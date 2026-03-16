@@ -68,8 +68,8 @@ A full-screen terminal emulator that renders Claude Code's output directly from 
 A message-based view that receives structured events directly from Claude Code hooks, bypassing terminal parsing entirely. The old parser sidecar (`parser.js`, `patterns.js`, `ParsedEvent.kt`) and all heuristic parsing code have been deleted.
 
 **Architecture:**
-- `hook-relay.js` (~10 lines) — Claude Code hook script that reads stdin JSON and writes to an Android abstract-namespace Unix socket
-- `EventBridge.kt` — `LocalServerSocket` that accepts hook-relay connections, parses JSON, emits `HookEvent` via `SharedFlow` (buffer: 1000)
+- `hook-relay.js` — Claude Code hook script that reads stdin JSON and writes to an Android abstract-namespace Unix socket. Retries up to 3 attempts with backoff on connection failure; logs errors to stderr.
+- `EventBridge.kt` — `LocalServerSocket` that accepts hook-relay connections, parses JSON, emits `HookEvent` via `SharedFlow` (buffer: 1000). Started BEFORE Claude Code session (not after) to prevent early events being dropped. Logs unparseable payloads for debugging.
 - `HookEvent.kt` — sealed class with 5 variants: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `Notification`
 - `ChatState.kt` — 7 `MessageContent` variants (`Text`, `Response`, `ToolRunning`, `ToolAwaitingApproval`, `ToolComplete`, `ToolFailed`, `SystemNotice`) with tool state machine transitions
 - `ChatScreen.kt` — collects `EventBridge.events`, routes each hook type to the appropriate `ChatState` mutation
