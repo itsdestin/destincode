@@ -32,6 +32,8 @@ fun ChatScreen(bridge: PtyBridge) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var prefillText by remember { mutableStateOf("") }
+    var chatInputText by remember { mutableStateOf("") }
+    val onPrefillConsumed = { prefillText = "" }
     var isTerminalMode by remember { mutableStateOf(false) }
     var hasUnhandledInteractive by remember { mutableStateOf(false) }
     var showBtwSheet by remember { mutableStateOf(false) }
@@ -256,44 +258,61 @@ fun ChatScreen(bridge: PtyBridge) {
                 )
             }
         } else {
-            // ── Chat mode ──────────────────────────────────────────────
+            // ── Chat mode — mirrors terminal page formatting ─────────
             Column(modifier = Modifier.fillMaxSize()) {
-                // Top bar with toggle on the left
-                Surface(
-                    color = MaterialTheme.colorScheme.background,
-                    tonalElevation = 2.dp,
+                val borderColor = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder
+
+                // Top bar — pill icon + title, matching terminal style
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Row(
+                    // Terminal toggle — styled as a pill
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = { isTerminalMode = true }) {
-                            Icon(
-                                com.destins.claudemobile.ui.theme.AppIcons.Terminal,
-                                contentDescription = "Switch to terminal",
-                                tint = if (hasUnhandledInteractive)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.onSurface,
+                            .height(34.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .border(
+                                0.5.dp,
+                                borderColor.copy(alpha = 0.5f),
+                                androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
                             )
-                        }
-                        Spacer(Modifier.width(4.dp))
-                        Text("Claude Mobile", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            if (bridge.isRunning) "Connected" else "Disconnected",
-                            color = if (bridge.isRunning)
-                                MaterialTheme.colorScheme.secondary
+                            .clickable { isTerminalMode = true }
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            com.destins.claudemobile.ui.theme.AppIcons.Terminal,
+                            contentDescription = "Switch to terminal",
+                            tint = if (hasUnhandledInteractive)
+                                MaterialTheme.colorScheme.primary
                             else
-                                MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
+                                MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
+                    Spacer(Modifier.width(2.dp))
+                    Text(
+                        "Claude Mobile",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        if (bridge.isRunning) "Connected" else "Disconnected",
+                        fontSize = 13.sp,
+                        color = if (bridge.isRunning)
+                            com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.textSecondary
+                        else
+                            MaterialTheme.colorScheme.error,
+                    )
                 }
-                // Divider below chat header
-                HorizontalDivider(color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder, thickness = 0.5.dp)
+                HorizontalDivider(color = borderColor, thickness = 0.5.dp)
 
                 // Chat messages
                 LazyColumn(
@@ -315,14 +334,15 @@ fun ChatScreen(bridge: PtyBridge) {
                     }
                 }
 
-                HorizontalDivider(color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder, thickness = 0.5.dp)
+                HorizontalDivider(color = borderColor, thickness = 0.5.dp)
 
+                // Quick chips
                 if (!chatState.isWaitingForApproval) {
                     QuickChips(
                         chips = defaultChips,
                         onChipTap = { chip ->
                             if (chip.needsCompletion) {
-                                prefillText = chip.prompt
+                                chatInputText = chip.prompt
                             } else {
                                 chatState.addUserMessage(chip.prompt)
                                 bridge.writeInput(chip.prompt + "\n")
@@ -331,24 +351,80 @@ fun ChatScreen(bridge: PtyBridge) {
                     )
                 }
 
-                InputBar(
-                    isApprovalMode = chatState.isWaitingForApproval,
-                    approvalSummary = chatState.approvalSummary,
-                    prefillText = prefillText,
-                    onPrefillConsumed = { prefillText = "" },
-                    onSend = { text ->
-                        chatState.addUserMessage(text)
-                        bridge.writeInput(text + "\n")
-                    },
-                    onApprove = {
-                        bridge.sendApproval(true)
-                        chatState.resolveApproval()
-                    },
-                    onReject = {
-                        bridge.sendApproval(false)
-                        chatState.resolveApproval()
-                    },
-                )
+                // Input row — pill-styled to match terminal
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .border(
+                                0.5.dp,
+                                borderColor.copy(alpha = 0.5f),
+                                androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                            ),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        BasicTextField(
+                            value = chatInputText,
+                            onValueChange = { chatInputText = it },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                fontSize = 14.sp,
+                                fontFamily = com.destins.claudemobile.ui.theme.CascadiaMono,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp),
+                            decorationBox = { innerTextField ->
+                                if (chatInputText.isEmpty()) {
+                                    Text(
+                                        "Type a message...",
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                    )
+                                }
+                                innerTextField()
+                            },
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                            .border(
+                                0.5.dp,
+                                borderColor.copy(alpha = 0.5f),
+                                androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                            )
+                            .clickable {
+                                if (chatInputText.isNotBlank()) {
+                                    chatState.addUserMessage(chatInputText)
+                                    bridge.writeInput(chatInputText + "\n")
+                                    chatInputText = ""
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
             }
 
             // /btw FAB
