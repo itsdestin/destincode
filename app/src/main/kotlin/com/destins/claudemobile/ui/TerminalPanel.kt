@@ -377,27 +377,7 @@ fun TerminalPanel(
             }
         }
 
-        // ── Scroll indicator when viewing history ───────────────────────
-        if (scrollRows > 0) {
-            val indicatorPaint = Paint().apply {
-                color = LINK_COLOR.toArgb()
-                textSize = cellH * 0.7f
-                isAntiAlias = true
-                textAlign = Paint.Align.CENTER
-            }
-            val indicatorBg = Paint().apply {
-                color = android.graphics.Color.argb(180, 28, 28, 28)
-            }
-            val text = "↓ ${scrollRows} rows above · tap to return"
-            val canvasWidth = size.width
-            val canvasHeight = size.height
-            val barH = cellH * 1.2f
-            drawContext.canvas.nativeCanvas.drawRect(
-                0f, canvasHeight - barH, canvasWidth, canvasHeight, indicatorBg
-            )
-            drawContext.canvas.nativeCanvas.drawText(
-                text, canvasWidth / 2f, canvasHeight - barH * 0.3f, indicatorPaint
-            )
-        }
+        // Scroll indicator is rendered as a Compose overlay in ChatScreen,
+        // not inside the Canvas, so it can float above the input bar.
     }
 }
