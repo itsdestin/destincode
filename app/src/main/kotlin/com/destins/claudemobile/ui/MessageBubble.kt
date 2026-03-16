@@ -150,7 +150,9 @@ fun MessageBubble(
 
     // Text bubbles (user messages and Claude responses)
     val isUser = message.role == MessageRole.USER
+    val isQueued = message.isQueued
     val bgColor = when {
+        isQueued -> MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
         message.isBtw -> MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
         isUser -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.surface
@@ -184,8 +186,18 @@ fun MessageBubble(
                     LinkableText(
                         text = content.text,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (isUser) Color.White else MaterialTheme.colorScheme.onSurface,
+                        color = if (isQueued) Color.White.copy(alpha = 0.5f)
+                            else if (isUser) Color.White
+                            else MaterialTheme.colorScheme.onSurface,
                     )
+                    if (isQueued) {
+                        Text(
+                            text = "queued",
+                            fontSize = 10.sp,
+                            color = Color.White.copy(alpha = 0.4f),
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
                 }
                 is MessageContent.Response -> {
                     LinkableText(
