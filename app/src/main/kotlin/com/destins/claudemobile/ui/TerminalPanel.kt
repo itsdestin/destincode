@@ -252,7 +252,7 @@ fun TerminalPanel(
                 val fgColor = if (isInverse) rawBg else rawFg
                 val bgColor = if (isInverse) rawFg else rawBg
 
-                val xLeft = col * cellW
+                val xLeft = col * cellW + 4f // small left margin to avoid edge clipping
 
                 // Draw cell background only if it differs from the terminal background
                 if (bgColor != terminalBg.toArgb()) {

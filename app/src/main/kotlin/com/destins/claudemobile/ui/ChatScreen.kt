@@ -147,29 +147,34 @@ fun ChatScreen(bridge: PtyBridge) {
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
 
-                // Special keys row
+                // Special keys + text input
                 TerminalKeyboardRow(
                     onKeyPress = { seq -> bridge.writeInput(seq) },
                 )
 
-                // Text input at the bottom — moves with keyboard
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(4.dp),
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    OutlinedTextField(
+                    TextField(
                         value = terminalInput,
                         onValueChange = { terminalInput = it },
-                        placeholder = { Text("Type command...", fontSize = 13.sp) },
-                        modifier = Modifier.weight(1f),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                        placeholder = { Text("Type here...", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)) },
+                        modifier = Modifier.weight(1f).height(46.dp),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(23.dp),
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                        ),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontSize = 14.sp,
+                            fontFamily = com.destins.claudemobile.ui.theme.CascadiaMono,
                         ),
                     )
                     IconButton(
@@ -180,7 +185,7 @@ fun ChatScreen(bridge: PtyBridge) {
                             }
                         },
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(40.dp)
                             .background(
                                 MaterialTheme.colorScheme.primary,
                                 shape = androidx.compose.foundation.shape.CircleShape
@@ -190,7 +195,7 @@ fun ChatScreen(bridge: PtyBridge) {
                             Icons.AutoMirrored.Filled.Send,
                             contentDescription = "Send",
                             tint = Color.White,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                 }
