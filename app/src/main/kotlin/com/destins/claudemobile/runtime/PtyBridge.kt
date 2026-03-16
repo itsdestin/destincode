@@ -138,6 +138,8 @@ class PtyBridge(
         eventBridge = bridge
     }
 
+    fun getSession(): TerminalSession? = session
+
     fun getEventBridge(): EventBridge? = eventBridge
 
     fun stop() {

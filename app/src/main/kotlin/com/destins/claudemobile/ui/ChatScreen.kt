@@ -4,6 +4,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -19,6 +22,8 @@ fun ChatScreen(bridge: PtyBridge) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var prefillText by remember { mutableStateOf("") }
+    var isTerminalMode by remember { mutableStateOf(false) }
+    var hasUnhandledInteractive by remember { mutableStateOf(false) }
 
     LaunchedEffect(bridge) {
         val eventBridge = bridge.getEventBridge()
@@ -55,6 +60,7 @@ fun ChatScreen(bridge: PtyBridge) {
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Top bar
         Surface(
             color = MaterialTheme.colorScheme.background,
             tonalElevation = 2.dp,
@@ -66,21 +72,35 @@ fun ChatScreen(bridge: PtyBridge) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text("Claude Mobile", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    if (bridge.isRunning) "Connected" else "Disconnected",
-                    color = if (bridge.isRunning)
-                        MaterialTheme.colorScheme.secondary
-                    else
-                        MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
+                Row {
+                    IconButton(onClick = { isTerminalMode = !isTerminalMode }) {
+                        Icon(
+                            if (isTerminalMode) Icons.Filled.Chat else Icons.Filled.Code,
+                            contentDescription = "Toggle terminal",
+                            tint = if (hasUnhandledInteractive)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Text(
+                        if (bridge.isRunning) "Connected" else "Disconnected",
+                        color = if (bridge.isRunning)
+                            MaterialTheme.colorScheme.secondary
+                        else
+                            MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                }
             }
         }
 
+        // Chat messages — compressed when terminal is open
         LazyColumn(
             state = listState,
             modifier = Modifier
-                .weight(1f)
+                .weight(if (isTerminalMode) 0.4f else 1f)
                 .fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 8.dp)
         ) {
@@ -89,39 +109,55 @@ fun ChatScreen(bridge: PtyBridge) {
             }
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-
-        if (!chatState.isWaitingForApproval) {
-            QuickChips(
-                chips = defaultChips,
-                onChipTap = { chip ->
-                    if (chip.needsCompletion) {
-                        prefillText = chip.prompt
-                    } else {
-                        chatState.addUserMessage(chip.prompt)
-                        bridge.writeInput(chip.prompt + "\n")
-                    }
-                }
-            )
+        // Terminal panel — only shown when toggled
+        if (isTerminalMode) {
+            Column(modifier = Modifier.weight(0.6f)) {
+                TerminalPanel(
+                    session = bridge.getSession(),
+                    modifier = Modifier.weight(1f),
+                )
+                TerminalKeyboardRow(
+                    onKeyPress = { seq -> bridge.writeInput(seq) },
+                )
+            }
         }
 
-        InputBar(
-            isApprovalMode = chatState.isWaitingForApproval,
-            approvalSummary = chatState.approvalSummary,
-            prefillText = prefillText,
-            onPrefillConsumed = { prefillText = "" },
-            onSend = { text ->
-                chatState.addUserMessage(text)
-                bridge.writeInput(text + "\n")
-            },
-            onApprove = {
-                bridge.sendApproval(true)
-                chatState.resolveApproval()
-            },
-            onReject = {
-                bridge.sendApproval(false)
-                chatState.resolveApproval()
-            },
-        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+        // Normal input + chips — hidden when terminal is open
+        if (!isTerminalMode) {
+            if (!chatState.isWaitingForApproval) {
+                QuickChips(
+                    chips = defaultChips,
+                    onChipTap = { chip ->
+                        if (chip.needsCompletion) {
+                            prefillText = chip.prompt
+                        } else {
+                            chatState.addUserMessage(chip.prompt)
+                            bridge.writeInput(chip.prompt + "\n")
+                        }
+                    }
+                )
+            }
+
+            InputBar(
+                isApprovalMode = chatState.isWaitingForApproval,
+                approvalSummary = chatState.approvalSummary,
+                prefillText = prefillText,
+                onPrefillConsumed = { prefillText = "" },
+                onSend = { text ->
+                    chatState.addUserMessage(text)
+                    bridge.writeInput(text + "\n")
+                },
+                onApprove = {
+                    bridge.sendApproval(true)
+                    chatState.resolveApproval()
+                },
+                onReject = {
+                    bridge.sendApproval(false)
+                    chatState.resolveApproval()
+                },
+            )
+        }
     }
 }
