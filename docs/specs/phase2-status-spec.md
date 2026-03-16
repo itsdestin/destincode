@@ -79,7 +79,7 @@ A message-based view that receives structured events directly from Claude Code h
 - `PreToolUse` → adds `ToolRunning` message (extracts args summary from `command`/`file_path`/`pattern` fields)
 - `PostToolUse` → finds matching card by `toolUseId`, transitions to `ToolComplete`
 - `PostToolUseFailure` → finds matching card by `toolUseId`, transitions to `ToolFailed`
-- `Stop` → adds `Response` message with `lastAssistantMessage`
+- `Stop` → adds `Response` message with assistant text (tries `last_assistant_message`, `message`, `response`, `assistant_message` fields; logs payload keys when empty)
 - `Notification` → if `permission_prompt`, transitions last `ToolRunning` to `ToolAwaitingApproval`; otherwise adds `SystemNotice`
 
 **Approval flow:**
