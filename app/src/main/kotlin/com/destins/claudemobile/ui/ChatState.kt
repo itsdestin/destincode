@@ -88,6 +88,17 @@ class ChatState {
         messages.add(ChatMessage(MessageRole.CLAUDE, MessageContent.Menu(options, raw)))
     }
 
+    fun resolveMenu(selectedOption: String) {
+        // Replace the last Menu message with a "Selected" text
+        val idx = messages.indexOfLast { it.content is MessageContent.Menu }
+        if (idx >= 0) {
+            messages[idx] = ChatMessage(
+                MessageRole.CLAUDE,
+                MessageContent.Text("Selected: $selectedOption"),
+            )
+        }
+    }
+
     fun addOAuth(url: String) {
         messages.add(ChatMessage(MessageRole.CLAUDE, MessageContent.OAuth(url)))
     }

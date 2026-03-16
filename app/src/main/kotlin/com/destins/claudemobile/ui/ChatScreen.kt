@@ -166,6 +166,31 @@ fun ChatScreen(bridge: PtyBridge) {
         }
     }
 
+    // Watch for screen changes and detect new menus from terminal screen buffer
+    // This catches menus that appear after ink redraws (which the parser misses)
+    val lastMenuHash = remember { mutableStateOf(0) }
+    LaunchedEffect(screenVersion) {
+        val session = bridge.getSession() ?: return@LaunchedEffect
+        val emulator = session.emulator ?: return@LaunchedEffect
+        val screen = emulator.screen ?: return@LaunchedEffect
+        val transcript = screen.getTranscriptText()
+
+        // Look for numbered menu patterns in the current screen
+        val menuPattern = Regex("""(?:^|\n)\s*[❯>]?\s*(\d+\.\s+\S.+)""")
+        val matches = menuPattern.findAll(transcript).map { it.groupValues[1].trim() }.toList()
+        if (matches.size >= 2) {
+            val hash = matches.hashCode()
+            if (hash != lastMenuHash.value) {
+                lastMenuHash.value = hash
+                // Check if there's already an active (unresolved) menu
+                val hasActiveMenu = chatState.messages.any { it.content is MessageContent.Menu }
+                if (!hasActiveMenu) {
+                    chatState.addMenu(matches, matches.joinToString("\n"))
+                }
+            }
+        }
+    }
+
     LaunchedEffect(chatState.messages.size) {
         if (chatState.messages.isNotEmpty()) {
             listState.animateScrollToItem(chatState.messages.size - 1)
@@ -403,6 +428,12 @@ fun ChatScreen(bridge: PtyBridge) {
                             onReject = { bridge.sendApproval(false); chatState.resolveApproval() },
                             onViewTerminal = { isTerminalMode = true },
                             onMenuSelect = { index ->
+                                // Resolve the widget with selected option text
+                                val menuMsg = message.content
+                                if (menuMsg is MessageContent.Menu) {
+                                    val selected = menuMsg.options.getOrElse(index) { "" }
+                                    chatState.resolveMenu(selected)
+                                }
                                 // Send arrow-down × index + enter to navigate ink menu
                                 repeat(index) { bridge.writeInput("\u001b[B") }
                                 bridge.writeInput("\r")
