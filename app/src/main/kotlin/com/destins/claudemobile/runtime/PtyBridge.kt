@@ -11,7 +11,7 @@ import java.io.File
 
 class PtyBridge(
     private val bootstrap: Bootstrap,
-    private val apiKey: String,
+    private val apiKey: String? = null,
 ) {
     private var session: TerminalSession? = null
     private var parserProcess: Process? = null
@@ -57,21 +57,41 @@ class PtyBridge(
 
     fun start() {
         val env = bootstrap.buildRuntimeEnv().toMutableMap()
-        env["ANTHROPIC_API_KEY"] = apiKey
+        // Only set API key if provided; otherwise Claude Code handles its own OAuth auth
+        apiKey?.let { env["ANTHROPIC_API_KEY"] = it }
 
         val claudePath = File(bootstrap.usrDir, "lib/node_modules/@anthropic-ai/claude-code/cli.js")
         val nodePath = File(bootstrap.usrDir, "bin/node")
 
+        // TerminalSession calls execvp(shellPath, args) where args[0] is typically
+        // the program name. To launch Claude Code via linker64, we use sh -c with
+        // the full command inline.
+        val usrPath = bootstrap.usrDir.absolutePath
+        val homePath = bootstrap.homeDir.absolutePath
+        val launchCmd = "exec /system/bin/linker64 ${nodePath.absolutePath} ${claudePath.absolutePath}"
+
+        // Add all env vars needed for the runtime
+        env["OPENSSL_CONF"] = "$usrPath/etc/tls/openssl.cnf"
+        env["SSL_CERT_FILE"] = "$usrPath/etc/tls/cert.pem"
+        env["SSL_CERT_DIR"] = "$usrPath/etc/tls/certs"
+        env["TMPDIR"] = "$homePath/tmp"
+        File(bootstrap.homeDir, "tmp").mkdirs()
+
         val envArray = env.map { "${it.key}=${it.value}" }.toTypedArray()
 
+        // TerminalSession passes args as argv to execvp. argv[0] must be the
+        // program name ("sh"), then "-c", then the command string.
         session = TerminalSession(
-            nodePath.absolutePath,
+            "/system/bin/sh",
             bootstrap.homeDir.absolutePath,
-            arrayOf(claudePath.absolutePath),
+            arrayOf("sh", "-c", launchCmd),
             envArray,
             200,
             sessionClient
         )
+        // initializeEmulator forks the process and starts the PTY.
+        // Without this call, the session is created but nothing runs.
+        session?.initializeEmulator(80, 24)
     }
 
     fun writeInput(text: String) {
@@ -103,8 +123,9 @@ class PtyBridge(
         env["PARSER_SOCKET"] = socketPath
 
         val nodePath = File(bootstrap.usrDir, "bin/node")
+        // Use linker64 to bypass SELinux exec restrictions on app_data_file binaries
         parserProcess = ProcessBuilder(
-            nodePath.absolutePath,
+            "/system/bin/linker64", nodePath.absolutePath,
             parserJs.absolutePath
         )
             .directory(parserDir)

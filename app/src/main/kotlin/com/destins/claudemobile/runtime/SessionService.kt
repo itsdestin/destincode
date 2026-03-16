@@ -30,7 +30,7 @@ class SessionService : Service() {
         createNotificationChannel()
     }
 
-    fun startSession(bootstrap: Bootstrap, apiKey: String) {
+    fun startSession(bootstrap: Bootstrap, apiKey: String? = null) {
         val bridge = PtyBridge(bootstrap, apiKey)
         bridge.start()
         ptyBridge = bridge
