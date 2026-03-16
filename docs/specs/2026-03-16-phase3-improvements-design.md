@@ -33,7 +33,9 @@ Three improvements to Claude Mobile addressing the highest-impact gaps between m
 
 ### Rendering Strategy
 
-Inline nodes (bold, italic, inline code, links) are rendered as `AnnotatedString` spans within `ClickableText`, extending the existing `LinkableText` URL detection pattern.
+Inline nodes (bold, italic, inline code, links) are rendered as `AnnotatedString` spans within `ClickableText`, extending the existing `LinkableText` URL detection pattern. Inline spans compose naturally within block containers (e.g., bold inside a list item) since the AST walker applies inline styles recursively within each block node's text content.
+
+**URL handling:** commonmark-java parses explicit `[text](url)` links into `Link` nodes. For bare URLs (which Claude frequently outputs), apply the same regex detection from `LinkableText` as a post-processing pass on `Text` nodes that aren't already inside a `Link`. This preserves the current behavior where bare `https://...` URLs are clickable.
 
 Block nodes (headers, paragraphs, lists, blockquotes, horizontal rules) are rendered as a `Column` of Compose elements with appropriate padding and styling.
 
