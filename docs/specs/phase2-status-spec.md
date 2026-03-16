@@ -71,7 +71,7 @@ A message-based view that receives structured events directly from Claude Code h
 - `hook-relay.js` — Claude Code hook script that reads stdin JSON and writes to an Android abstract-namespace Unix socket. Retries up to 3 attempts with backoff on connection failure; logs errors to stderr.
 - `EventBridge.kt` — `LocalServerSocket` that accepts hook-relay connections, parses JSON, emits `HookEvent` via `SharedFlow` (buffer: 1000). Started BEFORE Claude Code session (not after) to prevent early events being dropped. Logs unparseable payloads for debugging.
 - `HookEvent.kt` — sealed class with 5 variants: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `Notification`
-- `ChatState.kt` — 7 `MessageContent` variants (`Text`, `Response`, `ToolRunning`, `ToolAwaitingApproval`, `ToolComplete`, `ToolFailed`, `SystemNotice`) with tool state machine transitions
+- `ChatState.kt` — 7 `MessageContent` variants (`Text`, `Response`, `ToolRunning`, `ToolAwaitingApproval`, `ToolComplete`, `ToolFailed`, `SystemNotice`) with tool state machine transitions. Insertion cursor ensures responses appear after their corresponding user message, not at the end. Messages sent while Claude is processing are marked `isQueued` and visually dimmed.
 - `ChatScreen.kt` — collects `EventBridge.events`, routes each hook type to the appropriate `ChatState` mutation
 - `MessageBubble.kt` — routes content types to card composables (ToolCard, CodeCard, ErrorCard) or text bubbles
 
