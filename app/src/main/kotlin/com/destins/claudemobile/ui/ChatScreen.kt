@@ -34,9 +34,10 @@ fun ChatScreen(bridge: PtyBridge) {
     var prefillText by remember { mutableStateOf("") }
     var chatInputText by remember { mutableStateOf("") }
     val onPrefillConsumed = { prefillText = "" }
-    var isTerminalMode by remember { mutableStateOf(false) }
+    // Start in terminal mode — first-run interactive menus need terminal input
+    var isTerminalMode by remember { mutableStateOf(true) }
     var hasUnhandledInteractive by remember { mutableStateOf(false) }
-    var showBtwSheet by remember { mutableStateOf(false) }
+    // var showBtwSheet by remember { mutableStateOf(false) } // /btw deferred
 
     // Collect screen version to trigger terminal panel recomposition on PTY output
     val screenVersion by bridge.screenVersion.collectAsState()
@@ -427,28 +428,6 @@ fun ChatScreen(bridge: PtyBridge) {
                 }
             }
 
-            // /btw FAB
-            FloatingActionButton(
-                onClick = { showBtwSheet = true },
-                containerColor = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 80.dp),
-            ) {
-                Text("/btw", color = Color.White, fontSize = 12.sp)
-            }
         }
-    }
-
-    // Bottom sheet (outside the Box)
-    if (showBtwSheet) {
-        BtwSheet(
-            messages = chatState.messages,
-            onSend = { text ->
-                chatState.addUserMessage(text, isBtw = true)
-                bridge.sendBtw(text)
-            },
-            onDismiss = { showBtwSheet = false },
-        )
     }
 }
