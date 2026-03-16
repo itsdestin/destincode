@@ -93,7 +93,7 @@ class PtyBridge(
         // the full command inline.
         val usrPath = bootstrap.usrDir.absolutePath
         val homePath = bootstrap.homeDir.absolutePath
-        val launchCmd = "exec /system/bin/linker64 ${nodePath.absolutePath} ${claudePath.absolutePath}"
+        val launchCmd = "export SHELL=/system/bin/sh && exec /system/bin/linker64 ${nodePath.absolutePath} ${claudePath.absolutePath}"
 
         // Add all env vars needed for the runtime
         env["OPENSSL_CONF"] = "$usrPath/etc/tls/openssl.cnf"
