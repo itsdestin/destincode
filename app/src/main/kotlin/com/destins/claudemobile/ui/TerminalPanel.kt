@@ -224,8 +224,10 @@ fun TerminalPanel(
                     // Swipe up (negative dragAmount) = toward live/recent (decrease offset)
                     // Swipe down (positive dragAmount) = into history (increase offset)
                     // This matches standard mobile scroll: swipe up to see bottom content.
-                    scrollOffsetRows = (scrollOffsetRows + dragAmount / cellHeightPx)
+                    val newOffset = (scrollOffsetRows + dragAmount / cellHeightPx)
                         .coerceAtLeast(0f)
+                    scrollOffsetRows = newOffset
+                    onScrollOffsetChanged?.invoke(newOffset)
                 }
             }
     ) {
