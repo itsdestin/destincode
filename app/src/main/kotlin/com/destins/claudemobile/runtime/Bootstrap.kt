@@ -312,6 +312,14 @@ class Bootstrap(private val context: Context) {
         homeDir.mkdirs()
         File(homeDir, ".claude").mkdirs()
         File(homeDir, "tmp").mkdirs()
+
+        // Create shell wrapper scripts that use linker64 to bypass SELinux.
+        // Claude Code spawns subprocesses via SHELL, which fails without this.
+        val binDir = File(usrDir, "bin")
+        val bashReal = File(binDir, "bash").absolutePath
+        val shWrapper = File(binDir, "sh-wrapper")
+        shWrapper.writeText("#!/system/bin/sh\nexec /system/bin/linker64 $bashReal \"\$@\"\n")
+        shWrapper.setExecutable(true)
     }
 
     /**
@@ -340,7 +348,7 @@ class Bootstrap(private val context: Context) {
     fun buildRuntimeEnv(): Map<String, String> = mapOf(
         "HOME" to homeDir.absolutePath,
         "PREFIX" to usrDir.absolutePath,
-        "SHELL" to "/system/bin/sh",
+        "SHELL" to "${usrDir.absolutePath}/bin/sh-wrapper",
         "PATH" to "${usrDir.absolutePath}/bin:${usrDir.absolutePath}/bin/applets:/system/bin",
         "LD_LIBRARY_PATH" to "${usrDir.absolutePath}/lib",
         "LANG" to "en_US.UTF-8",
