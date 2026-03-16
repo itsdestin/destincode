@@ -212,6 +212,8 @@ fun TerminalPanel(
                     if (hit != null) {
                         val url = hit.url.trimEnd('.', ',', ';', ':', '!')
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    } else {
+                        onTap?.invoke()
                     }
                 }
             }
