@@ -10,10 +10,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import com.destins.claudemobile.config.ApiKeyStore
 import com.destins.claudemobile.runtime.Bootstrap
 import com.destins.claudemobile.runtime.SessionManager
-import com.destins.claudemobile.ui.ApiKeyScreen
 import com.destins.claudemobile.ui.ChatScreen
 import com.destins.claudemobile.ui.SetupScreen
 import com.destins.claudemobile.ui.theme.ClaudeMobileTheme
@@ -27,7 +25,6 @@ class MainActivity : ComponentActivity() {
             ClaudeMobileTheme {
                 var isReady by remember { mutableStateOf(bootstrap.isBootstrapped) }
                 var progress by remember { mutableStateOf<Bootstrap.Progress?>(null) }
-                var apiKeyReady by remember { mutableStateOf(false) }
 
                 if (!isReady) {
                     SetupScreen(progress)
@@ -41,7 +38,6 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     val sessionManager = remember { SessionManager(applicationContext) }
-                    val apiKeyStore = remember { ApiKeyStore(applicationContext) }
                     val sessionState by sessionManager.state.collectAsState()
                     val coroutineScope = rememberCoroutineScope()
 
@@ -51,12 +47,6 @@ class MainActivity : ComponentActivity() {
                     }
 
                     when {
-                        !apiKeyStore.hasApiKey && !apiKeyReady -> {
-                            ApiKeyScreen { key ->
-                                apiKeyStore.anthropicApiKey = key
-                                apiKeyReady = true
-                            }
-                        }
                         sessionState is SessionManager.SessionState.Connected -> {
                             val bridge = (sessionState as SessionManager.SessionState.Connected).bridge
                             ChatScreen(bridge)
@@ -74,7 +64,7 @@ class MainActivity : ComponentActivity() {
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Button(onClick = {
                                     coroutineScope.launch {
-                                        sessionManager.startSession(bootstrap, apiKeyStore.anthropicApiKey!!)
+                                        sessionManager.startSession(bootstrap)
                                     }
                                 }) {
                                     Text("Retry")
@@ -82,8 +72,9 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         else -> {
+                            // Start session immediately — Claude Code handles its own auth
                             LaunchedEffect(Unit) {
-                                sessionManager.startSession(bootstrap, apiKeyStore.anthropicApiKey!!)
+                                sessionManager.startSession(bootstrap)
                             }
                             SetupScreen(Bootstrap.Progress.Installing("Claude Code session"))
                         }

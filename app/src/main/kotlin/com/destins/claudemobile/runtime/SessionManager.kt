@@ -40,7 +40,7 @@ class SessionManager(private val context: Context) {
         context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
 
-    suspend fun startSession(bootstrap: Bootstrap, apiKey: String) {
+    suspend fun startSession(bootstrap: Bootstrap, apiKey: String? = null) {
         _state.value = SessionState.Connecting
         val intent = Intent(context, SessionService::class.java)
         context.startForegroundService(intent)

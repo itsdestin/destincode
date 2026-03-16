@@ -46,5 +46,9 @@ dependencies {
     // Termux terminal emulator (PTY session management)
     implementation("com.github.termux.termux-app:terminal-emulator:v0.118.1")
 
+    // Apache Commons Compress for extracting .deb packages (ar + tar + xz)
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.10")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

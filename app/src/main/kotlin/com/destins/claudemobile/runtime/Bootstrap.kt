@@ -3,15 +3,24 @@ package com.destins.claudemobile.runtime
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException
+import java.net.URL
 import java.util.zip.ZipInputStream
+import org.apache.commons.compress.archivers.ar.ArArchiveInputStream
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.tukaani.xz.XZInputStream
 
 class Bootstrap(private val context: Context) {
 
     val usrDir: File get() = File(context.filesDir, "usr")
     val homeDir: File get() = File(context.filesDir, "home")
-    val isBootstrapped: Boolean get() = File(usrDir, "bin/bash").exists()
+    val isExtracted: Boolean get() = File(usrDir, "bin/bash").exists()
+    val isFullySetup: Boolean get() = File(usrDir, "bin/node").exists() &&
+        File(usrDir, "lib/node_modules/npm").exists() &&
+        File(usrDir, "lib/node_modules/@anthropic-ai/claude-code").exists()
+    val isBootstrapped: Boolean get() = isExtracted && isFullySetup
 
     sealed class Progress {
         data class Extracting(val percent: Int) : Progress()
@@ -22,12 +31,14 @@ class Bootstrap(private val context: Context) {
 
     suspend fun setup(onProgress: (Progress) -> Unit) = withContext(Dispatchers.IO) {
         try {
-            if (!isBootstrapped) {
+            setupHome()  // Must exist before any executeInRuntime calls (used as cwd)
+            if (!isExtracted) {
                 extractBootstrap(onProgress)
             }
-            installPackages(onProgress)
-            installClaudeCode(onProgress)
-            setupHome()
+            if (!isFullySetup) {
+                installPackages(onProgress)
+                installClaudeCode(onProgress)
+            }
             onProgress(Progress.Complete)
         } catch (e: Exception) {
             onProgress(Progress.Error(e.message ?: "Unknown error"))
@@ -40,10 +51,17 @@ class Bootstrap(private val context: Context) {
         val zip = ZipInputStream(asset)
         var entry = zip.nextEntry
         var count = 0
+        var symlinksContent: String? = null
         while (entry != null) {
             count++
             if (count % 100 == 0) {
                 onProgress(Progress.Extracting((count * 100) / 5000))
+            }
+            if (entry.name == "SYMLINKS.txt") {
+                symlinksContent = zip.bufferedReader().readText()
+                zip.closeEntry()
+                entry = zip.nextEntry
+                continue
             }
             val target = File(usrDir, entry.name)
             if (entry.isDirectory) {
@@ -51,43 +69,210 @@ class Bootstrap(private val context: Context) {
             } else {
                 target.parentFile?.mkdirs()
                 target.outputStream().use { out -> zip.copyTo(out) }
-                if (entry.name.contains("/bin/") || entry.name.endsWith(".so")) {
-                    target.setExecutable(true)
-                }
+                // Set all files executable — covers bin/, lib/, libexec/, etc.
+                target.setExecutable(true)
             }
             zip.closeEntry()
             entry = zip.nextEntry
         }
         zip.close()
+
+        // Process symlinks from SYMLINKS.txt (format: target←link_path)
+        symlinksContent?.lines()?.forEach { line ->
+            if (line.isBlank()) return@forEach
+            val parts = line.split("←")
+            if (parts.size == 2) {
+                val symlinkTarget = parts[0].trim()
+                val linkPath = parts[1].trim().removePrefix("./")
+                val linkFile = File(usrDir, linkPath)
+                linkFile.parentFile?.mkdirs()
+                try {
+                    // Create symlinks using ProcessBuilder (no shell injection risk —
+                    // paths come from the trusted Termux bootstrap, not user input)
+                    ProcessBuilder("ln", "-sf", symlinkTarget, linkFile.absolutePath)
+                        .start().waitFor()
+                } catch (_: Exception) {
+                    // Symlink creation may fail on some Android versions; non-fatal
+                }
+            }
+        }
+
+        // Configure apt sources for Termux package repos
+        setupAptSources()
+
         onProgress(Progress.Extracting(100))
     }
 
+    private fun setupAptSources() {
+        val etcApt = File(usrDir, "etc/apt")
+        etcApt.mkdirs()
+        val sourcesList = File(etcApt, "sources.list")
+        sourcesList.writeText(
+            "deb https://packages.termux.dev/apt/termux-main stable main\n"
+        )
+    }
+
+    private val termuxRepo = "https://packages.termux.dev/apt/termux-main"
+
+    /**
+     * Download .deb packages directly from Termux repos and extract them.
+     * We can't use apt because it has hardcoded /data/data/com.termux/ paths.
+     */
     private fun installPackages(onProgress: (Progress) -> Unit) {
-        val packages = listOf("nodejs", "git", "rclone")
-        for (pkg in packages) {
-            onProgress(Progress.Installing(pkg))
-            executeInRuntime("apt", "install", "-y", pkg)
+        // Node.js dependencies first
+        if (!File(usrDir, "lib/libcares.so").exists()) {
+            onProgress(Progress.Installing("c-ares"))
+            installDeb("pool/main/c/c-ares/c-ares_1.34.6_aarch64.deb")
+        }
+        if (!File(usrDir, "lib/libicuuc.so.78").exists()) {
+            onProgress(Progress.Installing("libicu"))
+            installDeb("pool/main/libi/libicu/libicu_78.2_aarch64.deb")
+        }
+        if (!File(usrDir, "lib/libsqlite3.so").exists()) {
+            onProgress(Progress.Installing("libsqlite"))
+            installDeb("pool/main/libs/libsqlite/libsqlite_3.52.0-1_aarch64.deb")
+        }
+
+        // Node.js is required for Claude Code and the parser
+        if (!File(usrDir, "bin/node").exists()) {
+            onProgress(Progress.Installing("nodejs"))
+            installDeb("pool/main/n/nodejs/nodejs_25.8.1_aarch64.deb")
+        }
+
+        // npm is needed to install Claude Code
+        if (!File(usrDir, "lib/node_modules/npm").exists()) {
+            onProgress(Progress.Installing("npm"))
+            installDeb("pool/main/n/npm/npm_11.11.1_all.deb")
+        }
+
+        // Git is needed for repo operations but has many dependencies.
+        // Defer to Phase 2 — Claude Code can run without git for journaling/inbox use cases.
+        // TODO: Install git + deps (libcurl, libexpat, libiconv, openssl, pcre2, zlib, libgit2)
+    }
+
+    /**
+     * Download a .deb from Termux repos and extract it using pure Java.
+     * No shelling out — avoids all SELinux exec restrictions.
+     *
+     * A .deb is an ar archive containing:
+     *   - debian-binary (version string)
+     *   - control.tar.xz (package metadata)
+     *   - data.tar.xz (actual files to install)
+     *
+     * We parse the ar format, find data.tar.xz, decompress with XZ,
+     * then extract the tar entries directly into usrDir.
+     */
+    private fun installDeb(debPath: String) {
+        val url = "$termuxRepo/$debPath"
+        val tmpDeb = File(context.cacheDir, "tmp.deb")
+        try {
+            // Download .deb
+            URL(url).openStream().use { input ->
+                tmpDeb.outputStream().use { output -> input.copyTo(output) }
+            }
+
+            // Parse the ar archive to find data.tar.xz
+            ArArchiveInputStream(BufferedInputStream(tmpDeb.inputStream())).use { arStream ->
+                var arEntry = arStream.nextEntry
+                while (arEntry != null) {
+                    if (arEntry.name.startsWith("data.tar")) {
+                        // Decompress XZ and extract tar
+                        val tarStream = TarArchiveInputStream(XZInputStream(arStream))
+                        var tarEntry = tarStream.nextEntry
+                        while (tarEntry != null) {
+                            // Strip Termux prefix from tar paths.
+                            // Entries may be "./bin/node" or "data/data/com.termux/files/usr/bin/node"
+                            val termuxPrefix = "data/data/com.termux/files/usr/"
+                            var entryPath = tarEntry.name.removePrefix("./").removePrefix("/")
+                            if (entryPath.startsWith(termuxPrefix)) {
+                                entryPath = entryPath.removePrefix(termuxPrefix)
+                            }
+                            // Also handle absolute paths
+                            val absPrefix = "/data/data/com.termux/files/usr/"
+                            if (tarEntry.name.startsWith(absPrefix)) {
+                                entryPath = tarEntry.name.removePrefix(absPrefix)
+                            }
+                            if (entryPath.isEmpty()) {
+                                tarEntry = tarStream.nextEntry
+                                continue
+                            }
+                            val target = File(usrDir, entryPath)
+
+                            if (tarEntry.isDirectory) {
+                                target.mkdirs()
+                            } else if (tarEntry.isSymbolicLink) {
+                                // Create symlink
+                                target.parentFile?.mkdirs()
+                                try {
+                                    java.nio.file.Files.createSymbolicLink(
+                                        target.toPath(),
+                                        java.nio.file.Paths.get(tarEntry.linkName)
+                                    )
+                                } catch (_: Exception) {
+                                    // Symlinks may fail on some Android versions; non-fatal
+                                }
+                            } else {
+                                target.parentFile?.mkdirs()
+                                target.outputStream().use { out ->
+                                    tarStream.copyTo(out)
+                                }
+                                target.setExecutable(true)
+                            }
+                            tarEntry = tarStream.nextEntry
+                        }
+                        break // Done with data.tar
+                    }
+                    arEntry = arStream.nextEntry
+                }
+            }
+        } finally {
+            tmpDeb.delete()
         }
     }
 
     private fun installClaudeCode(onProgress: (Progress) -> Unit) {
+        if (File(usrDir, "lib/node_modules/@anthropic-ai/claude-code").exists()) return
         onProgress(Progress.Installing("claude-code"))
-        executeInRuntime("npm", "install", "-g", "@anthropic-ai/claude-code")
+        // npm is a JS script, not an ELF binary — run it via node + linker64.
+        // node <npm-cli.js> install -g @anthropic-ai/claude-code
+        val nodePath = File(usrDir, "bin/node").absolutePath
+        val npmCliPath = File(usrDir, "lib/node_modules/npm/bin/npm-cli.js").absolutePath
+
+        val cmdList = mutableListOf("/system/bin/linker64", nodePath, npmCliPath, "install", "-g", "@anthropic-ai/claude-code")
+        val pb = ProcessBuilder(cmdList)
+            .directory(homeDir)
+            .redirectErrorStream(true)
+        pb.environment().putAll(buildRuntimeEnv())
+        val process = pb.start()
+        val output = process.inputStream.bufferedReader().readText()
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw IOException("npm install claude-code failed (exit $exitCode): $output")
+        }
     }
 
     private fun setupHome() {
         homeDir.mkdirs()
         File(homeDir, ".claude").mkdirs()
+        File(homeDir, "tmp").mkdirs()
     }
 
+    /**
+     * Execute a command inside the embedded runtime.
+     * Uses /system/bin/linker64 to bypass SELinux restrictions that prevent
+     * direct execution of binaries from app_data_file contexts.
+     * The linker loads the ELF binary directly, bypassing the exec permission check.
+     */
     private fun executeInRuntime(vararg command: String) {
-        val env = buildRuntimeEnv()
-        val pb = ProcessBuilder(listOf(File(usrDir, "bin/${command[0]}").absolutePath) + command.drop(1))
+        val binPath = File(usrDir, "bin/${command[0]}").absolutePath
+        val cmdList = mutableListOf("/system/bin/linker64", binPath)
+        cmdList.addAll(command.drop(1))
+
+        val pb = ProcessBuilder(cmdList)
             .directory(homeDir)
             .redirectErrorStream(true)
-        pb.environment().putAll(env)
+        pb.environment().putAll(buildRuntimeEnv())
         val process = pb.start()
-        // Drain stdout concurrently to prevent pipe buffer deadlock
         val output = process.inputStream.bufferedReader().readText()
         val exitCode = process.waitFor()
         if (exitCode != 0) {
@@ -98,9 +283,15 @@ class Bootstrap(private val context: Context) {
     fun buildRuntimeEnv(): Map<String, String> = mapOf(
         "HOME" to homeDir.absolutePath,
         "PREFIX" to usrDir.absolutePath,
-        "PATH" to "${usrDir.absolutePath}/bin:${usrDir.absolutePath}/bin/applets",
+        "PATH" to "${usrDir.absolutePath}/bin:${usrDir.absolutePath}/bin/applets:/system/bin",
         "LD_LIBRARY_PATH" to "${usrDir.absolutePath}/lib",
         "LANG" to "en_US.UTF-8",
         "TERM" to "xterm-256color",
+        // Override hardcoded Termux paths in compiled binaries
+        "OPENSSL_CONF" to "${usrDir.absolutePath}/etc/tls/openssl.cnf",
+        "SSL_CERT_FILE" to "${usrDir.absolutePath}/etc/tls/cert.pem",
+        "SSL_CERT_DIR" to "${usrDir.absolutePath}/etc/tls/certs",
+        "TERMUX_PREFIX" to usrDir.absolutePath,
+        "TMPDIR" to "${homeDir.absolutePath}/tmp",
     )
 }
