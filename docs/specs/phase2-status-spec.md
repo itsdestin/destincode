@@ -377,7 +377,6 @@ ui/ActivityIndicator.kt        — Tool-specific animated "Working..." indicator
 ui/SyntaxHighlighter.kt        — Token-based code highlighting
 ui/BtwSheet.kt                 — /btw bottom sheet
 ui/ApiKeyScreen.kt             — API key entry screen
-ui/cards/CardState.kt          — Expand/collapse state manager (unused — ChatState has own toggle)
 ui/cards/ToolCard.kt           — Tool call card (3 states: Running, AwaitingApproval, Complete)
 ui/cards/DiffCard.kt           — Diff display card (built, not routed from hooks pipeline)
 ui/cards/CodeCard.kt           — Code block card with syntax highlighting + copy
