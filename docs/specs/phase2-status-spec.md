@@ -313,7 +313,7 @@ Unreachable components from the parser era:
 
 DirectShellBridge works via long-press on Terminal button but there's no visible indicator. Users won't discover it. Needs a UI element (toggle, menu item, or labeled button).
 
-### Priority 9: Person Briefings + Text Drafting Chips
+### Priority 8: Person Briefings + Text Drafting Chips
 
 Config-only change in `ChipConfig.kt` — no new files or complex logic.
 
