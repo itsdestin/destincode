@@ -121,7 +121,7 @@ fun ChatScreen(bridge: PtyBridge) {
             var terminalInput by remember { mutableStateOf("") }
 
             Column(modifier = Modifier.fillMaxSize()) {
-                // Minimal top bar — just toggle button to get back to chat
+                // Top bar with toggle on the left
                 Surface(
                     color = MaterialTheme.colorScheme.background,
                     tonalElevation = 2.dp,
@@ -130,17 +130,17 @@ fun ChatScreen(bridge: PtyBridge) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Terminal", style = MaterialTheme.typography.titleSmall)
                         IconButton(onClick = { isTerminalMode = false }) {
                             Icon(
-                                Icons.Filled.Chat,
-                                contentDescription = "Back to chat",
+                                com.destins.claudemobile.ui.theme.AppIcons.Chat,
+                                contentDescription = "Switch to chat",
                                 tint = MaterialTheme.colorScheme.onSurface,
                             )
                         }
+                        Spacer(Modifier.width(4.dp))
+                        Text("Terminal", style = MaterialTheme.typography.titleSmall)
                     }
                 }
 
@@ -236,7 +236,7 @@ fun ChatScreen(bridge: PtyBridge) {
         } else {
             // ── Chat mode ──────────────────────────────────────────────
             Column(modifier = Modifier.fillMaxSize()) {
-                // Top bar
+                // Top bar with toggle on the left
                 Surface(
                     color = MaterialTheme.colorScheme.background,
                     tonalElevation = 2.dp,
@@ -244,31 +244,30 @@ fun ChatScreen(bridge: PtyBridge) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Claude Mobile", style = MaterialTheme.typography.titleMedium)
-                        Row {
-                            IconButton(onClick = { isTerminalMode = true }) {
-                                Icon(
-                                    Icons.Filled.Code,
-                                    contentDescription = "Open terminal",
-                                    tint = if (hasUnhandledInteractive)
-                                        MaterialTheme.colorScheme.primary
-                                    else
-                                        MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                            Text(
-                                if (bridge.isRunning) "Connected" else "Disconnected",
-                                color = if (bridge.isRunning)
-                                    MaterialTheme.colorScheme.secondary
+                        IconButton(onClick = { isTerminalMode = true }) {
+                            Icon(
+                                com.destins.claudemobile.ui.theme.AppIcons.Terminal,
+                                contentDescription = "Switch to terminal",
+                                tint = if (hasUnhandledInteractive)
+                                    MaterialTheme.colorScheme.primary
                                 else
-                                    MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(top = 12.dp)
+                                    MaterialTheme.colorScheme.onSurface,
                             )
                         }
+                        Spacer(Modifier.width(4.dp))
+                        Text("Claude Mobile", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (bridge.isRunning) "Connected" else "Disconnected",
+                            color = if (bridge.isRunning)
+                                MaterialTheme.colorScheme.secondary
+                            else
+                                MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
 
