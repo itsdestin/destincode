@@ -1,57 +1,57 @@
 package com.destins.claudemobile.parser
 
+import android.net.LocalServerSocket
 import android.net.LocalSocket
-import android.net.LocalSocketAddress
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.io.OutputStream
 
 class EventBridge(private val socketPath: String) {
-    private val _events = MutableSharedFlow<ParsedEvent>(extraBufferCapacity = 1000)
-    val events: SharedFlow<ParsedEvent> = _events
+    private val _events = MutableSharedFlow<HookEvent>(extraBufferCapacity = 1000)
+    val events: SharedFlow<HookEvent> = _events
 
-    var onConnected: (() -> Unit)? = null
+    private var serverSocket: LocalServerSocket? = null
+    private var listenJob: Job? = null
 
-    private var socket: LocalSocket? = null
-    private var outputStream: OutputStream? = null
-    private var readJob: Job? = null
+    fun startServer(scope: CoroutineScope) {
+        // Remove stale socket file if it exists
+        try { java.io.File(socketPath).delete() } catch (_: Exception) {}
 
-    fun connect(scope: CoroutineScope) {
-        readJob = scope.launch(Dispatchers.IO) {
-            retry@ while (isActive) {
-                try {
-                    val s = LocalSocket()
-                    s.connect(LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM))
-                    socket = s
-                    outputStream = s.outputStream
-                    onConnected?.invoke()
-
-                    val reader = BufferedReader(InputStreamReader(s.inputStream))
-                    while (isActive) {
-                        val line = reader.readLine() ?: break
-                        ParsedEvent.fromJson(line)?.let { _events.emit(it) }
+        listenJob = scope.launch(Dispatchers.IO) {
+            try {
+                serverSocket = LocalServerSocket(socketPath)
+                while (isActive) {
+                    val client: LocalSocket = serverSocket!!.accept()
+                    launch {
+                        handleClient(client)
                     }
-                } catch (e: Exception) {
-                    delay(1000)
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    android.util.Log.e("EventBridge", "Server error", e)
                 }
             }
         }
     }
 
-    fun sendPtyOutput(data: String) {
+    private suspend fun handleClient(client: LocalSocket) {
         try {
-            outputStream?.write(data.toByteArray())
-            outputStream?.flush()
-        } catch (_: Exception) {}
+            client.use { socket ->
+                val reader = BufferedReader(InputStreamReader(socket.inputStream))
+                val line = reader.readLine() ?: return
+                HookEvent.fromJson(line)?.let { _events.emit(it) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("EventBridge", "Client error", e)
+        }
     }
 
-    fun disconnect() {
-        readJob?.cancel()
-        socket?.close()
-        socket = null
-        outputStream = null
+    fun stop() {
+        listenJob?.cancel()
+        try { serverSocket?.close() } catch (_: Exception) {}
+        try { java.io.File(socketPath).delete() } catch (_: Exception) {}
+        serverSocket = null
     }
 }
