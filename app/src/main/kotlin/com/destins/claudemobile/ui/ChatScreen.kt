@@ -361,7 +361,7 @@ fun ChatScreen(bridge: PtyBridge) {
                             )
                             .clickable {
                                 if (terminalInput.isNotBlank()) {
-                                    bridge.writeInput(terminalInput + "\n")
+                                    bridge.writeInput(terminalInput + "\r")
                                     terminalInput = ""
                                 }
                             },
@@ -478,8 +478,8 @@ fun ChatScreen(bridge: PtyBridge) {
                                     pendingMenuScan.value = true
                                 }
                             },
-                            onConfirmYes = { bridge.writeInput("y\n") },
-                            onConfirmNo = { bridge.writeInput("n\n") },
+                            onConfirmYes = { bridge.writeInput("y\r") },
+                            onConfirmNo = { bridge.writeInput("n\r") },
                         )
                     }
                 }
@@ -546,7 +546,7 @@ fun ChatScreen(bridge: PtyBridge) {
                             .clickable {
                                 if (chatInputText.isNotBlank()) {
                                     chatState.addUserMessage(chatInputText)
-                                    bridge.writeInput(chatInputText + "\n")
+                                    bridge.writeInput(chatInputText + "\r")
                                     chatInputText = ""
                                 }
                             },
@@ -570,7 +570,7 @@ fun ChatScreen(bridge: PtyBridge) {
                                 chatInputText = chip.prompt
                             } else {
                                 chatState.addUserMessage(chip.prompt)
-                                bridge.writeInput(chip.prompt + "\n")
+                                bridge.writeInput(chip.prompt + "\r")
                             }
                         }
                     )

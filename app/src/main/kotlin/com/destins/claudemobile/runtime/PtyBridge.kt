@@ -125,11 +125,11 @@ class PtyBridge(
     }
 
     fun sendApproval(accepted: Boolean) {
-        writeInput(if (accepted) "y\n" else "n\n")
+        writeInput(if (accepted) "y\r" else "n\r")
     }
 
     fun sendBtw(message: String) {
-        writeInput("/btw $message\n")
+        writeInput("/btw $message\r")
     }
 
     fun startParser(scope: CoroutineScope, context: Context) {
