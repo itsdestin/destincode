@@ -308,7 +308,7 @@ private fun RenderBlock(
             }
         }
         is ThematicBreak -> {
-            Divider(
+            HorizontalDivider(
                 color = HR_COLOR,
                 thickness = 1.dp,
                 modifier = Modifier.padding(vertical = 4.dp),
