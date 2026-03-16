@@ -470,6 +470,41 @@ fun ChatScreen(bridge: PtyBridge) {
 
                 HorizontalDivider(color = borderColor, thickness = 0.5.dp)
 
+                // Attachment thumbnail preview
+                if (attachmentBitmap != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        attachmentBitmap?.let { bmp ->
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = "Attached image",
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(6.dp)),
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Image attached", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Spacer(modifier = Modifier.weight(1f))
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Remove attachment",
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable {
+                                    attachmentPath = null
+                                    attachmentBitmap = null
+                                },
+                        )
+                    }
+                }
+
                 // Input row
                 Row(
                     modifier = Modifier
