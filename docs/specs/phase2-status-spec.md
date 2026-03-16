@@ -73,7 +73,7 @@ A message-based view that receives structured events directly from Claude Code h
 - `HookEvent.kt` — sealed class with 5 variants: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `Notification`
 - `ChatState.kt` — 7 `MessageContent` variants (`Text`, `Response`, `ToolRunning`, `ToolAwaitingApproval`, `ToolComplete`, `ToolFailed`, `SystemNotice`) with tool state machine transitions. Insertion cursor ensures responses appear after their corresponding user message, not at the end. Messages sent while Claude is processing are marked `isQueued` and visually dimmed.
 - `ChatScreen.kt` — collects `EventBridge.events`, routes each hook type to the appropriate `ChatState` mutation
-- `MessageBubble.kt` — routes content types to card composables (ToolCard, CodeCard, ErrorCard) or text bubbles
+- `MessageBubble.kt` — routes content types to card composables (ToolCard, CodeCard, ErrorCard) or text bubbles. `LinkableText` composable detects URLs via `AnnotatedString` and makes them tappable. Queued messages render dimmed with "queued" label.
 
 **Event routing:**
 - `PreToolUse` → adds `ToolRunning` message (extracts args summary from `command`/`file_path`/`pattern` fields)
