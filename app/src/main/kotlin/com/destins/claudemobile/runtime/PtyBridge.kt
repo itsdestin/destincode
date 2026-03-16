@@ -17,6 +17,7 @@ class PtyBridge(
     private var session: TerminalSession? = null
     private var eventBridge: EventBridge? = null
     val socketPath: String get() = "${bootstrap.homeDir.absolutePath}/.claude-mobile/parser.sock"
+    val homeDir: File get() = bootstrap.homeDir
 
     private val _outputFlow = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 1000)
     val outputFlow: SharedFlow<String> = _outputFlow
