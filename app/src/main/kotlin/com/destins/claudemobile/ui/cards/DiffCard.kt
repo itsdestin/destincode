@@ -17,8 +17,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.destins.claudemobile.parser.DiffHunk
 import com.destins.claudemobile.ui.theme.ClaudeMobileTheme
+
+data class DiffHunk(val header: String, val lines: String)
 
 @Composable
 fun DiffCard(
