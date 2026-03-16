@@ -88,13 +88,18 @@ fun TerminalPanel(
     val terminalBg = ClaudeMobileTheme.extended.terminalBg
     val context = LocalContext.current
 
-    // Grid dimensions in cells, updated whenever the panel is laid out
-    var gridCols by remember { mutableIntStateOf(80) }
+    // Terminal keeps a minimum of 80 columns. Font size is calculated
+    // dynamically to fit 80 columns in the available width.
+    val minCols = 80
+    var gridCols by remember { mutableIntStateOf(minCols) }
     var gridRows by remember { mutableIntStateOf(24) }
 
     // Vertical scroll offset (in rows) into scrollback history
     var scrollOffsetRows by remember { mutableFloatStateOf(0f) }
     var cellHeightPx by remember { mutableFloatStateOf(1f) }
+
+    // Font size is calculated on layout to fit minCols columns
+    var fontSizePx by remember { mutableFloatStateOf(30f) }
 
     // Load Cascadia Mono from resources
     val cascadiaRegular = remember {
@@ -105,36 +110,55 @@ fun TerminalPanel(
             ?: Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
     }
 
-    // Paint objects are created once and reused across frames
+    // Paint objects — textSize updated when layout changes
     val normalPaint = remember(cascadiaRegular) {
         Paint().apply {
             typeface = cascadiaRegular
-            textSize = 13.sp.value
+            textSize = 30f
             isAntiAlias = true
         }
     }
     val boldPaint = remember(cascadiaBold) {
         Paint().apply {
             typeface = cascadiaBold
-            textSize = 13.sp.value
+            textSize = 30f
             isAntiAlias = true
         }
     }
 
-    // onSizeChanged is placed on the modifier, NOT inside the Canvas draw lambda,
-    // to keep draw side-effect-free.
+    // onSizeChanged: calculate font size to fit 80 columns, then derive rows
     Canvas(
         modifier = modifier
             .onSizeChanged { size ->
                 if (size.width > 0 && size.height > 0) {
-                    // Measure cell dimensions using the normal paint
+                    // Binary search for the largest font size where 80 'M' chars fit
+                    var lo = 8f
+                    var hi = 60f
+                    val probe = Paint().apply {
+                        typeface = cascadiaRegular
+                        isAntiAlias = true
+                    }
+                    while (hi - lo > 0.5f) {
+                        val mid = (lo + hi) / 2f
+                        probe.textSize = mid
+                        val charW = probe.measureText("M")
+                        if (charW * minCols <= size.width) {
+                            lo = mid
+                        } else {
+                            hi = mid
+                        }
+                    }
+
+                    fontSizePx = lo
+                    normalPaint.textSize = lo
+                    boldPaint.textSize = lo
+
                     val fm = normalPaint.fontMetrics
                     val cellH = fm.descent - fm.ascent
                     val cellW = normalPaint.measureText("M")
-
                     cellHeightPx = cellH
 
-                    val cols = (size.width / cellW).toInt().coerceAtLeast(1)
+                    val cols = (size.width / cellW).toInt().coerceAtLeast(minCols)
                     val rows = (size.height / cellH).toInt().coerceAtLeast(1)
 
                     if (cols != gridCols || rows != gridRows) {
