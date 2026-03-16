@@ -206,8 +206,16 @@ fun TerminalPanel(
             // allocateFullLineIfNecessary is public and returns the existing TerminalRow
             // (it only allocates if the slot is null). externalToInternalRow maps the
             // external (scroll-aware) row index to the internal circular-buffer index.
-            val internalRow = screen.externalToInternalRow(bufferRow)
-            val row: TerminalRow = screen.allocateFullLineIfNecessary(internalRow) ?: continue
+            //
+            // Guard: after a resize, gridRows may exceed the buffer's mScreenRows
+            // until the terminal processes the size update. Catch the resulting
+            // IndexOutOfBoundsException to avoid crashing during the transient state.
+            val internalRow = try {
+                screen.externalToInternalRow(bufferRow)
+            } catch (_: IndexOutOfBoundsException) { continue }
+            val row: TerminalRow = try {
+                screen.allocateFullLineIfNecessary(internalRow) ?: continue
+            } catch (_: IndexOutOfBoundsException) { continue }
 
             val yTop = rowIndex * cellH
 
