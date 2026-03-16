@@ -85,9 +85,6 @@ fun TerminalPanel(
     screenVersion: Int = 0, // changes trigger Canvas redraw
     modifier: Modifier = Modifier,
 ) {
-    // Reading screenVersion here ensures Compose recomposes this function
-    // (and thus redraws the Canvas) whenever the terminal buffer changes.
-    @Suppress("UNUSED_EXPRESSION") screenVersion
     val terminalBg = ClaudeMobileTheme.extended.terminalBg
     val context = LocalContext.current
 
@@ -156,6 +153,12 @@ fun TerminalPanel(
             }
             .fillMaxSize()
     ) {
+        // ── Force Canvas invalidation when screenVersion changes ──────
+        // Without this, Compose may skip redrawing the Canvas even when
+        // the composable recomposes, because the draw lambda captures no
+        // State<T> objects directly.
+        val ver = screenVersion // read to force Canvas invalidation
+
         // ── Draw background ─────────────────────────────────────────────
         drawContext.canvas.nativeCanvas.drawColor(terminalBg.toArgb())
 

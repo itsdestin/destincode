@@ -44,14 +44,22 @@ class PtyBridge(
 
     private val sessionClient = object : TerminalSessionClient {
         override fun onTextChanged(changedSession: TerminalSession) {
+            // Always trigger terminal panel redraw — ink-based menus use cursor
+            // movement to redraw in-place, which can SHRINK the transcript.
+            // The panel reads the screen buffer directly, so it just needs to
+            // know WHEN to redraw, not what changed.
+            _screenVersion.value++
+
             val transcript = changedSession.getEmulator()?.getScreen()?.getTranscriptText() ?: return
             if (transcript.length > lastTranscriptLength) {
                 val delta = transcript.substring(lastTranscriptLength)
                 lastTranscriptLength = transcript.length
                 _rawBuffer.append(delta)
                 _outputFlow.tryEmit(delta)
-                _screenVersion.value++
                 onPtyOutput(delta)
+            } else if (transcript.length < lastTranscriptLength) {
+                // Transcript shrank (ink redrew). Reset tracking.
+                lastTranscriptLength = transcript.length
             }
         }
 
@@ -112,6 +120,7 @@ class PtyBridge(
     }
 
     fun writeInput(text: String) {
+        android.util.Log.d("PtyBridge", "writeInput: ${text.map { if (it.code < 32) "\\x${it.code.toString(16)}" else it.toString() }.joinToString("")}")
         session?.write(text)
     }
 

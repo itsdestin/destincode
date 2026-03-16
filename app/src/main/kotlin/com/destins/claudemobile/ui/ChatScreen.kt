@@ -4,7 +4,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material3.*
@@ -21,6 +23,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun ChatScreen(bridge: PtyBridge) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val chatState = remember { ChatState() }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -55,7 +58,17 @@ fun ChatScreen(bridge: PtyBridge) {
                     }
                     is ParsedEvent.Confirmation -> chatState.addClaudeText(event.question)
                     is ParsedEvent.TextPrompt -> chatState.addClaudeText(event.prompt)
-                    is ParsedEvent.OAuthRedirect -> chatState.addClaudeText("Open: ${event.url}")
+                    is ParsedEvent.OAuthRedirect -> {
+                        // Auto-open auth URL in system browser
+                        try {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(event.url)
+                            )
+                            context.startActivity(intent)
+                        } catch (_: Exception) {}
+                        chatState.addClaudeText("Opening: ${event.url}")
+                    }
                 }
             }
         } else {
@@ -68,6 +81,30 @@ fun ChatScreen(bridge: PtyBridge) {
         }
     }
 
+    // Also watch raw output for URLs the parser might miss (e.g., auth URLs)
+    // This catches URLs regardless of parser state
+    val urlPattern = remember { Regex("""https?://[^\s"'<>]+""") }
+    val openedUrls = remember { mutableSetOf<String>() }
+    LaunchedEffect(bridge) {
+        bridge.outputFlow.collect { output ->
+            // Only auto-open URLs that look like auth/login flows
+            if (output.contains("anthropic.com") || output.contains("oauth") ||
+                output.contains("login") || output.contains("authorize")) {
+                val match = urlPattern.find(output)
+                if (match != null && match.value !in openedUrls) {
+                    openedUrls.add(match.value)
+                    try {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse(match.value)
+                        )
+                        context.startActivity(intent)
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+    }
+
     LaunchedEffect(chatState.messages.size) {
         if (chatState.messages.isNotEmpty()) {
             listState.animateScrollToItem(chatState.messages.size - 1)
@@ -75,81 +112,150 @@ fun ChatScreen(bridge: PtyBridge) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Top bar
-            Surface(
-                color = MaterialTheme.colorScheme.background,
-                tonalElevation = 2.dp,
-            ) {
+        if (isTerminalMode) {
+            // ── Full-screen terminal mode ──────────────────────────────
+            var terminalInput by remember { mutableStateOf("") }
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Minimal top bar — just toggle button to get back to chat
+                Surface(
+                    color = MaterialTheme.colorScheme.background,
+                    tonalElevation = 2.dp,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Terminal", style = MaterialTheme.typography.titleSmall)
+                        IconButton(onClick = { isTerminalMode = false }) {
+                            Icon(
+                                Icons.Filled.Chat,
+                                contentDescription = "Back to chat",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+
+                // Terminal canvas — fills all available space
+                TerminalPanel(
+                    session = bridge.getSession(),
+                    screenVersion = screenVersion,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+
+                // Special keys row
+                TerminalKeyboardRow(
+                    onKeyPress = { seq -> bridge.writeInput(seq) },
+                )
+
+                // Text input at the bottom — moves with keyboard
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .padding(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("Claude Mobile", style = MaterialTheme.typography.titleMedium)
-                    Row {
-                        IconButton(onClick = { isTerminalMode = !isTerminalMode }) {
-                            Icon(
-                                if (isTerminalMode) Icons.Filled.Chat else Icons.Filled.Code,
-                                contentDescription = "Toggle terminal",
-                                tint = if (hasUnhandledInteractive)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                        Text(
-                            if (bridge.isRunning) "Connected" else "Disconnected",
-                            color = if (bridge.isRunning)
-                                MaterialTheme.colorScheme.secondary
-                            else
-                                MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 12.dp)
+                    OutlinedTextField(
+                        value = terminalInput,
+                        onValueChange = { terminalInput = it },
+                        placeholder = { Text("Type command...", fontSize = 13.sp) },
+                        modifier = Modifier.weight(1f),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                        ),
+                    )
+                    IconButton(
+                        onClick = {
+                            if (terminalInput.isNotBlank()) {
+                                bridge.writeInput(terminalInput + "\n")
+                                terminalInput = ""
+                            }
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primary,
+                                shape = androidx.compose.foundation.shape.CircleShape
+                            ),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                 }
             }
-
-            // Chat messages — compressed when terminal is open
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(if (isTerminalMode) 0.4f else 1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                items(chatState.messages) { message ->
-                    MessageBubble(
-                        message = message,
-                        expandedCardId = chatState.expandedCardId,
-                        onToggleCard = { chatState.toggleCard(it) },
-                        onApprove = { bridge.sendApproval(true); chatState.resolveApproval() },
-                        onReject = { bridge.sendApproval(false); chatState.resolveApproval() },
-                        onViewTerminal = { isTerminalMode = true },
-                    )
+        } else {
+            // ── Chat mode ──────────────────────────────────────────────
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Top bar
+                Surface(
+                    color = MaterialTheme.colorScheme.background,
+                    tonalElevation = 2.dp,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Claude Mobile", style = MaterialTheme.typography.titleMedium)
+                        Row {
+                            IconButton(onClick = { isTerminalMode = true }) {
+                                Icon(
+                                    Icons.Filled.Code,
+                                    contentDescription = "Open terminal",
+                                    tint = if (hasUnhandledInteractive)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            Text(
+                                if (bridge.isRunning) "Connected" else "Disconnected",
+                                color = if (bridge.isRunning)
+                                    MaterialTheme.colorScheme.secondary
+                                else
+                                    MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(top = 12.dp)
+                            )
+                        }
+                    }
                 }
-            }
 
-            // Terminal panel — only shown when toggled
-            if (isTerminalMode) {
-                Column(modifier = Modifier.weight(0.6f)) {
-                    TerminalPanel(
-                        session = bridge.getSession(),
-                        screenVersion = screenVersion,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TerminalKeyboardRow(
-                        onKeyPress = { seq -> bridge.writeInput(seq) },
-                    )
+                // Chat messages
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(chatState.messages) { message ->
+                        MessageBubble(
+                            message = message,
+                            expandedCardId = chatState.expandedCardId,
+                            onToggleCard = { chatState.toggleCard(it) },
+                            onApprove = { bridge.sendApproval(true); chatState.resolveApproval() },
+                            onReject = { bridge.sendApproval(false); chatState.resolveApproval() },
+                            onViewTerminal = { isTerminalMode = true },
+                        )
+                    }
                 }
-            }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
 
-            // Normal input + chips — hidden when terminal is open
-            if (!isTerminalMode) {
                 if (!chatState.isWaitingForApproval) {
                     QuickChips(
                         chips = defaultChips,
@@ -183,10 +289,8 @@ fun ChatScreen(bridge: PtyBridge) {
                     },
                 )
             }
-        }
 
-        // /btw FAB — hidden when terminal is open
-        if (!isTerminalMode) {
+            // /btw FAB
             FloatingActionButton(
                 onClick = { showBtwSheet = true },
                 containerColor = MaterialTheme.colorScheme.primary,
