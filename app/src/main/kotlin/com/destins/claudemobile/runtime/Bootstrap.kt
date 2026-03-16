@@ -332,15 +332,29 @@ class Bootstrap(private val context: Context) {
         File(homeDir, ".claude").mkdirs()
         File(homeDir, "tmp").mkdirs()
 
-        // Deploy the Node.js wrapper that patches child_process/fs to route
-        // embedded binary execution through linker64. This is the primary fix
-        // for Claude Code's "No suitable shell found" error — it intercepts
-        // shell validation (fs.accessSync X_OK) and spawn calls at the JS level.
         val mobileDir = File(homeDir, ".claude-mobile")
         mobileDir.mkdirs()
-        val wrapperFile = File(mobileDir, "claude-wrapper.js")
-        context.assets.open("claude-wrapper.js").use { input ->
-            wrapperFile.outputStream().use { output -> input.copyTo(output) }
+
+        // Create .bash_profile and .bashrc that source the linker64 wrapper
+        // functions. BASH_ENV only works for non-interactive shells (Claude Code's
+        // bash -c invocations). Interactive shells (login shell in Shell view)
+        // need .bash_profile → .bashrc to load the same functions.
+        val bashProfile = File(homeDir, ".bash_profile")
+        if (!bashProfile.exists()) {
+            bashProfile.writeText(
+                "# Source .bashrc for login shells\n" +
+                "[ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\"\n"
+            )
+        }
+        val bashrc = File(homeDir, ".bashrc")
+        // Always rewrite — ensures linker64-env.sh sourcing is present
+        val existingBashrc = if (bashrc.exists()) bashrc.readText() else ""
+        if (!existingBashrc.contains("linker64-env.sh")) {
+            bashrc.writeText(
+                "# Load linker64 wrapper functions for embedded binaries\n" +
+                "[ -f \"\$HOME/.claude-mobile/linker64-env.sh\" ] && . \"\$HOME/.claude-mobile/linker64-env.sh\"\n" +
+                if (existingBashrc.isNotEmpty()) "\n$existingBashrc" else ""
+            )
         }
 
         installHooks()

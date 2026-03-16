@@ -233,19 +233,76 @@ require(cliPath);
          * Generate BASH_ENV script with explicit shell functions for each binary.
          * Generated at launch time from the actual files in usr/bin/ — avoids all
          * shell eval/escaping issues since each function is a static string.
+         *
+         * Detects file type by reading the first bytes:
+         * - ELF binaries → wrap with linker64 directly
+         * - Scripts with shebangs → run the interpreter through linker64 with
+         *   the script as an argument (linker64 can't load scripts)
          */
         private fun buildBashEnvSh(usrPath: String): String {
             val binDir = File(usrPath, "bin")
             if (!binDir.isDirectory) return "# bin dir not found\n"
             val skip = setOf("bash", "sh", "sh-wrapper", "env")
             val sb = StringBuilder("# linker64 wrapper functions for embedded binaries\n")
+            val functionNames = mutableListOf<String>()
+
             binDir.listFiles()?.sorted()?.forEach { file ->
                 if (!file.isFile) return@forEach
                 val n = file.name
                 if (n in skip) return@forEach
                 if (!n.matches(Regex("[a-zA-Z_][a-zA-Z0-9_.+-]*"))) return@forEach
-                // Shell function: runs in-process, no exec syscall, SELinux can't block
-                sb.appendLine("""$n() { /system/bin/linker64 "$usrPath/bin/$n" "${'$'}@"; }""")
+
+                // Read first bytes to determine file type
+                val header = ByteArray(512)
+                val bytesRead = try {
+                    file.inputStream().use { it.read(header) }
+                } catch (_: Exception) { return@forEach }
+                if (bytesRead < 2) return@forEach
+
+                val isElf = bytesRead >= 4 &&
+                    header[0] == 0x7f.toByte() &&
+                    header[1] == 'E'.code.toByte() &&
+                    header[2] == 'L'.code.toByte() &&
+                    header[3] == 'F'.code.toByte()
+
+                val isScript = header[0] == '#'.code.toByte() &&
+                    header[1] == '!'.code.toByte()
+
+                if (isElf) {
+                    // ELF binary — run directly through linker64
+                    sb.appendLine("""$n() { /system/bin/linker64 "$usrPath/bin/$n" "${'$'}@"; }""")
+                } else if (isScript) {
+                    // Script — parse shebang to find the interpreter, then run
+                    // the interpreter through linker64 with the script as arg
+                    val shebangLine = String(header, 0, bytesRead)
+                        .lines().first().removePrefix("#!").trim()
+                    val parts = shebangLine.split(Regex("\\s+"))
+                    val interpreter = parts[0]
+                    val interpArgs = parts.drop(1)
+
+                    if (interpreter.endsWith("/env") && interpArgs.isNotEmpty()) {
+                        // #!/usr/bin/env node → resolve to $PREFIX/bin/node
+                        val prog = interpArgs[0]
+                        sb.appendLine("""$n() { /system/bin/linker64 "$usrPath/bin/$prog" "$usrPath/bin/$n" "${'$'}@"; }""")
+                    } else {
+                        // Direct interpreter path — resolve basename to our prefix
+                        val interpName = File(interpreter).name
+                        sb.appendLine("""$n() { /system/bin/linker64 "$usrPath/bin/$interpName" "$usrPath/bin/$n" "${'$'}@"; }""")
+                    }
+                } else {
+                    // Unknown type — try linker64 (may work for static binaries)
+                    sb.appendLine("""$n() { /system/bin/linker64 "$usrPath/bin/$n" "${'$'}@"; }""")
+                }
+                functionNames.add(n)
+            }
+
+            // Export all functions so they're available in subshells
+            if (functionNames.isNotEmpty()) {
+                sb.appendLine()
+                sb.appendLine("# Export functions for subshells")
+                for (n in functionNames) {
+                    sb.appendLine("export -f $n 2>/dev/null")
+                }
             }
             return sb.toString()
         }
