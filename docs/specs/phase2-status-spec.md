@@ -285,11 +285,7 @@ Response bubbles currently render `last_assistant_message` as plain text. Claude
 - Compose markdown library (e.g., `mikepenz/multiplatform-markdown-renderer`)
 - Basic regex-based annotated string (handles bold/italic/code spans, skips full block rendering)
 
-### Priority 3: Session Persistence
-
-Chat messages are lost on tab switch (Compose recomposition). Need to hoist `ChatState` to a ViewModel or persist across configuration changes. This becomes painful once the chat view is the primary interaction mode.
-
-### Priority 4: DiffCard for Edit Tool
+### Priority 3: DiffCard for Edit Tool
 
 DiffCard is built (syntax-highlighted red/green diffs) but unreachable — Edit tool results go through generic ToolCard. Need to parse `toolResponse` JSON from PostToolUse into DiffHunk format and route Edit/Write tools to DiffCard in MessageBubble.
 
