@@ -61,6 +61,39 @@ fun ChatScreen(bridge: PtyBridge) {
     var screenMode by remember { mutableStateOf(ScreenMode.Chat) }
     var directShellBridge by remember { mutableStateOf<DirectShellBridge?>(null) }
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
+
+    // Image attachment state
+    var attachmentPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var attachmentBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Reconstruct thumbnail from saved path on restore
+    LaunchedEffect(attachmentPath) {
+        attachmentBitmap = attachmentPath?.let { path ->
+            try {
+                val opts = BitmapFactory.Options().apply { inSampleSize = 8 }
+                BitmapFactory.decodeFile(path, opts)
+            } catch (_: Exception) { null }
+        }
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        uri?.let {
+            val attachDir = File(bridge.homeDir, "attachments").also { it.mkdirs() }
+            val timestamp = System.currentTimeMillis()
+            val destFile = File(attachDir, "$timestamp.png")
+            try {
+                context.contentResolver.openInputStream(it)?.use { input ->
+                    destFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                attachmentPath = destFile.absolutePath
+            } catch (_: Exception) {
+                // Silently fail — user can retry
+            }
+        }
+    }
 
     val screenVersion by bridge.screenVersion.collectAsState()
     val lastPtyOutput by bridge.lastPtyOutputTime.collectAsState()
