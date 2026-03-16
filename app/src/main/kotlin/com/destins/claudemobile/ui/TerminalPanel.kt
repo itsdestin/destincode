@@ -199,6 +199,17 @@ fun TerminalPanel(
                 }
             }
             .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    val hit = urlRegions.firstOrNull { r ->
+                        offset.x in r.left..r.right && offset.y in r.top..r.bottom
+                    }
+                    if (hit != null) {
+                        val url = hit.url.trimEnd('.', ',', ';', ':', '!')
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                }
+            }
+            .pointerInput(Unit) {
                 detectVerticalDragGestures { _, dragAmount ->
                     // Negative drag = scroll up (into history); positive = scroll down
                     scrollOffsetRows = (scrollOffsetRows - dragAmount / cellHeightPx)
