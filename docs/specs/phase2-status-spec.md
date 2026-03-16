@@ -300,14 +300,9 @@ Clickable terminal links (v2.3) partially address this — users can now tap the
 
 `Bootstrap.installHooks()` does deduplication but could clobber existing user hooks from desktop Claude Code if they have custom matchers. Needs true additive merge: read existing hooks, append ours, preserve theirs.
 
-### Priority 6: Dead Code Cleanup
+### ~~Priority 6: Dead Code Cleanup~~ — Done (v2.5)
 
-Unreachable components from the parser era:
-- `ApprovalCard` (superseded by ToolCard.AwaitingApproval)
-- `ProgressCard` (superseded by ActivityIndicator)
-- `MenuWidget`, `ConfirmationWidget`, `OAuthWidget` (no hook event drives them)
-- `InputBar` (ChatScreen builds its own inline input)
-- `CardStateManager` (ChatState has its own toggle)
+Deleted 7 orphaned parser-era files: `ApprovalCard.kt`, `ProgressCard.kt`, `CardState.kt` (CardStateManager), `MenuWidget.kt`, `ConfirmationWidget.kt`, `OAuthWidget.kt`, `InputBar.kt`. Removed empty `widgets/` directory.
 
 ### Priority 7: Direct Shell UI Affordance
 
