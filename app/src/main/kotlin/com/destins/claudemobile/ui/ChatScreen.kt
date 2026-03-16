@@ -121,31 +121,45 @@ fun ChatScreen(bridge: PtyBridge) {
             var terminalInput by remember { mutableStateOf("") }
 
             Column(modifier = Modifier.fillMaxSize()) {
-                // Top bar
+                // Top bar — matches bottom pills style
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text(
-                        "← Chat",
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 16.sp,
-                        modifier = Modifier.clickable { isTerminalMode = false },
-                    )
+                    // Chat toggle — styled as a key pill
+                    val borderColor = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder
+                    Box(
+                        modifier = Modifier
+                            .height(34.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .border(
+                                0.5.dp,
+                                borderColor.copy(alpha = 0.5f),
+                                androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                            )
+                            .clickable { isTerminalMode = false }
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            com.destins.claudemobile.ui.theme.AppIcons.Chat,
+                            contentDescription = "Switch to chat",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                     Spacer(Modifier.weight(1f))
                     Text(
                         "Terminal",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 13.sp,
+                        color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.textSecondary,
                     )
                 }
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                    thickness = 1.dp,
-                )
 
                 // Terminal canvas — fills all available space
                 TerminalPanel(
