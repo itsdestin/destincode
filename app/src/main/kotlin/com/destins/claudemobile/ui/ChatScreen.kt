@@ -160,6 +160,8 @@ fun ChatScreen(bridge: PtyBridge) {
                         color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.textSecondary,
                     )
                 }
+                // Divider below top bar
+                HorizontalDivider(color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder, thickness = 0.5.dp)
 
                 // Terminal canvas — fills all available space
                 TerminalPanel(
@@ -167,6 +169,9 @@ fun ChatScreen(bridge: PtyBridge) {
                     screenVersion = screenVersion,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
+
+                // Divider above text input
+                HorizontalDivider(color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder, thickness = 0.5.dp)
 
                 // Text input row
                 Row(
@@ -287,6 +292,8 @@ fun ChatScreen(bridge: PtyBridge) {
                         )
                     }
                 }
+                // Divider below chat header
+                HorizontalDivider(color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder, thickness = 0.5.dp)
 
                 // Chat messages
                 LazyColumn(
@@ -308,7 +315,7 @@ fun ChatScreen(bridge: PtyBridge) {
                     }
                 }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                HorizontalDivider(color = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder, thickness = 0.5.dp)
 
                 if (!chatState.isWaitingForApproval) {
                     QuickChips(
