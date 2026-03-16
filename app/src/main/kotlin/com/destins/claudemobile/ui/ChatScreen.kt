@@ -99,35 +99,32 @@ fun ChatScreen(bridge: PtyBridge) {
                             }
                             // URL accumulator — detect start of URL or continuation fragment
                             else if (text.contains("https://") && !text.contains(' ')) {
-                                // Start of a URL
+                                // Start of a URL — read the FULL URL from the terminal screen
+                                // instead of accumulating fragments (more reliable)
                                 urlAccumulator.clear()
-                                urlAccumulator.append(text)
                                 urlFlushJob?.cancel()
                                 urlFlushJob = coroutineScope.launch {
-                                    kotlinx.coroutines.delay(500)
-                                    val fullUrl = urlAccumulator.toString()
-                                    urlAccumulator.clear()
-                                    if (fullUrl.contains("claude") || fullUrl.contains("anthropic") || fullUrl.contains("oauth")) {
-                                        chatState.addOAuth(fullUrl)
-                                    } else {
-                                        chatState.addClaudeText(fullUrl)
+                                    kotlinx.coroutines.delay(800) // wait for all URL lines to render
+                                    val session = bridge.getSession()
+                                    val screen = session?.emulator?.screen
+                                    if (screen != null) {
+                                        val transcript = screen.getTranscriptText()
+                                        // Find the complete URL in the transcript
+                                        val urlMatch = Regex("""https://[^\s]+""").findAll(transcript)
+                                            .lastOrNull()  // last URL is most recent
+                                        if (urlMatch != null) {
+                                            val fullUrl = urlMatch.value
+                                            if (fullUrl.contains("oauth") || fullUrl.contains("claude") || fullUrl.contains("auth")) {
+                                                chatState.addOAuth(fullUrl)
+                                            } else {
+                                                chatState.addClaudeText(fullUrl)
+                                            }
+                                        }
                                     }
                                 }
                             } else if (urlAccumulator.isNotEmpty() && !text.contains(' ') && text.length > 5 &&
                                 text.matches(Regex("""^[a-zA-Z0-9%&=+_./:?-]+$"""))) {
-                                // URL continuation fragment — append to accumulator
-                                urlAccumulator.append(text)
-                                urlFlushJob?.cancel()
-                                urlFlushJob = coroutineScope.launch {
-                                    kotlinx.coroutines.delay(500)
-                                    val fullUrl = urlAccumulator.toString()
-                                    urlAccumulator.clear()
-                                    if (fullUrl.contains("claude") || fullUrl.contains("anthropic") || fullUrl.contains("oauth")) {
-                                        chatState.addOAuth(fullUrl)
-                                    } else {
-                                        chatState.addClaudeText(fullUrl)
-                                    }
-                                }
+                                // URL continuation fragment — suppress, the screen reader will get the full URL
                             }
                             // Detect numbered menu options
                             else if (Regex("""^.*\d+\.\s+\S""").containsMatchIn(text) && text.length < 100) {
