@@ -76,9 +76,9 @@ Delete the entire `installGit()` function (lines 215-263 approximately) — the 
 
 - [ ] **Step 3: Verify no remaining references to installGit**
 
-Run: search the entire codebase for `installGit` to confirm no callers exist.
+Run: search Kotlin source files (`app/src/main/kotlin/`) for `installGit` to confirm no callers exist.
 
-Expected: zero matches (function was only defined and referenced within Bootstrap.kt).
+Expected: zero matches in Kotlin source files. (Doc/spec files may reference the name — those are informational, not callers.)
 
 - [ ] **Step 4: Verify the project builds**
 
