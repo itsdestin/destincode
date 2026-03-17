@@ -138,7 +138,8 @@ fun ChatScreen(bridge: PtyBridge) {
                         }
                         val toolUseId = (lastRunning?.content as? MessageContent.ToolRunning)?.toolUseId
                         if (toolUseId != null) {
-                            chatState.updateToolToApproval(toolUseId)
+                            val hasAlways = bridge.hasAlwaysAllowOption()
+                            chatState.updateToolToApproval(toolUseId, hasAlways)
                         }
                     } else {
                         chatState.addSystemNotice(event.message)
