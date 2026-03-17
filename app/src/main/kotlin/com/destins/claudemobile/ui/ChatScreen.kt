@@ -336,12 +336,19 @@ fun ChatScreen(bridge: PtyBridge) {
                     contentPadding = PaddingValues(vertical = 8.dp),
                 ) {
                     items(chatState.messages, key = { it.id }) { message ->
+                        val toolUseId = (message.content as? MessageContent.ToolAwaitingApproval)?.toolUseId
                         MessageBubble(
                             message = message,
                             expandedCardId = chatState.expandedCardId,
                             onToggleCard = { chatState.toggleCard(it) },
-                            onAcceptApproval = { bridge.sendApproval(true) },
-                            onRejectApproval = { bridge.sendApproval(false) },
+                            onAcceptApproval = {
+                                toolUseId?.let { chatState.revertApprovalToRunning(it) }
+                                bridge.sendApproval(true)
+                            },
+                            onRejectApproval = {
+                                toolUseId?.let { chatState.revertApprovalToRunning(it) }
+                                bridge.sendApproval(false)
+                            },
                             session = bridge.getSession(),
                             screenVersion = screenVersion,
                         )
