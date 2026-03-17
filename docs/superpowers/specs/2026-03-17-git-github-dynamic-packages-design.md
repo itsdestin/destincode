@@ -178,8 +178,9 @@ No changes to the app's Kotlin code needed for auth — it's entirely handled by
 
 | File | Changes |
 |------|---------|
-| `Bootstrap.kt` | New: `TermuxPackageIndex` parser class, `resolvePackage()` method, SHA256 verification, version tracking, `gh`+`openssh` in package list, HTTP error handling |
+| `Bootstrap.kt` | New: `TermuxPackageIndex` parser class, `resolvePackage()` method, SHA256 verification, version tracking, `gh`+`openssh` in package list, HTTP error handling, zstd decompression, `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR` env vars |
 | `PtyBridge.kt` | Wrapper.js: add `resolveCmd()` helper, apply in `spawnFix`, `execFileSync`, `execFile` |
+| `build.gradle.kts` | Add `com.github.luben:zstd-jni` dependency for zstandard decompression |
 
 ## Files Created
 
