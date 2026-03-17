@@ -507,7 +507,7 @@ git commit -m "fix: resolve bare command names in wrapper.js for git/gh"
 
 ---
 
-### Task 7: Build + Smoke Test
+### Task 6: Build + Smoke Test
 
 - [ ] **Step 1: Full build**
 
