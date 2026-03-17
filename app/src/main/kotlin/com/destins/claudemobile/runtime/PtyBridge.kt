@@ -232,9 +232,26 @@ function fixShell(s) { if (s === true) return PREFIX + '/bin/bash'; return (type
 function fixOpts(o) { if (o && o.shell != null && o.shell !== false) { var s = fixShell(o.shell); if (s !== o.shell) return Object.assign({}, o, {shell: s}); } return o; }
 var _as = fs.accessSync;
 fs.accessSync = function(p, m) {
+    p = fixTmp(p);
     if (isEB(p) && m !== undefined && (m & fs.constants.X_OK)) return _as.call(this, fixPath(p), fs.constants.R_OK);
-    return _as.apply(this, arguments);
+    var a = Array.prototype.slice.call(arguments); a[0] = p;
+    return _as.apply(this, a);
 };
+// Redirect /tmp to $HOME/tmp for common fs operations
+['writeFileSync','readFileSync','existsSync','statSync','lstatSync','readdirSync',
+ 'mkdirSync','unlinkSync','rmdirSync','chmodSync','renameSync','copyFileSync'].forEach(function(m) {
+    var orig = fs[m]; if (!orig) return;
+    fs[m] = function() { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); if (m === 'renameSync' || m === 'copyFileSync') { if (typeof a[1] === 'string') a[1] = fixTmp(a[1]); } return orig.apply(this, a); };
+});
+['writeFile','readFile','stat','lstat','readdir','mkdir','unlink','rmdir','chmod','rename','copyFile','access'].forEach(function(m) {
+    var orig = fs[m]; if (!orig) return;
+    fs[m] = function() { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); if ((m === 'rename' || m === 'copyFile') && typeof a[1] === 'string') a[1] = fixTmp(a[1]); return orig.apply(this, a); };
+});
+// Also patch fs.open/openSync and fs.createWriteStream/createReadStream
+var _openSync = fs.openSync; fs.openSync = function(p) { var a = Array.prototype.slice.call(arguments); a[0] = fixTmp(a[0]); return _openSync.apply(this, a); };
+var _open = fs.open; fs.open = function(p) { var a = Array.prototype.slice.call(arguments); a[0] = fixTmp(a[0]); return _open.apply(this, a); };
+var _cws = fs.createWriteStream; fs.createWriteStream = function(p) { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); return _cws.apply(this, a); };
+var _crs = fs.createReadStream; fs.createReadStream = function(p) { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); return _crs.apply(this, a); };
 function resolveCmd(c) {
     if (c && c.indexOf('/') === -1) {
         var r = PREFIX + '/bin/' + c;
