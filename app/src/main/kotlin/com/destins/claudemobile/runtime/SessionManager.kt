@@ -5,15 +5,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 
 class SessionManager(private val context: Context) {
     private var service: SessionService? = null
     private val _state = MutableStateFlow<SessionState>(SessionState.Disconnected)
     val state: StateFlow<SessionState> = _state
-    private val serviceBound = CompletableDeferred<SessionService>()
+    private val serviceBound = MutableStateFlow<SessionService?>(null)
 
     sealed class SessionState {
         data object Disconnected : SessionState()
@@ -26,11 +27,12 @@ class SessionManager(private val context: Context) {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val svc = (binder as SessionService.LocalBinder).service
             service = svc
-            serviceBound.complete(svc)
+            serviceBound.value = svc
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
+            serviceBound.value = null
             _state.value = SessionState.Disconnected
         }
     }
@@ -46,7 +48,7 @@ class SessionManager(private val context: Context) {
         context.startForegroundService(intent)
 
         try {
-            val svc = serviceBound.await()
+            val svc = serviceBound.filterNotNull().first()
             svc.startSession(bootstrap, apiKey)
             svc.ptyBridge?.let {
                 _state.value = SessionState.Connected(it)
