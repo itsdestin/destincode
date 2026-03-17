@@ -60,6 +60,8 @@ fun ChatScreen(bridge: PtyBridge) {
     var chatInputText by remember { mutableStateOf("") }
     var screenMode by remember { mutableStateOf(ScreenMode.Chat) }
     var directShellBridge by remember { mutableStateOf<DirectShellBridge?>(null) }
+    // Clean up shell process when composable leaves composition (config change, navigation)
+    DisposableEffect(Unit) { onDispose { directShellBridge?.stop() } }
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
 
