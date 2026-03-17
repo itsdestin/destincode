@@ -161,6 +161,8 @@ class PtyBridge(
         eventBridge?.stop()
         session?.finishIfRunning()
         session = null
+        _rawBuffer.setLength(0)
+        lastTranscriptLength = 0
     }
 
     companion object {
