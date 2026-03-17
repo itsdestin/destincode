@@ -46,16 +46,15 @@ object SyntaxHighlighter {
 
             if (keywords.isEmpty()) return@buildAnnotatedString
 
-            // Highlight strings
-            val stringRegex = Regex("""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)""")
-            for (match in stringRegex.findAll(code)) {
-                addStyle(SpanStyle(color = stringColor), match.range.first, match.range.last + 1)
-            }
+            // Apply in priority order: later addStyle calls override earlier ones
+            // at overlapping ranges, so keywords go first (lowest priority) and
+            // strings/comments last (highest priority — a keyword inside a string
+            // stays string-colored).
 
-            // Highlight comments
-            val commentRegex = Regex("""(//.*|#.*|/\*[\s\S]*?\*/)""")
-            for (match in commentRegex.findAll(code)) {
-                addStyle(SpanStyle(color = commentColor), match.range.first, match.range.last + 1)
+            // Highlight keywords (word boundaries) — lowest priority
+            val wordRegex = Regex("""\b(${keywords.joinToString("|")})\b""")
+            for (match in wordRegex.findAll(code)) {
+                addStyle(SpanStyle(color = keywordColor), match.range.first, match.range.last + 1)
             }
 
             // Highlight numbers
@@ -64,10 +63,16 @@ object SyntaxHighlighter {
                 addStyle(SpanStyle(color = numberColor), match.range.first, match.range.last + 1)
             }
 
-            // Highlight keywords (word boundaries)
-            val wordRegex = Regex("""\b(${keywords.joinToString("|")})\b""")
-            for (match in wordRegex.findAll(code)) {
-                addStyle(SpanStyle(color = keywordColor), match.range.first, match.range.last + 1)
+            // Highlight comments
+            val commentRegex = Regex("""(//.*|#.*|/\*[\s\S]*?\*/)""")
+            for (match in commentRegex.findAll(code)) {
+                addStyle(SpanStyle(color = commentColor), match.range.first, match.range.last + 1)
+            }
+
+            // Highlight strings — highest priority
+            val stringRegex = Regex("""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)""")
+            for (match in stringRegex.findAll(code)) {
+                addStyle(SpanStyle(color = stringColor), match.range.first, match.range.last + 1)
             }
         }
     }
