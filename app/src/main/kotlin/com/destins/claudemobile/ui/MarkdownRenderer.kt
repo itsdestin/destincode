@@ -57,6 +57,7 @@ fun MarkdownRenderer(
 private fun RenderBlock(
     node: Node,
     textColor: Color,
+    blockIndex: Int,
     expandedCardId: String?,
     onToggleCard: (String) -> Unit,
 ) {
@@ -81,7 +82,7 @@ private fun RenderBlock(
         is FencedCodeBlock -> {
             val lang = node.info?.takeIf { it.isNotBlank() } ?: ""
             val code = node.literal.trimEnd('\n')
-            val cardId = "code_${code.hashCode()}"
+            val cardId = "code_${blockIndex}"
             CodeCard(
                 cardId = cardId,
                 language = lang,
@@ -92,7 +93,7 @@ private fun RenderBlock(
         }
         is IndentedCodeBlock -> {
             val code = node.literal.trimEnd('\n')
-            val cardId = "code_${code.hashCode()}"
+            val cardId = "code_${blockIndex}"
             CodeCard(
                 cardId = cardId,
                 language = "",
