@@ -363,14 +363,19 @@ function fixExecShell(o) {
     else if (typeof o.shell === 'string' && isEB(o.shell)) o.shell = fixPath(o.shell);
     return o;
 }
+// Fix /tmp refs in shell command strings (e.g. "bash /tmp/install.sh > /tmp/out")
+function fixTmpInShellCmd(cmd) {
+    if (typeof cmd !== 'string') return cmd;
+    return cmd.replace(/\/tmp\b/g, HOME + '/tmp').replace(/\/var\/tmp\b/g, HOME + '/tmp');
+}
 var _exec = child_process.exec;
 child_process.exec = function(cmd, opts, cb) {
     if (typeof opts === 'function') { cb = opts; opts = undefined; }
-    return _exec.call(this, cmd, fixExecShell(opts), cb);
+    return _exec.call(this, fixTmpInShellCmd(cmd), fixExecShell(opts), cb);
 };
 var _execSync = child_process.execSync;
 child_process.execSync = function(cmd, opts) {
-    return _execSync.call(this, cmd, fixExecShell(opts));
+    return _execSync.call(this, fixTmpInShellCmd(cmd), fixExecShell(opts));
 };
 var cliPath = process.argv[2];
 if (!cliPath) { process.stderr.write('claude-wrapper: missing CLI path\n'); process.exit(1); }
