@@ -145,10 +145,10 @@ fun ToolCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                // Yes — small green square
+                // Yes
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
+                        .then(if (hasAlwaysOption) Modifier.size(42.dp) else Modifier.weight(1f).height(42.dp))
                         .clip(RoundedCornerShape(6.dp))
                         .background(Color(0xFF2E7D32))
                         .clickable { onAccept() },
@@ -156,22 +156,24 @@ fun ToolCard(
                 ) {
                     Text("Yes", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
-                // Don't Ask Again — large center button
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(42.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(MaterialTheme.colorScheme.primary)
-                        .clickable { onAcceptAlways() },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("Don't Ask Again", color = MaterialTheme.colorScheme.onPrimary, fontSize = 13.sp)
+                // Always allow — only shown for 3-option prompts
+                if (hasAlwaysOption) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.primary)
+                            .clickable { onAcceptAlways() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Always Allow", color = MaterialTheme.colorScheme.onPrimary, fontSize = 13.sp)
+                    }
                 }
-                // No — small red square
+                // No
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
+                        .then(if (hasAlwaysOption) Modifier.size(42.dp) else Modifier.weight(1f).height(42.dp))
                         .clip(RoundedCornerShape(6.dp))
                         .background(Color(0xFFCC3333))
                         .clickable { onReject() },
