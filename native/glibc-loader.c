@@ -16,10 +16,12 @@
 
 #include <elf.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 static void errstr(const char *s) { write(2, s, strlen(s)); }
