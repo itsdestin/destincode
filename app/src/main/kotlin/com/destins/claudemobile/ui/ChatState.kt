@@ -113,6 +113,26 @@ class ChatState {
         insertPos++
     }
 
+    /** Revert a tool from AwaitingApproval back to Running after the user acts.
+     *  The PostToolUse/PostToolUseFailure event will finalize to Complete/Failed. */
+    fun revertApprovalToRunning(toolUseId: String) {
+        val idx = messages.indexOfLast {
+            val c = it.content
+            c is MessageContent.ToolAwaitingApproval && c.toolUseId == toolUseId
+        }
+        if (idx >= 0) {
+            val approval = messages[idx].content as MessageContent.ToolAwaitingApproval
+            messages[idx] = messages[idx].copy(
+                content = MessageContent.ToolRunning(
+                    cardId = approval.cardId,
+                    toolUseId = approval.toolUseId,
+                    tool = approval.tool,
+                    args = approval.args,
+                )
+            )
+        }
+    }
+
     fun updateToolToApproval(toolUseId: String) {
         val idx = messages.indexOfLast {
             val c = it.content
