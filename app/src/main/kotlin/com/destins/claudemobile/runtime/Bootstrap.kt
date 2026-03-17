@@ -27,7 +27,7 @@ class Bootstrap(private val context: Context) {
 
     sealed class Progress {
         data class Extracting(val percent: Int) : Progress()
-        data class Installing(val packageName: String) : Progress()
+        data class Installing(val packageName: String, val overallPercent: Int = -1) : Progress()
         data class Error(val message: String) : Progress()
         data object Complete : Progress()
     }
