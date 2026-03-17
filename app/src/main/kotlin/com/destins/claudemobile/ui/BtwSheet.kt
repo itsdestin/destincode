@@ -20,7 +20,7 @@ fun BtwSheet(
 ) {
     val sheetState = rememberModalBottomSheetState()
     var text by remember { mutableStateOf("") }
-    val btwMessages = messages.filter { it.isBtw }
+    val btwMessages = remember(messages) { messages.filter { it.isBtw } }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -36,11 +36,12 @@ fun BtwSheet(
             Text("/btw", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(8.dp))
 
+            // reverseLayout shows newest at bottom (chat-style scrolling)
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 reverseLayout = true,
             ) {
-                items(btwMessages.reversed()) { msg ->
+                items(btwMessages) { msg ->
                     MessageBubble(msg)
                 }
             }
