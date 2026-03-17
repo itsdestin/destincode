@@ -268,26 +268,37 @@ int main(int argc, char **argv, char **envp) {
     *frame++ = 0;
     memcpy(frame, auxv, ai * sizeof(Elf64_auxv_t));
 
-    /* 6. Verify stack layout before jump */
+    /* 6. Verify mapped code and stack before jump */
     {
-        char hex[32];
         uintptr_t *p = sp;
+        char buf[128];
+        int len;
+
         errstr("stack[0] argc=");
-        int v = (int)*p; hex[0]='0'+v; hex[1]='\n'; write(2,hex,2);
-        p++; /* argv[0] */
+        int v = (int)*p; buf[0]='0'+v; buf[1]='\n'; write(2,buf,2);
+        p++;
         errstr("argv[0]="); errstr((char*)*p); errstr("\n");
 
-        /* Print AT_BASE value */
-        char buf[80];
-        int len = 0;
-        buf[len++]='B'; buf[len++]='A'; buf[len++]='S'; buf[len++]='E'; buf[len++]='=';
-        uintptr_t bv = ld_bias;
-        for (int s = 60; s >= 0; s -= 4) {
-            int nib = (bv >> s) & 0xf;
-            buf[len++] = nib < 10 ? '0'+nib : 'a'+nib-10;
-        }
-        buf[len++] = '\n';
-        write(2, buf, len);
+        /* Hex print helper */
+        #define HEXPRINT(label, val) do { \
+            len = 0; const char *_l = label; \
+            while (*_l) buf[len++] = *_l++; \
+            uintptr_t _v = (val); \
+            for (int _s = 60; _s >= 0; _s -= 4) { \
+                int _n = (_v >> _s) & 0xf; \
+                buf[len++] = _n < 10 ? '0'+_n : 'a'+_n-10; \
+            } \
+            buf[len++] = '\n'; write(2, buf, len); \
+        } while(0)
+
+        HEXPRINT("ENTRY=", ld_entry);
+        HEXPRINT("BIAS=", ld_bias);
+        HEXPRINT("HWCAP=", getauxval(AT_HWCAP));
+
+        /* Read first 4 bytes at entry point to verify it's mapped and correct */
+        /* ld-linux _start should begin with NOP (d503201f) */
+        uint32_t first_insn = *(volatile uint32_t *)ld_entry;
+        HEXPRINT("INSN@ENTRY=", first_insn);
 
         errstr("jumping to ld-linux entry...\n");
     }
