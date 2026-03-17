@@ -29,9 +29,10 @@ class PtyBridge(
     private val _lastPtyOutputTime = MutableStateFlow(0L)
     val lastPtyOutputTime: StateFlow<Long> = _lastPtyOutputTime
 
-    private val _rawBuffer = StringBuilder()
+    private val _rawBuffer = StringBuffer()  // Thread-safe; capped to prevent OOM
     val rawBuffer: String get() = _rawBuffer.toString()
     private var lastTranscriptLength = 0
+    private val RAW_BUFFER_MAX = 512 * 1024  // 512 KB rolling window
 
     val isRunning: Boolean get() = session?.isRunning == true
 
