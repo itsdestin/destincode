@@ -369,9 +369,8 @@ fun TerminalPanel(
                     )
 
                     if (isUnderline || inUrl) {
-                        val ulPaint = if (inUrl) linkPaint else Paint().apply {
-                            color = fgColor
-                            strokeWidth = 1f
+                        val ulPaint = if (inUrl) linkPaint else underlinePaint.also {
+                            it.color = fgColor
                         }
                         drawContext.canvas.nativeCanvas.drawLine(
                             xLeft, yTop + baseline + 2f,
