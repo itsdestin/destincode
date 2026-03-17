@@ -83,7 +83,7 @@ data class PackageInfo(
  */
 private fun parsePackagesIndex(text: String): Map<String, PackageInfo> {
     val packages = mutableMapOf<String, PackageInfo>()
-    val stanzas = text.split("\n\n")
+    val stanzas = text.replace("\r\n", "\n").split("\n\n")
     for (stanza in stanzas) {
         val fields = mutableMapOf<String, String>()
         var currentKey = ""
