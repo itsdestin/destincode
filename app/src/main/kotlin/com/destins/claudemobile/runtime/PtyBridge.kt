@@ -232,6 +232,14 @@ fs.accessSync = function(p, m) {
     if (isEB(p) && m !== undefined && (m & fs.constants.X_OK)) return _as.call(this, fixPath(p), fs.constants.R_OK);
     return _as.apply(this, arguments);
 };
+function resolveCmd(c) {
+    if (c && c.indexOf('/') === -1) {
+        var r = PREFIX + '/bin/' + c;
+        try { _as.call(null, r, fs.constants.R_OK); return r; }
+        catch(e) { return c; }
+    }
+    return c;
+}
 function injectEnv(cmd, args) {
     if (BASH_ENV_FILE && cmd.endsWith('/bash') && Array.isArray(args) && args[0] === '-c' && args.length >= 2) {
         args = args.slice();
