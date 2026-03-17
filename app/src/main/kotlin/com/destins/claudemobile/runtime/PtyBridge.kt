@@ -69,6 +69,8 @@ class PtyBridge(
     }
 
     fun startEventBridge(scope: CoroutineScope) {
+        // Stop any existing bridge to release the socket before binding a new one
+        eventBridge?.stop()
         val bridge = EventBridge(socketPath)
         bridge.startServer(scope)
         eventBridge = bridge
