@@ -382,7 +382,14 @@ class Bootstrap(private val context: Context) {
                             if (tarEntry.name.startsWith(absPrefix)) {
                                 entryPath = tarEntry.name.removePrefix(absPrefix)
                             }
-                            if (entryPath.isEmpty()) {
+                            // Skip entries outside usr/ (e.g., home/.ssh defaults)
+                            val homePrefix = "data/data/com.termux/files/home/"
+                            if (entryPath.startsWith(homePrefix) ||
+                                tarEntry.name.startsWith("/data/data/com.termux/files/home/")) {
+                                tarEntry = tarStream.nextEntry
+                                continue
+                            }
+                            if (entryPath.isEmpty() || entryPath.startsWith("data/")) {
                                 tarEntry = tarStream.nextEntry
                                 continue
                             }
