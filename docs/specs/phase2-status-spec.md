@@ -105,7 +105,6 @@ A message-based view that receives structured events directly from Claude Code h
 - Rapid message sending: responses insert after the correct user message, queued messages show dimmed
 
 **Current limitations:**
-- Response text renders as plain text (no markdown parsing — no bold, italic, code spans)
 - Edit tool results use generic ToolCard (DiffCard exists but isn't routed — no diff parsing from `toolResponse`)
 
 **Status:** Implemented. Needs on-device validation with live Claude Code hook output.
