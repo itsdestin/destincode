@@ -343,11 +343,15 @@ fun ChatScreen(bridge: PtyBridge) {
                             onToggleCard = { chatState.toggleCard(it) },
                             onAcceptApproval = {
                                 toolUseId?.let { chatState.revertApprovalToRunning(it) }
-                                bridge.sendApproval(true)
+                                bridge.sendApproval(com.destins.claudemobile.runtime.PtyBridge.ApprovalOption.Yes)
+                            },
+                            onAcceptAlwaysApproval = {
+                                toolUseId?.let { chatState.revertApprovalToRunning(it) }
+                                bridge.sendApproval(com.destins.claudemobile.runtime.PtyBridge.ApprovalOption.YesAlways)
                             },
                             onRejectApproval = {
                                 toolUseId?.let { chatState.revertApprovalToRunning(it) }
-                                bridge.sendApproval(false)
+                                bridge.sendApproval(com.destins.claudemobile.runtime.PtyBridge.ApprovalOption.No)
                             },
                             session = bridge.getSession(),
                             screenVersion = screenVersion,
