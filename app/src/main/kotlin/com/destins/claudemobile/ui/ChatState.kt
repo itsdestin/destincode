@@ -82,7 +82,26 @@ class ChatState {
         expandedCardId = if (expandedCardId == cardId) null else cardId
     }
 
+    /** Reset stale processing state if no hook events arrived within timeout. */
+    private fun resetStaleProcessing() {
+        if (!isProcessing) return
+        val elapsed = System.currentTimeMillis() - processingStartedAt
+        // If 15s passed with no hook events, Claude never saw the message — reset
+        if (!receivedHookEvent && elapsed > 15_000) {
+            isProcessing = false
+            queuedIds.clear()
+            // Un-queue any queued messages
+            for (i in messages.indices) {
+                if (messages[i].isQueued) {
+                    messages[i] = messages[i].copy(isQueued = false)
+                }
+            }
+            insertPos = messages.size
+        }
+    }
+
     fun addUserMessage(text: String, isBtw: Boolean = false) {
+        resetStaleProcessing()
         val shouldQueue = isProcessing
         val msg = ChatMessage(
             role = MessageRole.USER,
