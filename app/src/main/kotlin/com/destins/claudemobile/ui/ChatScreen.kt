@@ -583,30 +583,51 @@ private fun ModeHeader(
 }
 
 /** Invisible text field that forwards soft keyboard input to a PTY.
- *  Autocorrect and auto-capitalization are disabled — keyboards modify
- *  already-committed text (capitalization, word replacements) which is
- *  impossible to replay correctly in a terminal where the cursor is
- *  always at the end. This matches Termux and other Android terminals. */
+ *
+ *  Uses TextFieldValue (not String) so Compose preserves the IME's
+ *  composition state across recompositions — prevents Gboard from
+ *  falling back to deleteSurroundingText for predictions.
+ *
+ *  Tracks what we've actually sent to the PTY (`ptySent`) and diffs
+ *  against that using common-prefix matching. With autocorrect and
+ *  autocapitalization disabled, the only word-level changes come from
+ *  predictions, which are bounded to the current word (small diffs). */
 @Composable
 private fun PtyInputField(
     focusRequester: FocusRequester,
     onInput: (String) -> Unit,
     onEnter: () -> Unit,
 ) {
-    var buffer by remember { mutableStateOf("") }
+    var tfv by remember { mutableStateOf(TextFieldValue()) }
+    // Ground truth: what the PTY currently has from our input
+    var ptySent by remember { mutableStateOf("") }
+
     BasicTextField(
-        value = buffer,
-        onValueChange = { newValue ->
-            if (newValue.length > buffer.length) {
-                // Text added — send the new characters
-                onInput(newValue.substring(buffer.length))
-            } else if (newValue.length < buffer.length) {
-                // Text removed — send backspaces as a single PTY write
-                onInput("\u007f".repeat(buffer.length - newValue.length))
+        value = tfv,
+        onValueChange = { newTfv ->
+            val newText = newTfv.text
+
+            if (newText != ptySent) {
+                val commonPrefix = ptySent.commonPrefixWith(newText).length
+                val toDelete = ptySent.length - commonPrefix
+                val toInsert = newText.substring(commonPrefix)
+
+                // Safety cap: if we'd send a huge number of backspaces,
+                // something unexpected changed (e.g. keyboard reformatted
+                // the whole buffer). Skip the PTY update to avoid damage.
+                if (toDelete <= 30) {
+                    val batch = "\u007f".repeat(toDelete) + toInsert
+                    if (batch.isNotEmpty()) onInput(batch)
+                    ptySent = newText
+                } else {
+                    // Accept the IME state but don't replay to PTY
+                    android.util.Log.w("PtyInput",
+                        "Skipped large diff: delete=$toDelete insert=${toInsert.length}")
+                    ptySent = newText
+                }
             }
-            // Same length, different content: keyboard did something we
-            // can't safely replay (e.g. capitalisation). Ignore it.
-            buffer = if (newValue.length > 1000) newValue.takeLast(500) else newValue
+
+            tfv = newTfv
         },
         singleLine = true,
         keyboardOptions = KeyboardOptions(
@@ -617,7 +638,8 @@ private fun PtyInputField(
         ),
         keyboardActions = KeyboardActions(onSend = {
             onEnter()
-            buffer = ""
+            tfv = TextFieldValue()
+            ptySent = ""
         }),
         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 1.sp),
         modifier = Modifier
