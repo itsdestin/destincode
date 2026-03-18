@@ -186,8 +186,8 @@ fun ChatScreen(bridge: PtyBridge) {
         when (screenMode) {
         ScreenMode.Terminal -> {
             // ── Full-screen terminal mode ──────────────────────────────
-            var termScrollOffset by remember { mutableFloatStateOf(0f) }
             val termFocusRequester = remember { FocusRequester() }
+            val termViewClient = remember { ClaudeTerminalViewClient() }
 
             Column(modifier = Modifier.fillMaxSize()) {
                 val borderColor = com.destins.claudemobile.ui.theme.ClaudeMobileTheme.extended.surfaceBorder
@@ -197,40 +197,18 @@ fun ChatScreen(bridge: PtyBridge) {
                     onLeftClick = { screenMode = ScreenMode.Chat },
                 )
 
-                // Terminal + floating scroll-to-bottom button
-                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    TerminalPanel(
-                        session = bridge.getSession(),
-                        screenVersion = screenVersion,
-                        modifier = Modifier.fillMaxSize(),
-                        scrollOffset = termScrollOffset,
-                        onScrollOffsetChanged = { termScrollOffset = it },
-                        onTap = { termFocusRequester.requestFocus() },
-                    )
-
-                    // Floating "return to bottom" pill
-                    if (termScrollOffset > 1f) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 8.dp)
-                                .height(30.dp)
-                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(15.dp))
-                                .background(MaterialTheme.colorScheme.surface)
-                                .border(0.5.dp, borderColor.copy(alpha = 0.5f), androidx.compose.foundation.shape.RoundedCornerShape(15.dp))
-                                .clickable { termScrollOffset = 0f }
-                                .padding(horizontal = 14.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                "↓ Return to bottom",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontFamily = com.destins.claudemobile.ui.theme.CascadiaMono,
-                            )
+                AndroidView(
+                    factory = { ctx ->
+                        TerminalView(ctx, null).apply {
+                            setTerminalViewClient(termViewClient)
+                            bridge.getSession()?.let { attachSession(it) }
                         }
-                    }
-                }
+                    },
+                    update = { view ->
+                        bridge.getSession()?.let { view.attachSession(it) }
+                    },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
 
                 HorizontalDivider(color = borderColor, thickness = 0.5.dp)
                 TerminalInputBar(
