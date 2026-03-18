@@ -216,7 +216,7 @@ class ManagedSession(
                 activePrompts.remove("paste_code")
                 chatState.completePrompt("paste_code", "Signed in")
             }
-            if ("continue" !in activePrompts) {
+            if ("continue" !in activePrompts && "continue" !in completedPromptIds) {
                 activePrompts.add("continue")
                 chatState.showInteractivePrompt("continue", "Login successful!", listOf(
                     PromptButton("Continue", "\r"),
