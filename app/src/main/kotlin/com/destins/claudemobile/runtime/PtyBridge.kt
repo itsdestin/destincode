@@ -403,7 +403,7 @@ var _exec = child_process.exec;
 child_process.exec = function(cmd, opts, cb) {
     if (typeof opts === 'function') { cb = opts; opts = undefined; }
     // Intercept xdg-open/open in shell command strings — route through browser-open
-    var m = typeof cmd === 'string' && cmd.match(/^(xdg-open|open)\s+(.*)/);
+    var m = typeof cmd === 'string' && cmd.match(/^(xdg-open|open|.*browser-open)\s+(.*)/);
     if (m && BROWSER_OPEN) {
         cmd = '/system/bin/sh ' + BROWSER_OPEN + ' ' + m[2];
     }
