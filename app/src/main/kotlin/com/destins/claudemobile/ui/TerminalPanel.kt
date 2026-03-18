@@ -113,6 +113,7 @@ fun TerminalPanel(
     scrollOffset: Float = 0f,
     onScrollOffsetChanged: ((Float) -> Unit)? = null,
     onTap: (() -> Unit)? = null,
+    hideLastRow: Boolean = false,
 ) {
     val terminalBg = ClaudeMobileTheme.extended.terminalBg
     val context = LocalContext.current
