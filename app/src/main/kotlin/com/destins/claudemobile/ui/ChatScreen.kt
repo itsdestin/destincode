@@ -663,9 +663,19 @@ private fun PtyInputField(
             keyboardType = KeyboardType.Ascii,
         ),
         keyboardActions = KeyboardActions(onSend = {
+            flushJob?.cancel()
+            // Flush any pending space before sending Enter
+            if (ptyTarget != ptyActual) {
+                val cp = ptyActual.commonPrefixWith(ptyTarget).length
+                val del = ptyActual.length - cp
+                val ins = ptyTarget.substring(cp)
+                val batch = "\u007f".repeat(del) + ins
+                if (batch.isNotEmpty()) onInput(batch)
+            }
             onEnter()
             tfv = TextFieldValue()
-            ptySent = ""
+            ptyActual = ""
+            ptyTarget = ""
         }),
         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 1.sp),
         modifier = Modifier
