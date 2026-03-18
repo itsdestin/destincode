@@ -61,7 +61,7 @@ This avoids splitting lifecycle management. PtyBridge creates the EventBridge be
 
 EventBridge uses Android `LocalServerSocket`, which creates **abstract namespace** Unix sockets (not filesystem paths). These are global to the device. Each session's socket name must be unique: `parser-{sessionId}`.
 
-The `CLAUDE_MOBILE_SOCKET` env var passes this name to `hook-relay.js`, which connects with the `'\0'` abstract namespace prefix. No filesystem paths are involved.
+The current socket name (`${homeDir}/.claude-mobile/parser.sock`) happens to look like a file path but is already an abstract namespace string. This design changes the name format to `parser-{sessionId}`. The `CLAUDE_MOBILE_SOCKET` env var passes this name to `hook-relay.js`, which connects with the `'\0'` abstract namespace prefix. `hook-relay.js` is agnostic to the name content — it uses whatever string is in the env var — so it requires no code changes despite the format change.
 
 ### SessionRegistry
 
