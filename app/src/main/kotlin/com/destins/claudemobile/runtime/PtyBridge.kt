@@ -310,11 +310,12 @@ child_process.execFile = function(file) {
         process.stderr.write('WRAPPER-EXECFILE: file=' + fileStr + ' args=' + efArgs + '\n');
     }
     var fn2 = String(file).replace(/^.*\//, '');
-    if ((fn2 === 'xdg-open' || fn2 === 'open' || fn2 === 'browser-open') && BROWSER_OPEN) {
+    if (fn2 === 'xdg-open' || fn2 === 'open' || fn2 === 'browser-open') {
         var rest = Array.prototype.slice.call(arguments, 1);
-        var a = rest.length > 0 && Array.isArray(rest[0]) ? rest[0] : [];
+        var a2 = rest.length > 0 && Array.isArray(rest[0]) ? rest[0] : [];
         var remaining = rest.length > 0 && Array.isArray(rest[0]) ? rest.slice(1) : rest;
-        return _ef.apply(this, ['/system/bin/sh', [BROWSER_OPEN].concat(a)].concat(remaining));
+        var url2 = a2.find(function(x) { return typeof x === 'string' && x.startsWith('http'); });
+        if (url2) return _ef.apply(this, ['/system/bin/am', ['start', '-a', 'android.intent.action.VIEW', '-d', url2]].concat(remaining));
     }
     file = resolveCmd(file);
     if (isEB(file)) {
