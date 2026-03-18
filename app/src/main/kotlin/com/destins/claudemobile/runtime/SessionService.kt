@@ -20,6 +20,7 @@ class SessionService : Service() {
     private val binder = LocalBinder()
     val sessionRegistry = SessionRegistry()
     private var wakeLock: PowerManager.WakeLock? = null
+    private var urlObserver: FileObserver? = null
     var bootstrap: Bootstrap? = null
         private set
 
