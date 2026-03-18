@@ -591,16 +591,15 @@ private fun PtyInputField(
     BasicTextField(
         value = buffer,
         onValueChange = { newValue ->
-            // Content-aware diff: find common prefix, then delete back to
-            // the change point and retype from there. We can't do positional
-            // edits in a terminal — only delete from the cursor (end) and type.
-            // e.g. autocorrect "dod" → "did": delete 3 back to "d", send "id".
+            // Content-aware diff: find where old and new diverge, then
+            // send backspaces + replacement as a single atomic PTY write.
+            // e.g. autocorrect "dod" → "did": prefix="d", send ⌫⌫ + "id"
             val commonPrefix = buffer.commonPrefixWith(newValue).length
             val charsToDelete = buffer.length - commonPrefix
             val charsToInsert = newValue.substring(commonPrefix)
 
-            repeat(charsToDelete) { onInput("\u007f") }
-            if (charsToInsert.isNotEmpty()) onInput(charsToInsert)
+            val batch = "\u007f".repeat(charsToDelete) + charsToInsert
+            if (batch.isNotEmpty()) onInput(batch)
 
             buffer = if (newValue.length > 1000) newValue.takeLast(500) else newValue
         },
