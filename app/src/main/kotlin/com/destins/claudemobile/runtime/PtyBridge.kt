@@ -336,16 +336,19 @@ function stripLogin(args) {
 // When shell:true + EB command string, bypass the shell entirely — split the
 // command and route the binary through linker64 (avoids SELinux shell exec).
 function spawnFix(orig, command, args, options) {
-    // Intercept xdg-open/open/browser-open — use Android am start directly
+    // Intercept xdg-open/open/browser-open — use Android am start with clean env
+    // CRITICAL: must strip LD_PRELOAD and LD_LIBRARY_PATH or system binaries crash
     var cmdName = String(command).replace(/^.*\//, '');
     if ((cmdName === 'xdg-open' || cmdName === 'open' || cmdName === 'browser-open' || String(command).endsWith('/browser-open'))) {
         var urlArgs = Array.isArray(args) ? args : [];
         var url = urlArgs.find(function(a) { return typeof a === 'string' && a.startsWith('http'); });
         if (url) {
-            process.stderr.write('WRAPPER-AM: opening ' + url.substring(0, 60) + '...\n');
-            return orig.call(this, '/system/bin/am', ['start', '-a', 'android.intent.action.VIEW', '-d', url], {});
+            var cleanEnv = {};
+            Object.keys(process.env).forEach(function(k) {
+                if (k !== 'LD_PRELOAD' && k !== 'LD_LIBRARY_PATH') cleanEnv[k] = process.env[k];
+            });
+            return orig.call(this, '/system/bin/am', ['start', '-a', 'android.intent.action.VIEW', '-d', url], { env: cleanEnv });
         }
-        process.stderr.write('WRAPPER-NOMATCH: cmd=' + String(command) + ' args=' + JSON.stringify(urlArgs) + '\n');
     }
     command = resolveCmd(String(command));
     var o = Array.isArray(args) ? options : args;
