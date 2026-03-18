@@ -1307,6 +1307,7 @@ Since `bridge` can now be null (no session selected), add null safety throughout
 - `bridge.writeInput(...)` → `bridge?.writeInput(...)`
 - `bridge.getSession()` → `bridge?.getSession()`
 - `bridge.sendApproval(...)` → `bridge?.sendApproval(...)`
+- `bridge.homeDir` (used for attachments dir, line ~89) → `service.bootstrap!!.homeDir` (homeDir is a Bootstrap property, not session-specific)
 
 - [ ] **Step 7: Update MainActivity.kt**
 
