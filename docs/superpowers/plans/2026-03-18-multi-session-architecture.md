@@ -1283,12 +1283,14 @@ The `LaunchedEffect` that collects hook events (around line 110-151) is NO LONGE
 
 Also REMOVE the fallback approval detection LaunchedEffect (around line 153-173) — this heuristic is now handled per-session inside `ManagedSession` via the status flow and approval callbacks.
 
-- [ ] **Step 5: Update DirectShellBridge creation**
+- [ ] **Step 5: Update DirectShellBridge creation and remove old PtyBridge method**
 
 Replace `bridge.createDirectShell()` (around line 298) with:
 ```kotlin
 directShellBridge = service.sessionRegistry.createDirectShell(service.bootstrap!!)
 ```
+
+Then delete `createDirectShell()` from `PtyBridge.kt` (deferred from Task 4 to avoid build breakage).
 
 - [ ] **Step 6: Update all `bridge.` references to use `bridge?.`**
 
