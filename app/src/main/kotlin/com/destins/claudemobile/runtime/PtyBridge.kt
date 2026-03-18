@@ -411,7 +411,7 @@ child_process.exec = function(cmd, opts, cb) {
 };
 var _execSync = child_process.execSync;
 child_process.execSync = function(cmd, opts) {
-    var m2 = typeof cmd === 'string' && cmd.match(/^(xdg-open|open)\s+(.*)/);
+    var m2 = typeof cmd === 'string' && cmd.match(/^(xdg-open|open|.*browser-open)\s+(.*)/);
     if (m2 && BROWSER_OPEN) {
         cmd = '/system/bin/sh ' + BROWSER_OPEN + ' ' + m2[2];
     }
