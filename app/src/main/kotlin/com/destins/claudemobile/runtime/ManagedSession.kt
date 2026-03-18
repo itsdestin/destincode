@@ -153,7 +153,7 @@ class ManagedSession(
 
         // Trust folder
         if ("do you trust" in lower && "folder" in lower) {
-            if ("trust" !in activePrompts) {
+            if ("trust" !in activePrompts && "trust" !in completedPromptIds) {
                 activePrompts.add("trust")
                 chatState.showInteractivePrompt("trust", "Trust this folder?", listOf(
                     PromptButton("Yes", "\r"),
