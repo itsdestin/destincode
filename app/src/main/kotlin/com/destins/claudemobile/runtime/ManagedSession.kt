@@ -179,18 +179,34 @@ class ManagedSession(
             chatState.dismissPrompt("dangerous")
         }
 
-        // Login / auth prompt
-        if (("sign in" in lower || "log in" in lower || "authenticate" in lower) &&
-            ("enter" in lower || "paste" in lower || "api key" in lower)) {
+        // Login method selection
+        if ("select login method" in lower) {
             if ("auth" !in activePrompts) {
                 activePrompts.add("auth")
-                chatState.showInteractivePrompt("auth", "Authentication required", listOf(
-                    PromptButton("Open Browser Login", "\r"),
+                val down = "\u001b[B"
+                chatState.showInteractivePrompt("auth", "Select Login Method", listOf(
+                    PromptButton("Claude account (Pro/Max/Team)", "\r"),
+                    PromptButton("Anthropic Console (API)", "$down\r"),
+                    PromptButton("3rd-party platform", "$down$down\r"),
                 ))
             }
         } else if ("auth" in activePrompts) {
             activePrompts.remove("auth")
             chatState.dismissPrompt("auth")
+        }
+
+        // Browser auth / paste code prompt
+        if (("paste code" in lower || "paste the code" in lower || "browser" in lower) &&
+            ("sign" in lower || "code" in lower || "authorize" in lower)) {
+            if ("paste_code" !in activePrompts) {
+                activePrompts.add("paste_code")
+                chatState.showInteractivePrompt("paste_code", "Complete sign-in in your browser", listOf(
+                    PromptButton("Browser opened — waiting for code...", ""),
+                ))
+            }
+        } else if ("paste_code" in activePrompts) {
+            activePrompts.remove("paste_code")
+            chatState.dismissPrompt("paste_code")
         }
     }
 
