@@ -117,9 +117,9 @@ fun TerminalPanel(
     val terminalBg = ClaudeMobileTheme.extended.terminalBg
     val context = LocalContext.current
 
-    // Terminal keeps a minimum of 80 columns. Font size is calculated
-    // dynamically to fit 80 columns in the available width.
-    val minCols = 60
+    // Terminal keeps a minimum of 40 columns. Font size is calculated
+    // dynamically to fit minCols columns in the available width.
+    val minCols = 40
     var gridCols by remember { mutableIntStateOf(minCols) }
     var gridRows by remember { mutableIntStateOf(24) }
 
