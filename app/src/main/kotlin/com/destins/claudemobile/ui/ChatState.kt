@@ -113,6 +113,7 @@ class ChatState {
     }
 
     fun addToolRunning(toolUseId: String, tool: String, args: String) {
+        receivedHookEvent = true
         val id = nextId()
         activeToolName = tool
         messages.add(insertPos, ChatMessage(
