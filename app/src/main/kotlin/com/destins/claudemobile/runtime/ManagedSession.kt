@@ -133,7 +133,7 @@ class ManagedSession(
 
         // Theme selection
         if ("dark mode" in lower && "light mode" in lower && "/theme" in lower) {
-            if ("theme" !in activePrompts) {
+            if ("theme" !in activePrompts && "theme" !in completedPromptIds) {
                 activePrompts.add("theme")
                 // Ink Select: first item is pre-selected. Navigate with ↓ arrows then Enter.
                 val down = "\u001b[B"
