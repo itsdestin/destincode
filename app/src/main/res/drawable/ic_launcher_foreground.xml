@@ -5,91 +5,83 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- All elements centered in the 72dp safe zone (18–90) -->
+    <!-- Positions derived from pixel-traced reference image -->
 
-    <!-- Hat/cap — close to body's upper-right corner -->
+    <!-- Hat — rounded square floating above body's upper-right -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M58,27 L67,27 A2.5,2.5 0,0 1,69.5,29.5 L69.5,35.5 A2.5,2.5 0,0 1,67,38 L58,38 A2.5,2.5 0,0 1,55.5,35.5 L55.5,29.5 A2.5,2.5 0,0 1,58,27 Z" />
+        android:pathData="M81,17 L85,17 A3,3 0,0 1,88,20 L88,25 A3,3 0,0 1,85,28 L81,28 A3,3 0,0 1,78,25 L78,20 A3,3 0,0 1,81,17 Z" />
 
-    <!-- Left arm — rounded square, 5dp gap from body -->
+    <!-- Left arm — rounded square, 5dp gap from body left edge -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M17,48 L25,48 A2.5,2.5 0,0 1,27.5,50.5 L27.5,57.5 A2.5,2.5 0,0 1,25,60 L17,60 A2.5,2.5 0,0 1,14.5,57.5 L14.5,50.5 A2.5,2.5 0,0 1,17,48 Z" />
+        android:pathData="M19,38 L23,38 A3,3 0,0 1,26,41 L26,47 A3,3 0,0 1,23,50 L19,50 A3,3 0,0 1,16,47 L16,41 A3,3 0,0 1,19,38 Z" />
 
-    <!-- Right arm (waving, raised) — rounded square, 5dp gap from body -->
+    <!-- Right arm (waving, higher) — rounded square, 5dp gap from body right edge -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M70,34 L78,34 A2.5,2.5 0,0 1,80.5,36.5 L80.5,43.5 A2.5,2.5 0,0 1,78,46 L70,46 A2.5,2.5 0,0 1,67.5,43.5 L67.5,36.5 A2.5,2.5 0,0 1,70,34 Z" />
+        android:pathData="M75,30 L79,30 A3,3 0,0 1,82,33 L82,39 A3,3 0,0 1,79,42 L75,42 A3,3 0,0 1,72,39 L72,33 A3,3 0,0 1,75,30 Z" />
 
-    <!-- Main body — large rounded square, centered -->
+    <!-- Main body — large rounded square -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="
-            M39,40 L57,40
-            A10,10 0,0 1,67,50
-            L67,62
-            A10,10 0,0 1,57,72
-            L39,72
-            A10,10 0,0 1,29,62
-            L29,50
-            A10,10 0,0 1,39,40 Z" />
+        android:pathData="M40,21 L58,21 A9,9 0,0 1,67,30 L67,51 A9,9 0,0 1,58,60 L40,60 A9,9 0,0 1,31,51 L31,30 A9,9 0,0 1,40,21 Z" />
 
     <!-- Faint code text lines inside body -->
-    <path android:fillColor="#ffffff" android:fillAlpha="0.14"
-        android:pathData="M34,47 L62,47 L62,48.5 L34,48.5 Z" />
+    <path android:fillColor="#ffffff" android:fillAlpha="0.13"
+        android:pathData="M35,28 L63,28 L63,29.5 L35,29.5 Z" />
     <path android:fillColor="#ffffff" android:fillAlpha="0.10"
-        android:pathData="M34,51 L56,51 L56,52.5 L34,52.5 Z" />
+        android:pathData="M35,32 L57,32 L57,33.5 L35,33.5 Z" />
     <path android:fillColor="#ffffff" android:fillAlpha="0.08"
-        android:pathData="M34,55 L59,55 L59,56.5 L34,56.5 Z" />
+        android:pathData="M35,36 L60,36 L60,37.5 L35,37.5 Z" />
     <path android:fillColor="#ffffff" android:fillAlpha="0.06"
-        android:pathData="M34,59 L50,59 L50,60.5 L34,60.5 Z" />
+        android:pathData="M35,40 L52,40 L52,41.5 L35,41.5 Z" />
     <path android:fillColor="#ffffff" android:fillAlpha="0.04"
-        android:pathData="M34,63 L55,63 L55,64.5 L34,64.5 Z" />
+        android:pathData="M35,44 L56,44 L56,45.5 L35,45.5 Z" />
 
-    <!-- Face: X shape — thick crossing diagonal lines (cream) -->
+    <!-- Face: X shape — crossing diagonal lines (cream) -->
     <path
-        android:pathData="M37,47 L59,67"
+        android:pathData="M38,28 L60,54"
         android:strokeColor="#f5ede4"
         android:strokeWidth="4.0"
         android:strokeLineCap="round" />
     <path
-        android:pathData="M59,47 L37,67"
+        android:pathData="M60,28 L38,54"
         android:strokeColor="#f5ede4"
         android:strokeWidth="4.0"
         android:strokeLineCap="round" />
 
-    <!-- Left leg — under body, 3dp gap -->
+    <!-- Left leg — flat top, rounded bottom, 5dp gap below body -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M37,75 L44,75 L44,83 A3.5,3.5 0,0 1,40.5,86.5 A3.5,3.5 0,0 1,37,83 Z" />
+        android:pathData="M36,65 L45,65 L45,72 A4.5,4.5 0,0 1,36,72 Z" />
 
-    <!-- Right leg — under body, 3dp gap -->
+    <!-- Right leg — flat top, rounded bottom, 5dp gap below body -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M52,75 L59,75 L59,83 A3.5,3.5 0,0 1,55.5,86.5 A3.5,3.5 0,0 1,52,83 Z" />
+        android:pathData="M59,65 L68,65 L68,72 A4.5,4.5 0,0 1,59,72 Z" />
 
-    <!-- Terminal chevron ">" (sienna accent, bolder) -->
+    <!-- Terminal chevron ">" (sienna, traced position) -->
     <path
-        android:pathData="M65,74 L73,80 L65,86"
+        android:pathData="M38,76 L46,83 L38,90"
         android:strokeColor="#c96442"
         android:strokeWidth="3.0"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
 
-    <!-- Terminal underscore "_" (sienna accent) -->
+    <!-- Terminal underscore "_" (sienna, traced position) -->
     <path
-        android:pathData="M75,86 L84,86"
+        android:pathData="M50,90 L68,90"
         android:strokeColor="#c96442"
         android:strokeWidth="3.0"
         android:strokeLineCap="round" />
 
-    <!-- Sparkle accent dots (sienna) -->
-    <path android:fillColor="#c96442" android:fillAlpha="0.50"
-        android:pathData="M22,37 A2,2 0,1 1,26,37 A2,2 0,1 1,22,37 Z" />
-    <path android:fillColor="#c96442" android:fillAlpha="0.35"
-        android:pathData="M78,26 A1.5,1.5 0,1 1,81,26 A1.5,1.5 0,1 1,78,26 Z" />
+    <!-- Sparkle accent dot (upper-left) -->
+    <path android:fillColor="#c96442" android:fillAlpha="0.45"
+        android:pathData="M17,15.5 A2,2 0,1 1,21,15.5 A2,2 0,1 1,17,15.5 Z" />
+
+    <!-- Sparkle accent dot (right side) -->
     <path android:fillColor="#c96442" android:fillAlpha="0.25"
-        android:pathData="M83,55 A1.3,1.3 0,1 1,85.6,55 A1.3,1.3 0,1 1,83,55 Z" />
+        android:pathData="M93,52.5 A1.5,1.5 0,1 1,96,52.5 A1.5,1.5 0,1 1,93,52.5 Z" />
 
 </vector>
