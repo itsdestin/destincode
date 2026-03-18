@@ -581,8 +581,10 @@ private fun ModeHeader(
 }
 
 /** Invisible text field that forwards soft keyboard input to a PTY.
- *  Uses content-aware diffing to correctly handle autocorrect, swipe
- *  typing, and IME composition replacements — not just length changes. */
+ *  Autocorrect and auto-capitalization are disabled — keyboards modify
+ *  already-committed text (capitalization, word replacements) which is
+ *  impossible to replay correctly in a terminal where the cursor is
+ *  always at the end. This matches Termux and other Android terminals. */
 @Composable
 private fun PtyInputField(
     focusRequester: FocusRequester,
@@ -593,23 +595,27 @@ private fun PtyInputField(
     BasicTextField(
         value = buffer,
         onValueChange = { newValue ->
-            // Content-aware diff: find where old and new diverge, then
-            // send backspaces + replacement as a single atomic PTY write.
-            // e.g. autocorrect "dod" → "did": prefix="d", send ⌫⌫ + "id"
-            val commonPrefix = buffer.commonPrefixWith(newValue).length
-            val charsToDelete = buffer.length - commonPrefix
-            val charsToInsert = newValue.substring(commonPrefix)
-
-            val batch = "\u007f".repeat(charsToDelete) + charsToInsert
-            if (batch.isNotEmpty()) onInput(batch)
-
+            if (newValue.length > buffer.length) {
+                // Text added — send the new characters
+                onInput(newValue.substring(buffer.length))
+            } else if (newValue.length < buffer.length) {
+                // Text removed — send backspaces as a single PTY write
+                onInput("\u007f".repeat(buffer.length - newValue.length))
+            }
+            // Same length, different content: keyboard did something we
+            // can't safely replay (e.g. capitalisation). Ignore it.
             buffer = if (newValue.length > 1000) newValue.takeLast(500) else newValue
         },
         singleLine = true,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+        keyboardOptions = KeyboardOptions(
+            imeAction = ImeAction.Send,
+            autoCorrect = false,
+            capitalization = KeyboardCapitalization.None,
+            keyboardType = KeyboardType.Ascii,
+        ),
         keyboardActions = KeyboardActions(onSend = {
             onEnter()
-            buffer = ""  // reset after send to avoid drift
+            buffer = ""
         }),
         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 1.sp),
         modifier = Modifier
