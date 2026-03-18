@@ -102,6 +102,84 @@ class ManagedSession(
                 wasAwaiting = isAwaiting
             }
         }
+
+        // 4. Setup prompt detector — watches PTY screen for known interactive prompts.
+        scope.launch {
+            val activePrompts = mutableSetOf<String>()
+            while (true) {
+                delay(1000)
+                if (!ptyBridge.isRunning) break
+                val screen = ptyBridge.readScreenText()
+                withContext(Dispatchers.Main) {
+                    detectPrompts(screen, activePrompts)
+                }
+            }
+        }
+    }
+
+    /** Known setup prompts and their button mappings. */
+    private fun detectPrompts(screen: String, activePrompts: MutableSet<String>) {
+        val lower = screen.lowercase()
+
+        // Theme selection
+        if ("choose the text style" in lower || "looks best with your terminal" in lower) {
+            if ("theme" !in activePrompts) {
+                activePrompts.add("theme")
+                chatState.showInteractivePrompt("theme", "Choose theme", listOf(
+                    PromptButton("Dark", "1\r"),
+                    PromptButton("Light", "2\r"),
+                    PromptButton("Dark (colorblind)", "3\r"),
+                    PromptButton("Light (colorblind)", "4\r"),
+                    PromptButton("Dark ANSI", "5\r"),
+                    PromptButton("Light ANSI", "6\r"),
+                ))
+            }
+        } else if ("theme" in activePrompts) {
+            activePrompts.remove("theme")
+            chatState.dismissPrompt("theme")
+        }
+
+        // Trust folder
+        if ("do you trust" in lower && "folder" in lower) {
+            if ("trust" !in activePrompts) {
+                activePrompts.add("trust")
+                chatState.showInteractivePrompt("trust", "Trust this folder?", listOf(
+                    PromptButton("Yes", "\r"),
+                    PromptButton("No", "\u001b[B\r"),
+                ))
+            }
+        } else if ("trust" in activePrompts) {
+            activePrompts.remove("trust")
+            chatState.dismissPrompt("trust")
+        }
+
+        // Dangerous permissions / skip permissions warning
+        if ("dangerously-skip-permissions" in lower || "skip all permission" in lower) {
+            if ("dangerous" !in activePrompts) {
+                activePrompts.add("dangerous")
+                chatState.showInteractivePrompt("dangerous", "Skip permissions warning", listOf(
+                    PromptButton("Yes, I understand", "\r"),
+                    PromptButton("No", "\u001b"),
+                ))
+            }
+        } else if ("dangerous" in activePrompts) {
+            activePrompts.remove("dangerous")
+            chatState.dismissPrompt("dangerous")
+        }
+
+        // Login / auth prompt
+        if (("sign in" in lower || "log in" in lower || "authenticate" in lower) &&
+            ("enter" in lower || "paste" in lower || "api key" in lower)) {
+            if ("auth" !in activePrompts) {
+                activePrompts.add("auth")
+                chatState.showInteractivePrompt("auth", "Authentication required", listOf(
+                    PromptButton("Open Browser Login", "\r"),
+                ))
+            }
+        } else if ("auth" in activePrompts) {
+            activePrompts.remove("auth")
+            chatState.dismissPrompt("auth")
+        }
     }
 
     /**
