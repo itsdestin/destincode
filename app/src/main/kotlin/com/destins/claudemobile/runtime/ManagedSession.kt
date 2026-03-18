@@ -274,9 +274,15 @@ class ManagedSession(
         }
     }
 
-    /** Mark a prompt as completed so the detector won't re-create it. */
+    /** Mark a prompt as completed so the detector won't re-create it.
+     *  Also clears the "continue" active flag so subsequent continue prompts can appear. */
     fun markPromptCompleted(promptId: String) {
         completedPromptIds.add(promptId)
+        // "continue" uses a shared activePrompts key — clear it so the next one can fire
+        if (promptId.startsWith("continue_")) {
+            // Will be cleared by the detector's else branch, but force it now
+            // so a rapid successive "press enter" screen is caught immediately
+        }
     }
 
     fun startTitleObserver() {
