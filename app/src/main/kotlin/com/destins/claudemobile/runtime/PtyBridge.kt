@@ -422,10 +422,10 @@ function fixTmpInShellCmd(cmd) {
 var _exec = child_process.exec;
 child_process.exec = function(cmd, opts, cb) {
     if (typeof opts === 'function') { cb = opts; opts = undefined; }
-    // Intercept xdg-open/open/browser-open in shell command strings — use am start with clean env
     var m = typeof cmd === 'string' && cmd.match(/^(?:.*\/)?(?:xdg-open|open|browser-open)\s+(https?:\/\/\S+)/);
     if (m) {
-        cmd = 'unset LD_PRELOAD LD_LIBRARY_PATH; /system/bin/am start -a android.intent.action.VIEW -d ' + m[1];
+        try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', m[1]); } catch(e) {}
+        cmd = 'true';
     }
     return _exec.call(this, fixTmpInShellCmd(cmd), fixExecShell(opts), cb);
 };
