@@ -765,11 +765,18 @@ class Bootstrap(private val context: Context) {
 
         // Deploy xdg-open/open wrappers every launch — Claude Code calls these
         // during auth to open the browser. Neither exists on Android natively.
+        // Placed in both ~/.claude-mobile (on PATH for shell) and $PREFIX/bin
+        // (where claude-wrapper.js resolveCmd() looks up bare command names).
         val browserOpenPath = File(mobileDir, "browser-open").absolutePath
         for (name in listOf("xdg-open", "open")) {
+            val wrapperContent = "#!/system/bin/sh\nexec \"$browserOpenPath\" \"\$@\"\n"
             val wrapper = File(mobileDir, name)
-            wrapper.writeText("#!/system/bin/sh\nexec \"$browserOpenPath\" \"\$@\"\n")
+            wrapper.writeText(wrapperContent)
             wrapper.setExecutable(true)
+            // Also place in $PREFIX/bin so claude-wrapper.js resolveCmd() finds them
+            val binWrapper = File(usrDir, "bin/$name")
+            binWrapper.writeText(wrapperContent)
+            binWrapper.setExecutable(true)
         }
 
         return bashEnvPath.absolutePath
