@@ -222,6 +222,8 @@ class SessionService : Service() {
     }
 
     override fun onDestroy() {
+        urlObserver?.stopWatching()
+        urlObserver = null
         sessionRegistry.destroyAll()
         releaseWakeLock()
         super.onDestroy()
