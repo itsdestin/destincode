@@ -210,23 +210,28 @@ class ManagedSession(
             chatState.dismissPrompt("paste_code")
         }
 
-        // "Press Enter to continue" / login successful
-        if ("press enter to continue" in lower || "login successful" in lower) {
+        // "Press Enter to continue" — can appear multiple times (login, security notes, etc.)
+        if ("press enter to continue" in lower) {
             // Auto-collapse the browser sign-in card if still active
             if ("paste_code" in activePrompts) {
                 activePrompts.remove("paste_code")
                 completedPromptIds.add("paste_code")
                 chatState.completePrompt("paste_code", "Signed in")
             }
-            if ("continue" !in activePrompts && "continue" !in completedPromptIds) {
+            if ("continue" !in activePrompts) {
                 activePrompts.add("continue")
-                chatState.showInteractivePrompt("continue", "Login successful!", listOf(
+                val cid = "continue_${continueCounter++}"
+                val title = when {
+                    "login successful" in lower -> "Login successful!"
+                    "security" in lower -> "Security notes"
+                    else -> "Ready"
+                }
+                chatState.showInteractivePrompt(cid, title, listOf(
                     PromptButton("Continue", "\r"),
                 ))
             }
         } else if ("continue" in activePrompts) {
             activePrompts.remove("continue")
-            chatState.dismissPrompt("continue")
         }
     }
 
