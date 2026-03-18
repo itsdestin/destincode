@@ -7,10 +7,10 @@
 
     <!-- All elements centered in the 72dp safe zone (18–90) -->
 
-    <!-- Square "hat/cap" — floating above top-left of body with gap -->
+    <!-- Left arm — floating above top-left of body -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M28,20 L39,20 A2.5,2.5 0,0 1,41.5,22.5 L41.5,29.5 A2.5,2.5 0,0 1,39,32 L28,32 A2.5,2.5 0,0 1,25.5,29.5 L25.5,22.5 A2.5,2.5 0,0 1,28,20 Z" />
+        android:pathData="M26,17 L37,17 A2.5,2.5 0,0 1,39.5,19.5 L39.5,26.5 A2.5,2.5 0,0 1,37,29 L26,29 A2.5,2.5 0,0 1,23.5,26.5 L23.5,19.5 A2.5,2.5 0,0 1,26,17 Z" />
 
     <!-- Main body — rounded rectangle (nearly square, large corner radius) -->
     <path
