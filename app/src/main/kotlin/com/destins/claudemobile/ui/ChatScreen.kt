@@ -316,7 +316,10 @@ fun ChatScreen(service: SessionService) {
                             },
                             onPromptAction = { promptId, input ->
                                 bridge?.writeInput(input)
-                                chatState.dismissPrompt(promptId)
+                                // Find which button was pressed to record the selection
+                                val prompt = message.content as? MessageContent.InteractivePrompt
+                                val label = prompt?.buttons?.find { it.input == input }?.label ?: ""
+                                chatState.completePrompt(promptId, label)
                             },
                             session = bridge?.getSession(),
                             screenVersion = 0,
