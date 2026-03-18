@@ -342,9 +342,10 @@ function spawnFix(orig, command, args, options) {
         var urlArgs = Array.isArray(args) ? args : [];
         var url = urlArgs.find(function(a) { return typeof a === 'string' && a.startsWith('http'); });
         if (url) {
-            // Strip detached/stdio opts — am needs normal process context
+            process.stderr.write('WRAPPER-AM: opening ' + url.substring(0, 60) + '...\n');
             return orig.call(this, '/system/bin/am', ['start', '-a', 'android.intent.action.VIEW', '-d', url], {});
         }
+        process.stderr.write('WRAPPER-NOMATCH: cmd=' + String(command) + ' args=' + JSON.stringify(urlArgs) + '\n');
     }
     command = resolveCmd(String(command));
     var o = Array.isArray(args) ? options : args;
