@@ -83,11 +83,11 @@
     <!-- Left leg -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M35,72 L43,72 L43,82 A4,4 0,0 1,39,86 L39,86 A4,4 0,0 1,35,82 Z" />
+        android:pathData="M35,76 L43,76 L43,85 A4,4 0,0 1,39,89 L39,89 A4,4 0,0 1,35,85 Z" />
 
     <!-- Right leg -->
     <path
         android:fillColor="#1c1c1c"
-        android:pathData="M49,72 L57,72 L57,82 A4,4 0,0 1,53,86 L53,86 A4,4 0,0 1,49,82 Z" />
+        android:pathData="M49,76 L57,76 L57,85 A4,4 0,0 1,53,89 L53,89 A4,4 0,0 1,49,85 Z" />
 
 </vector>
