@@ -56,6 +56,20 @@ import java.io.File
 
 private enum class ScreenMode { Chat, Terminal, Shell }
 
+/** Apply theme-appropriate foreground/background/cursor colors to a terminal emulator. */
+private fun applyTerminalColors(session: com.termux.terminal.TerminalSession?, isDark: Boolean) {
+    val emulator = session?.emulator ?: return
+    if (isDark) {
+        emulator.mColors.tryParseColor(256, "#E0E0E0") // foreground
+        emulator.mColors.tryParseColor(257, "#0A0A0A") // background
+        emulator.mColors.tryParseColor(258, "#E0E0E0") // cursor
+    } else {
+        emulator.mColors.tryParseColor(256, "#1A1A1A") // foreground
+        emulator.mColors.tryParseColor(257, "#D8D8D8") // background
+        emulator.mColors.tryParseColor(258, "#1A1A1A") // cursor
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(service: SessionService) {
@@ -129,6 +143,8 @@ fun ChatScreen(service: SessionService) {
         }
     }
 
+    val isDark = com.destin.code.ui.theme.LocalIsDarkTheme.current
+
     Box(modifier = Modifier.fillMaxSize()) {
         when (screenMode) {
         ScreenMode.Terminal -> {
@@ -157,6 +173,7 @@ fun ChatScreen(service: SessionService) {
                     },
                     update = { view ->
                         bridge?.getSession()?.let { view.attachSession(it) }
+                        applyTerminalColors(bridge?.getSession(), isDark)
                         @Suppress("UNUSED_EXPRESSION")
                         termScreenVersion
                         view.onScreenUpdated()
@@ -211,6 +228,7 @@ fun ChatScreen(service: SessionService) {
                     },
                     update = { view ->
                         shell.getSession()?.let { view.attachSession(it) }
+                        applyTerminalColors(shell.getSession(), isDark)
                         @Suppress("UNUSED_EXPRESSION")
                         shellScreenVersion
                         view.onScreenUpdated()
@@ -640,7 +658,6 @@ private fun TerminalInputBar(
     val borderColor = com.destin.code.ui.theme.DestinCodeTheme.extended.surfaceBorder
 
     Column {
-        Box(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -713,32 +730,12 @@ private fun TerminalInputBar(
                 )
             }
 
-            Box(
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                    .border(0.5.dp, borderColor.copy(alpha = 0.5f),
-                        androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                    .clickable { onSend(draft.text) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-        }
-
-            // Floating up/down arrows — stacked vertically above the send button
+            // Send button + floating up/down arrows stacked above it
             Column(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 6.dp, bottom = 52.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
+                // Floating up/down arrows
                 FloatingArrowButton(
                     icon = Icons.Filled.KeyboardArrowUp,
                     contentDescription = "Up",
@@ -751,8 +748,27 @@ private fun TerminalInputBar(
                     borderColor = borderColor,
                     onClick = { onKeyPress("\u001b[B") },
                 )
+
+                // Send button
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                        .border(0.5.dp, borderColor.copy(alpha = 0.5f),
+                            androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                        .clickable { onSend(draft.text) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
             }
-        } // end Box
+        }
 
         TerminalKeyboardRow(onKeyPress = onKeyPress)
     }
