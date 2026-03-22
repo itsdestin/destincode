@@ -74,11 +74,19 @@ class Bootstrap(private val context: Context) {
      * Post-install fixups for packages with hardcoded Termux paths.
      * Runs every launch (idempotent). Handles:
      * - Symlinks for binaries in libexec/
-     * - Wrapper script rewrites (nvim has hardcoded paths in its shell wrapper)
+     * - Bulk rewrite of hardcoded Termux prefix in all scripts and configs
+     *
+     * Termux's build system rewrites every shebang from #!/usr/bin/env sh to
+     * #!/data/data/com.termux/files/usr/bin/sh. Scripts also reference the
+     * Termux prefix in paths to libraries, configs, and helper programs.
+     * Since we relocate to a different prefix, all of these must be rewritten.
+     *
+     * This is the same approach Termux itself uses in post-install scripts.
      */
     private fun applyPostInstallFixups() {
         val usr = usrDir.absolutePath
         val termuxUsr = "/data/data/com.termux/files/usr"
+        val termuxHome = "/data/data/com.termux/files/home"
 
         // 1. Symlinks — bin/ entries for binaries in libexec/
         val symlinks = mapOf(
@@ -99,16 +107,47 @@ class Bootstrap(private val context: Context) {
             }
         }
 
-        // 2. Rewrite nvim wrapper script — it has hardcoded Termux paths to
-        // libluajit.so and the actual nvim binary in libexec/nvim/nvim.
-        val nvimWrapper = File(usrDir, "bin/nvim")
-        if (nvimWrapper.exists() && nvimWrapper.isFile) {
-            val content = nvimWrapper.readText()
-            if (content.contains(termuxUsr)) {
-                nvimWrapper.writeText(content.replace(termuxUsr, usr))
-                nvimWrapper.setExecutable(true)
-            }
+        // 2. Bulk rewrite hardcoded Termux prefix in scripts and configs.
+        // Scan bin/, libexec/, and etc/ for text files containing the old prefix.
+        // Use a sentinel file to avoid re-scanning on every launch.
+        val sentinel = File(usrDir, "var/lib/claude-mobile/prefix-rewritten")
+        if (sentinel.exists()) return  // already done
+
+        val dirsToScan = listOf("bin", "libexec", "etc")
+        var rewriteCount = 0
+
+        for (dirName in dirsToScan) {
+            val dir = File(usrDir, dirName)
+            if (!dir.isDirectory) continue
+
+            dir.walkTopDown()
+                .filter { it.isFile && !it.name.endsWith(".so") && it.length() < 512_000 }
+                .forEach { file ->
+                    try {
+                        val bytes = file.readBytes()
+                        // Skip binary files (check for null bytes in first 512 bytes)
+                        val checkLen = minOf(bytes.size, 512)
+                        if (bytes.take(checkLen).any { it == 0.toByte() }) return@forEach
+
+                        val content = String(bytes)
+                        if (content.contains(termuxUsr) || content.contains(termuxHome)) {
+                            val rewritten = content
+                                .replace(termuxUsr, usr)
+                                .replace(termuxHome, homeDir.absolutePath)
+                            file.writeText(rewritten)
+                            file.setExecutable(true)
+                            rewriteCount++
+                        }
+                    } catch (_: Exception) {
+                        // Skip files we can't read/write
+                    }
+                }
         }
+
+        // Write sentinel so we don't re-scan on subsequent launches.
+        // Delete sentinel when new packages are installed (in installPackages).
+        sentinel.parentFile?.mkdirs()
+        sentinel.writeText("$rewriteCount files rewritten at ${System.currentTimeMillis()}")
     }
 
     private fun extractBootstrap(onProgress: (Progress) -> Unit) {
@@ -425,6 +464,10 @@ class Bootstrap(private val context: Context) {
     }
 
     private fun installPackages(onProgress: (Progress) -> Unit) {
+        // Invalidate prefix-rewrite sentinel so applyPostInstallFixups()
+        // re-scans scripts after new packages are installed.
+        File(usrDir, "var/lib/claude-mobile/prefix-rewritten").delete()
+
         val index = fetchPackagesIndex()
         val installed = loadInstalledVersions()
 
@@ -1159,6 +1202,11 @@ class Bootstrap(private val context: Context) {
             // have Termux paths baked in — override with our relocated prefix.
             put("GIT_EXEC_PATH", "$usr/libexec/git-core")
             put("GIT_TEMPLATE_DIR", "$usr/share/git-core/templates")
+            // Git has /data/data/com.termux/.../etc/gitconfig compiled in as the
+            // system config path. That path doesn't exist in our prefix and causes
+            // "Permission denied" errors. Disable system config entirely.
+            put("GIT_CONFIG_NOSYSTEM", "1")
+            put("GIT_ATTR_NOSYSTEM", "1")
             // Vim has the Termux prefix baked in for $VIM/$VIMRUNTIME.
             // Override so it can find defaults.vim, syntax files, etc.
             put("VIM", "$usr/share/vim")
