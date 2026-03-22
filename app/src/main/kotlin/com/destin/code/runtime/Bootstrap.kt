@@ -59,9 +59,35 @@ class Bootstrap(private val context: Context) {
                 onProgress(Progress.TierUpgradeComplete(packageTier.displayName))
                 kotlinx.coroutines.delay(2000) // Show success briefly
             }
+            // Create post-install symlinks every launch (idempotent).
+            // Termux packages rely on post-install scripts for these, which we
+            // don't run. Placed here instead of installPackages() so symlinks
+            // are created even when no new packages need installing.
+            createPostInstallSymlinks()
             onProgress(Progress.Complete)
         } catch (e: Exception) {
             onProgress(Progress.Error(e.message ?: "Unknown error"))
+        }
+    }
+
+    /** Create bin/ symlinks for binaries that live in libexec/. Idempotent. */
+    private fun createPostInstallSymlinks() {
+        val symlinks = mapOf(
+            "bin/vim" to "../libexec/vim/vim",
+            "bin/vi" to "../libexec/vim/vim",
+            "bin/vimdiff" to "../libexec/vim/vim",
+        )
+        for ((link, target) in symlinks) {
+            val linkFile = File(usrDir, link)
+            val targetFile = File(usrDir, link.substringBeforeLast("/") + "/" + target)
+            if (!linkFile.exists() && targetFile.canonicalFile.exists()) {
+                try {
+                    java.nio.file.Files.createSymbolicLink(
+                        linkFile.toPath(),
+                        java.nio.file.Paths.get(target)
+                    )
+                } catch (_: Exception) {}
+            }
         }
     }
 
@@ -420,27 +446,6 @@ class Bootstrap(private val context: Context) {
             primarySo.setExecutable(true)
         }
 
-        // Post-install symlinks — Termux packages rely on post-install scripts
-        // to create bin/ symlinks for binaries in libexec/. We don't run those
-        // scripts, so create the symlinks manually.
-        val symlinks = mapOf(
-            "bin/vim" to "../libexec/vim/vim",
-            "bin/vi" to "../libexec/vim/vim",
-            "bin/vimdiff" to "../libexec/vim/vim",
-        )
-        for ((link, target) in symlinks) {
-            val linkFile = File(usrDir, link)
-            val targetFile = File(usrDir, link.substringBeforeLast("/") + "/" + target)
-            // Only create if target exists and link doesn't
-            if (!linkFile.exists() && targetFile.canonicalFile.exists()) {
-                try {
-                    java.nio.file.Files.createSymbolicLink(
-                        linkFile.toPath(),
-                        java.nio.file.Paths.get(target)
-                    )
-                } catch (_: Exception) {}
-            }
-        }
     }
 
     /**
