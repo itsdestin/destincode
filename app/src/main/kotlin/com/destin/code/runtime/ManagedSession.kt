@@ -168,6 +168,12 @@ class ManagedSession(
             chatState.dismissPrompt("auth")
         }
 
+        // --- Skip generic parser when a tool approval card is already handling the prompt ---
+        val hasActiveApproval = chatState.messages.any {
+            it.content is MessageContent.ToolAwaitingApproval
+        }
+        if (hasActiveApproval) return
+
         // --- Generic Ink Select menu detection (screen only, not raw buffer) ---
         val parsed = InkSelectParser.parse(screenText)
         if (parsed != null) {
