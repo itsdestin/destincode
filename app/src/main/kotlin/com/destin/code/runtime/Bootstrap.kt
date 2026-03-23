@@ -929,6 +929,44 @@ class Bootstrap(private val context: Context) {
             binWrapper.setExecutable(true)
         }
 
+        // Deploy script-based exec wrappers for binaries commonly spawned as
+        // child processes by Go/Rust/Python programs (which bypass LD_PRELOAD).
+        // These are real #!/system/bin/sh scripts that route through linker64,
+        // so exec.LookPath() in non-bash contexts finds a working wrapper.
+        // Example: `gh repo clone` calls exec("git") which fails without this.
+        val execWrappersDir = File(mobileDir, "exec-wrappers")
+        execWrappersDir.mkdirs()
+        val wrapperBinaries = listOf("git", "ssh", "ssh-keygen", "gpg", "curl", "wget")
+        for (name in wrapperBinaries) {
+            val realBin = File(usrDir, "bin/$name")
+            // Resolve symlinks to get the actual ELF binary path
+            val targetPath = if (realBin.exists()) realBin.canonicalPath else continue
+            val wrapper = File(execWrappersDir, name)
+            wrapper.writeText("#!/system/bin/sh\nexec /system/bin/linker64 \"$targetPath\" \"\$@\"\n")
+            wrapper.setExecutable(true)
+        }
+
+        // Create ripgrep vendor symlink for Claude Code's built-in Grep/Glob tools.
+        // Claude Code looks for vendor/ripgrep/<platform>/rg but doesn't ship arm64-android.
+        // Symlink to our installed rg binary so the tools work natively.
+        val claudeCodeDir = File(usrDir, "lib/node_modules/@anthropic-ai/claude-code")
+        val vendorRgDir = File(claudeCodeDir, "vendor/ripgrep/arm64-android")
+        val systemRg = File(usrDir, "bin/rg")
+        if (claudeCodeDir.exists() && systemRg.exists() && !File(vendorRgDir, "rg").exists()) {
+            vendorRgDir.mkdirs()
+            val rgLink = File(vendorRgDir, "rg")
+            try {
+                java.nio.file.Files.createSymbolicLink(
+                    rgLink.toPath(),
+                    systemRg.canonicalFile.toPath()
+                )
+            } catch (_: Exception) {
+                // Fallback: copy instead of symlink if symlink fails
+                systemRg.copyTo(rgLink, overwrite = true)
+                rgLink.setExecutable(true)
+            }
+        }
+
         return bashEnvPath.absolutePath
     }
 
@@ -1176,7 +1214,10 @@ class Bootstrap(private val context: Context) {
             // /system/bin/sh is silently ignored regardless of POSIX compliance.
             put("SHELL", bashPath)
             put("CLAUDE_CODE_SHELL", bashPath)
-            put("PATH", "$home/.claude-mobile:$home/.local/bin:$usr/bin:$usr/bin/applets:/system/bin")
+            // exec-wrappers comes before $usr/bin so Go/Rust/Python programs find
+            // shell script wrappers (which route through linker64) instead of raw
+            // ELF binaries (which SELinux blocks when exec'd by non-bash processes).
+            put("PATH", "$home/.claude-mobile:$home/.claude-mobile/exec-wrappers:$home/.local/bin:$usr/bin:$usr/bin/applets:/system/bin")
             put("LD_LIBRARY_PATH", "$usr/lib")
             // termux-exec LD_PRELOAD: intercepts execve() in bash subprocesses
             // and routes them through linker64. Complements the JS wrapper which
