@@ -15,6 +15,8 @@ object InkSelectParser {
     private val ANSI_ESCAPE = Regex("\u001b\\[[0-9;]*[a-zA-Z]")
     // Matches unselected lines: 2+ leading spaces (no ❯), optionally numbered
     private val UNSELECTED_LINE = Regex("""^\s{2,}(?:\d+\.\s+)?(.+)$""")
+    // Detects a new option (has a number prefix like "1. " or "2. ")
+    private val NUMBERED_PREFIX = Regex("""^\s*\d+\.\s+""")
 
     // Title overrides for known prompts — keyed by lowercase keyword found in context
     private val TITLE_OVERRIDES = mapOf(
@@ -47,26 +49,52 @@ object InkSelectParser {
         val options = mutableListOf<String>()
         val optionIndices = mutableListOf<Int>()
 
+        // Detect whether this menu uses numbered options (e.g. "1. Yes")
+        val isNumberedMenu = cleanLines.any { NUMBERED_PREFIX.containsMatchIn(it) }
+
         // Walk backward from selector to find earlier options
+        // Collect raw lines first, then merge continuations
+        val rawAbove = mutableListOf<Pair<Int, String>>() // (lineIndex, text)
         for (i in (selectorIndex - 1) downTo 0) {
             val clean = cleanLines[i].trimEnd()
-            if ("❯" in clean) break  // don't cross into another selected line
+            if ("❯" in clean) break
             val match = UNSELECTED_LINE.matchEntire(clean) ?: break
-            options.add(0, match.groupValues[1].trim())
-            optionIndices.add(0, i)
+            rawAbove.add(0, i to match.groupValues[1].trim())
         }
+        // Merge continuation lines into their parent option (backward pass)
+        for ((idx, text) in rawAbove) {
+            val isNewOption = !isNumberedMenu || NUMBERED_PREFIX.containsMatchIn(cleanLines[idx])
+            if (isNewOption || options.isEmpty()) {
+                options.add(text)
+                optionIndices.add(idx)
+            } else {
+                // Continuation line — merge into the last option
+                options[options.lastIndex] = options.last() + " " + text
+            }
+        }
+
         // Add the selected item
         val selectedMatch = SELECTED_LINE.matchEntire(cleanLines[selectorIndex].trimEnd()) ?: return null
-        val selectedIndex = options.size  // index within our collected options list
+        val selectedIndex = options.size
         options.add(selectedMatch.groupValues[1].trim())
         optionIndices.add(selectorIndex)
-        // Walk forward from selector+1 to find later options
+
+        // Walk forward from selector+1 to find later options, merging continuations
         for (i in (selectorIndex + 1) until cleanLines.size) {
             val clean = cleanLines[i].trimEnd()
             if ("❯" in clean) break
             val match = UNSELECTED_LINE.matchEntire(clean) ?: break
-            options.add(match.groupValues[1].trim())
-            optionIndices.add(i)
+            val text = match.groupValues[1].trim()
+            val isNewOption = !isNumberedMenu || NUMBERED_PREFIX.containsMatchIn(clean)
+            if (isNewOption) {
+                options.add(text)
+                optionIndices.add(i)
+            } else {
+                // Continuation line — merge into the previous option
+                if (options.isNotEmpty()) {
+                    options[options.lastIndex] = options.last() + " " + text
+                }
+            }
         }
 
         // Need at least 2 options for a valid menu
