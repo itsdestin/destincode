@@ -161,6 +161,17 @@ class ManagedSession(
                     (lower.startsWith("error") || lower.startsWith("warning") ||
                      lower.contains("fatal:") || lower.contains("panic:") ||
                      lower.contains("exception:") || lower.contains("segfault"))
+                }.filterNot { line ->
+                    // Filter out benign git credential noise — gh CLI uses its own
+                    // auth token and these "fatal:" lines are from a git subprocess
+                    // that can't reach a credential helper, not real errors.
+                    val lower = line.lowercase().trim()
+                    lower.contains("could not read username") ||
+                    lower.contains("could not read password") ||
+                    lower.contains("terminal prompts disabled") ||
+                    lower.contains("could not access") ||
+                    // Also filter out ANSI-wrapped versions of the above
+                    lower.contains("credential")
                 }
                 if (lines.isNotEmpty()) {
                     val notice = lines.joinToString("\n").take(300)
