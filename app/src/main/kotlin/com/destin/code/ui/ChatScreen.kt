@@ -831,10 +831,16 @@ fun ChatScreen(service: SessionService) {
             val knownDirs = workingDirStore?.allDirs() ?: listOf("Home (~)" to service.bootstrap!!.homeDir)
             NewSessionDialog(
                 knownDirs = knownDirs,
+                homeDir = service.bootstrap!!.homeDir,
                 onDismiss = { showNewSessionDialog = false },
                 onCreate = { config ->
                     showNewSessionDialog = false
                     service.createSession(config.cwd, config.dangerousMode, null)
+                },
+                onAddDirectory = { dir ->
+                    workingDirStore?.add(
+                        com.destin.code.config.WorkingDir(label = dir.name, path = dir.absolutePath)
+                    )
                 },
             )
         }
