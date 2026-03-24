@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
@@ -38,22 +39,26 @@ fun SessionSwitcherPill(
     val borderColor = com.destin.code.ui.theme.DestinCodeTheme.extended.surfaceBorder
     Row(
         modifier = modifier
-            .height(34.dp)
+            .widthIn(max = 180.dp)
+            .heightIn(max = 38.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surface)
             .border(0.5.dp, borderColor.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
             .clickable { onToggle() }
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         StatusDot(status)
         Text(
             name,
-            fontSize = 13.sp,
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
             color = MaterialTheme.colorScheme.onSurface,
             fontFamily = CascadiaMono,
-            maxLines = 1,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
         Text(
             "▾",
