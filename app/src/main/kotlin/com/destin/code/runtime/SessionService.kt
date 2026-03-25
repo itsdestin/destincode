@@ -99,7 +99,7 @@ class SessionService : Service() {
         val session = sessionRegistry.createSession(bs, cwd, dangerousMode, apiKey, titlesDir)
 
         // Wire clipboard callback
-        session.ptyBridge.onCopyToClipboard = { text ->
+        session.ptyBridge?.onCopyToClipboard = { text ->
             val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("Terminal", text))
         }

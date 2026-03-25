@@ -85,72 +85,82 @@ fun UnifiedTopBar(
                 sessionDropdownContent()
             }
 
-            // RIGHT: Chat/Terminal segmented toggle — tap anywhere to switch
+            // RIGHT: Chat/Terminal toggle or shell-only icon
             Box(modifier = Modifier.align(Alignment.CenterEnd)) {
-                Row(
-                    modifier = pillModifier
-                        .clickable {
-                            val next = when (screenMode) {
-                                ScreenMode.Chat -> ScreenMode.Terminal
-                                else -> ScreenMode.Chat
-                            }
-                            onModeChange(next)
-                        }
-                        .padding(horizontal = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Chat segment
+                if (currentSession?.shellMode == true) {
+                    // Shell session — just show terminal icon, no toggle
                     Box(
-                        modifier = Modifier
-                            .height(30.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .then(
-                                if (screenMode == ScreenMode.Chat)
-                                    Modifier.background(
-                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                                    )
-                                else Modifier
-                            )
-                            .padding(horizontal = 8.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            AppIcons.Chat,
-                            contentDescription = "Chat",
-                            tint = MaterialTheme.colorScheme.onSurface.copy(
-                                alpha = if (screenMode == ScreenMode.Chat) 1f else 0.4f
-                            ),
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-
-                    // Terminal segment
-                    Box(
-                        modifier = Modifier
-                            .height(30.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .then(
-                                when (screenMode) {
-                                    ScreenMode.Terminal -> Modifier.background(
-                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                                    )
-                                    ScreenMode.Shell -> Modifier.background(
-                                        MaterialTheme.colorScheme.tertiaryContainer
-                                    )
-                                    else -> Modifier
-                                }
-                            )
-                            .padding(horizontal = 8.dp),
+                        modifier = pillModifier
+                            .padding(horizontal = 10.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             AppIcons.Terminal,
-                            contentDescription = "Terminal",
-                            tint = MaterialTheme.colorScheme.onSurface.copy(
-                                alpha = if (screenMode != ScreenMode.Chat) 1f else 0.4f
-                            ),
+                            contentDescription = "Shell",
+                            tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(18.dp),
                         )
+                    }
+                } else {
+                    // Claude session — tap anywhere to toggle Chat/Terminal
+                    Row(
+                        modifier = pillModifier
+                            .clickable {
+                                val next = when (screenMode) {
+                                    ScreenMode.Chat -> ScreenMode.Terminal
+                                    else -> ScreenMode.Chat
+                                }
+                                onModeChange(next)
+                            }
+                            .padding(horizontal = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .height(30.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .then(
+                                    if (screenMode == ScreenMode.Chat)
+                                        Modifier.background(
+                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                                        )
+                                    else Modifier
+                                )
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                AppIcons.Chat,
+                                contentDescription = "Chat",
+                                tint = MaterialTheme.colorScheme.onSurface.copy(
+                                    alpha = if (screenMode == ScreenMode.Chat) 1f else 0.4f
+                                ),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .height(30.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .then(
+                                    if (screenMode == ScreenMode.Terminal)
+                                        Modifier.background(
+                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                                        )
+                                    else Modifier
+                                )
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                AppIcons.Terminal,
+                                contentDescription = "Terminal",
+                                tint = MaterialTheme.colorScheme.onSurface.copy(
+                                    alpha = if (screenMode != ScreenMode.Chat) 1f else 0.4f
+                                ),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
                 }
             }

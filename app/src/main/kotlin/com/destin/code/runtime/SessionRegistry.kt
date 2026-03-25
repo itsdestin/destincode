@@ -96,12 +96,38 @@ class SessionRegistry {
     ): ManagedSession? {
         val old = _sessions.value[sessionId] ?: return null
         destroySession(sessionId)
-        return createSession(bootstrap, old.cwd, old.dangerousMode, apiKey, titlesDir)
+        return if (old.shellMode) {
+            createShellSession(bootstrap, titlesDir)
+        } else {
+            createSession(bootstrap, old.cwd, old.dangerousMode, apiKey, titlesDir)
+        }
     }
 
-    /** Create a standalone bash shell (global, not per-session). */
-    fun createDirectShell(bootstrap: Bootstrap): DirectShellBridge {
-        return DirectShellBridge(bootstrap).also { it.start() }
+    /** Create a managed shell session (appears in session switcher). */
+    fun createShellSession(bootstrap: Bootstrap, titlesDir: File): ManagedSession {
+        val sessionId = java.util.UUID.randomUUID().toString()
+        val titleFile = File(titlesDir, sessionId)
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+        val shell = DirectShellBridge(bootstrap).also { it.start() }
+
+        val session = ManagedSession(
+            id = sessionId,
+            cwd = bootstrap.homeDir,
+            homeDir = bootstrap.homeDir,
+            dangerousMode = false,
+            directShellBridge = shell,
+            shellMode = true,
+            titleFile = titleFile,
+            scope = scope,
+        )
+
+        session.startBackgroundCollectors()
+
+        _sessions.update { it + (sessionId to session) }
+        _currentSessionId.value = sessionId
+
+        return session
     }
 
     val sessionCount: Int get() = _sessions.value.size

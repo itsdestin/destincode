@@ -26,7 +26,9 @@ class ManagedSession(
     val cwd: File,
     val homeDir: File,
     val dangerousMode: Boolean,
-    val ptyBridge: PtyBridge,
+    val ptyBridge: PtyBridge? = null,
+    val directShellBridge: DirectShellBridge? = null,
+    val shellMode: Boolean = false,
     val chatState: ChatState = ChatState(),
     val createdAt: Long = System.currentTimeMillis(),
     private val titleFile: File,
@@ -36,7 +38,16 @@ class ManagedSession(
     /** Callback when session leaves AwaitingApproval (for notification clearing). */
     var onApprovalCleared: ((sessionId: String) -> Unit)? = null,
 ) {
-    private val _name = MutableStateFlow("New Session")
+    val isRunning: Boolean get() = ptyBridge?.isRunning ?: directShellBridge?.isRunning ?: false
+    fun getTerminalSession(): com.termux.terminal.TerminalSession? =
+        ptyBridge?.getSession() ?: directShellBridge?.getSession()
+    fun writeInput(text: String) {
+        ptyBridge?.writeInput(text) ?: directShellBridge?.writeInput(text)
+    }
+    val screenVersion: StateFlow<Int> get() =
+        ptyBridge?.screenVersion ?: directShellBridge?.screenVersion ?: MutableStateFlow(0)
+
+    private val _name = MutableStateFlow(if (shellMode) "Shell" else "New Session")
     val name: StateFlow<String> = _name
 
     private var titleObserver: FileObserver? = null
@@ -46,17 +57,26 @@ class ManagedSession(
     // A 5-second polling coroutine feeds _isRunningFlow to make Dead detection reactive.
     private val _isRunningFlow = MutableStateFlow(true)
 
-    val status: StateFlow<SessionStatus> = combine(
-        ptyBridge.lastPtyOutputTime,
-        _isRunningFlow,
-    ) { lastOutput, isRunning ->
-        when {
-            !isRunning -> SessionStatus.Dead
-            isAwaitingApproval() -> SessionStatus.AwaitingApproval
-            System.currentTimeMillis() - lastOutput < 2000 -> SessionStatus.Active
-            else -> SessionStatus.Idle
+    val status: StateFlow<SessionStatus> = if (ptyBridge != null) {
+        combine(
+            ptyBridge.lastPtyOutputTime,
+            _isRunningFlow,
+        ) { lastOutput, isRunning ->
+            when {
+                !isRunning -> SessionStatus.Dead
+                isAwaitingApproval() -> SessionStatus.AwaitingApproval
+                System.currentTimeMillis() - lastOutput < 2000 -> SessionStatus.Active
+                else -> SessionStatus.Idle
+            }
+        }.stateIn(scope, SharingStarted.WhileSubscribed(5000), SessionStatus.Idle)
+    } else {
+        // Shell sessions: simple isRunning-based status
+        _isRunningFlow.let { flow ->
+            combine(flow, flow) { isRunning, _ ->
+                if (isRunning) SessionStatus.Active else SessionStatus.Dead
+            }.stateIn(scope, SharingStarted.WhileSubscribed(5000), SessionStatus.Active)
         }
-    }.stateIn(scope, SharingStarted.WhileSubscribed(5000), SessionStatus.Idle)
+    }
 
     private fun isAwaitingApproval(): Boolean {
         val lastMsg = chatState.messages.lastOrNull() ?: return false
@@ -68,14 +88,29 @@ class ManagedSession(
      * This includes: hook event collection, isRunning polling, approval notifications.
      */
     fun startBackgroundCollectors() {
+        if (shellMode) {
+            // Shell sessions only need isRunning polling
+            scope.launch {
+                while (true) {
+                    delay(5000)
+                    val running = directShellBridge?.isRunning ?: false
+                    _isRunningFlow.value = running
+                    if (!running) break
+                }
+            }
+            return
+        }
+
+        val bridge = ptyBridge ?: return
+
         // 1. Per-session hook event collector — runs regardless of which session is "current".
         //    All ChatState mutations dispatched to Main to avoid snapshot state race conditions.
         scope.launch {
             // Wait for EventBridge to become available
-            var eventBridge = ptyBridge.getEventBridge()
+            var eventBridge = bridge.getEventBridge()
             while (eventBridge == null) {
                 delay(200)
-                eventBridge = ptyBridge.getEventBridge()
+                eventBridge = bridge.getEventBridge()
             }
             eventBridge.events.collect { event ->
                 // Check for session ID mapping and start topic observer
@@ -94,8 +129,8 @@ class ManagedSession(
         scope.launch {
             while (true) {
                 delay(5000)
-                _isRunningFlow.value = ptyBridge.isRunning
-                if (!ptyBridge.isRunning) {
+                _isRunningFlow.value = bridge.isRunning
+                if (!bridge.isRunning) {
                     withContext(Dispatchers.Main) {
                         chatState.resetStaleProcessingPeriodic()
                     }
@@ -109,7 +144,7 @@ class ManagedSession(
         scope.launch {
             while (true) {
                 delay(5000)
-                if (!ptyBridge.isRunning) break
+                if (!bridge.isRunning) break
                 if (chatState.isProcessing) {
                     withContext(Dispatchers.Main) {
                         chatState.resetStaleProcessingPeriodic()
@@ -133,20 +168,16 @@ class ManagedSession(
         }
 
         // 4. Setup prompt detector — watches PTY output for known interactive prompts.
-        //    Reacts to screenVersion changes (new PTY output) + also polls the raw buffer
-        //    since screen text depends on emulator viewport size which may be tiny initially.
         scope.launch {
             try {
                 val activePrompts = mutableSetOf<String>()
                 while (true) {
                     delay(1000)
-                    if (!ptyBridge.isRunning) break
-                    val screen = try { ptyBridge.readScreenText() } catch (_: Exception) { "" }
-                    val raw = try { ptyBridge.rawBuffer.takeLast(4000) } catch (_: Exception) { "" }
+                    if (!bridge.isRunning) break
+                    val screen = try { bridge.readScreenText() } catch (_: Exception) { "" }
+                    val raw = try { bridge.rawBuffer.takeLast(4000) } catch (_: Exception) { "" }
                     val combined = screen + "\n" + raw
                     withContext(Dispatchers.Main) {
-                        // Use screen-only for menu parsing (raw buffer has stale menus)
-                        // Use combined for special-case keyword detection (paste_code, press-enter)
                         detectPrompts(screen, combined, activePrompts)
                         detectPermissionMode(screen)
                     }
@@ -154,14 +185,12 @@ class ManagedSession(
             } catch (_: Exception) {}
         }
 
-        // 5. PTY output consumer — surfaces important terminal messages (errors, warnings)
-        //    in the chat view. Without this, raw PTY output is invisible in chat mode.
+        // 5. PTY output consumer — surfaces important terminal messages in chat view.
         scope.launch {
             val debounceMs = 500L
             var pendingNotice: String? = null
             var lastEmitTime = 0L
-            ptyBridge.outputFlow.collect { delta ->
-                // Only surface lines containing error/warning keywords
+            bridge.outputFlow.collect { delta ->
                 val lines = delta.lines().filter { line ->
                     val lower = line.lowercase().trim()
                     lower.isNotEmpty() &&
@@ -169,21 +198,16 @@ class ManagedSession(
                      lower.contains("fatal:") || lower.contains("panic:") ||
                      lower.contains("exception:") || lower.contains("segfault"))
                 }.filterNot { line ->
-                    // Filter out benign git credential noise — gh CLI uses its own
-                    // auth token and these "fatal:" lines are from a git subprocess
-                    // that can't reach a credential helper, not real errors.
                     val lower = line.lowercase().trim()
                     lower.contains("could not read username") ||
                     lower.contains("could not read password") ||
                     lower.contains("terminal prompts disabled") ||
                     lower.contains("could not access") ||
-                    // Also filter out ANSI-wrapped versions of the above
                     lower.contains("credential")
                 }
                 if (lines.isNotEmpty()) {
                     val notice = lines.joinToString("\n").take(300)
                     val now = System.currentTimeMillis()
-                    // Debounce: don't spam the chat with rapid-fire errors
                     if (now - lastEmitTime > debounceMs) {
                         lastEmitTime = now
                         withContext(Dispatchers.Main) {
@@ -381,7 +405,7 @@ class ManagedSession(
                     }
                     val toolUseId = (lastRunning?.content as? MessageContent.ToolRunning)?.toolUseId
                     if (toolUseId != null) {
-                        val hasAlways = ptyBridge.hasAlwaysAllowOption()
+                        val hasAlways = ptyBridge?.hasAlwaysAllowOption() ?: false
                         chatState.updateToolToApproval(toolUseId, hasAlways)
                     }
                 } else {
@@ -419,7 +443,7 @@ class ManagedSession(
             (it.content as? MessageContent.ToolAwaitingApproval)?.toolUseId == toolUseId
         }?.content as? MessageContent.ToolAwaitingApproval
         if (approval?.requestId != null) {
-            ptyBridge.getEventBridge()?.closeSocket(approval.requestId)
+            ptyBridge?.getEventBridge()?.closeSocket(approval.requestId)
         }
     }
 
@@ -487,7 +511,8 @@ class ManagedSession(
         titleObserver = null
         topicObserver?.stopWatching()
         topicObserver = null
-        ptyBridge.stop()
+        ptyBridge?.stop()
+        directShellBridge?.stop()
         try { titleFile.delete() } catch (_: Exception) {}
     }
 }

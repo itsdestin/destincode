@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalContext
@@ -121,8 +122,13 @@ fun NewSessionDialog(
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                     )
 
-                    // PROJECT FOLDER section
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // PROJECT FOLDER section (disabled in shell mode)
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.then(
+                            if (shellMode) Modifier.alpha(0.4f) else Modifier
+                        ),
+                    ) {
                         Text(
                             "PROJECT FOLDER",
                             fontSize = 11.sp,
@@ -141,7 +147,7 @@ fun NewSessionDialog(
                                     borderColor.copy(alpha = 0.3f),
                                     RoundedCornerShape(8.dp),
                                 )
-                                .clickable { showDirPicker = !showDirPicker }
+                                .then(if (!shellMode) Modifier.clickable { showDirPicker = !showDirPicker } else Modifier)
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                         ) {
                             Text(
@@ -230,9 +236,11 @@ fun NewSessionDialog(
 
                     // Toggle rows
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        // SKIP PERMISSIONS toggle
+                        // SKIP PERMISSIONS toggle (disabled in shell mode)
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().then(
+                                if (shellMode) Modifier.alpha(0.4f) else Modifier
+                            ),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
@@ -244,8 +252,9 @@ fun NewSessionDialog(
                                 letterSpacing = 1.sp,
                             )
                             Switch(
-                                checked = dangerousMode,
-                                onCheckedChange = { dangerousMode = it },
+                                checked = dangerousMode && !shellMode,
+                                onCheckedChange = { if (!shellMode) dangerousMode = it },
+                                enabled = !shellMode,
                             )
                         }
 
