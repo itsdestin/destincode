@@ -117,8 +117,13 @@ fun ChatScreen(service: SessionService) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var screenMode by remember { mutableStateOf(ScreenMode.Chat) }
-    var directShellBridge by remember { mutableStateOf<DirectShellBridge?>(null) }
-    DisposableEffect(Unit) { onDispose { directShellBridge?.stop() } }
+
+    // Auto-switch to terminal mode for shell sessions
+    LaunchedEffect(currentSession?.shellMode) {
+        if (currentSession?.shellMode == true) {
+            screenMode = ScreenMode.Shell
+        }
+    }
     val context = LocalContext.current
     val tierStore = remember { TierStore(context) }
     var showTierDialog by remember { mutableStateOf(false) }
@@ -184,19 +189,7 @@ fun ChatScreen(service: SessionService) {
     Column(modifier = Modifier.fillMaxSize()) {
         UnifiedTopBar(
             screenMode = screenMode,
-            onModeChange = { newMode ->
-                when (newMode) {
-                    ScreenMode.Shell -> {
-                        if (directShellBridge == null) {
-                            service.bootstrap?.let { bs ->
-                                directShellBridge = service.sessionRegistry.createDirectShell(bs)
-                            }
-                        }
-                        screenMode = ScreenMode.Shell
-                    }
-                    else -> screenMode = newMode
-                }
-            },
+            onModeChange = { newMode -> screenMode = newMode },
             currentSession = currentSession,
             switcherExpanded = switcherExpanded,
             onSwitcherToggle = { switcherExpanded = !switcherExpanded },
@@ -292,6 +285,33 @@ fun ChatScreen(service: SessionService) {
         )
 
         Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+        if (currentSession == null) {
+            // No session active — show empty state
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "DestinCode",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "No active sessions",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Button(
+                    onClick = { showNewSessionDialog = true },
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text("New Session")
+                }
+            }
+        } else
         when (screenMode) {
         ScreenMode.Terminal -> {
             val termFocusRequester = remember { FocusRequester() }
@@ -401,10 +421,10 @@ fun ChatScreen(service: SessionService) {
         }
 
         ScreenMode.Shell -> {
-            val shell = directShellBridge ?: return@Box
+            val shellSession = currentSession ?: return@Box
             val shellFocusRequester = remember { FocusRequester() }
             val shellViewClient = remember { BaseTerminalViewClient() }
-            val shellScreenVersion by shell.screenVersion.collectAsState()
+            val shellScreenVersion by shellSession.screenVersion.collectAsState()
             var shellUserScrolledUp by remember { mutableStateOf(false) }
             var shellAttachedSession by remember { mutableStateOf<com.termux.terminal.TerminalSession?>(null) }
 
@@ -418,14 +438,14 @@ fun ChatScreen(service: SessionService) {
                             setTerminalViewClient(shellViewClient)
                             isFocusable = true
                             isFocusableInTouchMode = true
-                            shell.getSession()?.let {
+                            shellSession.getTerminalSession()?.let {
                                 attachSession(it)
                                 shellAttachedSession = it
                             }
                         }
                     },
                     update = { view ->
-                        val session = shell.getSession()
+                        val session = shellSession.getTerminalSession()
                         if (session != null && session !== shellAttachedSession) {
                             view.attachSession(session)
                             shellAttachedSession = session
@@ -433,7 +453,6 @@ fun ChatScreen(service: SessionService) {
                         applyTerminalColors(session, isDark)
                         @Suppress("UNUSED_EXPRESSION")
                         shellScreenVersion
-                        // Same scroll-preservation as Terminal view
                         val wasScrolledUp = view.topRow < 0
                         if (wasScrolledUp) shellUserScrolledUp = true
                         if (shellUserScrolledUp && wasScrolledUp) {
@@ -454,10 +473,10 @@ fun ChatScreen(service: SessionService) {
                     draft = chatState.inputDraft,
                     onDraftChange = { chatState.inputDraft = it },
                     onSend = { text ->
-                        shell.writeInput(text + "\r")
+                        shellSession.writeInput(text + "\r")
                         chatState.clearDraft()
                     },
-                    onKeyPress = { seq -> shell.writeInput(seq) },
+                    onKeyPress = { seq -> shellSession.writeInput(seq) },
                     onAttachImage = {
                         filePickerLauncher.launch("*/*")
                     },
@@ -835,7 +854,13 @@ fun ChatScreen(service: SessionService) {
                 onDismiss = { showNewSessionDialog = false },
                 onCreate = { config ->
                     showNewSessionDialog = false
-                    service.createSession(config.cwd, config.dangerousMode, null)
+                    if (config.shellMode) {
+                        service.bootstrap?.let { bs ->
+                            service.sessionRegistry.createShellSession(bs, service.titlesDir)
+                        }
+                    } else {
+                        service.createSession(config.cwd, config.dangerousMode, null)
+                    }
                 },
                 onAddDirectory = { dir ->
                     workingDirStore?.add(

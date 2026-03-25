@@ -1460,6 +1460,12 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
             if (File(browserOpen).exists()) {
                 put("BROWSER", browserOpen)
             }
+            // Suppress Claude Code's npm→native migration warnings and auto-update.
+            // None of these features work on Android (SELinux blocks binary replacement,
+            // native installer expects glibc, auto-updater can't write to app_data_file).
+            put("DISABLE_INSTALLATION_CHECKS", "1")
+            put("DISABLE_AUTO_MIGRATE_TO_NATIVE", "1")
+            put("DISABLE_AUTOUPDATER", "1")
         }
     }
 }
