@@ -218,240 +218,85 @@ class PtyBridge(
     }
 
     companion object {
-        // Embedded wrapper JS — patches child_process/fs for SELinux exec bypass.
-        // Key addition: injectEnv() explicitly sources BASH_ENV into every bash -c
-        // command, ensuring shell function wrappers are always available.
+        // Embedded wrapper JS — patches Node.js for Android quirks.
+        // ARCHITECTURE: termux-exec LD_PRELOAD handles exec routing through
+        // linker64 for all C/Rust programs. This wrapper only handles things
+        // termux-exec cannot: /tmp rewriting, fs.accessSync X_OK bypass,
+        // shell path fixing, -l flag stripping, BASH_ENV injection, and
+        // xdg-open/browser-open interception.
         private val WRAPPER_JS = """
 'use strict';
 var child_process = require('child_process');
 var fs = require('fs');
-var LINKER64 = '/system/bin/linker64';
 var PREFIX = process.env.PREFIX || '';
 var BASH_ENV_FILE = process.env.BASH_ENV || '';
 var HOME = process.env.HOME || '';
 var TERMUX_PREFIX = '/data/data/com.termux/files/usr';
-// Android has two paths to the same app directory: /data/user/0/pkg/ and /data/data/pkg/
-// (the latter is a symlink). PREFIX uses one form but resolved paths may use the other.
-// Compute the alternate form so isEB() matches regardless of which symlink was followed.
 var ALT_PREFIX = '';
 if (PREFIX.indexOf('/data/user/0/') === 0) ALT_PREFIX = '/data/data/' + PREFIX.substring('/data/user/0/'.length);
 else if (PREFIX.indexOf('/data/data/') === 0) ALT_PREFIX = '/data/user/0/' + PREFIX.substring('/data/data/'.length);
-var BROWSER_OPEN = HOME + '/.claude-mobile/browser-open';
-// Android has no /tmp — redirect to HOME/tmp for all fs and spawn operations
 function fixTmp(p) { if (typeof p === 'string') { if (p === '/tmp') return HOME + '/tmp'; if (p.startsWith('/tmp/')) return HOME + '/tmp/' + p.substring(5); if (p === '/var/tmp') return HOME + '/tmp'; if (p.startsWith('/var/tmp/')) return HOME + '/tmp/' + p.substring(9); } return p; }
-// Match our prefix (either symlink form), hardcoded Termux paths, or the alternate prefix form
+function fixTmpArgs(args) { if (!Array.isArray(args)) return args; return args.map(function(a) { return typeof a === 'string' ? fixTmp(a) : a; }); }
+function fixTmpInShellCmd(cmd) { if (typeof cmd !== 'string') return cmd; return cmd.replace(/(^|[\s=:])\/tmp\b/g, '${'$'}1' + HOME + '/tmp').replace(/(^|[\s=:])\/var\/tmp\b/g, '${'$'}1' + HOME + '/tmp'); }
 function isEB(f) { return f && (PREFIX && f.startsWith(PREFIX + '/') || f.startsWith(TERMUX_PREFIX + '/') || (ALT_PREFIX && f.startsWith(ALT_PREFIX + '/'))); }
-// Rewrite Termux or alternate-symlink paths to our canonical prefix so linker64 can find the binary
 function fixPath(f) { if (f.startsWith(TERMUX_PREFIX + '/')) return PREFIX + f.substring(TERMUX_PREFIX.length); if (ALT_PREFIX && f.startsWith(ALT_PREFIX + '/')) return PREFIX + f.substring(ALT_PREFIX.length); return f; }
-// Fix shell option — Termux-compiled Node.js resolves shell:true to the
-// hardcoded /data/data/com.termux/files/usr/bin/sh which doesn't exist
-// in our relocated prefix. Redirect to our prefix's sh (symlink to bash).
 function fixShell(s) { if (s === true) return PREFIX + '/bin/bash'; return (typeof s === 'string' && isEB(s)) ? fixPath(s) : s; }
 function fixOpts(o) { if (o && o.shell != null && o.shell !== false) { var s = fixShell(o.shell); if (s !== o.shell) return Object.assign({}, o, {shell: s}); } return o; }
+function fixExecShell(o) { o = Object.assign({}, o || {}); if (!o.shell || o.shell === true) o.shell = PREFIX + '/bin/bash'; else if (typeof o.shell === 'string' && isEB(o.shell)) o.shell = fixPath(o.shell); return o; }
 var _as = fs.accessSync;
-fs.accessSync = function(p, m) {
-    p = fixTmp(p);
-    if (isEB(p) && m !== undefined && (m & fs.constants.X_OK)) return _as.call(this, fixPath(p), fs.constants.R_OK);
-    var a = Array.prototype.slice.call(arguments); a[0] = p;
-    return _as.apply(this, a);
-};
-// Redirect /tmp to HOME/tmp for common fs operations
-['writeFileSync','readFileSync','existsSync','statSync','lstatSync','readdirSync',
- 'mkdirSync','unlinkSync','rmdirSync','chmodSync','renameSync','copyFileSync'].forEach(function(m) {
-    var orig = fs[m]; if (!orig) return;
-    fs[m] = function() { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); if (m === 'renameSync' || m === 'copyFileSync') { if (typeof a[1] === 'string') a[1] = fixTmp(a[1]); } return orig.apply(this, a); };
-});
-['writeFile','readFile','stat','lstat','readdir','mkdir','unlink','rmdir','chmod','rename','copyFile','access'].forEach(function(m) {
-    var orig = fs[m]; if (!orig) return;
-    fs[m] = function() { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); if ((m === 'rename' || m === 'copyFile') && typeof a[1] === 'string') a[1] = fixTmp(a[1]); return orig.apply(this, a); };
-});
-// Also patch fs.open/openSync and fs.createWriteStream/createReadStream
+fs.accessSync = function(p, m) { p = fixTmp(p); if (isEB(p) && m !== undefined && (m & fs.constants.X_OK)) return _as.call(this, fixPath(p), fs.constants.R_OK); var a = Array.prototype.slice.call(arguments); a[0] = p; return _as.apply(this, a); };
+['writeFileSync','readFileSync','existsSync','statSync','lstatSync','readdirSync','mkdirSync','unlinkSync','rmdirSync','chmodSync','renameSync','copyFileSync'].forEach(function(m) { var orig = fs[m]; if (!orig) return; fs[m] = function() { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); if (m === 'renameSync' || m === 'copyFileSync') { if (typeof a[1] === 'string') a[1] = fixTmp(a[1]); } return orig.apply(this, a); }; });
+['writeFile','readFile','stat','lstat','readdir','mkdir','unlink','rmdir','chmod','rename','copyFile','access'].forEach(function(m) { var orig = fs[m]; if (!orig) return; fs[m] = function() { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); if ((m === 'rename' || m === 'copyFile') && typeof a[1] === 'string') a[1] = fixTmp(a[1]); return orig.apply(this, a); }; });
 var _openSync = fs.openSync; fs.openSync = function(p) { var a = Array.prototype.slice.call(arguments); a[0] = fixTmp(a[0]); return _openSync.apply(this, a); };
 var _open = fs.open; fs.open = function(p) { var a = Array.prototype.slice.call(arguments); a[0] = fixTmp(a[0]); return _open.apply(this, a); };
 var _cws = fs.createWriteStream; fs.createWriteStream = function(p) { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); return _cws.apply(this, a); };
 var _crs = fs.createReadStream; fs.createReadStream = function(p) { var a = Array.prototype.slice.call(arguments); if (typeof a[0] === 'string') a[0] = fixTmp(a[0]); return _crs.apply(this, a); };
-function resolveCmd(c) {
-    c = fixTmp(c);
-    if (c && c.indexOf('/') === -1) {
-        var r = PREFIX + '/bin/' + c;
-        try { _as.call(null, r, fs.constants.R_OK); return r; }
-        catch(e) { return c; }
-    }
-    return c;
-}
-// Fix /tmp paths in spawn/exec argument arrays
-function fixTmpArgs(args) {
-    if (!Array.isArray(args)) return args;
-    return args.map(function(a) { return typeof a === 'string' ? fixTmp(a) : a; });
-}
-function injectEnv(cmd, args) {
-    if (BASH_ENV_FILE && cmd.endsWith('/bash') && Array.isArray(args) && args[0] === '-c' && args.length >= 2) {
-        args = args.slice();
-        args[1] = '. "' + BASH_ENV_FILE + '" 2>/dev/null; ' + args[1];
-    }
-    return args;
-}
+function stripLogin(args) { return args.filter(function(a) { return a !== '-l'; }); }
+function injectEnv(cmd, args) { if (BASH_ENV_FILE && cmd.endsWith('/bash') && Array.isArray(args) && args[0] === '-c' && args.length >= 2) { args = args.slice(); args[1] = '. "' + BASH_ENV_FILE + '" 2>/dev/null; ' + args[1]; } return args; }
+function isBrowserOpen(name) { var fn = String(name).replace(/^.*\//, ''); return fn === 'xdg-open' || fn === 'open' || fn === 'browser-open' || String(name).endsWith('/browser-open'); }
+function handleBrowserOpen(args) { var a = Array.isArray(args) ? args : []; var url = a.find(function(x) { return typeof x === 'string' && x.startsWith('http'); }); if (url) { try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', url); } catch(e) {} return true; } return false; }
+// child_process patches — no longer route through linker64 (termux-exec handles
+// that via LD_PRELOAD). Only fix /tmp, -l, BASH_ENV, shell paths, browser-open.
 var _efs = child_process.execFileSync;
 child_process.execFileSync = function(file) {
-    var fn = String(file).replace(/^.*\//, '');
-    if (fn === 'xdg-open' || fn === 'open' || fn === 'browser-open') {
-        var a = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[1] : [];
-        var url = a.find(function(x) { return typeof x === 'string' && x.startsWith('http'); });
-        if (url) {
-            try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', url); } catch(e) {}
-            return Buffer.alloc(0);
-        }
-    }
-    file = resolveCmd(file);
-    if (isEB(file)) {
-        file = fixPath(file);
-        var a = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[1] : [];
-        var opts = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[2] : arguments[1];
-        if (file.endsWith('/bash') || file.endsWith('/sh')) { a = stripLogin(a); var ci = a.indexOf('-c'); if (ci !== -1 && ci + 1 < a.length && typeof a[ci + 1] === 'string') { a = a.slice(); a[ci + 1] = fixTmpInShellCmd(a[ci + 1]); } }
-        a = fixTmpArgs(a);
-        a = injectEnv(file, a);
-        return _efs.call(this, LINKER64, [file].concat(a), opts);
-    }
-    var all = Array.prototype.slice.call(arguments);
-    if (all.length > 1 && Array.isArray(all[1])) all[1] = fixTmpArgs(all[1]);
-    return _efs.apply(this, all);
+    if (isBrowserOpen(file)) { var a0 = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[1] : []; if (handleBrowserOpen(a0)) return Buffer.alloc(0); }
+    file = fixTmp(file); if (isEB(file)) file = fixPath(file);
+    var args = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[1] : [];
+    var opts = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[2] : arguments[1];
+    if (file.endsWith('/bash') || file.endsWith('/sh')) { args = stripLogin(args); var ci = args.indexOf('-c'); if (ci !== -1 && ci + 1 < args.length && typeof args[ci + 1] === 'string') { args = args.slice(); args[ci + 1] = fixTmpInShellCmd(args[ci + 1]); } }
+    args = fixTmpArgs(args); args = injectEnv(file, args);
+    return _efs.call(this, file, args, opts);
 };
 var _ef = child_process.execFile;
 child_process.execFile = function(file) {
-    var fn2 = String(file).replace(/^.*\//, '');
-    if (fn2 === 'xdg-open' || fn2 === 'open' || fn2 === 'browser-open') {
-        var rest = Array.prototype.slice.call(arguments, 1);
-        var a2 = rest.length > 0 && Array.isArray(rest[0]) ? rest[0] : [];
-        var remaining = rest.length > 0 && Array.isArray(rest[0]) ? rest.slice(1) : rest;
-        var url2 = a2.find(function(x) { return typeof x === 'string' && x.startsWith('http'); });
-        if (url2) {
-            try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', url2); } catch(e) {}
-            var cb2 = remaining.find(function(x) { return typeof x === 'function'; });
-            if (cb2) cb2(null, '', '');
-            return;
-        }
-    }
-    file = resolveCmd(file);
-    if (isEB(file)) {
-        file = fixPath(file);
-        var rest = Array.prototype.slice.call(arguments, 1);
-        var a = rest.length > 0 && Array.isArray(rest[0]) ? rest[0] : [];
-        var remaining = rest.length > 0 && Array.isArray(rest[0]) ? rest.slice(1) : rest;
-        if (file.endsWith('/bash') || file.endsWith('/sh')) { a = stripLogin(a); var ci = a.indexOf('-c'); if (ci !== -1 && ci + 1 < a.length && typeof a[ci + 1] === 'string') { a = a.slice(); a[ci + 1] = fixTmpInShellCmd(a[ci + 1]); } }
-        a = fixTmpArgs(a);
-        a = injectEnv(file, a);
-        return _ef.apply(this, [LINKER64, [file].concat(a)].concat(remaining));
-    }
-    var all = Array.prototype.slice.call(arguments);
-    if (all.length > 1 && Array.isArray(all[1])) all[1] = fixTmpArgs(all[1]);
-    return _ef.apply(this, all);
+    if (isBrowserOpen(file)) { var rest0 = Array.prototype.slice.call(arguments, 1); var a0 = rest0.length > 0 && Array.isArray(rest0[0]) ? rest0[0] : []; if (handleBrowserOpen(a0)) { var cb0 = rest0.find(function(x) { return typeof x === 'function'; }); if (cb0) cb0(null, '', ''); return; } }
+    file = fixTmp(file); if (isEB(file)) file = fixPath(file);
+    var rest = Array.prototype.slice.call(arguments, 1);
+    var args = rest.length > 0 && Array.isArray(rest[0]) ? rest[0] : [];
+    var remaining = rest.length > 0 && Array.isArray(rest[0]) ? rest.slice(1) : rest;
+    if (file.endsWith('/bash') || file.endsWith('/sh')) { args = stripLogin(args); var ci = args.indexOf('-c'); if (ci !== -1 && ci + 1 < args.length && typeof args[ci + 1] === 'string') { args = args.slice(); args[ci + 1] = fixTmpInShellCmd(args[ci + 1]); } }
+    args = fixTmpArgs(args); args = injectEnv(file, args);
+    return _ef.apply(this, [file, args].concat(remaining));
 };
-// Strip -l flag from bash args. Claude Code sends ["-c", "-l", cmd] but
-// via linker64 bash treats -l as the command string, not an option.
-function stripLogin(args) {
-    return args.filter(function(a) { return a !== '-l'; });
-}
-// Route spawn through linker64 for EB binaries, fix shell for non-EB commands.
-// When shell:true + EB command string, bypass the shell entirely — split the
-// command and route the binary through linker64 (avoids SELinux shell exec).
 function spawnFix(orig, command, args, options) {
-    // Intercept xdg-open/open/browser-open — write URL to file for Kotlin-side Intent
-    // /system/bin/am doesn't work from app UID (SecurityException). Instead, write
-    // the URL to a trigger file that a FileObserver on the Kotlin side picks up and
-    // opens via startActivity(Intent.ACTION_VIEW).
-    var cmdName = String(command).replace(/^.*\//, '');
-    if ((cmdName === 'xdg-open' || cmdName === 'open' || cmdName === 'browser-open' || String(command).endsWith('/browser-open'))) {
-        var urlArgs = Array.isArray(args) ? args : [];
-        var url = urlArgs.find(function(a) { return typeof a === 'string' && a.startsWith('http'); });
-        if (url) {
-            try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', url); } catch(e) {}
-            // Return a dummy process that immediately exits successfully
-            var dummy = orig.call(this, '/system/bin/sh', ['-c', 'true'], {});
-            return dummy;
-        }
-    }
-    command = resolveCmd(String(command));
+    if (isBrowserOpen(command)) { var urlArgs = Array.isArray(args) ? args : []; if (handleBrowserOpen(urlArgs)) return orig.call(this, '/system/bin/sh', ['-c', 'true'], {}); }
+    command = fixTmp(String(command)); if (isEB(command)) command = fixPath(command);
     var o = Array.isArray(args) ? options : args;
     var hasShell = o && o.shell && o.shell !== false;
-    // Shell + EB command: the command is a shell string like "/prefix/bin/node script.js"
-    // Split it and route the binary through linker64 directly (no shell needed).
-    if (hasShell && isEB(String(command))) {
-        var parts = String(command).split(/\s+/);
-        var bin = fixPath(parts[0]);
-        var cmdArgs = parts.slice(1);
-        var newOpts = Object.assign({}, o); delete newOpts.shell;
-        return orig.call(this, LINKER64, [bin].concat(cmdArgs), newOpts);
-    }
-    // Shell + non-EB command: fix the shell path (Termux default doesn't exist)
-    if (hasShell) {
-        var fo = fixOpts(o);
-        if (fo !== o) {
-            if (Array.isArray(args)) return orig.call(this, command, args, fo);
-            return orig.call(this, command, fo);
-        }
-        return orig.call(this, command, args, options);
-    }
-    // No shell — command is a binary path, route through linker64 if embedded
-    if (isEB(command)) {
-        command = fixPath(command);
-        var actualArgs = Array.isArray(args) ? args : [];
-        actualArgs = stripLogin(actualArgs);
-        // Fix /tmp in bash -c command strings (e.g. spawn('bash', ['-c', 'cmd > /tmp/file']))
-        if (command.endsWith('/bash') || command.endsWith('/sh')) {
-            var ci = actualArgs.indexOf('-c');
-            if (ci !== -1 && ci + 1 < actualArgs.length && typeof actualArgs[ci + 1] === 'string') {
-                actualArgs = actualArgs.slice();
-                actualArgs[ci + 1] = fixTmpInShellCmd(actualArgs[ci + 1]);
-            }
-        }
-        actualArgs = injectEnv(command, actualArgs);
-        return orig.call(this, LINKER64, [command].concat(actualArgs), o);
-    }
-    return orig.call(this, command, args, options);
+    if (hasShell) { var fo = fixOpts(o); if (Array.isArray(args)) return orig.call(this, command, fixTmpArgs(args), fo); return orig.call(this, command, fo); }
+    var actualArgs = Array.isArray(args) ? args : [];
+    if (command.endsWith('/bash') || command.endsWith('/sh')) { actualArgs = stripLogin(actualArgs); var ci = actualArgs.indexOf('-c'); if (ci !== -1 && ci + 1 < actualArgs.length && typeof actualArgs[ci + 1] === 'string') { actualArgs = actualArgs.slice(); actualArgs[ci + 1] = fixTmpInShellCmd(actualArgs[ci + 1]); } }
+    actualArgs = fixTmpArgs(actualArgs); actualArgs = injectEnv(command, actualArgs);
+    return orig.call(this, command, actualArgs, o);
 }
 var _sp = child_process.spawn;
-child_process.spawn = function(command, args, options) {
-    return spawnFix.call(this, _sp, command, args, options);
-};
+child_process.spawn = function(command, args, options) { return spawnFix.call(this, _sp, command, args, options); };
 var _sps = child_process.spawnSync;
-child_process.spawnSync = function(command, args, options) {
-    return spawnFix.call(this, _sps, command, args, options);
-};
-// Patch exec/execSync — these always use a shell. Termux-compiled Node.js
-// resolves shell:true to the hardcoded Termux path deep in internals where
-// our spawn/execFile patches can't reach. Must set shell path explicitly.
-function fixExecShell(o) {
-    o = Object.assign({}, o || {});
-    if (!o.shell || o.shell === true) o.shell = PREFIX + '/bin/bash';
-    else if (typeof o.shell === 'string' && isEB(o.shell)) o.shell = fixPath(o.shell);
-    return o;
-}
-// Fix /tmp refs in shell command strings (e.g. "bash /tmp/install.sh > /tmp/out")
-// Only match /tmp at the start of a path (after whitespace, =, :, or start-of-string)
-// to avoid double-prefixing paths that already contain ${'$'}HOME/tmp
-function fixTmpInShellCmd(cmd) {
-    if (typeof cmd !== 'string') return cmd;
-    return cmd.replace(/(^|[\s=:])\/tmp\b/g, '${'$'}1' + HOME + '/tmp').replace(/(^|[\s=:])\/var\/tmp\b/g, '${'$'}1' + HOME + '/tmp');
-}
+child_process.spawnSync = function(command, args, options) { return spawnFix.call(this, _sps, command, args, options); };
 var _exec = child_process.exec;
-child_process.exec = function(cmd, opts, cb) {
-    if (typeof opts === 'function') { cb = opts; opts = undefined; }
-    var m = typeof cmd === 'string' && cmd.match(/^(?:.*\/)?(?:xdg-open|open|browser-open)\s+(https?:\/\/\S+)/);
-    if (m) {
-        try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', m[1]); } catch(e) {}
-        cmd = 'true';
-    }
-    return _exec.call(this, fixTmpInShellCmd(cmd), fixExecShell(opts), cb);
-};
+child_process.exec = function(cmd, opts, cb) { if (typeof opts === 'function') { cb = opts; opts = undefined; } var m = typeof cmd === 'string' && cmd.match(/^(?:.*\/)?(?:xdg-open|open|browser-open)\s+(https?:\/\/\S+)/); if (m) { try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', m[1]); } catch(e) {} cmd = 'true'; } return _exec.call(this, fixTmpInShellCmd(cmd), fixExecShell(opts), cb); };
 var _execSync = child_process.execSync;
-child_process.execSync = function(cmd, opts) {
-    var m2 = typeof cmd === 'string' && cmd.match(/^(?:.*\/)?(?:xdg-open|open|browser-open)\s+(https?:\/\/\S+)/);
-    if (m2) {
-        try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', m2[1]); } catch(e) {}
-        cmd = 'true';
-    }
-    return _execSync.call(this, fixTmpInShellCmd(cmd), fixExecShell(opts));
-};
+child_process.execSync = function(cmd, opts) { var m2 = typeof cmd === 'string' && cmd.match(/^(?:.*\/)?(?:xdg-open|open|browser-open)\s+(https?:\/\/\S+)/); if (m2) { try { fs.writeFileSync(HOME + '/.claude-mobile/open-url', m2[1]); } catch(e) {} cmd = 'true'; } return _execSync.call(this, fixTmpInShellCmd(cmd), fixExecShell(opts)); };
 var cliPath = process.argv[2];
 if (!cliPath) { process.stderr.write('claude-wrapper: missing CLI path\n'); process.exit(1); }
 process.argv = [process.argv[0], cliPath].concat(process.argv.slice(3));

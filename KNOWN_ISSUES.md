@@ -6,36 +6,44 @@ Tracked limitations in the DestinCode Android runtime that cannot be fully resol
 
 ## Active Known Issues
 
-### 1. `export -f` bash functions invisible to non-bash processes
+### 1. Go binaries cannot exec subprocesses (raw syscall bypass)
 
-**Status:** Mitigated, not fully resolved
-**Severity:** Medium — affects edge cases in tool execution
+**Status:** Mitigated for gh/fzf/micro; general case remains
+**Severity:** Medium — affects Go programs that spawn subprocesses
 
-**Problem:** The linker64 SELinux bypass relies on bash shell functions (generated in `linker64-env.sh`) that wrap every binary through `/system/bin/linker64`. These functions are propagated to subshells via `export -f`, which is a bash-only feature. Any process that isn't bash — including `#!/system/bin/sh` scripts, Go programs calling `exec()`, Rust `Command::new()`, and Python `subprocess.run()` — cannot see or use these functions. When such a process tries to execute a binary directly, SELinux blocks it.
+**Root cause:** Android SELinux denies `execve()` on files with the `app_data_file` label. The `termux-exec` v2.4 LD_PRELOAD library intercepts libc's `execve()` and routes through `/system/bin/linker64` — this works for all **C and Rust** programs (which use libc). However, **Go** programs use raw `SYS_execve` syscalls via hand-written assembly stubs (`syscall.forkExec`, `syscall.rawVforkSyscall`), completely bypassing LD_PRELOAD interception. Even with CGo enabled (Go programs link libc), `os/exec.Command` still uses raw syscalls.
 
-**Current mitigation:** `exec-wrappers/` directory (added in commit `dbf9310`) contains real shell scripts (`#!/system/bin/sh`) for ~11 commonly-exec'd binaries (`git`, `ssh`, `node`, `rclone`, `python3`, etc.) that Go/Rust programs find via `PATH` before the raw ELF binaries. Additionally, `termux-exec` `LD_PRELOAD` library intercepts `execve()` in C-linked programs (but not Go, which uses raw syscalls).
+**What works (via termux-exec):**
+- C programs calling exec: git → git-remote-https, ssh → ssh-agent, python → subprocess, etc.
+- Rust programs calling `Command::new()`: fd, bat, eza, ripgrep — all use libc execvp.
+- Node.js child_process: termux-exec intercepts Node's libc exec calls.
+- Bash functions: route through linker64 directly via BASH_ENV wrappers.
 
-**Gap:** Only ~11 of hundreds of binaries have script wrappers. If a Go/Rust/Python program tries to exec an unwrapped binary (e.g., `tar`, `gzip`, `less`, `file`), it will fail with "permission denied". Adding every binary to exec-wrappers would work but creates maintenance burden and startup cost.
+**What doesn't work:**
+- Go programs calling `exec.Command()`: gh → git, fzf → $SHELL, micro → $SHELL.
 
-**Planned fix direction:**
-- Option A: Generate script wrappers for ALL ELF binaries in `$PREFIX/bin/` during `deployBashEnv()`, not just the curated list. Place in `exec-wrappers/` which is already on PATH before `$PREFIX/bin`. Cost: ~200 small files, <1ms each to create at startup.
-- Option B: Investigate Android-specific `seccomp` or `prctl` approaches that could allow direct exec from the app data directory without linker64.
-- Option C: Build a native `LD_PRELOAD` library specifically for Go programs that intercepts the raw `execve` syscall via `ptrace` or `seccomp-bpf` user notification.
+**Affected binaries:** Only 4 Go binaries across all package tiers:
+| Binary | Tier | Subprocess | Fix |
+|--------|------|-----------|-----|
+| `gh` | Core | git, ssh | Bash wrapper rewrites `gh repo clone` → `git clone`; `.netrc` for auth |
+| `rclone` | Core | browser-open | Already handled by `claude-wrapper.js` URL interception |
+| `fzf` | Developer | `$SHELL -c "cmd"` | Bash wrapper sets `SHELL=/system/bin/sh` (system binary Go can exec) |
+| `micro` | Developer | `$SHELL`, linters | Bash wrapper sets `SHELL=/system/bin/sh` |
+
+**How the fzf/micro SHELL fix works:** Setting `SHELL=/system/bin/sh` lets Go's raw `execve` succeed (system binary). `/system/bin/sh` finds commands via PATH → exec-wrappers. When sh can't directly exec a wrapper (SELinux), it falls back to reading the `#!/system/bin/sh` shebang and spawning a new sh to interpret the script — which then runs `exec /system/bin/linker64 ...`.
+
+**Remaining gap:** If a new Go binary is added that execs subprocesses, it will need a custom bash wrapper. The long-term fix would be a ptrace-based or seccomp-BPF exec supervisor, but the current targeted approach covers all known cases.
 
 ---
 
-### 2. 77KB `linker64-env.sh` sourced on every `bash -c` invocation
+### 2. BASH_ENV sourcing overhead per `bash -c` invocation
 
-**Status:** Low priority — functional but adds latency
-**Severity:** Low — adds ~20-50ms to each short-lived bash command
+**Status:** Significantly reduced (was ~994 lines / 77KB, now ~150 lines)
+**Severity:** Low — much reduced from previous 20-50ms overhead
 
-**Problem:** Every `bash -c "..."` command spawned by Claude Code sources the full `linker64-env.sh` via `BASH_ENV` (or `injectEnv()` prepending `. "$BASH_ENV_FILE";` to the command). This ~994-line, 77KB script defines wrapper functions for every binary, `__fix_tmp()`, package manager overrides, and `export -f` calls. For frequent short commands (e.g., `echo test`, `cat file`), the sourcing overhead is measurable.
+**Problem:** Every `bash -c "..."` command spawned by Claude Code sources `linker64-env.sh` via `BASH_ENV`. Previously this was a ~994-line script defining wrapper functions for every binary. Now that termux-exec handles exec routing, the script only contains `/tmp` rewriting, package manager overrides, Go binary wrappers, and filesystem fixes.
 
-**Current behavior:** Claude Code spawns many `bash -c` subprocesses for tool execution. Each one pays the BASH_ENV sourcing cost. Profiling shows ~20-50ms overhead per invocation on typical Android hardware.
-
-**Planned fix direction:**
-- Lazy loading: split `linker64-env.sh` into a minimal bootstrap (~10 lines) that defines `command_not_found_handle()` or a PATH-based autoloader. Full function definitions are only loaded when a wrapped binary is actually invoked.
-- Alternatively: rely entirely on script-based exec-wrappers (see issue #1) and remove the function-based approach, eliminating BASH_ENV sourcing entirely.
+**Current overhead:** ~5-10ms per `bash -c` invocation (down from 20-50ms).
 
 ---
 
@@ -48,11 +56,6 @@ Tracked limitations in the DestinCode Android runtime that cannot be fully resol
 
 **User impact:** No functional difference — tools work identically. The security boundary is weaker: a malicious tool execution could make syscalls that would normally be blocked (e.g., network access from a sandboxed context, raw file I/O outside the working directory).
 
-**Why it can't be auto-fixed:** The `arm64-linux` seccomp binary cannot be symlinked like ripgrep or tree-sitter because:
-- Android's seccomp implementation differs from desktop Linux (different kernel config, different default policies)
-- The BPF filter may reference syscall numbers that differ between Android and desktop Linux kernels
-- `apply-seccomp` may use `prctl(PR_SET_SECCOMP)` which requires specific kernel capabilities that Android app processes don't have
-
 **Planned fix direction:**
 - Build a custom `apply-seccomp` binary targeting Android's bionic libc and arm64 syscall table
 - Test against Android kernel seccomp support (available since Android 8.0/API 26)
@@ -60,9 +63,25 @@ Tracked limitations in the DestinCode Android runtime that cannot be fully resol
 
 ---
 
-## Recently Fixed (reference)
+## Architecture Notes
 
-These were identified and fixed in the same audit session. Listed here for context on the class of issues this codebase is prone to.
+### Exec routing layers (current)
+
+| Layer | Role | Handles |
+|-------|------|---------|
+| **termux-exec LD_PRELOAD** | Primary exec routing | All C/Rust program exec calls → linker64 |
+| **claude-wrapper.js** | Node.js quirk patches | /tmp rewriting, fs.accessSync X_OK, shell path fixing, browser-open |
+| **linker64-env.sh (BASH_ENV)** | Bash-level fixes | /tmp rewriting, Go wrappers (gh/fzf/micro), package managers, make |
+| **exec-wrappers** | /system/bin/sh fallback | Shebang fallback for fzf/micro SHELL=/system/bin/sh |
+| **.netrc** | Git HTTPS auth | Avoids credential helper exec chain |
+
+### Key fix: TERMUX_APP__LEGACY_DATA_DIR
+
+termux-exec v2.4 does a string prefix match to decide whether a binary is under the app data directory. `context.filesDir` resolves to `/data/user/0/...` but binary canonical paths resolve to `/data/data/...` (symlink). Setting `TERMUX_APP__LEGACY_DATA_DIR=/data/data/<pkg>/files` provides both path forms so the match succeeds.
+
+---
+
+## Recently Fixed (reference)
 
 | Commit | Fix | Root Cause |
 |--------|-----|------------|

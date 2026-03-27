@@ -1070,22 +1070,26 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
             binWrapper.setExecutable(true)
         }
 
-        // Deploy script-based exec wrappers for binaries commonly spawned as
-        // child processes by Go/Rust/Python programs (which bypass LD_PRELOAD).
-        // These are real #!/system/bin/sh scripts that route through linker64,
-        // so exec.LookPath() in non-bash contexts finds a working wrapper.
-        // Example: `gh repo clone` calls exec("git") which fails without this.
+        // Exec-wrappers: #!/system/bin/sh scripts for the /system/bin/sh shebang
+        // fallback mechanism. Used by fzf/micro (SHELL=/system/bin/sh) — when sh
+        // can't directly exec a binary (SELinux), it reads the wrapper's shebang
+        // and spawns a new sh to interpret the script, which execs linker64.
+        // Only needed for binaries commonly called by fzf preview, micro plugins,
+        // or gh subcommands. termux-exec handles the rest.
         val execWrappersDir = File(mobileDir, "exec-wrappers")
         execWrappersDir.mkdirs()
         val wrapperBinaries = listOf(
-            "git", "ssh", "ssh-keygen", "gpg", "gpg2", "curl", "wget",
-            "rclone",  // Go binary — spawns xdg-open, curl for OAuth
-            "node",    // commonly exec'd by Go/Rust tools (e.g. npx packages)
-            "python3", "python",  // subprocess.Popen with absolute paths
+            // Commonly used in fzf --preview / micro plugins
+            "git", "bat", "cat", "head", "tail", "less",
+            "rg", "fd", "eza", "tree", "jq",
+            // git helpers (exec'd by git internally — but termux-exec handles
+            // these now; kept here for /system/bin/sh fallback completeness)
+            "ssh", "ssh-keygen", "gpg", "gpg2", "curl", "wget",
+            // Runtimes
+            "node", "python3", "python",
         )
         for (name in wrapperBinaries) {
             val realBin = File(usrDir, "bin/$name")
-            // Resolve symlinks to get the actual ELF binary path
             val targetPath = if (realBin.exists()) realBin.canonicalPath else continue
             val wrapper = File(execWrappersDir, name)
             wrapper.writeText("#!/system/bin/sh\nexec /system/bin/linker64 \"$targetPath\" \"\$@\"\n")
@@ -1180,17 +1184,26 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
         }
     }
 
+    /**
+     * Build the BASH_ENV shell script.
+     *
+     * ARCHITECTURE: termux-exec LD_PRELOAD now handles ALL exec routing through
+     * linker64 for C/Rust programs (via TERMUX_APP__LEGACY_DATA_DIR fix).
+     * This script only provides:
+     * 1. __fix_tmp() — /tmp path rewriting (Android has no /tmp)
+     * 2. Shell wrappers — /tmp rewriting for bash/sh script arguments
+     * 3. Go binary wrappers — gh, fzf, micro (Go bypasses termux-exec)
+     * 4. Package manager overrides — apt/dpkg config path redirection
+     * 5. make wrapper — SHELL= override for hardcoded Termux path
+     * 6. Android filesystem fixes — cd /tmp, pwd FUSE workaround
+     */
     private fun buildBashEnvSh(usrPath: String): String {
         val binDir = File(usrPath, "bin")
         if (!binDir.isDirectory) return "# bin dir not found\n"
-        val skip = setOf("bash", "sh", "sh-wrapper", "env", "xdg-open", "open")
-        // Package manager binaries need special handling — they have hardcoded
-        // /data/data/com.termux/ paths that must be overridden via config/flags.
-        val pkgManagerOverrides = setOf("apt", "apt-get", "apt-cache", "apt-key", "dpkg", "dpkg-deb", "pkg")
-        val sb = StringBuilder("# linker64 wrapper functions for embedded binaries\n")
-        // Helper function to rewrite /tmp and /var/tmp paths in command arguments.
-        // Android has no /tmp — we redirect to $HOME/tmp. This fixes install scripts
-        // and other programs that hardcode /tmp paths in arguments (e.g. curl -o /tmp/file).
+        val sb = StringBuilder("# BASH_ENV — Android quirk fixes (exec routing handled by termux-exec)\n")
+        val functionNames = mutableListOf<String>()
+
+        // /tmp rewriting helper
         sb.appendLine()
         sb.appendLine("# Rewrite /tmp paths in command arguments — Android has no /tmp")
         sb.appendLine("""__fix_tmp() {
@@ -1207,90 +1220,9 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
     esac
   done
 }""")
-        val functionNames = mutableListOf<String>()
-        // Track generated functions to avoid duplicates when scanning multiple dirs
-        val generated = mutableSetOf<String>()
 
-        // Scan a directory for binaries and generate linker64 shell function wrappers.
-        // binDirPath = the directory to scan, usrBinPath = where interpreters live ($PREFIX/bin)
-        fun scanBinDir(scanDir: File, label: String) {
-            if (!scanDir.isDirectory) return
-            sb.appendLine()
-            sb.appendLine("# Wrappers for $label")
-            scanDir.listFiles()?.sorted()?.forEach { file ->
-                if (!file.isFile) return@forEach
-                val n = file.name
-                if (n in skip) return@forEach
-                if (n in pkgManagerOverrides) return@forEach
-                if (n in generated) return@forEach  // already generated from higher-priority dir
-                if (!n.matches(Regex("[a-zA-Z_][a-zA-Z0-9_.+-]*"))) return@forEach
-
-                val filePath = file.absolutePath
-                val header = ByteArray(512)
-                val bytesRead = try {
-                    file.inputStream().use { it.read(header) }
-                } catch (_: Exception) { return@forEach }
-                if (bytesRead < 2) return@forEach
-
-                val isElf = bytesRead >= 4 &&
-                    header[0] == 0x7f.toByte() &&
-                    header[1] == 'E'.code.toByte() &&
-                    header[2] == 'L'.code.toByte() &&
-                    header[3] == 'F'.code.toByte()
-
-                val isScript = header[0] == '#'.code.toByte() &&
-                    header[1] == '!'.code.toByte()
-
-                if (isElf && n == "make") {
-                    // GNU make ignores the SHELL env var and uses its compiled-in
-                    // default (/data/data/com.termux/.../bin/sh). Override via
-                    // command-line variable assignment which takes highest priority.
-                    sb.appendLine("""$n() { __fix_tmp "${'$'}@"; /system/bin/linker64 "$filePath" "SHELL=$usrPath/bin/bash" "${'$'}{__FT[@]}"; }""")
-                } else if (isElf) {
-                    sb.appendLine("""$n() { __fix_tmp "${'$'}@"; /system/bin/linker64 "$filePath" "${'$'}{__FT[@]}"; }""")
-                } else if (isScript) {
-                    val shebangLine = String(header, 0, bytesRead)
-                        .lines().first().removePrefix("#!").trim()
-                    val parts = shebangLine.split(Regex("\\s+"))
-                    val interpreter = parts[0]
-                    val interpArgs = parts.drop(1)
-
-                    if (interpreter.endsWith("/env") && interpArgs.isNotEmpty()) {
-                        val prog = interpArgs[0]
-                        sb.appendLine("""$n() { __fix_tmp "${'$'}@"; /system/bin/linker64 "$usrPath/bin/$prog" "$filePath" "${'$'}{__FT[@]}"; }""")
-                    } else {
-                        val interpName = File(interpreter).name
-                        sb.appendLine("""$n() { __fix_tmp "${'$'}@"; /system/bin/linker64 "$usrPath/bin/$interpName" "$filePath" "${'$'}{__FT[@]}"; }""")
-                    }
-                } else {
-                    val headerStr = String(header, 0, bytesRead.coerceAtMost(64))
-                    val looksLikeJs = headerStr.startsWith("import ") ||
-                        headerStr.startsWith("import{") ||
-                        headerStr.startsWith("require(") ||
-                        headerStr.startsWith("\"use strict\"") ||
-                        headerStr.startsWith("'use strict'") ||
-                        headerStr.startsWith("//") ||
-                        headerStr.startsWith("/*") ||
-                        headerStr.startsWith("module.exports")
-                    if (looksLikeJs) {
-                        sb.appendLine("""$n() { __fix_tmp "${'$'}@"; /system/bin/linker64 "$usrPath/bin/node" "$filePath" "${'$'}{__FT[@]}"; }""")
-                    } else {
-                        sb.appendLine("""$n() { __fix_tmp "${'$'}@"; /system/bin/linker64 "$filePath" "${'$'}{__FT[@]}"; }""")
-                    }
-                }
-                generated.add(n)
-                functionNames.add(n)
-            }
-        }
-
-        // Scan $PREFIX/bin first (highest priority), then ~/.local/bin
-        scanBinDir(binDir, "$usrPath/bin")
-        scanBinDir(File(homeDir, ".local/bin"), "~/.local/bin")
-
-        // Shell wrappers — bash and sh are in the skip set (we don't want the auto-scan
-        // to generate standard linker64 wrappers for them) but they DO need /tmp rewriting.
+        // Shell wrappers — bash/sh need /tmp rewriting for script arguments.
         // Without these, `bash /tmp/install.sh` fails because bash opens the literal path.
-        // Subshells via (...) fork the process and don't invoke these functions.
         sb.appendLine()
         sb.appendLine("# Shell wrappers — /tmp rewriting for script arguments")
         val bashBin = File(binDir, "bash")
@@ -1303,9 +1235,16 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
             sb.appendLine("""sh() { __fix_tmp "${'$'}@"; /system/bin/linker64 "${shBin.absolutePath}" "${'$'}{__FT[@]}"; }""")
             functionNames.add("sh")
         } else if (shBin.exists()) {
-            // sh is a link to bash — use the same wrapper
             sb.appendLine("""sh() { bash "${'$'}@"; }""")
             functionNames.add("sh")
+        }
+
+        // make wrapper — GNU make ignores $SHELL, uses compiled-in Termux path.
+        // Override via command-line variable assignment (highest priority).
+        val makeBin = File(binDir, "make")
+        if (makeBin.exists()) {
+            sb.appendLine("""make() { __fix_tmp "${'$'}@"; /system/bin/linker64 "${makeBin.absolutePath}" "SHELL=$usrPath/bin/bash" "${'$'}{__FT[@]}"; }""")
+            functionNames.add("make")
         }
 
         // Package manager functions — override hardcoded /data/data/com.termux/ paths.
@@ -1343,6 +1282,80 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
   esac
 }""")
         functionNames.add("pkg")
+
+        // Go binary wrappers — Go's os/exec uses raw SYS_execve syscalls that
+        // bypass termux-exec LD_PRELOAD. These are the ONLY binaries that need
+        // bash-level wrappers; all C/Rust programs are handled by termux-exec.
+        sb.appendLine()
+        sb.appendLine("# Go binary wrappers — raw syscall exec bypass")
+        val ghBin = File(binDir, "gh")
+        if (ghBin.exists()) {
+            val ghPath = ghBin.absolutePath
+            sb.appendLine("""gh() {
+  __fix_tmp "${'$'}@"
+  case "${'$'}{__FT[0]:-}" in
+    repo)
+      case "${'$'}{__FT[1]:-}" in
+        clone)
+          # gh repo clone uses Go→git exec which fails on Android.
+          # Rewrite to git clone (termux-exec handles git's exec chain).
+          local _repo="${'$'}{__FT[2]:-}"
+          if [ -z "${'$'}_repo" ]; then
+            /system/bin/linker64 "$ghPath" "${'$'}{__FT[@]}"
+            return
+          fi
+          local _dest="${'$'}{__FT[3]:-}"
+          local _git_args=()
+          local _past_sep=false
+          local _i=0
+          for _a in "${'$'}{__FT[@]}"; do
+            _i=$((_i + 1))
+            [ "${'$'}_i" -le 3 ] && continue
+            [ -n "${'$'}_dest" ] && [ "${'$'}_i" -eq 4 ] && continue
+            if [ "${'$'}_a" = "--" ]; then _past_sep=true; continue; fi
+            if $_past_sep; then _git_args+=("${'$'}_a"); fi
+          done
+          case "${'$'}_repo" in
+            http*) ;;
+            *)     _repo="https://github.com/${'$'}_repo.git" ;;
+          esac
+          if [ -n "${'$'}_dest" ]; then
+            git clone "${'$'}{_git_args[@]}" "${'$'}_repo" "${'$'}_dest"
+          else
+            git clone "${'$'}{_git_args[@]}" "${'$'}_repo"
+          fi
+          return
+          ;;
+        fork)
+          if printf '%s\n' "${'$'}{__FT[@]}" | grep -qw '\-\-clone'; then
+            /system/bin/linker64 "$ghPath" repo fork "${'$'}{__FT[@]:2}" --clone=false
+            local _fork_repo
+            _fork_repo=${'$'}(/system/bin/linker64 "$ghPath" repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null)
+            if [ -n "${'$'}_fork_repo" ]; then
+              git clone "https://github.com/${'$'}_fork_repo.git"
+            fi
+            return
+          fi
+          ;;
+      esac
+      ;;
+  esac
+  /system/bin/linker64 "$ghPath" "${'$'}{__FT[@]}"
+}""")
+            functionNames.add("gh")
+        }
+        val fzfBin = File(binDir, "fzf")
+        if (fzfBin.exists()) {
+            // SHELL=/system/bin/sh lets Go exec the shell (system binary).
+            // sh finds commands via PATH → exec-wrappers → shebang fallback.
+            sb.appendLine("""fzf() { __fix_tmp "${'$'}@"; SHELL=/system/bin/sh /system/bin/linker64 "${fzfBin.absolutePath}" "${'$'}{__FT[@]}"; }""")
+            functionNames.add("fzf")
+        }
+        val microBin = File(binDir, "micro")
+        if (microBin.exists()) {
+            sb.appendLine("""micro() { __fix_tmp "${'$'}@"; SHELL=/system/bin/sh /system/bin/linker64 "${microBin.absolutePath}" "${'$'}{__FT[@]}"; }""")
+            functionNames.add("micro")
+        }
 
         // Android filesystem fixes
         sb.appendLine()
@@ -1392,14 +1405,16 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
             // /system/bin/sh is silently ignored regardless of POSIX compliance.
             put("SHELL", bashPath)
             put("CLAUDE_CODE_SHELL", bashPath)
-            // exec-wrappers comes before $usr/bin so Go/Rust/Python programs find
-            // shell script wrappers (which route through linker64) instead of raw
-            // ELF binaries (which SELinux blocks when exec'd by non-bash processes).
+            // exec-wrappers on PATH before $usr/bin: provides shebang-based
+            // fallback for /system/bin/sh (used by Go binaries with SHELL override).
             put("PATH", "$home/.claude-mobile:$home/.claude-mobile/exec-wrappers:$home/.local/bin:$usr/bin:$usr/bin/applets:/system/bin")
             put("LD_LIBRARY_PATH", "$usr/lib")
-            // termux-exec LD_PRELOAD: intercepts execve() in bash subprocesses
-            // and routes them through linker64. Complements the JS wrapper which
-            // only covers Node.js-level spawn calls.
+            // termux-exec LD_PRELOAD: the primary exec routing mechanism.
+            // Intercepts libc execve() in ALL C/Rust programs and routes
+            // app-data binaries through /system/bin/linker64. This handles
+            // the vast majority of exec calls (git→helpers, python→subprocess,
+            // etc.). Does NOT help Go programs (raw SYS_execve syscalls) —
+            // those need custom bash wrappers (see buildBashEnvSh).
             if (File(ldPreloadSo).exists()) {
                 put("LD_PRELOAD", ldPreloadSo)
             }
@@ -1416,11 +1431,20 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
             // prefix and enable linker64 exec mode. Without them, it falls back
             // to the hardcoded /data/data/com.termux/files/usr path and won't
             // intercept execve() calls for our relocated prefix.
+            //
+            // CRITICAL: TERMUX_APP__LEGACY_DATA_DIR must be set to the /data/data/
+            // form of the app directory. context.filesDir resolves to /data/user/0/
+            // but binary canonical paths resolve to /data/data/ (symlink). termux-exec
+            // does a string prefix match, so both forms must be registered. Without
+            // the legacy path, termux-exec intercepts execve but doesn't route
+            // through linker64 (is_exe_under_termux_app_data_dir='0').
             val filesDir = context.filesDir.absolutePath
+            val legacyFilesDir = "/data/data/${context.packageName}/files"
             put("TERMUX__PREFIX", usr)
             put("TERMUX_PREFIX", usr)
             put("TERMUX__ROOTFS", filesDir)
             put("TERMUX_APP__DATA_DIR", filesDir)
+            put("TERMUX_APP__LEGACY_DATA_DIR", legacyFilesDir)
             put("TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE", "enable")
             // Git helper programs (git-remote-https, git-upload-pack, etc.)
             // have Termux paths baked in — override with our relocated prefix.
