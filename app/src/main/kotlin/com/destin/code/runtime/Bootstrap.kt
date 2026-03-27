@@ -1313,7 +1313,7 @@ When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5
             [ "${'$'}_i" -le 3 ] && continue
             [ -n "${'$'}_dest" ] && [ "${'$'}_i" -eq 4 ] && continue
             if [ "${'$'}_a" = "--" ]; then _past_sep=true; continue; fi
-            if $_past_sep; then _git_args+=("${'$'}_a"); fi
+            if ${'$'}_past_sep; then _git_args+=("${'$'}_a"); fi
           done
           case "${'$'}_repo" in
             http*) ;;
