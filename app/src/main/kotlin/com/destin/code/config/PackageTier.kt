@@ -23,7 +23,8 @@ enum class PackageTier(
             "findutils", "ncurses-utils", "fzf",
             "jq",
             "libgit2", "bat", "eza",
-            "libevent", "libandroid-glob", "tmux",
+            // libandroid-glob moved to corePackages (openssh → krb5 dependency)
+            "libevent", "tmux",
             "nano",
         ),
     ),

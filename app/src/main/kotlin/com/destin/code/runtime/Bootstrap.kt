@@ -360,7 +360,12 @@ class Bootstrap(private val context: Context) {
         "termux-exec",
         "libnghttp2", "libnghttp3", "libngtcp2", "libssh2", "libcurl", "curl",
         "git",
-        "openssh", "gh",
+        // openssh dependency chain: openssh → krb5, ldns, libedit, termux-auth,
+        // openssh-sftp-server; krb5 → libandroid-glob, libresolv-wrapper, libdb;
+        // ldns → resolv-conf; libresolv-wrapper → resolv-conf
+        "resolv-conf", "libdb", "libandroid-glob", "libresolv-wrapper",
+        "libedit", "ldns", "krb5", "termux-auth", "openssh-sftp-server", "openssh",
+        "gh",
         "gdbm", "libbz2", "libcrypt", "libffi", "liblzma",
         "ncurses", "ncurses-ui-libs", "readline", "python",
         "libunistring", "libidn2", "libuuid", "wget",
@@ -393,6 +398,15 @@ class Bootstrap(private val context: Context) {
             "zlib" -> "lib/libz.so"
             "git" -> "bin/git"
             "gh" -> "bin/gh"
+            "resolv-conf" -> "etc/resolv.conf"
+            "libdb" -> "lib/libdb.so"
+            "libandroid-glob" -> "lib/libandroid-glob.so"
+            "libresolv-wrapper" -> "lib/libresolv_wrapper.so"
+            "libedit" -> "lib/libedit.so"
+            "ldns" -> "lib/libldns.so"
+            "krb5" -> "lib/libgssapi_krb5.so"
+            "termux-auth" -> "lib/libtermux-auth.so"
+            "openssh-sftp-server" -> "libexec/sftp-server"
             "openssh" -> "bin/ssh"
             "rclone" -> "bin/rclone"
             "libandroid-support" -> "lib/libandroid-support.so"
