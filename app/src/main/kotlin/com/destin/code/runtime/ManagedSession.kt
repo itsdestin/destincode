@@ -3,9 +3,13 @@ package com.destin.code.runtime
 import android.os.FileObserver
 import com.destin.code.parser.HookEvent
 import com.destin.code.parser.InkSelectParser
+import com.destin.code.parser.TranscriptEvent
+import com.destin.code.parser.TranscriptWatcher
 import com.destin.code.ui.ChatState
 import com.destin.code.ui.MessageContent
 import com.destin.code.ui.PromptButton
+import com.destin.code.ui.state.ChatAction
+import com.destin.code.ui.state.ChatReducer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -19,7 +23,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-enum class SessionStatus { Active, AwaitingApproval, Idle, Dead }
+/** Matches desktop's SessionStatusColor: green, red, blue, gray */
+enum class SessionStatus { Active, AwaitingApproval, Unseen, Idle, Dead }
 
 class ManagedSession(
     val id: String = UUID.randomUUID().toString(),
@@ -30,6 +35,10 @@ class ManagedSession(
     val directShellBridge: DirectShellBridge? = null,
     val shellMode: Boolean = false,
     val chatState: ChatState = ChatState(),
+    /** New turn-based state model — runs alongside old ChatState during transition. */
+    val chatReducer: ChatReducer = ChatReducer(),
+    /** Transcript watcher for this session — set externally by SessionRegistry. */
+    var transcriptWatcher: TranscriptWatcher? = null,
     val createdAt: Long = System.currentTimeMillis(),
     private val titleFile: File,
     private val scope: CoroutineScope,
@@ -47,6 +56,12 @@ class ManagedSession(
     val screenVersion: StateFlow<Int> get() =
         ptyBridge?.screenVersion ?: directShellBridge?.screenVersion ?: MutableStateFlow(0)
 
+    /** Whether this session has been viewed since last response. Used for blue "unseen" status. */
+    var hasBeenViewed: Boolean = true
+
+    /** Callback to check if this session is currently focused. Set by SessionRegistry. */
+    var isCurrentSession: (() -> Boolean)? = null
+
     private val _name = MutableStateFlow(if (shellMode) "Shell" else "New Session")
     val name: StateFlow<String> = _name
 
@@ -57,16 +72,23 @@ class ManagedSession(
     // A 5-second polling coroutine feeds _isRunningFlow to make Dead detection reactive.
     private val _isRunningFlow = MutableStateFlow(true)
 
+    /** Bumped when viewed state changes — forces status flow to re-derive. */
+    private val _viewedTrigger = MutableStateFlow(0)
+
+    /** Call when user switches to or away from this session. */
+    fun notifyViewedStateChanged() {
+        _viewedTrigger.value++
+    }
+
     val status: StateFlow<SessionStatus> = if (ptyBridge != null) {
         combine(
             ptyBridge.lastPtyOutputTime,
             _isRunningFlow,
-        ) { lastOutput, isRunning ->
+            _viewedTrigger,
+        ) { _, isRunning, _ ->
             when {
                 !isRunning -> SessionStatus.Dead
-                isAwaitingApproval() -> SessionStatus.AwaitingApproval
-                System.currentTimeMillis() - lastOutput < 2000 -> SessionStatus.Active
-                else -> SessionStatus.Idle
+                else -> deriveStatus()
             }
         }.stateIn(scope, SharingStarted.WhileSubscribed(5000), SessionStatus.Idle)
     } else {
@@ -78,9 +100,31 @@ class ManagedSession(
         }
     }
 
+    /**
+     * Derive session status matching desktop's logic:
+     *   red:   any tool awaiting approval
+     *   green: isThinking or any tool running
+     *   gray:  idle / no activity
+     */
+    private fun deriveStatus(): SessionStatus {
+        val state = chatReducer.state
+        val hasAwaiting = state.toolCalls.values.any {
+            it.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval
+        }
+        val hasRunning = state.toolCalls.values.any {
+            it.status == com.destin.code.ui.state.ToolCallStatus.Running
+        }
+        return when {
+            hasAwaiting -> SessionStatus.AwaitingApproval
+            state.isThinking || hasRunning -> SessionStatus.Active
+            state.timeline.isNotEmpty() && !hasBeenViewed -> SessionStatus.Unseen
+            else -> SessionStatus.Idle
+        }
+    }
+
+    /** Legacy compat — still used by old ChatState. */
     private fun isAwaitingApproval(): Boolean {
-        val lastMsg = chatState.messages.lastOrNull() ?: return false
-        return lastMsg.content is MessageContent.ToolAwaitingApproval
+        return deriveStatus() == SessionStatus.AwaitingApproval
     }
 
     /**
@@ -113,13 +157,26 @@ class ManagedSession(
                 eventBridge = bridge.getEventBridge()
             }
             eventBridge.events.collect { event ->
-                // Check for session ID mapping and start topic observer
+                // Check for session ID mapping and start topic/transcript observers
                 val claudeSessionId = eventBridge.getClaudeSessionId(id)
-                if (claudeSessionId != null && topicObserver == null) {
-                    startTopicObserver(claudeSessionId)
+                if (claudeSessionId != null) {
+                    if (topicObserver == null) startTopicObserver(claudeSessionId)
+                    startTranscriptWatcherIfNeeded(claudeSessionId)
                 }
                 withContext(Dispatchers.Main) {
                     routeHookEvent(event)
+                    routeHookEventToReducer(event)
+                }
+            }
+        }
+
+        // 1b. Transcript event collector — primary source for the new turn-based UI.
+        //     TranscriptWatcher starts once we learn the Claude session ID (in hook collector above).
+        scope.launch {
+            val watcher = transcriptWatcher ?: return@launch
+            watcher.events.collect { event ->
+                withContext(Dispatchers.Main) {
+                    routeTranscriptEvent(event)
                 }
             }
         }
@@ -201,12 +258,14 @@ class ManagedSession(
     /** Detect permission mode from visible screen only (not raw buffer). */
     private fun detectPermissionMode(screen: String) {
         val lower = screen.lowercase()
-        chatState.permissionMode = when {
+        val mode = when {
             "bypass permissions on" in lower -> "Bypass"
             "accept edits on" in lower -> "Auto-Accept"
             "plan mode on" in lower -> "Plan Mode"
             else -> "Normal"
         }
+        chatState.permissionMode = mode
+        chatReducer.state.permissionMode = mode
     }
 
     /** Known setup prompts and their button mappings.
@@ -421,6 +480,76 @@ class ManagedSession(
         completedPromptIds.add(promptId)
     }
 
+    // ─── Transcript watcher integration ─────────────────────────
+
+    private var transcriptWatcherStarted = false
+
+    private fun startTranscriptWatcherIfNeeded(claudeSessionId: String) {
+        if (transcriptWatcherStarted) return
+        // Use the transcript path from Claude Code (avoids symlink/slug mismatches)
+        val transcriptPath = ptyBridge?.getEventBridge()?.getTranscriptPath(id)
+        if (transcriptPath.isNullOrBlank()) return
+        transcriptWatcherStarted = true
+        transcriptWatcher?.startWatching(id, transcriptPath)
+    }
+
+    /**
+     * Route transcript events to the new ChatReducer.
+     * Must be called on Main dispatcher.
+     */
+    private fun routeTranscriptEvent(event: TranscriptEvent) {
+        when (event) {
+            is TranscriptEvent.UserMessage -> chatReducer.dispatch(
+                ChatAction.TranscriptUserMessage(event.uuid, event.text, event.timestamp)
+            )
+            is TranscriptEvent.AssistantText -> chatReducer.dispatch(
+                ChatAction.TranscriptAssistantText(event.uuid, event.text, event.timestamp)
+            )
+            is TranscriptEvent.ToolUse -> chatReducer.dispatch(
+                ChatAction.TranscriptToolUse(
+                    event.uuid, event.toolUseId, event.toolName, event.toolInput,
+                )
+            )
+            is TranscriptEvent.ToolResult -> chatReducer.dispatch(
+                ChatAction.TranscriptToolResult(
+                    event.uuid, event.toolUseId, event.result, event.isError,
+                )
+            )
+            is TranscriptEvent.TurnComplete -> {
+                chatReducer.dispatch(
+                    ChatAction.TranscriptTurnComplete(event.uuid, event.timestamp)
+                )
+                // Only mark unseen if user is NOT currently looking at this session
+                if (isCurrentSession?.invoke() != true) {
+                    hasBeenViewed = false
+                }
+            }
+        }
+    }
+
+    /**
+     * Route hook events to the new ChatReducer (permission flow only).
+     * Must be called on Main dispatcher.
+     */
+    private fun routeHookEventToReducer(event: HookEvent) {
+        when (event) {
+            is HookEvent.PermissionRequest -> {
+                val suggestions = event.permissionSuggestions?.let { arr ->
+                    (0 until arr.length()).map { arr.optString(it) }
+                }
+                chatReducer.dispatch(ChatAction.PermissionRequest(
+                    toolName = event.toolName,
+                    input = event.toolInput,
+                    requestId = event.requestId,
+                    permissionSuggestions = suggestions,
+                ))
+            }
+            // PostToolUse/PostToolUseFailure are handled by transcript watcher
+            // via ToolResult events — no need to duplicate here.
+            else -> {}
+        }
+    }
+
     fun startTitleObserver() {
         titleFile.parentFile?.mkdirs()
         if (!titleFile.exists()) titleFile.writeText("")
@@ -480,6 +609,7 @@ class ManagedSession(
         titleObserver = null
         topicObserver?.stopWatching()
         topicObserver = null
+        transcriptWatcher?.stopWatching(id)
         ptyBridge?.stop()
         directShellBridge?.stop()
         try { titleFile.delete() } catch (_: Exception) {}

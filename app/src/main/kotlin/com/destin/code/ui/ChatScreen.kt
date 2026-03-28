@@ -130,6 +130,16 @@ private fun applyTerminalColors(session: com.termux.terminal.TerminalSession?, i
 
 @Composable
 fun ChatScreen(service: SessionService) {
+    // Top-level mode: local sessions or remote desktop
+    var remoteMode by remember { mutableStateOf(false) }
+
+    if (remoteMode) {
+        com.destin.code.ui.v2.RemoteDesktopScreen(
+            onBack = { remoteMode = false },
+        )
+        return
+    }
+
     val sessions by service.sessionRegistry.sessions.collectAsState()
     val currentSessionId by service.sessionRegistry.currentSessionId.collectAsState()
     val currentSession = currentSessionId?.let { sessions[it] }
@@ -223,99 +233,88 @@ fun ChatScreen(service: SessionService) {
                 val currentThemeMode = com.destin.code.ui.theme.LocalThemeMode.current
                 val setThemeMode = com.destin.code.ui.theme.LocalSetThemeMode.current
 
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            "Package Tier",
-                            fontSize = 13.sp,
-                            fontFamily = com.destin.code.ui.theme.CascadiaMono,
-                        )
-                    },
-                    onClick = {
-                        onDismiss()
-                        showTierDialog = true
-                    },
-                )
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            "Manage Directories",
-                            fontSize = 13.sp,
-                            fontFamily = com.destin.code.ui.theme.CascadiaMono,
-                        )
-                    },
-                    onClick = {
-                        onDismiss()
-                        showManageDirectories = true
-                    },
-                )
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            "Theme",
-                            fontSize = 13.sp,
-                            fontFamily = com.destin.code.ui.theme.CascadiaMono,
-                        )
-                    },
-                    onClick = { themeSubmenuExpanded = !themeSubmenuExpanded },
-                )
-                if (themeSubmenuExpanded) {
-                    for (mode in com.destin.code.ui.theme.ThemeMode.entries) {
-                        DropdownMenuItem(
-                            text = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    Text(
-                                        if (mode == currentThemeMode) "●" else "○",
-                                        fontSize = 10.sp,
-                                        color = if (mode == currentThemeMode)
-                                            MaterialTheme.colorScheme.primary
-                                        else
-                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                                    )
-                                    Text(
-                                        mode.label,
-                                        fontSize = 12.sp,
-                                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
-                                    )
-                                }
-                            },
-                            onClick = {
-                                setThemeMode(mode)
-                                onDismiss()
-                            },
-                            modifier = Modifier.padding(start = 12.dp),
-                        )
+                // Menu items styled to match desktop dark panel
+                MenuItem("Package Tier") { onDismiss(); showTierDialog = true }
+                MenuItem("Manage Directories") { onDismiss(); showManageDirectories = true }
+
+                // Theme section
+                MenuItem(
+                    label = "Theme",
+                    trailing = if (themeSubmenuExpanded) "▴" else "▾",
+                ) { themeSubmenuExpanded = !themeSubmenuExpanded }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = themeSubmenuExpanded,
+                    enter = androidx.compose.animation.expandVertically(
+                        animationSpec = androidx.compose.animation.core.spring(
+                            stiffness = androidx.compose.animation.core.Spring.StiffnessMedium,
+                        ),
+                    ) + androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut(),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .padding(start = 16.dp, end = 8.dp, bottom = 4.dp)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFF222222))
+                            .padding(4.dp),
+                    ) {
+                        for (mode in com.destin.code.ui.theme.ThemeMode.entries) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable { setThemeMode(mode); onDismiss() }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    if (mode == currentThemeMode) "●" else "○",
+                                    fontSize = 8.sp,
+                                    color = if (mode == currentThemeMode) Color(0xFFB0B0B0)
+                                    else Color(0xFF666666),
+                                )
+                                Text(
+                                    mode.label,
+                                    fontSize = 12.sp,
+                                    fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                    color = if (mode == currentThemeMode) Color(0xFFE0E0E0)
+                                    else Color(0xFF999999),
+                                )
+                            }
+                        }
                     }
                 }
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            "Donate",
-                            fontSize = 13.sp,
-                            fontFamily = com.destin.code.ui.theme.CascadiaMono,
-                        )
-                    },
-                    onClick = {
-                        onDismiss()
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://buymeacoffee.com/itsdestin")))
-                    },
+
+                // Divider
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .height(0.5.dp)
+                        .background(Color(0xFF333333)),
                 )
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            "About",
-                            fontSize = 13.sp,
-                            fontFamily = com.destin.code.ui.theme.CascadiaMono,
-                        )
-                    },
-                    onClick = {
-                        onDismiss()
-                        showAbout = true
-                    },
+
+                MenuItem("Connect to Desktop") { onDismiss(); remoteMode = true }
+                MenuItem("Donate") {
+                    onDismiss()
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://buymeacoffee.com/itsdestin")))
+                }
+
+                // Divider
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .height(0.5.dp)
+                        .background(Color(0xFF333333)),
                 )
+
+                MenuItem("About", textColor = Color(0xFF666666)) {
+                    onDismiss(); showAbout = true
+                }
             },
             sessionDropdownContent = {
                 SessionDropdown(
@@ -331,36 +330,41 @@ fun ChatScreen(service: SessionService) {
                         )
                     },
                     onNewSession = { showNewSessionDialog = true },
+                    knownDirs = workingDirStore?.allDirs()
+                        ?: listOf("Home (~)" to service.bootstrap!!.homeDir),
+                    onCreateSession = { cwd, dangerous, shell ->
+                        if (shell) {
+                            service.bootstrap?.let { bs ->
+                                service.sessionRegistry.createShellSession(bs, service.titlesDir)
+                            }
+                        } else {
+                            service.createSession(cwd, dangerous, null)
+                        }
+                    },
                 )
             },
         )
 
         Box(modifier = Modifier.weight(1f).fillMaxSize()) {
         if (currentSession == null) {
-            // No session active — show empty state with mascot
-            Box(modifier = Modifier.fillMaxSize()) {
-                // Settings gear — top left
-                Box(modifier = Modifier.align(Alignment.TopStart).padding(6.dp)) {
+            // No session — matches desktop's empty state
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF111111)),
+            ) {
+                // Settings gear — top left, no background (matches desktop)
+                Box(modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
                     var emptyMenuExpanded by remember { mutableStateOf(false) }
-                    val emptyBorderColor = com.destin.code.ui.theme.DestinCodeTheme.extended.surfaceBorder
 
-                    Box(
+                    Icon(
+                        com.destin.code.ui.theme.AppIcons.SettingsGear,
+                        contentDescription = "Settings",
+                        tint = Color(0xFF999999),
                         modifier = Modifier
-                            .height(34.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .border(0.5.dp, emptyBorderColor.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                            .clickable { emptyMenuExpanded = true }
-                            .padding(horizontal = 10.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Default.Settings,
-                            contentDescription = "Settings",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
+                            .size(16.dp)
+                            .clickable { emptyMenuExpanded = true },
+                    )
 
                     if (emptyMenuExpanded) {
                         ExpandingSettingsMenu(
@@ -385,8 +389,8 @@ fun ChatScreen(service: SessionService) {
                                                 Text(
                                                     if (mode == currentThemeMode) "●" else "○",
                                                     fontSize = 10.sp,
-                                                    color = if (mode == currentThemeMode) MaterialTheme.colorScheme.primary
-                                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                                    color = if (mode == currentThemeMode) Color(0xFFB0B0B0)
+                                                    else Color(0xFF999999).copy(alpha = 0.4f),
                                                 )
                                                 Text(mode.label, fontSize = 12.sp, fontFamily = com.destin.code.ui.theme.CascadiaMono)
                                             }
@@ -412,39 +416,218 @@ fun ChatScreen(service: SessionService) {
                 }
 
                 // Centered content
+                // pickerMode: null = show buttons, "normal" or "dangerous" = show project picker
+                var pickerMode by remember { mutableStateOf<String?>(null) }
+                val knownDirs = workingDirStore?.allDirs()
+                    ?: listOf("Home (~)" to (service.bootstrap?.homeDir ?: File("/")))
+                var selectedDir by remember { mutableStateOf(knownDirs.firstOrNull()?.second) }
+
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Icon(
-                        com.destin.code.ui.theme.AppIcons.AppIcon,
+                    // "No Active Session" heading
+                    Text(
+                        "No Active Session",
+                        fontSize = 20.sp,
+                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                        color = Color(0xFF666666),
+                    )
+
+                    // WelcomeAppIcon
+                    androidx.compose.foundation.Image(
+                        painter = androidx.compose.ui.res.painterResource(com.destin.code.R.drawable.ic_welcome_mascot),
                         contentDescription = "DestinCode mascot",
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                        modifier = Modifier.size(136.dp),
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "DestinCode",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "No active sessions",
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Button(
-                        onClick = { showNewSessionDialog = true },
-                        shape = RoundedCornerShape(8.dp),
-                    ) {
-                        Text("New Session")
+
+                    if (pickerMode == null) {
+                        // Button group — show both session buttons
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .widthIn(min = 200.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFFB0B0B0))
+                                    .clickable {
+                                        if (knownDirs.size <= 1) {
+                                            // Only home — skip picker, create immediately
+                                            service.createSession(knownDirs.first().second, false, null)
+                                        } else {
+                                            pickerMode = "normal"
+                                        }
+                                    }
+                                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    "New Session",
+                                    fontSize = 18.sp,
+                                    fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                    color = Color(0xFF111111),
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFFDD4444).copy(alpha = 0.4f))
+                                    .clickable {
+                                        if (knownDirs.size <= 1) {
+                                            service.createSession(knownDirs.first().second, true, null)
+                                        } else {
+                                            pickerMode = "dangerous"
+                                        }
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        "New Session",
+                                        fontSize = 18.sp,
+                                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFFCA5A5),
+                                    )
+                                    Text(
+                                        "Dangerous Mode",
+                                        fontSize = 10.sp,
+                                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                        color = Color(0xFFFCA5A5).copy(alpha = 0.7f),
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        // Project picker — inline directory list with Continue button
+                        val isDangerous = pickerMode == "dangerous"
+
+                        Column(
+                            modifier = Modifier
+                                .widthIn(max = 280.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF191919))
+                                .border(1.dp, Color(0xFF333333), RoundedCornerShape(8.dp))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                "PROJECT FOLDER",
+                                fontSize = 10.sp,
+                                fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                color = Color(0xFF666666),
+                                letterSpacing = 1.sp,
+                            )
+
+                            // Directory list
+                            knownDirs.forEach { (label, dir) ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .then(
+                                            if (selectedDir == dir) Modifier.background(Color(0xFF222222))
+                                            else Modifier
+                                        )
+                                        .clickable { selectedDir = dir }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        if (selectedDir == dir) "●" else "○",
+                                        fontSize = 10.sp,
+                                        color = if (selectedDir == dir) Color(0xFFB0B0B0) else Color(0xFF666666),
+                                        modifier = Modifier.padding(end = 8.dp),
+                                    )
+                                    Text(
+                                        label,
+                                        fontSize = 13.sp,
+                                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                        color = Color(0xFFE0E0E0),
+                                    )
+                                }
+                            }
+
+                            // Continue + Back buttons
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                // Back
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF333333))
+                                        .clickable { pickerMode = null }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        "Back",
+                                        fontSize = 13.sp,
+                                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                        color = Color(0xFFE0E0E0),
+                                    )
+                                }
+
+                                // Continue
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(
+                                            if (isDangerous) Color(0xFFDD4444).copy(alpha = 0.6f)
+                                            else Color(0xFFB0B0B0)
+                                        )
+                                        .clickable {
+                                            selectedDir?.let { dir ->
+                                                service.createSession(dir, isDangerous, null)
+                                            }
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        "Continue",
+                                        fontSize = 13.sp,
+                                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                        color = if (isDangerous) Color(0xFFFCA5A5) else Color(0xFF111111),
+                                    )
+                                }
+                            }
+                        }
                     }
+                }
+
+                // "Connect to Desktop" pinned at bottom
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 24.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .border(1.dp, Color(0xFF333333), RoundedCornerShape(6.dp))
+                        .clickable { remoteMode = true }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        "Connect to Desktop",
+                        fontSize = 13.sp,
+                        fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                        color = Color(0xFF666666),
+                    )
                 }
             }
         } else
-        when (screenMode) {
+        androidx.compose.animation.Crossfade(
+            targetState = screenMode,
+            animationSpec = androidx.compose.animation.core.tween(200),
+            label = "screenMode",
+        ) { mode -> when (mode) {
         ScreenMode.Terminal -> {
             val termFocusRequester = remember { FocusRequester() }
             val termViewClient = remember { BaseTerminalViewClient() }
@@ -555,7 +738,7 @@ fun ChatScreen(service: SessionService) {
         }
 
         ScreenMode.Shell -> {
-            val shellSession = currentSession ?: return@Box
+            val shellSession = currentSession ?: return@Crossfade
             val shellFocusRequester = remember { FocusRequester() }
             val shellViewClient = remember { BaseTerminalViewClient() }
             val shellScreenVersion by shellSession.screenVersion.collectAsState()
@@ -625,120 +808,85 @@ fun ChatScreen(service: SessionService) {
         }
 
         ScreenMode.Chat -> {
+            val reducer = currentSession?.chatReducer
+                ?: remember { com.destin.code.ui.state.ChatReducer() }
+
             Column(modifier = Modifier.fillMaxSize()) {
                 val borderColor = com.destin.code.ui.theme.DestinCodeTheme.extended.surfaceBorder
 
-                // Messages + activity indicator
-                // Group consecutive completed/failed tool calls into collapsible summaries.
-                // Recompute when list size changes OR when any tool state transitions
-                // (e.g. Running→Complete). activeToolName changes on transitions, making
-                // it a lightweight proxy for "some tool card changed state".
-                val displayItems = remember(
-                    chatState.messages.size,
-                    chatState.activeToolName,
-                    chatState.messageVersion,
-                    chatState.messages.lastOrNull()?.content,
-                ) {
-                    groupMessages(chatState.messages)
-                }
-                // Track which tool groups are expanded
-                val expandedGroups = remember { mutableStateMapOf<String, Boolean>() }
-
-                // Auto-scroll on new messages (uses displayItems count for correct index)
-                LaunchedEffect(chatState.messages.size) {
-                    if (displayItems.isNotEmpty()) {
-                        // +1 for the activity indicator item at the end
-                        listState.animateScrollToItem(displayItems.size)
-                    }
-                }
-
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(vertical = 8.dp),
-                ) {
-                    items(displayItems.size, key = { index ->
-                        when (val item = displayItems[index]) {
-                            is DisplayItem.Single -> item.message.id
-                            is DisplayItem.ToolGroup -> item.key
+                // New turn-based chat view
+                com.destin.code.ui.v2.ChatViewV2(
+                    reducer = reducer,
+                    onPromptAction = { promptId, input ->
+                        bridge?.writeInput(input)
+                        reducer.dispatch(
+                            com.destin.code.ui.state.ChatAction.CompletePrompt(
+                                promptId = promptId,
+                                selection = input,
+                            )
+                        )
+                        currentSession?.markPromptCompleted(promptId)
+                    },
+                    onAcceptTool = { tool ->
+                        reducer.dispatch(
+                            com.destin.code.ui.state.ChatAction.PermissionResponded(
+                                requestId = tool.requestId ?: "",
+                            )
+                        )
+                        if (tool.requestId != null) {
+                            val decision = org.json.JSONObject()
+                                .put("decision", org.json.JSONObject().put("behavior", "allow"))
+                            bridge?.getEventBridge()?.respond(tool.requestId, decision)
+                        } else {
+                            android.util.Log.w("ChatScreen", "onAcceptTool: no requestId, falling back to PTY")
+                            bridge?.sendApproval(com.destin.code.runtime.PtyBridge.ApprovalOption.Yes)
                         }
-                    }) { index ->
-                        when (val item = displayItems[index]) {
-                            is DisplayItem.ToolGroup -> {
-                                ToolGroupCard(
-                                    messages = item.messages,
-                                    isExpanded = expandedGroups[item.key] == true,
-                                    onToggle = {
-                                        expandedGroups[item.key] = expandedGroups[item.key] != true
-                                    },
-                                    expandedCardId = chatState.expandedCardId,
-                                    onToggleCard = { chatState.toggleCard(it) },
-                                )
+                    },
+                    onAcceptAlwaysTool = { tool ->
+                        reducer.dispatch(
+                            com.destin.code.ui.state.ChatAction.PermissionResponded(
+                                requestId = tool.requestId ?: "",
+                            )
+                        )
+                        if (tool.requestId != null && !tool.permissionSuggestions.isNullOrEmpty()) {
+                            // Parse the suggestion string back to a JSON object
+                            val suggestionObj = try {
+                                org.json.JSONObject(tool.permissionSuggestions[0])
+                            } catch (_: Exception) {
+                                // If it's not valid JSON, use it as a string
+                                null
                             }
-                            is DisplayItem.Single -> {
-                                val message = item.message
-                                val approval = message.content as? MessageContent.ToolAwaitingApproval
-                                val toolUseId = approval?.toolUseId
-                                MessageBubble(
-                                    message = message,
-                                    expandedCardId = chatState.expandedCardId,
-                                    onToggleCard = { chatState.toggleCard(it) },
-                                    onAcceptApproval = {
-                                        toolUseId?.let { chatState.revertApprovalToRunning(it) }
-                                        if (approval?.requestId != null) {
-                                            val decision = org.json.JSONObject()
-                                                .put("decision", org.json.JSONObject().put("behavior", "allow"))
-                                            bridge?.getEventBridge()?.respond(approval.requestId, decision)
-                                        } else {
-                                            bridge?.sendApproval(com.destin.code.runtime.PtyBridge.ApprovalOption.Yes)
-                                        }
-                                    },
-                                    onAcceptAlwaysApproval = {
-                                        toolUseId?.let { chatState.revertApprovalToRunning(it) }
-                                        if (approval?.requestId != null && approval.permissionSuggestions != null && approval.permissionSuggestions.length() > 0) {
-                                            val decision = org.json.JSONObject()
-                                                .put("decision", org.json.JSONObject()
-                                                    .put("behavior", "allow")
-                                                    .put("updatedPermissions", org.json.JSONArray().put(approval.permissionSuggestions.get(0))))
-                                            bridge?.getEventBridge()?.respond(approval.requestId, decision)
-                                        } else {
-                                            bridge?.sendApproval(com.destin.code.runtime.PtyBridge.ApprovalOption.YesAlways)
-                                        }
-                                    },
-                                    onRejectApproval = {
-                                        toolUseId?.let { chatState.revertApprovalToRunning(it) }
-                                        if (approval?.requestId != null) {
-                                            val decision = org.json.JSONObject()
-                                                .put("decision", org.json.JSONObject().put("behavior", "deny"))
-                                            bridge?.getEventBridge()?.respond(approval.requestId, decision)
-                                        } else {
-                                            bridge?.sendApproval(com.destin.code.runtime.PtyBridge.ApprovalOption.No)
-                                        }
-                                    },
-                                    onPromptAction = { promptId, input ->
-                                        bridge?.writeInput(input)
-                                        val currentMsg = chatState.messages.lastOrNull {
-                                            (it.content as? MessageContent.InteractivePrompt)?.promptId == promptId
-                                        }
-                                        val prompt = currentMsg?.content as? MessageContent.InteractivePrompt
-                                        val label = prompt?.buttons?.find { it.input == input }?.label ?: input
-                                        chatState.completePrompt(promptId, label)
-                                        currentSession?.markPromptCompleted(promptId)
-                                    },
-                                    session = bridge?.getSession(),
-                                    screenVersion = 0,
-                                )
+                            val permsArray = org.json.JSONArray()
+                            if (suggestionObj != null) {
+                                permsArray.put(suggestionObj)
+                            } else {
+                                permsArray.put(tool.permissionSuggestions[0])
                             }
+                            val decision = org.json.JSONObject()
+                                .put("decision", org.json.JSONObject()
+                                    .put("behavior", "allow")
+                                    .put("updatedPermissions", permsArray))
+                            bridge?.getEventBridge()?.respond(tool.requestId, decision)
+                        } else {
+                            bridge?.sendApproval(com.destin.code.runtime.PtyBridge.ApprovalOption.YesAlways)
                         }
-                    }
-                    item {
-                        var now by remember { mutableStateOf(System.currentTimeMillis()) }
-                        LaunchedEffect(Unit) { while (true) { delay(500); now = System.currentTimeMillis() } }
-                        val ptyActive = (now - lastPtyOutput) < 2000
-                        val hasActiveTool = chatState.activeToolName != null
-                        ActivityIndicator(isActive = ptyActive && !hasActiveTool)
-                    }
-                }
+                    },
+                    onRejectTool = { tool ->
+                        reducer.dispatch(
+                            com.destin.code.ui.state.ChatAction.PermissionResponded(
+                                requestId = tool.requestId ?: "",
+                            )
+                        )
+                        if (tool.requestId != null) {
+                            val decision = org.json.JSONObject()
+                                .put("decision", org.json.JSONObject().put("behavior", "deny"))
+                            bridge?.getEventBridge()?.respond(tool.requestId, decision)
+                        } else {
+                            bridge?.sendApproval(com.destin.code.runtime.PtyBridge.ApprovalOption.No)
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                )
 
                 HorizontalDivider(color = borderColor, thickness = 0.5.dp)
 
@@ -781,104 +929,136 @@ fun ChatScreen(service: SessionService) {
                     }
                 }
 
-                // Input row
+                // Input row — matches desktop: bg-gray-800 rounded-xl with icons inline
+                val isAwaitingApproval = reducer.isAwaitingApproval()
+                val inputIconColor = com.destin.code.ui.v2.ThemedColors.inputBarIcon
+
+                // Send action extracted for reuse
+                val sendMessage = {
+                    val text = chatState.inputDraft.text
+                    if (text.isNotBlank() || attachmentPaths.isNotEmpty()) {
+                        val messageText = buildString {
+                            for (path in attachmentPaths) {
+                                appendLine("[File attached: $path]")
+                            }
+                            if (attachmentPaths.isNotEmpty()) appendLine()
+                            append(text)
+                        }.trim()
+                        val imageCount = attachmentPaths.size
+                        val displayText = when {
+                            imageCount > 1 && text.isBlank() -> "[$imageCount images]"
+                            imageCount == 1 && text.isBlank() -> "[image]"
+                            imageCount > 0 -> "[$imageCount image${if (imageCount > 1) "s" else ""}] $text"
+                            else -> text
+                        }
+                        chatState.addUserMessage(displayText)
+                        bridge?.writeInput(messageText + "\r")
+                        chatState.clearDraft()
+                        reducer.state.isThinking = true
+                        attachmentPaths = emptyList()
+                        attachmentBitmap = null
+                    }
+                }
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.background)
-                        .padding(horizontal = 6.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
                 ) {
-                    Box(
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 42.dp, max = 120.dp)
-                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .border(0.5.dp, borderColor.copy(alpha = 0.5f), androidx.compose.foundation.shape.RoundedCornerShape(6.dp)),
-                        contentAlignment = Alignment.TopStart,
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(com.destin.code.ui.v2.ThemedColors.inputBarBg)
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        val inputScrollState = rememberScrollState()
-                        BasicTextField(
-                            value = chatState.inputDraft,
-                            onValueChange = { chatState.inputDraft = it },
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                            singleLine = false,
-                            maxLines = 5,
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                fontSize = 14.sp,
-                                fontFamily = com.destin.code.ui.theme.CascadiaMono,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            ),
+                        // Attach icon (desktop: AttachIcon w-5 h-5)
+                        Icon(
+                            com.destin.code.ui.theme.AppIcons.Attach,
+                            contentDescription = "Attach file",
+                            tint = if (attachmentPaths.isNotEmpty()) com.destin.code.ui.v2.ThemedColors.inputBarText else inputIconColor,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 10.dp)
-                                .verticalScroll(inputScrollState),
-                            decorationBox = { innerTextField ->
-                                Box(modifier = Modifier.fillMaxWidth()) {
-                                    Box(modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(end = 24.dp)) {
+                                .size(20.dp)
+                                .clickable(enabled = !isAwaitingApproval) {
+                                    filePickerLauncher.launch("*/*")
+                                }
+                                .alpha(if (isAwaitingApproval) 0.3f else 1f),
+                        )
+
+                        // Compass icon (desktop: CompassIcon w-5 h-5 — browse skills)
+                        Icon(
+                            com.destin.code.ui.theme.AppIcons.Compass,
+                            contentDescription = "Browse skills",
+                            tint = inputIconColor,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable(enabled = !isAwaitingApproval) {
+                                    // TODO: open command drawer
+                                }
+                                .alpha(if (isAwaitingApproval) 0.3f else 1f),
+                        )
+
+                        // Text input (desktop: flex-1 bg-transparent)
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 20.dp, max = 100.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            val inputScrollState = rememberScrollState()
+                            BasicTextField(
+                                value = chatState.inputDraft,
+                                onValueChange = { chatState.inputDraft = it },
+                                cursorBrush = SolidColor(com.destin.code.ui.v2.ThemedColors.inputBarCursor),
+                                singleLine = false,
+                                maxLines = 3,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    fontSize = 14.sp,
+                                    fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                    color = com.destin.code.ui.v2.ThemedColors.inputBarText,
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(inputScrollState),
+                                decorationBox = { innerTextField ->
+                                    Box {
                                         if (chatState.inputDraft.text.isEmpty()) {
-                                            Text("Type a message...", fontSize = 14.sp,
-                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f))
+                                            Text(
+                                                if (isAwaitingApproval) "Waiting for approval..." else "Message Claude...",
+                                                fontSize = 14.sp,
+                                                color = com.destin.code.ui.v2.ThemedColors.inputBarPlaceholder,
+                                                fontFamily = com.destin.code.ui.theme.CascadiaMono,
+                                            )
                                         }
                                         innerTextField()
                                     }
-                                    Icon(
-                                        com.destin.code.ui.theme.AppIcons.Attach,
-                                        contentDescription = "Attach file",
-                                        tint = if (attachmentPaths.isNotEmpty())
-                                            Color(0xFFB0B0B0)
-                                        else
-                                            Color(0xFF555555),
-                                        modifier = Modifier
-                                            .size(20.dp)
-                                            .align(Alignment.BottomEnd)
-                                            .clickable {
-                                                filePickerLauncher.launch("*/*")
-                                            },
-                                    )
-                                }
-                            },
-                        )
-                    }
+                                },
+                            )
+                        }
 
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                            .border(0.5.dp, borderColor.copy(alpha = 0.5f), androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                            .clickable {
-                                val text = chatState.inputDraft.text
-                                if (text.isNotBlank() || attachmentPaths.isNotEmpty()) {
-                                    val messageText = buildString {
-                                        for (path in attachmentPaths) {
-                                            appendLine("[File attached: $path]")
-                                        }
-                                        if (attachmentPaths.isNotEmpty()) appendLine()
-                                        append(text)
-                                    }.trim()
-                                    val imageCount = attachmentPaths.size
-                                    val displayText = when {
-                                        imageCount > 1 && text.isBlank() -> "[$imageCount images]"
-                                        imageCount == 1 && text.isBlank() -> "[image]"
-                                        imageCount > 0 -> "[$imageCount image${if (imageCount > 1) "s" else ""}] $text"
-                                        else -> text
-                                    }
-                                    chatState.addUserMessage(displayText)
-                                    bridge?.writeInput(messageText + "\r")
-                                    chatState.clearDraft()
-                                    attachmentPaths = emptyList()
-                                    attachmentBitmap = null
-                                }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send",
-                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                        // Send button (desktop: w-7 h-7 bg-gray-300 rounded-lg)
+                        val canSend = chatState.inputDraft.text.isNotBlank() || attachmentPaths.isNotEmpty()
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (canSend && !isAwaitingApproval) com.destin.code.ui.v2.ThemedColors.sendButtonBg
+                                    else com.destin.code.ui.v2.ThemedColors.sendButtonBg.copy(alpha = 0.3f)
+                                )
+                                .clickable(enabled = canSend && !isAwaitingApproval) { sendMessage() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                com.destin.code.ui.theme.AppIcons.ArrowRight,
+                                contentDescription = "Send",
+                                tint = com.destin.code.ui.v2.ThemedColors.sendButtonIcon,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
                 }
 
@@ -892,7 +1072,7 @@ fun ChatScreen(service: SessionService) {
             }
         }
 
-        } // when
+        } } // Crossfade + when
         } // Box(weight)
     } // Column(fillMaxSize)
 
@@ -1151,6 +1331,38 @@ private fun TerminalInputBar(
             hasBypassMode = hasBypassMode,
             onPermissionCycle = onPermissionCycle,
         )
+    }
+}
+
+/** Styled settings menu item matching desktop dark panel aesthetic. */
+@Composable
+private fun MenuItem(
+    label: String,
+    textColor: Color = Color(0xFFE0E0E0),
+    trailing: String? = null,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            label,
+            fontSize = 13.sp,
+            fontFamily = com.destin.code.ui.theme.CascadiaMono,
+            color = textColor,
+        )
+        if (trailing != null) {
+            Text(
+                trailing,
+                fontSize = 10.sp,
+                color = Color(0xFF666666),
+            )
+        }
     }
 }
 

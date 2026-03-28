@@ -1,5 +1,6 @@
 package com.destin.code.runtime
 
+import com.destin.code.parser.TranscriptWatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,12 +43,16 @@ class SessionRegistry {
             mobileSessionId = sessionId,
         )
 
+        val projectsDir = File(bootstrap.homeDir, ".claude/projects")
+        val transcriptWatcher = TranscriptWatcher(projectsDir, scope)
+
         val session = ManagedSession(
             id = sessionId,
             cwd = cwd,
             homeDir = bootstrap.homeDir,
             dangerousMode = dangerousMode,
             ptyBridge = bridge,
+            transcriptWatcher = transcriptWatcher,
             titleFile = titleFile,
             scope = scope,
         )
@@ -56,6 +61,9 @@ class SessionRegistry {
         bridge.startEventBridge(scope)
         bridge.start()
         session.startTitleObserver()
+
+        // Wire up the current-session check for blue dot logic
+        session.isCurrentSession = { _currentSessionId.value == sessionId }
 
         // Start background collectors (hook events, status polling, approval observer)
         session.startBackgroundCollectors()
@@ -68,7 +76,16 @@ class SessionRegistry {
 
     fun switchTo(sessionId: String) {
         if (_sessions.value.containsKey(sessionId)) {
+            // Notify the old session so it can re-derive status (may turn blue)
+            val oldId = _currentSessionId.value
+            if (oldId != null && oldId != sessionId) {
+                _sessions.value[oldId]?.notifyViewedStateChanged()
+            }
+            // Switch and mark viewed
             _currentSessionId.value = sessionId
+            val session = _sessions.value[sessionId]
+            session?.hasBeenViewed = true
+            session?.notifyViewedStateChanged()
         }
     }
 

@@ -1,5 +1,11 @@
 package com.destin.code.ui
 
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,10 +21,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
@@ -26,7 +31,12 @@ import androidx.compose.ui.window.PopupProperties
 import com.destin.code.runtime.ManagedSession
 import com.destin.code.runtime.SessionStatus
 import com.destin.code.ui.theme.CascadiaMono
+import com.destin.code.ui.v2.DesktopColors as DC
+import java.io.File
 
+/**
+ * Session trigger pill — matches desktop's SessionSelector trigger.
+ */
 @Composable
 fun SessionSwitcherPill(
     currentSession: ManagedSession?,
@@ -37,49 +47,38 @@ fun SessionSwitcherPill(
     val name by currentSession?.name?.collectAsState() ?: remember { mutableStateOf("No Session") }
     val status by currentSession?.status?.collectAsState() ?: remember { mutableStateOf(SessionStatus.Dead) }
 
-    val borderColor = com.destin.code.ui.theme.DestinCodeTheme.extended.surfaceBorder
-    // Detect if name overflows a single line at full size to switch modes.
-    // Reset when name changes; only transition single → multi, never back
-    // (prevents layout oscillation where 13sp overflows but 11sp fits).
-    var needsMultiLine by remember(name) { mutableStateOf(false) }
-    val singleLineFontSize = 13.sp
-    val multiLineFontSize = 11.sp
-    val multiLineHeight = 14.sp
-
     Row(
         modifier = modifier
             .widthIn(max = 180.dp)
-            .then(if (needsMultiLine) Modifier.heightIn(max = 38.dp) else Modifier.height(34.dp))
+            .height(34.dp)
             .clip(RoundedCornerShape(6.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .border(0.5.dp, borderColor.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
             .clickable { onToggle() }
-            .padding(horizontal = 10.dp, vertical = if (needsMultiLine) 4.dp else 0.dp),
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         StatusDot(status)
         Text(
             name,
-            fontSize = if (needsMultiLine) multiLineFontSize else singleLineFontSize,
-            lineHeight = if (needsMultiLine) multiLineHeight else TextUnit.Unspecified,
-            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 13.sp,
+            color = DC.gray200,
             fontFamily = CascadiaMono,
-            maxLines = if (needsMultiLine) 2 else 1,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false),
-            onTextLayout = { result ->
-                if (result.hasVisualOverflow) needsMultiLine = true
-            },
         )
         Text(
-            "▾",
+            if (expanded) "▴" else "▾",
             fontSize = 10.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            color = DC.gray400,
         )
     }
 }
 
+/**
+ * Session dropdown — matches desktop's SessionSelector dropdown.
+ * "New Session" expands an inline form with folder picker + skip permissions toggle.
+ */
 @Composable
 fun SessionDropdown(
     expanded: Boolean,
@@ -90,15 +89,21 @@ fun SessionDropdown(
     onDestroy: (String) -> Unit,
     onRelaunch: (String) -> Unit,
     onNewSession: () -> Unit,
+    knownDirs: List<Pair<String, File>>? = null,
+    onCreateSession: ((cwd: File, dangerous: Boolean, shell: Boolean) -> Unit)? = null,
 ) {
     if (!expanded) return
+
+    var showNewForm by remember { mutableStateOf(false) }
+    var selectedDir by remember { mutableStateOf(knownDirs?.firstOrNull()?.second) }
+    var dangerous by remember { mutableStateOf(false) }
+    var shellMode by remember { mutableStateOf(false) }
 
     Popup(
         alignment = Alignment.TopCenter,
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true),
     ) {
-        // Scrim + centered card
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -108,92 +113,245 @@ fun SessionDropdown(
                 ) { onDismiss() },
             contentAlignment = Alignment.TopCenter,
         ) {
-            Card(
+            Column(
                 modifier = Modifier
-                    .padding(top = 48.dp, start = 16.dp, end = 16.dp)
-                    .widthIn(max = 320.dp)
-                    .shadow(8.dp, RoundedCornerShape(12.dp))
+                    .padding(top = 48.dp)
+                    .widthIn(max = 288.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(DC.gray900)
+                    .border(1.dp, DC.gray700, RoundedCornerShape(8.dp))
                     .clickable(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() },
-                    ) { /* consume clicks so they don't hit the scrim */ },
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
+                    ) { /* consume */ }
+                    .padding(vertical = 4.dp),
             ) {
-                Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                    sessions.entries.sortedBy { it.value.createdAt }.forEach { (id, session) ->
-                        val name by session.name.collectAsState()
-                        val status by session.status.collectAsState()
-                        val isCurrent = id == currentSessionId
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onSelect(id); onDismiss() }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            StatusDot(status)
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    name,
-                                    fontSize = 13.sp,
-                                    fontFamily = CascadiaMono,
-                                    color = if (isCurrent) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.onSurface,
-                                )
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        session.cwd.name,
-                                        fontSize = 11.sp,
-                                        fontFamily = CascadiaMono,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                                    )
-                                    if (session.dangerousMode) {
-                                        Text(
-                                            "SKIP PERMISSIONS",
-                                            fontSize = 9.sp,
-                                            fontFamily = CascadiaMono,
-                                            color = MaterialTheme.colorScheme.error,
-                                        )
-                                    }
-                                }
-                            }
-                            if (status == SessionStatus.Dead) {
-                                TextButton(onClick = { onRelaunch(id); onDismiss() }) {
-                                    Text("Relaunch", fontSize = 11.sp)
-                                }
-                            } else {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Close session",
-                                    modifier = Modifier
-                                        .size(18.dp)
-                                        .clickable { onDestroy(id); onDismiss() },
-                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(horizontal = 8.dp))
+                // Session list
+                sessions.entries.sortedBy { it.value.createdAt }.forEach { (id, session) ->
+                    val name by session.name.collectAsState()
+                    val status by session.status.collectAsState()
+                    val isCurrent = id == currentSessionId
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onNewSession(); onDismiss() }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .then(if (isCurrent) Modifier.background(DC.gray800) else Modifier)
+                            .clickable { onSelect(id); onDismiss() }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        StatusDot(status)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    name,
+                                    fontSize = 13.sp,
+                                    fontFamily = CascadiaMono,
+                                    color = DC.gray200,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                if (session.dangerousMode) {
+                                    Text("DANGER", fontSize = 9.sp, fontFamily = CascadiaMono, color = DC.red400)
+                                }
+                            }
+                            Text(
+                                session.cwd.name,
+                                fontSize = 11.sp,
+                                fontFamily = CascadiaMono,
+                                color = DC.gray500,
+                            )
+                        }
+                        if (status == SessionStatus.Dead) {
+                            Text(
+                                "Relaunch",
+                                fontSize = 11.sp,
+                                fontFamily = CascadiaMono,
+                                color = DC.gray400,
+                                modifier = Modifier.clickable { onRelaunch(id); onDismiss() },
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Close session",
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { onDestroy(id); onDismiss() },
+                                tint = DC.gray500,
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = DC.gray700, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+
+                if (!showNewForm) {
+                    // "New Session" button
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (knownDirs != null && onCreateSession != null) {
+                                    showNewForm = true
+                                } else {
+                                    onNewSession(); onDismiss()
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = "New session", modifier = Modifier.size(16.dp))
-                        Text("New Session", fontSize = 13.sp, fontFamily = CascadiaMono)
+                        Icon(Icons.Default.Add, contentDescription = "New session", modifier = Modifier.size(16.dp), tint = DC.gray400)
+                        Text("New Session", fontSize = 13.sp, fontFamily = CascadiaMono, color = DC.gray200)
+                    }
+                } else {
+                    // ─── Inline new session form (matches desktop) ───
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        // Folder picker
+                        Text(
+                            "PROJECT FOLDER",
+                            fontSize = 10.sp,
+                            fontFamily = CascadiaMono,
+                            color = DC.gray500,
+                            letterSpacing = 1.sp,
+                        )
+
+                        // Directory list
+                        knownDirs?.forEach { (label, dir) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .then(if (selectedDir == dir) Modifier.background(DC.gray800) else Modifier)
+                                    .clickable { selectedDir = dir }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    if (selectedDir == dir) "●" else "○",
+                                    fontSize = 8.sp,
+                                    color = if (selectedDir == dir) DC.gray300 else DC.gray500,
+                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                                Text(
+                                    label,
+                                    fontSize = 12.sp,
+                                    fontFamily = CascadiaMono,
+                                    color = DC.gray300,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+
+                        // Skip Permissions toggle — desktop: w-8 h-4.5 custom switch
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "SKIP PERMISSIONS",
+                                fontSize = 10.sp,
+                                fontFamily = CascadiaMono,
+                                color = DC.gray500,
+                                letterSpacing = 1.sp,
+                            )
+                            // Custom toggle matching desktop: w-8 h-4.5 rounded-full
+                            Box(
+                                modifier = Modifier
+                                    .width(32.dp)
+                                    .height(18.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(if (dangerous) DC.red400 else DC.gray700)
+                                    .clickable { dangerous = !dangerous },
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .offset(x = if (dangerous) 16.dp else 2.dp, y = 2.dp)
+                                        .size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White),
+                                )
+                            }
+                        }
+
+                        // Warning text when dangerous
+                        if (dangerous) {
+                            Text(
+                                "Claude will execute tools without asking for approval.",
+                                fontSize = 10.sp,
+                                fontFamily = CascadiaMono,
+                                color = DC.red400,
+                            )
+                        }
+
+                        // Shell Mode toggle
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "SHELL MODE",
+                                fontSize = 10.sp,
+                                fontFamily = CascadiaMono,
+                                color = DC.gray500,
+                                letterSpacing = 1.sp,
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .width(32.dp)
+                                    .height(18.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(if (shellMode) DC.gray300 else DC.gray700)
+                                    .clickable { shellMode = !shellMode },
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .offset(x = if (shellMode) 16.dp else 2.dp, y = 2.dp)
+                                        .size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White),
+                                )
+                            }
+                        }
+
+                        // Create button — red when dangerous, gray otherwise
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (dangerous) DC.red400 else DC.gray300)
+                                .clickable {
+                                    selectedDir?.let { dir ->
+                                        onCreateSession?.invoke(dir, dangerous, shellMode)
+                                        onDismiss()
+                                    }
+                                }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                when {
+                                    shellMode -> "Create Shell"
+                                    dangerous -> "Create (Dangerous)"
+                                    else -> "Create Session"
+                                },
+                                fontSize = 13.sp,
+                                fontFamily = CascadiaMono,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                                color = if (dangerous) Color.White else DC.gray950,
+                            )
+                        }
                     }
                 }
             }
@@ -201,18 +359,96 @@ fun SessionDropdown(
     }
 }
 
+/**
+ * Status dot — matches desktop's StatusDot.tsx exactly.
+ * - green/red: pulsing glow animation (active/awaiting)
+ * - gray: solid (idle/dead)
+ *
+ * Desktop: container w-2 h-2, core dot w-1.5 h-1.5,
+ * green/red get animate-ping on outer glow layer.
+ */
 @Composable
 fun StatusDot(status: SessionStatus, modifier: Modifier = Modifier) {
-    val color = when (status) {
-        SessionStatus.Active -> Color(0xFF4CAF50)
-        SessionStatus.AwaitingApproval -> Color(0xFFFF9800)
-        SessionStatus.Idle -> Color(0xFF666666)
-        SessionStatus.Dead -> Color(0xFFDD4444)
+    val dotColor = when (status) {
+        SessionStatus.Active -> DC.green400.copy(alpha = 0.8f)
+        SessionStatus.AwaitingApproval -> DC.red400.copy(alpha = 0.8f)
+        SessionStatus.Unseen -> Color(0xFF60A5FA).copy(alpha = 0.7f) // blue-400/70
+        SessionStatus.Idle -> DC.gray500.copy(alpha = 0.5f)
+        SessionStatus.Dead -> DC.gray500.copy(alpha = 0.5f)
     }
-    Box(
-        modifier = modifier
-            .size(8.dp)
-            .clip(CircleShape)
-            .background(color)
+    val glowColor = when (status) {
+        SessionStatus.Active -> DC.green400.copy(alpha = 0.3f)
+        SessionStatus.AwaitingApproval -> DC.red400.copy(alpha = 0.3f)
+        else -> null
+    }
+    val pulsing = status == SessionStatus.Active || status == SessionStatus.AwaitingApproval
+
+    if (pulsing && glowColor != null) {
+        PulsingStatusDot(dotColor = dotColor, glowColor = glowColor, modifier = modifier)
+    } else {
+        // Static dot
+        Box(
+            modifier = modifier.size(8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(dotColor),
+            )
+        }
+    }
+}
+
+@Composable
+private fun PulsingStatusDot(
+    dotColor: Color,
+    glowColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val transition = rememberInfiniteTransition(label = "ping")
+    val scale by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "pingScale",
     )
+    val alpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "pingAlpha",
+    )
+
+    Box(
+        modifier = modifier.size(8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Glow ping layer
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    this.alpha = alpha
+                }
+                .clip(CircleShape)
+                .background(glowColor),
+        )
+        // Core dot
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+    }
 }

@@ -28,7 +28,13 @@ class EventBridge(private val socketName: String) {
     /** Maps mobile session IDs to Claude Code session IDs. */
     private val sessionIdMap = ConcurrentHashMap<String, String>()
 
+    /** Maps mobile session IDs to transcript file paths (extracted from hook events). */
+    private val transcriptPathMap = ConcurrentHashMap<String, String>()
+
     fun getClaudeSessionId(mobileSessionId: String): String? = sessionIdMap[mobileSessionId]
+
+    /** Get the transcript JSONL path for a session, as reported by Claude Code. */
+    fun getTranscriptPath(mobileSessionId: String): String? = transcriptPathMap[mobileSessionId]
 
     @Volatile private var serverSocket: LocalServerSocket? = null
     private var listenJob: Job? = null
@@ -87,6 +93,12 @@ class EventBridge(private val socketName: String) {
                 sessionIdMap[mobileSessionId] = claudeSessionId
             }
 
+            // Extract transcript path if present (Claude Code includes this on every hook event)
+            val transcriptPath = json.optString("transcript_path", "")
+            if (mobileSessionId.isNotBlank() && transcriptPath.isNotBlank()) {
+                transcriptPathMap[mobileSessionId] = transcriptPath
+            }
+
             if (eventName == "PermissionRequest") {
                 // Hold socket open for blocking response
                 val requestId = UUID.randomUUID().toString()
@@ -122,13 +134,18 @@ class EventBridge(private val socketName: String) {
 
     /** Send a decision back through a held PermissionRequest socket. */
     fun respond(requestId: String, decision: JSONObject) {
-        val socket = pendingSockets.remove(requestId) ?: return
+        val socket = pendingSockets.remove(requestId)
+        if (socket == null) {
+            android.util.Log.e("EventBridge", "No pending socket for requestId=$requestId")
+            return
+        }
         try {
-            socket.outputStream.write((decision.toString() + "\n").toByteArray())
+            val payload = decision.toString() + "\n"
+            socket.outputStream.write(payload.toByteArray())
             socket.outputStream.flush()
             socket.close()
         } catch (e: Exception) {
-            android.util.Log.w("EventBridge", "respond() failed (relay timeout?)", e)
+            android.util.Log.e("EventBridge", "respond() write failed", e)
         }
     }
 
