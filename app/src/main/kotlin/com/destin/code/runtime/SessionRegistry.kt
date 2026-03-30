@@ -179,28 +179,8 @@ class SessionRegistry {
             resumeSessionId = pastSession.sessionId,
         )
 
-        // Load history on IO thread to avoid ANR on large files
-        val projectsDir = File(bootstrap.homeDir, ".claude/projects")
-        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
-            val result = SessionBrowser.loadHistory(
-                projectsDir, pastSession.projectSlug, pastSession.sessionId,
-            )
-            if (result.messages.isNotEmpty()) {
-                val entries = result.messages.map { msg ->
-                    com.destin.code.ui.state.HistoryEntry(msg.role, msg.content, msg.timestamp)
-                }
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    session.chatReducer.dispatch(
-                        com.destin.code.ui.state.ChatAction.HistoryLoaded(
-                            messages = entries,
-                            hasMore = result.hasMore,
-                            claudeSessionId = pastSession.sessionId,
-                            projectSlug = pastSession.projectSlug,
-                        )
-                    )
-                }
-            }
-        }
+        // History for resumed sessions is now handled entirely by the React UI
+        // via TranscriptWatcher forwarding — no need to load it here.
 
         return session
     }

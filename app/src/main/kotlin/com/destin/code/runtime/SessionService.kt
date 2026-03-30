@@ -280,7 +280,7 @@ class SessionService : Service() {
                         id = id, name = session.name.value,
                         cwd = session.cwd.absolutePath,
                         status = session.status.value.name.lowercase(),
-                        permissionMode = session.chatReducer.state.permissionMode,
+                        permissionMode = session.permissionMode,
                         dangerous = session.dangerousMode
                     )
                 }
