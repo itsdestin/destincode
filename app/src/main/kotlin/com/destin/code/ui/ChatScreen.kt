@@ -685,7 +685,6 @@ fun ChatScreen(service: SessionService) {
                     draft = (currentSession?.inputDraft ?: fallbackDraft.value),
                     onDraftChange = { currentSession?.let { s -> s.inputDraft = it } ?: run { fallbackDraft.value = it } },
                     onSend = { text ->
-                        if (text.isNotBlank()) chatState.addUserMessage(text)
                         bridge?.writeInput(text + "\r")
                         currentSession?.clearDraft() ?: run { fallbackDraft.value = TextFieldValue() }
                     },

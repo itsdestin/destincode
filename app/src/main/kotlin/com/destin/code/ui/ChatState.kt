@@ -4,45 +4,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import org.json.JSONObject
 import java.util.UUID
 import com.destin.code.ui.state.PromptButton
 
-enum class MessageRole { USER, CLAUDE, SYSTEM }
+enum class MessageRole { SYSTEM }
 
 sealed class MessageContent {
-    data class Text(val text: String) : MessageContent()
-    data class Response(val markdown: String) : MessageContent()
-    data class ToolRunning(
-        val cardId: String,
-        val toolUseId: String,
-        val tool: String,
-        val args: String,
-    ) : MessageContent()
-    data class ToolAwaitingApproval(
-        val cardId: String,
-        val toolUseId: String,
-        val tool: String,
-        val args: String,
-        val hasAlwaysOption: Boolean = true,
-        val requestId: String? = null,
-        val permissionSuggestions: org.json.JSONArray? = null,
-    ) : MessageContent()
-    data class ToolComplete(
-        val cardId: String,
-        val toolUseId: String,
-        val tool: String,
-        val args: String,
-        val result: JSONObject,
-    ) : MessageContent()
-    data class ToolFailed(
-        val cardId: String,
-        val toolUseId: String,
-        val tool: String,
-        val args: String,
-        val error: JSONObject,
-    ) : MessageContent()
-    data class SystemNotice(val text: String) : MessageContent()
     data class InteractivePrompt(
         val promptId: String,
         val title: String,
@@ -58,237 +25,24 @@ sealed class MessageContent {
 data class ChatMessage(
     val role: MessageRole,
     val content: MessageContent,
-    val isBtw: Boolean = false,
-    val timestamp: Long = System.currentTimeMillis(),
     val id: String = UUID.randomUUID().toString(),
-    val isQueued: Boolean = false,
 )
 
+/**
+ * Legacy v1 state â€” retained only for prompt detection dual-writes
+ * and permission mode tracking during the transition period.
+ * All tool/response/queue infrastructure has been removed;
+ * the v2 ChatReducer is now the source of truth for chat state.
+ */
 class ChatState {
     val messages = mutableStateListOf<ChatMessage>()
+
     /** Claude Code's current permission mode, detected from status bar */
     var permissionMode: String by mutableStateOf("Normal")
 
-    /** Current tool being worked on — for activity indicator text */
-    var activeToolName: String? by mutableStateOf(null)
-
-    /** True while the assistant is processing a user message (between send and Stop) */
-    var isProcessing: Boolean by mutableStateOf(false)
-        private set
-
-    /** Timestamp when processing started — for timeout detection */
-    private var processingStartedAt = 0L
-
-    /** Timestamp of the most recent hook event in the current processing cycle (0 = none yet) */
-    private var lastHookEventAt = 0L
-
-    private var nextCardId = 0
-    private fun nextId(): String = "card-${nextCardId++}"
-
-    // Insertion cursor — Assistant events (tools, responses) insert here,
-    // which is always before any queued user messages.
-    private var insertPos = 0
-
-    // IDs of user messages waiting for the assistant to process them
-    private val queuedIds = mutableListOf<String>()
-
-    /** Reset stale processing state based on time since last hook event.
-     *  - No hooks received at all: 15s timeout (assistant never saw the message)
-     *  - Hooks started but stalled: 30s since last hook (Stop event likely lost)
-     *  Called both from addUserMessage() and periodically from ManagedSession. */
-    private fun resetStaleProcessing() {
-        if (!isProcessing) return
-        val now = System.currentTimeMillis()
-        val sinceStart = now - processingStartedAt
-        val sinceLastHook = if (lastHookEventAt > 0) now - lastHookEventAt else Long.MAX_VALUE
-        // 15s with no hooks at all, or 30s since last hook event
-        if ((lastHookEventAt == 0L && sinceStart > 15_000) ||
-            (lastHookEventAt > 0L && sinceLastHook > 30_000)) {
-            forceResetProcessing()
-        }
-    }
-
-    /** Callable from ManagedSession for periodic health checks and session death cleanup. */
-    fun resetStaleProcessingPeriodic() {
-        resetStaleProcessing()
-    }
-
-    /** Force-clear all processing state and unqueue all messages. */
-    private fun forceResetProcessing() {
-        isProcessing = false
-        queuedIds.clear()
-        for (i in messages.indices) {
-            if (messages[i].isQueued) {
-                messages[i] = messages[i].copy(isQueued = false)
-            }
-        }
-        insertPos = messages.size
-        activeToolName = null
-    }
-
-    fun addUserMessage(text: String, isBtw: Boolean = false) {
-        resetStaleProcessing()
-        val shouldQueue = isProcessing
-        val msg = ChatMessage(
-            role = MessageRole.USER,
-            content = MessageContent.Text(text),
-            isBtw = isBtw,
-            isQueued = shouldQueue,
-        )
-        messages.add(msg) // queued messages always go at the end
-        if (shouldQueue) {
-            queuedIds.add(msg.id)
-        } else {
-            isProcessing = true
-            processingStartedAt = System.currentTimeMillis()
-            lastHookEventAt = 0L
-            insertPos = messages.size // after this user message
-        }
-    }
-
-    fun addResponse(markdown: String) {
-        if (markdown.isNotBlank()) {
-            // Check if there are tool cards between the last user message and insertPos.
-            // If so, the Stop event's lastAssistantMessage may contain text from before AND
-            // after tool calls concatenated together. We need to deduplicate: if the response
-            // text is already partially displayed in an earlier Response bubble, only add the
-            // new portion.
-            val existingResponses = mutableListOf<String>()
-            for (i in 0 until insertPos.coerceAtMost(messages.size)) {
-                val c = messages[i].content
-                if (c is MessageContent.Response) {
-                    existingResponses.add(c.markdown.trim())
-                }
-            }
-
-            var remaining = markdown.trim()
-            // Strip any text that was already added as a response bubble earlier in this turn
-            for (existing in existingResponses) {
-                if (remaining.startsWith(existing)) {
-                    remaining = remaining.removePrefix(existing).trim()
-                } else if (remaining.contains(existing)) {
-                    remaining = remaining.replace(existing, "").trim()
-                }
-            }
-
-            if (remaining.isNotBlank()) {
-                messages.add(insertPos, ChatMessage(
-                    MessageRole.CLAUDE, MessageContent.Response(remaining),
-                ))
-                insertPos++
-            }
-        }
-        activeToolName = null
-        advanceQueue()
-    }
-
-    fun addToolRunning(toolUseId: String, tool: String, args: String) {
-        lastHookEventAt = System.currentTimeMillis()
-        val id = nextId()
-        activeToolName = tool
-        messages.add(insertPos, ChatMessage(
-            MessageRole.CLAUDE,
-            MessageContent.ToolRunning(id, toolUseId, tool, args),
-        ))
-        insertPos++
-    }
-    fun updateToolToApproval(
-        toolUseId: String,
-        hasAlwaysOption: Boolean = true,
-        requestId: String? = null,
-        permissionSuggestions: org.json.JSONArray? = null,
-    ) {
-        // Keep the stale-processing timer alive while user considers the approval prompt
-        lastHookEventAt = System.currentTimeMillis()
-        val idx = messages.indexOfLast {
-            val c = it.content
-            c is MessageContent.ToolRunning && c.toolUseId == toolUseId
-        }
-        if (idx >= 0) {
-            val running = messages[idx].content as MessageContent.ToolRunning
-            messages[idx] = messages[idx].copy(
-                content = MessageContent.ToolAwaitingApproval(
-                    cardId = running.cardId,
-                    toolUseId = running.toolUseId,
-                    tool = running.tool,
-                    args = running.args,
-                    hasAlwaysOption = hasAlwaysOption,
-                    requestId = requestId,
-                    permissionSuggestions = permissionSuggestions,
-                )
-            )
-        }
-    }
-
-    fun updateToolToComplete(toolUseId: String, result: JSONObject) {
-        lastHookEventAt = System.currentTimeMillis()
-        val idx = messages.indexOfLast {
-            val c = it.content
-            (c is MessageContent.ToolRunning && c.toolUseId == toolUseId) ||
-            (c is MessageContent.ToolAwaitingApproval && c.toolUseId == toolUseId)
-        }
-        if (idx >= 0) {
-            val existing = messages[idx].content
-            val (cardId, tool, args) = when (existing) {
-                is MessageContent.ToolRunning -> Triple(existing.cardId, existing.tool, existing.args)
-                is MessageContent.ToolAwaitingApproval -> Triple(existing.cardId, existing.tool, existing.args)
-                else -> return
-            }
-            messages[idx] = messages[idx].copy(
-                content = MessageContent.ToolComplete(cardId, toolUseId, tool, args, result),
-            )
-            activeToolName = null
-        }
-    }
-
-    fun updateToolToFailed(toolUseId: String, error: JSONObject) {
-        lastHookEventAt = System.currentTimeMillis()
-        val idx = messages.indexOfLast {
-            val c = it.content
-            (c is MessageContent.ToolRunning && c.toolUseId == toolUseId) ||
-            (c is MessageContent.ToolAwaitingApproval && c.toolUseId == toolUseId)
-        }
-        if (idx >= 0) {
-            val existing = messages[idx].content
-            val (cardId, tool, args) = when (existing) {
-                is MessageContent.ToolRunning -> Triple(existing.cardId, existing.tool, existing.args)
-                is MessageContent.ToolAwaitingApproval -> Triple(existing.cardId, existing.tool, existing.args)
-                else -> return
-            }
-            messages[idx] = messages[idx].copy(
-                content = MessageContent.ToolFailed(cardId, toolUseId, tool, args, error),
-            )
-            activeToolName = null
-        }
-    }
-
-    fun addSystemNotice(text: String) {
-        messages.add(insertPos, ChatMessage(
-            MessageRole.SYSTEM, MessageContent.SystemNotice(text),
-        ))
-        insertPos++
-    }
-
-    /** Remove messages matching a predicate, adjusting insertPos for shifted indices. */
-    private fun removeMessagesAdjusting(predicate: (ChatMessage) -> Boolean) {
-        var removed = 0
-        val iter = messages.listIterator()
-        var idx = 0
-        while (iter.hasNext()) {
-            val msg = iter.next()
-            if (predicate(msg)) {
-                iter.remove()
-                if (idx < insertPos) removed++
-            }
-            idx++
-        }
-        insertPos = (insertPos - removed).coerceAtLeast(0)
-    }
-
     /** Show an interactive prompt card. Replaces existing prompt with same ID. */
     fun showInteractivePrompt(promptId: String, title: String, buttons: List<PromptButton>) {
-        // Remove existing prompt with same ID to avoid duplicates
-        removeMessagesAdjusting { (it.content as? MessageContent.InteractivePrompt)?.promptId == promptId }
+        messages.removeAll { (it.content as? MessageContent.InteractivePrompt)?.promptId == promptId }
         messages.add(ChatMessage(
             MessageRole.SYSTEM,
             MessageContent.InteractivePrompt(promptId, title, buttons),
@@ -310,27 +64,8 @@ class ChatState {
 
     /** Remove a prompt entirely (used when detector clears stale prompts). */
     fun dismissPrompt(promptId: String) {
-        // Only remove if still an active InteractivePrompt (don't remove completed ones)
-        removeMessagesAdjusting {
+        messages.removeAll {
             (it.content as? MessageContent.InteractivePrompt)?.promptId == promptId
-        }
-    }
-
-    /** Advance to the next queued user message, or stop processing. */
-    private fun advanceQueue() {
-        if (queuedIds.isNotEmpty()) {
-            val nextId = queuedIds.removeFirst()
-            val idx = messages.indexOfFirst { it.id == nextId }
-            if (idx >= 0) {
-                messages[idx] = messages[idx].copy(isQueued = false)
-                insertPos = idx + 1
-            } else {
-                // Queued message was lost — recover by inserting at end
-                insertPos = messages.size
-            }
-            // isProcessing stays true — The assistant will process the un-queued message
-        } else {
-            isProcessing = false
         }
     }
 }

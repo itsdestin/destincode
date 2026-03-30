@@ -6,7 +6,6 @@ import com.destin.code.parser.InkSelectParser
 import com.destin.code.parser.TranscriptEvent
 import com.destin.code.parser.TranscriptWatcher
 import com.destin.code.ui.ChatState
-import com.destin.code.ui.MessageContent
 import com.destin.code.ui.state.PromptButton
 import com.destin.code.ui.state.ChatAction
 import com.destin.code.ui.state.ChatReducer
@@ -53,7 +52,7 @@ class ManagedSession(
     /** Callback when session leaves AwaitingApproval (for notification clearing). */
     var onApprovalCleared: ((sessionId: String) -> Unit)? = null,
 ) {
-    /** Draft text in the input bar � shared across Chat/Terminal/Shell modes */
+    /** Draft text in the input bar � shared across Chat/Terminal/Shell modes */
     var inputDraft by mutableStateOf(TextFieldValue())
 
     /** Set draft text with cursor at end */
@@ -196,31 +195,11 @@ class ManagedSession(
         }
 
         // 2. isRunning poller — makes Dead status reactive.
-        //    Also force-clears the message queue when the session dies (Fix 5).
         scope.launch {
             while (true) {
                 delay(5000)
                 _isRunningFlow.value = bridge.isRunning
-                if (!bridge.isRunning) {
-                    withContext(Dispatchers.Main) {
-                        chatState.resetStaleProcessingPeriodic()
-                    }
-                    break
-                }
-            }
-        }
-
-        // 2b. Periodic queue health check — catches stuck processing state
-        //     even when no new user message triggers resetStaleProcessing().
-        scope.launch {
-            while (true) {
-                delay(5000)
                 if (!bridge.isRunning) break
-                if (chatState.isProcessing) {
-                    withContext(Dispatchers.Main) {
-                        chatState.resetStaleProcessingPeriodic()
-                    }
-                }
             }
         }
 
@@ -490,73 +469,19 @@ class ManagedSession(
      */
     private fun routeHookEvent(event: HookEvent) {
         when (event) {
-            is HookEvent.PreToolUse -> {
-                val argsSummary = event.toolInput.optString("command",
-                    event.toolInput.optString("file_path",
-                        event.toolInput.optString("pattern",
-                            event.toolInput.toString().take(80))))
-                chatState.addToolRunning(event.toolUseId, event.toolName, argsSummary)
-            }
-            is HookEvent.PostToolUse -> {
-                // Cross-path cleanup: if tool was awaiting approval with a held socket, close it
-                cleanupOrphanedSocket(event.toolUseId)
-                chatState.updateToolToComplete(event.toolUseId, event.toolResponse)
-            }
-            is HookEvent.PostToolUseFailure -> {
-                cleanupOrphanedSocket(event.toolUseId)
-                chatState.updateToolToFailed(event.toolUseId, event.toolResponse)
-            }
-            is HookEvent.Stop -> {
-                chatState.addResponse(event.lastAssistantMessage)
-            }
-            is HookEvent.Notification -> {
-                if (event.notificationType == "permission_prompt") {
-                    // Best-effort match: Notification events don't carry tool_name,
-                    // so we still fall back to last running tool
-                    val lastRunning = chatState.messages.lastOrNull {
-                        it.content is MessageContent.ToolRunning
-                    }
-                    val toolUseId = (lastRunning?.content as? MessageContent.ToolRunning)?.toolUseId
-                    if (toolUseId != null) {
-                        val hasAlways = ptyBridge?.hasAlwaysAllowOption() ?: false
-                        chatState.updateToolToApproval(toolUseId, hasAlways)
-                    }
-                } else {
-                    chatState.addSystemNotice(event.message)
-                }
-            }
-            is HookEvent.PermissionRequest -> {
-                // Match by tool name first for accuracy when multiple tools fire rapidly,
-                // then fall back to last running tool if no name match
-                val matchByName = chatState.messages.lastOrNull {
-                    val c = it.content
-                    c is MessageContent.ToolRunning && c.tool == event.toolName
-                }
-                val lastRunning = matchByName ?: chatState.messages.lastOrNull {
-                    it.content is MessageContent.ToolRunning
-                }
-                val toolUseId = (lastRunning?.content as? MessageContent.ToolRunning)?.toolUseId
-                if (toolUseId != null) {
-                    val hasAlways = event.permissionSuggestions != null &&
-                        event.permissionSuggestions.length() > 0
-                    chatState.updateToolToApproval(
-                        toolUseId,
-                        hasAlways,
-                        event.requestId,
-                        event.permissionSuggestions,
-                    )
-                }
-            }
+            is HookEvent.PostToolUse -> cleanupOrphanedSocket(event.toolUseId)
+            is HookEvent.PostToolUseFailure -> cleanupOrphanedSocket(event.toolUseId)
+            else -> {} // All other events handled by routeHookEventToReducer + TranscriptWatcher
         }
     }
 
     /** Close an orphaned PermissionRequest socket if the tool completes via another path. */
     private fun cleanupOrphanedSocket(toolUseId: String) {
-        val approval = chatState.messages.lastOrNull {
-            (it.content as? MessageContent.ToolAwaitingApproval)?.toolUseId == toolUseId
-        }?.content as? MessageContent.ToolAwaitingApproval
-        if (approval?.requestId != null) {
-            ptyBridge?.getEventBridge()?.closeSocket(approval.requestId)
+        val tool = chatReducer.state.toolCalls[toolUseId]
+        if (tool?.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval) {
+            tool.requestId?.let { requestId ->
+                ptyBridge?.getEventBridge()?.closeSocket(requestId)
+            }
         }
     }
 
