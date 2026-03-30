@@ -21,3 +21,6 @@ keystore.properties
 icon-drafts/
 tmp-screenshots/
 screenshot.png
+
+# Built React UI bundle (copied from desktop build)
+app/src/main/assets/web/
