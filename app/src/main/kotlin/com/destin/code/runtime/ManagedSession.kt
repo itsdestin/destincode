@@ -305,8 +305,8 @@ class ManagedSession(
         }
 
         // --- Skip generic parser when a tool approval card is already handling the prompt ---
-        val hasActiveApproval = chatState.messages.any {
-            it.content is MessageContent.ToolAwaitingApproval
+        val hasActiveApproval = chatReducer.state.toolCalls.values.any {
+            it.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval
         }
         if (hasActiveApproval) return
 
