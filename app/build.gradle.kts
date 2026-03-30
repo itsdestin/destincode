@@ -69,10 +69,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
-    // Encrypted SharedPreferences for API key storage
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Termux terminal emulator (PTY session management) + terminal view (native rendering)
     implementation("com.github.termux.termux-app:terminal-emulator:v0.118.1")

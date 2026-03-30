@@ -19,9 +19,7 @@
 # Keep JSON parsing (org.json is part of Android SDK but accessed via reflection in some cases)
 -keep class org.json.** { *; }
 
-# Encrypted SharedPreferences + Google Tink (used by security-crypto)
--keep class androidx.security.crypto.** { *; }
--keep class com.google.crypto.tink.** { *; }
+# Suppress various dependency warnings
 -dontwarn javax.annotation.**
 -dontwarn javax.annotation.concurrent.**
 -dontwarn com.google.errorprone.annotations.**
