@@ -68,8 +68,6 @@ data class ChatMessage(
 
 class ChatState {
     val messages = mutableStateListOf<ChatMessage>()
-    var expandedCardId: String? by mutableStateOf(null)
-
     /** Draft text in the input bar — shared across Chat/Terminal/Shell modes */
     var inputDraft by mutableStateOf(TextFieldValue())
 
@@ -108,10 +106,6 @@ class ChatState {
 
     // IDs of user messages waiting for the assistant to process them
     private val queuedIds = mutableListOf<String>()
-
-    fun toggleCard(cardId: String) {
-        expandedCardId = if (expandedCardId == cardId) null else cardId
-    }
 
     /** Reset stale processing state based on time since last hook event.
      *  - No hooks received at all: 15s timeout (assistant never saw the message)
@@ -197,7 +191,6 @@ class ChatState {
                     MessageRole.CLAUDE, MessageContent.Response(remaining),
                 ))
                 insertPos++
-                messageVersion++
             }
         }
         activeToolName = null
@@ -213,29 +206,7 @@ class ChatState {
             MessageContent.ToolRunning(id, toolUseId, tool, args),
         ))
         insertPos++
-        messageVersion++
     }
-
-    /** Revert a tool from AwaitingApproval back to Running after the user acts.
-     *  The PostToolUse/PostToolUseFailure event will finalize to Complete/Failed. */
-    fun revertApprovalToRunning(toolUseId: String) {
-        val idx = messages.indexOfLast {
-            val c = it.content
-            c is MessageContent.ToolAwaitingApproval && c.toolUseId == toolUseId
-        }
-        if (idx >= 0) {
-            val approval = messages[idx].content as MessageContent.ToolAwaitingApproval
-            messages[idx] = messages[idx].copy(
-                content = MessageContent.ToolRunning(
-                    cardId = approval.cardId,
-                    toolUseId = approval.toolUseId,
-                    tool = approval.tool,
-                    args = approval.args,
-                )
-            )
-        }
-    }
-
     fun updateToolToApproval(
         toolUseId: String,
         hasAlwaysOption: Boolean = true,
@@ -282,7 +253,6 @@ class ChatState {
                 content = MessageContent.ToolComplete(cardId, toolUseId, tool, args, result),
             )
             activeToolName = null
-            messageVersion++
         }
     }
 
@@ -304,7 +274,6 @@ class ChatState {
                 content = MessageContent.ToolFailed(cardId, toolUseId, tool, args, error),
             )
             activeToolName = null
-            messageVersion++
         }
     }
 
@@ -314,10 +283,6 @@ class ChatState {
         ))
         insertPos++
     }
-
-    /** A version counter that increments on any message content change (not just list size). */
-    var messageVersion: Int by mutableStateOf(0)
-        private set
 
     /** Remove messages matching a predicate, adjusting insertPos for shifted indices. */
     private fun removeMessagesAdjusting(predicate: (ChatMessage) -> Boolean) {
@@ -333,7 +298,6 @@ class ChatState {
             idx++
         }
         insertPos = (insertPos - removed).coerceAtLeast(0)
-        messageVersion++
     }
 
     /** Show an interactive prompt card. Replaces existing prompt with same ID. */
