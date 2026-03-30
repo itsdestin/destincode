@@ -780,10 +780,16 @@ fun ChatScreen(service: SessionService) {
                     reducer = reducer,
                     onPromptAction = { promptId, input ->
                         bridge?.writeInput(input)
+                        // Look up the human-readable label for the completed prompt display
+                        val label = reducer.state.timeline
+                            .filterIsInstance<com.destin.code.ui.state.TimelineEntry.Prompt>()
+                            .find { it.prompt.promptId == promptId }
+                            ?.prompt?.buttons?.find { it.input == input }?.label
+                            ?: input
                         reducer.dispatch(
                             com.destin.code.ui.state.ChatAction.CompletePrompt(
                                 promptId = promptId,
-                                selection = input,
+                                selection = label,
                             )
                         )
                         currentSession?.markPromptCompleted(promptId)
