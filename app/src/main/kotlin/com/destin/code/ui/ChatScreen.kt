@@ -127,20 +127,25 @@ fun ChatScreen(service: SessionService) {
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                         AndroidView(
                             factory = { ctx ->
+                                android.util.Log.d("ChatScreen", "TerminalView factory: creating view")
+                                val termSession = currentSession.getTerminalSession()
+                                android.util.Log.d("ChatScreen", "TerminalView factory: termSession=${termSession != null}, ptyBridge=${currentSession.ptyBridge != null}, isRunning=${currentSession.ptyBridge?.isRunning}")
                                 TerminalView(ctx, null).apply {
                                     setTextSize((12 * resources.displayMetrics.scaledDensity).toInt())
                                     setTerminalViewClient(termViewClient)
                                     isFocusable = true
                                     isFocusableInTouchMode = true
-                                    currentSession.getTerminalSession()?.let {
+                                    termSession?.let {
+                                        android.util.Log.d("ChatScreen", "TerminalView factory: attaching session, emulator=${it.emulator != null}")
                                         attachSession(it)
                                         attachedSession = it
-                                    }
+                                    } ?: android.util.Log.w("ChatScreen", "TerminalView factory: NO terminal session to attach!")
                                 }
                             },
                             update = { view ->
                                 val session = currentSession.getTerminalSession()
                                 if (session != null && session !== attachedSession) {
+                                    android.util.Log.d("ChatScreen", "TerminalView update: attaching new session")
                                     view.attachSession(session)
                                     attachedSession = session
                                 }
@@ -149,15 +154,19 @@ fun ChatScreen(service: SessionService) {
                                 view.setBackgroundColor(termBgColor)
                                 @Suppress("UNUSED_EXPRESSION")
                                 termScreenVersion
-                                val wasScrolledUp = view.topRow < 0
-                                if (wasScrolledUp) userScrolledUp = true
-                                if (userScrolledUp && wasScrolledUp) {
-                                    val saved = view.topRow
-                                    view.onScreenUpdated()
-                                    view.topRow = saved
-                                } else {
-                                    userScrolledUp = false
-                                    view.onScreenUpdated()
+                                try {
+                                    val wasScrolledUp = view.topRow < 0
+                                    if (wasScrolledUp) userScrolledUp = true
+                                    if (userScrolledUp && wasScrolledUp) {
+                                        val saved = view.topRow
+                                        view.onScreenUpdated()
+                                        view.topRow = saved
+                                    } else {
+                                        userScrolledUp = false
+                                        view.onScreenUpdated()
+                                    }
+                                } catch (_: Exception) {
+                                    // Termux TerminalBuffer throws during resize race — safe to ignore
                                 }
                             },
                             modifier = Modifier.fillMaxSize(),

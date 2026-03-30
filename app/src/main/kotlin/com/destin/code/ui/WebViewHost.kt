@@ -37,6 +37,8 @@ fun WebViewHost(
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     allowFileAccess = true
+                    allowFileAccessFromFileURLs = true
+                    allowUniversalAccessFromFileURLs = true
                     mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                     setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                     useWideViewPort = true

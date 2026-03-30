@@ -17,6 +17,7 @@ import com.destin.code.MainActivity
 import com.destin.code.bridge.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -257,7 +258,12 @@ class SessionService : Service() {
             "session:create" -> {
                 val cwd = msg.payload.optString("cwd", bootstrap?.homeDir?.absolutePath ?: "")
                 val dangerous = msg.payload.optBoolean("skipPermissions", false)
-                val session = createSession(File(cwd), dangerous, null)
+                android.util.Log.i("SessionService", "Bridge session:create cwd=$cwd dangerous=$dangerous")
+                // TerminalSession requires the main thread (Looper)
+                val session = withContext(Dispatchers.Main) {
+                    createSession(File(cwd), dangerous, null)
+                }
+                android.util.Log.i("SessionService", "Session created: id=${session.id} ptyBridge=${session.ptyBridge != null} termSession=${session.getTerminalSession() != null}")
                 val info = MessageRouter.buildSessionInfo(
                     id = session.id, name = session.name.value,
                     cwd = cwd, status = "running",
@@ -271,7 +277,9 @@ class SessionService : Service() {
             }
             "session:destroy" -> {
                 val sessionId = msg.payload.optString("sessionId", "")
-                destroySession(sessionId)
+                withContext(Dispatchers.Main) {
+                    destroySession(sessionId)
+                }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
             "session:list" -> {
@@ -284,7 +292,7 @@ class SessionService : Service() {
                         dangerous = session.dangerousMode
                     )
                 }
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildSessionListResponse(sessions)) }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray(sessions)) }
             }
             "session:input" -> {
                 val sessionId = msg.payload.optString("sessionId", "")
@@ -306,7 +314,17 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
             "skills:list" -> {
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("skills", org.json.JSONArray())) }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+            }
+            "github:auth" -> {
+                // No GitHub auth on Android — return null
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject.NULL) }
+            }
+            "favorites:get" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("favorites", org.json.JSONArray())) }
+            }
+            "favorites:set" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
             }
             "get-home-path" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, platformBridge?.getHomePath() ?: "") }
