@@ -224,13 +224,19 @@ class ManagedSession(
         scope.launch {
             try {
                 val activePrompts = mutableSetOf<String>()
+                var lastScreenHash = 0
                 while (true) {
                     delay(1000)
                     if (!bridge.isRunning) break
                     val screen = try { bridge.readScreenText() } catch (_: Exception) { "" }
                     val raw = try { bridge.rawBuffer.takeLast(4000) } catch (_: Exception) { "" }
                     val combined = screen + "\n" + raw
+                    val screenHash = screen.hashCode()
                     withContext(Dispatchers.Main) {
+                        if (screenHash != lastScreenHash) {
+                            lastScreenHash = screenHash
+                            chatReducer.dispatch(ChatAction.TerminalActivity)
+                        }
                         detectPrompts(screen, combined, activePrompts)
                         detectPermissionMode(screen)
                     }
