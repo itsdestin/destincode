@@ -8,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
@@ -25,6 +26,7 @@ import com.destin.code.ui.state.ToolCallState
 import com.destin.code.ui.state.ToolCallStatus
 import com.destin.code.ui.state.ToolInputFormatter
 import androidx.compose.material3.MaterialTheme
+import com.destin.code.ui.theme.AppIcons
 import com.destin.code.ui.theme.CascadiaMono
 import com.destin.code.ui.theme.DestinCodeTheme
 
@@ -49,7 +51,7 @@ fun ToolCardV2(
 
     val borderColor = when (tool.status) {
         ToolCallStatus.Running -> DC.gray700.copy(alpha = 0.5f)
-        ToolCallStatus.AwaitingApproval -> DC.blue600
+        ToolCallStatus.AwaitingApproval -> DC.gray400
         ToolCallStatus.Complete -> DC.gray700.copy(alpha = 0.3f)
         ToolCallStatus.Failed -> DC.red400
     }
@@ -94,18 +96,28 @@ fun ToolCardV2(
                     )
                 }
                 ToolCallStatus.AwaitingApproval -> {
-                    Text("⚠", fontSize = 13.sp)
+                    Icon(
+                        imageVector = AppIcons.ShieldAlert,
+                        contentDescription = "Approval needed",
+                        tint = DC.gray400,
+                        modifier = Modifier.size(14.dp),
+                    )
                     Spacer(Modifier.width(6.dp))
                     Text(
                         friendlyName,
-                        color = DC.blue600,
+                        color = DC.gray200,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 13.sp,
                         fontFamily = CascadiaMono,
                     )
                 }
                 ToolCallStatus.Complete -> {
-                    Text("✓", fontSize = 13.sp, color = DC.green400)
+                    Icon(
+                        imageVector = AppIcons.CheckCircle,
+                        contentDescription = "Complete",
+                        tint = DC.gray400,
+                        modifier = Modifier.size(14.dp),
+                    )
                     Spacer(Modifier.width(6.dp))
                     Text(
                         friendlyName,
@@ -115,7 +127,12 @@ fun ToolCardV2(
                     )
                 }
                 ToolCallStatus.Failed -> {
-                    Text("✗", fontSize = 13.sp, color = DC.red400)
+                    Icon(
+                        imageVector = AppIcons.XCircle,
+                        contentDescription = "Failed",
+                        tint = DC.gray400,
+                        modifier = Modifier.size(14.dp),
+                    )
                     Spacer(Modifier.width(6.dp))
                     Text(
                         friendlyName,

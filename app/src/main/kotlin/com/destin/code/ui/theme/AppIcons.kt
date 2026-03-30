@@ -427,6 +427,131 @@ object AppIcons {
         }.build()
     }
 
+    // ─── Tool status icons (Lucide-style, stroke-only) ────────────
+
+    /** Checkmark circle — completed tool indicator */
+    val CheckCircle: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "CheckCircle",
+            defaultWidth = 16.dp,
+            defaultHeight = 16.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Circle
+                moveTo(22f, 12f)
+                arcTo(10f, 10f, 0f, true, true, 2f, 12f)
+                arcTo(10f, 10f, 0f, true, true, 22f, 12f)
+                close()
+            }
+            path(
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Checkmark
+                moveTo(9f, 12f)
+                lineTo(11f, 14f)
+                lineTo(15f, 10f)
+            }
+        }.build()
+    }
+
+    /** X circle — failed tool indicator */
+    val XCircle: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "XCircle",
+            defaultWidth = 16.dp,
+            defaultHeight = 16.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Circle
+                moveTo(22f, 12f)
+                arcTo(10f, 10f, 0f, true, true, 2f, 12f)
+                arcTo(10f, 10f, 0f, true, true, 22f, 12f)
+                close()
+            }
+            path(
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // X
+                moveTo(15f, 9f)
+                lineTo(9f, 15f)
+                moveTo(9f, 9f)
+                lineTo(15f, 15f)
+            }
+        }.build()
+    }
+
+    /** Shield alert — approval/permission indicator */
+    val ShieldAlert: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "ShieldAlert",
+            defaultWidth = 16.dp,
+            defaultHeight = 16.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Shield shape
+                moveTo(12f, 22f)
+                curveTo(12f, 22f, 20f, 18f, 20f, 12f)
+                lineTo(20f, 5f)
+                lineTo(12f, 2f)
+                lineTo(4f, 5f)
+                lineTo(4f, 12f)
+                curveTo(4f, 18f, 12f, 22f, 12f, 22f)
+                close()
+            }
+            // Exclamation mark
+            path(
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+            ) {
+                moveTo(12f, 8f)
+                lineTo(12f, 12f)
+            }
+            path(
+                fill = null,
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+            ) {
+                moveTo(12f, 16f)
+                lineTo(12f, 16.01f)
+            }
+        }.build()
+    }
+
     /**
      * App icon — squat rounded character with >< eyes, nub arms, stubby legs.
      * Body + eyes use EvenOdd so eyes are cutouts (works with Icon tint).

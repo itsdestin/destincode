@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.destin.code.ui.state.InteractivePrompt
+import com.destin.code.ui.theme.AppIcons
 import com.destin.code.ui.theme.CascadiaMono
 import com.destin.code.ui.theme.DestinCodeTheme
 import com.destin.code.ui.v2.DesktopColors as DC
@@ -42,7 +44,12 @@ fun PromptCardV2(
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("✓", fontSize = 13.sp, color = DC.green400)
+            Icon(
+                imageVector = AppIcons.CheckCircle,
+                contentDescription = "Complete",
+                tint = DC.gray400,
+                modifier = Modifier.size(14.dp),
+            )
             Spacer(Modifier.width(6.dp))
             Text(prompt.title, fontSize = 12.sp, color = DC.gray400, fontFamily = CascadiaMono)
             Spacer(Modifier.width(6.dp))
@@ -57,7 +64,7 @@ fun PromptCardV2(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .clip(RoundedCornerShape(8.dp))
-            .border(1.dp, DC.blue600, RoundedCornerShape(8.dp))
+            .border(1.dp, DC.gray400, RoundedCornerShape(8.dp))
             .background(
                 if (DestinCodeTheme.extended.isMaterial) MaterialTheme.colorScheme.surfaceContainer
                 else DC.gray800
@@ -67,7 +74,12 @@ fun PromptCardV2(
     ) {
         // Title row — matches ToolCardV2 approval header
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("⚠", fontSize = 13.sp)
+            Icon(
+                imageVector = AppIcons.ShieldAlert,
+                contentDescription = "Action needed",
+                tint = DC.gray400,
+                modifier = Modifier.size(14.dp),
+            )
             Spacer(Modifier.width(6.dp))
             Text(
                 prompt.title,
@@ -85,8 +97,8 @@ fun PromptCardV2(
                 modifier = Modifier.fillMaxWidth().height(42.dp),
                 shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = DC.blue600.copy(alpha = 0.7f),
-                    contentColor = Color.White,
+                    containerColor = DC.gray600,
+                    contentColor = DC.gray100,
                 ),
                 contentPadding = PaddingValues(0.dp),
             ) {

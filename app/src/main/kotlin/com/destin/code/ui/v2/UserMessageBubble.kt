@@ -16,17 +16,16 @@ import com.destin.code.ui.theme.DestinCodeTheme
 import com.destin.code.ui.v2.DesktopColors as DC
 
 /**
- * User message bubble — matches desktop's UserMessage.tsx.
- * In Material themes, uses the dynamic primary color for the bubble.
+ * User message bubble — matches desktop's neutral monochrome style.
+ * Always uses neutral gray regardless of Material theme to avoid colored bubbles.
  */
 @Composable
 fun UserMessageBubble(
     message: ChatMessage,
     modifier: Modifier = Modifier,
 ) {
-    val isMaterial = DestinCodeTheme.extended.isMaterial
-    val bubbleBg = if (isMaterial) MaterialTheme.colorScheme.primaryContainer else DC.userBubbleBg
-    val bubbleText = if (isMaterial) MaterialTheme.colorScheme.onPrimaryContainer else DC.userBubbleText
+    val bubbleBg = DC.userBubbleBg
+    val bubbleText = DC.userBubbleText
 
     Row(
         modifier = modifier
