@@ -4,8 +4,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
 import org.json.JSONObject
 import java.util.UUID
 import com.destin.code.ui.state.PromptButton
@@ -68,30 +66,17 @@ data class ChatMessage(
 
 class ChatState {
     val messages = mutableStateListOf<ChatMessage>()
-    /** Draft text in the input bar â€” shared across Chat/Terminal/Shell modes */
-    var inputDraft by mutableStateOf(TextFieldValue())
-
-    /** Set draft text with cursor at end */
-    fun setDraftText(text: String) {
-        inputDraft = TextFieldValue(text, TextRange(text.length))
-    }
-
-    /** Clear draft */
-    fun clearDraft() {
-        inputDraft = TextFieldValue()
-    }
-
     /** Claude Code's current permission mode, detected from status bar */
     var permissionMode: String by mutableStateOf("Normal")
 
-    /** Current tool being worked on â€” for activity indicator text */
+    /** Current tool being worked on — for activity indicator text */
     var activeToolName: String? by mutableStateOf(null)
 
     /** True while the assistant is processing a user message (between send and Stop) */
     var isProcessing: Boolean by mutableStateOf(false)
         private set
 
-    /** Timestamp when processing started â€” for timeout detection */
+    /** Timestamp when processing started — for timeout detection */
     private var processingStartedAt = 0L
 
     /** Timestamp of the most recent hook event in the current processing cycle (0 = none yet) */
@@ -100,7 +85,7 @@ class ChatState {
     private var nextCardId = 0
     private fun nextId(): String = "card-${nextCardId++}"
 
-    // Insertion cursor â€” Assistant events (tools, responses) insert here,
+    // Insertion cursor — Assistant events (tools, responses) insert here,
     // which is always before any queued user messages.
     private var insertPos = 0
 
@@ -340,10 +325,10 @@ class ChatState {
                 messages[idx] = messages[idx].copy(isQueued = false)
                 insertPos = idx + 1
             } else {
-                // Queued message was lost â€” recover by inserting at end
+                // Queued message was lost — recover by inserting at end
                 insertPos = messages.size
             }
-            // isProcessing stays true â€” The assistant will process the un-queued message
+            // isProcessing stays true — The assistant will process the un-queued message
         } else {
             isProcessing = false
         }

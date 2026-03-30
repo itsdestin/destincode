@@ -23,6 +23,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 import java.io.File
 import java.util.UUID
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 
 /** Matches desktop's SessionStatusColor: green, red, blue, gray */
 enum class SessionStatus { Active, AwaitingApproval, Unseen, Idle, Dead }
@@ -48,6 +53,19 @@ class ManagedSession(
     /** Callback when session leaves AwaitingApproval (for notification clearing). */
     var onApprovalCleared: ((sessionId: String) -> Unit)? = null,
 ) {
+    /** Draft text in the input bar — shared across Chat/Terminal/Shell modes */
+    var inputDraft by mutableStateOf(TextFieldValue())
+
+    /** Set draft text with cursor at end */
+    fun setDraftText(text: String) {
+        inputDraft = TextFieldValue(text, TextRange(text.length))
+    }
+
+    /** Clear draft */
+    fun clearDraft() {
+        inputDraft = TextFieldValue()
+    }
+
     val isRunning: Boolean get() = ptyBridge?.isRunning ?: directShellBridge?.isRunning ?: false
     fun getTerminalSession(): com.termux.terminal.TerminalSession? =
         ptyBridge?.getSession() ?: directShellBridge?.getSession()

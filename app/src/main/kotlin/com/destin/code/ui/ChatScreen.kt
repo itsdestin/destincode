@@ -107,6 +107,9 @@ fun ChatScreen(service: SessionService) {
     val bridge = currentSession?.ptyBridge
     val chatState = currentSession?.chatState ?: remember { ChatState() }
 
+    // Input draft — lives on ManagedSession, fallback for null session
+    val fallbackDraft = remember { mutableStateOf(TextFieldValue()) }
+
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var screenMode by remember { mutableStateOf(ScreenMode.Chat) }
@@ -679,12 +682,12 @@ fun ChatScreen(service: SessionService) {
                 HorizontalDivider(color = borderColor, thickness = 0.5.dp)
                 TerminalInputBar(
                     focusRequester = termFocusRequester,
-                    draft = chatState.inputDraft,
-                    onDraftChange = { chatState.inputDraft = it },
+                    draft = (currentSession?.inputDraft ?: fallbackDraft.value),
+                    onDraftChange = { currentSession?.let { s -> s.inputDraft = it } ?: run { fallbackDraft.value = it } },
                     onSend = { text ->
                         if (text.isNotBlank()) chatState.addUserMessage(text)
                         bridge?.writeInput(text + "\r")
-                        chatState.clearDraft()
+                        currentSession?.clearDraft() ?: run { fallbackDraft.value = TextFieldValue() }
                     },
                     onKeyPress = { seq -> bridge?.writeInput(seq) },
                     onAttachImage = {
@@ -750,11 +753,11 @@ fun ChatScreen(service: SessionService) {
                 HorizontalDivider(color = borderColor, thickness = 0.5.dp)
                 TerminalInputBar(
                     focusRequester = shellFocusRequester,
-                    draft = chatState.inputDraft,
-                    onDraftChange = { chatState.inputDraft = it },
+                    draft = (currentSession?.inputDraft ?: fallbackDraft.value),
+                    onDraftChange = { currentSession?.let { s -> s.inputDraft = it } ?: run { fallbackDraft.value = it } },
                     onSend = { text ->
                         shellSession.writeInput(text + "\r")
-                        chatState.clearDraft()
+                        currentSession?.clearDraft() ?: run { fallbackDraft.value = TextFieldValue() }
                     },
                     onKeyPress = { seq -> shellSession.writeInput(seq) },
                     onAttachImage = {
@@ -902,7 +905,7 @@ fun ChatScreen(service: SessionService) {
 
                 // Send action extracted for reuse
                 val sendMessage = {
-                    val text = chatState.inputDraft.text
+                    val text = (currentSession?.inputDraft ?: fallbackDraft.value).text
                     if (text.isNotBlank() || attachmentPaths.isNotEmpty()) {
                         val messageText = buildString {
                             for (path in attachmentPaths) {
@@ -913,7 +916,7 @@ fun ChatScreen(service: SessionService) {
                         }.trim()
                         bridge?.writeInput(messageText + "\r")
                         reducer.dispatch(com.destin.code.ui.state.ChatAction.MessageSent(messageText))
-                        chatState.clearDraft()
+                        currentSession?.clearDraft() ?: run { fallbackDraft.value = TextFieldValue() }
                         attachmentPaths = emptyList()
                         attachmentBitmap = null
                     }
@@ -969,8 +972,8 @@ fun ChatScreen(service: SessionService) {
                         ) {
                             val inputScrollState = rememberScrollState()
                             BasicTextField(
-                                value = chatState.inputDraft,
-                                onValueChange = { chatState.inputDraft = it },
+                                value = (currentSession?.inputDraft ?: fallbackDraft.value),
+                                onValueChange = { currentSession?.let { s -> s.inputDraft = it } ?: run { fallbackDraft.value = it } },
                                 cursorBrush = SolidColor(com.destin.code.ui.v2.ThemedColors.inputBarCursor),
                                 singleLine = false,
                                 maxLines = 3,
@@ -984,7 +987,7 @@ fun ChatScreen(service: SessionService) {
                                     .verticalScroll(inputScrollState),
                                 decorationBox = { innerTextField ->
                                     Box {
-                                        if (chatState.inputDraft.text.isEmpty()) {
+                                        if ((currentSession?.inputDraft ?: fallbackDraft.value).text.isEmpty()) {
                                             Text(
                                                 if (isAwaitingApproval) "Waiting for approval..." else "Message Claude...",
                                                 fontSize = 14.sp,
@@ -999,7 +1002,7 @@ fun ChatScreen(service: SessionService) {
                         }
 
                         // Send button (desktop: w-7 h-7 bg-gray-300 rounded-lg)
-                        val canSend = chatState.inputDraft.text.isNotBlank() || attachmentPaths.isNotEmpty()
+                        val canSend = (currentSession?.inputDraft ?: fallbackDraft.value).text.isNotBlank() || attachmentPaths.isNotEmpty()
                         Box(
                             modifier = Modifier
                                 .size(28.dp)
@@ -1025,7 +1028,7 @@ fun ChatScreen(service: SessionService) {
                 QuickChips(
                     tier = tierStore.selectedTier,
                     onChipTap = { chip ->
-                        chatState.setDraftText(chip.prompt)
+                        currentSession?.setDraftText(chip.prompt) ?: run { fallbackDraft.value = TextFieldValue(chip.prompt, androidx.compose.ui.text.TextRange(chip.prompt.length)) }
                     }
                 )
             }
