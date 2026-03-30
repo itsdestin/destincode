@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 import java.io.File
 import java.util.UUID
 
@@ -240,6 +241,21 @@ class ManagedSession(
         // 5. PTY output consumer — previously surfaced error/warning lines from terminal
         // output as chat notices, but the keyword filter was too broad and created noise.
         // Removed: errors and warnings are visible in terminal view if needed.
+
+        // 6. Thinking timeout — prevent infinite spinner if transcript watcher stalls
+        scope.launch {
+            while (isActive) {
+                delay(5000)
+                withContext(Dispatchers.Main) {
+                    if (chatReducer.state.isThinking) {
+                        val elapsed = System.currentTimeMillis() - chatReducer.state.lastActivityAt
+                        if (elapsed > 15_000) {
+                            chatReducer.dispatch(ChatAction.ThinkingTimeout)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Track prompts that have been completed so we don't re-create them
