@@ -123,10 +123,16 @@ class TranscriptWatcher(
                 raf.seek(state.fileOffset)
                 val newBytes = ByteArray((fileLength - state.fileOffset).toInt())
                 raf.readFully(newBytes)
-                state.fileOffset = fileLength
 
-                val newContent = String(newBytes, Charsets.UTF_8)
-                for (line in newContent.lineSequence()) {
+                // Find last newline byte (0x0A is unambiguous in UTF-8)
+                val lastNewline = newBytes.lastIndexOf(0x0A.toByte())
+                if (lastNewline < 0) return@withLock  // no complete lines yet
+
+                // Only advance offset past complete lines
+                state.fileOffset += lastNewline + 1
+
+                val completeContent = String(newBytes, 0, lastNewline + 1, Charsets.UTF_8)
+                for (line in completeContent.lineSequence()) {
                     if (line.isBlank()) continue
                     parseLine(line, state)
                 }
