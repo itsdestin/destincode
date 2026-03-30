@@ -262,6 +262,26 @@ class ManagedSession(
                 }
             }
         }
+
+        // 7. Permission expiry — clean up stale approval cards
+        scope.launch {
+            while (isActive) {
+                delay(10_000)
+                withContext(Dispatchers.Main) {
+                    val now = System.currentTimeMillis()
+                    for ((_, tool) in chatReducer.state.toolCalls) {
+                        if (tool.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval &&
+                            tool.approvalStartedAt > 0 &&
+                            now - tool.approvalStartedAt > 90_000
+                        ) {
+                            tool.requestId?.let { requestId ->
+                                chatReducer.dispatch(ChatAction.PermissionExpired(requestId))
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Track prompts that have been completed so we don't re-create them

@@ -245,6 +245,7 @@ class ChatReducer {
                 status = ToolCallStatus.AwaitingApproval,
                 requestId = action.requestId,
                 permissionSuggestions = action.permissionSuggestions,
+                approvalStartedAt = System.currentTimeMillis(),
             )
         } else {
             // Synthetic tool entry — permission hook arrived before transcript
@@ -259,6 +260,7 @@ class ChatReducer {
                 status = ToolCallStatus.AwaitingApproval,
                 requestId = action.requestId,
                 permissionSuggestions = action.permissionSuggestions,
+                approvalStartedAt = System.currentTimeMillis(),
             )
             group.toolIds.add(syntheticId)
         }

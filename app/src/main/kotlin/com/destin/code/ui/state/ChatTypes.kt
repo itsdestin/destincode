@@ -27,6 +27,7 @@ data class ToolCallState(
     val permissionSuggestions: List<String>? = null,
     val response: String? = null,
     val error: String? = null,
+    val approvalStartedAt: Long = 0L,
 )
 
 data class ToolGroupState(
