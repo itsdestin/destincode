@@ -17,6 +17,7 @@ class PtyBridge(
     private val cwd: File = bootstrap.homeDir,
     private val dangerousMode: Boolean = false,
     val mobileSessionId: String? = null,
+    private val resumeSessionId: String? = null,
 ) {
     private var session: TerminalSession? = null
     private var eventBridge: EventBridge? = null
@@ -124,7 +125,8 @@ class PtyBridge(
         // The wrapper fixes Claude Code's shell detection (it requires bash/zsh
         // but can't exec them directly due to SELinux on app_data_file).
         val dangerousFlag = if (dangerousMode) " --dangerously-skip-permissions" else ""
-        val launchCmd = "exec /system/bin/linker64 ${nodePath.absolutePath} ${wrapperPath.absolutePath} ${claudePath.absolutePath}$dangerousFlag"
+        val resumeFlag = if (resumeSessionId != null) " --resume $resumeSessionId" else ""
+        val launchCmd = "exec /system/bin/linker64 ${nodePath.absolutePath} ${wrapperPath.absolutePath} ${claudePath.absolutePath}$dangerousFlag$resumeFlag"
 
         File(bootstrap.homeDir, "tmp").mkdirs()
 

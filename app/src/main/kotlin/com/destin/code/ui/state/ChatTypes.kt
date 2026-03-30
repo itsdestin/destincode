@@ -76,6 +76,8 @@ sealed class TimelineEntry {
     data class Turn(val turnId: String) : TimelineEntry()
     data class Prompt(val prompt: InteractivePrompt) : TimelineEntry()
     data class Notice(val id: String, val message: String) : TimelineEntry()
+    /** Historical messages loaded from a resumed session — rendered dimmed. */
+    data class History(val messages: List<HistoryEntry>) : TimelineEntry()
 }
 
 // ─── Session state ───────────────────────────────────────────────────
@@ -103,6 +105,11 @@ class SessionChatState {
     var permissionMode by androidx.compose.runtime.mutableStateOf("Normal")
     /** Current tool being worked on — for activity indicator */
     var activeToolName: String? by androidx.compose.runtime.mutableStateOf(null)
+
+    /** Resume info — Claude session ID of the resumed session (for "See previous" expand) */
+    var resumeClaudeSessionId: String? = null
+    /** Resume info — project slug of the resumed session */
+    var resumeProjectSlug: String? = null
 }
 
 fun createSessionChatState(): SessionChatState = SessionChatState()

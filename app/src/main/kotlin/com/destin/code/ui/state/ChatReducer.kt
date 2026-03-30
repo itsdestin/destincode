@@ -91,7 +91,21 @@ sealed class ChatAction {
 
     // ─── System notices (hook notifications) ────────────────────────────────
     data class SystemNotice(val id: String, val message: String) : ChatAction()
+
+    // ─── History (session resume) ─────────────────────────────────────────────
+    data class HistoryLoaded(
+        val messages: List<HistoryEntry>,
+        val hasMore: Boolean = false,
+        val claudeSessionId: String? = null,
+        val projectSlug: String? = null,
+    ) : ChatAction()
 }
+
+data class HistoryEntry(
+    val role: String, // "user" or "assistant"
+    val content: String,
+    val timestamp: Long,
+)
 
 /**
  * Manages a [SessionChatState] by processing [ChatAction]s.
@@ -135,6 +149,7 @@ class ChatReducer {
             is ChatAction.MessageSent -> handleMessageSent(action)
             is ChatAction.StreamingText -> handleStreamingText(action)
             is ChatAction.SystemNotice -> handleSystemNotice(action)
+            is ChatAction.HistoryLoaded -> handleHistoryLoaded(action)
         }
         version++
     }
@@ -236,8 +251,19 @@ class ChatReducer {
 
         // Find the matching tool call. If it doesn't exist yet (transcript watcher
         // hasn't caught up), create a synthetic entry — same as desktop.
-        val toolCall = state.toolCalls.values.find {
+        // Use findLast to get the most recently added match (SnapshotStateMap
+        // iteration order is non-deterministic, so filter then pick latest by
+        // checking which appears last in tool groups).
+        val candidates = state.toolCalls.values.filter {
             it.toolName == action.toolName && it.status == ToolCallStatus.Running
+        }
+        val toolCall = if (candidates.size <= 1) {
+            candidates.firstOrNull()
+        } else {
+            // Multiple running tools with same name — find which was added last
+            // by scanning tool groups in reverse insertion order
+            val groupOrder = state.toolGroups.values.flatMap { it.toolIds }
+            candidates.maxByOrNull { groupOrder.indexOf(it.toolUseId) }
         }
 
         if (toolCall != null) {
@@ -344,6 +370,31 @@ class ChatReducer {
 
     private fun handleSystemNotice(action: ChatAction.SystemNotice) {
         state.timeline.add(TimelineEntry.Notice(action.id, action.message))
+    }
+
+    private fun handleHistoryLoaded(action: ChatAction.HistoryLoaded) {
+        if (action.messages.isEmpty()) return
+
+        // Remove any existing history entries and expand button
+        state.timeline.removeAll { it is TimelineEntry.History }
+        state.timeline.removeAll {
+            it is TimelineEntry.Prompt && it.prompt.promptId == "_history_expand"
+        }
+
+        // If hasMore, prepend a "See previous messages" expand button
+        if (action.hasMore && action.claudeSessionId != null && action.projectSlug != null) {
+            state.resumeClaudeSessionId = action.claudeSessionId
+            state.resumeProjectSlug = action.projectSlug
+            state.timeline.add(0, TimelineEntry.Prompt(InteractivePrompt(
+                promptId = "_history_expand",
+                title = "See previous messages",
+                buttons = listOf(PromptButton("Expand", "expand")),
+            )))
+        }
+
+        // Insert history at the beginning (after expand button if present)
+        val insertIdx = if (action.hasMore) 1 else 0
+        state.timeline.add(insertIdx, TimelineEntry.History(action.messages))
     }
 
     // ─── Helpers ─────────────────────────────────────────────────

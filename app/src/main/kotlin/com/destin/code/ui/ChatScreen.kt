@@ -134,6 +134,27 @@ fun ChatScreen(service: SessionService) {
     var switcherExpanded by remember { mutableStateOf(false) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
 
+    // Past sessions for resume — loaded when dropdown opens
+    var pastSessions by remember { mutableStateOf(listOf<com.destin.code.runtime.SessionBrowser.PastSession>()) }
+    LaunchedEffect(switcherExpanded) {
+        if (switcherExpanded && service.bootstrap != null) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val projectsDir = java.io.File(service.bootstrap!!.homeDir, ".claude/projects")
+                val topicsDir = java.io.File(service.bootstrap!!.homeDir, ".claude/topics")
+                // Collect Claude session IDs (not mobile IDs) for filtering
+                val claudeIds = sessions.values.mapNotNull { s ->
+                    s.ptyBridge?.getEventBridge()
+                        ?.getClaudeSessionId(s.id)
+                }.toSet()
+                pastSessions = com.destin.code.runtime.SessionBrowser.listPastSessions(
+                    projectsDir = projectsDir,
+                    topicsDir = topicsDir,
+                    activeIds = claudeIds,
+                )
+            }
+        }
+    }
+
     // Image attachment state
     var attachmentPaths by rememberSaveable { mutableStateOf(listOf<String>()) }
     var attachmentBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -303,6 +324,17 @@ fun ChatScreen(service: SessionService) {
                             }
                         } else {
                             service.createSession(cwd, dangerous, null)
+                        }
+                    },
+                    pastSessions = pastSessions,
+                    onResumeSession = { past ->
+                        service.bootstrap?.let { bs ->
+                            service.sessionRegistry.resumeSession(
+                                pastSession = past,
+                                bootstrap = bs,
+                                apiKey = null,
+                                titlesDir = service.titlesDir,
+                            )
                         }
                     },
                 )
@@ -781,20 +813,47 @@ fun ChatScreen(service: SessionService) {
                 com.destin.code.ui.v2.ChatViewV2(
                     reducer = reducer,
                     onPromptAction = { promptId, input ->
-                        bridge?.writeInput(input)
-                        // Look up the human-readable label for the completed prompt display
-                        val label = reducer.state.timeline
-                            .filterIsInstance<com.destin.code.ui.state.TimelineEntry.Prompt>()
-                            .find { it.prompt.promptId == promptId }
-                            ?.prompt?.buttons?.find { it.input == input }?.label
-                            ?: input
-                        reducer.dispatch(
-                            com.destin.code.ui.state.ChatAction.CompletePrompt(
-                                promptId = promptId,
-                                selection = label,
+                        if (promptId == "_history_expand") {
+                            // Load full history from disk — do NOT send to PTY
+                            val claudeId = reducer.state.resumeClaudeSessionId
+                            val slug = reducer.state.resumeProjectSlug
+                            if (claudeId != null && slug != null && service.bootstrap != null) {
+                                coroutineScope.launch {
+                                    val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        val projectsDir = java.io.File(service.bootstrap!!.homeDir, ".claude/projects")
+                                        com.destin.code.runtime.SessionBrowser.loadHistory(
+                                            projectsDir, slug, claudeId, all = true,
+                                        )
+                                    }
+                                    val entries = result.messages.map { msg ->
+                                        com.destin.code.ui.state.HistoryEntry(msg.role, msg.content, msg.timestamp)
+                                    }
+                                    reducer.dispatch(
+                                        com.destin.code.ui.state.ChatAction.HistoryLoaded(
+                                            messages = entries,
+                                            hasMore = false,
+                                            claudeSessionId = claudeId,
+                                            projectSlug = slug,
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            bridge?.writeInput(input)
+                            // Look up the human-readable label for the completed prompt display
+                            val label = reducer.state.timeline
+                                .filterIsInstance<com.destin.code.ui.state.TimelineEntry.Prompt>()
+                                .find { it.prompt.promptId == promptId }
+                                ?.prompt?.buttons?.find { it.input == input }?.label
+                                ?: input
+                            reducer.dispatch(
+                                com.destin.code.ui.state.ChatAction.CompletePrompt(
+                                    promptId = promptId,
+                                    selection = label,
+                                )
                             )
-                        )
-                        currentSession?.markPromptCompleted(promptId)
+                            currentSession?.markPromptCompleted(promptId)
+                        }
                     },
                     onAcceptTool = { tool ->
                         reducer.dispatch(

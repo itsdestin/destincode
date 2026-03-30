@@ -9,6 +9,13 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontStyle
+import com.destin.code.ui.MarkdownRenderer
 import com.destin.code.ui.state.*
 import com.destin.code.ui.theme.CascadiaMono
 import com.destin.code.ui.v2.DesktopColors as DC
@@ -136,6 +143,9 @@ fun ChatViewV2(
                                 fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
                             )
                         }
+                        is TimelineEntry.History -> {
+                            HistorySection(messages = entry.messages)
+                        }
                     }
                 }
                 is DisplayItem.ApprovalCard -> {
@@ -195,6 +205,7 @@ private sealed class DisplayItem {
             is TimelineEntry.Turn -> "turn-${entry.turnId}"
             is TimelineEntry.Prompt -> "prompt-${entry.prompt.promptId}"
             is TimelineEntry.Notice -> "notice-${entry.id}"
+            is TimelineEntry.History -> "history"
         }
     }
 
@@ -212,5 +223,85 @@ private sealed class DisplayItem {
 
     data object Thinking : DisplayItem() {
         override val key: String = "thinking"
+    }
+}
+
+/**
+ * Renders historical messages from a resumed session with dimmed styling
+ * and a "Previous conversation" header.
+ */
+@Composable
+private fun HistorySection(messages: List<HistoryEntry>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        // Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                "Previous Conversation",
+                color = DC.gray500,
+                fontSize = 11.sp,
+                fontFamily = CascadiaMono,
+                fontStyle = FontStyle.Italic,
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Messages — dimmed to distinguish from current conversation
+        for (msg in messages) {
+            val isUser = msg.role == "user"
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp),
+                horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .clip(RoundedCornerShape(
+                            topStart = if (isUser) 16.dp else 4.dp,
+                            topEnd = if (isUser) 4.dp else 16.dp,
+                            bottomStart = 16.dp,
+                            bottomEnd = 16.dp,
+                        ))
+                        .background(
+                            if (isUser) DC.gray700.copy(alpha = 0.3f)
+                            else DC.gray800.copy(alpha = 0.5f)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    if (isUser) {
+                        // User messages: plain text, dimmed
+                        Text(
+                            text = msg.content,
+                            color = DC.gray500,
+                            fontSize = 12.sp,
+                            fontFamily = CascadiaMono,
+                        )
+                    } else {
+                        // Assistant messages: markdown rendered, dimmed
+                        MarkdownRenderer(
+                            markdown = msg.content,
+                            textColor = DC.gray500,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+
+        HorizontalDivider(
+            color = DC.gray700,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
     }
 }

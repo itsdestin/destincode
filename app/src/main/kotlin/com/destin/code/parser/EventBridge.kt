@@ -161,6 +161,8 @@ class EventBridge(private val socketName: String) {
             try { socket.close() } catch (_: Exception) {}
         }
         pendingSockets.clear()
+        sessionIdMap.clear()
+        transcriptPathMap.clear()
         listenJob?.cancel()
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null

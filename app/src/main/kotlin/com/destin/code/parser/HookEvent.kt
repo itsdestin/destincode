@@ -89,10 +89,12 @@ sealed class HookEvent {
                     )
                     "Stop" -> {
                         // Try multiple field names — Claude Code versions may differ
-                        val assistantMsg = obj.optString("last_assistant_message", "")
-                            .ifBlank { obj.optString("message", "") }
-                            .ifBlank { obj.optString("response", "") }
-                            .ifBlank { obj.optString("assistant_message", "") }
+                        val assistantMsg = TranscriptWatcher.stripSystemTags(
+                            obj.optString("last_assistant_message", "")
+                                .ifBlank { obj.optString("message", "") }
+                                .ifBlank { obj.optString("response", "") }
+                                .ifBlank { obj.optString("assistant_message", "") }
+                        )
                         if (assistantMsg.isBlank()) {
                             android.util.Log.w("HookEvent", "Stop event has no assistant message")
                         }

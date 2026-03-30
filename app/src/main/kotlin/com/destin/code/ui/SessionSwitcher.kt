@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.destin.code.runtime.ManagedSession
+import com.destin.code.runtime.SessionBrowser
 import com.destin.code.runtime.SessionStatus
 import com.destin.code.ui.theme.CascadiaMono
 import com.destin.code.ui.v2.DesktopColors as DC
@@ -91,6 +92,8 @@ fun SessionDropdown(
     onNewSession: () -> Unit,
     knownDirs: List<Pair<String, File>>? = null,
     onCreateSession: ((cwd: File, dangerous: Boolean, shell: Boolean) -> Unit)? = null,
+    pastSessions: List<SessionBrowser.PastSession> = emptyList(),
+    onResumeSession: ((SessionBrowser.PastSession) -> Unit)? = null,
 ) {
     if (!expanded) return
 
@@ -189,6 +192,69 @@ fun SessionDropdown(
                 }
 
                 HorizontalDivider(color = DC.gray700, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+
+                // ─── Resume past sessions ───
+                if (pastSessions.isNotEmpty() && onResumeSession != null) {
+                    var showResume by remember { mutableStateOf(false) }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showResume = !showResume }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "RESUME",
+                            fontSize = 10.sp,
+                            fontFamily = CascadiaMono,
+                            color = DC.gray500,
+                            letterSpacing = 1.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            if (showResume) "▴" else "▾",
+                            fontSize = 10.sp,
+                            color = DC.gray500,
+                        )
+                    }
+
+                    if (showResume) {
+                        for (past in pastSessions.take(10)) {
+                            val timeAgo = formatTimeAgo(past.lastModified)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onResumeSession(past)
+                                        onDismiss()
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        past.name,
+                                        fontSize = 12.sp,
+                                        fontFamily = CascadiaMono,
+                                        color = DC.gray300,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        timeAgo,
+                                        fontSize = 10.sp,
+                                        fontFamily = CascadiaMono,
+                                        color = DC.gray500,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = DC.gray700, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+                }
 
                 if (!showNewForm) {
                     // "New Session" button
@@ -450,5 +516,22 @@ private fun PulsingStatusDot(
                 .clip(CircleShape)
                 .background(dotColor),
         )
+    }
+}
+
+/** Format epoch millis as a human-friendly relative time string. */
+private fun formatTimeAgo(timestamp: Long): String {
+    val now = System.currentTimeMillis()
+    val diff = now - timestamp
+    val minutes = diff / 60_000
+    val hours = minutes / 60
+    val days = hours / 24
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "${minutes}m ago"
+        hours < 24 -> "${hours}h ago"
+        days < 7 -> "${days}d ago"
+        days < 30 -> "${days / 7}w ago"
+        else -> "${days / 30}mo ago"
     }
 }

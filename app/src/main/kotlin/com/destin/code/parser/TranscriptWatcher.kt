@@ -31,6 +31,14 @@ class TranscriptWatcher(
         private const val TAG = "TranscriptWatcher"
         private const val POLL_INTERVAL_MS = 500L
 
+        /** Strip system XML tags that should never appear in rendered content. */
+        private val SYSTEM_TAG_REGEX = Regex(
+            """<system-reminder>[\s\S]*?</system-reminder>""",
+        )
+
+        fun stripSystemTags(text: String): String =
+            SYSTEM_TAG_REGEX.replace(text, "").trim()
+
         /**
          * Convert a working directory path to Claude Code's project slug.
          * Mirrors desktop's cwdToProjectSlug(): replace \, :, / with - then strip leading -.
@@ -255,7 +263,8 @@ class TranscriptWatcher(
             val block = content.optJSONObject(i) ?: continue
             when (block.optString("type")) {
                 "text" -> {
-                    val text = block.optString("text", "")
+                    val raw = block.optString("text", "")
+                    val text = stripSystemTags(raw)
                     if (text.isNotBlank()) {
                         _events.tryEmit(TranscriptEvent.AssistantText(
                             sessionId, uuid, timestamp, text,
@@ -296,7 +305,10 @@ class TranscriptWatcher(
         }
         if (text.isNotEmpty()) {
             state.accumulatedStreamingText += text
-            _events.tryEmit(TranscriptEvent.StreamingText(sessionId, state.accumulatedStreamingText))
+            val cleaned = stripSystemTags(state.accumulatedStreamingText)
+            if (cleaned.isNotBlank()) {
+                _events.tryEmit(TranscriptEvent.StreamingText(sessionId, cleaned))
+            }
         }
     }
 

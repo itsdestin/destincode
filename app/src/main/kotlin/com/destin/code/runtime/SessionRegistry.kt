@@ -4,6 +4,7 @@ import com.destin.code.parser.TranscriptWatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -27,6 +28,7 @@ class SessionRegistry {
         dangerousMode: Boolean,
         apiKey: String?,
         titlesDir: File,
+        resumeSessionId: String? = null,
     ): ManagedSession {
         val sessionId = java.util.UUID.randomUUID().toString()
         val socketName = "parser-$sessionId"
@@ -41,6 +43,7 @@ class SessionRegistry {
             cwd = cwd,
             dangerousMode = dangerousMode,
             mobileSessionId = sessionId,
+            resumeSessionId = resumeSessionId,
         )
 
         val projectsDir = File(bootstrap.homeDir, ".claude/projects")
@@ -143,6 +146,56 @@ class SessionRegistry {
 
         _sessions.update { it + (sessionId to session) }
         _currentSessionId.value = sessionId
+
+        return session
+    }
+
+    /**
+     * Resume a past session. Creates a new Claude Code PTY with --resume flag
+     * in the session's original project directory, then loads history.
+     * Mirrors the desktop's handleResumeSession() in App.tsx.
+     */
+    fun resumeSession(
+        pastSession: SessionBrowser.PastSession,
+        bootstrap: Bootstrap,
+        apiKey: String?,
+        titlesDir: File,
+    ): ManagedSession {
+        // Derive CWD from the project slug — fall back to homeDir if path doesn't exist
+        val cwd = SessionBrowser.slugToCwd(pastSession.projectSlug, bootstrap.homeDir)
+
+        // Create session with --resume CLI flag (NOT /resume stdin)
+        val session = createSession(
+            bootstrap = bootstrap,
+            cwd = cwd,
+            dangerousMode = false,
+            apiKey = apiKey,
+            titlesDir = titlesDir,
+            resumeSessionId = pastSession.sessionId,
+        )
+
+        // Load history on IO thread to avoid ANR on large files
+        val projectsDir = File(bootstrap.homeDir, ".claude/projects")
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            val result = SessionBrowser.loadHistory(
+                projectsDir, pastSession.projectSlug, pastSession.sessionId,
+            )
+            if (result.messages.isNotEmpty()) {
+                val entries = result.messages.map { msg ->
+                    com.destin.code.ui.state.HistoryEntry(msg.role, msg.content, msg.timestamp)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    session.chatReducer.dispatch(
+                        com.destin.code.ui.state.ChatAction.HistoryLoaded(
+                            messages = entries,
+                            hasMore = result.hasMore,
+                            claudeSessionId = pastSession.sessionId,
+                            projectSlug = pastSession.projectSlug,
+                        )
+                    )
+                }
+            }
+        }
 
         return session
     }

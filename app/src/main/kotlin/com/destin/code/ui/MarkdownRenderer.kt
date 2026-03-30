@@ -23,8 +23,8 @@ import org.commonmark.parser.Parser
 
 private val URL_PATTERN = Regex("""https?://[^\s)>\]"'`]+""")
 private val LINK_COLOR = Color(0xFF66AAFF)
-private val INLINE_CODE_BG = Color(0xFF222222)
-private val INLINE_CODE_COLOR = Color(0xFFB0B0B0)
+private val INLINE_CODE_BG = Color(0xFF2D2D2D)
+private val INLINE_CODE_COLOR = Color(0xFFD4D4D4)
 private val BLOCKQUOTE_BORDER = Color(0xFFB0B0B0)
 private val BLOCKQUOTE_TEXT = Color(0xFF999999)
 private val HR_COLOR = Color(0xFF333333)
