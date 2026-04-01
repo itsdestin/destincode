@@ -66,12 +66,13 @@ fun ChatScreen(service: SessionService) {
 
     var screenMode by remember { mutableStateOf(ScreenMode.Chat) }
 
-    // React UI sends view switch requests via the bridge
-    val viewModeRequest by service.viewModeRequest.collectAsState()
-    LaunchedEffect(viewModeRequest) {
-        when (viewModeRequest) {
-            "terminal" -> screenMode = ScreenMode.Terminal
-            "chat" -> screenMode = ScreenMode.Chat
+    // React UI and native code send view switch requests via SharedFlow
+    LaunchedEffect(Unit) {
+        service.viewModeRequest.collect { mode ->
+            when (mode) {
+                "terminal" -> screenMode = ScreenMode.Terminal
+                "chat" -> screenMode = ScreenMode.Chat
+            }
         }
     }
 
@@ -115,8 +116,11 @@ fun ChatScreen(service: SessionService) {
 
         if (currentSession != null) {
 
-            // Terminal — shown when toggled or when session is a shell
+            // Terminal — shown when toggled or when session is a shell.
+            // key(currentSessionId) forces full recreation when session changes,
+            // preventing the terminal from showing the wrong session's PTY.
             if (screenMode == ScreenMode.Terminal) {
+                key(currentSessionId) {
                 val termViewClient = remember { BaseTerminalViewClient() }
                 val termScreenVersion by currentSession.screenVersion.collectAsState()
                 var userScrolledUp by remember { mutableStateOf(false) }
@@ -198,8 +202,8 @@ fun ChatScreen(service: SessionService) {
                         hasBypassMode = currentSession.dangerousMode,
                         onPermissionCycle = { currentSession.writeInput("\u001b[Z") },
                         onSwitchToChat = {
-                            screenMode = ScreenMode.Chat
-                            // Tell React to switch its viewModes back to chat
+                            // Route through SharedFlow so Kotlin and React stay in sync
+                            service.requestViewMode("chat")
                             service.bridgeServer.broadcast(org.json.JSONObject().apply {
                                 put("type", "ui:action")
                                 put("payload", org.json.JSONObject().apply {
@@ -210,6 +214,7 @@ fun ChatScreen(service: SessionService) {
                         },
                     )
                 }
+                } // key(currentSessionId)
             }
 
             // View switching handled by React header toggle (sends ui:action via bridge)

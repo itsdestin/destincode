@@ -30,9 +30,17 @@ class SessionService : Service() {
     var platformBridge: PlatformBridge? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    /** View mode requested by React UI — ChatScreen observes this */
-    private val _viewModeRequest = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-    val viewModeRequest: kotlinx.coroutines.flow.StateFlow<String?> = _viewModeRequest
+    /** View mode requested by React UI — ChatScreen observes this.
+     *  SharedFlow (not StateFlow) because these are events, not state:
+     *  "switch to terminal" must fire even if the last request was also "terminal". */
+    private val _viewModeRequest = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val viewModeRequest: kotlinx.coroutines.flow.SharedFlow<String> = _viewModeRequest
+
+    /** Emit a view mode change from native code (e.g., TerminalKeyboardRow "Chat" button). */
+    fun requestViewMode(mode: String) {
+        _viewModeRequest.tryEmit(mode)
+    }
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
     var bootstrap: Bootstrap? = null
@@ -302,6 +310,13 @@ class SessionService : Service() {
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray(sessions)) }
             }
+            "session:switch" -> {
+                val sessionId = msg.payload.optString("sessionId", "")
+                if (sessionId.isNotEmpty()) {
+                    sessionRegistry.switchTo(sessionId)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
             "session:input" -> {
                 val sessionId = msg.payload.optString("sessionId", "")
                 val text = msg.payload.optString("text", "")
@@ -401,7 +416,7 @@ class SessionService : Service() {
                 val action = msg.payload.optString("action", "")
                 if (action == "switch-view") {
                     val mode = msg.payload.optString("mode", "chat")
-                    _viewModeRequest.value = mode
+                    _viewModeRequest.tryEmit(mode)
                 }
             }
             else -> {
