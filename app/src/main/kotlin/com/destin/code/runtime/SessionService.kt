@@ -15,6 +15,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import com.destin.code.MainActivity
 import com.destin.code.bridge.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -40,6 +41,11 @@ class SessionService : Service() {
     fun requestViewMode(mode: String) {
         _viewModeRequest.tryEmit(mode)
     }
+
+    /** File picker bridge: Service sets the deferred, Activity completes it with paths. */
+    var pendingFilePicker: CompletableDeferred<List<String>>? = null
+    /** Callback for Activity to know when to launch the file picker. */
+    var onFilePickerRequested: (() -> Unit)? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
@@ -363,7 +369,19 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, platformBridge?.getHomePath() ?: "") }
             }
             "dialog:open-file" -> {
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("paths", org.json.JSONArray())) }
+                // Route through Activity — Service can't launch ActivityResultContracts
+                val deferred = CompletableDeferred<List<String>>()
+                pendingFilePicker = deferred
+                withContext(Dispatchers.Main) {
+                    onFilePickerRequested?.invoke()
+                }
+                try {
+                    val paths = deferred.await()
+                    val arr = org.json.JSONArray(paths)
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("paths", arr)) }
+                } catch (_: Exception) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("paths", org.json.JSONArray())) }
+                }
             }
             "clipboard:save-image" -> {
                 val result = platformBridge?.saveClipboardImage() ?: JSONObject().put("path", JSONObject.NULL)
