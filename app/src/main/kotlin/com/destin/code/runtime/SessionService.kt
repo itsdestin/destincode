@@ -429,10 +429,63 @@ class SessionService : Service() {
                 // fire-and-forget — no response needed
             }
             "session:browse" -> {
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+                val homeDir = bootstrap?.homeDir ?: filesDir
+                val projectsDir = File(homeDir, ".claude/projects")
+                val topicsDir = File(homeDir, ".claude/topics")
+                // Collect active Claude session IDs to exclude from past sessions
+                val activeIds = sessionRegistry.sessions.value.values.mapNotNull { s ->
+                    s.ptyBridge?.getEventBridge()?.getClaudeSessionId(s.id)
+                }.toSet()
+                val pastSessions = withContext(Dispatchers.IO) {
+                    SessionBrowser.listPastSessions(projectsDir, topicsDir, activeIds)
+                }
+                val arr = org.json.JSONArray()
+                for (s in pastSessions) {
+                    arr.put(JSONObject().apply {
+                        put("sessionId", s.sessionId)
+                        put("projectSlug", s.projectSlug)
+                        put("name", s.name)
+                        put("lastModified", s.lastModified)
+                        put("projectPath", s.projectPath)
+                    })
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
             }
             "session:history" -> {
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+                val sessionId = msg.payload.optString("sessionId", "")
+                val projectSlug = msg.payload.optString("projectSlug", "")
+                val count = msg.payload.optInt("count", 10)
+                val all = msg.payload.optBoolean("all", false)
+                if (sessionId.isEmpty()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+                } else {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val projectsDir = File(homeDir, ".claude/projects")
+                    // If no slug provided, scan for the session file
+                    val slug = projectSlug.ifEmpty {
+                        withContext(Dispatchers.IO) {
+                            projectsDir.listFiles { f -> f.isDirectory }
+                                ?.firstOrNull { dir -> File(dir, "$sessionId.jsonl").exists() }
+                                ?.name ?: ""
+                        }
+                    }
+                    if (slug.isEmpty()) {
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+                    } else {
+                        val result = withContext(Dispatchers.IO) {
+                            SessionBrowser.loadHistory(projectsDir, slug, sessionId, count, all)
+                        }
+                        val arr = org.json.JSONArray()
+                        for (m in result.messages) {
+                            arr.put(JSONObject().apply {
+                                put("role", m.role)
+                                put("content", m.content)
+                                put("timestamp", m.timestamp)
+                            })
+                        }
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
+                    }
+                }
             }
             "ui:action" -> {
                 // Handle view switching from React UI
