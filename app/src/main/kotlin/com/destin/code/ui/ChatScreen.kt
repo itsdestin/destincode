@@ -66,6 +66,15 @@ fun ChatScreen(service: SessionService) {
 
     var screenMode by remember { mutableStateOf(ScreenMode.Chat) }
 
+    // React UI sends view switch requests via the bridge
+    val viewModeRequest by service.viewModeRequest.collectAsState()
+    LaunchedEffect(viewModeRequest) {
+        when (viewModeRequest) {
+            "terminal" -> screenMode = ScreenMode.Terminal
+            "chat" -> screenMode = ScreenMode.Chat
+        }
+    }
+
     // Auto-switch to terminal for shell sessions
     LaunchedEffect(currentSession?.shellMode) {
         if (currentSession?.shellMode == true) {
@@ -188,17 +197,22 @@ fun ChatScreen(service: SessionService) {
                         permissionMode = currentSession.permissionMode,
                         hasBypassMode = currentSession.dangerousMode,
                         onPermissionCycle = { currentSession.writeInput("\u001b[Z") },
+                        onSwitchToChat = {
+                            screenMode = ScreenMode.Chat
+                            // Tell React to switch its viewModes back to chat
+                            service.bridgeServer.broadcast(org.json.JSONObject().apply {
+                                put("type", "ui:action")
+                                put("payload", org.json.JSONObject().apply {
+                                    put("action", "switch-view")
+                                    put("mode", "chat")
+                                })
+                            })
+                        },
                     )
                 }
             }
 
-            // Native floating toggle button — switches between Chat and Terminal
-            FloatingViewToggle(
-                screenMode = screenMode,
-                onToggle = {
-                    screenMode = if (screenMode == ScreenMode.Chat) ScreenMode.Terminal else ScreenMode.Chat
-                },
-            )
+            // View switching handled by React header toggle (sends ui:action via bridge)
         }
     }
 
@@ -231,23 +245,109 @@ private fun FloatingViewToggle(screenMode: ScreenMode, onToggle: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        contentAlignment = Alignment.BottomEnd,
+            .padding(top = 6.dp, end = 6.dp),
+        contentAlignment = Alignment.TopEnd,
     ) {
-        Box(
+        Row(
             modifier = Modifier
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color(0xFF333333))
-                .clickable { onToggle() }
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF222222))
+                .border(0.5.dp, Color(0xFF333333).copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(
-                text = if (screenMode == ScreenMode.Chat) "Terminal" else "Chat",
-                color = Color(0xFFE0E0E0),
-                fontSize = 13.sp,
-                fontFamily = com.destin.code.ui.theme.CascadiaMono,
-            )
+            // Chat button
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (screenMode == ScreenMode.Chat) Color(0xFFB0B0B0) else Color.Transparent)
+                    .clickable { if (screenMode != ScreenMode.Chat) onToggle() }
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                ChatModeIcon(
+                    tint = if (screenMode == ScreenMode.Chat) Color(0xFF111111) else Color(0xFF999999),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            // Terminal button
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (screenMode == ScreenMode.Terminal) Color(0xFFB0B0B0) else Color.Transparent)
+                    .clickable { if (screenMode != ScreenMode.Terminal) onToggle() }
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                TerminalModeIcon(
+                    tint = if (screenMode == ScreenMode.Terminal) Color(0xFF111111) else Color(0xFF999999),
+                    modifier = Modifier.size(14.dp),
+                )
+            }
         }
+    }
+}
+
+/** Chat icon — speech bubble with three dots, matching desktop's ChatIcon SVG */
+@Composable
+private fun ChatModeIcon(tint: Color, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val w = size.width; val h = size.height
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 0.08f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+        // Speech bubble outline
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.17f, h * 0.21f) // top-left
+            lineTo(w * 0.83f, h * 0.21f) // top-right
+            cubicTo(w * 0.92f, h * 0.21f, w * 0.92f, h * 0.21f, w * 0.92f, h * 0.29f)
+            lineTo(w * 0.92f, h * 0.625f)
+            cubicTo(w * 0.92f, h * 0.71f, w * 0.92f, h * 0.71f, w * 0.83f, h * 0.71f)
+            lineTo(w * 0.42f, h * 0.71f)
+            lineTo(w * 0.25f, h * 0.83f) // tail point
+            lineTo(w * 0.29f, h * 0.71f)
+            lineTo(w * 0.17f, h * 0.71f)
+            cubicTo(w * 0.08f, h * 0.71f, w * 0.08f, h * 0.71f, w * 0.08f, h * 0.625f)
+            lineTo(w * 0.08f, h * 0.29f)
+            cubicTo(w * 0.08f, h * 0.21f, w * 0.08f, h * 0.21f, w * 0.17f, h * 0.21f)
+            close()
+        }
+        drawPath(path, color = tint, style = stroke)
+        // Three dots
+        val dotR = w * 0.04f
+        drawCircle(color = tint, radius = dotR, center = androidx.compose.ui.geometry.Offset(w * 0.35f, h * 0.46f))
+        drawCircle(color = tint, radius = dotR, center = androidx.compose.ui.geometry.Offset(w * 0.50f, h * 0.46f))
+        drawCircle(color = tint, radius = dotR, center = androidx.compose.ui.geometry.Offset(w * 0.65f, h * 0.46f))
+    }
+}
+
+/** Terminal icon — rounded rect with >_ prompt, matching desktop's TerminalIcon SVG */
+@Composable
+private fun TerminalModeIcon(tint: Color, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val w = size.width; val h = size.height
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 0.08f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+        // Rounded rectangle
+        val rect = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.17f, h * 0.17f)
+            lineTo(w * 0.83f, h * 0.17f)
+            cubicTo(w * 0.92f, h * 0.17f, w * 0.92f, h * 0.17f, w * 0.92f, h * 0.25f)
+            lineTo(w * 0.92f, h * 0.75f)
+            cubicTo(w * 0.92f, h * 0.83f, w * 0.92f, h * 0.83f, w * 0.83f, h * 0.83f)
+            lineTo(w * 0.17f, h * 0.83f)
+            cubicTo(w * 0.08f, h * 0.83f, w * 0.08f, h * 0.83f, w * 0.08f, h * 0.75f)
+            lineTo(w * 0.08f, h * 0.25f)
+            cubicTo(w * 0.08f, h * 0.17f, w * 0.08f, h * 0.17f, w * 0.17f, h * 0.17f)
+            close()
+        }
+        drawPath(rect, color = tint, style = stroke)
+        // Chevron >
+        val chevron = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.25f, h * 0.375f)
+            lineTo(w * 0.42f, h * 0.50f)
+            lineTo(w * 0.25f, h * 0.625f)
+        }
+        drawPath(chevron, color = tint, style = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 0.09f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+        // Underscore _
+        drawLine(color = tint, start = androidx.compose.ui.geometry.Offset(w * 0.50f, h * 0.625f), end = androidx.compose.ui.geometry.Offset(w * 0.71f, h * 0.625f), strokeWidth = w * 0.09f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
     }
 }
 

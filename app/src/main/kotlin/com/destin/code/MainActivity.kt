@@ -25,6 +25,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Catch Termux TerminalBuffer crashes (row/column out of bounds during resize race).
+        // These are internal Termux bugs triggered when PTY output arrives during a resize.
+        // The terminal recovers on the next screen update — crashing the app is worse.
         enableEdgeToEdge()
 
         val bootstrap = Bootstrap(applicationContext)

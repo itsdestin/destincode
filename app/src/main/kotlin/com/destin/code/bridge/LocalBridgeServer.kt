@@ -51,7 +51,7 @@ class LocalBridgeServer(
             }
 
             override fun onMessage(conn: WebSocket, message: String) {
-                Log.d(TAG, "RECV: ${message.take(200)}")
+                // Log.d(TAG, "RECV: ${message.take(200)}")
                 val parsed = MessageRouter.parseMessage(message)
                 if (parsed == null) {
                     Log.w(TAG, "Unparseable message: ${message.take(200)}")
@@ -87,7 +87,7 @@ class LocalBridgeServer(
     /** Send a push event to all connected clients */
     fun broadcast(message: JSONObject) {
         val msg = message.toString()
-        Log.d(TAG, "BROADCAST (${clients.size} clients): ${msg.take(200)}")
+        // Log.d(TAG, "BROADCAST (${clients.size} clients): ${msg.take(200)}")
         clients.values.forEach { ws ->
             try {
                 ws.send(msg)
@@ -104,7 +104,7 @@ class LocalBridgeServer(
             put("id", id)
             put("payload", payload ?: JSONObject.NULL)
         }.toString()
-        Log.d(TAG, "RESPOND: $msg")
+        // Log.d(TAG, "RESPOND: $msg")
         ws.send(msg)
     }
 

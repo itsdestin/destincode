@@ -29,6 +29,10 @@ class SessionService : Service() {
     val bridgeServer = LocalBridgeServer()
     var platformBridge: PlatformBridge? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /** View mode requested by React UI — ChatScreen observes this */
+    private val _viewModeRequest = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val viewModeRequest: kotlinx.coroutines.flow.StateFlow<String?> = _viewModeRequest
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
     var bootstrap: Bootstrap? = null
@@ -301,13 +305,23 @@ class SessionService : Service() {
             "session:input" -> {
                 val sessionId = msg.payload.optString("sessionId", "")
                 val text = msg.payload.optString("text", "")
-                sessionRegistry.sessions.value[sessionId]?.writeInput(text)
+                if (text.isNotEmpty()) {
+                    sessionRegistry.sessions.value[sessionId]?.writeInput(text)
+                }
             }
             "session:resize" -> {
                 val sessionId = msg.payload.optString("sessionId", "")
                 val cols = msg.payload.optInt("cols", 80)
                 val rows = msg.payload.optInt("rows", 24)
-                sessionRegistry.sessions.value[sessionId]?.getTerminalSession()?.updateSize(cols, rows)
+                if (cols > 0 && rows > 0) {
+                    try {
+                        withContext(Dispatchers.Main) {
+                            sessionRegistry.sessions.value[sessionId]?.getTerminalSession()?.updateSize(cols, rows)
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("SessionService", "Resize failed: ${e.message}")
+                    }
+                }
             }
             "permission:respond" -> {
                 val requestId = msg.payload.optString("requestId", "")
@@ -383,7 +397,12 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
             }
             "ui:action" -> {
-                // fire-and-forget — broadcast to other clients if any
+                // Handle view switching from React UI
+                val action = msg.payload.optString("action", "")
+                if (action == "switch-view") {
+                    val mode = msg.payload.optString("mode", "chat")
+                    _viewModeRequest.value = mode
+                }
             }
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
