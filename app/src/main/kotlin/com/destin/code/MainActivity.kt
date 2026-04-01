@@ -19,6 +19,7 @@ import com.destin.code.config.TierStore
 import com.destin.code.runtime.Bootstrap
 import com.destin.code.runtime.ServiceBinder
 import com.destin.code.ui.ChatScreen
+import com.destin.code.ui.QrScannerOverlay
 import com.destin.code.ui.SetupScreen
 import com.destin.code.ui.TierPickerScreen
 import com.destin.code.ui.theme.DestinCodeTheme
@@ -64,6 +65,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private var boundService: com.destin.code.runtime.SessionService? = null
+
+    /** Compose-observable state for showing the QR scanner overlay. */
+    private val _showQrScanner = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -174,12 +178,15 @@ class MainActivity : ComponentActivity() {
                                 is ServiceBinder.SessionState.Connected -> {
                                     val svc = (serviceState as ServiceBinder.SessionState.Connected).service
 
-                                    // Initialize bootstrap and wire file picker
+                                    // Initialize bootstrap and wire file picker + QR scanner
                                     LaunchedEffect(svc) {
                                         svc.initBootstrap(bootstrap)
                                         boundService = svc
                                         svc.onFilePickerRequested = {
                                             filePickerLauncher.launch("*/*")
+                                        }
+                                        svc.onQrScanRequested = {
+                                            _showQrScanner.value = true
                                         }
                                     }
 
@@ -193,6 +200,20 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     ChatScreen(svc)
+
+                                    // QR scanner overlay — shown above ChatScreen
+                                    if (_showQrScanner.value) {
+                                        QrScannerOverlay(
+                                            onScanned = { url ->
+                                                _showQrScanner.value = false
+                                                boundService?.pendingQrScanner?.complete(url)
+                                            },
+                                            onDismiss = {
+                                                _showQrScanner.value = false
+                                                boundService?.pendingQrScanner?.complete(null)
+                                            },
+                                        )
+                                    }
                                 }
                                 is ServiceBinder.SessionState.Error -> {
                                     val error = (serviceState as ServiceBinder.SessionState.Error).message

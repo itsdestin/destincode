@@ -47,6 +47,11 @@ class SessionService : Service() {
     /** Callback for Activity to know when to launch the file picker. */
     var onFilePickerRequested: (() -> Unit)? = null
 
+    /** QR scanner bridge: Service sets the deferred, Activity completes it with scanned URL. */
+    var pendingQrScanner: CompletableDeferred<String?>? = null
+    /** Callback for Activity to know when to launch the QR scanner. */
+    var onQrScanRequested: (() -> Unit)? = null
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
     var bootstrap: Bootstrap? = null
@@ -541,9 +546,18 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
             "android:scan-qr" -> {
-                // QR scanning requires Activity — return not-implemented for now,
-                // will be wired to ActivityResultContracts in Phase 2
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", JSONObject.NULL)) }
+                // Route through Activity — camera requires Activity context
+                val deferred = CompletableDeferred<String?>()
+                pendingQrScanner = deferred
+                withContext(Dispatchers.Main) {
+                    onQrScanRequested?.invoke()
+                }
+                try {
+                    val url = deferred.await()
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", url ?: JSONObject.NULL)) }
+                } catch (_: Exception) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", JSONObject.NULL)) }
+                }
             }
 
             else -> {
