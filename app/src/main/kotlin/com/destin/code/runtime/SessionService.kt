@@ -419,6 +419,115 @@ class SessionService : Service() {
                     _viewModeRequest.tryEmit(mode)
                 }
             }
+
+            // ── Android-only settings bridge ────────────────────────────
+            "android:get-tier" -> {
+                val tierStore = com.destin.code.config.TierStore(applicationContext)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("tier", tierStore.selectedTier.name)) }
+            }
+            "android:set-tier" -> {
+                val tierName = msg.payload.optString("tier", "CORE")
+                val tierStore = com.destin.code.config.TierStore(applicationContext)
+                val newTier = try {
+                    com.destin.code.config.PackageTier.valueOf(tierName)
+                } catch (_: Exception) { com.destin.code.config.PackageTier.CORE }
+                val changed = newTier != tierStore.selectedTier
+                tierStore.selectedTier = newTier
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("restartRequired", changed)) }
+            }
+            "android:get-directories" -> {
+                val homeDir = bootstrap?.homeDir ?: filesDir
+                val store = com.destin.code.config.WorkingDirStore(homeDir)
+                val dirs = org.json.JSONArray()
+                store.allDirs().forEach { (label, dir) ->
+                    dirs.put(JSONObject().put("label", label).put("path", dir.absolutePath))
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("directories", dirs)) }
+            }
+            "android:add-directory" -> {
+                val path = msg.payload.optString("path", "")
+                val label = msg.payload.optString("label", "")
+                if (path.isNotEmpty()) {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val store = com.destin.code.config.WorkingDirStore(homeDir)
+                    store.add(com.destin.code.config.WorkingDir(label = label.ifEmpty { File(path).name }, path = path))
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:remove-directory" -> {
+                val path = msg.payload.optString("path", "")
+                if (path.isNotEmpty()) {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val store = com.destin.code.config.WorkingDirStore(homeDir)
+                    store.remove(path)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:get-about" -> {
+                val pm = applicationContext.packageManager
+                val info = pm.getPackageInfo(applicationContext.packageName, 0)
+                msg.id?.let {
+                    bridgeServer.respond(ws, msg.type, it, JSONObject().apply {
+                        put("version", info.versionName ?: "unknown")
+                        put("build", info.longVersionCode.toString())
+                    })
+                }
+            }
+            "android:get-paired-devices" -> {
+                val prefs = applicationContext.getSharedPreferences("remote_devices", android.content.Context.MODE_PRIVATE)
+                val json = prefs.getString("paired_devices", null)
+                val devices = if (json != null) {
+                    try { org.json.JSONArray(json) } catch (_: Exception) { org.json.JSONArray() }
+                } else org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("devices", devices)) }
+            }
+            "android:save-paired-device" -> {
+                val prefs = applicationContext.getSharedPreferences("remote_devices", android.content.Context.MODE_PRIVATE)
+                val existing = try {
+                    org.json.JSONArray(prefs.getString("paired_devices", "[]"))
+                } catch (_: Exception) { org.json.JSONArray() }
+                val host = msg.payload.optString("host", "")
+                val port = msg.payload.optInt("port", 9900)
+                // Remove existing entry with same host:port
+                val filtered = org.json.JSONArray()
+                for (i in 0 until existing.length()) {
+                    val d = existing.getJSONObject(i)
+                    if (d.optString("host") != host || d.optInt("port") != port) {
+                        filtered.put(d)
+                    }
+                }
+                filtered.put(JSONObject().apply {
+                    put("name", msg.payload.optString("name", "Desktop"))
+                    put("host", host)
+                    put("port", port)
+                    put("password", msg.payload.optString("password", ""))
+                })
+                prefs.edit().putString("paired_devices", filtered.toString()).apply()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:remove-paired-device" -> {
+                val prefs = applicationContext.getSharedPreferences("remote_devices", android.content.Context.MODE_PRIVATE)
+                val existing = try {
+                    org.json.JSONArray(prefs.getString("paired_devices", "[]"))
+                } catch (_: Exception) { org.json.JSONArray() }
+                val host = msg.payload.optString("host", "")
+                val port = msg.payload.optInt("port", 9900)
+                val filtered = org.json.JSONArray()
+                for (i in 0 until existing.length()) {
+                    val d = existing.getJSONObject(i)
+                    if (d.optString("host") != host || d.optInt("port") != port) {
+                        filtered.put(d)
+                    }
+                }
+                prefs.edit().putString("paired_devices", filtered.toString()).apply()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:scan-qr" -> {
+                // QR scanning requires Activity — return not-implemented for now,
+                // will be wired to ActivityResultContracts in Phase 2
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", JSONObject.NULL)) }
+            }
+
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }
