@@ -36,6 +36,7 @@ fun TerminalKeyboardRow(
     permissionMode: String = "Normal",
     hasBypassMode: Boolean = false,
     onPermissionCycle: ((String) -> Unit)? = null,
+    onSwitchToChat: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var ctrlActive by remember { mutableStateOf(false) }
@@ -49,6 +50,22 @@ fun TerminalKeyboardRow(
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Chat button — switches back to React WebView
+        if (onSwitchToChat != null) {
+            Box(
+                modifier = Modifier
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                    .border(0.5.dp, borderColor.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                    .clickable { onSwitchToChat() }
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Chat", fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
         // Ctrl
         SmallPill(
             label = "Ctrl",

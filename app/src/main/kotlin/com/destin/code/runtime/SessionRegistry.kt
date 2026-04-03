@@ -1,5 +1,6 @@
 package com.destin.code.runtime
 
+import com.destin.code.bridge.LocalBridgeServer
 import com.destin.code.parser.TranscriptWatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.update
 import java.io.File
 
 class SessionRegistry {
+    var bridgeServer: LocalBridgeServer? = null
     private val _sessions = MutableStateFlow<Map<String, ManagedSession>>(emptyMap())
     val sessions: StateFlow<Map<String, ManagedSession>> = _sessions
 
@@ -59,6 +61,9 @@ class SessionRegistry {
             titleFile = titleFile,
             scope = scope,
         )
+
+        // Wire bridge server for React UI forwarding
+        session.bridgeServer = bridgeServer
 
         // Start EventBridge BEFORE Claude Code — hooks fire immediately on launch
         bridge.startEventBridge(scope)
@@ -174,28 +179,8 @@ class SessionRegistry {
             resumeSessionId = pastSession.sessionId,
         )
 
-        // Load history on IO thread to avoid ANR on large files
-        val projectsDir = File(bootstrap.homeDir, ".claude/projects")
-        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
-            val result = SessionBrowser.loadHistory(
-                projectsDir, pastSession.projectSlug, pastSession.sessionId,
-            )
-            if (result.messages.isNotEmpty()) {
-                val entries = result.messages.map { msg ->
-                    com.destin.code.ui.state.HistoryEntry(msg.role, msg.content, msg.timestamp)
-                }
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    session.chatReducer.dispatch(
-                        com.destin.code.ui.state.ChatAction.HistoryLoaded(
-                            messages = entries,
-                            hasMore = result.hasMore,
-                            claudeSessionId = pastSession.sessionId,
-                            projectSlug = pastSession.projectSlug,
-                        )
-                    )
-                }
-            }
-        }
+        // History for resumed sessions is now handled entirely by the React UI
+        // via TranscriptWatcher forwarding — no need to load it here.
 
         return session
     }

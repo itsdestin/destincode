@@ -84,6 +84,10 @@ dependencies {
     // Markdown parsing for chat view
     implementation("org.commonmark:commonmark:0.24.0")
 
+    // WebSocket server for React UI bridge
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.java-websocket:Java-WebSocket:1.5.6")
+
     // QR code scanning for remote desktop pairing
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("androidx.camera:camera-core:1.4.1")

@@ -5,26 +5,76 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.destin.code.config.TierStore
 import com.destin.code.runtime.Bootstrap
 import com.destin.code.runtime.ServiceBinder
 import com.destin.code.ui.ChatScreen
+import com.destin.code.ui.QrScannerOverlay
 import com.destin.code.ui.SetupScreen
 import com.destin.code.ui.TierPickerScreen
 import com.destin.code.ui.theme.DestinCodeTheme
 import com.destin.code.ui.theme.ThemeMode
+import java.io.File
 
 class MainActivity : ComponentActivity() {
+
+    /** File picker launcher — copies selected files to ~/attachments/ and completes the service deferred. */
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        val deferred = boundService?.pendingFilePicker ?: return@registerForActivityResult
+        if (uris.isEmpty()) {
+            deferred.complete(emptyList())
+            return@registerForActivityResult
+        }
+        // Copy files to ~/attachments/ on a background thread
+        kotlinx.coroutines.MainScope().launch {
+            val paths = withContext(Dispatchers.IO) {
+                val homeDir = boundService?.bootstrap?.homeDir ?: filesDir
+                val attachDir = File(homeDir, "attachments").also { it.mkdirs() }
+                uris.mapNotNull { uri ->
+                    try {
+                        val timestamp = System.currentTimeMillis()
+                        val mime = contentResolver.getType(uri)
+                        val ext = when {
+                            mime?.startsWith("image/png") == true -> "png"
+                            mime?.startsWith("image/jpeg") == true -> "jpg"
+                            mime?.startsWith("image/") == true -> mime.substringAfter("/")
+                            else -> uri.lastPathSegment?.substringAfterLast('.', "bin") ?: "bin"
+                        }
+                        val destFile = File(attachDir, "$timestamp.$ext")
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            destFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        destFile.absolutePath
+                    } catch (_: Exception) { null }
+                }
+            }
+            deferred.complete(paths)
+        }
+    }
+
+    private var boundService: com.destin.code.runtime.SessionService? = null
+
+    /** Compose-observable state for showing the QR scanner overlay. */
+    private val _showQrScanner = mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Catch Termux TerminalBuffer crashes (row/column out of bounds during resize race).
+        // These are internal Termux bugs triggered when PTY output arrives during a resize.
+        // The terminal recovers on the next screen update — crashing the app is worse.
         enableEdgeToEdge()
 
         val bootstrap = Bootstrap(applicationContext)
@@ -128,9 +178,16 @@ class MainActivity : ComponentActivity() {
                                 is ServiceBinder.SessionState.Connected -> {
                                     val svc = (serviceState as ServiceBinder.SessionState.Connected).service
 
-                                    // Initialize bootstrap but don't auto-create sessions
+                                    // Initialize bootstrap and wire file picker + QR scanner
                                     LaunchedEffect(svc) {
                                         svc.initBootstrap(bootstrap)
+                                        boundService = svc
+                                        svc.onFilePickerRequested = {
+                                            filePickerLauncher.launch("*/*")
+                                        }
+                                        svc.onQrScanRequested = {
+                                            _showQrScanner.value = true
+                                        }
                                     }
 
                                     // Handle intent session_id from notification tap
@@ -143,6 +200,20 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     ChatScreen(svc)
+
+                                    // QR scanner overlay — shown above ChatScreen
+                                    if (_showQrScanner.value) {
+                                        QrScannerOverlay(
+                                            onScanned = { url ->
+                                                _showQrScanner.value = false
+                                                boundService?.pendingQrScanner?.complete(url)
+                                            },
+                                            onDismiss = {
+                                                _showQrScanner.value = false
+                                                boundService?.pendingQrScanner?.complete(null)
+                                            },
+                                        )
+                                    }
                                 }
                                 is ServiceBinder.SessionState.Error -> {
                                     val error = (serviceState as ServiceBinder.SessionState.Error).message

@@ -1,5 +1,8 @@
 package com.destin.code.parser
 
+/** A button in an interactive terminal prompt. */
+data class PromptButton(val label: String, val input: String)
+
 data class ParsedMenu(
     val id: String,
     val title: String,
@@ -19,12 +22,12 @@ object InkSelectParser {
     private val NUMBERED_PREFIX = Regex("""^\s*\d+\.\s+""")
 
     // Title overrides for known prompts — keyed by lowercase keyword found in context
+    // Note: bypass permissions prompt is handled by a hardcoded handler in ManagedSession,
+    // not by the generic InkSelectParser, because it uses Enter/Esc (not arrow navigation).
     private val TITLE_OVERRIDES = mapOf(
         "trust" to "Trust This Folder?",
         "dark mode" to "Choose a Theme for the Terminal",
         "login method" to "Select Login Method",
-        "dangerously-skip-permissions" to "You are allowing Claude to bypass permission prompts, which can be dangerous. Proceed?",
-        "skip all permission" to "You are allowing Claude to bypass permission prompts, which can be dangerous. Proceed?",
     )
 
     /**
@@ -148,7 +151,7 @@ object InkSelectParser {
      * Generate PromptButtons from a parsed menu.
      * Sends up-arrows for items above the selector and down-arrows for items below.
      */
-    fun toPromptButtons(menu: ParsedMenu): List<com.destin.code.ui.state.PromptButton> {
+    fun toPromptButtons(menu: ParsedMenu): List<PromptButton> {
         val up = "\u001b[A"
         val down = "\u001b[B"
         return menu.options.mapIndexed { index, label ->
@@ -158,7 +161,7 @@ object InkSelectParser {
                 offset > 0 -> down.repeat(offset) + "\r"
                 else -> "\r"  // already selected
             }
-            com.destin.code.ui.state.PromptButton(label = label, input = sequence)
+            PromptButton(label = label, input = sequence)
         }
     }
 }

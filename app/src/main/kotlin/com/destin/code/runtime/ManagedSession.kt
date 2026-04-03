@@ -1,14 +1,15 @@
 package com.destin.code.runtime
 
 import android.os.FileObserver
+import com.destin.code.bridge.LocalBridgeServer
+import com.destin.code.bridge.TranscriptSerializer
+import com.destin.code.bridge.HookSerializer
 import com.destin.code.parser.HookEvent
 import com.destin.code.parser.InkSelectParser
+import com.destin.code.parser.PromptButton
 import com.destin.code.parser.TranscriptEvent
 import com.destin.code.parser.TranscriptWatcher
-import com.destin.code.ui.ChatState
-import com.destin.code.ui.state.PromptButton
-import com.destin.code.ui.state.ChatAction
-import com.destin.code.ui.state.ChatReducer
+import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -39,9 +40,6 @@ class ManagedSession(
     val ptyBridge: PtyBridge? = null,
     val directShellBridge: DirectShellBridge? = null,
     val shellMode: Boolean = false,
-    val chatState: ChatState = ChatState(),
-    /** New turn-based state model — runs alongside old ChatState during transition. */
-    val chatReducer: ChatReducer = ChatReducer(),
     /** Transcript watcher for this session — set externally by SessionRegistry. */
     var transcriptWatcher: TranscriptWatcher? = null,
     val createdAt: Long = System.currentTimeMillis(),
@@ -52,7 +50,13 @@ class ManagedSession(
     /** Callback when session leaves AwaitingApproval (for notification clearing). */
     var onApprovalCleared: ((sessionId: String) -> Unit)? = null,
 ) {
-    /** Draft text in the input bar � shared across Chat/Terminal/Shell modes */
+    /** Bridge server for forwarding events to React UI. Set by SessionRegistry. */
+    var bridgeServer: LocalBridgeServer? = null
+
+    /** Current Claude Code permission mode, detected from terminal status bar. */
+    var permissionMode: String = "Normal"
+
+    /** Draft text in the input bar — shared across Chat/Terminal/Shell modes */
     var inputDraft by mutableStateOf(TextFieldValue())
 
     /** Set draft text with cursor at end */
@@ -119,23 +123,12 @@ class ManagedSession(
     }
 
     /**
-     * Derive session status matching desktop's logic:
-     *   red:   any tool awaiting approval
-     *   green: isThinking or any tool running
-     *   gray:  idle / no activity
+     * Derive session status from simple heuristics now that ChatReducer is gone.
+     * The React UI tracks tool/approval state; here we just use idle/unseen.
      */
     private fun deriveStatus(): SessionStatus {
-        val state = chatReducer.state
-        val hasAwaiting = state.toolCalls.values.any {
-            it.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval
-        }
-        val hasRunning = state.toolCalls.values.any {
-            it.status == com.destin.code.ui.state.ToolCallStatus.Running
-        }
         return when {
-            hasAwaiting -> SessionStatus.AwaitingApproval
-            state.isThinking || hasRunning -> SessionStatus.Active
-            state.timeline.isNotEmpty() && !hasBeenViewed -> SessionStatus.Unseen
+            !hasBeenViewed -> SessionStatus.Unseen
             else -> SessionStatus.Idle
         }
     }
@@ -161,7 +154,6 @@ class ManagedSession(
         val bridge = ptyBridge ?: return
 
         // 1. Per-session hook event collector — runs regardless of which session is "current".
-        //    All ChatState mutations dispatched to Main to avoid snapshot state race conditions.
         scope.launch {
             // Wait for EventBridge to become available
             var eventBridge = bridge.getEventBridge()
@@ -178,18 +170,63 @@ class ManagedSession(
                 }
                 withContext(Dispatchers.Main) {
                     routeHookEvent(event)
-                    routeHookEventToReducer(event)
+                }
+
+                // Forward to bridge server for React UI
+                bridgeServer?.let { server ->
+                    when (event) {
+                        is HookEvent.PermissionRequest -> {
+                            val suggestions = event.permissionSuggestions?.let { arr ->
+                                (0 until arr.length()).map { arr.optString(it) }
+                            } ?: emptyList()
+                            server.broadcast(HookSerializer.permissionRequest(
+                                sessionId = id,
+                                requestId = event.requestId,
+                                toolName = event.toolName,
+                                toolInput = event.toolInput,
+                                suggestions = suggestions
+                            ))
+                        }
+                        is HookEvent.Notification -> {
+                            server.broadcast(HookSerializer.notification(
+                                sessionId = id,
+                                message = event.message
+                            ))
+                        }
+                        else -> {}
+                    }
                 }
             }
         }
 
-        // 1b. Transcript event collector — primary source for the new turn-based UI.
+        // 1b. Transcript event collector — forwards events to React UI via bridge server.
         //     TranscriptWatcher starts once we learn the Claude session ID (in hook collector above).
         scope.launch {
             val watcher = transcriptWatcher ?: return@launch
             watcher.events.collect { event ->
                 withContext(Dispatchers.Main) {
-                    routeTranscriptEvent(event)
+                    // Mark unseen on turn complete if session isn't focused
+                    if (event is TranscriptEvent.TurnComplete) {
+                        if (isCurrentSession?.invoke() != true) {
+                            hasBeenViewed = false
+                        }
+                    }
+                }
+
+                // Forward to bridge server for React UI
+                bridgeServer?.let { server ->
+                    val serialized = when (event) {
+                        is TranscriptEvent.UserMessage -> TranscriptSerializer.userMessage(event.sessionId, event.uuid, event.timestamp, event.text)
+                        is TranscriptEvent.AssistantText -> TranscriptSerializer.assistantText(event.sessionId, event.uuid, event.timestamp, event.text)
+                        is TranscriptEvent.ToolUse -> TranscriptSerializer.toolUse(event.sessionId, event.uuid, event.timestamp, event.toolUseId, event.toolName, event.toolInput)
+                        is TranscriptEvent.ToolResult -> TranscriptSerializer.toolResult(event.sessionId, event.uuid, event.timestamp, event.toolUseId, event.result, event.isError)
+                        is TranscriptEvent.TurnComplete -> TranscriptSerializer.turnComplete(event.sessionId, event.uuid, event.timestamp)
+                        is TranscriptEvent.StreamingText -> TranscriptSerializer.streamingText(event.sessionId, event.text)
+                    }
+                    server.broadcast(JSONObject().apply {
+                        put("type", "transcript:event")
+                        put("payload", serialized)
+                    })
                 }
             }
         }
@@ -222,6 +259,7 @@ class ManagedSession(
             try {
                 val activePrompts = mutableSetOf<String>()
                 var lastScreenHash = 0
+                var sessionReadyBroadcast = false
                 while (true) {
                     delay(1000)
                     if (!bridge.isRunning) break
@@ -232,52 +270,36 @@ class ManagedSession(
                     withContext(Dispatchers.Main) {
                         if (screenHash != lastScreenHash) {
                             lastScreenHash = screenHash
-                            chatReducer.dispatch(ChatAction.TerminalActivity)
                         }
                         detectPrompts(screen, combined, activePrompts)
                         detectPermissionMode(screen)
+
+                        // Detect Claude Code ready state — dismiss React "Initializing" overlay
+                        if (!sessionReadyBroadcast && screen.isNotBlank()) {
+                            // Claude Code shows a ">" prompt or has visible content
+                            // Any non-blank screen after session start means it's alive
+                            sessionReadyBroadcast = true
+                            bridgeServer?.broadcast(JSONObject().apply {
+                                put("type", "prompt:show")
+                                put("payload", JSONObject().apply {
+                                    put("sessionId", id)
+                                    put("promptId", "_session_ready")
+                                    put("title", "")
+                                    put("buttons", org.json.JSONArray())
+                                })
+                            })
+                            // Immediately dismiss it
+                            bridgeServer?.broadcast(JSONObject().apply {
+                                put("type", "prompt:dismiss")
+                                put("payload", JSONObject().apply {
+                                    put("sessionId", id)
+                                    put("promptId", "_session_ready")
+                                })
+                            })
+                        }
                     }
                 }
             } catch (_: Exception) {}
-        }
-
-        // 5. PTY output consumer — previously surfaced error/warning lines from terminal
-        // output as chat notices, but the keyword filter was too broad and created noise.
-        // Removed: errors and warnings are visible in terminal view if needed.
-
-        // 6. Thinking timeout — prevent infinite spinner if transcript watcher stalls
-        scope.launch {
-            while (isActive) {
-                delay(5000)
-                withContext(Dispatchers.Main) {
-                    if (chatReducer.state.isThinking) {
-                        val elapsed = System.currentTimeMillis() - chatReducer.state.lastActivityAt
-                        if (elapsed > 15_000) {
-                            chatReducer.dispatch(ChatAction.ThinkingTimeout)
-                        }
-                    }
-                }
-            }
-        }
-
-        // 7. Permission expiry — clean up stale approval cards
-        scope.launch {
-            while (isActive) {
-                delay(10_000)
-                withContext(Dispatchers.Main) {
-                    val now = System.currentTimeMillis()
-                    for ((_, tool) in chatReducer.state.toolCalls) {
-                        if (tool.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval &&
-                            tool.approvalStartedAt > 0 &&
-                            now - tool.approvalStartedAt > 90_000
-                        ) {
-                            tool.requestId?.let { requestId ->
-                                chatReducer.dispatch(ChatAction.PermissionExpired(requestId))
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -285,21 +307,28 @@ class ManagedSession(
     private val completedPromptIds = mutableSetOf<String>()
 
     // Track consecutive polls where a prompt was absent — debounce dismissal
-    // to prevent flicker when terminal output temporarily hides a prompt
     private val absentPollCounts = mutableMapOf<String, Int>()
-    private val DISMISS_THRESHOLD = 2  // require 2+ absent polls before dismissing
+    private val DISMISS_THRESHOLD = 2
+
+    /** Titles of known setup prompts — only these are broadcast via prompt:show.
+     *  Matches InkSelectParser.TITLE_OVERRIDES values. Runtime permission prompts
+     *  (Yes/No/Always Allow) are handled by the hook system and must NOT be
+     *  broadcast here to avoid duplicate UI (PromptCard + ToolCard). */
+    private val SETUP_PROMPT_TITLES = setOf(
+        "Trust This Folder?",
+        "Choose a Theme for the Terminal",
+        "Select Login Method",
+    )
 
     /** Detect permission mode from visible screen only (not raw buffer). */
     private fun detectPermissionMode(screen: String) {
         val lower = screen.lowercase()
-        val mode = when {
+        permissionMode = when {
             "bypass permissions on" in lower -> "Bypass"
             "accept edits on" in lower -> "Auto-Accept"
             "plan mode on" in lower -> "Plan Mode"
             else -> "Normal"
         }
-        chatState.permissionMode = mode
-        chatReducer.state.permissionMode = mode
     }
 
     /** Known setup prompts and their button mappings.
@@ -310,99 +339,105 @@ class ManagedSession(
         val lower = combined.lowercase()
         val screenLower = screenText.lowercase()
 
-        // --- Hardcoded: Login method selection (multi-line options break generic parser) ---
+        // --- Hardcoded: Login method selection ---
         if ("select login method" in screenLower) {
             absentPollCounts.remove("auth")
             if ("auth" !in activePrompts && "auth" !in completedPromptIds) {
                 activePrompts.add("auth")
+                // Forward prompt to React UI via bridge
                 val down = "\u001b[B"
-                chatState.showInteractivePrompt("auth", "Select Login Method", listOf(
+                broadcastPrompt("auth", "Select Login Method", listOf(
                     PromptButton("Claude Account (Pro/Max/Team)", "\r"),
                     PromptButton("Anthropic Console (API)", "$down\r"),
                     PromptButton("3rd-Party Platform", "$down$down\r"),
                 ))
-                chatReducer.dispatch(ChatAction.ShowPrompt(
-                    promptId = "auth",
-                    title = "Select Login Method",
-                    buttons = listOf(
-                        PromptButton("Claude Account (Pro/Max/Team)", "\r"),
-                        PromptButton("Anthropic Console (API)", "$down\r"),
-                        PromptButton("3rd-Party Platform", "$down$down\r"),
-                    ),
-                ))
             }
-            return  // skip generic parser for this screen
+            return
         } else if ("auth" in activePrompts) {
             val count = absentPollCounts.getOrDefault("auth", 0) + 1
             absentPollCounts["auth"] = count
             if (count >= DISMISS_THRESHOLD) {
                 activePrompts.remove("auth")
-                chatState.dismissPrompt("auth")
-                chatReducer.dispatch(ChatAction.DismissPrompt("auth"))
+                broadcastPromptDismiss("auth")
                 absentPollCounts.remove("auth")
             }
         }
 
-        // --- Skip generic parser when a tool approval card is already handling the prompt ---
-        val hasActiveApproval = chatReducer.state.toolCalls.values.any {
-            it.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval
+        // --- Hardcoded: Bypass permissions warning ---
+        // Detect ❯ position to determine correct input. The prompt defaults ❯ to
+        // "No, exit" — accepting requires navigating DOWN to "Yes" first.
+        // PtyBridge.writeInput splits escape+Enter with a delay to prevent PTY
+        // buffering from causing ESC to be read as standalone Escape key.
+        if ("bypass permission" in screenLower && "enter to confirm" in screenLower) {
+            absentPollCounts.remove("bypass_warning")
+            if ("bypass_warning" !in activePrompts && "bypass_warning" !in completedPromptIds) {
+                activePrompts.add("bypass_warning")
+                // Check if ❯ is already on a "Yes"/"accept" option
+                val afterSelector = screenText.substringAfter("❯", "").lowercase().trim()
+                val selectorOnAccept = afterSelector.startsWith("yes") ||
+                    afterSelector.startsWith("2.") || afterSelector.startsWith("accept")
+                val acceptInput = if (selectorOnAccept) "\r" else "\u001b[B\r"
+                broadcastPrompt("bypass_warning",
+                    "Bypass Permissions Mode — Claude will run tools without asking for approval.",
+                    listOf(
+                        PromptButton("Accept the Risks", acceptInput),
+                        PromptButton("Exit", "\u001b"),
+                    ))
+            }
+            return
+        } else if ("bypass_warning" in activePrompts) {
+            val count = absentPollCounts.getOrDefault("bypass_warning", 0) + 1
+            absentPollCounts["bypass_warning"] = count
+            if (count >= DISMISS_THRESHOLD) {
+                activePrompts.remove("bypass_warning")
+                broadcastPromptDismiss("bypass_warning")
+                absentPollCounts.remove("bypass_warning")
+            }
         }
-        if (hasActiveApproval) return
 
-        // --- Generic Ink Select menu detection (screen only, not raw buffer) ---
+        // --- Generic Ink Select menu detection ---
+        // Only broadcast menus that are known setup prompts. Permission prompts
+        // (Yes/No/Always Allow) are handled exclusively by the hook system via
+        // EventBridge → HookSerializer → hook:event → React ToolCard.
+        // Broadcasting them here would create duplicate UI (PromptCard + ToolCard).
         val parsed = InkSelectParser.parse(screenText)
-        if (parsed != null) {
+        val isKnownSetupPrompt = parsed != null && SETUP_PROMPT_TITLES.any {
+            parsed.title.equals(it, ignoreCase = true)
+        }
+        if (parsed != null && isKnownSetupPrompt) {
             absentPollCounts.remove(parsed.id)
             if (parsed.id !in activePrompts && parsed.id !in completedPromptIds) {
-                // Clear any previous generic menu that is no longer showing
                 val staleMenus = activePrompts.filter { it.startsWith("menu_") }
                 for (stale in staleMenus) {
                     activePrompts.remove(stale)
                     completedPromptIds.add(stale)
-                    chatState.dismissPrompt(stale)
-                    chatReducer.dispatch(ChatAction.DismissPrompt(stale))
+                    broadcastPromptDismiss(stale)
                     absentPollCounts.remove(stale)
                 }
                 activePrompts.add(parsed.id)
-                chatState.showInteractivePrompt(
-                    parsed.id,
-                    parsed.title,
-                    InkSelectParser.toPromptButtons(parsed),
-                )
-                chatReducer.dispatch(ChatAction.ShowPrompt(
-                    promptId = parsed.id,
-                    title = parsed.title,
-                    buttons = InkSelectParser.toPromptButtons(parsed),
-                ))
+                broadcastPrompt(parsed.id, parsed.title,
+                    InkSelectParser.toPromptButtons(parsed))
             }
         } else {
-            // No menu detected — debounce dismissal of active generic menus
             val staleMenus = activePrompts.filter { it.startsWith("menu_") }
             for (stale in staleMenus) {
                 val count = absentPollCounts.getOrDefault(stale, 0) + 1
                 absentPollCounts[stale] = count
                 if (count >= DISMISS_THRESHOLD) {
                     activePrompts.remove(stale)
-                    chatState.dismissPrompt(stale)
-                    chatReducer.dispatch(ChatAction.DismissPrompt(stale))
+                    broadcastPromptDismiss(stale)
                     absentPollCounts.remove(stale)
                 }
             }
         }
 
-        // --- Special-case: Browser auth / paste code prompt ---
-        // (Not an Ink Select menu — just informational text with no selectable options)
+        // --- Browser auth / paste code prompt ---
         if (("paste code" in lower || "paste the code" in lower || "browser" in lower) &&
             ("sign" in lower || "code" in lower || "authorize" in lower)) {
             if ("paste_code" !in activePrompts && "paste_code" !in completedPromptIds) {
                 activePrompts.add("paste_code")
-                chatState.showInteractivePrompt("paste_code", "Complete Sign-In in Your Browser", listOf(
+                broadcastPrompt("paste_code", "Complete Sign-In in Your Browser", listOf(
                     PromptButton("Browser opened — waiting for code...", ""),
-                ))
-                chatReducer.dispatch(ChatAction.ShowPrompt(
-                    promptId = "paste_code",
-                    title = "Complete Sign-In in Your Browser",
-                    buttons = listOf(PromptButton("Browser opened — waiting for code...", "")),
                 ))
             }
         } else if ("paste_code" in activePrompts) {
@@ -410,21 +445,17 @@ class ManagedSession(
             absentPollCounts["paste_code"] = count
             if (count >= DISMISS_THRESHOLD) {
                 activePrompts.remove("paste_code")
-                chatState.dismissPrompt("paste_code")
-                chatReducer.dispatch(ChatAction.DismissPrompt("paste_code"))
+                broadcastPromptDismiss("paste_code")
                 absentPollCounts.remove("paste_code")
             }
         }
 
-        // --- Special-case: "Press Enter to continue" ---
-        // (Single-action prompt, not an Ink Select menu)
+        // --- "Press Enter to continue" ---
         if ("press enter to continue" in lower) {
-            // Auto-collapse the browser sign-in card if still active
             if ("paste_code" in activePrompts) {
                 activePrompts.remove("paste_code")
                 completedPromptIds.add("paste_code")
-                chatState.completePrompt("paste_code", "Signed in")
-                chatReducer.dispatch(ChatAction.CompletePrompt(promptId = "paste_code", selection = "Signed in"))
+                broadcastPromptComplete("paste_code", "Signed in")
             }
             val continueKey = when {
                 "login successful" in lower -> "continue_login"
@@ -438,51 +469,80 @@ class ManagedSession(
                     "security" in lower -> "Remember, Claude Can Make Mistakes"
                     else -> "Ready"
                 }
-                chatState.showInteractivePrompt(continueKey, title, listOf(
-                    PromptButton("Continue", "\r"),
-                ))
-                chatReducer.dispatch(ChatAction.ShowPrompt(
-                    promptId = continueKey,
-                    title = title,
-                    buttons = listOf(PromptButton("Continue", "\r")),
-                ))
+                broadcastPrompt(continueKey, title, listOf(PromptButton("Continue", "\r")))
             }
         } else {
-            // Debounce dismissal of continue prompts
             val staleContinues = activePrompts.filter { it.startsWith("continue_") }
             for (stale in staleContinues) {
                 val count = absentPollCounts.getOrDefault(stale, 0) + 1
                 absentPollCounts[stale] = count
                 if (count >= DISMISS_THRESHOLD) {
                     activePrompts.remove(stale)
-                    chatState.dismissPrompt(stale)
-                    chatReducer.dispatch(ChatAction.DismissPrompt(stale))
+                    broadcastPromptDismiss(stale)
                     absentPollCounts.remove(stale)
                 }
             }
         }
     }
 
+    /** Broadcast a prompt event to the React UI via bridge server. */
+    private fun broadcastPrompt(promptId: String, title: String, buttons: List<PromptButton>) {
+        bridgeServer?.broadcast(JSONObject().apply {
+            put("type", "prompt:show")
+            put("payload", JSONObject().apply {
+                put("sessionId", id)
+                put("promptId", promptId)
+                put("title", title)
+                put("buttons", org.json.JSONArray().also { arr ->
+                    buttons.forEach { btn ->
+                        arr.put(JSONObject().apply {
+                            put("label", btn.label)
+                            put("input", btn.input)
+                        })
+                    }
+                })
+            })
+        })
+    }
+
+    private fun broadcastPromptDismiss(promptId: String) {
+        bridgeServer?.broadcast(JSONObject().apply {
+            put("type", "prompt:dismiss")
+            put("payload", JSONObject().apply {
+                put("sessionId", id)
+                put("promptId", promptId)
+            })
+        })
+    }
+
+    private fun broadcastPromptComplete(promptId: String, selection: String) {
+        bridgeServer?.broadcast(JSONObject().apply {
+            put("type", "prompt:complete")
+            put("payload", JSONObject().apply {
+                put("sessionId", id)
+                put("promptId", promptId)
+                put("selection", selection)
+            })
+        })
+    }
+
     /**
-     * Route a hook event to this session's ChatState.
-     * Must be called on Main dispatcher (ChatState uses Compose snapshot state).
+     * Route a hook event to this session.
+     * Must be called on Main dispatcher.
      */
     private fun routeHookEvent(event: HookEvent) {
         when (event) {
             is HookEvent.PostToolUse -> cleanupOrphanedSocket(event.toolUseId)
             is HookEvent.PostToolUseFailure -> cleanupOrphanedSocket(event.toolUseId)
-            else -> {} // All other events handled by routeHookEventToReducer + TranscriptWatcher
+            else -> {}
         }
     }
 
     /** Close an orphaned PermissionRequest socket if the tool completes via another path. */
     private fun cleanupOrphanedSocket(toolUseId: String) {
-        val tool = chatReducer.state.toolCalls[toolUseId]
-        if (tool?.status == com.destin.code.ui.state.ToolCallStatus.AwaitingApproval) {
-            tool.requestId?.let { requestId ->
-                ptyBridge?.getEventBridge()?.closeSocket(requestId)
-            }
-        }
+        // With React UI, permission state lives on the bridge/React side.
+        // We just ensure the socket is closed so the hook process can exit.
+        ptyBridge?.getEventBridge()?.closeSocket(toolUseId)
     }
 
     /** Mark a prompt as completed so the detector won't re-create it. */
@@ -496,86 +556,16 @@ class ManagedSession(
 
     private fun startTranscriptWatcherIfNeeded(claudeSessionId: String) {
         if (transcriptWatcherStarted) return
-        // Use the transcript path from Claude Code (avoids symlink/slug mismatches)
         val transcriptPath = ptyBridge?.getEventBridge()?.getTranscriptPath(id)
         if (transcriptPath.isNullOrBlank()) return
         transcriptWatcherStarted = true
         transcriptWatcher?.startWatching(id, transcriptPath)
     }
 
-    /**
-     * Route transcript events to the new ChatReducer.
-     * Must be called on Main dispatcher.
-     */
-    private fun routeTranscriptEvent(event: TranscriptEvent) {
-        when (event) {
-            is TranscriptEvent.UserMessage -> chatReducer.dispatch(
-                ChatAction.TranscriptUserMessage(event.uuid, event.text, event.timestamp)
-            )
-            is TranscriptEvent.AssistantText -> chatReducer.dispatch(
-                ChatAction.TranscriptAssistantText(event.uuid, event.text, event.timestamp)
-            )
-            is TranscriptEvent.ToolUse -> chatReducer.dispatch(
-                ChatAction.TranscriptToolUse(
-                    event.uuid, event.toolUseId, event.toolName, event.toolInput,
-                )
-            )
-            is TranscriptEvent.ToolResult -> chatReducer.dispatch(
-                ChatAction.TranscriptToolResult(
-                    event.uuid, event.toolUseId, event.result, event.isError,
-                )
-            )
-            is TranscriptEvent.TurnComplete -> {
-                chatReducer.dispatch(
-                    ChatAction.TranscriptTurnComplete(event.uuid, event.timestamp)
-                )
-                // Only mark unseen if user is NOT currently looking at this session
-                if (isCurrentSession?.invoke() != true) {
-                    hasBeenViewed = false
-                }
-            }
-            is TranscriptEvent.StreamingText -> {
-                chatReducer.dispatch(ChatAction.StreamingText(event.text))
-            }
-        }
-    }
-
-    /**
-     * Route hook events to the new ChatReducer (permission flow only).
-     * Must be called on Main dispatcher.
-     */
-    private fun routeHookEventToReducer(event: HookEvent) {
-        when (event) {
-            is HookEvent.PermissionRequest -> {
-                val suggestions = event.permissionSuggestions?.let { arr ->
-                    (0 until arr.length()).map { arr.optString(it) }
-                }
-                chatReducer.dispatch(ChatAction.PermissionRequest(
-                    toolName = event.toolName,
-                    input = event.toolInput,
-                    requestId = event.requestId,
-                    permissionSuggestions = suggestions,
-                ))
-            }
-            is HookEvent.Notification -> {
-                if (event.message.isNotBlank()) {
-                    chatReducer.dispatch(ChatAction.SystemNotice(
-                        id = java.util.UUID.randomUUID().toString(),
-                        message = event.message,
-                    ))
-                }
-            }
-            // PostToolUse/PostToolUseFailure are handled by transcript watcher
-            // via ToolResult events — no need to duplicate here.
-            else -> {}
-        }
-    }
-
     fun startTitleObserver() {
         titleFile.parentFile?.mkdirs()
         if (!titleFile.exists()) titleFile.writeText("")
 
-        // Use File-based constructor (non-deprecated on API 29+)
         titleObserver = object : FileObserver(titleFile, CLOSE_WRITE or MODIFY) {
             override fun onEvent(event: Int, path: String?) {
                 try {
@@ -588,7 +578,6 @@ class ManagedSession(
         }
         titleObserver?.startWatching()
 
-        // Read current value if the file already has a title
         val existing = titleFile.readText().trim()
         if (existing.isNotBlank()) {
             _name.value = existing
@@ -601,7 +590,6 @@ class ManagedSession(
         val topicFileName = "topic-$claudeSessionId"
         val topicFile = File(topicDir, topicFileName)
 
-        // Watch the DIRECTORY, not the file — the file may not exist yet.
         topicObserver = object : FileObserver(topicDir, CLOSE_WRITE or MODIFY or CREATE) {
             override fun onEvent(event: Int, path: String?) {
                 if (path != topicFileName) return
@@ -616,7 +604,6 @@ class ManagedSession(
         }
         topicObserver?.startWatching()
 
-        // Read current value if the file already exists
         if (topicFile.exists()) {
             val currentTopic = topicFile.readText().trim()
             if (currentTopic.isNotBlank() && currentTopic != "New Session") {

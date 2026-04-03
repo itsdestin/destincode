@@ -14,11 +14,44 @@ import android.os.FileObserver
 import android.os.IBinder
 import android.os.PowerManager
 import com.destin.code.MainActivity
+import com.destin.code.bridge.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.File
 
 class SessionService : Service() {
     private val binder = LocalBinder()
     val sessionRegistry = SessionRegistry()
+    val bridgeServer = LocalBridgeServer()
+    var platformBridge: PlatformBridge? = null
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /** View mode requested by React UI — ChatScreen observes this.
+     *  SharedFlow (not StateFlow) because these are events, not state:
+     *  "switch to terminal" must fire even if the last request was also "terminal". */
+    private val _viewModeRequest = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val viewModeRequest: kotlinx.coroutines.flow.SharedFlow<String> = _viewModeRequest
+
+    /** Emit a view mode change from native code (e.g., TerminalKeyboardRow "Chat" button). */
+    fun requestViewMode(mode: String) {
+        _viewModeRequest.tryEmit(mode)
+    }
+
+    /** File picker bridge: Service sets the deferred, Activity completes it with paths. */
+    var pendingFilePicker: CompletableDeferred<List<String>>? = null
+    /** Callback for Activity to know when to launch the file picker. */
+    var onFilePickerRequested: (() -> Unit)? = null
+
+    /** QR scanner bridge: Service sets the deferred, Activity completes it with scanned URL. */
+    var pendingQrScanner: CompletableDeferred<String?>? = null
+    /** Callback for Activity to know when to launch the QR scanner. */
+    var onQrScanRequested: (() -> Unit)? = null
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
     private var usageRefreshTimer: java.util.Timer? = null
@@ -42,6 +75,18 @@ class SessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildSessionNotification())
+
+        val homeDir = bootstrap?.homeDir ?: filesDir
+        platformBridge = PlatformBridge(applicationContext, homeDir)
+        sessionRegistry.bridgeServer = bridgeServer
+        if (!bridgeServer.isRunning) {
+            bridgeServer.start { ws, msg ->
+                serviceScope.launch {
+                    handleBridgeMessage(ws, msg)
+                }
+            }
+        }
+
         return START_STICKY
     }
 
@@ -248,6 +293,7 @@ class SessionService : Service() {
     }
 
     override fun onDestroy() {
+        bridgeServer.stop()
         urlObserver?.stopWatching()
         urlObserver = null
         usageRefreshTimer?.cancel()
@@ -255,6 +301,351 @@ class SessionService : Service() {
         sessionRegistry.destroyAll()
         releaseWakeLock()
         super.onDestroy()
+    }
+
+    private suspend fun handleBridgeMessage(
+        ws: org.java_websocket.WebSocket,
+        msg: MessageRouter.ParsedMessage
+    ) {
+        when (msg.type) {
+            "session:create" -> {
+                val cwd = msg.payload.optString("cwd", bootstrap?.homeDir?.absolutePath ?: "")
+                val dangerous = msg.payload.optBoolean("skipPermissions", false)
+                android.util.Log.i("SessionService", "Bridge session:create cwd=$cwd dangerous=$dangerous")
+                // TerminalSession requires the main thread (Looper)
+                val session = withContext(Dispatchers.Main) {
+                    createSession(File(cwd), dangerous, null)
+                }
+                android.util.Log.i("SessionService", "Session created: id=${session.id} ptyBridge=${session.ptyBridge != null} termSession=${session.getTerminalSession() != null}")
+                val info = MessageRouter.buildSessionInfo(
+                    id = session.id, name = session.name.value,
+                    cwd = cwd, status = "active",
+                    permissionMode = "normal", skipPermissions = dangerous,
+                    createdAt = session.createdAt
+                )
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, info) }
+                bridgeServer.broadcast(JSONObject().apply {
+                    put("type", "session:created")
+                    put("payload", info)
+                })
+            }
+            "session:destroy" -> {
+                val sessionId = msg.payload.optString("sessionId", "")
+                withContext(Dispatchers.Main) {
+                    destroySession(sessionId)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "session:list" -> {
+                val sessions = sessionRegistry.sessions.value.map { (id, session) ->
+                    MessageRouter.buildSessionInfo(
+                        id = id, name = session.name.value,
+                        cwd = session.cwd.absolutePath,
+                        status = if (session.status.value == SessionStatus.Dead) "dead" else "active",
+                        permissionMode = session.permissionMode,
+                        skipPermissions = session.dangerousMode,
+                        createdAt = session.createdAt
+                    )
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray(sessions)) }
+            }
+            "session:switch" -> {
+                val sessionId = msg.payload.optString("sessionId", "")
+                if (sessionId.isNotEmpty()) {
+                    sessionRegistry.switchTo(sessionId)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "session:input" -> {
+                val sessionId = msg.payload.optString("sessionId", "")
+                val text = msg.payload.optString("text", "")
+                if (text.isNotEmpty()) {
+                    sessionRegistry.sessions.value[sessionId]?.writeInput(text)
+                }
+            }
+            "session:resize" -> {
+                val sessionId = msg.payload.optString("sessionId", "")
+                val cols = msg.payload.optInt("cols", 80)
+                val rows = msg.payload.optInt("rows", 24)
+                if (cols > 0 && rows > 0) {
+                    try {
+                        withContext(Dispatchers.Main) {
+                            sessionRegistry.sessions.value[sessionId]?.getTerminalSession()?.updateSize(cols, rows)
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("SessionService", "Resize failed: ${e.message}")
+                    }
+                }
+            }
+            "permission:respond" -> {
+                val requestId = msg.payload.optString("requestId", "")
+                val decision = msg.payload.optJSONObject("decision") ?: JSONObject()
+                sessionRegistry.sessions.value.values.forEach { session ->
+                    session.ptyBridge?.getEventBridge()?.respond(requestId, decision)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "skills:list" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+            }
+            "github:auth" -> {
+                // No GitHub auth on Android — return null
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject.NULL) }
+            }
+            "favorites:get" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("favorites", org.json.JSONArray())) }
+            }
+            "favorites:set" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+            "get-home-path" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, platformBridge?.getHomePath() ?: "") }
+            }
+            "dialog:open-file" -> {
+                // Route through Activity — Service can't launch ActivityResultContracts
+                val deferred = CompletableDeferred<List<String>>()
+                pendingFilePicker = deferred
+                withContext(Dispatchers.Main) {
+                    onFilePickerRequested?.invoke()
+                }
+                try {
+                    val paths = deferred.await()
+                    val arr = org.json.JSONArray(paths)
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("paths", arr)) }
+                } catch (_: Exception) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("paths", org.json.JSONArray())) }
+                }
+            }
+            "clipboard:save-image" -> {
+                val result = platformBridge?.saveClipboardImage() ?: JSONObject().put("path", JSONObject.NULL)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "remote:get-client-count" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, 1) }
+            }
+            "remote:get-config" -> {
+                msg.id?.let {
+                    bridgeServer.respond(ws, msg.type, it, JSONObject().apply {
+                        put("enabled", false)
+                        put("port", 9901)
+                        put("hasPassword", false)
+                        put("trustTailscale", false)
+                        put("keepAwakeHours", 0)
+                        put("clientCount", 1)
+                    })
+                }
+            }
+            "remote:detect-tailscale" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("installed", false)) }
+            }
+            "remote:get-client-list" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+            }
+            "remote:set-password" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "remote:set-config" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject()) }
+            }
+            "remote:disconnect-client" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "transcript:read-meta" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject.NULL) }
+            }
+            "session:terminal-ready" -> {
+                // fire-and-forget — no response needed
+            }
+            "session:browse" -> {
+                val homeDir = bootstrap?.homeDir ?: filesDir
+                val projectsDir = File(homeDir, ".claude/projects")
+                val topicsDir = File(homeDir, ".claude/topics")
+                // Collect active Claude session IDs to exclude from past sessions
+                val activeIds = sessionRegistry.sessions.value.values.mapNotNull { s ->
+                    s.ptyBridge?.getEventBridge()?.getClaudeSessionId(s.id)
+                }.toSet()
+                val pastSessions = withContext(Dispatchers.IO) {
+                    SessionBrowser.listPastSessions(projectsDir, topicsDir, activeIds)
+                }
+                val arr = org.json.JSONArray()
+                for (s in pastSessions) {
+                    arr.put(JSONObject().apply {
+                        put("sessionId", s.sessionId)
+                        put("projectSlug", s.projectSlug)
+                        put("name", s.name)
+                        put("lastModified", s.lastModified)
+                        put("projectPath", s.projectPath)
+                    })
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
+            }
+            "session:history" -> {
+                val sessionId = msg.payload.optString("sessionId", "")
+                val projectSlug = msg.payload.optString("projectSlug", "")
+                val count = msg.payload.optInt("count", 10)
+                val all = msg.payload.optBoolean("all", false)
+                if (sessionId.isEmpty()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+                } else {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val projectsDir = File(homeDir, ".claude/projects")
+                    // If no slug provided, scan for the session file
+                    val slug = projectSlug.ifEmpty {
+                        withContext(Dispatchers.IO) {
+                            projectsDir.listFiles { f -> f.isDirectory }
+                                ?.firstOrNull { dir -> File(dir, "$sessionId.jsonl").exists() }
+                                ?.name ?: ""
+                        }
+                    }
+                    if (slug.isEmpty()) {
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+                    } else {
+                        val result = withContext(Dispatchers.IO) {
+                            SessionBrowser.loadHistory(projectsDir, slug, sessionId, count, all)
+                        }
+                        val arr = org.json.JSONArray()
+                        for (m in result.messages) {
+                            arr.put(JSONObject().apply {
+                                put("role", m.role)
+                                put("content", m.content)
+                                put("timestamp", m.timestamp)
+                            })
+                        }
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
+                    }
+                }
+            }
+            "ui:action" -> {
+                // Handle view switching from React UI
+                val action = msg.payload.optString("action", "")
+                if (action == "switch-view") {
+                    val mode = msg.payload.optString("mode", "chat")
+                    _viewModeRequest.tryEmit(mode)
+                }
+            }
+
+            // ── Android-only settings bridge ────────────────────────────
+            "android:get-tier" -> {
+                val tierStore = com.destin.code.config.TierStore(applicationContext)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("tier", tierStore.selectedTier.name)) }
+            }
+            "android:set-tier" -> {
+                val tierName = msg.payload.optString("tier", "CORE")
+                val tierStore = com.destin.code.config.TierStore(applicationContext)
+                val newTier = try {
+                    com.destin.code.config.PackageTier.valueOf(tierName)
+                } catch (_: Exception) { com.destin.code.config.PackageTier.CORE }
+                val changed = newTier != tierStore.selectedTier
+                tierStore.selectedTier = newTier
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("restartRequired", changed)) }
+            }
+            "android:get-directories" -> {
+                val homeDir = bootstrap?.homeDir ?: filesDir
+                val store = com.destin.code.config.WorkingDirStore(homeDir)
+                val dirs = org.json.JSONArray()
+                store.allDirs().forEach { (label, dir) ->
+                    dirs.put(JSONObject().put("label", label).put("path", dir.absolutePath))
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("directories", dirs)) }
+            }
+            "android:add-directory" -> {
+                val path = msg.payload.optString("path", "")
+                val label = msg.payload.optString("label", "")
+                if (path.isNotEmpty()) {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val store = com.destin.code.config.WorkingDirStore(homeDir)
+                    store.add(com.destin.code.config.WorkingDir(label = label.ifEmpty { File(path).name }, path = path))
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:remove-directory" -> {
+                val path = msg.payload.optString("path", "")
+                if (path.isNotEmpty()) {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val store = com.destin.code.config.WorkingDirStore(homeDir)
+                    store.remove(path)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:get-about" -> {
+                val pm = applicationContext.packageManager
+                val info = pm.getPackageInfo(applicationContext.packageName, 0)
+                msg.id?.let {
+                    bridgeServer.respond(ws, msg.type, it, JSONObject().apply {
+                        put("version", info.versionName ?: "unknown")
+                        put("build", info.longVersionCode.toString())
+                    })
+                }
+            }
+            "android:get-paired-devices" -> {
+                val prefs = applicationContext.getSharedPreferences("remote_devices", android.content.Context.MODE_PRIVATE)
+                val json = prefs.getString("paired_devices", null)
+                val devices = if (json != null) {
+                    try { org.json.JSONArray(json) } catch (_: Exception) { org.json.JSONArray() }
+                } else org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("devices", devices)) }
+            }
+            "android:save-paired-device" -> {
+                val prefs = applicationContext.getSharedPreferences("remote_devices", android.content.Context.MODE_PRIVATE)
+                val existing = try {
+                    org.json.JSONArray(prefs.getString("paired_devices", "[]"))
+                } catch (_: Exception) { org.json.JSONArray() }
+                val host = msg.payload.optString("host", "")
+                val port = msg.payload.optInt("port", 9900)
+                // Remove existing entry with same host:port
+                val filtered = org.json.JSONArray()
+                for (i in 0 until existing.length()) {
+                    val d = existing.getJSONObject(i)
+                    if (d.optString("host") != host || d.optInt("port") != port) {
+                        filtered.put(d)
+                    }
+                }
+                filtered.put(JSONObject().apply {
+                    put("name", msg.payload.optString("name", "Desktop"))
+                    put("host", host)
+                    put("port", port)
+                    put("password", msg.payload.optString("password", ""))
+                })
+                prefs.edit().putString("paired_devices", filtered.toString()).apply()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:remove-paired-device" -> {
+                val prefs = applicationContext.getSharedPreferences("remote_devices", android.content.Context.MODE_PRIVATE)
+                val existing = try {
+                    org.json.JSONArray(prefs.getString("paired_devices", "[]"))
+                } catch (_: Exception) { org.json.JSONArray() }
+                val host = msg.payload.optString("host", "")
+                val port = msg.payload.optInt("port", 9900)
+                val filtered = org.json.JSONArray()
+                for (i in 0 until existing.length()) {
+                    val d = existing.getJSONObject(i)
+                    if (d.optString("host") != host || d.optInt("port") != port) {
+                        filtered.put(d)
+                    }
+                }
+                prefs.edit().putString("paired_devices", filtered.toString()).apply()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "android:scan-qr" -> {
+                // Route through Activity — camera requires Activity context
+                val deferred = CompletableDeferred<String?>()
+                pendingQrScanner = deferred
+                withContext(Dispatchers.Main) {
+                    onQrScanRequested?.invoke()
+                }
+                try {
+                    val url = deferred.await()
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", url ?: JSONObject.NULL)) }
+                } catch (_: Exception) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", JSONObject.NULL)) }
+                }
+            }
+
+            else -> {
+                android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }
+            }
+        }
     }
 
     companion object {
