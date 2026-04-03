@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
@@ -89,6 +91,8 @@ class ManagedSession(
 
     private var titleObserver: FileObserver? = null
     private var topicObserver: FileObserver? = null
+    private var topicPollJob: Job? = null
+    private var renameBroadcastJob: Job? = null
 
     // Status uses combine + a periodic isRunning check (isRunning is not reactive).
     // A 5-second polling coroutine feeds _isRunningFlow to make Dead detection reactive.
@@ -138,6 +142,20 @@ class ManagedSession(
      * This includes: hook event collection, isRunning polling, approval notifications.
      */
     fun startBackgroundCollectors() {
+        // 0. Broadcast session:renamed to React UI when _name changes.
+        //    drop(1) skips the initial value (React already has it from session:created).
+        renameBroadcastJob = scope.launch {
+            _name.drop(1).collect { newName ->
+                bridgeServer?.broadcast(JSONObject().apply {
+                    put("type", "session:renamed")
+                    put("payload", JSONObject().apply {
+                        put("sessionId", id)
+                        put("name", newName)
+                    })
+                })
+            }
+        }
+
         if (shellMode) {
             // Shell sessions only need isRunning polling
             scope.launch {
@@ -613,6 +631,10 @@ class ManagedSession(
     }
 
     fun destroy() {
+        renameBroadcastJob?.cancel()
+        renameBroadcastJob = null
+        topicPollJob?.cancel()
+        topicPollJob = null
         titleObserver?.stopWatching()
         titleObserver = null
         topicObserver?.stopWatching()
