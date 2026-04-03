@@ -165,9 +165,9 @@ class SessionService : Service() {
         stopSelf()
     }
 
-    fun createSession(cwd: File, dangerousMode: Boolean, apiKey: String?): ManagedSession {
+    fun createSession(cwd: File, dangerousMode: Boolean, apiKey: String?, model: String? = null): ManagedSession {
         val bs = bootstrap ?: throw IllegalStateException("Bootstrap not initialized")
-        val session = sessionRegistry.createSession(bs, cwd, dangerousMode, apiKey, titlesDir)
+        val session = sessionRegistry.createSession(bs, cwd, dangerousMode, apiKey, titlesDir, model = model)
 
         // Wire clipboard callback
         session.ptyBridge?.onCopyToClipboard = { text ->
@@ -311,10 +311,15 @@ class SessionService : Service() {
             "session:create" -> {
                 val cwd = msg.payload.optString("cwd", bootstrap?.homeDir?.absolutePath ?: "")
                 val dangerous = msg.payload.optBoolean("skipPermissions", false)
+                val prefFile = File(bootstrap!!.homeDir, ".claude-mobile/model-preference.json")
+                val model = try {
+                    val json = org.json.JSONObject(prefFile.readText())
+                    json.optString("model", "sonnet")
+                } catch (_: Exception) { "sonnet" }
                 android.util.Log.i("SessionService", "Bridge session:create cwd=$cwd dangerous=$dangerous")
                 // TerminalSession requires the main thread (Looper)
                 val session = withContext(Dispatchers.Main) {
-                    createSession(File(cwd), dangerous, null)
+                    createSession(File(cwd), dangerous, null, model = model)
                 }
                 android.util.Log.i("SessionService", "Session created: id=${session.id} ptyBridge=${session.ptyBridge != null} termSession=${session.getTerminalSession() != null}")
                 val info = MessageRouter.buildSessionInfo(
@@ -639,6 +644,29 @@ class SessionService : Service() {
                 } catch (_: Exception) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", JSONObject.NULL)) }
                 }
+            }
+
+            "model:get-preference" -> {
+                val prefFile = File(bootstrap!!.homeDir, ".claude-mobile/model-preference.json")
+                val model = try {
+                    val json = org.json.JSONObject(prefFile.readText())
+                    json.optString("model", "sonnet")
+                } catch (_: Exception) { "sonnet" }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, model) }
+            }
+            "model:set-preference" -> {
+                val model = msg.payload.optString("model", "sonnet")
+                val prefFile = File(bootstrap!!.homeDir, ".claude-mobile/model-preference.json")
+                prefFile.parentFile?.mkdirs()
+                prefFile.writeText(org.json.JSONObject().put("model", model).toString())
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+            "model:switch" -> {
+                val sessionId = msg.payload.optString("sessionId", "")
+                val model = msg.payload.optString("model", "")
+                val session = sessionRegistry.sessions.value[sessionId]
+                session?.writeInput("/model $model\r")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
 
             else -> {
