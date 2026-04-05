@@ -57,7 +57,15 @@ const CommandDrawer_1 = __importDefault(require("./components/CommandDrawer"));
 const TrustGate_1 = __importStar(require("./components/TrustGate"));
 const SettingsPanel_1 = __importDefault(require("./components/SettingsPanel"));
 const ResumeBrowser_1 = __importDefault(require("./components/ResumeBrowser"));
+const Marketplace_1 = __importDefault(require("./components/Marketplace"));
+const SkillManager_1 = __importDefault(require("./components/SkillManager"));
+const SkillEditor_1 = __importDefault(require("./components/SkillEditor"));
+const ShareSheet_1 = __importDefault(require("./components/ShareSheet"));
+const CreatePromptSheet_1 = __importDefault(require("./components/CreatePromptSheet"));
 const platform_1 = require("./platform");
+const theme_context_1 = require("./state/theme-context");
+const skill_context_1 = require("./state/skill-context");
+const ThemeEffects_1 = __importDefault(require("./components/ThemeEffects"));
 function AppInner() {
     const [sessionId, setSessionId] = (0, react_1.useState)(null);
     const [sessions, setSessions] = (0, react_1.useState)([]);
@@ -75,16 +83,15 @@ function AppInner() {
     const [drawerSearchMode, setDrawerSearchMode] = (0, react_1.useState)(false);
     const [settingsOpen, setSettingsOpen] = (0, react_1.useState)(false);
     const [settingsBadge, setSettingsBadge] = (0, react_1.useState)(false);
-    const [skills, setSkills] = (0, react_1.useState)([]);
     // Track which sessions the user has "seen" (switched to after activity completed)
     const [viewedSessions, setViewedSessions] = (0, react_1.useState)(new Set());
     const [resumeInfo, setResumeInfo] = (0, react_1.useState)(new Map());
     const [resumeRequested, setResumeRequested] = (0, react_1.useState)(false);
-    const [model, setModel] = (0, react_1.useState)('sonnet');
-    const [pendingModel, setPendingModel] = (0, react_1.useState)(null);
-    const consecutiveFailures = (0, react_1.useRef)(0);
-    const [toast, setToast] = (0, react_1.useState)(null);
-    const MODELS_LIST = ['sonnet', 'opus', 'haiku'];
+    const [managerOpen, setManagerOpen] = (0, react_1.useState)(false);
+    const [marketplaceOpen, setMarketplaceOpen] = (0, react_1.useState)(false);
+    const [editorSkillId, setEditorSkillId] = (0, react_1.useState)(null);
+    const [shareSkillId, setShareSkillId] = (0, react_1.useState)(null);
+    const [createPromptOpen, setCreatePromptOpen] = (0, react_1.useState)(false);
     (0, usePromptDetector_1.usePromptDetector)();
     const dispatch = (0, chat_context_1.useChatDispatch)();
     const chatStateMap = (0, chat_context_1.useChatStateMap)();
@@ -115,8 +122,17 @@ function AppInner() {
                 newStatuses.set(s.id, 'gray');
             }
             else {
-                const hasAwaiting = [...chatState.toolCalls.values()].some(t => t.status === 'awaiting-approval');
-                const hasRunning = [...chatState.toolCalls.values()].some(t => t.status === 'running');
+                // Single pass, no temporary array allocation — hot path during streaming
+                let hasAwaiting = false;
+                let hasRunning = false;
+                for (const t of chatState.toolCalls.values()) {
+                    if (t.status === 'awaiting-approval')
+                        hasAwaiting = true;
+                    else if (t.status === 'running')
+                        hasRunning = true;
+                    if (hasAwaiting)
+                        break; // awaiting takes priority in the status logic
+                }
                 const status = hasAwaiting
                     ? 'red'
                     : (chatState.isThinking || hasRunning)
@@ -198,12 +214,33 @@ function AppInner() {
                 });
             }
         });
+        // Batch transcript dispatches into animation frames — multiple fs.watch events
+        // within a single frame become one React render instead of N separate renders.
+        const pendingTranscriptActions = [];
+        let transcriptRafId = null;
+        let transcriptBatchCancelled = false;
+        function flushTranscriptActions() {
+            transcriptRafId = null;
+            if (transcriptBatchCancelled)
+                return;
+            const batch = pendingTranscriptActions.splice(0);
+            // React 18 batches all synchronous dispatches → single render for the whole batch
+            for (const action of batch) {
+                dispatch(action);
+            }
+        }
+        function batchTranscriptDispatch(action) {
+            pendingTranscriptActions.push(action);
+            if (transcriptRafId === null) {
+                transcriptRafId = requestAnimationFrame(flushTranscriptActions);
+            }
+        }
         const transcriptHandler = window.claude.on.transcriptEvent?.((event) => {
             if (!event?.type || !event?.sessionId)
                 return;
             switch (event.type) {
                 case 'user-message':
-                    dispatch({
+                    batchTranscriptDispatch({
                         type: 'TRANSCRIPT_USER_MESSAGE',
                         sessionId: event.sessionId,
                         uuid: event.uuid,
@@ -212,7 +249,7 @@ function AppInner() {
                     });
                     break;
                 case 'assistant-text':
-                    dispatch({
+                    batchTranscriptDispatch({
                         type: 'TRANSCRIPT_ASSISTANT_TEXT',
                         sessionId: event.sessionId,
                         uuid: event.uuid,
@@ -221,7 +258,7 @@ function AppInner() {
                     });
                     break;
                 case 'tool-use':
-                    dispatch({
+                    batchTranscriptDispatch({
                         type: 'TRANSCRIPT_TOOL_USE',
                         sessionId: event.sessionId,
                         uuid: event.uuid,
@@ -231,7 +268,7 @@ function AppInner() {
                     });
                     break;
                 case 'tool-result':
-                    dispatch({
+                    batchTranscriptDispatch({
                         type: 'TRANSCRIPT_TOOL_RESULT',
                         sessionId: event.sessionId,
                         uuid: event.uuid,
@@ -241,7 +278,7 @@ function AppInner() {
                     });
                     break;
                 case 'turn-complete':
-                    dispatch({
+                    batchTranscriptDispatch({
                         type: 'TRANSCRIPT_TURN_COMPLETE',
                         sessionId: event.sessionId,
                         uuid: event.uuid,
@@ -349,6 +386,9 @@ function AppInner() {
             });
         });
         return () => {
+            transcriptBatchCancelled = true;
+            if (transcriptRafId !== null)
+                cancelAnimationFrame(transcriptRafId);
             window.claude.off('session:created', createdHandler);
             window.claude.off('session:destroyed', destroyedHandler);
             window.claude.off('hook:event', hookHandler);
@@ -396,21 +436,6 @@ function AppInner() {
             });
         }).catch(() => { });
     }, [dispatch]);
-    // Load skills once on mount
-    (0, react_1.useEffect)(() => {
-        window.claude.skills.list().then((list) => {
-            // Inject built-in resume skill at the top
-            const resumeSkill = {
-                id: '_resume',
-                displayName: 'Resume Session',
-                description: 'Resume a previous conversation',
-                category: 'personal',
-                prompt: '',
-                source: 'destinclaude',
-            };
-            setSkills([resumeSkill, ...list]);
-        }).catch(console.error);
-    }, []);
     // Flush and reload session state when connection mode changes (local ↔ remote).
     // On Android, switching to remote means the WebSocket now talks to the desktop server —
     // all local session state is stale and must be replaced with the desktop's sessions.
@@ -453,14 +478,6 @@ function AppInner() {
             });
         }
     }, [sessionId]);
-    // Load model preference on mount
-    (0, react_1.useEffect)(() => {
-        if (window.claude.model) {
-            window.claude.model.getPreference().then((m) => {
-                if (MODELS_LIST.includes(m)) setModel(m);
-            });
-        }
-    }, []);
     // Clear viewed status when a session starts thinking (user sent a new message).
     // Early-exit: skip iteration if no sessions are currently thinking.
     (0, react_1.useEffect)(() => {
@@ -589,42 +606,6 @@ function AppInner() {
         // Send Shift+Tab to the PTY to cycle Claude Code's permission mode
         window.claude.session.sendInput(sessionId, '\x1b[Z');
     }, [sessionId, canBypass, currentPermissionMode]);
-    const cycleModel = (0, react_1.useCallback)(() => {
-        const idx = MODELS_LIST.indexOf(model);
-        const next = MODELS_LIST[(idx + 1) % MODELS_LIST.length];
-        setModel(next);
-        setPendingModel(next);
-        if (sessionId && window.claude.model) {
-            window.claude.model.switch(sessionId, next);
-        }
-    }, [model, sessionId]);
-    // Verify model switch via transcript events
-    (0, react_1.useEffect)(() => {
-        if (!pendingModel) return;
-        const handler = window.claude.on.transcriptEvent?.((event) => {
-            if (!event || event.type !== 'assistant-text' || !event.data?.model) return;
-            if (event.sessionId !== sessionId) return;
-            const actualModel = event.data.model;
-            const matches = actualModel.includes(pendingModel);
-            if (matches) {
-                setPendingModel(null);
-                consecutiveFailures.current = 0;
-                if (window.claude.model) window.claude.model.setPreference(pendingModel);
-            } else {
-                const actual = MODELS_LIST.find(m => actualModel.includes(m));
-                if (actual) setModel(actual);
-                consecutiveFailures.current += 1;
-                setPendingModel(null);
-                if (consecutiveFailures.current >= 2) {
-                    setToast("Model switch failed again. Ask Claude to diagnose with /model, or report a bug.");
-                } else {
-                    setToast("Couldn't switch to " + pendingModel.charAt(0).toUpperCase() + pendingModel.slice(1));
-                }
-                setTimeout(() => setToast(null), 4000);
-            }
-        });
-        return handler;
-    }, [pendingModel, sessionId]);
     const trustGateActive = (0, TrustGate_1.useTrustGateActive)(sessionId);
     // Once trust gate activates, permanently mark the session as initialized
     // so the "Initializing" overlay doesn't reappear after trust is completed
@@ -644,14 +625,18 @@ function AppInner() {
     const sessionInitialized = sessionId ? initializedSessions.has(sessionId) : true;
     // Parse announcement
     const announcementText = statusData.announcement?.message || null;
-    return ((0, jsx_runtime_1.jsxs)("div", { className: "flex w-screen h-full bg-gray-950 text-gray-200", children: [(0, jsx_runtime_1.jsx)("div", { className: "flex-1 flex flex-col overflow-hidden", children: sessions.length > 0 && sessionId && currentSession ? ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(HeaderBar_1.default, { sessions: sessions, activeSessionId: sessionId, onSelectSession: setSessionId, onCreateSession: createSession, onCloseSession: (id) => window.claude.session.destroy(id), onReorderSessions: (fromIndex, toIndex) => {
+    return ((0, jsx_runtime_1.jsxs)("div", { className: "flex w-screen h-full bg-canvas text-fg", children: [(0, jsx_runtime_1.jsx)("div", { className: "flex-1 flex flex-col overflow-hidden", children: sessions.length > 0 && sessionId && currentSession ? ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(HeaderBar_1.default, { sessions: sessions, activeSessionId: sessionId, onSelectSession: (id) => {
+                                setSessionId(id);
+                                // Notify Android/remote bridge so the native terminal view switches too
+                                window.claude?.session?.switch?.(id);
+                            }, onCreateSession: createSession, onCloseSession: (id) => window.claude.session.destroy(id), onReorderSessions: (fromIndex, toIndex) => {
                                 setSessions(prev => {
                                     const next = [...prev];
                                     const [moved] = next.splice(fromIndex, 1);
                                     next.splice(toIndex, 0, moved);
                                     return next;
                                 });
-                            }, viewMode: currentViewMode, onToggleView: handleToggleView, gamePanelOpen: gameState.panelOpen, onToggleGamePanel: () => gameDispatch({ type: 'TOGGLE_PANEL' }), gameConnected: gameState.connected, challengePending: gameState.challengeFrom !== null, permissionMode: currentPermissionMode, onCyclePermission: cyclePermission, announcement: announcementText, settingsOpen: settingsOpen, onToggleSettings: () => setSettingsOpen(prev => !prev), settingsBadge: settingsBadge, sessionStatuses: sessionStatuses, onResumeSession: handleResumeSession, onOpenResumeBrowser: () => setResumeRequested(true) }), (0, jsx_runtime_1.jsxs)("div", { className: "flex-1 overflow-hidden relative", children: [sessions.map((s) => ((0, jsx_runtime_1.jsxs)(react_1.default.Fragment, { children: [(0, jsx_runtime_1.jsx)(ErrorBoundary_1.default, { name: "Chat", children: (0, jsx_runtime_1.jsx)(ChatView_1.default, { sessionId: s.id, visible: s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat', resumeInfo: resumeInfo }) }), (0, platform_1.getPlatform)() !== 'android' && ((0, jsx_runtime_1.jsx)(ErrorBoundary_1.default, { name: "Terminal", children: (0, jsx_runtime_1.jsx)(TerminalView_1.default, { sessionId: s.id, visible: s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'terminal' }) }))] }, s.id))), !sessionInitialized && sessionId && ((0, jsx_runtime_1.jsxs)("div", { className: "absolute inset-0 z-30 flex flex-col items-center justify-center bg-gray-950", children: [(0, jsx_runtime_1.jsx)(Icons_1.AppIcon, { className: "w-16 h-16 text-gray-400 mb-6 animate-pulse" }), (0, jsx_runtime_1.jsx)("p", { className: "text-sm text-gray-400 font-medium", children: "Initializing session..." })] })), trustGateActive && sessionId && (0, jsx_runtime_1.jsx)(TrustGate_1.default, { sessionId: sessionId })] }), currentViewMode === 'chat' && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(ChatInputBar, { sessionId: sessionId, onOpenDrawer: handleOpenDrawer, disabled: trustGateActive || !sessionInitialized, onResumeCommand: () => setResumeRequested(true) }), (0, jsx_runtime_1.jsx)(CommandDrawer_1.default, { open: drawerOpen, searchMode: drawerSearchMode, skills: skills, onSelect: handleSelectSkill, onClose: () => setDrawerOpen(false) }), (0, jsx_runtime_1.jsx)(StatusBar_1.default, { statusData: {
+                            }, viewMode: currentViewMode, onToggleView: handleToggleView, gamePanelOpen: gameState.panelOpen, onToggleGamePanel: () => gameDispatch({ type: 'TOGGLE_PANEL' }), gameConnected: gameState.connected, challengePending: gameState.challengeFrom !== null, permissionMode: currentPermissionMode, onCyclePermission: cyclePermission, model: statusData.model, announcement: announcementText, settingsOpen: settingsOpen, onToggleSettings: () => setSettingsOpen(prev => !prev), settingsBadge: settingsBadge, sessionStatuses: sessionStatuses, onResumeSession: handleResumeSession, onOpenResumeBrowser: () => setResumeRequested(true) }), (0, jsx_runtime_1.jsxs)("div", { className: "flex-1 overflow-hidden relative", children: [sessions.map((s) => ((0, jsx_runtime_1.jsxs)(react_1.default.Fragment, { children: [(0, jsx_runtime_1.jsx)(ErrorBoundary_1.default, { name: "Chat", children: (0, jsx_runtime_1.jsx)(ChatView_1.default, { sessionId: s.id, visible: s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat', resumeInfo: resumeInfo }) }), (0, platform_1.getPlatform)() !== 'android' && ((0, jsx_runtime_1.jsx)(ErrorBoundary_1.default, { name: "Terminal", children: (0, jsx_runtime_1.jsx)(TerminalView_1.default, { sessionId: s.id, visible: s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'terminal' }) }))] }, s.id))), !sessionInitialized && sessionId && ((0, jsx_runtime_1.jsxs)("div", { className: "absolute inset-0 z-30 flex flex-col items-center justify-center bg-canvas", children: [(0, jsx_runtime_1.jsx)(Icons_1.AppIcon, { className: "w-16 h-16 text-fg-dim mb-6 animate-pulse" }), (0, jsx_runtime_1.jsx)("p", { className: "text-sm text-fg-dim font-medium", children: "Initializing session..." })] })), trustGateActive && sessionId && (0, jsx_runtime_1.jsx)(TrustGate_1.default, { sessionId: sessionId })] }), currentViewMode === 'chat' && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(ChatInputBar, { sessionId: sessionId, onOpenDrawer: handleOpenDrawer, disabled: trustGateActive || !sessionInitialized, onResumeCommand: () => setResumeRequested(true) }), (0, jsx_runtime_1.jsx)(CommandDrawer_1.default, { open: drawerOpen, searchMode: drawerSearchMode, onSelect: handleSelectSkill, onClose: () => setDrawerOpen(false), onOpenManager: () => setManagerOpen(true), onOpenMarketplace: () => setMarketplaceOpen(true) }), (0, jsx_runtime_1.jsx)(StatusBar_1.default, { statusData: {
                                         usage: statusData.usage,
                                         updateStatus: statusData.updateStatus,
                                         contextPercent: statusData.contextPercent,
@@ -660,16 +645,22 @@ function AppInner() {
                                     }, onRunSync: !trustGateActive && sessionId ? () => {
                                         dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                                         window.claude.session.sendInput(sessionId, '/sync\r');
-                                    } : undefined, model: model, onCycleModel: cycleModel })] }))] })) : ((0, jsx_runtime_1.jsxs)("div", { className: "flex-1 flex flex-col items-center justify-center gap-3", children: [(0, jsx_runtime_1.jsx)("p", { className: "text-xl text-gray-500", children: "No Active Session" }), (0, jsx_runtime_1.jsx)(Icons_1.WelcomeAppIcon, { className: "w-36 h-36 text-gray-400" }), (0, jsx_runtime_1.jsxs)("div", { className: "flex flex-col items-center gap-2 mt-1", children: [(0, jsx_runtime_1.jsx)("button", { onClick: () => createSession('', false), className: "px-8 py-2 text-base font-medium rounded-lg bg-gray-300 text-gray-950 hover:bg-gray-200 transition-colors", children: "New Session" }), (0, jsx_runtime_1.jsxs)("button", { onClick: () => createSession('', true), className: "px-6 py-1 rounded-lg bg-red-600/40 hover:bg-red-600/60 text-red-200 transition-colors flex flex-col items-center", children: [(0, jsx_runtime_1.jsx)("span", { className: "text-sm font-medium leading-none", children: "New Session" }), (0, jsx_runtime_1.jsx)("span", { className: "text-[10px] text-red-300/70 font-normal leading-tight", children: "Dangerous Mode" })] })] })] })) }), gameState.panelOpen && ((0, jsx_runtime_1.jsx)(ErrorBoundary_1.default, { name: "Game", children: (0, jsx_runtime_1.jsx)(GamePanel_1.default, { connection: gameConnection, incognito: lobby.incognito, onToggleIncognito: lobby.toggleIncognito }) })), (0, jsx_runtime_1.jsx)(SettingsPanel_1.default, { open: settingsOpen, onClose: () => setSettingsOpen(false), onSendInput: (text) => {
+                                    } : undefined })] }))] })) : ((0, jsx_runtime_1.jsxs)("div", { className: "flex-1 flex flex-col items-center justify-center gap-3", children: [(0, jsx_runtime_1.jsx)("p", { className: "text-xl text-fg-muted", children: "No Active Session" }), (0, jsx_runtime_1.jsx)(Icons_1.WelcomeAppIcon, { className: "w-36 h-36 text-fg-dim" }), (0, jsx_runtime_1.jsxs)("div", { className: "flex flex-col items-center gap-2 mt-1", children: [(0, jsx_runtime_1.jsx)("button", { onClick: () => createSession('', false), className: "px-8 py-2 text-base font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors", children: "New Session" }), (0, jsx_runtime_1.jsxs)("button", { onClick: () => createSession('', true), className: "px-6 py-1 rounded-lg bg-red-600/40 hover:bg-red-600/60 text-red-200 transition-colors flex flex-col items-center", children: [(0, jsx_runtime_1.jsx)("span", { className: "text-sm font-medium leading-none", children: "New Session" }), (0, jsx_runtime_1.jsx)("span", { className: "text-[10px] text-red-300/70 font-normal leading-tight", children: "Dangerous Mode" })] })] })] })) }), gameState.panelOpen && ((0, jsx_runtime_1.jsx)(ErrorBoundary_1.default, { name: "Game", children: (0, jsx_runtime_1.jsx)(GamePanel_1.default, { connection: gameConnection, incognito: lobby.incognito, onToggleIncognito: lobby.toggleIncognito }) })), (0, jsx_runtime_1.jsx)(SettingsPanel_1.default, { open: settingsOpen, onClose: () => setSettingsOpen(false), onSendInput: (text) => {
                     if (sessionId) {
                         const claude = window.claude;
                         claude.session.sendInput(sessionId, text + '\r');
                     }
-                }, hasActiveSession: !!sessionId }), (0, jsx_runtime_1.jsx)(ResumeBrowser_1.default, { open: resumeRequested, onClose: () => setResumeRequested(false), onResume: handleResumeSession }), toast && ((0, jsx_runtime_1.jsx)("div", { className: "fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 shadow-lg", children: toast }))] }));
+                }, hasActiveSession: !!sessionId }), (0, jsx_runtime_1.jsx)(ResumeBrowser_1.default, { open: resumeRequested, onClose: () => setResumeRequested(false), onResume: handleResumeSession }), marketplaceOpen && ((0, jsx_runtime_1.jsx)(Marketplace_1.default, { onClose: () => setMarketplaceOpen(false) })), managerOpen && ((0, jsx_runtime_1.jsx)(SkillManager_1.default, { onClose: () => setManagerOpen(false), onOpenMarketplace: () => { setManagerOpen(false); setMarketplaceOpen(true); }, onOpenShareSheet: (id) => setShareSkillId(id), onOpenEditor: (id) => setEditorSkillId(id), onOpenCreatePrompt: () => setCreatePromptOpen(true) })), editorSkillId && ((0, jsx_runtime_1.jsx)(SkillEditor_1.default, { skillId: editorSkillId, onClose: () => setEditorSkillId(null) })), shareSkillId && ((0, jsx_runtime_1.jsx)(ShareSheet_1.default, { skillId: shareSkillId, onClose: () => setShareSkillId(null) })), createPromptOpen && ((0, jsx_runtime_1.jsx)(CreatePromptSheet_1.default, { onClose: () => setCreatePromptOpen(false) }))] }));
 }
 function ChatInputBar({ sessionId, onOpenDrawer, disabled, onResumeCommand }) {
     return (0, jsx_runtime_1.jsx)(InputBar_1.default, { sessionId: sessionId, onOpenDrawer: onOpenDrawer, disabled: disabled, onResumeCommand: onResumeCommand });
 }
+function ThemeBg() {
+    const { bgStyle } = (0, theme_context_1.useTheme)();
+    if (!bgStyle)
+        return null;
+    return (0, jsx_runtime_1.jsx)("div", { id: "theme-bg", style: bgStyle, "aria-hidden": "true" });
+}
 function App() {
-    return ((0, jsx_runtime_1.jsx)(game_context_1.GameProvider, { children: (0, jsx_runtime_1.jsx)(chat_context_1.ChatProvider, { children: (0, jsx_runtime_1.jsx)(AppInner, {}) }) }));
+    return ((0, jsx_runtime_1.jsxs)(theme_context_1.ThemeProvider, { children: [(0, jsx_runtime_1.jsx)(ThemeBg, {}), (0, jsx_runtime_1.jsx)(ThemeEffects_1.default, {}), (0, jsx_runtime_1.jsx)(skill_context_1.SkillProvider, { children: (0, jsx_runtime_1.jsx)(game_context_1.GameProvider, { children: (0, jsx_runtime_1.jsx)(chat_context_1.ChatProvider, { children: (0, jsx_runtime_1.jsx)(AppInner, {}) }) }) })] }));
 }

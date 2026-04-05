@@ -365,13 +365,25 @@ function installShim() {
             promptDismiss: (cb) => addListener('prompt:dismiss', cb),
             promptComplete: (cb) => addListener('prompt:complete', cb),
         },
-        model: {
-            getPreference: () => invoke('model:get-preference'),
-            setPreference: (model) => invoke('model:set-preference', { model }),
-            switch: (sessionId, model) => invoke('model:switch', { sessionId, model }),
-        },
         skills: {
             list: () => invoke('skills:list'),
+            listMarketplace: (filters) => invoke('skills:list-marketplace', filters),
+            getDetail: (id) => invoke('skills:get-detail', { id }),
+            search: (query) => invoke('skills:search', { query }),
+            install: (id) => invoke('skills:install', { id }),
+            uninstall: (id) => invoke('skills:uninstall', { id }),
+            getFavorites: () => invoke('skills:get-favorites'),
+            setFavorite: (id, favorited) => invoke('skills:set-favorite', { id, favorited }),
+            getChips: () => invoke('skills:get-chips'),
+            setChips: (chips) => invoke('skills:set-chips', { chips }),
+            getOverride: (id) => invoke('skills:get-override', { id }),
+            setOverride: (id, override) => invoke('skills:set-override', { id, override }),
+            createPrompt: (skill) => invoke('skills:create-prompt', skill),
+            deletePrompt: (id) => invoke('skills:delete-prompt', { id }),
+            publish: (id) => invoke('skills:publish', { id }),
+            getShareLink: (id) => invoke('skills:get-share-link', { id }),
+            importFromLink: (encoded) => invoke('skills:import-from-link', { encoded }),
+            getCuratedDefaults: () => invoke('skills:get-curated-defaults'),
         },
         dialog: {
             openFile: async () => [],
@@ -391,11 +403,6 @@ function installShim() {
             getClientList: () => invoke('remote:get-client-list'),
             disconnectClient: (clientId) => invoke('remote:disconnect-client', clientId),
             broadcastAction: (action) => fire('ui:action', action),
-        },
-        model: {
-            getPreference: () => invoke('model:get-preference'),
-            setPreference: (model) => invoke('model:set-preference', { model }),
-            switch: (sessionId, model) => invoke('model:switch', { sessionId, model }),
         },
         // Android-only bridge methods — only called when isAndroid() is true
         android: {
