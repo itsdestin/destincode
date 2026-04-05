@@ -442,7 +442,35 @@ class SessionService : Service() {
                 }
             }
             "remote:detect-tailscale" -> {
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("installed", false)) }
+                msg.id?.let { id ->
+                    val installed = try {
+                        packageManager.getPackageInfo("com.tailscale.ipn", 0); true
+                    } catch (_: Exception) { false }
+
+                    // Check if any network interface has a Tailscale CGNAT IP (100.64.0.0/10)
+                    var connected = false
+                    var tsIp: String? = null
+                    try {
+                        for (iface in java.net.NetworkInterface.getNetworkInterfaces()) {
+                            for (addr in iface.inetAddresses) {
+                                if (addr is java.net.Inet4Address) {
+                                    val bytes = addr.address
+                                    // 100.64.0.0/10 = first byte 100, second byte 64-127
+                                    if (bytes[0] == 100.toByte() && (bytes[1].toInt() and 0xFF) in 64..127) {
+                                        connected = true
+                                        tsIp = addr.hostAddress
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+
+                    bridgeServer.respond(ws, msg.type, id, JSONObject().apply {
+                        put("installed", installed)
+                        put("connected", connected)
+                        if (tsIp != null) put("ip", tsIp)
+                    })
+                }
             }
             "remote:get-client-list" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
