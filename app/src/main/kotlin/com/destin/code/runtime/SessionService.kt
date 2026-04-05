@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
+import com.destin.code.skills.LocalSkillProvider
 
 class SessionService : Service() {
     private val binder = LocalBinder()
@@ -56,6 +57,7 @@ class SessionService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
     private var usageRefreshTimer: java.util.Timer? = null
+    private var skillProvider: LocalSkillProvider? = null
     var bootstrap: Bootstrap? = null
         private set
 
@@ -96,6 +98,8 @@ class SessionService : Service() {
         titlesDir.mkdirs()
         startUrlObserver(bs)
         startUsageRefresh(bs)
+        skillProvider = LocalSkillProvider(bs.homeDir, applicationContext)
+        skillProvider?.ensureMigrated()
     }
 
     /** Watch ~/.claude-mobile/open-url for URLs written by the JS wrapper.
@@ -392,7 +396,88 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
             "skills:list" -> {
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+                val result = skillProvider?.getInstalled() ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:list-marketplace" -> {
+                val result = skillProvider?.listMarketplace(msg.payload) ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:get-detail" -> {
+                val id = msg.payload.optString("id")
+                val result = skillProvider?.getSkillDetail(id) ?: JSONObject()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:search" -> {
+                val query = msg.payload.optString("query")
+                val result = skillProvider?.search(query) ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:install" -> {
+                val id = msg.payload.optString("id")
+                skillProvider?.install(id)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+            "skills:uninstall" -> {
+                val id = msg.payload.optString("id")
+                skillProvider?.uninstall(id)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+            "skills:get-favorites" -> {
+                val result = skillProvider?.getFavorites() ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:set-favorite" -> {
+                val id = msg.payload.optString("id")
+                val favorited = msg.payload.optBoolean("favorited")
+                skillProvider?.setFavorite(id, favorited)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+            "skills:get-chips" -> {
+                val result = skillProvider?.getChips() ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:set-chips" -> {
+                val chips = msg.payload.optJSONArray("chips") ?: org.json.JSONArray()
+                skillProvider?.setChips(chips)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+            "skills:get-override" -> {
+                val id = msg.payload.optString("id")
+                val result = skillProvider?.getOverride(id) ?: JSONObject.NULL
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:set-override" -> {
+                val id = msg.payload.optString("id")
+                val override = msg.payload.optJSONObject("override") ?: JSONObject()
+                skillProvider?.setOverride(id, override)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+            "skills:create-prompt" -> {
+                val result = skillProvider?.createPromptSkill(msg.payload) ?: JSONObject()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:delete-prompt" -> {
+                val id = msg.payload.optString("id")
+                skillProvider?.deletePromptSkill(id)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+            "skills:publish" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "Publishing not yet implemented")) }
+            }
+            "skills:get-share-link" -> {
+                val id = msg.payload.optString("id")
+                val result = skillProvider?.generateShareLink(id) ?: ""
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:import-from-link" -> {
+                val encoded = msg.payload.optString("encoded")
+                val result = skillProvider?.importFromLink(encoded) ?: JSONObject()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "skills:get-curated-defaults" -> {
+                val result = skillProvider?.getCuratedDefaults() ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             "github:auth" -> {
                 // No GitHub auth on Android — return null
