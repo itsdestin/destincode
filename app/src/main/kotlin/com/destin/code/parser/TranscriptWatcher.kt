@@ -31,13 +31,25 @@ class TranscriptWatcher(
         private const val TAG = "TranscriptWatcher"
         private const val POLL_INTERVAL_MS = 500L
 
-        /** Strip system XML tags that should never appear in rendered content. */
-        private val SYSTEM_TAG_REGEX = Regex(
-            """<system-reminder>[\s\S]*?</system-reminder>""",
+        /** Strip internal XML tags and ANSI escapes that should never appear in rendered content.
+         *  - system-reminder: injected system context
+         *  - command-name/message/args: slash-command metadata (strip entirely)
+         *  - local-command-stdout/stderr: command output (keep inner text)
+         */
+        private val STRIP_ENTIRELY_REGEX = Regex(
+            """<(system-reminder|command-name|command-message|command-args)>[\s\S]*?</\1>""",
         )
+        private val UNWRAP_REGEX = Regex(
+            """<(local-command-stdout|local-command-stderr)>([\s\S]*?)</\1>""",
+        )
+        private val ANSI_REGEX = Regex("""\u001b\[[0-9;]*[a-zA-Z]""")
 
-        fun stripSystemTags(text: String): String =
-            SYSTEM_TAG_REGEX.replace(text, "").trim()
+        fun stripSystemTags(text: String): String {
+            var result = STRIP_ENTIRELY_REGEX.replace(text, "")
+            result = UNWRAP_REGEX.replace(result) { it.groupValues[2] }
+            result = ANSI_REGEX.replace(result, "")
+            return result.trim()
+        }
 
         /**
          * Convert a working directory path to Claude Code's project slug.
@@ -194,7 +206,10 @@ class TranscriptWatcher(
         if (content is String) {
             // Only emit if this is a real user prompt (has promptId), not a tool result
             if (obj.has("promptId")) {
-                _events.tryEmit(TranscriptEvent.UserMessage(sessionId, uuid, timestamp, content))
+                val cleaned = stripSystemTags(content)
+                if (cleaned.isNotBlank()) {
+                    _events.tryEmit(TranscriptEvent.UserMessage(sessionId, uuid, timestamp, cleaned))
+                }
             }
             return
         }
@@ -239,7 +254,7 @@ class TranscriptWatcher(
             // If no tool_result and has promptId, it's a user message
             if (!hasToolResult && obj.has("promptId")) {
                 // Extract text from content blocks
-                val text = extractTextFromContent(content)
+                val text = stripSystemTags(extractTextFromContent(content))
                 if (text.isNotBlank()) {
                     _events.tryEmit(TranscriptEvent.UserMessage(sessionId, uuid, timestamp, text))
                 }
