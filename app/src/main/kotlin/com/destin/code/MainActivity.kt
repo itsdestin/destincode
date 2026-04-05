@@ -199,20 +199,22 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
 
-                                    ChatScreen(svc)
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        ChatScreen(svc)
 
-                                    // QR scanner overlay — shown above ChatScreen
-                                    if (_showQrScanner.value) {
-                                        QrScannerOverlay(
-                                            onScanned = { url ->
-                                                _showQrScanner.value = false
-                                                boundService?.pendingQrScanner?.complete(url)
-                                            },
-                                            onDismiss = {
-                                                _showQrScanner.value = false
-                                                boundService?.pendingQrScanner?.complete(null)
-                                            },
-                                        )
+                                        // QR scanner overlay — rendered on top of ChatScreen
+                                        if (_showQrScanner.value) {
+                                            QrScannerOverlay(
+                                                onScanned = { url ->
+                                                    _showQrScanner.value = false
+                                                    boundService?.pendingQrScanner?.complete(url)
+                                                },
+                                                onDismiss = {
+                                                    _showQrScanner.value = false
+                                                    boundService?.pendingQrScanner?.complete(null)
+                                                },
+                                            )
+                                        }
                                     }
                                 }
                                 is ServiceBinder.SessionState.Error -> {

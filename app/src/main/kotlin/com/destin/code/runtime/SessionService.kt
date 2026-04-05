@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 
@@ -639,7 +640,7 @@ class SessionService : Service() {
                     onQrScanRequested?.invoke()
                 }
                 try {
-                    val url = deferred.await()
+                    val url = withTimeoutOrNull(120_000) { deferred.await() }
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", url ?: JSONObject.NULL)) }
                 } catch (_: Exception) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", JSONObject.NULL)) }

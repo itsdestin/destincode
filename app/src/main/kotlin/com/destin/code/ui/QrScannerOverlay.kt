@@ -126,7 +126,9 @@ fun QrScannerOverlay(
                                 preview,
                                 analysis,
                             )
-                        } catch (_: Exception) {}
+                        } catch (e: Exception) {
+                            android.util.Log.e("QrScanner", "Camera binding failed", e)
+                        }
                     }, ContextCompat.getMainExecutor(ctx))
 
                     previewView
