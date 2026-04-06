@@ -123,6 +123,49 @@ class SkillConfigStore(private val homeDir: File) {
         return skill
     }
 
+    // ── Installed Plugins (marketplace) ──────────────────────────
+
+    fun getInstalledPlugins(): JSONObject =
+        config.optJSONObject("installed_plugins") ?: JSONObject()
+
+    fun recordPluginInstall(id: String, meta: JSONObject) {
+        val plugins = getInstalledPlugins()
+        plugins.put(id, meta)
+        config.put("installed_plugins", plugins)
+        save()
+    }
+
+    fun removePluginInstall(id: String) {
+        val plugins = getInstalledPlugins()
+        plugins.remove(id)
+        config.put("installed_plugins", plugins)
+
+        // Cascade: remove from favorites, chips, overrides
+        val favs = getFavorites()
+        val filteredFavs = JSONArray()
+        for (i in 0 until favs.length()) {
+            val fid = favs.optString(i)
+            if (fid != id) filteredFavs.put(fid)
+        }
+        config.put("favorites", filteredFavs)
+
+        val chips = getChips()
+        val filteredChips = JSONArray()
+        for (i in 0 until chips.length()) {
+            val chip = chips.optString(i)
+            if (chip != id) filteredChips.put(chip)
+        }
+        config.put("chips", filteredChips)
+
+        val overrides = getOverrides()
+        overrides.remove(id)
+        config.put("overrides", overrides)
+
+        save()
+    }
+
+    // ── Prompt Skills ─────────────────────────────────────────────
+
     fun deletePromptSkill(skillId: String) {
         // Remove from privateSkills
         val skills = getPrivateSkills()

@@ -10,7 +10,7 @@ import java.util.Locale
 
 class LocalSkillProvider(private val homeDir: File, private val context: Context) {
 
-    private val configStore = SkillConfigStore(homeDir)
+    val configStore = SkillConfigStore(homeDir)
     private val scanner = SkillScanner(homeDir, context)
     private val fetcher = MarketplaceFetcher(homeDir)
     private var installedCache: JSONArray? = null
@@ -23,8 +23,37 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             val scanned = scanner.scan()
             val privateSkills = configStore.getPrivateSkills()
             val combined = JSONArray()
-            for (i in 0 until scanned.length()) combined.put(scanned.getJSONObject(i))
-            for (i in 0 until privateSkills.length()) combined.put(privateSkills.getJSONObject(i))
+            val seenIds = mutableSetOf<String>()
+            for (i in 0 until scanned.length()) {
+                val s = scanned.getJSONObject(i)
+                combined.put(s); seenIds.add(s.optString("id"))
+            }
+            for (i in 0 until privateSkills.length()) {
+                val s = privateSkills.getJSONObject(i)
+                combined.put(s); seenIds.add(s.optString("id"))
+            }
+            // Include marketplace-installed plugins not already discovered by scanner
+            val marketplaceInstalled = configStore.getInstalledPlugins()
+            val keys = marketplaceInstalled.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                if (seenIds.contains(id)) continue
+                val meta = marketplaceInstalled.optJSONObject(id) ?: continue
+                val installPath = meta.optString("installPath", "")
+                val dir = if (installPath.isNotEmpty()) File(installPath) else null
+                combined.put(JSONObject().apply {
+                    put("id", id)
+                    put("type", "plugin")
+                    put("displayName", id.split("-").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } })
+                    put("description", "Installed from ${meta.optString("installedFrom", "marketplace")}")
+                    put("category", "other")
+                    put("source", "marketplace")
+                    put("visibility", "published")
+                    put("installedAt", meta.optString("installedAt", ""))
+                    if (dir != null && !dir.exists()) put("status", "missing")
+                })
+                seenIds.add(id)
+            }
             installedCache = combined
         }
         val overrides = configStore.getOverrides()
@@ -151,6 +180,17 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         return result
     }
 
+    /** Look up a single marketplace entry by id. */
+    fun getMarketplaceEntry(id: String): JSONObject? {
+        val index = fetcher.fetchIndex()
+        for (i in 0 until index.length()) {
+            if (index.getJSONObject(i).optString("id") == id) {
+                return index.getJSONObject(i)
+            }
+        }
+        return null
+    }
+
     fun install(id: String) {
         val index = fetcher.fetchIndex()
         var entry: JSONObject? = null
@@ -170,6 +210,7 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         installedCache = null
     }
 
+    fun invalidateCache() { installedCache = null }
     fun uninstall(id: String) { configStore.deletePromptSkill(id); installedCache = null }
     fun getFavorites(): JSONArray = configStore.getFavorites()
     fun setFavorite(id: String, favorited: Boolean) = configStore.setFavorite(id, favorited)
