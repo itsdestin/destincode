@@ -9,7 +9,7 @@ import java.net.URL
 class MarketplaceFetcher(private val homeDir: File) {
 
     private val cacheDir = File(homeDir, ".claude/destincode-marketplace-cache")
-    private val registryBase = "https://raw.githubusercontent.com/anthropics/destincode-marketplace/main"
+    private val registryBase = "https://raw.githubusercontent.com/itsdestin/destincode-marketplace/main"
     private val statsTtl = 60 * 60 * 1000L       // 1 hour
     private val indexTtl = 24 * 60 * 60 * 1000L   // 24 hours
 
