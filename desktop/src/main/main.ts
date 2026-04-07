@@ -229,10 +229,13 @@ function createWindow(firstRunManager?: FirstRunManager) {
 
   // Forward hook events to renderer
   hookRelay.on('hook-event', (event) => {
-    // Auto-approve permission requests for skip-permissions (dangerous mode) sessions
+    // Auto-approve permission requests for skip-permissions (dangerous mode) sessions.
+    // Exception: AskUserQuestion requires actual user text input — auto-approving it
+    // silently answers Claude's question without the user ever seeing it.
     if (event.type === 'PermissionRequest') {
       const sessionInfo = sessionManager.getSession(event.sessionId);
-      if (sessionInfo?.skipPermissions) {
+      const toolName = event.payload?.tool_name as string;
+      if (sessionInfo?.skipPermissions && toolName !== 'AskUserQuestion') {
         const requestId = event.payload?._requestId as string;
         if (requestId) {
           hookRelay.respond(requestId, { decision: { behavior: 'allow' } });
