@@ -696,22 +696,36 @@ function AppInner() {
     });
   }, [model]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, resumeModel?: string, resumeDangerous?: boolean) => {
-    const slugToPath = (s: string) => {
-      if (/^[A-Z]--/.test(s)) return s.replace(/^([A-Z])--/, '$1:\\').replace(/-/g, '\\');
-      return s.replace(/-/g, '/');
-    };
-    const cwd = slugToPath(projectSlug);
-    const m = resumeModel || model;
-    if (resumeModel && MODELS.includes(resumeModel as any)) {
-      setModel(resumeModel as ModelAlias);
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPathOrModel?: string, resumeModelOrDangerous?: string | boolean, resumeDangerous?: boolean) => {
+    // When called from ResumeBrowser: (id, slug, resolvedPath, model, dangerous)
+    // When called from SessionStrip/HeaderBar: (id, slug) — only 2 args
+    let cwd: string;
+    let m: string;
+    let dangerous: boolean;
+    if (projectPathOrModel && (projectPathOrModel.includes('/') || projectPathOrModel.includes('\\'))) {
+      // ResumeBrowser path: third arg is filesystem path
+      cwd = projectPathOrModel;
+      m = (typeof resumeModelOrDangerous === 'string' ? resumeModelOrDangerous : undefined) || model;
+      dangerous = typeof resumeDangerous === 'boolean' ? resumeDangerous : false;
+    } else {
+      // Legacy path: third arg is model (or undefined)
+      const slugToPath = (s: string) => {
+        if (/^[A-Z]--/.test(s)) return s.replace(/^([A-Z])--/, '$1:\\').replace(/-/g, '\\');
+        return s.replace(/-/g, '/');
+      };
+      cwd = slugToPath(projectSlug);
+      m = (typeof projectPathOrModel === 'string' ? projectPathOrModel : undefined) || model;
+      dangerous = typeof resumeModelOrDangerous === 'boolean' ? resumeModelOrDangerous : false;
+    }
+    if (MODELS.includes(m as any)) {
+      setModel(m as ModelAlias);
     }
 
     // Pass --resume flag so Claude Code boots directly into the resumed session
     const newSession = await (window.claude.session.create as any)({
       name: 'Resuming...',
       cwd,
-      skipPermissions: resumeDangerous || false,
+      skipPermissions: dangerous,
       resumeSessionId: claudeSessionId,
       model: m,
     });

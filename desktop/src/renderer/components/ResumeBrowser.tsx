@@ -38,7 +38,7 @@ interface PastSession {
 interface Props {
   open: boolean;
   onClose: () => void;
-  onResume: (sessionId: string, projectSlug: string, model: string, dangerous: boolean) => void;
+  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean) => void;
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
 }
@@ -115,7 +115,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   };
 
   const handleConfirmResume = (s: PastSession) => {
-    onResume(s.sessionId, s.projectSlug, resumeModel, resumeDangerous);
+    onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous);
     onClose();
   };
 

@@ -10,16 +10,55 @@ const TOPICS_DIR = path.join(CLAUDE_DIR, 'topics');
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 /**
- * Converts a project slug back to a display-friendly path.
- * e.g. 'C--Users-desti' → 'C:/Users/desti'
- *      '-home-user-project' → '/home/user/project'
+ * Resolves a project slug back to a real filesystem path by walking the
+ * directory tree. The naive approach (replace all dashes with separators)
+ * breaks when directory names contain hyphens (e.g. "destinclaude-dev"
+ * becomes "destinclaude/dev"). This function tries each segment greedily
+ * against the filesystem, extending with hyphens when a single part
+ * doesn't match a real directory.
  */
-function slugToDisplayPath(slug: string): string {
+function resolveSlugToPath(slug: string): string {
+  let root: string;
+  let parts: string[];
+
   if (/^[A-Z]--/.test(slug)) {
-    return slug.replace(/^([A-Z])--/, '$1:/').replace(/-/g, '/');
+    // Windows: C--Users-desti-project → root=C:\, parts=[Users, desti, project]
+    root = slug[0] + ':\\';
+    parts = slug.slice(3).split('-').filter(Boolean);
+  } else {
+    // Unix: -home-user-project → root=/, parts=[home, user, project]
+    root = '/';
+    parts = slug.slice(1).split('-').filter(Boolean);
   }
-  // Unix slugs start with '-' (from leading /); replace all dashes with /
-  return slug.replace(/-/g, '/');
+
+  if (parts.length === 0) return root;
+  return walkSlugParts(root, parts);
+}
+
+/**
+ * Recursively resolves slug dash-segments against the filesystem.
+ * Tries single segment first; if it doesn't exist as a directory,
+ * joins with the next segment via hyphen and retries.
+ */
+function walkSlugParts(base: string, parts: string[]): string {
+  for (let len = 1; len <= parts.length; len++) {
+    const segment = parts.slice(0, len).join('-');
+    const candidate = path.join(base, segment);
+
+    if (len === parts.length) {
+      // Last possible grouping — accept whether or not it exists on disk
+      return candidate;
+    }
+
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return walkSlugParts(candidate, parts.slice(len));
+      }
+    } catch {}
+  }
+
+  // Fallback: naive join
+  return path.join(base, parts.join('-'));
 }
 
 async function readTopic(sessionId: string): Promise<string> {
@@ -76,7 +115,7 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           sessionId,
           name,
           projectSlug: slug,
-          projectPath: slugToDisplayPath(slug),
+          projectPath: resolveSlugToPath(slug),
           lastModified: stat.mtimeMs,
           size: stat.size,
         } as PastSession;
