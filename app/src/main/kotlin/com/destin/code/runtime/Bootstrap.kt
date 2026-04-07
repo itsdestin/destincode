@@ -19,7 +19,7 @@ import org.tukaani.xz.XZInputStream
 import com.github.luben.zstd.ZstdInputStream
 import com.destin.code.config.PackageTier
 
-class Bootstrap(private val context: Context) {
+class Bootstrap(internal val context: Context) {
 
     val usrDir: File get() = File(context.filesDir, "usr")
     val homeDir: File get() = File(context.filesDir, "home")

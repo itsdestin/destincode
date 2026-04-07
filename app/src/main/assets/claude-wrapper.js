@@ -1,8 +1,6 @@
-// REFERENCE COPY — the canonical version is the WRAPPER_JS constant in PtyBridge.kt.
-// PtyBridge.start() deploys WRAPPER_JS to ~/.claude-mobile/claude-wrapper.js at
-// every launch. This file exists only for readability / version control.
-//
-// If you edit this file, also update WRAPPER_JS in PtyBridge.kt (and vice versa).
+// CANONICAL SOURCE — PtyBridge.start() reads this asset file and deploys it to
+// ~/.claude-mobile/claude-wrapper.js at every launch. Edit this file directly;
+// PtyBridge loads it at runtime via context.assets.open("claude-wrapper.js").
 //
 // ARCHITECTURE (post-termux-exec-fix):
 // termux-exec LD_PRELOAD handles ALL exec routing through linker64 for C/Rust
@@ -25,8 +23,6 @@ var TERMUX_PREFIX = '/data/data/com.termux/files/usr';
 var ALT_PREFIX = '';
 if (PREFIX.indexOf('/data/user/0/') === 0) ALT_PREFIX = '/data/data/' + PREFIX.substring('/data/user/0/'.length);
 else if (PREFIX.indexOf('/data/data/') === 0) ALT_PREFIX = '/data/user/0/' + PREFIX.substring('/data/data/'.length);
-var BROWSER_OPEN = HOME + '/.claude-mobile/browser-open';
-
 // --- /tmp rewriting (Android has no /tmp) ---
 function fixTmp(p) {
     if (typeof p === 'string') {

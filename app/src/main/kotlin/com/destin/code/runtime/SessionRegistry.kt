@@ -40,6 +40,7 @@ class SessionRegistry {
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
         val bridge = PtyBridge(
+            context = bootstrap.context,
             bootstrap = bootstrap,
             apiKey = apiKey,
             socketName = socketName,

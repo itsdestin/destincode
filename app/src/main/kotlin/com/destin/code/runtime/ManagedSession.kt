@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -157,7 +158,7 @@ class ManagedSession(
         }
 
         if (shellMode) {
-            // Shell sessions only need isRunning polling
+            // Shell sessions — poll isRunning (DirectShellBridge has no sessionFinished flow)
             scope.launch {
                 while (true) {
                     delay(5000)
@@ -249,13 +250,10 @@ class ManagedSession(
             }
         }
 
-        // 2. isRunning poller — makes Dead status reactive.
+        // 2. sessionFinished — reactively marks Dead status (no polling).
         scope.launch {
-            while (true) {
-                delay(5000)
-                _isRunningFlow.value = bridge.isRunning
-                if (!bridge.isRunning) break
-            }
+            bridge.sessionFinished.first { it }
+            _isRunningFlow.value = false
         }
 
         // 3. Approval notification observer — fires callbacks when status changes.
