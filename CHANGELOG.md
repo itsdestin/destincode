@@ -2,6 +2,36 @@
 
 All notable changes to DestinCode are documented in this file.
 
+## [2.3.0] — 2026-04-07
+
+First unified release. Desktop and Android now share the same version number and release from a single `v*` tag.
+
+### Added
+- **Desktop app** — Full Electron app with React UI, now lives in this repo alongside the Android app.
+- **Theme system** — Theme packs with custom colors, patterns, particles, glassmorphism, wallpapers, mascots, and icon overrides. Includes theme editor in settings.
+- **Theme marketplace** — Browse, install, preview, and publish community themes.
+- **Skill marketplace** — Browse, search, install, and share Claude Code plugins. Favorites, quick chips, and curated defaults.
+- **Multiplayer games** — Connect 4 via PartyKit (Cloudflare Durable Objects) with lobby, challenges, reconnection, and incognito mode.
+- **Remote access** — Built-in HTTP + WebSocket server for browser-based access from any device. Password auth + Tailscale trust.
+- **First-run setup wizard** — Zero-terminal onboarding: detects prerequisites, installs Claude Code, handles OAuth sign-in.
+- **Session resume** — Browse and resume past Claude Code sessions with history loading.
+- **Folder switcher** — Quick-access saved directories for session creation.
+- **Model selector** — Cycle between Claude models with persistence and transcript verification.
+- **Desktop CI** — New `desktop-ci.yml` runs vitest + tsc on every push. `android-ci.yml` now runs `./gradlew test`.
+- **Unified release tags** — Single `v*` tag triggers both `android-release.yml` and `desktop-release.yml`.
+
+### Changed
+- **CI consolidation** — Renamed workflows to `{platform}-{purpose}.yml` convention. Standardized all actions to `@v4`.
+- **Release APKs** — `android-release.yml` now runs `build-web-ui.sh` so release APKs include the full React UI instead of placeholders.
+- **License** — Split licensing: MIT for desktop (`desktop/LICENSE`), GPLv3 for Android (root `LICENSE`).
+
+### Fixed
+- **13 broken desktop tests** — session-manager (missing electron mock), transcript-reducer (updated for turn-based model), transcript-watcher (async read timing), theme-preview-sync (cross-repo path).
+- **TypeScript error** — Aligned `onResumeSession` callback signature across App, HeaderBar, SessionStrip.
+- **Android protocol** — Added `game:getIncognito`/`game:setIncognito` IPC handlers.
+- **Execute bits** — Set +x on all 6 shell scripts.
+- **build-web-ui.sh** — Added build output existence check with clear error message.
+
 ## [1.0.0] — 2026-03-20
 
 First stable release. DestinCode runs Claude Code natively on Android with a touch-optimized chat and terminal interface.
