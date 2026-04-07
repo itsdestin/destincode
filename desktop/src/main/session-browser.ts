@@ -87,8 +87,21 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     allSessions.push(...results.filter((s): s is PastSession => s !== null));
   }
 
-  allSessions.sort((a, b) => b.lastModified - a.lastModified);
-  return allSessions;
+  // Deduplicate: aggregation symlinks/copies place project-specific .jsonl
+  // files into the home slug for unified browsing. When the same sessionId
+  // appears in both the home slug and a project slug, keep the project slug
+  // entry so resume uses the correct working directory.
+  const deduped = new Map<string, PastSession>();
+  for (const s of allSessions) {
+    const existing = deduped.get(s.sessionId);
+    if (!existing || s.projectSlug.length > existing.projectSlug.length) {
+      deduped.set(s.sessionId, s);
+    }
+  }
+
+  const result = Array.from(deduped.values());
+  result.sort((a, b) => b.lastModified - a.lastModified);
+  return result;
 }
 
 /**
