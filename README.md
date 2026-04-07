@@ -20,6 +20,8 @@ It's designed for students, professionals, and anyone who uses AI regularly — 
 - Chat interface with structured message rendering, tool cards, and markdown
 - Full terminal emulator for direct shell access
 - Multiple concurrent sessions with color-coded status
+- Model selector — cycle between Claude models with persistence
+- Folder switcher — quick-access saved directories for session creation
 - Permission mode cycling (Normal, Auto-Accept, Plan Mode)
 
 **Social AI**

@@ -13,7 +13,7 @@ First unified release. Desktop and Android now share the same version number and
 - **Skill marketplace** — Browse, search, install, and share Claude Code plugins. Favorites, quick chips, and curated defaults.
 - **Multiplayer games** — Connect 4 via PartyKit (Cloudflare Durable Objects) with lobby, challenges, reconnection, and incognito mode.
 - **Remote access** — Built-in HTTP + WebSocket server for browser-based access from any device. Password auth + Tailscale trust.
-- **First-run setup wizard** — Zero-terminal onboarding: detects prerequisites, installs Claude Code, handles OAuth sign-in.
+- **First-run setup wizard (Desktop)** — Zero-terminal onboarding: detects prerequisites, installs Claude Code, handles OAuth sign-in.
 - **Session resume** — Browse and resume past Claude Code sessions with history loading.
 - **Folder switcher** — Quick-access saved directories for session creation.
 - **Model selector** — Cycle between Claude models with persistence and transcript verification.
@@ -26,6 +26,7 @@ First unified release. Desktop and Android now share the same version number and
 - **License** — Split licensing: MIT for desktop (`desktop/LICENSE`), GPLv3 for Android (root `LICENSE`).
 
 ### Fixed
+- **Auto-approve safety** — AskUserQuestion prompts are no longer auto-approved in dangerous mode; they now require actual user input
 - **13 broken desktop tests** — session-manager (missing electron mock), transcript-reducer (updated for turn-based model), transcript-watcher (async read timing), theme-preview-sync (cross-repo path).
 - **TypeScript error** — Aligned `onResumeSession` callback signature across App, HeaderBar, SessionStrip.
 - **Android protocol** — Added `game:getIncognito`/`game:setIncognito` IPC handlers.
