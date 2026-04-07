@@ -555,6 +555,12 @@ class SessionService : Service() {
             "favorites:set" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
             }
+            "game:getIncognito" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, false) }
+            }
+            "game:setIncognito" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
             "get-home-path" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, platformBridge?.getHomePath() ?: "") }
             }

@@ -13,7 +13,7 @@
   },
   "keywords": [],
   "author": "itsdestin",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

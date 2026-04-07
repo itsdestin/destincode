@@ -114,4 +114,4 @@ Contributions welcome — bug fixes, features, documentation, testing on differe
 - Desktop app: MIT
 - Android app: GPLv3 (due to Termux library dependencies)
 
-See [LICENSE](LICENSE) for details.
+See [desktop/LICENSE](desktop/LICENSE) and [LICENSE](LICENSE) for details.
