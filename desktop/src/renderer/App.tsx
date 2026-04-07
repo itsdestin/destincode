@@ -389,15 +389,19 @@ function AppInner() {
     });
 
     const statusHandler = window.claude.on.statusData((data) => {
-      setStatusData((prev) => ({
-        ...prev,
-        usage: data.usage,
-        announcement: data.announcement,
-        updateStatus: data.updateStatus,
-        syncStatus: data.syncStatus,
-        syncWarnings: data.syncWarnings,
-        contextMap: data.contextMap || prev.contextMap,
-      }));
+      setStatusData((prev) => {
+        // Shallow-compare to avoid re-rendering when nothing changed
+        const nextContextMap = data.contextMap || prev.contextMap;
+        if (prev.usage === data.usage
+          && prev.announcement === data.announcement
+          && prev.updateStatus === data.updateStatus
+          && prev.syncStatus === data.syncStatus
+          && prev.syncWarnings === data.syncWarnings
+          && prev.contextMap === nextContextMap) return prev;
+        return { ...prev, usage: data.usage, announcement: data.announcement,
+          updateStatus: data.updateStatus, syncStatus: data.syncStatus,
+          syncWarnings: data.syncWarnings, contextMap: nextContextMap };
+      });
     });
 
     // UI action sync — receive actions broadcast from other devices
@@ -977,7 +981,6 @@ function AppInner() {
             claude.session.sendInput(sessionId, text + '\r');
           }
         }}
-        hasActiveSession={!!sessionId}
       />
       <ResumeBrowser
         open={resumeRequested}

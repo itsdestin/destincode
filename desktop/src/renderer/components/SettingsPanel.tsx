@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { isAndroid } from '../platform';
 import ThemeScreen from './ThemeScreen';
+import FolderSwitcher from './FolderSwitcher';
 import { useTheme } from '../state/theme-context';
 import { MODELS, type ModelAlias } from './StatusBar';
 
@@ -44,7 +45,6 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
-  hasActiveSession: boolean;
 }
 
 function timeAgo(timestamp: number): string {
@@ -56,7 +56,7 @@ function timeAgo(timestamp: number): string {
   return `${hours}h ago`;
 }
 
-export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession }: Props) {
+export default function SettingsPanel({ open, onClose, onSendInput }: Props) {
   return (
     <>
       {/* Backdrop */}
@@ -92,7 +92,6 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
               open={open}
               onClose={onClose}
               onSendInput={onSendInput}
-              hasActiveSession={hasActiveSession}
             />
           )}
         </div>
@@ -354,12 +353,13 @@ function PasswordSection({ config, newPassword, passwordStatus, onSetNewPassword
 
 // ─── Remote settings popup button ─────────────────────────────────────────
 
+type SetupStep = 'DETECT' | 'INSTALL' | 'AUTH' | 'PASSWORD' | 'COMPLETE';
+
 interface RemoteButtonProps {
   config: RemoteConfig | null;
   tailscale: TailscaleInfo | null;
   clients: ClientInfo[];
   loading: boolean;
-  hasActiveSession: boolean;
   newPassword: string;
   passwordStatus: 'idle' | 'saving' | 'saved';
   copied: boolean;
@@ -370,22 +370,139 @@ interface RemoteButtonProps {
   onToggleEnabled: () => void;
   onToggleTailscaleTrust: () => void;
   onSetKeepAwake: (hours: number) => void;
-  onRunSetup: () => void;
   onDisconnectClient: (id: string) => void;
   onCopyLink: () => void;
   onSetShowSetupQR: (v: boolean) => void;
   onSetShowAddDevice: (v: boolean) => void;
+  onRefreshState: () => void;
 }
 
 function RemoteButton({
-  config, tailscale, clients, loading, hasActiveSession,
+  config, tailscale, clients, loading,
   newPassword, passwordStatus, copied, showSetupQR, showAddDevice,
   onSetNewPassword, onSetPassword, onToggleEnabled, onToggleTailscaleTrust,
-  onSetKeepAwake, onRunSetup, onDisconnectClient, onCopyLink,
-  onSetShowSetupQR, onSetShowAddDevice,
+  onSetKeepAwake, onDisconnectClient, onCopyLink,
+  onSetShowSetupQR, onSetShowAddDevice, onRefreshState,
 }: RemoteButtonProps) {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
+
+  // ── Setup wizard state ──
+  const [wizardActive, setWizardActive] = useState(false);
+  const [wizardStep, setWizardStep] = useState<SetupStep>('DETECT');
+  const [wizardBusy, setWizardBusy] = useState(false);
+  const [wizardError, setWizardError] = useState<string | null>(null);
+  const [wizardPassword, setWizardPassword] = useState('');
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Cleanup polling on unmount
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const detectAndRoute = useCallback(async () => {
+    setWizardBusy(true);
+    setWizardError(null);
+    try {
+      const claude = (window as any).claude;
+      const [ts, cfg] = await Promise.all([
+        claude.remote.detectTailscale(),
+        claude.remote.getConfig(),
+      ]);
+      if (!ts.installed) { setWizardStep('INSTALL'); }
+      else if (!ts.connected) { setWizardStep('AUTH'); }
+      else if (!cfg.hasPassword) { setWizardStep('PASSWORD'); }
+      else { setWizardStep('COMPLETE'); }
+    } catch {
+      setWizardError('Failed to check status. Try again.');
+      setWizardStep('INSTALL');
+    } finally {
+      setWizardBusy(false);
+    }
+  }, []);
+
+  const startWizard = useCallback(() => {
+    setWizardActive(true);
+    setWizardStep('DETECT');
+    setWizardError(null);
+    setWizardPassword('');
+    detectAndRoute();
+  }, [detectAndRoute]);
+
+  const handleInstall = useCallback(async () => {
+    setWizardBusy(true);
+    setWizardError(null);
+    try {
+      const result = await (window as any).claude.remote.installTailscale();
+      if (result.error === 'linux-manual') {
+        (window as any).claude.shell.openExternal('https://tailscale.com/download/linux');
+        setWizardError('Please install Tailscale manually, then click Next.');
+        setWizardBusy(false);
+        return;
+      }
+      if (!result.success) {
+        setWizardError(result.error || 'Installation failed.');
+        setWizardBusy(false);
+        return;
+      }
+      detectAndRoute();
+    } catch (err) {
+      setWizardError(String(err));
+      setWizardBusy(false);
+    }
+  }, [detectAndRoute]);
+
+  const handleAuth = useCallback(async () => {
+    setWizardBusy(true);
+    setWizardError(null);
+    try {
+      const result = await (window as any).claude.remote.authTailscale();
+      if (result.error) {
+        setWizardError(result.error);
+        setWizardBusy(false);
+        return;
+      }
+      // Poll for connection (tailscale up opened a browser)
+      pollRef.current = setInterval(async () => {
+        const ts = await (window as any).claude.remote.detectTailscale();
+        if (ts.connected) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          detectAndRoute();
+        }
+      }, 2000);
+      // Timeout after 2 minutes
+      setTimeout(() => {
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setWizardBusy(false);
+          setWizardError('Sign-in timed out. Click Try Again to retry.');
+        }
+      }, 120000);
+    } catch (err) {
+      setWizardError(String(err));
+      setWizardBusy(false);
+    }
+  }, [detectAndRoute]);
+
+  const handleWizardSetPassword = useCallback(async () => {
+    if (!wizardPassword.trim()) return;
+    setWizardBusy(true);
+    setWizardError(null);
+    try {
+      await (window as any).claude.remote.setPassword(wizardPassword);
+      onRefreshState();
+      detectAndRoute();
+    } catch (err) {
+      setWizardError(String(err));
+      setWizardBusy(false);
+    }
+  }, [wizardPassword, detectAndRoute, onRefreshState]);
+
+  const closeWizard = useCallback(() => {
+    setWizardActive(false);
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    onRefreshState();
+  }, [onRefreshState]);
 
   useEffect(() => {
     if (!open) return;
@@ -461,13 +578,177 @@ function RemoteButton({
                   <div className="flex items-center justify-center py-8 text-fg-muted text-sm">Loading...</div>
                 ) : (
                   <>
-                    {/* Setup banner — shown when no clients connected */}
-                    {!hasClients && (
+                    {/* Setup wizard / banner */}
+                    {wizardActive ? (
+                      <div className="bg-blue-500/10 border border-blue-500/25 rounded-lg p-4">
+                        {/* Step indicator */}
+                        <div className="flex items-center gap-1.5 mb-3">
+                          {(['INSTALL', 'AUTH', 'PASSWORD', 'COMPLETE'] as const).map((s, i) => (
+                            <div key={s} className={`h-1 flex-1 rounded-full ${
+                              s === wizardStep ? 'bg-blue-500' :
+                              (['INSTALL','AUTH','PASSWORD','COMPLETE'].indexOf(wizardStep) > i) ? 'bg-blue-500/40' : 'bg-inset'
+                            }`} />
+                          ))}
+                        </div>
+
+                        {wizardStep === 'DETECT' && (
+                          <div className="flex items-center justify-center py-6">
+                            <span className="text-xs text-fg-muted animate-pulse">Checking setup status...</span>
+                          </div>
+                        )}
+
+                        {wizardStep === 'INSTALL' && (
+                          <div>
+                            <h4 className="text-xs font-medium text-fg mb-1">Install Tailscale</h4>
+                            <p className="text-[10px] text-fg-muted mb-3">
+                              Tailscale creates a private network between your devices — like a secure tunnel that only you can use. Free for personal use.
+                            </p>
+                            {wizardBusy ? (
+                              <div className="flex items-center gap-2 py-2">
+                                <span className="text-xs text-blue-400 animate-pulse">Installing Tailscale...</span>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={handleInstall}
+                                className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
+                              >
+                                Install Tailscale
+                              </button>
+                            )}
+                            {wizardError && (
+                              <div className="mt-2">
+                                <p className="text-[10px] text-red-400 mb-1">{wizardError}</p>
+                                {wizardError.includes('manually') && (
+                                  <button onClick={detectAndRoute} className="text-[10px] text-blue-400 hover:text-blue-300">
+                                    Next — I installed it
+                                  </button>
+                                )}
+                                {!wizardError.includes('manually') && !wizardBusy && (
+                                  <button onClick={handleInstall} className="text-[10px] text-blue-400 hover:text-blue-300">
+                                    Try Again
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {wizardStep === 'AUTH' && (
+                          <div>
+                            <h4 className="text-xs font-medium text-fg mb-1">Sign in to Tailscale</h4>
+                            {wizardBusy ? (
+                              <>
+                                <p className="text-[10px] text-fg-muted mb-2">
+                                  A browser window should have opened. Sign in with Google, Microsoft, GitHub, or Apple — whichever you prefer.
+                                </p>
+                                <div className="flex items-center gap-2 py-2">
+                                  <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                                  <span className="text-[10px] text-blue-400">Waiting for sign-in...</span>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <p className="text-[10px] text-fg-muted mb-3">
+                                  Connect Tailscale to your account so your devices can find each other.
+                                </p>
+                                <button
+                                  onClick={handleAuth}
+                                  className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
+                                >
+                                  Connect Tailscale
+                                </button>
+                              </>
+                            )}
+                            {wizardError && (
+                              <div className="mt-2">
+                                <p className="text-[10px] text-red-400 mb-1">{wizardError}</p>
+                                <button onClick={handleAuth} className="text-[10px] text-blue-400 hover:text-blue-300">
+                                  Try Again
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {wizardStep === 'PASSWORD' && (
+                          <div>
+                            <h4 className="text-xs font-medium text-fg mb-1">Set a Password</h4>
+                            <p className="text-[10px] text-fg-muted mb-3">
+                              Choose a password for remote access. You'll type this when connecting from your phone.
+                            </p>
+                            <div className="flex gap-2">
+                              <input
+                                type="password"
+                                value={wizardPassword}
+                                onChange={e => setWizardPassword(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleWizardSetPassword()}
+                                placeholder="Choose a password..."
+                                className="flex-1 px-2 py-1.5 rounded-sm bg-inset border border-edge text-xs text-fg placeholder:text-fg-faint focus:outline-none focus:border-blue-500"
+                                disabled={wizardBusy}
+                                autoFocus
+                              />
+                              <button
+                                onClick={handleWizardSetPassword}
+                                disabled={!wizardPassword.trim() || wizardBusy}
+                                className="px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium disabled:opacity-50"
+                              >
+                                {wizardBusy ? '...' : 'Set'}
+                              </button>
+                            </div>
+                            {wizardError && (
+                              <p className="text-[10px] text-red-400 mt-1">{wizardError}</p>
+                            )}
+                          </div>
+                        )}
+
+                        {wizardStep === 'COMPLETE' && (
+                          <div>
+                            <div className="flex items-center gap-2 mb-3">
+                              <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center">
+                                <svg className="w-3 h-3 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                </svg>
+                              </div>
+                              <h4 className="text-xs font-medium text-fg">Remote Access Ready</h4>
+                            </div>
+                            {tailscale?.url && (
+                              <>
+                                <p className="text-[10px] text-fg-muted mb-2">
+                                  Install Tailscale on your phone, sign in with the same account, then open this URL:
+                                </p>
+                                <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
+                                  <QRCodeSVG value={tailscale.url} size={140} />
+                                </div>
+                                <p className="text-[10px] text-fg-muted mt-2 text-center font-mono">{tailscale.url}</p>
+                                <button
+                                  onClick={onCopyLink}
+                                  className="w-full mt-2 px-3 py-1 rounded-sm bg-inset hover:bg-edge text-[10px] text-fg-dim"
+                                >
+                                  {copied ? 'Copied!' : 'Copy link'}
+                                </button>
+                              </>
+                            )}
+                            <button
+                              onClick={closeWizard}
+                              className="w-full mt-3 px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
+                            >
+                              Done
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Cancel link */}
+                        {wizardStep !== 'COMPLETE' && !wizardBusy && (
+                          <button onClick={closeWizard} className="text-[10px] text-fg-faint hover:text-fg-muted mt-3 block">
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    ) : !hasClients && (
                       <div className="bg-blue-500/10 border border-blue-500/25 rounded-lg p-3">
                         <p className="text-xs text-blue-400 mb-2">
                           Remote access lets you use DestinCode from any device — phone, tablet, or another computer.
                         </p>
-
                         {tailscale?.connected && tailscale.url && config?.hasPassword ? (
                           showSetupQR ? (
                             <div className="mt-2">
@@ -492,19 +773,12 @@ function RemoteButton({
                             </button>
                           )
                         ) : (
-                          <>
-                            <button
-                              onClick={onRunSetup}
-                              disabled={!hasActiveSession}
-                              className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                              title={!hasActiveSession ? 'Create a session first' : ''}
-                            >
-                              Set Up Remote Access
-                            </button>
-                            {!hasActiveSession && (
-                              <p className="text-[10px] text-fg-muted mt-1 text-center">Create a session first to run setup</p>
-                            )}
-                          </>
+                          <button
+                            onClick={startWizard}
+                            className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
+                          >
+                            Set Up Remote Access
+                          </button>
                         )}
                       </div>
                     )}
@@ -640,11 +914,10 @@ function RemoteButton({
                             Tailscale is not installed. It creates a secure private network so you can access DestinCode from anywhere.
                           </p>
                           <button
-                            onClick={onRunSetup}
-                            disabled={!hasActiveSession}
-                            className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs disabled:opacity-50"
+                            onClick={startWizard}
+                            className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs"
                           >
-                            Install with Setup Skill
+                            Set Up Tailscale
                           </button>
                         </div>
                       )}
@@ -686,13 +959,6 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
-
-  const handleBrowseFolder = useCallback(async () => {
-    try {
-      const folder = await (window as any).claude.dialog.openFolder();
-      if (folder) onDefaultsChange({ projectFolder: folder });
-    } catch {}
-  }, [onDefaultsChange]);
 
   const summaryParts: string[] = [];
   summaryParts.push(MODEL_LABELS[defaults.model] || 'Sonnet');
@@ -782,12 +1048,11 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 {/* Default Project Folder */}
                 <section>
                   <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Project Folder</h3>
-                  <button
-                    onClick={handleBrowseFolder}
-                    className="w-full text-left px-2.5 py-1.5 bg-inset border border-edge-dim rounded-md text-xs text-fg-2 hover:border-edge transition-colors truncate"
-                  >
-                    {defaults.projectFolder || 'Home directory (default)'}
-                  </button>
+                  <FolderSwitcher
+                    value={defaults.projectFolder}
+                    onChange={(folder) => onDefaultsChange({ projectFolder: folder })}
+                    autoSelect={false}
+                  />
                   {defaults.projectFolder && (
                     <button
                       onClick={() => onDefaultsChange({ projectFolder: '' })}
@@ -1285,11 +1550,10 @@ function AndroidSettings({ open, onClose, onSendInput }: { open: boolean; onClos
 
 // ─── Desktop Settings (existing, unchanged) ─────────────────────────────────
 
-function DesktopSettings({ open, onClose, onSendInput, hasActiveSession }: {
+function DesktopSettings({ open, onClose, onSendInput }: {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
-  hasActiveSession: boolean;
 }) {
   const [config, setConfig] = useState<RemoteConfig | null>(null);
   const [tailscale, setTailscale] = useState<TailscaleInfo | null>(null);
@@ -1354,11 +1618,19 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession }: {
     setConfig(prev => prev ? { ...prev, ...updated } : prev);
   }, []);
 
-  const handleRunSetup = useCallback(() => {
-    if (!hasActiveSession) return;
-    onSendInput('/remote-setup');
-    onClose();
-  }, [hasActiveSession, onSendInput, onClose]);
+  const handleRefreshState = useCallback(() => {
+    const claude = (window as any).claude;
+    if (!claude?.remote) return;
+    Promise.all([
+      claude.remote.getConfig(),
+      claude.remote.detectTailscale(),
+      claude.remote.getClientList(),
+    ]).then(([cfg, ts, cls]: [RemoteConfig, TailscaleInfo, ClientInfo[]]) => {
+      setConfig(cfg);
+      setTailscale(ts);
+      setClients(cls);
+    }).catch(() => {});
+  }, []);
 
   const handleDisconnectClient = useCallback(async (clientId: string) => {
     await (window as any).claude.remote.disconnectClient(clientId);
@@ -1393,7 +1665,6 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession }: {
           tailscale={tailscale}
           clients={clients}
           loading={loading}
-          hasActiveSession={hasActiveSession}
           newPassword={newPassword}
           passwordStatus={passwordStatus}
           copied={copied}
@@ -1404,11 +1675,11 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession }: {
           onToggleEnabled={handleToggleEnabled}
           onToggleTailscaleTrust={handleToggleTailscaleTrust}
           onSetKeepAwake={handleSetKeepAwake}
-          onRunSetup={handleRunSetup}
           onDisconnectClient={handleDisconnectClient}
           onCopyLink={handleCopyLink}
           onSetShowSetupQR={setShowSetupQR}
           onSetShowAddDevice={setShowAddDevice}
+          onRefreshState={handleRefreshState}
         />
 
         {/* Other */}
