@@ -1,67 +1,81 @@
 # DestinCode
 
-**Claude Code on Android.** A native Android app that runs [Claude Code](https://github.com/anthropics/claude-code) on your phone with a touch-optimized chat and terminal interface.
+**Claude Code on every device.** A cross-platform app for Windows, macOS, Linux, and Android — with remote access from any web browser.
 
-> **Disclaimer:** DestinCode is an independent, community-built project. It is **not affiliated with, endorsed by, or officially supported by Anthropic.** "Claude" and "Claude Code" are trademarks of Anthropic, PBC.
->
-> That said — huge thanks to the Anthropic team for building Claude Code. This project exists because of their work, and we're grateful for the incredible tool they've created.
+> Built entirely without coding experience, using Claude Code itself.
 
 ---
 
 ## What is DestinCode?
 
-DestinCode brings Claude Code — Anthropic's agentic coding tool — to Android. It bundles a Termux runtime, Node.js, and Claude Code into a single app with a native chat UI, full terminal emulator, and multi-session support.
+DestinCode is an open-source app that puts [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Anthropic's agentic coding and AI assistant tool — into a real app with a chat interface, themes, a skill marketplace, and multiplayer games. Sign in with your Claude Pro or Max plan and start using it.
 
-You bring your own Anthropic API key. DestinCode handles everything else — bootstrapping the runtime, managing sessions, rendering tool use, and handling permissions — all on-device.
+It's designed for students, professionals, and anyone who uses AI regularly — not just developers.
+
+**Disclaimer:** DestinCode is an independent, community-built project. It is not affiliated with, endorsed by, or officially supported by Anthropic.
 
 ## Features
 
-**Chat Interface**
-- Structured message rendering with user bubbles, Claude responses, and tool cards
-- Tool cards with Running, Awaiting Approval, Complete, and Failed states
-- Markdown rendering with syntax highlighting
-- Image attachment support, URL detection, quick action chips
-- Activity indicators during Claude processing
+**Chat & Terminal**
+- Chat interface with structured message rendering, tool cards, and markdown
+- Full terminal emulator for direct shell access
+- Multiple concurrent sessions with color-coded status
+- Permission mode cycling (Normal, Auto-Accept, Plan Mode)
 
-**Terminal & Shell**
-- Full terminal emulator via Termux with raw PTY access
-- Terminal keyboard row (Ctrl, Esc, Tab, arrows)
-- Permission mode cycling (Normal, Auto-Accept, Bypass, Plan Mode)
-- Direct bash shell mode — independent from Claude Code
+**Social AI**
+- Create custom skills and share them with friends, classmates, or coworkers
+- Play multiplayer games (Connect Four) while waiting for Claude to finish working
+- Build and share custom theme packs with the community
 
-**Multi-Session**
-- Up to 5 concurrent Claude Code sessions
-- Color-coded status indicators (Active, Idle, Awaiting Approval, Dead)
-- Per-session working directory selection
-- Auto-titling from Claude Code session files
+**Skill Marketplace**
+- Browse and install skills from 150+ available options
+- Create your own prompt skills and share them via deep links
+- Quick-launch chips for your most-used skills
 
-**Theming**
-- Dark and Light themes
-- Material You (Dynamic Color) support on Android 12+
-- Cascadia Mono font throughout
+**Themes**
+- 4 built-in themes (Light, Dark, Midnight, Creme) + community theme packs
+- Custom wallpapers, particle effects, mascot characters, and icon overrides
+- Build your own themes with `/theme-builder`
 
-**Architecture**
-- 3-layer SELinux bypass routing binary execution through `/system/bin/linker64`
-- Unix socket event bridge for structured hook events
-- Bootstrap system with SHA256-verified Termux package extraction
-- Foreground service keeps sessions alive in background
+**Remote Access**
+- Access DestinCode from any web browser on your network
+- Use it from your phone, tablet, or another computer
+- Same full UI — just open a URL
+
+**Powered by DestinClaude**
+- Optional [DestinClaude toolkit](https://github.com/itsdestin/destinclaude) adds journaling, a personal encyclopedia, task inbox processing, text messaging, and cross-device sync
+- Heavily encouraged but not required — install what you want
+
+## Platforms
+
+| Platform | Status | Install |
+|----------|--------|---------|
+| Windows | Available | Download `.exe` from [Releases](https://github.com/itsdestin/destincode/releases) |
+| macOS | Available | Download `.dmg` from [Releases](https://github.com/itsdestin/destincode/releases) |
+| Linux | Available | Download `.AppImage` from [Releases](https://github.com/itsdestin/destincode/releases) |
+| Android | Available | Download `.apk` from [Releases](https://github.com/itsdestin/destincode/releases) |
+| Web browser | Via remote access | Open the app on any device, then access from any browser on your network |
 
 ## Requirements
 
-- Android 9+ (API 28) on arm64 devices
-- An [Anthropic API key](https://console.anthropic.com/)
-- ~100 MB of storage (35 MB APK + ~60 MB extracted runtime)
+- A [Claude Pro or Max plan](https://claude.ai/) (sign in with your Claude account)
+- Android: Android 9+ (arm64)
+- Desktop: Windows 10+, macOS 11+, or Linux (x64)
 
-## Installation
+## Building from Source
 
-### From GitHub Releases
+### Desktop (Electron)
 
-1. Download the latest APK from the [Releases](https://github.com/itsdestin/destincode/releases) page
-2. Install on your device (you may need to enable "Install from unknown sources")
-3. Open the app and enter your Anthropic API key
-4. Select a package tier (Core or Developer) and wait for bootstrap to complete
+```bash
+git clone https://github.com/itsdestin/destincode.git
+cd destincode/desktop
+npm ci
+npm run dev       # Development mode with hot reload
+npm test          # Run tests
+npm run build     # Build distributable installer
+```
 
-### Building from Source
+### Android
 
 ```bash
 git clone https://github.com/itsdestin/destincode.git
@@ -69,51 +83,35 @@ cd destincode
 ./gradlew assembleDebug
 ```
 
-The debug APK will be at `app/build/outputs/apk/debug/app-debug.apk`.
+Debug APK at `app/build/outputs/apk/debug/app-debug.apk`.
 
-For a release build, create a `keystore.properties` file at the project root:
+## Project Structure
 
-```properties
-storeFile=release-keystore.jks
-storePassword=your_password
-keyAlias=your_alias
-keyPassword=your_password
 ```
-
-Then run `./gradlew assembleRelease`.
-
-## Known Issues
-
-See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for documented limitations, including:
-
-- `export -f` bash functions invisible to non-bash processes (Go, Rust, Python subprocesses)
-- ~20-50ms overhead per `bash -c` invocation from env sourcing
-- Missing seccomp sandbox for arm64-android tool execution
+destincode/
+  desktop/     # Electron app (Windows, macOS, Linux)
+  app/         # Android app (Kotlin + Jetpack Compose)
+  scripts/     # Shared build scripts
+```
 
 ## Contributing
 
-Contributions are welcome! Whether it's bug fixes, feature ideas, documentation improvements, or testing on different devices — all help is appreciated.
+Contributions welcome — bug fixes, features, documentation, testing on different devices.
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/your-feature`)
+2. Create a feature branch
 3. Make your changes
 4. Submit a pull request
 
-Please note that this project uses a hooks-based architecture for Claude Code integration. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for architectural context before diving into the runtime code.
+## Related Projects
+
+- [DestinClaude](https://github.com/itsdestin/destinclaude) — The plugin toolkit that powers DestinCode's personalization features
+- [DestinCode Themes](https://github.com/itsdestin/destinclaude-themes) — Community theme registry
+- [DestinCode Marketplace](https://github.com/itsdestin/destincode-marketplace) — Skill marketplace registry
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE) for details.
+- Desktop app: MIT
+- Android app: GPLv3 (due to Termux library dependencies)
 
-### Third-Party Licenses
-
-| Library | License | Source |
-|---------|---------|--------|
-| Termux terminal-emulator | GPLv3 | [termux/termux-app](https://github.com/termux/termux-app) |
-| Termux terminal-view | GPLv3 | [termux/termux-app](https://github.com/termux/termux-app) |
-| AndroidX / Jetpack Compose | Apache 2.0 | [developer.android.com](https://developer.android.com/jetpack/androidx) |
-| Apache Commons Compress | Apache 2.0 | [commons.apache.org](https://commons.apache.org/proper/commons-compress/) |
-| CommonMark | BSD 2-Clause | [commonmark/commonmark-java](https://github.com/commonmark/commonmark-java) |
-| XZ for Java | Public Domain | [tukaani.org/xz](https://tukaani.org/xz/java.html) |
-| Zstd-JNI | BSD | [luben/zstd-jni](https://github.com/luben/zstd-jni) |
-| Cascadia Mono | SIL Open Font License | [microsoft/cascadia-code](https://github.com/microsoft/cascadia-code) |
+See [LICENSE](LICENSE) for details.
