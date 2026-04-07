@@ -146,8 +146,9 @@ function removeEffectDiv(id: string): void {
 
 const LAYOUT_ATTRS = ['data-chrome-style', 'data-input-style', 'data-bubble-style', 'data-header-style', 'data-statusbar-style'] as const;
 
-/** Applies a full ThemeDefinition to the live DOM. Only call from renderer process. */
-export function applyThemeToDom(theme: ThemeDefinition): void {
+/** Applies a full ThemeDefinition to the live DOM. Only call from renderer process.
+ *  When reducedEffects is true, glassmorphism, particles, and overlay effects are suppressed. */
+export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false): void {
   const root = document.documentElement;
   const body = document.body;
 
@@ -167,7 +168,7 @@ export function applyThemeToDom(theme: ThemeDefinition): void {
   // 4. Glassmorphism — set/remove data-panels-blur + CSS vars
   const blur = theme.background?.['panels-blur'];
   const panelsOpacity = theme.background?.['panels-opacity'];
-  if (blur && blur > 0) {
+  if (blur && blur > 0 && !reducedEffects) {
     root.setAttribute('data-panels-blur', String(blur));
     root.style.setProperty('--panels-blur', `${blur}px`);
     // Compute semi-transparent panel color for glassmorphism
@@ -230,7 +231,7 @@ export function applyThemeToDom(theme: ThemeDefinition): void {
   applyThemeFont(theme.font);
 
   // 9. Visual effects — create/remove overlay divs for vignette, noise, scan-lines
-  applyEffects(theme.effects);
+  applyEffects(reducedEffects ? undefined : theme.effects);
 }
 
 const TOKEN_CSS_PROPS = [

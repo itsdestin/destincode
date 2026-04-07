@@ -97,7 +97,7 @@ function drawCustom(
 const DEFAULT_PARTICLE_COUNT = 60;
 
 export default function ThemeEffects() {
-  const { activeTheme } = useTheme();
+  const { activeTheme, reducedEffects } = useTheme();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const particlesRef = useRef<Particle[]>([]);
@@ -126,7 +126,7 @@ export default function ThemeEffects() {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || preset === 'none') {
+    if (!canvas || preset === 'none' || reducedEffects) {
       cancelAnimationFrame(animRef.current);
       return;
     }
@@ -170,9 +170,9 @@ export default function ThemeEffects() {
       cancelAnimationFrame(animRef.current);
       window.removeEventListener('resize', resize);
     };
-  }, [preset, accent, particleCount, particleSpeed, particleDrift, sizeRange[0], sizeRange[1]]);
+  }, [preset, accent, particleCount, particleSpeed, particleDrift, sizeRange[0], sizeRange[1], reducedEffects]);
 
-  if (preset === 'none') return null;
+  if (preset === 'none' || reducedEffects) return null;
 
   return (
     <canvas

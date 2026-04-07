@@ -25,7 +25,7 @@ function roundnessToShape(value: number) {
 interface Props { onClose: () => void; onSendInput?: (text: string) => void; }
 
 export default function ThemeScreen({ onClose, onSendInput }: Props) {
-  const { allThemes, theme: activeSlug, setTheme, cycleList, setCycleList, font, setFont, activeTheme } = useTheme();
+  const { allThemes, theme: activeSlug, setTheme, cycleList, setCycleList, font, setFont, activeTheme, reducedEffects, setReducedEffects } = useTheme();
   const [fonts, setFonts] = useState<string[] | null>(null);
   const [fontSearch, setFontSearch] = useState('');
   const [view, setView] = useState<'grid' | 'fonts'>('grid');
@@ -211,6 +211,25 @@ export default function ThemeScreen({ onClose, onSendInput }: Props) {
             <span className="text-xs text-fg-2" style={{ fontFamily: font }}>{currentFontName}</span>
             <span className="text-fg-muted text-xs">›</span>
           </button>
+        </div>
+
+        {/* Reduce Visual Effects */}
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[9px] text-fg-faint uppercase tracking-wider">Performance</p>
+              <p className="text-xs text-fg-2 mt-1">Reduce visual effects</p>
+            </div>
+            <button
+              onClick={() => setReducedEffects(!reducedEffects)}
+              className={`relative w-8 h-[18px] rounded-full transition-colors ${reducedEffects ? 'bg-accent' : 'bg-well'}`}
+            >
+              <span
+                className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white shadow-sm transition-transform ${reducedEffects ? 'left-[16px]' : 'left-[2px]'}`}
+              />
+            </button>
+          </div>
+          <p className="text-[10px] text-fg-faint mt-1">Disables glassmorphism, particles, and overlay effects</p>
         </div>
 
         {/* Build with Claude */}

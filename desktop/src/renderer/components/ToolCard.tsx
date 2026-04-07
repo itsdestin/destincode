@@ -299,7 +299,7 @@ interface Props {
   sessionId?: string;
 }
 
-export default function ToolCard({ tool, sessionId }: Props) {
+export default React.memo(function ToolCard({ tool, sessionId }: Props) {
   const [expanded, setExpanded] = useState(false);
   const dispatch = useChatDispatch();
   const display = friendlyToolDisplay(tool);
@@ -386,4 +386,4 @@ export default function ToolCard({ tool, sessionId }: Props) {
       )}
     </div>
   );
-}
+})

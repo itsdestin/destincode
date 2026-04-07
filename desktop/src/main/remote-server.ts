@@ -41,11 +41,11 @@ export class RemoteServer {
   private ptyBuffers = new Map<string, string>(); // sessionId → rolling PTY output
   private hookBuffers = new Map<string, any[]>(); // sessionId → rolling hook events
   private transcriptBuffers = new Map<string, any[]>();
-  private statusInterval: ReturnType<typeof setInterval> | null = null;
+  // statusInterval removed — status data now fed by ipc-handlers.ts via broadcastStatusData()
   private failedAttempts = new Map<string, { count: number; resetAt: number }>();
   // Last-known topic names, fed by ipc-handlers.ts via setLastTopic()
   private lastTopics = new Map<string, string>();
-  // Last-known context remaining %, fed by ipc-handlers.ts via setContextMap()
+  // Last-known context remaining %, fed by ipc-handlers.ts via broadcastStatusData()
   private contextMap: Record<string, number> = {};
 
   constructor(
@@ -128,24 +128,8 @@ export class RemoteServer {
       });
     }
 
-    // Status data polling — independent of ipc-handlers.ts
-    const usageCachePath = path.join(os.homedir(), '.claude', '.usage-cache.json');
-    const announcementCachePath = path.join(os.homedir(), '.claude', '.announcement-cache.json');
-    const updateStatusPath = path.join(os.homedir(), '.claude', 'toolkit-state', 'update-status.json');
-    const syncStatusPath = path.join(os.homedir(), '.claude', '.sync-status');
-    const syncWarningsPath = path.join(os.homedir(), '.claude', '.sync-warnings');
-
-    this.statusInterval = setInterval(() => {
-      const data = {
-        usage: readJsonFile(usageCachePath),
-        announcement: readJsonFile(announcementCachePath),
-        updateStatus: readJsonFile(updateStatusPath),
-        syncStatus: readTextFile(syncStatusPath),
-        syncWarnings: readTextFile(syncWarningsPath),
-        contextMap: this.contextMap,
-      };
-      this.broadcast({ type: 'status:data', payload: data });
-    }, 10_000);
+    // Status data is now fed by ipc-handlers.ts via broadcastStatusData() —
+    // no independent polling needed. This eliminates duplicate file reads.
 
     // Cleanup uploaded files older than 1 hour
     const uploadDir = path.join(os.tmpdir(), 'claude-desktop-uploads');
@@ -179,13 +163,14 @@ export class RemoteServer {
     this.lastTopics.set(desktopId, name);
   }
 
-  /** Update per-session context remaining %. Called by ipc-handlers.ts. */
-  setContextMap(map: Record<string, number>): void {
-    this.contextMap = map;
+  /** Broadcast status data to all connected remote clients. Called by ipc-handlers.ts
+   *  so that both the local renderer and remote clients share the same polling cycle. */
+  broadcastStatusData(data: Record<string, any>): void {
+    this.contextMap = data.contextMap || {};
+    this.broadcast({ type: 'status:data', payload: data });
   }
 
   stop(): void {
-    if (this.statusInterval) clearInterval(this.statusInterval);
     this.lastTopics.clear();
     this.transcriptBuffers.clear();
     this.sessionManager.off('pty-output', this.onPtyOutput);
@@ -911,12 +896,3 @@ export class RemoteServer {
   }
 }
 
-// --- File reading helpers (same pattern as ipc-handlers.ts) ---
-
-function readJsonFile(filePath: string): any {
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return null; }
-}
-
-function readTextFile(filePath: string): string | null {
-  try { return fs.readFileSync(filePath, 'utf8').trim() || null; } catch { return null; }
-}

@@ -252,6 +252,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 <img
                   src={`file://${att.path.replace(/\\/g, '/')}`}
                   alt={att.name}
+                  loading="lazy"
                   className="w-12 h-12 rounded-md object-cover border border-edge"
                 />
               ) : (

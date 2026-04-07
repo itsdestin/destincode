@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { onBufferReady } from '../hooks/terminal-registry';
 import UserMessage from './UserMessage';
@@ -70,18 +70,22 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Single pass — compute all tool status flags at once (avoids 3 separate array spreads)
-  let hasAwaitingApproval = false;
-  let hasRunningTools = false;
-  const awaitingTools: any[] = [];
-  for (const t of state.toolCalls.values()) {
-    if (t.status === 'awaiting-approval') {
-      hasAwaitingApproval = true;
-      awaitingTools.push(t);
-    } else if (t.status === 'running') {
-      hasRunningTools = true;
+  // Single pass — compute all tool status flags, memoized to avoid re-iterating
+  // the Map on every render (toolCalls is a new ref on every reducer dispatch)
+  const { hasAwaitingApproval, hasRunningTools, awaitingTools } = useMemo(() => {
+    let hasAwaiting = false;
+    let hasRunning = false;
+    const awaiting: any[] = [];
+    for (const t of state.toolCalls.values()) {
+      if (t.status === 'awaiting-approval') {
+        hasAwaiting = true;
+        awaiting.push(t);
+      } else if (t.status === 'running') {
+        hasRunning = true;
+      }
     }
-  }
+    return { hasAwaitingApproval: hasAwaiting, hasRunningTools: hasRunning, awaitingTools: awaiting };
+  }, [state.toolCalls]);
 
   useEffect(() => {
     // Don't start the timeout when a tool is awaiting permission approval —
@@ -144,13 +148,13 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   }, []);
 
   // Auto-scroll when new content arrives and user is at bottom.
-  // assistantTurns and toolCalls are new Map references on every reducer update,
-  // so they trigger scroll for text appends, tool results, etc. — not just timeline growth.
+  // Uses lastActivityAt (a timestamp that updates on content-producing actions)
+  // instead of Map references which changed on every reducer dispatch.
   useEffect(() => {
     if (atBottom && bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: 'auto' });
     }
-  }, [state.timeline.length, state.assistantTurns, state.toolCalls, state.isThinking, atBottom]);
+  }, [state.timeline.length, state.lastActivityAt, state.isThinking, atBottom]);
 
   const jumpToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });

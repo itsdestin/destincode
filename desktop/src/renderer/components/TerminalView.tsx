@@ -118,12 +118,20 @@ export default function TerminalView({ sessionId, visible }: Props) {
     // Resize handler
     window.addEventListener('resize', fitAndSync);
 
-    // Observe container size changes
-    const resizeObserver = new ResizeObserver(() => fitAndSync());
+    // Observe container size changes — throttled to one fitAndSync per frame
+    let resizeRafId: number | null = null;
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeRafId !== null) return;
+      resizeRafId = requestAnimationFrame(() => {
+        resizeRafId = null;
+        fitAndSync();
+      });
+    });
     resizeObserver.observe(containerRef.current);
 
     return () => {
       clearTimeout(timer);
+      if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
       window.removeEventListener('resize', fitAndSync);
       resizeObserver.disconnect();
       unregisterTerminal(sessionId);

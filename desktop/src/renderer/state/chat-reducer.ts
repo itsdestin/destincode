@@ -82,10 +82,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // Deduplicate — if any of the last 10 timeline entries is a user message
       // with the same content (InputBar optimistic + hook/transcript event
       // arriving later, possibly with many intervening entries), skip
-      const lastFew = session.timeline.slice(-10);
-      const isDuplicate = lastFew.some(entry =>
-        entry.kind === 'user' && 'message' in entry && entry.message.content === action.content
-      );
+      let isDuplicate = false;
+      for (let i = session.timeline.length - 1; i >= Math.max(0, session.timeline.length - 10); i--) {
+        const entry = session.timeline[i];
+        if (entry.kind === 'user' && 'message' in entry && entry.message.content === action.content) {
+          isDuplicate = true;
+          break;
+        }
+      }
       if (isDuplicate) {
         if (!session.isThinking) {
           next.set(action.sessionId, {
@@ -197,10 +201,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       // Dedup against last 10 timeline entries (optimistic USER_PROMPT may
       // have many intervening assistant-turn or tool entries before transcript arrives)
-      const lastFewT = session.timeline.slice(-10);
-      const isDuplicateT = lastFewT.some(entry =>
-        entry.kind === 'user' && 'message' in entry && entry.message.content === action.text
-      );
+      let isDuplicateT = false;
+      for (let i = session.timeline.length - 1; i >= Math.max(0, session.timeline.length - 10); i--) {
+        const entry = session.timeline[i];
+        if (entry.kind === 'user' && 'message' in entry && entry.message.content === action.text) {
+          isDuplicateT = true;
+          break;
+        }
+      }
       if (isDuplicateT) {
         if (!session.isThinking) {
           next.set(action.sessionId, {
@@ -245,6 +253,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       next.set(action.sessionId, {
         ...session, assistantTurns, timeline, currentTurnId,
         currentGroupId: null, // next tool_use creates a new group
+        lastActivityAt: Date.now(),
       });
       return next;
     }
