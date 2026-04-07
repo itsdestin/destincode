@@ -11,7 +11,7 @@ enum class PackageTier(
 ) {
     CORE(
         displayName = "Core",
-        description = "Claude Code essentials — git, python, curl, rclone, ripgrep",
+        description = "Everything needed for basic Claude Code functionality",
         additionalPackages = emptyList(),
     ),
     DEVELOPER(

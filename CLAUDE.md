@@ -5,11 +5,22 @@ and package ecosystem, with a multi-layer SELinux bypass for SDK 35+.
 
 ## Architecture Overview
 
-- **UI**: Jetpack Compose chat interface + Termux TerminalView for raw shell
+- **UI**: The Android app renders the **same React UI as the desktop Electron app** via WebViewHost (loaded from `file:///android_asset/web/`). Jetpack Compose is only used for native-only screens (tier picker, setup, about). The React UI is built from `desktop/src/renderer/` via `scripts/build-web-ui.sh` and bundled into the APK's assets.
+- **IPC Bridge**: React communicates with Kotlin via WebSocket. `LocalBridgeServer` runs on `ws://localhost:9901` and speaks the same JSON protocol as the desktop's remote-server. The React shim (`remote-shim.ts`) detects `location.protocol === 'file:'` to route to the local bridge. `SessionService.handleBridgeMessage()` dispatches all ~70 IPC handlers.
 - **Runtime**: PtyBridge (Claude Code sessions) and DirectShellBridge (standalone bash)
 - **Bootstrap**: Downloads pre-compiled .deb packages from Termux repos, extracts to app-private storage
 - **SELinux bypass**: 3-layer system (JS wrapper → C LD_PRELOAD → bash shell functions), all routing through `/system/bin/linker64`
 - **Events**: Unix socket relay (hook-relay.js → EventBridge) for structured tool call/response rendering
+
+**Shared UI implications**: Because Android uses the same React UI, most desktop features (themes, session resume, skill marketplace, model selector, status bar, folder switcher, settings panel) work on both platforms automatically. When adding new desktop UI features, they will appear on Android as long as their IPC handlers exist in `SessionService.kt`. Only features that need native Android APIs (camera, file picker, package installation) require Kotlin-side code.
+
+## Build Dependency: React UI Must Be Bundled Before APK
+
+The Android APK bundles the desktop React UI as static assets. Before building the APK:
+```bash
+cd destincode && ./scripts/build-web-ui.sh
+```
+This runs `npm ci && npm run build` in `desktop/`, then copies `desktop/dist/renderer/*` to `app/src/main/assets/web/`. If skipped, the app launches with a blank WebView. CI handles this automatically, but local builds require running it manually after any React UI changes.
 
 ## Two Terminal Views
 
@@ -100,17 +111,31 @@ causing "Permission denied" when binaries fork+exec helpers.
 
 | File | Purpose |
 |------|---------|
+| **Shared UI (React → Android)** | |
+| `ui/WebViewHost.kt` | Hosts React UI in WebView, loads bundled web assets |
+| `bridge/LocalBridgeServer.kt` | WebSocket server on :9901, bridges React IPC to Kotlin |
+| `bridge/PlatformBridge.kt` | Android-native operations (file picker, clipboard, URLs) |
+| `desktop/src/renderer/remote-shim.ts` | React-side platform detection + WebSocket IPC client |
+| **Runtime** | |
 | `runtime/Bootstrap.kt` | Package management, environment setup, shell function generation |
+| `runtime/SessionService.kt` | Main IPC dispatcher — handles all ~70 bridge message types |
 | `runtime/PtyBridge.kt` | Claude Code terminal session (PTY + event bridge) |
 | `runtime/DirectShellBridge.kt` | Standalone bash shell session |
 | `runtime/ManagedSession.kt` | Session lifecycle, status, approval flow, prompt detection |
 | `runtime/SessionRegistry.kt` | Multi-session management |
+| **Assets** | |
 | `assets/claude-wrapper.js` | Node.js monkey-patch for SELinux bypass (CANONICAL SOURCE) |
 | `assets/hook-relay.js` | Unix socket event relay for structured hook events |
+| **Skills** | |
 | `skills/LocalSkillProvider.kt` | Skill marketplace backend (discovery, install, config, sharing) |
 | `skills/PluginInstaller.kt` | Installs Claude Code plugins to `~/.claude/plugins/<name>/` via git clone/copy |
 | `skills/SkillConfigStore.kt` | Reads/writes `~/.claude/destincode-skills.json` (favorites, chips, overrides, installed plugins) |
 | `skills/MarketplaceFetcher.kt` | HTTP fetch + cache of GitHub marketplace registry |
 | `skills/SkillScanner.kt` | Discovers installed skills from `~/.claude/plugins/` |
 | `skills/SkillShareCodec.kt` | Base64url encode/decode for `destincode://` deep links |
+| **Native-only screens (Compose)** | |
+| `ui/TierPickerScreen.kt` | First-run package tier selection (not in React) |
+| `ui/SetupScreen.kt` | Bootstrap progress display (not in React) |
+| `config/PackageTier.kt` | Package tier definitions (CORE, DEVELOPER, FULL_DEV) |
+| **Other** | |
 | `native/execve-interceptor.c` | glibc LD_PRELOAD research artifact (not deployed) |

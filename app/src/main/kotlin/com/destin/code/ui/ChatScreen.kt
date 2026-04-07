@@ -1,27 +1,17 @@
 package com.destin.code.ui
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.destin.code.runtime.BaseTerminalViewClient
 import com.destin.code.runtime.SessionService
 import com.termux.view.TerminalView
-import java.io.File
-import androidx.compose.ui.Alignment
 
 /** Apply dark terminal colors to a terminal emulator. */
 private fun applyTerminalColors(session: com.termux.terminal.TerminalSession?) {
@@ -72,17 +62,6 @@ fun ChatScreen(service: SessionService) {
     val density = LocalDensity.current
     val headerHeightDp = with(density) { headerHeightPx.toDp() }
     val bottomBarHeightDp = with(density) { bottomBarHeightPx.toDp() }
-
-    val context = LocalContext.current
-
-    var showTierDialog by remember { mutableStateOf(false) }
-    var showManageDirectories by remember { mutableStateOf(false) }
-    var showAbout by remember { mutableStateOf(false) }
-
-    val workingDirStore = remember(service.bootstrap) {
-        service.bootstrap?.let { com.destin.code.config.WorkingDirStore(it.homeDir) }
-    }
-    val tierStore = remember { com.destin.code.config.TierStore(context) }
 
     Box(
         modifier = Modifier
@@ -151,114 +130,5 @@ fun ChatScreen(service: SessionService) {
 
         // Layer 2 (on top): WebView — ALWAYS full size, transparent middle lets terminal show through
         WebViewHost(modifier = Modifier.fillMaxSize())
-    }
-
-    // ── Overlay screens ────────────────────────────────────────────────
-    if (showTierDialog) {
-        TierPickerDialog(
-            tierStore = tierStore,
-            context = context,
-            onDismiss = { showTierDialog = false },
-        )
-    }
-
-    if (showManageDirectories && workingDirStore != null && service.bootstrap != null) {
-        ManageDirectoriesScreen(
-            homeDir = service.bootstrap!!.homeDir,
-            workingDirStore = workingDirStore,
-            onBack = { showManageDirectories = false },
-        )
-    }
-
-    if (showAbout) {
-        AboutScreen(onBack = { showAbout = false })
-    }
-}
-
-// ─── Tier Picker Dialog ─────────────────────────────────────────────────────
-
-@Composable
-private fun TierPickerDialog(
-    tierStore: com.destin.code.config.TierStore,
-    context: android.content.Context,
-    onDismiss: () -> Unit,
-) {
-    var dialogTier by remember { mutableStateOf(tierStore.selectedTier) }
-    var showRestartConfirm by remember { mutableStateOf(false) }
-
-    if (!showRestartConfirm) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text("Package Tier", fontSize = 16.sp, fontFamily = com.destin.code.ui.theme.CascadiaMono) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    com.destin.code.config.PackageTier.entries.forEach { tier ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
-                                .then(
-                                    if (dialogTier == tier)
-                                        Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                                    else Modifier
-                                )
-                                .clickable { dialogTier = tier }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                if (dialogTier == tier) "●" else "○",
-                                fontSize = 10.sp,
-                                color = if (dialogTier == tier)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                            )
-                            Column {
-                                Text(tier.displayName, fontWeight = FontWeight.Bold, fontSize = 13.sp, fontFamily = com.destin.code.ui.theme.CascadiaMono)
-                                Text(tier.description, fontSize = 11.sp, fontFamily = com.destin.code.ui.theme.CascadiaMono, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (dialogTier != tierStore.selectedTier) {
-                        tierStore.selectedTier = dialogTier
-                        showRestartConfirm = true
-                    } else {
-                        onDismiss()
-                    }
-                }) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismiss) { Text("Cancel") }
-            },
-        )
-    } else {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text("Tier Updated", fontSize = 16.sp, fontFamily = com.destin.code.ui.theme.CascadiaMono) },
-            text = {
-                Text("Package tier changed to ${dialogTier.displayName}. Restart now to install new packages.")
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                    if (launchIntent != null) {
-                        launchIntent.addFlags(
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-                        )
-                        context.startActivity(launchIntent)
-                    }
-                    kotlin.system.exitProcess(0)
-                }) { Text("Restart Now") }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismiss) { Text("Later") }
-            },
-        )
     }
 }

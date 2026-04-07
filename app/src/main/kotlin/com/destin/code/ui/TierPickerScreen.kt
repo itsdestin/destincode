@@ -1,9 +1,15 @@
 package com.destin.code.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,10 +23,11 @@ import com.destin.code.ui.theme.CascadiaMono
 
 @Composable
 fun TierPickerScreen(
-    initialTier: PackageTier = PackageTier.DEVELOPER,
+    initialTier: PackageTier = PackageTier.CORE,
     onConfirm: (PackageTier) -> Unit,
 ) {
     var selected by remember { mutableStateOf(initialTier) }
+    var expanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -36,20 +43,103 @@ fun TierPickerScreen(
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            "Choose your toolkit",
+            "Set up your environment",
             fontSize = 14.sp,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
         )
         Spacer(modifier = Modifier.height(32.dp))
 
-        PackageTier.entries.forEach { tier ->
-            val isSelected = tier == selected
-            TierCard(
-                tier = tier,
-                isSelected = isSelected,
-                onClick = { selected = tier },
-            )
-            Spacer(modifier = Modifier.height(12.dp))
+        // ── Core tier card (always visible, pre-selected) ──
+        TierCard(
+            tier = PackageTier.CORE,
+            isSelected = selected == PackageTier.CORE,
+            onClick = { selected = PackageTier.CORE },
+        )
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ── "Install Additional Packages" expandable header ──
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded },
+            color = Color.Transparent,
+        ) {
+            Row(
+                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp
+                    else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    "Install Additional Packages",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                )
+            }
+        }
+
+        // ── Expandable section ──
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(),
+            exit = shrinkVertically(),
+        ) {
+            Column {
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Developer Essentials
+                TierCard(
+                    tier = PackageTier.DEVELOPER,
+                    isSelected = selected == PackageTier.DEVELOPER,
+                    onClick = { selected = PackageTier.DEVELOPER },
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Full Dev Environment
+                TierCard(
+                    tier = PackageTier.FULL_DEV,
+                    isSelected = selected == PackageTier.FULL_DEV,
+                    onClick = { selected = PackageTier.FULL_DEV },
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // "Additional Packages — Coming Soon" placeholder
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Color(0xFF282828)),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0d0d0d)),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Additional Packages",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "Coming soon",
+                                fontSize = 13.sp,
+                                fontFamily = CascadiaMono,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.weight(1f))

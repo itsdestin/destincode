@@ -838,12 +838,44 @@ class SessionService : Service() {
                 prefFile.writeText(org.json.JSONObject().put("model", model).toString())
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
-            "model:switch" -> {
-                val sessionId = msg.payload.optString("sessionId", "")
-                val model = msg.payload.optString("model", "")
-                val session = sessionRegistry.sessions.value[sessionId]
-                session?.writeInput("/model $model\r")
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+
+            "defaults:get" -> {
+                val defaultsFile = File(bootstrap!!.homeDir, ".claude-mobile/destincode-defaults.json")
+                val defaults = try {
+                    val json = org.json.JSONObject(defaultsFile.readText())
+                    JSONObject().apply {
+                        put("skipPermissions", json.optBoolean("skipPermissions", false))
+                        put("model", json.optString("model", "sonnet"))
+                        put("projectFolder", json.optString("projectFolder", ""))
+                    }
+                } catch (_: Exception) {
+                    JSONObject().apply {
+                        put("skipPermissions", false)
+                        put("model", "sonnet")
+                        put("projectFolder", "")
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, defaults) }
+            }
+            "defaults:set" -> {
+                val defaultsFile = File(bootstrap!!.homeDir, ".claude-mobile/destincode-defaults.json")
+                defaultsFile.parentFile?.mkdirs()
+                // Read current, merge updates, write back
+                val current = try {
+                    org.json.JSONObject(defaultsFile.readText())
+                } catch (_: Exception) {
+                    JSONObject().apply {
+                        put("skipPermissions", false)
+                        put("model", "sonnet")
+                        put("projectFolder", "")
+                    }
+                }
+                // Merge payload keys into current
+                msg.payload.keys().forEach { key ->
+                    current.put(key, msg.payload.get(key))
+                }
+                defaultsFile.writeText(current.toString(2))
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, current) }
             }
 
             else -> {
