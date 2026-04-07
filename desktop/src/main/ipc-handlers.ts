@@ -235,6 +235,81 @@ export function registerIpcHandlers(
     }
   });
 
+  // --- Folder switcher persistence ---
+  const foldersPrefPath = path.join(os.homedir(), '.claude', 'destincode-folders.json');
+
+  interface SavedFolder {
+    path: string;
+    nickname: string;
+    addedAt: number;
+  }
+
+  function readFolders(): SavedFolder[] {
+    try {
+      const raw = fs.readFileSync(foldersPrefPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeFolders(folders: SavedFolder[]) {
+    fs.mkdirSync(path.dirname(foldersPrefPath), { recursive: true });
+    fs.writeFileSync(foldersPrefPath, JSON.stringify(folders, null, 2));
+  }
+
+  ipcMain.handle(IPC.FOLDERS_LIST, async () => {
+    let folders = readFolders();
+    // Seed with home directory on first use
+    if (folders.length === 0) {
+      const home = os.homedir();
+      folders = [{ path: home, nickname: 'Home', addedAt: Date.now() }];
+      writeFolders(folders);
+    }
+    // Annotate each folder with whether the path still exists on disk
+    return folders.map(f => ({
+      ...f,
+      exists: fs.existsSync(f.path),
+    }));
+  });
+
+  ipcMain.handle(IPC.FOLDERS_ADD, async (_event, folderPath: string, nickname?: string) => {
+    const folders = readFolders();
+    // Deduplicate by normalized path
+    const normalized = path.resolve(folderPath);
+    if (folders.some(f => path.resolve(f.path) === normalized)) {
+      return folders.find(f => path.resolve(f.path) === normalized);
+    }
+    const entry: SavedFolder = {
+      path: normalized,
+      nickname: nickname || path.basename(normalized),
+      addedAt: Date.now(),
+    };
+    folders.unshift(entry);
+    writeFolders(folders);
+    return entry;
+  });
+
+  ipcMain.handle(IPC.FOLDERS_REMOVE, async (_event, folderPath: string) => {
+    const folders = readFolders();
+    const normalized = path.resolve(folderPath);
+    const filtered = folders.filter(f => path.resolve(f.path) !== normalized);
+    if (filtered.length === folders.length) return false;
+    writeFolders(filtered);
+    return true;
+  });
+
+  ipcMain.handle(IPC.FOLDERS_RENAME, async (_event, folderPath: string, nickname: string) => {
+    const folders = readFolders();
+    const normalized = path.resolve(folderPath);
+    const entry = folders.find(f => path.resolve(f.path) === normalized);
+    if (!entry) return false;
+    entry.nickname = nickname;
+    writeFolders(folders);
+    return true;
+  });
+
   // --- Skills discovery & marketplace ---
   ipcMain.handle(IPC.SKILLS_LIST, async () => {
     return skillProvider.getInstalled();
@@ -379,6 +454,18 @@ export function registerIpcHandlers(
 
     ipcMain.handle(IPC.REMOTE_DISCONNECT_CLIENT, async (_event, clientId: string) => {
       return remoteServer?.disconnectClient(clientId) ?? false;
+    });
+
+    ipcMain.handle(IPC.REMOTE_INSTALL_TAILSCALE, async () => {
+      return RemoteConfig.installTailscale();
+    });
+
+    ipcMain.handle(IPC.REMOTE_AUTH_TAILSCALE, async () => {
+      const result = await RemoteConfig.startTailscaleAuth();
+      if (result.url) {
+        shell.openExternal(result.url);
+      }
+      return result;
     });
 
     // UI action sync: Electron window broadcasts an action → forward to all remote clients
@@ -529,8 +616,8 @@ export function registerIpcHandlers(
   const statusInterval = setInterval(() => {
     const data = buildStatusData();
     send(IPC.STATUS_DATA, data);
-    // Feed context map to remote server for browser clients
-    if (remoteServer && data.contextMap) remoteServer.setContextMap(data.contextMap);
+    // Feed full status data to remote server for browser clients (single polling source)
+    if (remoteServer) remoteServer.broadcastStatusData(data);
   }, 10000);
 
   // Also push immediately on first hook event (session is active)
@@ -541,7 +628,7 @@ export function registerIpcHandlers(
         sentInitialStatus = true;
         const data = buildStatusData();
         send(IPC.STATUS_DATA, data);
-        if (remoteServer && data.contextMap) remoteServer.setContextMap(data.contextMap);
+        if (remoteServer) remoteServer.broadcastStatusData(data);
       }
     });
   }

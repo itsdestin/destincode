@@ -221,6 +221,8 @@ export const IPC = {
   REMOTE_GET_CLIENT_COUNT: 'remote:get-client-count',
   REMOTE_GET_CLIENT_LIST: 'remote:get-client-list',
   REMOTE_DISCONNECT_CLIENT: 'remote:disconnect-client',
+  REMOTE_INSTALL_TAILSCALE: 'remote:install-tailscale',
+  REMOTE_AUTH_TAILSCALE: 'remote:auth-tailscale',
   UI_ACTION_BROADCAST: 'ui:action:broadcast',
   UI_ACTION_RECEIVED: 'ui:action:received',
   TRANSCRIPT_EVENT: 'transcript:event',
@@ -228,6 +230,11 @@ export const IPC = {
   SESSION_BROWSE: 'session:browse',
   SESSION_HISTORY: 'session:history',
   SESSION_RESUME: 'session:resume',
+  // Folder switcher
+  FOLDERS_LIST: 'folders:list',
+  FOLDERS_ADD: 'folders:add',
+  FOLDERS_REMOVE: 'folders:remove',
+  FOLDERS_RENAME: 'folders:rename',
   // Theme system
   THEME_RELOAD: 'theme:reload',   // Main -> Renderer: a theme file changed
   THEME_LIST: 'theme:list',       // Renderer -> Main: get list of user theme slugs

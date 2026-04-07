@@ -47,11 +47,18 @@ const IPC = {
   REMOTE_GET_CLIENT_COUNT: 'remote:get-client-count',
   REMOTE_GET_CLIENT_LIST: 'remote:get-client-list',
   REMOTE_DISCONNECT_CLIENT: 'remote:disconnect-client',
+  REMOTE_INSTALL_TAILSCALE: 'remote:install-tailscale',
+  REMOTE_AUTH_TAILSCALE: 'remote:auth-tailscale',
   UI_ACTION_BROADCAST: 'ui:action:broadcast',
   UI_ACTION_RECEIVED: 'ui:action:received',
   TRANSCRIPT_EVENT: 'transcript:event',
   SESSION_BROWSE: 'session:browse',
   SESSION_HISTORY: 'session:history',
+  // Folder switcher
+  FOLDERS_LIST: 'folders:list',
+  FOLDERS_ADD: 'folders:add',
+  FOLDERS_REMOVE: 'folders:remove',
+  FOLDERS_RENAME: 'folders:rename',
   // Theme system
   THEME_RELOAD: 'theme:reload',   // Main -> Renderer: a theme file changed
   THEME_LIST: 'theme:list',       // Renderer -> Main: get list of user theme slugs
@@ -187,6 +194,8 @@ contextBridge.exposeInMainWorld('claude', {
     getClientCount: () => ipcRenderer.invoke(IPC.REMOTE_GET_CLIENT_COUNT),
     getClientList: () => ipcRenderer.invoke(IPC.REMOTE_GET_CLIENT_LIST),
     disconnectClient: (clientId: string) => ipcRenderer.invoke(IPC.REMOTE_DISCONNECT_CLIENT, clientId),
+    installTailscale: () => ipcRenderer.invoke(IPC.REMOTE_INSTALL_TAILSCALE),
+    authTailscale: () => ipcRenderer.invoke(IPC.REMOTE_AUTH_TAILSCALE),
     broadcastAction: (action: any) => ipcRenderer.send(IPC.UI_ACTION_BROADCAST, action),
   },
   model: {
@@ -199,6 +208,12 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.DEFAULTS_GET),
     set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>): Promise<any> =>
       ipcRenderer.invoke(IPC.DEFAULTS_SET, updates),
+  },
+  folders: {
+    list: (): Promise<any[]> => ipcRenderer.invoke(IPC.FOLDERS_LIST),
+    add: (folderPath: string, nickname?: string): Promise<any> => ipcRenderer.invoke(IPC.FOLDERS_ADD, folderPath, nickname),
+    remove: (folderPath: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_REMOVE, folderPath),
+    rename: (folderPath: string, nickname: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_RENAME, folderPath, nickname),
   },
   off: (channel: string, handler: (...args: any[]) => void) =>
     ipcRenderer.removeListener(channel, handler),

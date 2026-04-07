@@ -119,26 +119,30 @@ export class RemoteConfig {
     this.save();
   }
 
+  /** Resolve the Tailscale CLI binary path across platforms. */
+  static resolveTailscalePath(): string {
+    let tsPath = 'tailscale';
+    try { const w = require('which'); tsPath = w.sync('tailscale'); } catch {}
+    if (tsPath === 'tailscale') {
+      const candidates = process.platform === 'win32'
+        ? ['C:\\Program Files\\Tailscale\\tailscale.exe', `${process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'}\\Tailscale\\tailscale.exe`]
+        : process.platform === 'darwin'
+          ? ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale']
+          : ['/usr/bin/tailscale', '/usr/local/bin/tailscale'];
+      for (const p of candidates) {
+        try { fs.accessSync(p); tsPath = p; break; } catch {}
+      }
+    }
+    return tsPath;
+  }
+
   /** Detect Tailscale installation and connection status. */
   static async detectTailscale(port: number): Promise<{ installed: boolean; connected: boolean; ip: string | null; hostname: string | null; url: string | null }> {
     try {
       const { execFile } = require('child_process');
       const { promisify } = require('util');
       const execFileAsync = promisify(execFile);
-      let tsPath = 'tailscale';
-      try { const w = require('which'); tsPath = w.sync('tailscale'); } catch {}
-      // Platform-specific fallbacks when tailscale isn't on PATH
-      if (tsPath === 'tailscale') {
-        const fs = require('fs');
-        const candidates = process.platform === 'win32'
-          ? ['C:\\Program Files\\Tailscale\\tailscale.exe', `${process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'}\\Tailscale\\tailscale.exe`]
-          : process.platform === 'darwin'
-            ? ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale']
-            : ['/usr/bin/tailscale', '/usr/local/bin/tailscale'];
-        for (const p of candidates) {
-          try { fs.accessSync(p); tsPath = p; break; } catch {}
-        }
-      }
+      const tsPath = RemoteConfig.resolveTailscalePath();
 
       const { stdout: ip } = await execFileAsync(tsPath, ['ip', '-4']);
       const tailscaleIp = ip.trim();
@@ -156,5 +160,82 @@ export class RemoteConfig {
     } catch {
       return { installed: false, connected: false, ip: null, hostname: null, url: null };
     }
+  }
+
+  /** Install Tailscale silently. Windows: winget, macOS: brew, Linux: manual. */
+  static async installTailscale(): Promise<{ success: boolean; error?: string }> {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+
+    try {
+      if (process.platform === 'win32') {
+        await execFileAsync(
+          'winget',
+          ['install', 'Tailscale.Tailscale', '--silent', '--accept-package-agreements', '--accept-source-agreements'],
+          { timeout: 300000 },
+        );
+      } else if (process.platform === 'darwin') {
+        await execFileAsync('brew', ['install', '--cask', 'tailscale'], { timeout: 300000 });
+      } else {
+        return { success: false, error: 'linux-manual' };
+      }
+
+      // Verify installation
+      const check = await RemoteConfig.detectTailscale(9900);
+      if (!check.installed) {
+        return { success: false, error: 'Tailscale not found after install. You may need to restart the app.' };
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
+
+  /** Start Tailscale authentication by running `tailscale up`. Returns the auth URL if found. */
+  static async startTailscaleAuth(): Promise<{ url: string | null; error?: string }> {
+    const { spawn } = require('child_process');
+    const tsPath = RemoteConfig.resolveTailscalePath();
+
+    return new Promise((resolve) => {
+      let authUrl: string | null = null;
+      let settled = false;
+
+      const child = spawn(tsPath, ['up'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+
+      const onData = (data: Buffer) => {
+        const text = data.toString();
+        const match = text.match(/https:\/\/[^\s]+/);
+        if (match && !settled) {
+          authUrl = match[0];
+          settled = true;
+          resolve({ url: authUrl });
+        }
+      };
+
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+
+      child.on('error', (err: Error) => {
+        if (!settled) { settled = true; resolve({ url: null, error: String(err) }); }
+      });
+
+      child.on('close', (code: number) => {
+        if (!settled) {
+          settled = true;
+          // Exit code 0 with no URL means already authenticated
+          if (code === 0) resolve({ url: null });
+          else resolve({ url: null, error: `tailscale up exited with code ${code}` });
+        }
+      });
+
+      // If no URL appears after 10s, resolve anyway (may already be authed)
+      setTimeout(() => {
+        if (!settled) { settled = true; resolve({ url: null }); }
+      }, 10000);
+    });
   }
 }
