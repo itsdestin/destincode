@@ -1,7 +1,11 @@
 import PartySocket from "partysocket";
 
-// Update this after deploying
-export const PARTYKIT_HOST = "destinclaude-games.itsdestin.partykit.dev";
+// Injected by Vite's `define` config when VITE_PARTYKIT_HOST is set;
+// falls back to the production URL at build time.
+declare const __PARTYKIT_HOST__: string | undefined;
+export const PARTYKIT_HOST =
+  (typeof __PARTYKIT_HOST__ !== 'undefined' ? __PARTYKIT_HOST__ : null)
+  ?? "destinclaude-games.itsdestin.partykit.dev";
 
 export type MessageHandler = (data: any) => void;
 

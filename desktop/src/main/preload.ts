@@ -247,7 +247,6 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.THEME_RELOAD, wrapped);
       return () => ipcRenderer.removeListener(IPC.THEME_RELOAD, wrapped);
     },
-    setTitleBarColors: (_bg: string, _fg: string) => Promise.resolve(), // deprecated — kept for compat
     marketplace: {
       list: (filters?: any): Promise<any[]> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_LIST, filters),
       detail: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_DETAIL, slug),

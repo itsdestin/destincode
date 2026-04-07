@@ -13,7 +13,6 @@ import type {
 const CACHE_DIR = path.join(os.homedir(), '.claude', 'destincode-marketplace-cache');
 const INDEX_CACHE = path.join(CACHE_DIR, 'index.json');
 const STATS_CACHE = path.join(CACHE_DIR, 'stats.json');
-const FEATURED_CACHE = path.join(CACHE_DIR, 'featured.json');
 const DEFAULTS_CACHE = path.join(CACHE_DIR, 'curated-defaults.json');
 
 // GitHub raw content base URL — set this to your marketplace repo
@@ -23,9 +22,6 @@ const STATS_TTL = 60 * 60 * 1000;    // 1 hour
 const INDEX_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 interface CacheMeta { fetchedAt: number; }
-
-// Suppress unused variable warning — reserved for future featured-skills feature
-void FEATURED_CACHE;
 
 export class LocalSkillProvider implements SkillProvider {
   private configStore = new SkillConfigStore();
