@@ -13,18 +13,18 @@ function CaptionButtons() {
   const claude = (window as any).claude;
   if (!claude?.window) return null;
 
-  const btnClass = "p-1 rounded-[var(--radius-toggle)] transition-colors text-fg-dim hover:text-fg-2 flex items-center justify-center";
+  const btnClass = "px-2 py-1 rounded-[var(--radius-toggle)] transition-colors text-fg-dim hover:text-fg-2 flex items-center justify-center";
 
   return (
     <div className="flex bg-inset rounded-md p-0.5 gap-0.5">
       <button className={btnClass} onClick={() => claude.window.minimize()} title="Minimize">
-        <svg className="w-3 h-3" viewBox="0 0 10 10"><rect fill="currentColor" y="5" width="10" height="1" /></svg>
+        <svg className="w-3.5 h-3.5" viewBox="0 0 10 10"><rect fill="currentColor" y="5" width="10" height="1" /></svg>
       </button>
       <button className={btnClass} onClick={() => claude.window.maximize()} title="Maximize">
-        <svg className="w-3 h-3" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2"><rect x="1" y="1" width="8" height="8" /></svg>
+        <svg className="w-3.5 h-3.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2"><rect x="1" y="1" width="8" height="8" /></svg>
       </button>
       <button className={`${btnClass} hover:!bg-red-500 hover:!text-white`} onClick={() => claude.window.close()} title="Close">
-        <svg className="w-3 h-3" viewBox="0 0 10 10" stroke="currentColor" strokeWidth="1.4"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg>
+        <svg className="w-3.5 h-3.5" viewBox="0 0 10 10" stroke="currentColor" strokeWidth="1.4"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg>
       </button>
     </div>
   );
@@ -134,7 +134,7 @@ export default function HeaderBar({
               title="Chat"
             >
               <ChatIcon className="w-3.5 h-3.5" />
-              <span className="text-xs font-medium hidden sm:inline">Chat</span>
+              {viewMode === 'chat' && <span className="text-xs font-medium hidden sm:inline">Chat</span>}
             </button>
             <button
               onClick={() => onToggleView('terminal')}
@@ -146,7 +146,7 @@ export default function HeaderBar({
               title="Terminal"
             >
               <TerminalIcon className="w-3.5 h-3.5" />
-              <span className="text-xs font-medium hidden sm:inline">Terminal</span>
+              {viewMode === 'terminal' && <span className="text-xs font-medium hidden sm:inline">Terminal</span>}
             </button>
           </div>
         )}
