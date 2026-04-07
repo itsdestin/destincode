@@ -699,12 +699,8 @@ function AppInner() {
     });
   }, [model]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, resumeModel?: string, resumeDangerous?: boolean) => {
-    const slugToPath = (s: string) => {
-      if (/^[A-Z]--/.test(s)) return s.replace(/^([A-Z])--/, '$1:\\').replace(/-/g, '\\');
-      return s.replace(/-/g, '/');
-    };
-    const cwd = slugToPath(projectSlug);
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean) => {
+    const cwd = projectPath;
     const m = resumeModel || model;
     if (resumeModel && MODELS.includes(resumeModel as any)) {
       setModel(resumeModel as ModelAlias);

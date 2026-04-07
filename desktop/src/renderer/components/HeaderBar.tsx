@@ -57,7 +57,7 @@ interface Props {
   onToggleSettings: () => void;
   settingsBadge?: boolean;
   sessionStatuses?: Map<string, SessionStatusColor>;
-  onResumeSession: (sessionId: string, projectSlug: string) => void;
+  onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
   onOpenResumeBrowser: () => void;
   onReorderSessions?: (fromIndex: number, toIndex: number) => void;
   defaultModel?: string;
