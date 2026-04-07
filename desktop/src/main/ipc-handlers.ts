@@ -145,7 +145,7 @@ export function registerIpcHandlers(
 
   // Open the DestinClaude CHANGELOG on GitHub in the default browser
   ipcMain.handle(IPC.OPEN_CHANGELOG, async () => {
-    await shell.openExternal('https://github.com/itsdestin/destinclaude/blob/master/CHANGELOG.md');
+    await shell.openExternal('https://github.com/itsdestin/destincode/blob/master/CHANGELOG.md');
   });
 
   // Open any URL in the default browser (allowlisted to https only)
