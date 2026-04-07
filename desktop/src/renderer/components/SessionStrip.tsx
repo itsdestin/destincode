@@ -169,11 +169,12 @@ export default function SessionStrip({
       // Bare Shift press — start hold timer to open dropdown
       if (e.key === 'Shift' && !e.ctrlKey && !e.altKey && !e.metaKey && !shiftNavActive.current) {
         shiftHoldTimer.current = setTimeout(() => {
+          shiftHoldTimer.current = null;
           shiftNavActive.current = true;
           const currentIdx = sessions.findIndex(s => s.id === activeSessionId);
           setShiftNavIdx(currentIdx >= 0 ? currentIdx : 0);
           setMenuOpen(true);
-        }, 150);
+        }, 350);
         return;
       }
 
@@ -187,10 +188,15 @@ export default function SessionStrip({
         return;
       }
 
-      // Any other key while Shift is held — cancel the hold timer
+      // Any other key while Shift is held — cancel switcher (timer or already open)
       if (shiftHoldTimer.current) {
         clearTimeout(shiftHoldTimer.current);
         shiftHoldTimer.current = null;
+      }
+      if (shiftNavActive.current) {
+        shiftNavActive.current = false;
+        setShiftNavIdx(-1);
+        setMenuOpen(false);
       }
     };
 
