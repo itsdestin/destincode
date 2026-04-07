@@ -19,7 +19,7 @@ describe('RemoteConfig', () => {
     const { RemoteConfig } = await import('../src/main/remote-config');
     const config = new RemoteConfig();
 
-    expect(config.enabled).toBe(true);
+    expect(config.enabled).toBe(false);
     expect(config.port).toBe(9900);
     expect(config.passwordHash).toBeNull();
     expect(config.trustTailscale).toBe(false);
