@@ -214,11 +214,16 @@ html, body, #root {
 /* Hide xterm scrollbar when terminal is not the active view.
    Without this, xterm's scrollbar can bleed through and overlap ChatView's
    because TerminalView uses visibility:hidden (not display:none) to keep
-   xterm's buffer alive. */
+   xterm's buffer alive.
+   We must force overflow:hidden to kill the scrollbar gutter entirely —
+   just hiding the thumb/track via ::-webkit-scrollbar is not enough because
+   xterm.js sets overflow-y:scroll as an inline style, and Chromium can
+   still reserve gutter space for visibility:hidden elements. */
 .terminal-hidden .xterm-viewport::-webkit-scrollbar {
   display: none;
 }
 .terminal-hidden .xterm-viewport {
+  overflow-y: hidden !important;
   scrollbar-width: none;
 }
 
