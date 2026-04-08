@@ -126,6 +126,12 @@ export function registerIpcHandlers(
     return sessionManager.listSessions();
   });
 
+  ipcMain.handle(IPC.SESSION_SWITCH, async (_event, sessionId: string) => {
+    // Switch is a client-side concern on desktop — the renderer manages active session.
+    // This handler exists for protocol parity with Android/remote.
+    return { ok: true };
+  });
+
   // File picker dialog
   ipcMain.handle(IPC.DIALOG_OPEN_FILE, async () => {
     const result = await dialog.showOpenDialog(mainWindow, {

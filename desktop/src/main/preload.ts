@@ -86,6 +86,7 @@ const IPC = {
   MODEL_READ_LAST: 'model:read-last',
   DEFAULTS_GET: 'defaults:get',
   DEFAULTS_SET: 'defaults:set',
+  SESSION_SWITCH: 'session:switch',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -107,6 +108,8 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SESSION_BROWSE),
     loadHistory: (sessionId: string, projectSlug: string, count?: number, all?: boolean): Promise<any[]> =>
       ipcRenderer.invoke(IPC.SESSION_HISTORY, sessionId, projectSlug, count || 10, all || false),
+    switch: (sessionId: string) =>
+      ipcRenderer.invoke(IPC.SESSION_SWITCH, sessionId),
   },
   on: {
     sessionCreated: (cb: (info: any) => void) => {
