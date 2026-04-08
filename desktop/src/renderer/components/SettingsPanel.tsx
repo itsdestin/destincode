@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { isAndroid } from '../platform';
 import ThemeScreen from './ThemeScreen';
+import SyncSection from './SyncPanel';
 import { useTheme } from '../state/theme-context';
 import { MODELS, type ModelAlias } from './StatusBar';
 
@@ -138,7 +139,7 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
           </div>
 
           {isAndroid() ? (
-            <AndroidSettings open={open} onClose={onClose} onSendInput={onSendInput} onOpenThemeMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
+            <AndroidSettings open={open} onClose={onClose} onSendInput={onSendInput} onOpenThemeMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} syncAutoOpen={syncAutoOpen} onSyncAutoOpenHandled={onSyncAutoOpenHandled} />
           ) : (
             <DesktopSettings
               open={open}
@@ -147,6 +148,8 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
               hasActiveSession={hasActiveSession}
               onOpenThemeMarketplace={onOpenThemeMarketplace}
               onPublishTheme={onPublishTheme}
+              syncAutoOpen={syncAutoOpen}
+              onSyncAutoOpenHandled={onSyncAutoOpenHandled}
             />
           )}
         </div>
@@ -933,7 +936,7 @@ interface PairedDevice {
   password: string;
 }
 
-function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, onPublishTheme }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void }) {
+function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
   const [loading, setLoading] = useState(true);
   const [tier, setTier] = useState('CORE');
   const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);

@@ -1067,6 +1067,9 @@ export class SyncService extends EventEmitter {
 
       this.regenerateTopicCache();
 
+      // Run health check to generate .sync-warnings for the UI
+      await this.runHealthCheck();
+
       this.emit('pull-complete');
       this.logBackup('INFO', 'Pull complete', 'sync.pull');
     } catch (e) {
@@ -1247,6 +1250,207 @@ export class SyncService extends EventEmitter {
         }
       } catch {}
     }
+  }
+
+  // =========================================================================
+  // Sync Health Check & Warning Generation
+  // =========================================================================
+
+  /**
+   * Run sync health checks and write .sync-warnings file.
+   * Ports session-start.sh _bg_sync_health() — generates warnings for:
+   *   OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE,
+   *   SKILLS:unrouted:name1,name2, PROJECTS:N
+   * Called after pull completes and on app startup.
+   */
+  async runHealthCheck(): Promise<string[]> {
+    const warningsFile = path.join(this.claudeDir, '.sync-warnings');
+    const warnings: string[] = [];
+
+    // 0. Internet connectivity check (DNS lookup)
+    try {
+      const dns = await import('dns');
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timeout')), 5000);
+        dns.lookup('github.com', (err) => {
+          clearTimeout(timer);
+          if (err) reject(err); else resolve();
+        });
+      });
+    } catch {
+      warnings.push('OFFLINE');
+    }
+
+    // 1. Personal data sync backend status
+    const backends = this.getBackends();
+    if (backends.length === 0) {
+      // Auto-detect: check if a known sync provider works
+      const detected = await this.autoDetectBackend();
+      if (detected) {
+        // Self-heal: write detected backend to config
+        try {
+          const config = this.readJson(this.configPath) || {};
+          config.PERSONAL_SYNC_BACKEND = detected;
+          this.atomicWrite(this.configPath, JSON.stringify(config, null, 2));
+          this.logBackup('INFO', `Auto-detected sync backend: ${detected}`, 'sync.health');
+        } catch {}
+      } else {
+        warnings.push('PERSONAL:NOT_CONFIGURED');
+      }
+    } else {
+      // Check if last sync is stale (>24 hours)
+      try {
+        const markerText = fs.readFileSync(this.syncMarkerPath, 'utf8').trim();
+        const lastEpoch = parseInt(markerText, 10);
+        if (!isNaN(lastEpoch)) {
+          const age = Math.floor(Date.now() / 1000) - lastEpoch;
+          if (age >= 86400) {
+            warnings.push('PERSONAL:STALE');
+          }
+        }
+      } catch {
+        // No marker file — first run, not stale
+      }
+    }
+
+    // 2. Unrouted user skills (not toolkit symlinks, not in skill-routes.json)
+    const unroutedSkills = this.findUnroutedSkills();
+    if (unroutedSkills.length > 0) {
+      warnings.push(`SKILLS:unrouted:${unroutedSkills.join(',')}`);
+    }
+
+    // 3. Unsynced projects — discover git repos not tracked
+    const discoveredProjects = this.discoverProjects();
+    if (discoveredProjects.length > 0) {
+      // Write discovered paths for /sync skill to consume
+      const unsyncedFile = path.join(this.claudeDir, '.unsynced-projects');
+      this.atomicWrite(unsyncedFile, discoveredProjects.join('\n'));
+      warnings.push(`PROJECTS:${discoveredProjects.length}`);
+    } else {
+      // Clean up stale file
+      try { fs.unlinkSync(path.join(this.claudeDir, '.unsynced-projects')); } catch {}
+    }
+
+    // Write warnings file (or remove if empty)
+    if (warnings.length > 0) {
+      fs.writeFileSync(warningsFile, warnings.join('\n') + '\n');
+    } else {
+      try { fs.unlinkSync(warningsFile); } catch {}
+    }
+
+    return warnings;
+  }
+
+  /** Try to auto-detect a sync backend (Drive via rclone, iCloud via folder). */
+  private async autoDetectBackend(): Promise<string | null> {
+    // Check Google Drive (rclone + gdrive remote)
+    const driveRoot = this.configGet('DRIVE_ROOT', 'Claude');
+    const rcloneResult = await this.rclone(['lsd', `gdrive:${driveRoot}/Backup/`]);
+    if (rcloneResult.code === 0) return 'drive';
+
+    // Check iCloud Drive (macOS/Windows folder exists with Claude backup)
+    const icloudCandidates = [
+      path.join(os.homedir(), 'Library/Mobile Documents/com~apple~CloudDocs'),
+      path.join(os.homedir(), 'iCloudDrive'),
+    ];
+    for (const candidate of icloudCandidates) {
+      if (this.dirExists(candidate)) {
+        const claudeDir = path.join(candidate, 'Claude');
+        const destinclaude = path.join(candidate, 'DestinClaude');
+        if (this.dirExists(path.join(claudeDir, 'Backup')) || this.dirExists(destinclaude)) {
+          return 'icloud';
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find user-created skills that are not routed in skill-routes.json.
+   * Skips toolkit-owned skills (symlinks into TOOLKIT_ROOT) and toolkit
+   * copies (matching skill name exists in toolkit layers).
+   */
+  private findUnroutedSkills(): string[] {
+    const skillsDir = path.join(this.claudeDir, 'skills');
+    if (!this.dirExists(skillsDir)) return [];
+
+    const routesFile = path.join(this.claudeDir, 'toolkit-state', 'skill-routes.json');
+    const routes = this.readJson(routesFile) || {};
+    const toolkitRoot = this.configGet('toolkit_root', '');
+    const toolkitLayers = ['core/skills', 'productivity/skills', 'life/skills'];
+
+    const unrouted: string[] = [];
+
+    for (const skillName of fs.readdirSync(skillsDir)) {
+      const skillDir = path.join(skillsDir, skillName);
+      if (!this.dirExists(skillDir)) continue;
+
+      // Skip symlinks (toolkit-managed)
+      try { if (fs.lstatSync(skillDir).isSymbolicLink()) continue; } catch { continue; }
+
+      // Skip if it's a copy of a toolkit skill
+      if (toolkitRoot) {
+        let isToolkitCopy = false;
+        for (const layer of toolkitLayers) {
+          if (this.dirExists(path.join(toolkitRoot, layer, skillName))) {
+            isToolkitCopy = true;
+            break;
+          }
+        }
+        if (isToolkitCopy) continue;
+      }
+
+      // Skip if already routed (any route means it's accounted for)
+      if (routes[skillName]?.route) continue;
+
+      unrouted.push(skillName);
+    }
+
+    return unrouted;
+  }
+
+  /**
+   * Discover git repos in common directories that aren't tracked.
+   * Ports backup-common.sh discover_projects().
+   */
+  private discoverProjects(): string[] {
+    const trackedFile = path.join(this.claudeDir, 'tracked-projects.json');
+    const tracked = this.readJson(trackedFile) || {};
+
+    // Build skip set from tracked + ignored projects
+    const skipPaths = new Set<string>();
+    skipPaths.add(path.resolve(this.claudeDir));
+    for (const p of (tracked.projects || [])) {
+      if (p.path) skipPaths.add(path.resolve(p.path));
+    }
+    for (const p of (tracked.ignored || [])) {
+      skipPaths.add(path.resolve(p));
+    }
+
+    // Scan common directories (depth 1)
+    const scanDirs = ['projects', 'repos', 'code', 'dev', 'src', 'Documents', 'Desktop']
+      .map(d => path.join(os.homedir(), d))
+      .filter(d => this.dirExists(d));
+
+    const discovered: string[] = [];
+
+    for (const scanDir of scanDirs) {
+      try {
+        for (const entry of fs.readdirSync(scanDir)) {
+          const candidate = path.join(scanDir, entry);
+          if (!this.dirExists(candidate)) continue;
+          if (!this.dirExists(path.join(candidate, '.git'))) continue;
+
+          const resolved = path.resolve(candidate);
+          if (skipPaths.has(resolved)) continue;
+
+          discovered.push(resolved);
+        }
+      } catch {}
+    }
+
+    return discovered;
   }
 
   // =========================================================================
