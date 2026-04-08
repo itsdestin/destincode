@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import os from 'os';
 import { SessionManager } from '../src/main/session-manager';
+
+const tmpDir = os.tmpdir();
 
 // Mock child_process.fork to return a fake worker
 const mockWorker = {
@@ -15,7 +18,7 @@ vi.mock('child_process', () => ({
 }));
 
 vi.mock('electron', () => ({
-  app: { isPackaged: false, getPath: vi.fn(() => '/tmp') },
+  app: { isPackaged: false, getPath: vi.fn(() => tmpDir) },
 }));
 
 describe('SessionManager', () => {
@@ -36,26 +39,26 @@ describe('SessionManager', () => {
   it('creates a session and returns session info', () => {
     const info = manager.createSession({
       name: 'test-session',
-      cwd: '/tmp',
+      cwd: tmpDir,
       skipPermissions: false,
     });
 
     expect(info.id).toBeDefined();
     expect(info.name).toBe('test-session');
-    expect(info.cwd).toBe('/tmp');
+    expect(info.cwd).toBe(tmpDir);
     expect(info.status).toBe('active');
   });
 
   it('lists all active sessions', () => {
-    manager.createSession({ name: 's1', cwd: '/tmp', skipPermissions: false });
-    manager.createSession({ name: 's2', cwd: '/tmp', skipPermissions: false });
+    manager.createSession({ name: 's1', cwd: tmpDir, skipPermissions: false });
+    manager.createSession({ name: 's2', cwd: tmpDir, skipPermissions: false });
 
     const sessions = manager.listSessions();
     expect(sessions).toHaveLength(2);
   });
 
   it('destroys a session by id', () => {
-    const info = manager.createSession({ name: 'test', cwd: '/tmp', skipPermissions: false });
+    const info = manager.createSession({ name: 'test', cwd: tmpDir, skipPermissions: false });
     manager.destroySession(info.id);
 
     const sessions = manager.listSessions();
@@ -63,7 +66,7 @@ describe('SessionManager', () => {
   });
 
   it('sends spawn with --dangerously-skip-permissions when requested', () => {
-    manager.createSession({ name: 'skip', cwd: '/tmp', skipPermissions: true });
+    manager.createSession({ name: 'skip', cwd: tmpDir, skipPermissions: true });
 
     const spawnMsg = mockWorker.send.mock.calls[0][0];
     expect(spawnMsg.type).toBe('spawn');
@@ -71,7 +74,7 @@ describe('SessionManager', () => {
   });
 
   it('emits pty-output when worker sends data', () => {
-    manager.createSession({ name: 'test', cwd: '/tmp', skipPermissions: false });
+    manager.createSession({ name: 'test', cwd: tmpDir, skipPermissions: false });
 
     const messageHandler = mockWorker.on.mock.calls.find(
       (c: any) => c[0] === 'message'
@@ -85,7 +88,7 @@ describe('SessionManager', () => {
   });
 
   it('emits session-exit when worker reports exit', () => {
-    manager.createSession({ name: 'test', cwd: '/tmp', skipPermissions: false });
+    manager.createSession({ name: 'test', cwd: tmpDir, skipPermissions: false });
 
     const messageHandler = mockWorker.on.mock.calls.find(
       (c: any) => c[0] === 'message'
@@ -100,7 +103,7 @@ describe('SessionManager', () => {
   });
 
   it('does not emit session-exit after explicit destroy', () => {
-    manager.createSession({ name: 'test', cwd: '/tmp', skipPermissions: false });
+    manager.createSession({ name: 'test', cwd: tmpDir, skipPermissions: false });
 
     const exitHandler = mockWorker.on.mock.calls.find(
       (c: any) => c[0] === 'exit'
