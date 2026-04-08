@@ -295,6 +295,10 @@ interface RemoteButtonProps {
   onToggleTailscaleTrust: () => void;
   onSetKeepAwake: (hours: number) => void;
   onRunSetup: () => void;
+  onConfirmSetup: () => void;
+  onCancelSetup: () => void;
+  setupStatus: 'idle' | 'confirm' | 'installing' | 'authenticating' | 'done' | 'error';
+  setupError: string;
   onDisconnectClient: (id: string) => void;
   onCopyLink: () => void;
   onSetShowSetupQR: (v: boolean) => void;
@@ -305,7 +309,7 @@ function RemoteButton({
   config, tailscale, clients, loading, hasActiveSession,
   newPassword, passwordStatus, copied, showSetupQR, showAddDevice,
   onSetNewPassword, onSetPassword, onToggleEnabled, onToggleTailscaleTrust,
-  onSetKeepAwake, onRunSetup, onDisconnectClient, onCopyLink,
+  onSetKeepAwake, onRunSetup, onConfirmSetup, onCancelSetup, setupStatus, setupError, onDisconnectClient, onCopyLink,
   onSetShowSetupQR, onSetShowAddDevice,
 }: RemoteButtonProps) {
   const [open, setOpen] = useState(false);
@@ -411,6 +415,31 @@ function RemoteButton({
                               Set Up Remote Access
                             </button>
                           )
+                        ) : setupStatus === 'confirm' ? (
+                          <div className="space-y-2">
+                            <p className="text-[10px] text-fg-2 text-center">This will download and install Tailscale (~50MB) for secure remote access.</p>
+                            <div className="flex gap-2">
+                              <button onClick={onCancelSetup} className="flex-1 px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs">Cancel</button>
+                              <button onClick={onConfirmSetup} className="flex-1 px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium">Install</button>
+                            </div>
+                          </div>
+                        ) : setupStatus === 'installing' ? (
+                          <div className="text-center py-1">
+                            <p className="text-xs text-fg-2 animate-pulse">Installing Tailscale...</p>
+                            <p className="text-[10px] text-fg-faint mt-1">This may take a few minutes</p>
+                          </div>
+                        ) : setupStatus === 'authenticating' ? (
+                          <div className="text-center py-1">
+                            <p className="text-xs text-fg-2 animate-pulse">Authenticating...</p>
+                            <p className="text-[10px] text-fg-faint mt-1">Check your browser to sign in to Tailscale</p>
+                          </div>
+                        ) : setupStatus === 'done' ? (
+                          <p className="text-xs text-green-400 text-center py-1">Tailscale installed and connected!</p>
+                        ) : setupStatus === 'error' ? (
+                          <div className="space-y-2">
+                            <p className="text-xs text-red-400 text-center">{setupError || 'Setup failed'}</p>
+                            <button onClick={onRunSetup} className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium">Retry</button>
+                          </div>
                         ) : (
                           <button
                             onClick={onRunSetup}
@@ -568,9 +597,10 @@ function RemoteButton({
                           </p>
                           <button
                             onClick={onRunSetup}
-                            className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs"
+                            disabled={setupStatus === 'installing' || setupStatus === 'authenticating'}
+                            className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs disabled:opacity-50"
                           >
-                            Install Tailscale
+                            {setupStatus === 'installing' ? 'Installing...' : setupStatus === 'authenticating' ? 'Authenticating...' : 'Install Tailscale'}
                           </button>
                         </div>
                       )}
@@ -1266,6 +1296,8 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   const [showSetupQR, setShowSetupQR] = useState(false);
   const [copied, setCopied] = useState(false);
   const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
+  const [setupStatus, setSetupStatus] = useState<'idle' | 'confirm' | 'installing' | 'authenticating' | 'done' | 'error'>('idle');
+  const [setupError, setSetupError] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -1319,14 +1351,35 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
     setConfig(prev => prev ? { ...prev, ...updated } : prev);
   }, []);
 
-  const handleRunSetup = useCallback(async () => {
+  const handleRunSetup = useCallback(() => {
+    setSetupStatus('confirm');
+    setSetupError('');
+  }, []);
+
+  const handleCancelSetup = useCallback(() => {
+    setSetupStatus('idle');
+    setSetupError('');
+  }, []);
+
+  const handleConfirmSetup = useCallback(async () => {
+    setSetupStatus('installing');
     try {
       const result = await (window as any).claude.remote.installTailscale();
-      if (result?.installed || result?.alreadyInstalled) {
+      if (result?.success || result?.installed || result?.alreadyInstalled) {
+        setSetupStatus('authenticating');
         await (window as any).claude.remote.authTailscale();
+        setSetupStatus('done');
+        // Refresh tailscale status
+        const ts = await (window as any).claude.remote.detectTailscale();
+        setTailscale(ts);
+        setTimeout(() => setSetupStatus('idle'), 3000);
+      } else {
+        setSetupError(result?.error || 'Installation failed');
+        setSetupStatus('error');
       }
     } catch (err) {
-      console.error('Remote setup failed:', err);
+      setSetupError(String(err));
+      setSetupStatus('error');
     }
   }, []);
 
@@ -1375,6 +1428,10 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
           onToggleTailscaleTrust={handleToggleTailscaleTrust}
           onSetKeepAwake={handleSetKeepAwake}
           onRunSetup={handleRunSetup}
+          onConfirmSetup={handleConfirmSetup}
+          onCancelSetup={handleCancelSetup}
+          setupStatus={setupStatus}
+          setupError={setupError}
           onDisconnectClient={handleDisconnectClient}
           onCopyLink={handleCopyLink}
           onSetShowSetupQR={setShowSetupQR}
