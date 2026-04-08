@@ -135,7 +135,8 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
       {/* Dropdown panel — inline, not portaled */}
       {open && (
         <div
-          className="absolute left-0 right-0 top-full mt-1 bg-panel border border-edge rounded-lg shadow-lg overflow-hidden z-50"
+          className="absolute top-full mt-1 bg-panel border border-edge rounded-lg shadow-lg overflow-hidden z-50"
+          style={{ left: '-12px', right: '-12px', minWidth: '280px' }}
           style={{ animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
         >
           {/* Saved folders list */}

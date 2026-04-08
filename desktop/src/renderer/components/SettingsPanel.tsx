@@ -511,18 +511,23 @@ function RemoteButton({
                       </div>
                     </section>
 
+                    {/* Add Device — always visible when remote is configured */}
+                    {tailscale?.installed && config?.hasPassword && (
+                      <button
+                        onClick={() => onSetShowAddDevice(!showAddDevice)}
+                        className="w-full px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/25 text-xs text-blue-400 font-medium hover:bg-blue-500/20 transition-colors flex items-center justify-center gap-1.5"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                        </svg>
+                        Add Device
+                      </button>
+                    )}
+
                     {/* Remote Clients section */}
                     {hasClients && (
                       <section>
-                        <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Clients</h3>
-                          <button
-                            onClick={() => onSetShowAddDevice(true)}
-                            className="text-[10px] text-blue-400 hover:text-blue-300"
-                          >
-                            + Add Device
-                          </button>
-                        </div>
+                        <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Connected Devices</h3>
 
                         <div className="space-y-1">
                           {clients.map(client => (
