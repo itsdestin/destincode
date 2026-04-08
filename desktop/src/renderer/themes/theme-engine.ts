@@ -202,9 +202,12 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   }
 
   // 5. Background wallpaper — set directly on <body> (bypasses z-index stacking issues)
+  //    Also expose as --wallpaper-url so portaled glass overlays can render
+  //    a blurred copy via ::before (backdrop-filter doesn't work on body children)
   const bg = theme.background;
   if (bg?.type === 'image' && bg.value) {
     root.setAttribute('data-wallpaper', '');
+    root.style.setProperty('--wallpaper-url', `url("${bg.value}")`);
     body.style.backgroundImage = `url("${bg.value}")`;
     body.style.backgroundSize = 'cover';
     body.style.backgroundPosition = 'center';
@@ -215,6 +218,7 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     }
   } else {
     root.removeAttribute('data-wallpaper');
+    root.style.removeProperty('--wallpaper-url');
     body.style.backgroundImage = '';
     body.style.backgroundSize = '';
     body.style.backgroundPosition = '';
@@ -268,7 +272,7 @@ export function clearThemeFromDom(): void {
   body.style.backgroundRepeat = '';
   const propsToRemove = [
     ...TOKEN_CSS_PROPS,
-    '--panels-blur', '--panel-glass', '--bubble-blur', '--bubble-opacity',
+    '--panels-blur', '--panel-glass', '--bubble-blur', '--bubble-opacity', '--wallpaper-url',
     '--radius', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-2xl', '--radius-full',
     '--font-sans', '--font-mono',
     '--vignette-opacity', '--noise-opacity', '--scanline-opacity',
