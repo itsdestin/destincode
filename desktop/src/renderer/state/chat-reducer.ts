@@ -40,7 +40,7 @@ function getOrCreateTurn(session: SessionChatState): {
   }
 
   currentTurnId = nextTurnId();
-  assistantTurns.set(currentTurnId, { id: currentTurnId, segments: [] });
+  assistantTurns.set(currentTurnId, { id: currentTurnId, segments: [], timestamp: Date.now() });
   timeline = [...timeline, { kind: 'assistant-turn' as const, turnId: currentTurnId }];
   return { assistantTurns, timeline, currentTurnId };
 }
@@ -567,6 +567,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           historyTurns.set(turnId, {
             id: turnId,
             segments: [{ type: 'text', content: msg.content, messageId: msgId }],
+            timestamp: msg.timestamp,
           });
           historyTimeline.push({ kind: 'assistant-turn', turnId });
         }

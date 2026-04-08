@@ -5,12 +5,14 @@ import MarkdownContent from './MarkdownContent';
 import ToolCard from './ToolCard';
 import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
+import { formatBubbleTime } from '../utils/format-time';
 
 interface Props {
   turn: AssistantTurn;
   toolGroups: Map<string, ToolGroupState>;
   toolCalls: Map<string, ToolCallState>;
   sessionId: string;
+  showTimestamps: boolean;
 }
 
 /** Renders a collapsed summary for 3+ tools in a group. */
@@ -99,14 +101,15 @@ function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
   return bubbles;
 }
 
-export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolCalls, sessionId }: Props) {
+export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolCalls, sessionId, showTimestamps }: Props) {
   const bubbles = splitIntoBubbles(turn);
 
   return (
     <>
-      {bubbles.map((bubble) => {
+      {bubbles.map((bubble, i) => {
         const hasTools = bubble.toolGroupIds.length > 0;
         const toolsOnly = hasTools && !bubble.text;
+        const isLastBubble = i === bubbles.length - 1;
         return (
           <div key={bubble.key} className="flex justify-start px-4 py-0.5">
             <div className={`assistant-bubble max-w-[85%] rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : 'py-3.5'}`}>
@@ -124,6 +127,11 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                       sessionId={sessionId}
                     />
                   ))}
+                </div>
+              )}
+              {showTimestamps && isLastBubble && turn.timestamp && (
+                <div className="bubble-timestamp text-[9px] text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
+                  {formatBubbleTime(turn.timestamp)}
                 </div>
               )}
             </div>

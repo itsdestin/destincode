@@ -16,6 +16,8 @@ export type AssistantTurnSegment =
 export interface AssistantTurn {
   id: string;
   segments: AssistantTurnSegment[];
+  /** Epoch ms — captured from the first segment's transcript event */
+  timestamp?: number;
 }
 
 export type TimelineEntry =

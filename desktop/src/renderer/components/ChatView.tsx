@@ -6,6 +6,7 @@ import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
 import PromptCard from './PromptCard';
 import ThinkingIndicator from './ThinkingIndicator';
+import { useTheme } from '../state/theme-context';
 
 interface Props {
   sessionId: string;
@@ -58,6 +59,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
 export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
+  const { showTimestamps } = useTheme();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -255,7 +257,7 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
               switch (entry.kind) {
                 case 'user':
                   key = entry.message.id;
-                  content = <UserMessage message={entry.message} />;
+                  content = <UserMessage message={entry.message} showTimestamps={showTimestamps} />;
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
@@ -267,6 +269,7 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
                       toolGroups={state.toolGroups}
                       toolCalls={state.toolCalls}
                       sessionId={sessionId}
+                      showTimestamps={showTimestamps}
                     />
                   );
                   break;

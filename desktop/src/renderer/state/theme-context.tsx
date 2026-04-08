@@ -30,6 +30,7 @@ export const DEFAULT_FONT_FAMILY = "'Cascadia Mono', 'Cascadia Code', 'Fira Code
 const STORAGE_KEY = 'destincode-theme';
 const CYCLE_KEY = 'destincode-theme-cycle';
 const REDUCED_EFFECTS_KEY = 'destincode-reduced-effects';
+const SHOW_TIMESTAMPS_KEY = 'destincode-show-timestamps';
 const DEFAULT_THEME = 'midnight';
 const DEFAULT_CYCLE = ['midnight', 'dark'];
 /** Reserved slug for live-preview during /theme-builder — auto-switches on write, reverts on delete. */
@@ -44,6 +45,8 @@ interface ThemeContextValue {
   font: string;
   reducedEffects: boolean;
   setReducedEffects: (v: boolean) => void;
+  showTimestamps: boolean;
+  setShowTimestamps: (v: boolean) => void;
   allThemes: LoadedTheme[];
   activeTheme: LoadedTheme;
   bgStyle: Record<string, string> | null;
@@ -55,6 +58,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   cycleList: DEFAULT_CYCLE, setCycleList: () => {},
   font: DEFAULT_FONT_FAMILY,
   reducedEffects: false, setReducedEffects: () => {},
+  showTimestamps: true, setShowTimestamps: () => {},
   allThemes: BUILTIN_THEMES, activeTheme: BUILTIN_THEMES[0], bgStyle: null, patternStyle: null,
 });
 
@@ -82,6 +86,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [cycleList, setCycleListState] = useState<string[]>(() => getStoredJSON(CYCLE_KEY, DEFAULT_CYCLE));
   const [font, setFontState] = useState(DEFAULT_FONT_FAMILY);
   const [reducedEffects, setReducedEffectsState] = useState(() => getStored(REDUCED_EFFECTS_KEY, '') === '1');
+  const [showTimestamps, setShowTimestampsState] = useState(() => getStored(SHOW_TIMESTAMPS_KEY, '1') !== '0');
   const [userThemes, setUserThemes] = useState<LoadedTheme[]>([]);
 
   // All themes including _preview (for engine lookup) — memoized to stabilize references
@@ -206,6 +211,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     try { localStorage.setItem(REDUCED_EFFECTS_KEY, v ? '1' : ''); } catch {}
   }, []);
 
+  const setShowTimestamps = useCallback((v: boolean) => {
+    setShowTimestampsState(v);
+    try { localStorage.setItem(SHOW_TIMESTAMPS_KEY, v ? '1' : '0'); } catch {}
+  }, []);
+
   const cycleTheme = useCallback(() => {
     setActiveSlug(prev => {
       // If currently previewing, exit preview and cycle from the pre-preview theme
@@ -236,9 +246,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     theme: activeSlug, setTheme, cycleTheme,
     cycleList, setCycleList, font,
     reducedEffects, setReducedEffects,
+    showTimestamps, setShowTimestamps,
     allThemes, activeTheme, bgStyle, patternStyle,
   }), [activeSlug, setTheme, cycleTheme, cycleList, setCycleList, font,
-       reducedEffects, setReducedEffects, allThemes, activeTheme, bgStyle, patternStyle]);
+       reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps,
+       allThemes, activeTheme, bgStyle, patternStyle]);
 
   return (
     <ThemeContext.Provider value={value}>
