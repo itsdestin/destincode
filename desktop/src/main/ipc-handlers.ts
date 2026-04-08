@@ -15,6 +15,7 @@ import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
+import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning } from './sync-state';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -866,6 +867,16 @@ export function registerIpcHandlers(
     }
     sessionIdMap.delete(sessionId);
   });
+
+  // --- Sync management ---
+  // Control plane for DestinClaude toolkit sync — reads state files written
+  // by sync.sh / session-start.sh and triggers sync via the existing scripts.
+  ipcMain.handle(IPC.SYNC_GET_STATUS, () => getSyncStatus());
+  ipcMain.handle(IPC.SYNC_GET_CONFIG, () => getSyncConfig());
+  ipcMain.handle(IPC.SYNC_SET_CONFIG, (_e, updates) => setSyncConfig(updates));
+  ipcMain.handle(IPC.SYNC_FORCE, () => forceSync());
+  ipcMain.handle(IPC.SYNC_GET_LOG, (_e, lines) => getSyncLog(lines));
+  ipcMain.handle(IPC.SYNC_DISMISS_WARNING, (_e, warning) => dismissWarning(warning));
 
   // --- Permission response (blocking hooks) ---
   if (hookRelay) {
