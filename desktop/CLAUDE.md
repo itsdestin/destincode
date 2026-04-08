@@ -26,7 +26,7 @@ Electron + React app that wraps Claude Code CLI in a GUI.
 - **PluginInstaller** (`src/main/plugin-installer.ts`) — Installs Claude Code plugins to `~/.claude/plugins/<name>/` via git clone (url), copy from cache (local), or sparse checkout (git-subdir). Includes conflict detection against Claude Code's `installed_plugins.json`
 - **SkillConfigStore** (`src/main/skill-config-store.ts`) — Reads/writes `~/.claude/destincode-skills.json`: favorites, chips, overrides, private prompt skills, and marketplace-installed plugin tracking
 - **SettingsPanel** (`src/renderer/components/SettingsPanel.tsx`) — Settings UI for remote access config, appearance popup (theme + font)
-- **ThemeProvider** (`src/renderer/state/theme-context.tsx`) — Appearance state: active theme, cycle list, font family. Persists to localStorage, applies `data-theme` attribute on `<html>`, swaps highlight.js stylesheet, sets font CSS variables. See `docs/theme-spec.md` for details
+- **ThemeProvider** (`src/renderer/state/theme-context.tsx`) — Appearance state: active theme, cycle list, font family, reducedEffects, showTimestamps. Persists to localStorage (`destincode-theme`, `destincode-theme-cycle`, `destincode-font`, `destincode-reduced-effects`, `destincode-show-timestamps`), applies `data-theme` attribute on `<html>`, swaps highlight.js stylesheet, sets font CSS variables. See `docs/theme-spec.md` for details
 
 ## Chat View Data Flow
 
@@ -93,11 +93,12 @@ The app uses a semantic CSS token system for theming. All colors are CSS custom 
 - **Themes:** Light (default), Dark, Midnight, Crème — defined in `src/renderer/styles/globals.css`
 - **Tokens:** `bg-canvas`, `bg-panel`, `bg-inset`, `bg-well`, `bg-accent`, `text-fg`, `text-fg-2`, `text-fg-dim`, `text-fg-muted`, `text-fg-faint`, `text-on-accent`, `border-edge`, `border-edge-dim`
 - **Adding a theme:** Add a `[data-theme="name"]` block in globals.css with all variables, add the name to `THEMES` array in `theme-context.tsx`, add label/description/swatches to `SettingsPanel.tsx`
-- **Font:** User-selectable via `queryLocalFonts()` API. Applied via `--font-sans`/`--font-mono` CSS variables + xterm.js `fontFamily`
+- **Font (chat):** User-selectable via `queryLocalFonts()` API. Applied via `--font-sans`/`--font-mono` CSS variables. Only affects the chat UI.
+- **Font (terminal):** Hardcoded to Cascadia Code (`'Cascadia Code', 'Cascadia Mono', Consolas, monospace`). User font selection does not apply to xterm — proportional fonts break the character cell grid.
 - **Persistence:** `localStorage` keys: `destincode-theme`, `destincode-theme-cycle`, `destincode-font`
 - **Status bar pill:** Cycles through user-configured subset of themes (configurable in appearance popup)
 - **highlight.js:** Dynamically swaps between `github-dark.css` and `github.css` via inline `?inline` CSS imports managed in ThemeProvider
-- **xterm.js:** Reads `--canvas` and `--fg` CSS variables for terminal colors, syncs reactively on theme/font change
+- **xterm.js:** Reads `--canvas` and `--fg` CSS variables for terminal colors, syncs reactively on theme change. WebGL renderer is always loaded for performance. When a wallpaper, gradient, or glassmorphism background is active, the terminal container uses `opacity: 0.88` to let the background peek through (xterm itself stays opaque — WebGL requires it).
 - **Anti-FOUC:** Theme + font applied before React mounts in `index.tsx`
 
 **Key rule:** Status colors (green, red, amber, blue, orange) are theme-independent and stay hardcoded. Only surface/text/border colors use semantic tokens.

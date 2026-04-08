@@ -48,7 +48,9 @@ The `@theme` block maps these to Tailwind utility classes:
 `ThemeProvider` wraps the app and manages:
 - `theme: ThemeName` — active theme
 - `cycleList: ThemeName[]` — which themes the status bar pill cycles through
-- `font: string` — CSS font-family string
+- `font: string` — CSS font-family string (chat UI only)
+- `reducedEffects: boolean` — disables particles, glassmorphism, and animations
+- `showTimestamps: boolean` — shows time sent in each chat bubble
 
 State changes trigger:
 1. `data-theme` attribute update on `<html>`
@@ -69,7 +71,7 @@ Theme and font are applied synchronously before `createRoot()` to prevent a flas
 
 **File:** `src/renderer/components/TerminalView.tsx`
 
-Terminal reads `--canvas` and `--fg` CSS computed values for its theme. A `useEffect` on `theme` and `font` updates `terminal.options.theme` and `terminal.options.fontFamily` reactively, with a re-fit after font changes (different glyph widths).
+Terminal reads `--canvas` and `--fg` CSS computed values for its theme. A `useEffect` on `activeTheme` updates `terminal.options.theme` reactively. The terminal font is hardcoded to Cascadia Code (`'Cascadia Code', 'Cascadia Mono', Consolas, monospace`) — user font selection only applies to the chat UI, as proportional fonts break xterm's character cell grid. WebGL renderer is always loaded for performance. When a wallpaper, gradient, or glassmorphism background is active, the terminal container uses `opacity: 0.88` to let the background peek through (xterm itself stays opaque — WebGL requires it).
 
 ### Font Selection
 
