@@ -364,6 +364,14 @@ class SessionService : Service() {
                     destroySession(sessionId)
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+                // Broadcast so React UI removes the session from the selector
+                // (parity with desktop ipc-handlers.ts SESSION_DESTROYED)
+                bridgeServer.broadcast(JSONObject().apply {
+                    put("type", "session:destroyed")
+                    put("payload", JSONObject().apply {
+                        put("sessionId", sessionId)
+                    })
+                })
             }
             "session:list" -> {
                 val sessions = sessionRegistry.sessions.value.map { (id, session) ->
