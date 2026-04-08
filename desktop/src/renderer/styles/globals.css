@@ -399,8 +399,10 @@ html, body, #root {
    NOTE: no overflow:hidden here — child dropdowns (FolderSwitcher)
    extend beyond the container and must not be clipped. */
 [data-panels-blur] .glass-overlay {
-  position: relative;
   background-color: color-mix(in srgb, var(--panel) 88%, transparent);
+  /* No position: relative — the element is already position: fixed (from
+     Tailwind), which serves as a containing block for the ::before.
+     Setting relative would override fixed and break portal positioning. */
 }
 
 /* Blurred wallpaper layer — only on wallpaper themes.
