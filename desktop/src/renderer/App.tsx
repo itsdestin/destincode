@@ -85,9 +85,6 @@ interface StatusDataState {
   contextMap: Record<string, number>;
   syncStatus: string | null;
   syncWarnings: string | null;
-  lastSyncEpoch: number | null;
-  syncInProgress: boolean;
-  backupMeta: any;
 }
 
 function AppInner() {
@@ -98,7 +95,6 @@ function AppInner() {
     usage: null, announcement: null, updateStatus: null,
     model: null, contextMap: {},
     syncStatus: null, syncWarnings: null,
-    lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
   });
 
   const [permissionModes, setPermissionModes] = useState<Map<string, PermissionMode>>(new Map());
@@ -113,7 +109,6 @@ function AppInner() {
   const bottomBarRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBadge, setSettingsBadge] = useState(false);
-  const [syncAutoOpen, setSyncAutoOpen] = useState(false);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   // Track which sessions the user has "seen" (switched to after activity completed)
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
@@ -407,9 +402,6 @@ function AppInner() {
         updateStatus: data.updateStatus,
         syncStatus: data.syncStatus,
         syncWarnings: data.syncWarnings,
-        lastSyncEpoch: data.lastSyncEpoch ?? prev.lastSyncEpoch,
-        syncInProgress: data.syncInProgress ?? prev.syncInProgress,
-        backupMeta: data.backupMeta ?? prev.backupMeta,
         contextMap: data.contextMap || prev.contextMap,
       }));
     });
@@ -963,11 +955,6 @@ function AppInner() {
                     syncStatus: statusData.syncStatus,
                     syncWarnings: statusData.syncWarnings,
                   }}
-                  onOpenSync={() => {
-                    // Open settings panel with sync popup auto-opened
-                    setSyncAutoOpen(true);
-                    setSettingsOpen(true);
-                  }}
                   onRunSync={!trustGateActive && sessionId ? () => {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                     window.claude.session.sendInput(sessionId, '/sync\r');
@@ -1011,7 +998,7 @@ function AppInner() {
       )}
       <SettingsPanel
         open={settingsOpen}
-        onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); }}
+        onClose={() => setSettingsOpen(false)}
         onSendInput={(text) => {
           if (sessionId) {
             const claude = (window as any).claude;
@@ -1021,8 +1008,6 @@ function AppInner() {
         hasActiveSession={!!sessionId}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); setThemeMarketplaceOpen(true); }}
         onPublishTheme={(slug) => { setSettingsOpen(false); setPublishThemeSlug(slug); }}
-        syncAutoOpen={syncAutoOpen}
-        onSyncAutoOpenHandled={() => setSyncAutoOpen(false)}
       />
       <ResumeBrowser
         open={resumeRequested}

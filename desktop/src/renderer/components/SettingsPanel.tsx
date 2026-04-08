@@ -4,7 +4,6 @@ import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { isAndroid } from '../platform';
 import ThemeScreen from './ThemeScreen';
-import SyncSection from './SyncPanel';
 import { useTheme } from '../state/theme-context';
 import { MODELS, type ModelAlias } from './StatusBar';
 
@@ -46,9 +45,6 @@ interface Props {
   hasActiveSession: boolean;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
-  /** When true, auto-open the sync popup (triggered by StatusBar warning click) */
-  syncAutoOpen?: boolean;
-  onSyncAutoOpenHandled?: () => void;
 }
 
 function timeAgo(timestamp: number): string {
@@ -60,7 +56,7 @@ function timeAgo(timestamp: number): string {
   return `${hours}h ago`;
 }
 
-export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: Props) {
+export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme }: Props) {
   return (
     <>
       {/* Backdrop */}
@@ -93,7 +89,7 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
           </div>
 
           {isAndroid() ? (
-            <AndroidSettings open={open} onClose={onClose} onSendInput={onSendInput} onOpenThemeMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} syncAutoOpen={syncAutoOpen} onSyncAutoOpenHandled={onSyncAutoOpenHandled} />
+            <AndroidSettings open={open} onClose={onClose} onSendInput={onSendInput} onOpenThemeMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
           ) : (
             <DesktopSettings
               open={open}
@@ -102,8 +98,6 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
               hasActiveSession={hasActiveSession}
               onOpenThemeMarketplace={onOpenThemeMarketplace}
               onPublishTheme={onPublishTheme}
-              syncAutoOpen={syncAutoOpen}
-              onSyncAutoOpenHandled={onSyncAutoOpenHandled}
             />
           )}
         </div>
@@ -786,11 +780,10 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
 
 // ─── Tier selector popup ───────────────────────────────────────────────────
 
-// Descriptions must match PackageTier.kt (Android first-run tier picker source of truth)
 const TIER_OPTIONS = [
-  { id: 'CORE', name: 'Core', desc: 'Everything needed for basic Claude Code functionality' },
-  { id: 'DEVELOPER', name: 'Developer Essentials', desc: 'fd, fzf, jq, bat, tmux, nano, micro' },
-  { id: 'FULL_DEV', name: 'Full Dev Environment', desc: 'neovim, vim, make, cmake, sqlite' },
+  { id: 'CORE', name: 'Core', desc: 'Personal assistant — journal, inbox, briefings' },
+  { id: 'DEVELOPER', name: 'Developer', desc: 'Core + git, tests, code review' },
+  { id: 'FULL_DEV', name: 'Full Dev', desc: 'Everything — all dev tools included' },
 ];
 
 function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string) => void }) {
@@ -891,7 +884,7 @@ interface PairedDevice {
   password: string;
 }
 
-function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
+function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, onPublishTheme }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void }) {
   const [loading, setLoading] = useState(true);
   const [tier, setTier] = useState('CORE');
   const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
@@ -1035,8 +1028,6 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
       <div className="flex-1 px-4 py-4 space-y-6">
 
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
-
-        <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
         {/* Tier & directories are local-only — hide when connected to remote desktop */}
         {!remoteConnected && (
@@ -1339,15 +1330,13 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
 // ─── Desktop Settings (existing, unchanged) ─────────────────────────────────
 
-function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: {
+function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme }: {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
   hasActiveSession: boolean;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
-  syncAutoOpen?: boolean;
-  onSyncAutoOpenHandled?: () => void;
 }) {
   const [config, setConfig] = useState<RemoteConfig | null>(null);
   const [tailscale, setTailscale] = useState<TailscaleInfo | null>(null);
@@ -1485,8 +1474,6 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
         <SoundSettings />
-
-        <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
         <RemoteButton
           config={config}
