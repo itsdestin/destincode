@@ -147,7 +147,10 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
                 </select>
               </div>
               {/* Glassmorphism sliders — only for themes with panels-blur enabled */}
-              {(activeTheme.background?.['panels-blur'] ?? 0) > 0 && (
+              {/* Glass section — visible for any theme with a wallpaper/gradient
+                  background (glassmorphism-capable). Always show the panel blur
+                  slider so the user can drag it back up from zero. */}
+              {activeTheme.background && activeTheme.background.type !== 'solid' && (
                 <>
                   <div className="border-t border-edge-dim pt-3 mt-1">
                     <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Glass</p>

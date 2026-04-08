@@ -247,6 +247,40 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     customEl.textContent = '';
   }
 
+  // 7b. Engine overrides — injected AFTER custom_css so they win at equal
+  //     specificity. Themes may hardcode bubble blur/opacity in custom_css,
+  //     but manifest fields (via CSS variables) must take precedence.
+  const overridesId = 'theme-engine-overrides';
+  let overridesEl = document.getElementById(overridesId) as HTMLStyleElement | null;
+  if (blur && blur > 0 && !reducedEffects) {
+    if (!overridesEl) {
+      overridesEl = document.createElement('style');
+      overridesEl.id = overridesId;
+      document.head.appendChild(overridesEl);
+    }
+    // These rules mirror globals.css but are injected after theme custom_css
+    // so they override any hardcoded bubble blur/opacity in the theme
+    overridesEl.textContent = `
+[data-panels-blur] .bg-inset {
+  background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
+}
+[data-panels-blur] .bg-accent {
+  background-color: color-mix(in srgb, var(--accent) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
+}
+[data-panels-blur][data-wallpaper] .in-view .bg-inset {
+  backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  -webkit-backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
+}
+[data-panels-blur][data-wallpaper] .in-view .bg-accent {
+  backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  -webkit-backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  background-color: color-mix(in srgb, var(--accent) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
+}`;
+  } else if (overridesEl) {
+    overridesEl.textContent = '';
+  }
+
   // 8. Theme font — inject Google Font <link> and set --font-sans/--font-mono
   applyThemeFont(theme.font);
 
@@ -284,6 +318,8 @@ export function clearThemeFromDom(): void {
   for (const id of LEGACY_EFFECT_IDS) document.getElementById(id)?.remove();
   const customEl = document.getElementById('theme-custom') as HTMLStyleElement | null;
   if (customEl) customEl.textContent = '';
+  const overridesEl = document.getElementById('theme-engine-overrides') as HTMLStyleElement | null;
+  if (overridesEl) overridesEl.textContent = '';
   // Remove injected Google Font link
   document.getElementById(GOOGLE_FONT_LINK_ID)?.remove();
 }
