@@ -102,9 +102,13 @@ export default function TerminalView({ sessionId, visible }: Props) {
     // This flushes any buffered output that arrived before mount.
     window.claude.session.signalReady(sessionId);
 
-    // Fit terminal to container and sync dimensions to PTY
+    // Fit terminal to container and sync dimensions to PTY.
+    // Skip when container is collapsed to 0x0 (hidden terminals) to avoid
+    // setting a 1-column width on the PTY that causes text bunching.
     const fitAndSync = () => {
       try {
+        const el = containerRef.current;
+        if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
         fitAddon.fit();
         const dims = fitAddon.proposeDimensions();
         if (dims && dims.cols && dims.rows) {
@@ -153,22 +157,25 @@ export default function TerminalView({ sessionId, visible }: Props) {
     };
   }, [sessionId]);
 
-  // Re-fit when visible, blur when hidden (prevents xterm stealing keyboard input)
+  // Re-fit when visible, blur when hidden (prevents xterm stealing keyboard input).
+  // Hidden terminals are collapsed to 0x0 via CSS (.terminal-hidden). When becoming
+  // visible, the class is removed but the browser needs time to reflow. We fit twice:
+  // once after a short delay (catches most cases) and again after a longer delay
+  // (catches slow reflows where the container hasn't reached its final size yet).
   useEffect(() => {
     if (visible && fitAddonRef.current) {
-      const timer = setTimeout(() => {
+      const doFit = () => {
         try {
           fitAddonRef.current!.fit();
           const dims = fitAddonRef.current!.proposeDimensions();
           if (dims && dims.cols && dims.rows) {
             window.claude.session.resize(sessionId, dims.cols, dims.rows);
           }
-          terminalRef.current?.focus();
-        } catch {
-          // Ignore
-        }
-      }, 50);
-      return () => clearTimeout(timer);
+        } catch {}
+      };
+      const t1 = setTimeout(() => { doFit(); terminalRef.current?.focus(); }, 50);
+      const t2 = setTimeout(doFit, 200);
+      return () => { clearTimeout(t1); clearTimeout(t2); };
     } else if (!visible && terminalRef.current) {
       terminalRef.current.blur();
     }
