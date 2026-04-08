@@ -144,8 +144,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       });
 
       // Replace newlines with spaces so multi-line pastes don't get split
-      // into separate PTY inputs (each \n would act as Enter)
-      window.claude.session.sendInput(sessionId, combined.replace(/[\r\n]+/g, ' ') + '\r');
+      // into separate PTY inputs (each \n would act as Enter).
+      // Send text and Enter as two separate PTY writes so Claude Code's Ink
+      // framework processes them in distinct stdin read cycles — a single bulk
+      // write ("text\r") can cause Ink to swallow the trailing \r.
+      const sanitized = combined.replace(/[\r\n]+/g, ' ');
+      window.claude.session.sendInput(sessionId, sanitized);
+      setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 50);
     },
     [sessionId, disabled, dispatch],
   );
@@ -187,7 +192,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     e.preventDefault();
     if (minimal && sessionId) {
       const val = inputRef.current?.value ?? text;
-      window.claude.session.sendInput(sessionId, val + '\r');
+      // Split text and Enter into separate PTY writes (see sendMessage comment)
+      window.claude.session.sendInput(sessionId, val);
+      setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 50);
       setText('');
       if (inputRef.current) {
         inputRef.current.value = '';
@@ -336,9 +343,11 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 if (minimal && sessionId) {
-                  // Terminal mode: send text + Enter directly to PTY
+                  // Terminal mode: send text + Enter directly to PTY.
+                  // Split into two writes so Ink processes them in separate reads.
                   const val = inputRef.current?.value ?? text;
-                  window.claude.session.sendInput(sessionId, val + '\r');
+                  window.claude.session.sendInput(sessionId, val);
+                  setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 50);
                   setText('');
                   if (inputRef.current) {
                     inputRef.current.value = '';
