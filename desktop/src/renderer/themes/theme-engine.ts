@@ -206,7 +206,6 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   const bg = theme.background;
   if (bg?.type === 'image' && bg.value) {
     root.setAttribute('data-wallpaper', '');
-    root.style.setProperty('--wallpaper-url', `url("${bg.value}")`);
     body.style.backgroundImage = `url("${bg.value}")`;
     body.style.backgroundSize = 'cover';
     body.style.backgroundPosition = 'center';
@@ -217,7 +216,6 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     }
   } else {
     root.removeAttribute('data-wallpaper');
-    root.style.removeProperty('--wallpaper-url');
     body.style.backgroundImage = '';
     body.style.backgroundSize = '';
     body.style.backgroundPosition = '';
@@ -277,6 +275,8 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   background-color: var(--panel-glass, color-mix(in srgb, var(--panel) 88%, transparent));
 }
 [data-panels-blur] .glass-overlay {
+  backdrop-filter: blur(var(--panels-blur, 24px)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--panels-blur, 24px)) saturate(1.2);
   background-color: var(--panel-glass, color-mix(in srgb, var(--panel) 88%, transparent));
 }
 [data-panels-blur] .bg-inset {
@@ -324,8 +324,7 @@ export function clearThemeFromDom(): void {
   body.style.backgroundRepeat = '';
   const propsToRemove = [
     ...TOKEN_CSS_PROPS,
-    '--panels-blur', '--panel-glass', '--bubble-blur', '--bubble-opacity', '--wallpaper-url',
-    '--radius', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-2xl', '--radius-full',
+    '--panels-blur', '--panel-glass', '--bubble-blur', '--bubble-opacity',     '--radius', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-2xl', '--radius-full',
     '--font-sans', '--font-mono',
     '--vignette-opacity', '--noise-opacity', '--scanline-opacity',
   ];

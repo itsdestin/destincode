@@ -394,36 +394,13 @@ html, body, #root {
 }
 
 /* Floating overlays (portaled menus/popups) — frosted glass.
-   Uses a ::before pseudo-element with filter: blur() instead of
-   backdrop-filter, because Chromium can't backdrop-filter elements
-   portaled to <body> (they can't sample the root compositing layer).
-   The pseudo-element renders a blurred copy of the wallpaper.
-   NOTE: no overflow:hidden here — child dropdowns (FolderSwitcher)
-   extend beyond the container and must not be clipped. */
+   Portaled to #root (not body) so backdrop-filter can sample live
+   content from the compositing tree. position: fixed escapes #root's
+   overflow:hidden since #root has no transform/filter/will-change. */
 [data-panels-blur] .glass-overlay {
+  backdrop-filter: blur(var(--panels-blur, 24px)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--panels-blur, 24px)) saturate(1.2);
   background-color: var(--panel-glass, color-mix(in srgb, var(--panel) 88%, transparent));
-  /* No position: relative — the element is already position: fixed (from
-     Tailwind), which serves as a containing block for the ::before.
-     Setting relative would override fixed and break portal positioning. */
-}
-
-/* Blurred wallpaper layer — only on wallpaper themes.
-   Oversized by 40px in each direction for blur quality, then clipped
-   back to the parent bounds via clip-path (avoids overflow:hidden on
-   the parent, which would clip child dropdowns).
-   Uses --panels-blur so the Panel Blur slider controls this too. */
-[data-panels-blur][data-wallpaper] .glass-overlay::before {
-  content: '';
-  position: absolute;
-  inset: -40px;
-  clip-path: inset(40px round var(--radius-lg, 0.5rem));
-  background-image: var(--wallpaper-url, none);
-  background-size: cover;
-  background-position: center;
-  background-attachment: fixed; /* continuous with body wallpaper */
-  filter: blur(var(--panels-blur, 24px)) saturate(1.2);
-  z-index: -1;
-  pointer-events: none;
 }
 
 /* Inside glass overlays, children use opaque backgrounds so the

@@ -613,7 +613,8 @@ export default function SessionStrip({
             </div>
           )}
         </div>,
-        document.body
+        document.getElementById('root')! // Portal to #root (not body) so
+        // backdrop-filter can sample the compositing tree for live content blur
       )}
 
       {/* ── Insertion indicator — shows where the pill will land ── */}
