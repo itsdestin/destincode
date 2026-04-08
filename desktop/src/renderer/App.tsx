@@ -856,7 +856,7 @@ function AppInner() {
       <div className="flex-1 flex flex-col overflow-hidden relative">
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
-            <div ref={headerRef} className="chrome-wrapper bg-canvas relative">
+            <div ref={headerRef} className="chrome-wrapper bg-canvas">
               <HeaderBar
                 sessions={sessions}
                 activeSessionId={sessionId}
@@ -919,9 +919,10 @@ function AppInner() {
                   )}
                 </React.Fragment>
               ))}
-              {/* Initializing overlay — shown before Claude is ready */}
+              {/* Initializing overlay — shown before Claude is ready.
+                 z-10: must stay below glassmorphism chrome (z-20) so header/bottom bars remain accessible */}
               {!sessionInitialized && sessionId && (
-                <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-canvas">
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-canvas">
                   <ThemeMascot variant="idle" fallback={AppIcon} className="w-16 h-16 text-fg-dim mb-6 animate-pulse" />
                   <p className="text-sm text-fg-dim font-medium">Initializing session...</p>
                 </div>
