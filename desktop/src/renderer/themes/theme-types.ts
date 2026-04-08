@@ -39,6 +39,8 @@ export interface ThemeBackground {
   opacity?: number;
   'panels-blur'?: number;
   'panels-opacity'?: number;
+  'bubble-blur'?: number;
+  'bubble-opacity'?: number;
   pattern?: string;
   'pattern-opacity'?: number;
 }

@@ -175,6 +175,8 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   // 4. Glassmorphism — set/remove data-panels-blur + CSS vars
   const blur = theme.background?.['panels-blur'];
   const panelsOpacity = theme.background?.['panels-opacity'];
+  const bubbleBlur = theme.background?.['bubble-blur'];
+  const bubbleOpacity = theme.background?.['bubble-opacity'];
   if (blur && blur > 0 && !reducedEffects) {
     root.setAttribute('data-panels-blur', String(blur));
     root.style.setProperty('--panels-blur', `${blur}px`);
@@ -188,10 +190,15 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     } else {
       root.style.removeProperty('--panel-glass');
     }
+    // Bubble glassmorphism — separate blur/opacity for chat bubbles
+    root.style.setProperty('--bubble-blur', `${bubbleBlur ?? 16}px`);
+    root.style.setProperty('--bubble-opacity', String(bubbleOpacity ?? 0.88));
   } else {
     root.removeAttribute('data-panels-blur');
     root.style.removeProperty('--panels-blur');
     root.style.removeProperty('--panel-glass');
+    root.style.removeProperty('--bubble-blur');
+    root.style.removeProperty('--bubble-opacity');
   }
 
   // 5. Background wallpaper — set directly on <body> (bypasses z-index stacking issues)
@@ -261,7 +268,7 @@ export function clearThemeFromDom(): void {
   body.style.backgroundRepeat = '';
   const propsToRemove = [
     ...TOKEN_CSS_PROPS,
-    '--panels-blur', '--panel-glass',
+    '--panels-blur', '--panel-glass', '--bubble-blur', '--bubble-opacity',
     '--radius', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-2xl', '--radius-full',
     '--font-sans', '--font-mono',
     '--vignette-opacity', '--noise-opacity', '--scanline-opacity',

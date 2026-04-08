@@ -44,6 +44,13 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
     (window as any).claude?.theme?.writeFile?.(activeTheme.slug, JSON.stringify(updated, null, 2));
   }, [activeTheme]);
 
+  // Update a single background.* field and persist
+  const updateBackground = useCallback((field: string, value: number) => {
+    if (!activeTheme || activeTheme.source !== 'user') return;
+    const updated = { ...activeTheme, background: { ...(activeTheme.background ?? { type: 'solid' as const, value: 'transparent' }), [field]: value } };
+    (window as any).claude?.theme?.writeFile?.(activeTheme.slug, JSON.stringify(updated, null, 2));
+  }, [activeTheme]);
+
   const currentRoundness = (() => {
     const md = activeTheme?.shape?.['radius-md'];
     if (!md) return 0.5;
@@ -139,6 +146,62 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
                   {PARTICLE_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
               </div>
+              {/* Glassmorphism sliders — only for themes with panels-blur enabled */}
+              {(activeTheme.background?.['panels-blur'] ?? 0) > 0 && (
+                <>
+                  <div className="border-t border-edge-dim pt-3 mt-1">
+                    <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Glass</p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-fg-2 shrink-0">Panel Blur</span>
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        type="range" min="0" max="30" step="1"
+                        value={activeTheme.background?.['panels-blur'] ?? 24}
+                        onChange={e => updateBackground('panels-blur', parseFloat(e.target.value))}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-[10px] text-fg-muted w-7 text-right">{activeTheme.background?.['panels-blur'] ?? 24}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-fg-2 shrink-0">Panel Opacity</span>
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        type="range" min="0.3" max="1" step="0.02"
+                        value={activeTheme.background?.['panels-opacity'] ?? 0.88}
+                        onChange={e => updateBackground('panels-opacity', parseFloat(e.target.value))}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-[10px] text-fg-muted w-7 text-right">{Math.round((activeTheme.background?.['panels-opacity'] ?? 0.88) * 100)}%</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-fg-2 shrink-0">Bubble Blur</span>
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        type="range" min="0" max="24" step="1"
+                        value={activeTheme.background?.['bubble-blur'] ?? 16}
+                        onChange={e => updateBackground('bubble-blur', parseFloat(e.target.value))}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-[10px] text-fg-muted w-7 text-right">{activeTheme.background?.['bubble-blur'] ?? 16}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-fg-2 shrink-0">Bubble Opacity</span>
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        type="range" min="0.3" max="1" step="0.02"
+                        value={activeTheme.background?.['bubble-opacity'] ?? 0.88}
+                        onChange={e => updateBackground('bubble-opacity', parseFloat(e.target.value))}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-[10px] text-fg-muted w-7 text-right">{Math.round((activeTheme.background?.['bubble-opacity'] ?? 0.88) * 100)}%</span>
+                    </div>
+                  </div>
+                </>
+              )}
               {onPublishTheme && (
                 <button
                   onClick={() => {

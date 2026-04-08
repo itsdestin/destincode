@@ -407,26 +407,28 @@ html, body, #root {
 }
 
 /* Chat bubbles — semi-transparent by default (no blur = fast scroll).
+   --bubble-opacity is set by theme-engine from background.bubble-opacity.
    Blur is only applied on wallpaper themes for visible bubbles (see below). */
 [data-panels-blur] .bg-inset {
-  background-color: color-mix(in srgb, var(--inset) 92%, transparent);
+  background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
 }
 [data-panels-blur] .bg-accent {
-  background-color: color-mix(in srgb, var(--accent) 92%, transparent);
+  background-color: color-mix(in srgb, var(--accent) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
 }
 
 /* Wallpaper themes: restore frosted glass on VISIBLE bubbles only.
+   --bubble-blur is set by theme-engine from background.bubble-blur.
    The .in-view class is toggled by IntersectionObserver in ChatView.
    200px overscan ensures blur appears before the bubble scrolls into view. */
 [data-panels-blur][data-wallpaper] .in-view .bg-inset {
-  backdrop-filter: blur(16px) saturate(1.1);
-  -webkit-backdrop-filter: blur(16px) saturate(1.1);
-  background-color: color-mix(in srgb, var(--inset) 90%, transparent);
+  backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  -webkit-backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
 }
 [data-panels-blur][data-wallpaper] .in-view .bg-accent {
-  backdrop-filter: blur(16px) saturate(1.1);
-  -webkit-backdrop-filter: blur(16px) saturate(1.1);
-  background-color: color-mix(in srgb, var(--accent) 90%, transparent);
+  backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  -webkit-backdrop-filter: blur(var(--bubble-blur, 16px)) saturate(1.1);
+  background-color: color-mix(in srgb, var(--accent) calc(var(--bubble-opacity, 0.88) * 100%), transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
