@@ -14,6 +14,8 @@ import { IPC } from '../shared/types';
 import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
 import { FirstRunManager } from './first-run';
+import { SyncService } from './sync-service';
+import { setSyncService } from './sync-state';
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
@@ -348,6 +350,18 @@ app.whenReady().then(async () => {
 
   registerThemeProtocol();
   createWindow(isFirstRun ? firstRunManager : undefined);
+
+  // Start native sync service — owns push/pull lifecycle, background timer,
+  // session-end sync. Replaces bash hook sync when app is running.
+  const syncService = new SyncService();
+  setSyncService(syncService);
+  syncService.start().catch(e => log('ERROR', 'Main', 'SyncService start failed', { error: String(e) }));
+  // Push session JSONL on session close (replaces session-end-sync.sh)
+  sessionManager.on('session-exit', (sessionId: string) => {
+    syncService.pushSession(sessionId).catch(e =>
+      log('ERROR', 'Main', 'Session-end sync failed', { sessionId, error: String(e) })
+    );
+  });
 });
 
 app.on('window-all-closed', () => {
@@ -355,5 +369,7 @@ app.on('window-all-closed', () => {
   sessionManager.destroyAll();
   hookRelay.stop();
   remoteServer.stop();
+  // Stop sync service — clears timer, releases locks, removes .app-sync-active marker
+  try { setSyncService(null); } catch {}
   app.quit();
 });
