@@ -119,6 +119,14 @@ class SessionService : Service() {
         skillProvider = LocalSkillProvider(bs.homeDir, applicationContext)
         skillProvider?.ensureMigrated()
         pluginInstaller = PluginInstaller(bs.homeDir, bs, skillProvider!!.configStore)
+        // Wire up plugin installer and reload callback so LocalSkillProvider
+        // handles all install/uninstall routing (consolidates SessionService logic)
+        skillProvider?.pluginInstaller = pluginInstaller
+        skillProvider?.onPluginsChanged = {
+            sessionRegistry.getCurrentSession()
+                ?.takeIf { !it.shellMode && it.isRunning }
+                ?.writeInput("/reload-plugins\r")
+        }
 
         // Start native sync engine — pulls on launch, pushes every 15 min
         syncService = SyncService(applicationContext, bs).also { it.start() }
@@ -469,61 +477,19 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             "skills:install" -> {
+                // All install routing consolidated in LocalSkillProvider — handles
+                // both prompts and plugins (any sourceMarketplace) with /reload-plugins
                 val id = msg.payload.optString("id")
-                val entry = skillProvider?.getMarketplaceEntry(id)
-
-                if (entry != null && entry.optString("type") == "plugin"
-                    && entry.optString("sourceMarketplace") != "destinclaude") {
-                    // Plugin install — delegate to PluginInstaller
-                    val result = pluginInstaller?.install(entry)
-                        ?: PluginInstaller.InstallResult.Failed("Installer not initialized")
-                    val response = when (result) {
-                        is PluginInstaller.InstallResult.Success -> {
-                            skillProvider?.invalidateCache()
-                            // Convenience: reload plugins in active Claude Code session
-                            sessionRegistry.getCurrentSession()
-                                ?.takeIf { !it.shellMode && it.isRunning }
-                                ?.writeInput("/reload-plugins\r")
-                            JSONObject().put("status", "installed")
-                        }
-                        is PluginInstaller.InstallResult.AlreadyInstalled ->
-                            JSONObject().put("status", "already_installed").put("via", result.via)
-                        is PluginInstaller.InstallResult.Failed ->
-                            JSONObject().put("status", "failed").put("error", result.error)
-                        is PluginInstaller.InstallResult.InProgress ->
-                            JSONObject().put("status", "installing")
-                    }
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
-                } else {
-                    // Prompt skill install — existing path
-                    try {
-                        skillProvider?.install(id)
-                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                            JSONObject().put("status", "installed")) }
-                    } catch (e: Exception) {
-                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                            JSONObject().put("status", "failed").put("error", e.message ?: "Unknown")) }
-                    }
-                }
+                val result = skillProvider?.install(id)
+                    ?: JSONObject().put("status", "failed").put("error", "Skill provider not initialized")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             "skills:uninstall" -> {
+                // All uninstall routing consolidated in LocalSkillProvider
                 val id = msg.payload.optString("id")
-                // Check if this is a marketplace-installed plugin
-                if (pluginInstaller?.isInstalled(id) == true) {
-                    val ok = pluginInstaller?.uninstall(id) ?: false
-                    skillProvider?.invalidateCache()
-                    if (ok) {
-                        sessionRegistry.getCurrentSession()
-                            ?.takeIf { !it.shellMode && it.isRunning }
-                            ?.writeInput("/reload-plugins\r")
-                    }
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                        JSONObject().put("ok", ok)) }
-                } else {
-                    skillProvider?.uninstall(id)
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                        JSONObject().put("ok", true)) }
-                }
+                val result = skillProvider?.uninstall(id)
+                    ?: JSONObject().put("ok", false).put("error", "Skill provider not initialized")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             "skills:get-favorites" -> {
                 val result = skillProvider?.getFavorites() ?: org.json.JSONArray()

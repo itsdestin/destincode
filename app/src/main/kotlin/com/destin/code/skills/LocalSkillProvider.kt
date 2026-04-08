@@ -15,6 +15,12 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
     private val fetcher = MarketplaceFetcher(homeDir) { getBundledIndex() }
     private var installedCache: JSONArray? = null
 
+    // Injected after construction — plugin installer for marketplace plugins
+    var pluginInstaller: PluginInstaller? = null
+
+    // Callback to reload plugins in active Claude Code session after install/uninstall
+    var onPluginsChanged: (() -> Unit)? = null
+
     private fun nowIso(): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date())
 
@@ -191,27 +197,68 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         return null
     }
 
-    fun install(id: String) {
+    /** Install a skill or plugin from the marketplace. Returns a JSON result with status. */
+    suspend fun install(id: String): JSONObject {
         val index = fetcher.fetchIndex()
         var entry: JSONObject? = null
         for (i in 0 until index.length()) {
             if (index.getJSONObject(i).optString("id") == id) { entry = index.getJSONObject(i); break }
         }
-        if (entry == null) throw Exception("Skill not found in marketplace: $id")
+        if (entry == null) return JSONObject().put("status", "failed").put("error", "Skill not found in marketplace: $id")
+
         if (entry.optString("type") == "prompt") {
+            // Prompt skill — store directly in config
             val skill = JSONObject(entry.toString())
             skill.put("source", "marketplace")
             skill.put("visibility", "published")
             skill.put("installedAt", nowIso())
             configStore.createPromptSkill(skill)
-        } else {
-            throw Exception("Plugin installation from marketplace not yet implemented")
+            installedCache = null
+            return JSONObject().put("status", "installed").put("type", "prompt")
         }
+
+        // Plugin install — delegate to PluginInstaller (all sourceMarketplace values)
+        val installer = pluginInstaller
+            ?: return JSONObject().put("status", "failed").put("error", "Plugin installer not initialized")
+
+        val result = installer.install(entry)
+        val response = when (result) {
+            is PluginInstaller.InstallResult.Success -> {
+                installedCache = null
+                // Notify active sessions so Claude Code discovers the new plugin
+                onPluginsChanged?.invoke()
+                JSONObject().put("status", "installed").put("type", "plugin")
+            }
+            is PluginInstaller.InstallResult.AlreadyInstalled ->
+                JSONObject().put("status", "already_installed").put("via", result.via)
+            is PluginInstaller.InstallResult.Failed ->
+                JSONObject().put("status", "failed").put("error", result.error)
+            is PluginInstaller.InstallResult.InProgress ->
+                JSONObject().put("status", "installing")
+        }
+        return response
+    }
+
+    /** Uninstall a skill or plugin. Returns a JSON result. */
+    suspend fun uninstall(id: String): JSONObject {
+        // Check if this is a marketplace-installed plugin
+        val installer = pluginInstaller
+        if (installer != null && installer.isInstalled(id)) {
+            val ok = installer.uninstall(id)
+            installedCache = null
+            if (ok) {
+                // Notify active sessions so Claude Code drops the plugin
+                onPluginsChanged?.invoke()
+            }
+            return JSONObject().put("ok", ok).put("type", "plugin")
+        }
+        // Prompt skill uninstall
+        configStore.deletePromptSkill(id)
         installedCache = null
+        return JSONObject().put("ok", true).put("type", "prompt")
     }
 
     fun invalidateCache() { installedCache = null }
-    fun uninstall(id: String) { configStore.deletePromptSkill(id); installedCache = null }
     fun getFavorites(): JSONArray = configStore.getFavorites()
     fun setFavorite(id: String, favorited: Boolean) = configStore.setFavorite(id, favorited)
     fun getChips(): JSONArray = configStore.getChips()
