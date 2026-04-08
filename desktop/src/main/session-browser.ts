@@ -9,6 +9,19 @@ const TOPICS_DIR = path.join(CLAUDE_DIR, 'topics');
 
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
+/** Retry an async operation up to `attempts` times with a short delay between tries. */
+async function withRetry<T>(fn: () => Promise<T>, attempts: number = 3, delayMs: number = 100): Promise<T> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw new Error('unreachable');
+}
+
 /**
  * Resolves a project slug back to a real filesystem path by walking the
  * directory tree. The naive approach (replace all dashes with separators)
@@ -79,17 +92,18 @@ async function readTopic(sessionId: string): Promise<string> {
 export async function listPastSessions(activeSessionIds?: Set<string>): Promise<PastSession[]> {
   let slugs: string[];
   try {
-    const entries = await fs.promises.readdir(PROJECTS_DIR);
+    const entries = await withRetry(() => fs.promises.readdir(PROJECTS_DIR));
     const statResults = await Promise.all(
       entries.map(async (f) => {
         try {
-          const stat = await fs.promises.stat(path.join(PROJECTS_DIR, f));
+          const stat = await withRetry(() => fs.promises.stat(path.join(PROJECTS_DIR, f)));
           return stat.isDirectory() ? f : null;
         } catch { return null; }
       })
     );
     slugs = statResults.filter((s): s is string => s !== null);
-  } catch {
+  } catch (err) {
+    console.warn('[session-browser] Failed to read projects directory:', err);
     return [];
   }
 
@@ -99,15 +113,18 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     const slugDir = path.join(PROJECTS_DIR, slug);
     let files: string[];
     try {
-      files = (await fs.promises.readdir(slugDir)).filter((f) => f.endsWith('.jsonl'));
-    } catch { continue; }
+      files = (await withRetry(() => fs.promises.readdir(slugDir))).filter((f) => f.endsWith('.jsonl'));
+    } catch (err) {
+      console.warn(`[session-browser] Failed to read slug dir ${slug} after retries:`, err);
+      continue;
+    }
 
     const sessionPromises = files.map(async (file) => {
       const sessionId = file.replace('.jsonl', '');
       if (activeSessionIds?.has(sessionId)) return null;
 
       try {
-        const stat = await fs.promises.stat(path.join(slugDir, file));
+        const stat = await withRetry(() => fs.promises.stat(path.join(slugDir, file)));
         if (stat.size < 500) return null;
         const name = await readTopic(sessionId);
 
@@ -119,7 +136,10 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           lastModified: stat.mtimeMs,
           size: stat.size,
         } as PastSession;
-      } catch { return null; }
+      } catch {
+        console.warn(`[session-browser] Failed to stat ${slug}/${file} after retries`);
+        return null;
+      }
     });
 
     const results = await Promise.all(sessionPromises);
