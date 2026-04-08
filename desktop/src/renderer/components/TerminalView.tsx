@@ -13,22 +13,14 @@ function safeTerminalFont(font: string): string {
   return font.includes('monospace') ? font : `${font}, monospace`;
 }
 
-/** Read the current theme CSS variables and return an xterm ITheme. */
-function getXtermTheme(): { background: string; foreground: string; cursor: string; selectionBackground: string } {
+/** Read the current theme CSS variables and return an xterm ITheme.
+ *  @param transparent — when true, xterm background is transparent so wallpaper shows through */
+function getXtermTheme(transparent: boolean): { background: string; foreground: string; cursor: string; selectionBackground: string } {
   const s = getComputedStyle(document.documentElement);
   const fg = s.getPropertyValue('--fg').trim() || '#E0E0E0';
   const accent = s.getPropertyValue('--accent').trim() || '#264f78';
-  // When glassmorphism is active, make xterm background transparent so the
-  // wallpaper shows through the frosted container behind it
-  const hasBlur = document.documentElement.hasAttribute('data-panels-blur');
-  const bg = hasBlur ? 'transparent' : (s.getPropertyValue('--canvas').trim() || '#0A0A0A');
-  // Selection: accent at 30% opacity
+  const bg = transparent ? 'transparent' : (s.getPropertyValue('--canvas').trim() || '#0A0A0A');
   return { background: bg, foreground: fg, cursor: fg, selectionBackground: accent + '4D' };
-}
-
-/** Check if glassmorphism is active. */
-function hasGlassmorphism(): boolean {
-  return document.documentElement.hasAttribute('data-panels-blur');
 }
 
 interface Props {
@@ -41,22 +33,23 @@ export default function TerminalView({ sessionId, visible }: Props) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
-  const { theme, font, activeTheme } = useTheme();
+  const { theme, font, activeTheme, reducedEffects } = useTheme();
+  const glass = !!(activeTheme?.background?.['panels-blur'] && activeTheme.background['panels-blur'] > 0 && !reducedEffects);
 
-  // Sync xterm theme when app theme changes (activeTheme changes on hot-reload too,
-  // not just slug switches — so we depend on the full object, not just the slug)
+  // Sync xterm theme and WebGL state when app theme or glassmorphism changes.
+  // Depends on glass (derived from activeTheme + reducedEffects) so it re-runs
+  // when transparency state changes, not just when the theme slug changes.
   useEffect(() => {
     if (!terminalRef.current) return;
     // Microtask delay: CSS variables may not be painted yet when this effect fires
     requestAnimationFrame(() => {
       if (!terminalRef.current) return;
-      terminalRef.current.options.theme = getXtermTheme();
+      terminalRef.current.options.theme = getXtermTheme(glass);
 
       // WebGL addon renders on an opaque canvas that blocks body background-image
       // (wallpaper) from showing through. Dispose it when glassmorphism is active
       // so the DOM renderer is used (which handles transparent backgrounds via CSS).
       // Re-attach when glassmorphism is off for better rendering performance.
-      const glass = hasGlassmorphism();
       if (glass && webglRef.current) {
         webglRef.current.dispose();
         webglRef.current = null;
@@ -71,7 +64,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
         }
       }
     });
-  }, [activeTheme]);
+  }, [activeTheme, glass]);
 
   // Sync xterm font when app font changes — wait for the font to load before
   // applying so xterm measures character cells against the real glyphs, not a
@@ -100,7 +93,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
       cursorBlink: true,
       fontSize: 14,
       fontFamily: 'monospace', // Start with monospace; real font applied after load via effect
-      theme: getXtermTheme(),
+      theme: getXtermTheme(glass),
     });
 
     const fitAddon = new FitAddon();
@@ -114,7 +107,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
     // artifacts from the DOM renderer's sub-pixel rounding issues.
     // Skip when glassmorphism is active — the WebGL canvas is opaque
     // and blocks the wallpaper from showing through.
-    if (!hasGlassmorphism()) {
+    if (!glass) {
       try {
         const webgl = new WebglAddon();
         webgl.onContextLoss(() => webgl.dispose());
@@ -203,8 +196,6 @@ export default function TerminalView({ sessionId, visible }: Props) {
   usePtyOutput(sessionId, (data) => {
     terminalRef.current?.write(data, () => notifyBufferReady(sessionId));
   });
-
-  const glass = hasGlassmorphism();
 
   return (
     <div
