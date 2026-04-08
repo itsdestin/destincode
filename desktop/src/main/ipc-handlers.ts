@@ -232,6 +232,31 @@ export function registerIpcHandlers(
     }
   });
 
+  // --- Appearance preference persistence ---
+  ipcMain.handle('appearance:get', async () => {
+    try {
+      const raw = fs.readFileSync(appearancePrefPath, 'utf-8');
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle('appearance:set', async (_event, prefs: Record<string, any>) => {
+    try {
+      let existing: Record<string, any> = {};
+      try {
+        existing = JSON.parse(fs.readFileSync(appearancePrefPath, 'utf-8'));
+      } catch {}
+      const merged = { ...existing, ...prefs };
+      fs.mkdirSync(path.dirname(appearancePrefPath), { recursive: true });
+      fs.writeFileSync(appearancePrefPath, JSON.stringify(merged));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
   // --- Transcript model verification ---
   ipcMain.handle('model:read-last', async (_event, transcriptPath: string) => {
     try {
@@ -615,6 +640,7 @@ export function registerIpcHandlers(
   const announcementCachePath = path.join(os.homedir(), '.claude', '.announcement-cache.json');
   const updateStatusPath = path.join(os.homedir(), '.claude', 'toolkit-state', 'update-status.json');
   const modelPrefPath = path.join(os.homedir(), '.claude', 'destincode-model.json');
+  const appearancePrefPath = path.join(os.homedir(), '.claude', 'destincode-appearance.json');
   const defaultsPrefPath = path.join(os.homedir(), '.claude', 'destincode-defaults.json');
 
   function readJsonFile(filePath: string): any {

@@ -687,6 +687,32 @@ export class RemoteServer {
         }
         break;
       }
+      case 'appearance:get': {
+        const appearancePath = path.join(os.homedir(), '.claude', 'destincode-appearance.json');
+        try {
+          const raw = await fs.promises.readFile(appearancePath, 'utf8');
+          this.respond(client.ws, type, id, JSON.parse(raw));
+        } catch {
+          this.respond(client.ws, type, id, null);
+        }
+        break;
+      }
+      case 'appearance:set': {
+        const appearancePath = path.join(os.homedir(), '.claude', 'destincode-appearance.json');
+        try {
+          let existing: Record<string, any> = {};
+          try {
+            existing = JSON.parse(await fs.promises.readFile(appearancePath, 'utf8'));
+          } catch {}
+          const merged = { ...existing, ...payload };
+          await fs.promises.mkdir(path.dirname(appearancePath), { recursive: true });
+          await fs.promises.writeFile(appearancePath, JSON.stringify(merged));
+          this.respond(client.ws, type, id, true);
+        } catch {
+          this.respond(client.ws, type, id, false);
+        }
+        break;
+      }
       case 'defaults:get': {
         const defaultsPrefPath = path.join(os.homedir(), '.claude', 'destincode-defaults.json');
         const DEFAULTS_INITIAL = { skipPermissions: false, model: 'sonnet', projectFolder: '' };

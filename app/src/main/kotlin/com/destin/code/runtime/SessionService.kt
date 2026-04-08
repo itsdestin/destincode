@@ -909,6 +909,32 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
 
+            "appearance:get" -> {
+                val prefFile = File(bootstrap!!.homeDir, ".claude-mobile/destincode-appearance.json")
+                val result: Any = try {
+                    org.json.JSONObject(prefFile.readText())
+                } catch (_: Exception) { org.json.JSONObject.NULL }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "appearance:set" -> {
+                val prefFile = File(bootstrap!!.homeDir, ".claude-mobile/destincode-appearance.json")
+                try {
+                    val existing = try {
+                        org.json.JSONObject(prefFile.readText())
+                    } catch (_: Exception) { org.json.JSONObject() }
+                    val keys = msg.payload.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        existing.put(key, msg.payload.get(key))
+                    }
+                    prefFile.parentFile?.mkdirs()
+                    prefFile.writeText(existing.toString())
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+                } catch (_: Exception) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, false) }
+                }
+            }
+
             "defaults:get" -> {
                 val defaultsFile = File(bootstrap!!.homeDir, ".claude-mobile/destincode-defaults.json")
                 val defaults = try {

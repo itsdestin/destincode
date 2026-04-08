@@ -69,6 +69,11 @@ function getStoredJSON<T>(key: string, fallback: T): T {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; } catch { return fallback; }
 }
 
+/** Fire-and-forget write of appearance prefs to disk via IPC */
+function persistAppearance(prefs: Record<string, any>) {
+  try { (window as any).claude?.appearance?.set(prefs); } catch {}
+}
+
 function applyFont(font: string) {
   document.documentElement.style.setProperty('--font-sans', font);
   document.documentElement.style.setProperty('--font-mono', font);
@@ -88,6 +93,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [reducedEffects, setReducedEffectsState] = useState(() => getStored(REDUCED_EFFECTS_KEY, '') === '1');
   const [showTimestamps, setShowTimestampsState] = useState(() => getStored(SHOW_TIMESTAMPS_KEY, '1') !== '0');
   const [userThemes, setUserThemes] = useState<LoadedTheme[]>([]);
+  const [userThemesLoaded, setUserThemesLoaded] = useState(false);
 
   // All themes including _preview (for engine lookup) — memoized to stabilize references
   const allThemesInternal = useMemo(() => [...BUILTIN_THEMES, ...userThemes], [userThemes]);
@@ -95,20 +101,24 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const allThemes = useMemo(() => allThemesInternal.filter(t => t.slug !== PREVIEW_SLUG), [allThemesInternal]);
   const activeTheme = useMemo(() => allThemesInternal.find(t => t.slug === activeSlug) ?? BUILTIN_THEMES[0], [allThemesInternal, activeSlug]);
 
-  // Fallback if active theme was uninstalled (slug no longer in allThemes)
+  // Fallback if active theme was uninstalled (slug no longer in allThemes).
+  // Guard: skip until user themes have loaded, otherwise a valid community/user
+  // theme would be falsely detected as "uninstalled" before its theme file loads.
   useEffect(() => {
+    if (!userThemesLoaded) return;
     if (!allThemes.find(t => t.slug === activeSlug)) {
       setActiveSlug(DEFAULT_THEME);
       try { localStorage.setItem(STORAGE_KEY, DEFAULT_THEME); } catch {}
+      persistAppearance({ theme: DEFAULT_THEME });
     }
-  }, [allThemes, activeSlug]);
+  }, [allThemes, activeSlug, userThemesLoaded]);
 
   // Load user themes from disk on mount
   useEffect(() => {
     const loadUserThemes = async () => {
       try {
         const claude = (window as any).claude;
-        if (!claude?.theme?.list) return;
+        if (!claude?.theme?.list) { setUserThemesLoaded(true); return; }
         const slugs: string[] = await claude.theme.list();
         const loaded: LoadedTheme[] = [];
         for (const slug of slugs) {
@@ -122,9 +132,43 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
           }
         }
         setUserThemes(loaded);
-      } catch { /* not in Electron */ }
+        setUserThemesLoaded(true);
+      } catch {
+        setUserThemesLoaded(true); // Mark loaded even on error so fallback can run
+      }
     };
     loadUserThemes();
+  }, []);
+
+  // Load appearance preferences from disk (source of truth) on mount
+  useEffect(() => {
+    const loadAppearance = async () => {
+      try {
+        const claude = (window as any).claude;
+        if (!claude?.appearance?.get) return;
+        const prefs = await claude.appearance.get();
+        if (!prefs) return; // First launch — no file yet, keep localStorage/defaults
+
+        if (prefs.theme && typeof prefs.theme === 'string') {
+          setActiveSlug(prefs.theme);
+          try { localStorage.setItem(STORAGE_KEY, prefs.theme); } catch {}
+          document.documentElement.setAttribute('data-theme', prefs.theme);
+        }
+        if (Array.isArray(prefs.themeCycle) && prefs.themeCycle.length > 0) {
+          setCycleListState(prefs.themeCycle);
+          try { localStorage.setItem(CYCLE_KEY, JSON.stringify(prefs.themeCycle)); } catch {}
+        }
+        if (typeof prefs.reducedEffects === 'boolean') {
+          setReducedEffectsState(prefs.reducedEffects);
+          try { localStorage.setItem(REDUCED_EFFECTS_KEY, prefs.reducedEffects ? '1' : ''); } catch {}
+        }
+        if (typeof prefs.showTimestamps === 'boolean') {
+          setShowTimestampsState(prefs.showTimestamps);
+          try { localStorage.setItem(SHOW_TIMESTAMPS_KEY, prefs.showTimestamps ? '1' : '0'); } catch {}
+        }
+      } catch {}
+    };
+    loadAppearance();
   }, []);
 
   // Track the slug the user had before preview auto-switch
@@ -173,6 +217,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
             const revert = prePreviewSlug ?? DEFAULT_THEME;
             setPrePreviewSlug(null);
             try { localStorage.setItem(STORAGE_KEY, revert); } catch {}
+            persistAppearance({ theme: revert });
             return revert;
           });
         }
@@ -198,22 +243,26 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const setTheme = useCallback((slug: string) => {
     setActiveSlug(slug);
     try { localStorage.setItem(STORAGE_KEY, slug); } catch {}
+    if (slug !== PREVIEW_SLUG) persistAppearance({ theme: slug });
   }, []);
 
   const setCycleList = useCallback((list: string[]) => {
     const safe = list.length > 0 ? list : DEFAULT_CYCLE;
     setCycleListState(safe);
     try { localStorage.setItem(CYCLE_KEY, JSON.stringify(safe)); } catch {}
+    persistAppearance({ themeCycle: safe });
   }, []);
 
   const setReducedEffects = useCallback((v: boolean) => {
     setReducedEffectsState(v);
     try { localStorage.setItem(REDUCED_EFFECTS_KEY, v ? '1' : ''); } catch {}
+    persistAppearance({ reducedEffects: v });
   }, []);
 
   const setShowTimestamps = useCallback((v: boolean) => {
     setShowTimestampsState(v);
     try { localStorage.setItem(SHOW_TIMESTAMPS_KEY, v ? '1' : '0'); } catch {}
+    persistAppearance({ showTimestamps: v });
   }, []);
 
   const cycleTheme = useCallback(() => {
@@ -222,6 +271,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       if (prev === PREVIEW_SLUG && prePreviewSlug) {
         setPrePreviewSlug(null);
         try { localStorage.setItem(STORAGE_KEY, prePreviewSlug); } catch {}
+        persistAppearance({ theme: prePreviewSlug });
         return prePreviewSlug;
       }
       const pool = allThemes.filter(t => cycleList.includes(t.slug));
@@ -229,6 +279,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       const idx = pool.findIndex(t => t.slug === prev);
       const next = idx === -1 ? pool[0].slug : pool[(idx + 1) % pool.length].slug;
       try { localStorage.setItem(STORAGE_KEY, next); } catch {}
+      persistAppearance({ theme: next });
       return next;
     });
   }, [allThemes, cycleList, prePreviewSlug]);

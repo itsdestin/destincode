@@ -83,6 +83,8 @@ const IPC = {
   FIRST_RUN_SKIP: 'first-run:skip',
   MODEL_GET_PREFERENCE: 'model:get-preference',
   MODEL_SET_PREFERENCE: 'model:set-preference',
+  APPEARANCE_GET: 'appearance:get',
+  APPEARANCE_SET: 'appearance:set',
   MODEL_READ_LAST: 'model:read-last',
   DEFAULTS_GET: 'defaults:get',
   DEFAULTS_SET: 'defaults:set',
@@ -212,6 +214,12 @@ contextBridge.exposeInMainWorld('claude', {
     getPreference: (): Promise<string> => ipcRenderer.invoke(IPC.MODEL_GET_PREFERENCE),
     setPreference: (model: string): Promise<boolean> => ipcRenderer.invoke(IPC.MODEL_SET_PREFERENCE, model),
     readLastModel: (transcriptPath: string): Promise<string | null> => ipcRenderer.invoke(IPC.MODEL_READ_LAST, transcriptPath),
+  },
+  appearance: {
+    get: (): Promise<{ theme?: string; themeCycle?: string[]; reducedEffects?: boolean; showTimestamps?: boolean } | null> =>
+      ipcRenderer.invoke(IPC.APPEARANCE_GET),
+    set: (prefs: { theme?: string; themeCycle?: string[]; reducedEffects?: boolean; showTimestamps?: boolean }): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.APPEARANCE_SET, prefs),
   },
   defaults: {
     get: (): Promise<{ skipPermissions: boolean; model: string; projectFolder: string }> =>

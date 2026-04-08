@@ -532,6 +532,10 @@ export function installShim(): void {
       setPreference: (model: string) => invoke('model:set-preference', { model }),
       readLastModel: async () => null,
     },
+    appearance: {
+      get: () => invoke('appearance:get'),
+      set: (prefs: Record<string, any>) => invoke('appearance:set', prefs),
+    },
     defaults: {
       get: () => invoke('defaults:get'),
       set: (updates: Record<string, any>) => invoke('defaults:set', updates),
