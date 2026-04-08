@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 
 interface SavedFolder {
   path: string;
@@ -23,9 +22,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [editNickname, setEditNickname] = useState('');
   const editRef = useRef<HTMLInputElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -44,9 +41,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
   useEffect(() => {
     if (!open) return;
     const handler = (e: Event) => {
-      const target = e.target as Node;
-      if (panelRef.current?.contains(target)) return;
-      if (triggerRef.current?.contains(target)) return;
+      if (wrapperRef.current?.contains(e.target as Node)) return;
       setOpen(false);
       setEditingPath(null);
     };
@@ -115,22 +110,10 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
       : 'Select folder...';
 
   return (
-    <div ref={panelRef} className="relative">
+    <div ref={wrapperRef} className="relative">
       {/* Trigger button — shows current selection */}
       <button
-        ref={triggerRef}
-        onClick={() => {
-          if (!open && triggerRef.current) {
-            const rect = triggerRef.current.getBoundingClientRect();
-            const dropdownWidth = Math.max(rect.width, 320);
-            // Center the dropdown horizontally relative to the trigger button
-            const centerLeft = rect.left + (rect.width / 2) - (dropdownWidth / 2);
-            // Clamp to viewport so it doesn't overflow off-screen
-            const clampedLeft = Math.max(8, Math.min(centerLeft, window.innerWidth - dropdownWidth - 8));
-            setDropdownPos({ top: rect.bottom + 4, left: clampedLeft, width: dropdownWidth });
-          }
-          setOpen(!open);
-        }}
+        onClick={() => setOpen(!open)}
         className="w-full text-left px-2.5 py-1.5 bg-inset border border-edge rounded-md text-xs text-fg-2 hover:border-edge transition-colors truncate flex items-center gap-1.5"
       >
         <svg className="w-3 h-3 shrink-0 text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -149,17 +132,11 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
         </div>
       )}
 
-      {/* Dropdown panel — portaled to body for proper centering */}
-      {open && dropdownPos && createPortal(
+      {/* Dropdown panel — inline, not portaled */}
+      {open && (
         <div
-          ref={panelRef}
-          className="fixed bg-panel border border-edge rounded-lg shadow-lg overflow-hidden z-[9999] glass-overlay"
-          style={{
-            top: dropdownPos.top,
-            left: dropdownPos.left,
-            width: dropdownPos.width,
-            animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both',
-          }}
+          className="absolute left-0 right-0 top-full mt-1 bg-panel border border-edge rounded-lg shadow-lg overflow-hidden z-50"
+          style={{ animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
         >
           {/* Saved folders list */}
           {folders.length > 0 && (
@@ -265,8 +242,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
               <span>Browse for folder</span>
             </button>
           </div>
-        </div>,
-        document.body
+        </div>
       )}
     </div>
   );

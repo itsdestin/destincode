@@ -452,7 +452,7 @@ export default function SessionStrip({
       {menuOpen && createPortal(
         <div
           ref={dropdownRef}
-          className="glass-overlay overlay-no-drag fixed w-72 bg-panel border border-edge rounded-lg shadow-lg overflow-hidden z-[9000]"
+          className="glass-overlay overlay-no-drag fixed w-72 bg-panel border border-edge rounded-lg shadow-lg z-[9000]"
           style={(() => {
             const triggerRect = triggerBtnRef.current?.getBoundingClientRect();
             const pillRect = pillBarRef.current?.getBoundingClientRect();
