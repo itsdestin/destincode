@@ -63,10 +63,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       if (e.defaultPrevented) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      // Focus textarea for paste shortcuts so Ctrl+V lands in the input
+      // even after the idle blur timer has unfocused it
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        inputRef.current?.focus();
+        return;
+      }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key !== 'Backspace' && e.key !== 'Enter' && e.key.length !== 1) return;
       inputRef.current?.focus();
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         sendRef.current();
       }
@@ -89,9 +95,11 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     };
     el.addEventListener('keydown', resetTimer);
     el.addEventListener('input', resetTimer);
+    el.addEventListener('paste', resetTimer);
     return () => {
       el.removeEventListener('keydown', resetTimer);
       el.removeEventListener('input', resetTimer);
+      el.removeEventListener('paste', resetTimer);
       if (idleBlurTimer.current) clearTimeout(idleBlurTimer.current);
     };
   }, []);
@@ -325,7 +333,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             }}
             onKeyDown={(e) => {
               // Enter sends, Shift+Enter inserts newline
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 if (minimal && sessionId) {
                   // Terminal mode: send text + Enter directly to PTY

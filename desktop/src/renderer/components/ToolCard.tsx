@@ -243,6 +243,10 @@ function PermissionButtons({ requestId, suggestions, onResponded, onFailed }: {
   useEffect(() => {
     if (responding) return;
     const handler = (e: KeyboardEvent) => {
+      // Don't steal keyboard events when user is typing in an input
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
         setFocusIdx(prev => {
