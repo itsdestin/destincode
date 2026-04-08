@@ -177,6 +177,13 @@ function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: stri
       return { label, detail: taskId ? `↳ #${taskId}` : '' };
     }
 
+    case 'AskUserQuestion': {
+      // Show the first question's header/text as the tool label
+      const questions = input.questions as any[];
+      const header = questions?.[0]?.header || questions?.[0]?.question || 'Question';
+      return { label: truncate(String(header), 40), detail: '' };
+    }
+
     default: {
       // MCP tools: mcp__{server}__{action}
       if (toolName.startsWith('mcp__')) {
@@ -298,6 +305,207 @@ function PermissionButtons({ requestId, suggestions, onResponded, onFailed }: {
   );
 }
 
+// --- AskUserQuestion UI ---
+// Claude Code's AskUserQuestion tool sends 1-4 multiple-choice questions.
+// Unlike regular tools (allow/deny), we must collect the user's selections
+// and return them via updatedInput.answers so Claude gets the actual answer.
+
+interface AskQuestion {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect: boolean;
+}
+
+function isValidQuestions(input: Record<string, unknown>): input is { questions: AskQuestion[] } {
+  const q = input.questions;
+  return Array.isArray(q) && q.length > 0 && typeof q[0]?.question === 'string';
+}
+
+function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
+  tool: ToolCallState;
+  requestId: string;
+  onResponded?: () => void;
+  onFailed?: () => void;
+}) {
+  const questions = (tool.input as any).questions as AskQuestion[];
+  // answers: map from question text → selected label(s)
+  const [answers, setAnswers] = useState<Record<string, Set<string>>>({});
+  const [responding, setResponding] = useState(false);
+  // Track which question is "active" for keyboard nav, and which option is focused
+  const [focusedOption, setFocusedOption] = useState(0);
+
+  const allAnswered = questions.every(q => {
+    const sel = answers[q.question];
+    return sel && sel.size > 0;
+  });
+
+  const handleSelect = useCallback((question: string, label: string, multiSelect: boolean) => {
+    setAnswers(prev => {
+      const current = prev[question] || new Set<string>();
+      const next = new Set(current);
+      if (multiSelect) {
+        // Toggle for multi-select
+        if (next.has(label)) next.delete(label);
+        else next.add(label);
+      } else {
+        // Replace for single-select
+        next.clear();
+        next.add(label);
+      }
+      return { ...prev, [question]: next };
+    });
+  }, []);
+
+  const handleSubmit = useCallback(async () => {
+    if (!allAnswered || responding) return;
+    setResponding(true);
+    // Build answers object: question text → "Label" or "Label1, Label2"
+    const answersObj: Record<string, string> = {};
+    for (const q of questions) {
+      const sel = answers[q.question];
+      answersObj[q.question] = sel ? Array.from(sel).join(', ') : '';
+    }
+    try {
+      const delivered = await (window as any).claude.session.respondToPermission(requestId, {
+        decision: {
+          behavior: 'allow',
+          updatedInput: {
+            questions,       // Echo back original questions array
+            answers: answersObj,
+          },
+        },
+      });
+      if (delivered === false) {
+        setResponding(false);
+        if (onFailed) onFailed();
+        return;
+      }
+      if (onResponded) onResponded();
+    } catch (err) {
+      console.error('Failed to respond to AskUserQuestion:', err);
+      setResponding(false);
+      if (onFailed) onFailed();
+    }
+  }, [allAnswered, responding, questions, answers, requestId, onResponded, onFailed]);
+
+  const handleDeny = useCallback(async () => {
+    setResponding(true);
+    try {
+      const delivered = await (window as any).claude.session.respondToPermission(requestId, {
+        decision: { behavior: 'deny' },
+      });
+      if (delivered === false) {
+        setResponding(false);
+        if (onFailed) onFailed();
+        return;
+      }
+      if (onResponded) onResponded();
+    } catch {
+      setResponding(false);
+      if (onFailed) onFailed();
+    }
+  }, [requestId, onResponded, onFailed]);
+
+  // Total flat list of all options across questions (for keyboard nav)
+  const allOptions = questions.flatMap(q => q.options.map(o => ({ q, o })));
+  const optionCount = allOptions.length;
+
+  // Keyboard: Arrow Up/Down cycles options, Enter toggles selection, Ctrl+Enter submits
+  useEffect(() => {
+    if (responding) return;
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        setFocusedOption(prev =>
+          e.key === 'ArrowDown' ? (prev + 1) % optionCount : (prev - 1 + optionCount) % optionCount
+        );
+      } else if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        // Select the focused option
+        if (optionCount > 0) {
+          const { q, o } = allOptions[focusedOption];
+          handleSelect(q.question, o.label, q.multiSelect);
+        }
+      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        // Ctrl/Cmd+Enter to submit
+        e.preventDefault();
+        handleSubmit();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [responding, focusedOption, optionCount, allOptions, handleSelect, handleSubmit]);
+
+  const pad = isAndroid() ? 'py-2' : 'py-1.5';
+  let flatIdx = 0; // Running index across all questions' options for keyboard focus
+
+  return (
+    <div className="border-t border-edge px-3 py-2 space-y-3">
+      {questions.map((q, qi) => (
+        <div key={qi}>
+          <div className="text-xs font-medium text-fg-2 mb-1">
+            {q.header && <span className="text-fg-muted mr-1">{q.header}:</span>}
+            {q.question}
+          </div>
+          <div className="space-y-1">
+            {q.options.map((opt, oi) => {
+              const idx = flatIdx++;
+              const selected = answers[q.question]?.has(opt.label) ?? false;
+              const focused = idx === focusedOption;
+              return (
+                <button
+                  key={oi}
+                  disabled={responding}
+                  onClick={() => handleSelect(q.question, opt.label, q.multiSelect)}
+                  className={`w-full text-left px-2.5 ${pad} rounded-sm text-xs transition-colors
+                    ${selected
+                      ? 'bg-accent/20 border border-accent/50 text-fg'
+                      : 'bg-inset/40 border border-transparent hover:bg-inset/70 text-fg-dim'}
+                    ${focused ? 'ring-1 ring-white/30' : ''}
+                    disabled:opacity-50`}
+                >
+                  <div className="flex items-center gap-2">
+                    {/* Selection indicator */}
+                    <span className={`w-3 h-3 shrink-0 rounded-${q.multiSelect ? 'sm' : 'full'} border
+                      ${selected ? 'bg-accent border-accent' : 'border-edge'}`}
+                    />
+                    <span className="font-medium">{opt.label}</span>
+                  </div>
+                  {opt.description && (
+                    <div className="text-fg-muted ml-5 mt-0.5">{opt.description}</div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {/* Submit + Deny buttons */}
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          disabled={!allAnswered || responding}
+          onClick={handleSubmit}
+          className={`px-3 ${pad} text-xs font-medium rounded-sm transition-colors disabled:opacity-40
+            ${allAnswered ? 'bg-accent/70 hover:bg-accent/90 text-on-accent' : 'bg-inset/50 text-fg-muted'}`}
+        >
+          Submit
+        </button>
+        <button
+          disabled={responding}
+          onClick={handleDeny}
+          className={`px-3 ${pad} text-xs font-medium rounded-sm bg-inset/40 hover:bg-red-600/40 text-fg-muted hover:text-red-200 transition-colors disabled:opacity-50`}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+}
+
 interface Props {
   tool: ToolCallState;
   sessionId?: string;
@@ -337,27 +545,40 @@ export default React.memo(function ToolCard({ tool, sessionId }: Props) {
       </button>
 
 
-      {/* Permission approval buttons */}
-      {tool.status === 'awaiting-approval' && tool.requestId && (
-        <PermissionButtons
-          requestId={tool.requestId}
-          suggestions={tool.permissionSuggestions}
-          onResponded={() => {
-            if (sessionId && tool.requestId) {
-              const action = { type: 'PERMISSION_RESPONDED' as const, sessionId, requestId: tool.requestId };
-              dispatch(action);
-              (window as any).claude?.remote?.broadcastAction(action);
-            }
-          }}
-          onFailed={() => {
-            if (sessionId && tool.requestId) {
-              const action = { type: 'PERMISSION_EXPIRED' as const, sessionId, requestId: tool.requestId };
-              dispatch(action);
-              (window as any).claude?.remote?.broadcastAction(action);
-            }
-          }}
-        />
-      )}
+      {/* Permission / AskUserQuestion UI */}
+      {tool.status === 'awaiting-approval' && tool.requestId && (() => {
+        // AskUserQuestion needs its own UI with option selection instead of Yes/No
+        const isAskUser = tool.toolName === 'AskUserQuestion' && isValidQuestions(tool.input);
+        const onRespondedCb = () => {
+          if (sessionId && tool.requestId) {
+            const action = { type: 'PERMISSION_RESPONDED' as const, sessionId, requestId: tool.requestId };
+            dispatch(action);
+            (window as any).claude?.remote?.broadcastAction(action);
+          }
+        };
+        const onFailedCb = () => {
+          if (sessionId && tool.requestId) {
+            const action = { type: 'PERMISSION_EXPIRED' as const, sessionId, requestId: tool.requestId };
+            dispatch(action);
+            (window as any).claude?.remote?.broadcastAction(action);
+          }
+        };
+        return isAskUser ? (
+          <AskUserQuestionCard
+            tool={tool}
+            requestId={tool.requestId}
+            onResponded={onRespondedCb}
+            onFailed={onFailedCb}
+          />
+        ) : (
+          <PermissionButtons
+            requestId={tool.requestId}
+            suggestions={tool.permissionSuggestions}
+            onResponded={onRespondedCb}
+            onFailed={onFailedCb}
+          />
+        );
+      })()}
 
       {/* Expanded details */}
       {expanded && (
