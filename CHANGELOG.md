@@ -2,6 +2,33 @@
 
 All notable changes to DestinCode are documented in this file.
 
+## [2.3.2] — 2026-04-08
+
+### Added
+- **AskUserQuestion UI** — multiple-choice option selection with keyboard nav (Arrow Up/Down, Enter, Ctrl+Enter to submit)
+- **Notification sounds** — selectable Web Audio presets for completion, attention (red status), and ready (blue status) events with per-category toggles
+- **Welcome screen form** — expandable New Session with project folder, model picker, and skip-permissions toggle; Resume Session button
+- **Glassmorphism sliders** — Panel Blur, Panel Opacity, Bubble Blur, Bubble Opacity controls in appearance settings
+- **Appearance persistence** — theme, cycle list, reduced effects, and timestamps now persist to disk across app restarts (localStorage kept as FOUC cache)
+
+### Fixed
+- **Enter key stolen by ToolCard** — global Enter handler no longer intercepts when user is typing in InputBar textarea
+- **Paste fails after idle blur** — Ctrl+V refocuses textarea; paste resets idle timer
+- **PTY paste swallowed** — text and Enter sent as separate PTY writes with 50ms delay so Ink processes them in distinct read cycles
+- **Initializing overlay covers chrome** — lowered z-index so glassmorphism header/bottom bars remain accessible
+- **Game presence** — server pong returns full user list every 30s for self-correction; challenge-failed feedback when target offline; green dot checks connected state
+- **Remote access status** — green only when remote enabled + Tailscale installed + VPN active
+- **Android session:destroyed** — broadcast added so React UI removes closed sessions from selector (desktop parity)
+- **Glass dropdown blur** — portaled to #root for live content backdrop-filter; removed transform-based centering that broke Chromium compositing
+- **Bubble blur slider** — engine override rules injected after theme custom_css to ensure manifest fields take precedence
+- **macOS traffic lights** — overlay-header padding on all overlay screens; fullscreen state relay removes padding when traffic lights disappear
+- **Session dropdown corners** — child backgrounds clipped to container border-radius
+
+### Changed
+- **Glassmorphism CSS** — all glass rules now use --panels-blur and --panel-glass CSS variables (slider-controlled in real-time)
+- **Bottom chrome scroll-behind** — input + status bars absolutely positioned with ResizeObserver-driven padding so chat scrolls behind frosted glass
+- **Sound settings** — converted from inline section to popout panel with master volume, per-category toggles, and preset selectors
+
 ## [2.3.1] — 2026-04-08
 
 ### Added
