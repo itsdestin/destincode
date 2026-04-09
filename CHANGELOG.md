@@ -10,6 +10,8 @@ All notable changes to DestinCode are documented in this file.
 - **Welcome screen form** — expandable New Session with project folder, model picker, and skip-permissions toggle; Resume Session button
 - **Glassmorphism sliders** — Panel Blur, Panel Opacity, Bubble Blur, Bubble Opacity controls in appearance settings
 - **Appearance persistence** — theme, cycle list, reduced effects, and timestamps now persist to disk across app restarts (localStorage kept as FOUC cache)
+- **Sync Management UI** — visual control plane for DestinClaude sync in Settings (backend cards, force sync, warning resolution, config editor, log viewer)
+- **Keyboard shortcuts** — Ctrl+` toggles chat/terminal view; shortcuts help panel in settings
 
 ### Fixed
 - **Enter key stolen by ToolCard** — global Enter handler no longer intercepts when user is typing in InputBar textarea
