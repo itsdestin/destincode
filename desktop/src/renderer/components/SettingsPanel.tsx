@@ -731,8 +731,8 @@ function RemoteButton({
                       </div>
                     </section>
 
-                    {/* Add Device — always visible when remote is configured */}
-                    {tailscale?.installed && config?.hasPassword && (
+                    {/* Add Device — requires Tailscale running, otherwise tailscale.url is null */}
+                    {tailscale?.installed && tailscale?.connected && tailscale?.url && config?.hasPassword && (
                       <button
                         onClick={() => onSetShowAddDevice(!showAddDevice)}
                         className="w-full px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/25 text-xs text-blue-400 font-medium hover:bg-blue-500/20 transition-colors flex items-center justify-center gap-1.5"
@@ -801,16 +801,22 @@ function RemoteButton({
 
                       {tailscale?.installed ? (
                         <>
+                          {/* Distinguish "installed and connected" from "installed but VPN off" —
+                              previously detection conflated the two and forced the not-installed branch. */}
                           <div className="py-2 flex items-center justify-between">
                             <span className="text-xs text-fg-2">Status</span>
-                            <span className="text-[10px] text-green-400">
-                              Connected{tailscale.hostname ? ` · ${tailscale.hostname}` : ''}
-                            </span>
+                            {tailscale.connected ? (
+                              <span className="text-[10px] text-green-400">
+                                Connected{tailscale.hostname ? ` · ${tailscale.hostname}` : ''}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-fg-muted">VPN not active</span>
+                            )}
                           </div>
 
                           <div className="py-2 flex items-center justify-between">
                             <span className="text-xs text-fg-2">IP</span>
-                            <span className="text-xs text-fg-dim font-mono">{tailscale.ip}</span>
+                            <span className="text-xs text-fg-dim font-mono">{tailscale.ip ?? '—'}</span>
                           </div>
 
                           <label className="flex items-center justify-between py-2 cursor-pointer">
