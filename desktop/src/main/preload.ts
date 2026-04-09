@@ -157,6 +157,12 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.SESSION_RENAMED, handler);
       return handler;
     },
+    // Shape parity with remote-shim — desktop never fires this push event
+    // (mode detection runs in App.tsx via pty:output text matching), so this
+    // is a no-op subscriber that just keeps `window.claude.on` symmetric.
+    sessionPermissionMode: (_cb: (sessionId: string, mode: string) => void) => {
+      return () => {};
+    },
     uiAction: (cb: (action: any) => void) => {
       const handler = (_e: IpcRendererEvent, action: any) => cb(action);
       ipcRenderer.on(IPC.UI_ACTION_RECEIVED, handler);

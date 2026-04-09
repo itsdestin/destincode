@@ -464,6 +464,19 @@ function AppInner() {
       });
     });
 
+    // Android-only: corrects optimistic permission-mode cycling. Desktop's
+    // detection runs through ptyOutput above, but Android doesn't forward
+    // raw PTY bytes — ManagedSession.detectPermissionMode broadcasts this
+    // event from its 1Hz screen poll instead.
+    const sessionPermissionModeHandler = (window.claude.on as any).sessionPermissionMode?.((sid: string, mode: string) => {
+      const valid: PermissionMode[] = ['normal', 'auto-accept', 'plan', 'bypass'];
+      if (!valid.includes(mode as PermissionMode)) return;
+      setPermissionModes((prev) => {
+        if (prev.get(sid) === mode) return prev;
+        return new Map(prev).set(sid, mode as PermissionMode);
+      });
+    });
+
     return () => {
       transcriptBatchCancelled = true;
       if (transcriptRafId !== null) cancelAnimationFrame(transcriptRafId);
@@ -478,6 +491,7 @@ function AppInner() {
       if (promptShowHandler) window.claude.off('prompt:show', promptShowHandler);
       if (promptDismissHandler) window.claude.off('prompt:dismiss', promptDismissHandler);
       if (promptCompleteHandler) window.claude.off('prompt:complete', promptCompleteHandler);
+      if (sessionPermissionModeHandler) window.claude.off('session:permission-mode', sessionPermissionModeHandler);
     };
   }, [dispatch]);
 

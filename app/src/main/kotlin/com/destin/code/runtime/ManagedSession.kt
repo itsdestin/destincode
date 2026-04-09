@@ -56,8 +56,9 @@ class ManagedSession(
     /** Bridge server for forwarding events to React UI. Set by SessionRegistry. */
     var bridgeServer: LocalBridgeServer? = null
 
-    /** Current Claude Code permission mode, detected from terminal status bar. */
-    var permissionMode: String = "Normal"
+    /** Current Claude Code permission mode, detected from terminal status bar.
+     *  Values match React's PermissionMode type: "normal" | "auto-accept" | "plan" | "bypass". */
+    var permissionMode: String = "normal"
 
     /** Draft text in the input bar — shared across Chat/Terminal/Shell modes */
     var inputDraft by mutableStateOf(TextFieldValue())
@@ -336,14 +337,28 @@ class ManagedSession(
         "Select Login Method",
     )
 
-    /** Detect permission mode from visible screen only (not raw buffer). */
+    /** Detect permission mode from visible screen only (not raw buffer).
+     *  Broadcasts a `session:permission-mode` event when the mode changes so React
+     *  can correct its optimistic Shift+Tab cycling state — Android does not
+     *  forward raw pty:output to the renderer, so the desktop's PTY-text-based
+     *  detection in App.tsx never fires here. */
     private fun detectPermissionMode(screen: String) {
         val lower = screen.lowercase()
-        permissionMode = when {
-            "bypass permissions on" in lower -> "Bypass"
-            "accept edits on" in lower -> "Auto-Accept"
-            "plan mode on" in lower -> "Plan Mode"
-            else -> "Normal"
+        val newMode = when {
+            "bypass permissions on" in lower -> "bypass"
+            "accept edits on" in lower -> "auto-accept"
+            "plan mode on" in lower -> "plan"
+            else -> "normal"
+        }
+        if (newMode != permissionMode) {
+            permissionMode = newMode
+            bridgeServer?.broadcast(JSONObject().apply {
+                put("type", "session:permission-mode")
+                put("payload", JSONObject().apply {
+                    put("sessionId", id)
+                    put("mode", newMode)
+                })
+            })
         }
     }
 

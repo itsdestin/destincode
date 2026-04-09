@@ -145,6 +145,12 @@ function handleMessage(data: string): void {
     case 'session:renamed':
       dispatchEvent('session:renamed', payload.sessionId, payload.name);
       break;
+    case 'session:permission-mode':
+      // Android-only: corrects React's optimistic Shift+Tab cycling state.
+      // Desktop uses pty:output text detection in App.tsx, but Android doesn't
+      // forward raw PTY bytes to the renderer (terminal is rendered natively).
+      dispatchEvent('session:permission-mode', payload.sessionId, payload.mode);
+      break;
     case 'status:data':
       dispatchEvent('status:data', payload);
       break;
@@ -476,6 +482,8 @@ export function installShim(): void {
       hookEvent: (cb: Callback) => addListener('hook:event', cb),
       statusData: (cb: Callback) => addListener('status:data', cb),
       sessionRenamed: (cb: Callback) => addListener('session:renamed', cb),
+      // Android-only push event — see remote-shim handleMessage above for rationale.
+      sessionPermissionMode: (cb: Callback) => addListener('session:permission-mode', cb),
       uiAction: (cb: Callback) => addListener('ui:action:received', cb),
       transcriptEvent: (cb: Callback) => addListener('transcript:event', cb),
       promptShow: (cb: Callback) => addListener('prompt:show', cb),
