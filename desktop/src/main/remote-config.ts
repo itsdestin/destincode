@@ -2,6 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import bcrypt from 'bcryptjs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 const CONFIG_PATH = () => path.join(os.homedir(), '.claude', 'destincode-remote.json');
 const BCRYPT_ROUNDS = 10;
@@ -136,30 +140,65 @@ export class RemoteConfig {
     return tsPath;
   }
 
-  /** Detect Tailscale installation and connection status. */
+  /**
+   * Detect Tailscale installation and connection status.
+   *
+   * Fix: previously this ran `tailscale ip -4` first and used its success as the
+   * installation signal. That command fails when the VPN is disconnected (or the
+   * daemon is stopped), so the UI showed Tailscale as "uninstalled" any time the
+   * VPN was off. We now probe installation independently of the daemon — by
+   * verifying the binary on disk (or via `tailscale version`, which doesn't need
+   * the local API) — and only then probe connection state.
+   */
   static async detectTailscale(port: number): Promise<{ installed: boolean; connected: boolean; ip: string | null; hostname: string | null; url: string | null }> {
-    try {
-      const { execFile } = require('child_process');
-      const { promisify } = require('util');
-      const execFileAsync = promisify(execFile);
-      const tsPath = RemoteConfig.resolveTailscalePath();
+    const notInstalled = { installed: false, connected: false, ip: null, hostname: null, url: null };
 
-      const { stdout: ip } = await execFileAsync(tsPath, ['ip', '-4']);
-      const tailscaleIp = ip.trim();
+    const tsPath = RemoteConfig.resolveTailscalePath();
 
-      let hostname = '';
-      let connected = false;
-      try {
-        const { stdout: statusJson } = await execFileAsync(tsPath, ['status', '--json']);
-        const status = JSON.parse(statusJson);
-        hostname = status.Self?.HostName || '';
-        connected = status.BackendState === 'Running';
-      } catch {}
-
-      return { installed: true, connected, ip: tailscaleIp, hostname, url: `http://${tailscaleIp}:${port}` };
-    } catch {
-      return { installed: false, connected: false, ip: null, hostname: null, url: null };
+    // Step 1: confirm the binary exists, independent of daemon state.
+    // resolveTailscalePath() returns a verified absolute path on success, or
+    // the literal 'tailscale' as a fallback. For the fallback, run
+    // `tailscale version` (does not require the daemon) to check PATH.
+    let installed = false;
+    if (tsPath !== 'tailscale') {
+      try { fs.accessSync(tsPath); installed = true; } catch {}
+    } else {
+      try { await execFileAsync(tsPath, ['version']); installed = true; } catch {}
     }
+    if (!installed) return notInstalled;
+
+    // Step 2: probe daemon for connection state. Tolerate failure — when the
+    // Tailscale service is fully stopped, `status --json` errors out, but
+    // Tailscale is still installed (just not running).
+    let connected = false;
+    let hostname: string | null = null;
+    let tailscaleIp: string | null = null;
+    try {
+      const { stdout: statusJson } = await execFileAsync(tsPath, ['status', '--json']);
+      const status = JSON.parse(statusJson);
+      hostname = status.Self?.HostName || null;
+      connected = status.BackendState === 'Running';
+      if (connected) {
+        // Prefer the IP from status JSON (one fewer subprocess). Fall back to
+        // `tailscale ip -4` only if status JSON didn't include one.
+        const ips: string[] = status.Self?.TailscaleIPs ?? [];
+        tailscaleIp = ips.find((ip) => ip.includes('.')) ?? null;
+        if (!tailscaleIp) {
+          try {
+            const { stdout: ipOut } = await execFileAsync(tsPath, ['ip', '-4']);
+            tailscaleIp = ipOut.trim() || null;
+          } catch {}
+        }
+      }
+    } catch {}
+
+    return {
+      installed: true,
+      connected,
+      ip: tailscaleIp,
+      hostname,
+      url: tailscaleIp ? `http://${tailscaleIp}:${port}` : null,
+    };
   }
 
   /** Install Tailscale silently. Windows: winget, macOS: brew, Linux: manual. */
