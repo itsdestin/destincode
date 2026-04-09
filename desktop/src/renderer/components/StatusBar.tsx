@@ -11,6 +11,7 @@ interface StatusData {
     current: string;
     latest: string;
     update_available: boolean;
+    download_url: string | null;
   } | null;
   contextPercent: number | null;
   syncStatus: string | null;
@@ -291,15 +292,27 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </button>
       )}
 
-      {/* Version — hidden on very narrow screens */}
+      {/* Version pill — shows DestinCode app version, glows yellow when update available */}
       {show('version') && updateStatus && (
         <button
-          onClick={() => window.claude.shell.openChangelog()}
-          className="px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:bg-inset transition-colors hidden sm:inline-flex"
+          onClick={() => {
+            // When update available with a download URL, open the installer download directly
+            if (updateStatus.update_available && updateStatus.download_url) {
+              window.claude.shell.openExternal(updateStatus.download_url);
+            } else {
+              window.claude.shell.openChangelog();
+            }
+          }}
+          className={`px-1.5 py-0.5 rounded-sm border cursor-pointer transition-colors hidden sm:inline-flex ${
+            updateStatus.update_available
+              ? 'bg-[rgba(234,179,8,0.12)] border-[rgba(234,179,8,0.5)] hover:bg-[rgba(234,179,8,0.22)] animate-[version-glow_2s_ease-in-out_infinite]'
+              : 'bg-panel border-edge-dim hover:bg-inset'
+          }`}
+          title={updateStatus.update_available ? `Update available: v${updateStatus.latest} — click to download` : `DestinCode v${updateStatus.current}`}
         >
           {updateStatus.update_available ? (
-            <span className="text-[#FF9800]">
-              v{updateStatus.current} → v{updateStatus.latest}
+            <span className="text-[#EAB308] font-medium">
+              v{updateStatus.latest} — Update Available
             </span>
           ) : (
             <span>v{updateStatus.current}</span>

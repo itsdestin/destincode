@@ -45,7 +45,10 @@ export class StatusPoller extends EventEmitter {
 			backupMeta: await this.readJson('backup-meta.json'),
 			usage: await this.readJson('.usage-cache.json'),
 			announcement: await this.readJson('.announcement-cache.json'),
-			updateStatus: await this.readJson('toolkit-state/update-status.json'),
+			// updateStatus is now fetched from GitHub Releases API in ipc-handlers.ts,
+			// not from a local file. This poller isn't fully integrated yet — when it is,
+			// it should call the shared getUpdateStatus() from ipc-handlers instead.
+			updateStatus: null,
 		};
 		this.emit('status', data);
 	}

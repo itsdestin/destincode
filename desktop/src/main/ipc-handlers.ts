@@ -1,7 +1,8 @@
-import { IpcMain, BrowserWindow, dialog, clipboard, nativeImage, shell, powerSaveBlocker } from 'electron';
+import { app, IpcMain, BrowserWindow, dialog, clipboard, nativeImage, shell, powerSaveBlocker } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
@@ -639,7 +640,98 @@ export function registerIpcHandlers(
   // Reads DestinClaude cache files and pushes status updates to the renderer
   const usageCachePath = path.join(os.homedir(), '.claude', '.usage-cache.json');
   const announcementCachePath = path.join(os.homedir(), '.claude', '.announcement-cache.json');
-  const updateStatusPath = path.join(os.homedir(), '.claude', 'toolkit-state', 'update-status.json');
+
+  // --- DestinCode app update checker via GitHub Releases API ---
+  // Caches the latest release info and refreshes every 30 minutes.
+  let cachedUpdateStatus: { current: string; latest: string; update_available: boolean; download_url: string | null } | null = null;
+  let lastReleaseCheck = 0;
+  const RELEASE_CHECK_INTERVAL = 30 * 60 * 1000; // 30 minutes
+
+  function fetchLatestRelease(): Promise<void> {
+    return new Promise((resolve) => {
+      const req = https.get('https://api.github.com/repos/itsdestin/destincode/releases/latest', {
+        headers: { 'User-Agent': 'DestinCode', 'Accept': 'application/vnd.github.v3+json' },
+        timeout: 10000,
+      }, (res) => {
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          // Follow redirect (GitHub sometimes redirects)
+          https.get(res.headers.location!, { headers: { 'User-Agent': 'DestinCode', 'Accept': 'application/vnd.github.v3+json' }, timeout: 10000 }, (rRes) => {
+            let body = '';
+            rRes.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+            rRes.on('end', () => { parseReleaseResponse(body); resolve(); });
+          }).on('error', () => { resolve(); });
+          return;
+        }
+        let body = '';
+        res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        res.on('end', () => { parseReleaseResponse(body); resolve(); });
+      });
+      req.on('error', () => { resolve(); });
+      req.on('timeout', () => { req.destroy(); resolve(); });
+    });
+  }
+
+  function parseReleaseResponse(body: string) {
+    try {
+      const release = JSON.parse(body);
+      const tagName: string = release.tag_name || '';
+      const latestVersion = tagName.replace(/^v/, '');
+      const currentVersion = app.getVersion();
+      const isNewer = compareVersions(latestVersion, currentVersion) > 0;
+
+      // Find the right installer asset for the current platform
+      const assets: Array<{ name: string; browser_download_url: string }> = release.assets || [];
+      let downloadUrl: string | null = null;
+      const platform = process.platform;
+      if (platform === 'win32') {
+        // Prefer .exe installer
+        const exe = assets.find(a => a.name.endsWith('.exe'));
+        downloadUrl = exe?.browser_download_url || null;
+      } else if (platform === 'darwin') {
+        // Prefer .dmg
+        const dmg = assets.find(a => a.name.endsWith('.dmg'));
+        downloadUrl = dmg?.browser_download_url || null;
+      } else {
+        // Linux — prefer .AppImage, fallback to .deb
+        const appImage = assets.find(a => a.name.endsWith('.AppImage'));
+        const deb = assets.find(a => a.name.endsWith('.deb'));
+        downloadUrl = appImage?.browser_download_url || deb?.browser_download_url || null;
+      }
+      // Fallback to release page if no matching asset found
+      if (!downloadUrl) downloadUrl = release.html_url || null;
+
+      cachedUpdateStatus = { current: currentVersion, latest: latestVersion, update_available: isNewer, download_url: downloadUrl };
+      lastReleaseCheck = Date.now();
+    } catch {
+      // Parse failed — keep previous cache or set current version only
+      if (!cachedUpdateStatus) {
+        cachedUpdateStatus = { current: app.getVersion(), latest: app.getVersion(), update_available: false, download_url: null };
+      }
+    }
+  }
+
+  /** Simple semver compare: returns >0 if a > b, <0 if a < b, 0 if equal */
+  function compareVersions(a: string, b: string): number {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const na = pa[i] || 0;
+      const nb = pb[i] || 0;
+      if (na !== nb) return na - nb;
+    }
+    return 0;
+  }
+
+  function getUpdateStatus() {
+    // Return cached value, kick off background refresh if stale
+    if (Date.now() - lastReleaseCheck > RELEASE_CHECK_INTERVAL) {
+      fetchLatestRelease().catch(() => {});
+    }
+    return cachedUpdateStatus || { current: app.getVersion(), latest: app.getVersion(), update_available: false, download_url: null };
+  }
+
+  // Initial fetch on startup
+  fetchLatestRelease().catch(() => {});
   const modelPrefPath = path.join(os.homedir(), '.claude', 'destincode-model.json');
   const appearancePrefPath = path.join(os.homedir(), '.claude', 'destincode-appearance.json');
   const defaultsPrefPath = path.join(os.homedir(), '.claude', 'destincode-defaults.json');
@@ -666,7 +758,7 @@ export function registerIpcHandlers(
   function buildStatusData() {
     const usage = readJsonFile(usageCachePath);
     const announcement = readJsonFile(announcementCachePath);
-    const updateStatus = readJsonFile(updateStatusPath);
+    const updateStatus = getUpdateStatus();
     const syncStatus = readTextFile(syncStatusPath);
     const syncWarnings = readTextFile(syncWarningsPath);
 

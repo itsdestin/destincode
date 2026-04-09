@@ -646,6 +646,12 @@ html, body, #root {
   }
 }
 
+/* Yellow glow pulse for version pill when update is available */
+@keyframes version-glow {
+  0%, 100% { box-shadow: 0 0 4px rgba(234, 179, 8, 0.3); }
+  50% { box-shadow: 0 0 10px rgba(234, 179, 8, 0.6); }
+}
+
 /* Android safe area handling */
 @supports (padding-top: env(safe-area-inset-top)) {
   .safe-area-top { padding-top: env(safe-area-inset-top); }
