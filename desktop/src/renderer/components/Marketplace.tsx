@@ -555,18 +555,7 @@ function SkillsTab({ onSelectSkill }: { onSelectSkill: (id: string) => void }) {
   }, [installSkill]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-canvas flex flex-col">
-      {/* Header — overlay-header class adds macOS traffic light padding */}
-      <div className="overlay-header flex items-center px-4 py-3 border-b border-edge">
-        <button
-          onClick={onClose}
-          className="text-fg-muted hover:text-fg mr-3 text-lg"
-        >
-          &larr;
-        </button>
-        <h2 className="text-sm font-bold text-fg">Marketplace</h2>
-      </div>
-
+    <>
       {/* Search bar */}
       <div className="px-4 pt-3 pb-2">
         <input
