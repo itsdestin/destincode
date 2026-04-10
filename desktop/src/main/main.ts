@@ -10,7 +10,7 @@ import { registerIpcHandlers } from './ipc-handlers';
 import { RemoteServer } from './remote-server';
 import { RemoteConfig } from './remote-config';
 import { LocalSkillProvider } from './skill-provider';
-import { IPC } from '../shared/types';
+import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT } from '../shared/types';
 import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
 import { FirstRunManager } from './first-run';
@@ -64,15 +64,61 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'theme-asset', privileges: { bypassCSP: true, supportFetchAPI: true, stream: true } },
 ]);
 
-// Detect title hook Bash commands: `echo "Topic" > ~/.claude/topics/topic-...`
-// The auto-title PostToolUse hook fires every few minutes and tells Claude to write
-// a topic summary. In bypass mode this hits the .claude/ protected path check,
-// firing a PermissionRequest we need to silently approve.
+// --- Permission override classification ---
+// In bypass mode, Claude Code still fires PermissionRequest for protected paths,
+// compound cd commands, and AskUserQuestion. These regexes classify each request
+// so the user's per-category overrides can selectively auto-approve them.
+
 const TITLE_HOOK_RE = /[>|].*[/\\]\.claude[/\\]topics[/\\]topic-/;
-function isTitleHookCommand(toolInput?: Record<string, unknown>): boolean {
-  if (!toolInput) return false;
-  const cmd = toolInput.command as string;
-  return typeof cmd === 'string' && TITLE_HOOK_RE.test(cmd);
+const CONFIG_FILE_RE = /\.(bashrc|bash_profile|zshrc|zprofile|profile|gitconfig|gitmodules|ripgreprc)\b|\.mcp\.json|\.claude\.json/;
+const PROTECTED_DIR_RE = /[/\\]\.git[/\\]|[/\\]\.claude[/\\]/;
+const CD_REDIRECT_RE = /\bcd\b.*[>]/;
+const CD_GIT_RE = /\bcd\b.*\bgit\b/;
+
+type PermissionCategory =
+  | 'titleHook'
+  | 'protectedConfigFiles'
+  | 'protectedDirectories'
+  | 'compoundCdRedirect'
+  | 'compoundCdGit'
+  | 'unknown';
+
+function classifyPermission(toolName: string, toolInput?: Record<string, unknown>): PermissionCategory {
+  const cmd = (toolInput?.command as string) || '';
+  const filePath = (toolInput?.file_path as string) || '';
+  const target = cmd || filePath;
+
+  // Title hook — always auto-approved, checked first
+  if (toolName === 'Bash' && TITLE_HOOK_RE.test(cmd)) return 'titleHook';
+
+  // Compound cd patterns (Bash only) — check before path-based patterns
+  // because a single command can match both (e.g., cd /tmp && echo > .git/config)
+  if (toolName === 'Bash') {
+    if (CD_GIT_RE.test(cmd)) return 'compoundCdGit';
+    if (CD_REDIRECT_RE.test(cmd)) return 'compoundCdRedirect';
+  }
+
+  // Protected config files
+  if (CONFIG_FILE_RE.test(target)) return 'protectedConfigFiles';
+
+  // Protected directories (.git/, .claude/)
+  if (PROTECTED_DIR_RE.test(target)) return 'protectedDirectories';
+
+  return 'unknown';
+}
+
+// In-memory cache of user's permission overrides, loaded from defaults file
+// and updated by ipc-handlers.ts whenever defaults:set is called.
+let permissionOverrides: PermissionOverrides = { ...PERMISSION_OVERRIDES_DEFAULT };
+
+/** Called by ipc-handlers.ts on startup and after each defaults:set. */
+export function setPermissionOverrides(overrides: Partial<PermissionOverrides>) {
+  permissionOverrides = { ...PERMISSION_OVERRIDES_DEFAULT, ...overrides };
+}
+
+/** Read current overrides (for ipc-handlers.ts startup load). */
+export function getPermissionOverrides(): PermissionOverrides {
+  return permissionOverrides;
 }
 
 function registerFirstRunIpc(
@@ -272,19 +318,35 @@ function createWindow(firstRunManager?: FirstRunManager) {
     //   - Compound commands with cd + git (bare repository attack protection)
     //   - AskUserQuestion (needs actual user input)
     //
-    // We only auto-approve title hook writes to ~/.claude/topics/ — these fire every
-    // few minutes and would be disruptive to prompt for. Everything else goes to the
-    // chat UI where the user can use Yes / Always Allow / No buttons.
+    // Title hooks are always auto-approved. Other categories are auto-approved
+    // only if the user has enabled the corresponding override in Advanced settings.
+    // AskUserQuestion always goes to the chat UI (needs real user input).
     if (event.type === 'PermissionRequest') {
       const toolName = event.payload?.tool_name as string;
       const toolInput = event.payload?.tool_input as Record<string, unknown> | undefined;
       const requestId = event.payload?._requestId as string;
 
-      // Auto-approve title hook writes: Bash commands writing to ~/.claude/topics/
-      // These are triggered by the PostToolUse auto-title hook and fire constantly.
-      if (requestId && toolName === 'Bash' && isTitleHookCommand(toolInput)) {
-        hookRelay.respond(requestId, { decision: { behavior: 'allow' } });
-        return;
+      // Never auto-approve AskUserQuestion — it needs actual user input
+      if (requestId && toolName !== 'AskUserQuestion') {
+        const category = classifyPermission(toolName, toolInput);
+
+        // Title hooks are always auto-approved (fire every few minutes)
+        if (category === 'titleHook') {
+          hookRelay.respond(requestId, { decision: { behavior: 'allow' } });
+          return;
+        }
+
+        // Blanket approve-all override (restores old behavior)
+        if (permissionOverrides.approveAll) {
+          hookRelay.respond(requestId, { decision: { behavior: 'allow' } });
+          return;
+        }
+
+        // Per-category overrides — approve if the user enabled this category
+        if (category !== 'unknown' && permissionOverrides[category]) {
+          hookRelay.respond(requestId, { decision: { behavior: 'allow' } });
+          return;
+        }
       }
     }
 

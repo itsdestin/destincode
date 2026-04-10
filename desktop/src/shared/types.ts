@@ -1,5 +1,25 @@
 export type PermissionMode = 'normal' | 'auto-accept' | 'plan' | 'bypass';
 
+// Advanced permission overrides for bypass mode. Controls which PermissionRequest
+// categories are auto-approved when --dangerously-skip-permissions is active.
+// These only affect the small set of requests that bypass mode still fires:
+// protected path writes, compound cd commands, etc.
+export interface PermissionOverrides {
+  approveAll: boolean;            // Blanket approve everything (except AskUserQuestion)
+  protectedConfigFiles: boolean;  // .bashrc, .gitconfig, .mcp.json, etc.
+  protectedDirectories: boolean;  // .git/, .claude/ (non-exempt paths)
+  compoundCdRedirect: boolean;    // cd + output redirection (path resolution bypass)
+  compoundCdGit: boolean;         // cd + git (bare repository attack protection)
+}
+
+export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
+  approveAll: false,
+  protectedConfigFiles: false,
+  protectedDirectories: false,
+  compoundCdRedirect: false,
+  compoundCdGit: false,
+};
+
 export interface SessionInfo {
   id: string;
   name: string;

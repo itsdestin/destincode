@@ -261,6 +261,13 @@ class SessionService : Service() {
         wakeLock = null
     }
 
+    /** Push permission overrides to all active sessions' in-memory cache. */
+    private fun syncPermissionOverridesToSessions(overrides: JSONObject) {
+        sessionRegistry.sessions.value.values.forEach { session ->
+            session.permissionOverridesCache = overrides
+        }
+    }
+
     private fun createNotificationChannels() {
         val manager = getSystemService(NotificationManager::class.java)
 
@@ -972,14 +979,18 @@ class SessionService : Service() {
                         put("skipPermissions", json.optBoolean("skipPermissions", false))
                         put("model", json.optString("model", "sonnet"))
                         put("projectFolder", json.optString("projectFolder", ""))
+                        put("permissionOverrides", json.optJSONObject("permissionOverrides") ?: JSONObject())
                     }
                 } catch (_: Exception) {
                     JSONObject().apply {
                         put("skipPermissions", false)
                         put("model", "sonnet")
                         put("projectFolder", "")
+                        put("permissionOverrides", JSONObject())
                     }
                 }
+                // Sync overrides cache to all sessions
+                syncPermissionOverridesToSessions(defaults.optJSONObject("permissionOverrides") ?: JSONObject())
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, defaults) }
             }
             "defaults:set" -> {
@@ -993,13 +1004,22 @@ class SessionService : Service() {
                         put("skipPermissions", false)
                         put("model", "sonnet")
                         put("projectFolder", "")
+                        put("permissionOverrides", JSONObject())
                     }
                 }
-                // Merge payload keys into current
+                // Deep-merge permissionOverrides instead of replacing
+                val payloadOverrides = msg.payload.optJSONObject("permissionOverrides")
                 msg.payload.keys().forEach { key ->
-                    current.put(key, msg.payload.get(key))
+                    if (key != "permissionOverrides") current.put(key, msg.payload.get(key))
+                }
+                if (payloadOverrides != null) {
+                    val merged = current.optJSONObject("permissionOverrides") ?: JSONObject()
+                    payloadOverrides.keys().forEach { key -> merged.put(key, payloadOverrides.get(key)) }
+                    current.put("permissionOverrides", merged)
                 }
                 defaultsFile.writeText(current.toString(2))
+                // Update in-memory cache so hook handler picks up changes immediately
+                syncPermissionOverridesToSessions(current.optJSONObject("permissionOverrides") ?: JSONObject())
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, current) }
             }
 

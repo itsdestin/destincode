@@ -918,9 +918,166 @@ const MODEL_LABELS: Record<string, string> = {
   haiku: 'Haiku',
 };
 
+interface PermissionOverrides {
+  approveAll: boolean;
+  protectedConfigFiles: boolean;
+  protectedDirectories: boolean;
+  compoundCdRedirect: boolean;
+  compoundCdGit: boolean;
+}
+
+const OVERRIDES_DEFAULT: PermissionOverrides = {
+  approveAll: false,
+  protectedConfigFiles: false,
+  protectedDirectories: false,
+  compoundCdRedirect: false,
+  compoundCdGit: false,
+};
+
+// Per-category override toggles for the Advanced section
+const OVERRIDE_CATEGORIES: { key: keyof Omit<PermissionOverrides, 'approveAll'>; label: string; description: string }[] = [
+  { key: 'protectedConfigFiles', label: 'Config files', description: '.bashrc, .gitconfig, .mcp.json' },
+  { key: 'protectedDirectories', label: 'Protected directories', description: '.git/, .claude/ paths' },
+  { key: 'compoundCdRedirect', label: 'cd + redirect commands', description: 'Compound cd with output redirection' },
+  { key: 'compoundCdGit', label: 'cd + git commands', description: 'Compound cd with git operations' },
+];
+
+function SkipPermissionsSection({ defaults, onDefaultsChange }: {
+  defaults: { skipPermissions: boolean; permissionOverrides?: PermissionOverrides };
+  onDefaultsChange: (updates: any) => void;
+}) {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const overrides = { ...OVERRIDES_DEFAULT, ...defaults.permissionOverrides };
+
+  const updateOverride = useCallback((key: keyof PermissionOverrides, value: boolean) => {
+    onDefaultsChange({ permissionOverrides: { ...overrides, [key]: value } });
+  }, [overrides, onDefaultsChange]);
+
+  const handleApproveAllToggle = useCallback(() => {
+    if (!overrides.approveAll) {
+      // Turning ON — show confirmation popup
+      setConfirmOpen(true);
+    } else {
+      // Turning OFF — immediate
+      updateOverride('approveAll', false);
+    }
+  }, [overrides.approveAll, updateOverride]);
+
+  return (
+    <section>
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</h3>
+          <p className="text-[10px] text-fg-faint mt-0.5">New sessions will skip tool approval</p>
+        </div>
+        <Toggle
+          enabled={defaults.skipPermissions}
+          onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
+          color="red"
+        />
+      </div>
+      {defaults.skipPermissions && (
+        <>
+          <p className="text-[10px] text-[#DD4444] mt-1.5">Claude will execute tools without asking for approval.</p>
+
+          {/* Advanced expandable section */}
+          <button
+            onClick={() => setAdvancedOpen(!advancedOpen)}
+            className="flex items-center gap-1.5 mt-3 group"
+          >
+            <svg
+              className="w-3 h-3 text-fg-faint transition-transform"
+              style={{ transform: advancedOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}
+              strokeLinecap="round" strokeLinejoin="round"
+            >
+              <path d="M9 5l7 7-7 7" />
+            </svg>
+            <span className="text-[10px] text-fg-faint group-hover:text-fg-muted transition-colors">Advanced</span>
+          </button>
+
+          {advancedOpen && (
+            <div className="mt-2 ml-1 border-l border-edge-dim pl-3 space-y-3">
+              {/* Approve All toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] text-fg-dim font-medium">Auto-approve all</p>
+                  <p className="text-[9px] text-fg-faint">Silently approve all protected requests</p>
+                </div>
+                <Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" />
+              </div>
+
+              {/* Separator */}
+              <div className="flex items-center gap-2">
+                <div className="flex-1 border-t border-edge-dim" />
+                <span className="text-[9px] text-fg-faint">or approve by category</span>
+                <div className="flex-1 border-t border-edge-dim" />
+              </div>
+
+              {/* Per-category toggles */}
+              {OVERRIDE_CATEGORIES.map(({ key, label, description }) => (
+                <div key={key} className={`flex items-center justify-between ${overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}`}>
+                  <div>
+                    <p className="text-[10px] text-fg-dim font-medium">{label}</p>
+                    <p className="text-[9px] text-fg-faint">{description}</p>
+                  </div>
+                  <Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Confirmation popup for Approve All */}
+          {confirmOpen && createPortal(
+            <>
+              <div className="fixed inset-0 bg-black/50 z-[70]" onClick={() => setConfirmOpen(false)} />
+              <div
+                className="fixed z-[71] rounded-xl bg-panel border border-red-600/40 shadow-2xl overflow-hidden"
+                style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(340px, 85vw)' }}
+              >
+                <div className="px-4 py-3 border-b border-red-600/30 bg-red-600/10">
+                  <h3 className="text-xs font-bold text-[#DD4444]">Enable full auto-approve?</h3>
+                </div>
+                <div className="px-4 py-3 space-y-2">
+                  <p className="text-[10px] text-fg-dim">
+                    This will silently approve <strong>all</strong> remaining permission requests in bypass mode, including:
+                  </p>
+                  <ul className="text-[10px] text-fg-muted space-y-1 ml-3 list-disc">
+                    <li>Writes to <code className="text-fg-dim">.git/</code> directories</li>
+                    <li>Writes to shell config (<code className="text-fg-dim">.bashrc</code>, <code className="text-fg-dim">.gitconfig</code>)</li>
+                    <li>Writes to <code className="text-fg-dim">.claude/</code> configuration</li>
+                    <li>Compound commands that bypass path resolution protections</li>
+                    <li>Compound commands that bypass bare repository protections</li>
+                  </ul>
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={() => { updateOverride('approveAll', true); setConfirmOpen(false); }}
+                      className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-red-600/70 hover:bg-red-600/90 text-white transition-colors"
+                    >
+                      Enable
+                    </button>
+                    <button
+                      onClick={() => setConfirmOpen(false)}
+                      className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-inset hover:bg-edge text-fg-muted transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>,
+            document.body,
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 interface DefaultsButtonProps {
-  defaults: { skipPermissions: boolean; model: string; projectFolder: string };
-  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>) => void;
+  defaults: { skipPermissions: boolean; model: string; projectFolder: string; permissionOverrides?: PermissionOverrides };
+  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; permissionOverrides: PermissionOverrides }>) => void;
 }
 
 function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
@@ -1011,22 +1168,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 </section>
 
                 {/* Skip Permissions */}
-                <section>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</h3>
-                      <p className="text-[10px] text-fg-faint mt-0.5">New sessions will skip tool approval</p>
-                    </div>
-                    <Toggle
-                      enabled={defaults.skipPermissions}
-                      onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
-                      color="red"
-                    />
-                  </div>
-                  {defaults.skipPermissions && (
-                    <p className="text-[10px] text-[#DD4444] mt-1.5">Claude will execute tools without asking for approval.</p>
-                  )}
-                </section>
+                <SkipPermissionsSection defaults={defaults} onDefaultsChange={onDefaultsChange} />
 
                 {/* Default Project Folder */}
                 <section>
@@ -1168,7 +1310,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
   const [loading, setLoading] = useState(true);
   const [tier, setTier] = useState('CORE');
   const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
-  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
+  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [showConnectForm, setShowConnectForm] = useState(false);
   const [formName, setFormName] = useState('Desktop');
@@ -1206,7 +1348,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
       claude.android?.getTier?.() ?? 'CORE',
       claude.android?.getAbout?.() ?? { version: 'unknown', build: '' },
       claude.android?.getPairedDevices?.() ?? [],
-      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '' },
+      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } },
     ]).then(([t, about, devices, defs]) => {
       setTier(t?.tier || t || 'CORE');
       setAboutInfo(about);
@@ -1638,7 +1780,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showSetupQR, setShowSetupQR] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
+  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
   const [setupStatus, setSetupStatus] = useState<'idle' | 'confirm' | 'installing' | 'authenticating' | 'done' | 'error'>('idle');
   const [setupError, setSetupError] = useState('');
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);
@@ -1658,7 +1800,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
       claude.remote.getConfig(),
       claude.remote.detectTailscale(),
       claude.remote.getClientList(),
-      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '' },
+      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } },
     ]).then(([cfg, ts, cls, defs]: [RemoteConfig, TailscaleInfo, ClientInfo[], any]) => {
       setConfig(cfg);
       setTailscale(ts);

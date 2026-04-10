@@ -6,7 +6,8 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT } from '../shared/types';
+import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
@@ -289,13 +290,30 @@ export function registerIpcHandlers(
   });
 
   // --- Session defaults persistence ---
-  const DEFAULTS_INITIAL = { skipPermissions: false, model: 'sonnet', projectFolder: '' };
+  const DEFAULTS_INITIAL = {
+    skipPermissions: false,
+    model: 'sonnet',
+    projectFolder: '',
+    permissionOverrides: { ...PERMISSION_OVERRIDES_DEFAULT },
+  };
+
+  // Load permission overrides into main.ts cache on startup
+  function syncPermissionOverrides(defaults: Record<string, any>) {
+    const overrides = defaults.permissionOverrides;
+    if (overrides && typeof overrides === 'object') {
+      setPermissionOverrides(overrides);
+    }
+  }
 
   ipcMain.handle('defaults:get', async () => {
     try {
       const raw = fs.readFileSync(defaultsPrefPath, 'utf-8');
       const parsed = JSON.parse(raw);
-      return { ...DEFAULTS_INITIAL, ...parsed };
+      const result = { ...DEFAULTS_INITIAL, ...parsed,
+        permissionOverrides: { ...PERMISSION_OVERRIDES_DEFAULT, ...parsed.permissionOverrides },
+      };
+      syncPermissionOverrides(result);
+      return result;
     } catch {
       return { ...DEFAULTS_INITIAL };
     }
@@ -303,13 +321,22 @@ export function registerIpcHandlers(
 
   ipcMain.handle('defaults:set', async (_event, updates: Record<string, any>) => {
     try {
-      let current = { ...DEFAULTS_INITIAL };
+      let current: Record<string, any> = { ...DEFAULTS_INITIAL };
       try {
-        current = { ...current, ...JSON.parse(fs.readFileSync(defaultsPrefPath, 'utf-8')) };
+        const parsed = JSON.parse(fs.readFileSync(defaultsPrefPath, 'utf-8'));
+        current = { ...current, ...parsed,
+          permissionOverrides: { ...PERMISSION_OVERRIDES_DEFAULT, ...parsed.permissionOverrides },
+        };
       } catch {}
+      // Deep-merge permissionOverrides instead of replacing
       const merged = { ...current, ...updates };
+      if (updates.permissionOverrides) {
+        merged.permissionOverrides = { ...current.permissionOverrides, ...updates.permissionOverrides };
+      }
       fs.mkdirSync(path.dirname(defaultsPrefPath), { recursive: true });
       fs.writeFileSync(defaultsPrefPath, JSON.stringify(merged, null, 2));
+      // Update in-memory cache so hook handler picks up changes immediately
+      syncPermissionOverrides(merged);
       return merged;
     } catch {
       return null;

@@ -32,14 +32,34 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 
-// Detect title hook Bash commands: `echo "Topic" > ~/.claude/topics/topic-...`
-// The auto-title PostToolUse hook fires every few minutes and tells Claude to write
-// a topic summary. In bypass mode this hits the .claude/ protected path check,
-// firing a PermissionRequest we need to silently approve.
+// --- Permission override classification ---
+// In bypass mode, Claude Code still fires PermissionRequest for protected paths,
+// compound cd commands, and AskUserQuestion. These regexes classify each request
+// so the user's per-category overrides can selectively auto-approve them.
 private val TITLE_HOOK_RE = Regex("""[>|].*[/\\]\.claude[/\\]topics[/\\]topic-""")
-private fun isTitleHookCommand(toolInput: JSONObject): Boolean {
+private val CONFIG_FILE_RE = Regex("""\.(bashrc|bash_profile|zshrc|zprofile|profile|gitconfig|gitmodules|ripgreprc)\b|\.mcp\.json|\.claude\.json""")
+private val PROTECTED_DIR_RE = Regex("""[/\\]\.git[/\\]|[/\\]\.claude[/\\]""")
+private val CD_REDIRECT_RE = Regex("""\bcd\b.*[>]""")
+private val CD_GIT_RE = Regex("""\bcd\b.*\bgit\b""")
+
+private fun classifyPermission(toolName: String, toolInput: JSONObject): String {
     val cmd = toolInput.optString("command", "")
-    return cmd.isNotEmpty() && TITLE_HOOK_RE.containsMatchIn(cmd)
+    val filePath = toolInput.optString("file_path", "")
+    val target = cmd.ifEmpty { filePath }
+
+    if (toolName == "Bash" && TITLE_HOOK_RE.containsMatchIn(cmd)) return "titleHook"
+    if (toolName == "Bash") {
+        if (CD_GIT_RE.containsMatchIn(cmd)) return "compoundCdGit"
+        if (CD_REDIRECT_RE.containsMatchIn(cmd)) return "compoundCdRedirect"
+    }
+    if (CONFIG_FILE_RE.containsMatchIn(target)) return "protectedConfigFiles"
+    if (PROTECTED_DIR_RE.containsMatchIn(target)) return "protectedDirectories"
+    return "unknown"
+}
+
+private fun shouldAutoApprove(category: String, overrides: JSONObject): Boolean {
+    if (overrides.optBoolean("approveAll", false)) return true
+    return overrides.optBoolean(category, false)
 }
 
 /** Matches desktop's SessionStatusColor: green, red, blue, gray */
@@ -58,6 +78,8 @@ class ManagedSession(
     val createdAt: Long = System.currentTimeMillis(),
     private val titleFile: File,
     private val scope: CoroutineScope,
+    /** Cached permission overrides from user's defaults — updated by SessionService on defaults:set. */
+    var permissionOverridesCache: JSONObject = JSONObject(),
     /** Callback when session enters AwaitingApproval (for notification posting). */
     var onApprovalNeeded: ((sessionId: String, sessionName: String) -> Unit)? = null,
     /** Callback when session leaves AwaitingApproval (for notification clearing). */
@@ -206,14 +228,19 @@ class ManagedSession(
                 bridgeServer?.let { server ->
                     when (event) {
                         is HookEvent.PermissionRequest -> {
-                            // Auto-approve title hook writes to ~/.claude/topics/.
-                            // The auto-title PostToolUse hook fires every few minutes
-                            // and hits .claude/ protected path checks even in bypass mode.
-                            if (event.toolName == "Bash" && isTitleHookCommand(event.toolInput)) {
-                                val decision = JSONObject().put("decision",
-                                    JSONObject().put("behavior", "allow"))
-                                ptyBridge?.getEventBridge()?.respond(event.requestId, decision)
-                                return@let
+                            // Classify and auto-approve based on user's override settings.
+                            // Title hooks always auto-approved; other categories per user config.
+                            // AskUserQuestion is never auto-approved (needs real user input).
+                            if (event.toolName != "AskUserQuestion") {
+                                val category = classifyPermission(event.toolName, event.toolInput)
+                                val overrides = permissionOverridesCache
+                                val shouldApprove = category == "titleHook" || shouldAutoApprove(category, overrides)
+                                if (shouldApprove) {
+                                    val decision = JSONObject().put("decision",
+                                        JSONObject().put("behavior", "allow"))
+                                    ptyBridge?.getEventBridge()?.respond(event.requestId, decision)
+                                    return@let
+                                }
                             }
                             val suggestions = event.permissionSuggestions?.let { arr ->
                                 (0 until arr.length()).map { arr.optString(it) }
