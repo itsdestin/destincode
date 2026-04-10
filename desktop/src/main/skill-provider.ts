@@ -5,6 +5,7 @@ import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
 import { installPlugin, uninstallPlugin, isPluginInstalled, type InstallResult } from './plugin-installer';
+import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import type {
   SkillEntry, SkillDetailView, SkillFilters, ChipConfig,
   MetadataOverride, SkillProvider,
@@ -199,7 +200,7 @@ export class LocalSkillProvider implements SkillProvider {
    * the latest marketplace entry, overwriting files at the same path. Config
    * in ~/.claude/destincode-config/<id>.json is NOT touched.
    */
-  async update(id: string): Promise<{ ok: boolean; newVersion?: string; error?: string }> {
+  async update(id: string): Promise<{ ok: boolean; newVersion?: string; error?: string; missingRequiredFields?: string[] }> {
     const index = await this.fetchIndex();
     const entry = index.find(e => e.id === id);
     if (!entry) return { ok: false, error: `Skill not found in marketplace: ${id}` };
@@ -232,10 +233,32 @@ export class LocalSkillProvider implements SkillProvider {
     if (result.status === 'installed' || result.status === 'already_installed') {
       this.configStore.updatePackageVersion(id, entry.version || '1.0.0');
       this.installedCache = null;
-      return { ok: true, newVersion: entry.version };
+
+      // Phase 3c: check if the new configSchema has required fields missing
+      // from the existing user config. Don't block the update — just surface
+      // the field names so the renderer can prompt the user.
+      const missingRequiredFields = this.checkMissingConfigFields(id, entry);
+      return { ok: true, newVersion: entry.version, ...(missingRequiredFields.length > 0 ? { missingRequiredFields } : {}) };
     }
 
     return { ok: false, error: result.status === 'failed' ? (result as any).error : 'Update failed' };
+  }
+
+  /**
+   * Phase 3c: compare the entry's configSchema against the user's saved config.
+   * Returns names of required fields that are missing from the saved config.
+   */
+  private checkMissingConfigFields(id: string, entry: SkillEntry): string[] {
+    const schema = (entry as any).configSchema;
+    if (!schema?.fields?.length) return [];
+    try {
+      const config = getMarketplaceConfig(id);
+      return schema.fields
+        .filter((f: { required?: boolean; name: string }) => f.required && (config[f.name] === undefined || config[f.name] === ''))
+        .map((f: { name: string }) => f.name);
+    } catch {
+      return [];
+    }
   }
 
   async uninstall(id: string): Promise<{ type: 'plugin' | 'prompt' }> {

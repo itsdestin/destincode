@@ -3,6 +3,7 @@ import type { ThemeRegistryEntryWithStatus } from '../../shared/theme-marketplac
 import { useTheme } from '../state/theme-context';
 import { applyThemeToDom } from '../themes/theme-engine';
 import type { ThemeDefinition } from '../themes/theme-types';
+import ConfigForm from './ConfigForm';
 
 interface ThemeDetailProps {
   entry: ThemeRegistryEntryWithStatus;
@@ -224,6 +225,12 @@ export default function ThemeDetail({ entry, onBack, onInstallComplete }: ThemeD
             {entry.created && <span>Created: {entry.created}</span>}
             {entry.updated && <span>Updated: {entry.updated}</span>}
           </div>
+
+          {/* Phase 3c: config form — only rendered when the theme has a
+              configSchema AND is currently installed. */}
+          {isInstalled && entry.configSchema && entry.configSchema.fields.length > 0 && (
+            <ConfigForm id={entry.slug} schema={entry.configSchema} />
+          )}
 
           {/* Error */}
           {error && (

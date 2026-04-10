@@ -18,6 +18,7 @@ import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THE
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning } from './sync-state';
+import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -546,6 +547,17 @@ export function registerIpcHandlers(
   // Re-downloads theme files at the same slug path and bumps the version.
   ipcMain.handle(IPC.THEME_MARKETPLACE_UPDATE, async (_event, slug: string) => {
     return themeMarketplace.updateTheme(slug);
+  });
+
+  // Phase 3c: per-entry config — reads/writes ~/.claude/destincode-config/<id>.json.
+  // Only entries that declare configSchema in their marketplace JSON use this.
+  ipcMain.handle(IPC.MARKETPLACE_GET_CONFIG, async (_event, id: string) => {
+    return getMarketplaceConfig(id);
+  });
+
+  ipcMain.handle(IPC.MARKETPLACE_SET_CONFIG, async (_event, id: string, values: Record<string, unknown>) => {
+    setMarketplaceConfig(id, values);
+    return { ok: true };
   });
 
   // --- Remote access settings ---
