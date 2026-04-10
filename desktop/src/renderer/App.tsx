@@ -110,7 +110,7 @@ function AppInner() {
   const [pendingModel, setPendingModel] = useState<ModelAlias | null>(null);
   const consecutiveFailures = useRef(0);
   const [toast, setToast] = useState<string | null>(null);
-  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
+  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false });
 
   // Check first-run state with a 3-second safety timeout — never hang the app
   useEffect(() => {
@@ -711,17 +711,18 @@ function AppInner() {
     [sessionId, dispatch],
   );
 
-  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string) => {
+  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini') => {
     const m = sessionModel || model;
     // Update the active model to match what was chosen in the form
     if (sessionModel && MODELS.includes(sessionModel as any)) {
       setModel(sessionModel as ModelAlias);
     }
     await (window.claude.session.create as any)({
-      name: 'New Session',
+      name: provider === 'gemini' ? 'Gemini Session' : 'New Session',
       cwd,
       skipPermissions: dangerous,
       model: m,
+      provider: provider || 'claude',
     });
   }, [model]);
 
@@ -944,6 +945,7 @@ function AppInner() {
                 defaultModel={sessionDefaults.model}
                 defaultSkipPermissions={sessionDefaults.skipPermissions}
                 defaultProjectFolder={sessionDefaults.projectFolder}
+                geminiEnabled={sessionDefaults.geminiEnabled}
               />
             </div>
             <div

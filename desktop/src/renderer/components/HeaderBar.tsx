@@ -42,7 +42,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string) => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini') => void;
   onCloseSession: (id: string) => void;
   viewMode: 'chat' | 'terminal';
   onToggleView: (mode: 'chat' | 'terminal') => void;
@@ -63,6 +63,7 @@ interface Props {
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
   defaultProjectFolder?: string;
+  geminiEnabled?: boolean;
 }
 
 export default function HeaderBar({
@@ -73,6 +74,7 @@ export default function HeaderBar({
   settingsOpen, onToggleSettings, settingsBadge, sessionStatuses, onResumeSession,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
+  geminiEnabled,
 }: Props) {
   // Refs for measuring toggle button positions so the sliding pill fits exactly
   const toggleContainerRef = useRef<HTMLDivElement>(null);
@@ -143,6 +145,7 @@ export default function HeaderBar({
         defaultModel={defaultModel}
         defaultSkipPermissions={defaultSkipPermissions}
         defaultProjectFolder={defaultProjectFolder}
+        geminiEnabled={geminiEnabled}
       />
 
       {/* Right — view toggles */}

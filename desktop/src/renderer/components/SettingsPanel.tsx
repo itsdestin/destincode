@@ -1140,8 +1140,8 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 }
 
 interface DefaultsButtonProps {
-  defaults: { skipPermissions: boolean; model: string; projectFolder: string; permissionOverrides?: PermissionOverrides };
-  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; permissionOverrides: PermissionOverrides }>) => void;
+  defaults: { skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled?: boolean; permissionOverrides?: PermissionOverrides };
+  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled: boolean; permissionOverrides: PermissionOverrides }>) => void;
 }
 
 function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
@@ -1167,6 +1167,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
   const summaryParts: string[] = [];
   summaryParts.push(MODEL_LABELS[defaults.model] || 'Sonnet');
   if (defaults.skipPermissions) summaryParts.push('Skip Perms');
+  if (defaults.geminiEnabled) summaryParts.push('Gemini');
 
   return (
     <>
@@ -1251,6 +1252,23 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                       Reset to home directory
                     </button>
                   )}
+                </section>
+
+                {/* Gemini CLI — opt-in toggle to show Gemini as a session provider */}
+                <section>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Gemini CLI</h3>
+                      <p className="text-[10px] text-fg-faint mt-0.5">Show Gemini option when creating sessions</p>
+                    </div>
+                    <button
+                      onClick={() => onDefaultsChange({ geminiEnabled: !defaults.geminiEnabled })}
+                      className="w-8 h-4.5 rounded-full relative transition-colors shrink-0"
+                      style={{ backgroundColor: defaults.geminiEnabled ? '#4285F4' : 'var(--inset)' }}
+                    >
+                      <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${defaults.geminiEnabled ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
+                    </button>
+                  </div>
                 </section>
               </div>
             </div>
