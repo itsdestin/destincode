@@ -40,7 +40,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string) => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini') => void;
   onCloseSession: (id: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
   onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
@@ -49,6 +49,8 @@ interface Props {
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
   defaultProjectFolder?: string;
+  /** When true, show Gemini CLI toggle in new session form */
+  geminiEnabled?: boolean;
 }
 
 /* ── Status dot color maps ───────────────────────────────── */
@@ -150,6 +152,7 @@ export default function SessionStrip({
   onCreateSession, onCloseSession, sessionStatuses, onResumeSession,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
+  geminiEnabled,
 }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -159,6 +162,8 @@ export default function SessionStrip({
   const [newCwd, setNewCwd] = useState('');
   const [dangerous, setDangerous] = useState(false);
   const [newModel, setNewModel] = useState<string>('sonnet');
+  // Gemini CLI session toggle — only visible when enabled in settings
+  const [isGemini, setIsGemini] = useState(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -284,12 +289,13 @@ export default function SessionStrip({
   }, []);
 
   const handleCreate = useCallback(() => {
-    onCreateSession(newCwd, dangerous, newModel);
+    onCreateSession(newCwd, dangerous, newModel, isGemini ? 'gemini' : 'claude');
     setMenuOpen(false);
     setShowNewForm(false);
     setDangerous(defaultSkipPermissions || false);
     setNewModel(defaultModel || 'sonnet');
-  }, [newCwd, dangerous, newModel, onCreateSession, defaultSkipPermissions, defaultModel]);
+    setIsGemini(false);
+  }, [newCwd, dangerous, newModel, isGemini, onCreateSession, defaultSkipPermissions, defaultModel]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
 
@@ -588,7 +594,8 @@ export default function SessionStrip({
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
                 <FolderSwitcher value={newCwd} onChange={setNewCwd} />
               </div>
-              <div>
+              {/* Model selector — grayed out when Gemini is selected */}
+              <div style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
                 <div className="flex gap-1">
                   {MODELS.map((m) => (
@@ -606,7 +613,8 @@ export default function SessionStrip({
                   ))}
                 </div>
               </div>
-              <div className="flex items-center justify-between">
+              {/* Skip Permissions — grayed out when Gemini is selected */}
+              <div className="flex items-center justify-between" style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
                 <button
                   onClick={() => setDangerous(!dangerous)}
@@ -615,18 +623,39 @@ export default function SessionStrip({
                   <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${dangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
                 </button>
               </div>
-              {dangerous && (
+              {dangerous && !isGemini && (
                 <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+              )}
+              {/* Gemini CLI toggle — only visible when enabled in settings */}
+              {geminiEnabled && (
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] uppercase tracking-wider text-fg-muted">Gemini CLI</label>
+                  <button
+                    onClick={() => {
+                      const next = !isGemini;
+                      setIsGemini(next);
+                      // Gemini sessions don't support skip-permissions
+                      if (next) setDangerous(false);
+                    }}
+                    className="w-8 h-4.5 rounded-full relative transition-colors"
+                    style={{ backgroundColor: isGemini ? '#4285F4' : 'var(--inset)' }}
+                  >
+                    <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${isGemini ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
+                  </button>
+                </div>
               )}
               <button
                 onClick={handleCreate}
                 className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors ${
-                  dangerous
-                    ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
-                    : 'bg-accent hover:bg-accent text-on-accent'
+                  isGemini
+                    ? 'text-white'
+                    : dangerous
+                      ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
+                      : 'bg-accent hover:bg-accent text-on-accent'
                 }`}
+                style={isGemini ? { background: 'linear-gradient(135deg, #4285F4, #7B68EE)' } : undefined}
               >
-                {dangerous ? 'Create (Dangerous)' : 'Create Session'}
+                {isGemini ? 'Create Gemini Session' : dangerous ? 'Create (Dangerous)' : 'Create Session'}
               </button>
             </div>
           ) : (
@@ -647,6 +676,7 @@ export default function SessionStrip({
                   setNewCwd(defaultProjectFolder || '');
                   setDangerous(defaultSkipPermissions || false);
                   setNewModel(defaultModel || 'sonnet');
+                  setIsGemini(false);
                   setShowNewForm(true);
                 }}
                 className="flex-1 px-3 py-2 text-sm text-fg-dim hover:bg-inset hover:text-fg transition-colors flex items-center justify-center gap-1.5"

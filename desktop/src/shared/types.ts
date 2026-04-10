@@ -20,6 +20,9 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
   compoundCdGit: false,
 };
 
+// Which CLI backend powers a session — defaults to 'claude' for backwards compat
+export type SessionProvider = 'claude' | 'gemini';
+
 export interface SessionInfo {
   id: string;
   name: string;
@@ -28,6 +31,8 @@ export interface SessionInfo {
   skipPermissions: boolean;
   status: 'active' | 'idle' | 'destroyed';
   createdAt: number;
+  /** Which CLI backend this session runs — 'claude' (default) or 'gemini' */
+  provider: SessionProvider;
 }
 
 export interface HookEvent {

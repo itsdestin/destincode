@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { app } from 'electron';
-import { SessionInfo } from '../shared/types';
+import { SessionInfo, SessionProvider } from '../shared/types';
 import { EventEmitter } from 'events';
 import { log } from './logger';
 
@@ -21,6 +21,8 @@ export interface CreateSessionOpts {
   /** Resume a previous session by its Claude Code session ID */
   resumeSessionId?: string;
   model?: string;
+  /** Which CLI backend to launch — defaults to 'claude' */
+  provider?: SessionProvider;
 }
 
 interface ManagedSession {
@@ -38,18 +40,24 @@ export class SessionManager extends EventEmitter {
 
   createSession(opts: CreateSessionOpts): SessionInfo {
     const id = randomUUID();
+    const provider: SessionProvider = opts.provider || 'claude';
     // Resolve CWD: fall back to home directory if empty or nonexistent
     const resolvedCwd = (opts.cwd && fs.existsSync(opts.cwd)) ? opts.cwd : os.homedir();
+
+    // Build CLI args — Gemini CLI has no equivalent for Claude's flags
     const args: string[] = [];
-    if (opts.skipPermissions) {
-      args.push('--dangerously-skip-permissions');
+    if (provider === 'claude') {
+      if (opts.skipPermissions) {
+        args.push('--dangerously-skip-permissions');
+      }
+      if (opts.resumeSessionId) {
+        args.push('--resume', opts.resumeSessionId);
+      }
+      if (opts.model) {
+        args.push('--model', opts.model);
+      }
     }
-    if (opts.resumeSessionId) {
-      args.push('--resume', opts.resumeSessionId);
-    }
-    if (opts.model) {
-      args.push('--model', opts.model);
-    }
+    // Gemini CLI launches with no special args for now
 
     // Spawn a separate Node.js process for node-pty so it uses Node's
     // native binary instead of Electron's (which requires electron-rebuild).
@@ -83,6 +91,7 @@ export class SessionManager extends EventEmitter {
       skipPermissions: opts.skipPermissions,
       status: 'active',
       createdAt: Date.now(),
+      provider,
     };
 
     const session: ManagedSession = { info, worker };
@@ -128,7 +137,7 @@ export class SessionManager extends EventEmitter {
       this.sessions.delete(id);
     });
 
-    // Tell the worker to spawn claude, passing our session ID
+    // Tell the worker to spawn the CLI, passing our session ID
     // so hook events can be correlated back to this session.
     // Wrapped in try/catch because send() throws synchronously if
     // the spawn failed (IPC channel never opened), which happens
@@ -136,13 +145,14 @@ export class SessionManager extends EventEmitter {
     try {
       worker.send({
         type: 'spawn',
-        command: 'claude',
+        command: provider === 'gemini' ? 'gemini' : 'claude',
         args,
         cwd: resolvedCwd,
         cols: opts.cols || 80,
         rows: opts.rows || 24,
-        sessionId: id,
-        pipeName: this.pipeName,
+        // Claude-specific: session ID + pipe name for hook event correlation
+        sessionId: provider === 'claude' ? id : '',
+        pipeName: provider === 'claude' ? this.pipeName : '',
       });
     } catch {
       // The 'error' handler above will clean up the session asynchronously.
