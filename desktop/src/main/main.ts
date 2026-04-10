@@ -64,6 +64,17 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'theme-asset', privileges: { bypassCSP: true, supportFetchAPI: true, stream: true } },
 ]);
 
+// Detect title hook Bash commands: `echo "Topic" > ~/.claude/topics/topic-...`
+// The auto-title PostToolUse hook fires every few minutes and tells Claude to write
+// a topic summary. In bypass mode this hits the .claude/ protected path check,
+// firing a PermissionRequest we need to silently approve.
+const TITLE_HOOK_RE = /[>|].*[/\\]\.claude[/\\]topics[/\\]topic-/;
+function isTitleHookCommand(toolInput?: Record<string, unknown>): boolean {
+  if (!toolInput) return false;
+  const cmd = toolInput.command as string;
+  return typeof cmd === 'string' && TITLE_HOOK_RE.test(cmd);
+}
+
 function registerFirstRunIpc(
   mainWindow: BrowserWindow,
   firstRunManager: FirstRunManager,
@@ -243,18 +254,26 @@ function createWindow(firstRunManager?: FirstRunManager) {
 
   // Forward hook events to renderer
   hookRelay.on('hook-event', (event) => {
-    // Auto-approve permission requests for skip-permissions (dangerous mode) sessions.
-    // Exception: AskUserQuestion requires actual user text input — auto-approving it
-    // silently answers Claude's question without the user ever seeing it.
+    // In bypass mode (--dangerously-skip-permissions), Claude Code handles most
+    // permissions natively. But a few things still fire PermissionRequest:
+    //   - Protected path writes (.git/, .bashrc, .claude/ except commands/agents/skills/worktrees)
+    //   - Compound commands with cd + output redirection (path resolution bypass protection)
+    //   - Compound commands with cd + git (bare repository attack protection)
+    //   - AskUserQuestion (needs actual user input)
+    //
+    // We only auto-approve title hook writes to ~/.claude/topics/ — these fire every
+    // few minutes and would be disruptive to prompt for. Everything else goes to the
+    // chat UI where the user can use Yes / Always Allow / No buttons.
     if (event.type === 'PermissionRequest') {
-      const sessionInfo = sessionManager.getSession(event.sessionId);
       const toolName = event.payload?.tool_name as string;
-      if (sessionInfo?.skipPermissions && toolName !== 'AskUserQuestion') {
-        const requestId = event.payload?._requestId as string;
-        if (requestId) {
-          hookRelay.respond(requestId, { decision: { behavior: 'allow' } });
-          return;
-        }
+      const toolInput = event.payload?.tool_input as Record<string, unknown> | undefined;
+      const requestId = event.payload?._requestId as string;
+
+      // Auto-approve title hook writes: Bash commands writing to ~/.claude/topics/
+      // These are triggered by the PostToolUse auto-title hook and fire constantly.
+      if (requestId && toolName === 'Bash' && isTitleHookCommand(toolInput)) {
+        hookRelay.respond(requestId, { decision: { behavior: 'allow' } });
+        return;
       }
     }
 

@@ -32,6 +32,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 
+// Detect title hook Bash commands: `echo "Topic" > ~/.claude/topics/topic-...`
+// The auto-title PostToolUse hook fires every few minutes and tells Claude to write
+// a topic summary. In bypass mode this hits the .claude/ protected path check,
+// firing a PermissionRequest we need to silently approve.
+private val TITLE_HOOK_RE = Regex("""[>|].*[/\\]\.claude[/\\]topics[/\\]topic-""")
+private fun isTitleHookCommand(toolInput: JSONObject): Boolean {
+    val cmd = toolInput.optString("command", "")
+    return cmd.isNotEmpty() && TITLE_HOOK_RE.containsMatchIn(cmd)
+}
+
 /** Matches desktop's SessionStatusColor: green, red, blue, gray */
 enum class SessionStatus { Active, AwaitingApproval, Unseen, Idle, Dead }
 
@@ -196,6 +206,15 @@ class ManagedSession(
                 bridgeServer?.let { server ->
                     when (event) {
                         is HookEvent.PermissionRequest -> {
+                            // Auto-approve title hook writes to ~/.claude/topics/.
+                            // The auto-title PostToolUse hook fires every few minutes
+                            // and hits .claude/ protected path checks even in bypass mode.
+                            if (event.toolName == "Bash" && isTitleHookCommand(event.toolInput)) {
+                                val decision = JSONObject().put("decision",
+                                    JSONObject().put("behavior", "allow"))
+                                ptyBridge?.getEventBridge()?.respond(event.requestId, decision)
+                                return@let
+                            }
                             val suggestions = event.permissionSuggestions?.let { arr ->
                                 (0 until arr.length()).map { arr.optString(it) }
                             } ?: emptyList()
