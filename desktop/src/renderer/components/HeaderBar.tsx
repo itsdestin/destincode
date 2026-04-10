@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useState, useLayoutEffect } from 'react';
 import { ChatIcon, TerminalIcon, GamepadIcon } from './Icons';
 import SessionStrip from './SessionStrip';
 import type { SessionStatusColor } from './StatusDot';
@@ -74,6 +74,32 @@ export default function HeaderBar({
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
 }: Props) {
+  // Refs for measuring toggle button positions so the sliding pill fits exactly
+  const toggleContainerRef = useRef<HTMLDivElement>(null);
+  const chatBtnRef = useRef<HTMLButtonElement>(null);
+  const termBtnRef = useRef<HTMLButtonElement>(null);
+  const [pillStyle, setPillStyle] = useState<{ left: number; width: number }>({ left: 0, width: 0 });
+
+  // Measure active button position after layout (incl. text roll-out transitions)
+  useLayoutEffect(() => {
+    const measure = () => {
+      const container = toggleContainerRef.current;
+      const activeBtn = viewMode === 'chat' ? chatBtnRef.current : termBtnRef.current;
+      if (!container || !activeBtn) return;
+      const containerRect = container.getBoundingClientRect();
+      const btnRect = activeBtn.getBoundingClientRect();
+      setPillStyle({
+        left: btnRect.left - containerRect.left,
+        width: btnRect.width,
+      });
+    };
+    // Measure immediately for initial render
+    measure();
+    // Re-measure after text transition completes (300ms duration)
+    const timer = setTimeout(measure, 310);
+    return () => clearTimeout(timer);
+  }, [viewMode]);
+
   return (
     <div className="header-bar flex items-center h-10 px-2 sm:px-3 border-b border-edge shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
       {/* Left — settings + remote/announcement badges */}
@@ -121,35 +147,56 @@ export default function HeaderBar({
 
       {/* Right — view toggles */}
       <div className="flex-1 flex items-center justify-end gap-1 sm:gap-2">
-        {/* Chat/Terminal toggle */}
-        {(
-          <div className="flex bg-inset rounded-md p-0.5 gap-0.5">
-            <button
-              onClick={() => onToggleView('chat')}
-              className={`px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] transition-colors flex items-center gap-1.5 ${
-                viewMode === 'chat'
-                  ? 'bg-accent text-on-accent'
-                  : 'text-fg-dim hover:text-fg-2'
-              }`}
-              title="Chat"
-            >
-              <ChatIcon className="w-3.5 h-3.5" />
-              {viewMode === 'chat' && <span className="text-xs font-medium hidden sm:inline">Chat</span>}
-            </button>
-            <button
-              onClick={() => onToggleView('terminal')}
-              className={`px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] transition-colors flex items-center gap-1.5 ${
-                viewMode === 'terminal'
-                  ? 'bg-accent text-on-accent'
-                  : 'text-fg-dim hover:text-fg-2'
-              }`}
-              title="Terminal"
-            >
-              <TerminalIcon className="w-3.5 h-3.5" />
-              {viewMode === 'terminal' && <span className="text-xs font-medium hidden sm:inline">Terminal</span>}
-            </button>
-          </div>
-        )}
+        {/* Chat/Terminal toggle — sliding pill with text roll-out */}
+        <div ref={toggleContainerRef} className="relative flex bg-inset rounded-md p-0.5 gap-0.5">
+          {/* Sliding background pill — measured from active button ref */}
+          <div
+            className="absolute top-0.5 bottom-0.5 bg-accent rounded-[var(--radius-toggle)] transition-all duration-300 ease-in-out"
+            style={{
+              left: pillStyle.left,
+              width: pillStyle.width,
+            }}
+          />
+          <button
+            ref={chatBtnRef}
+            onClick={() => onToggleView('chat')}
+            className={`relative z-10 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center gap-1.5 transition-colors duration-300 ${
+              viewMode === 'chat'
+                ? 'text-on-accent'
+                : 'text-fg-dim hover:text-fg-2'
+            }`}
+            title="Chat"
+          >
+            <ChatIcon className="w-3.5 h-3.5 shrink-0" />
+            {/* Text rolls out via max-width + opacity transition */}
+            <span
+              className="text-xs font-medium hidden sm:inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out"
+              style={{
+                maxWidth: viewMode === 'chat' ? '3rem' : '0',
+                opacity: viewMode === 'chat' ? 1 : 0,
+              }}
+            >Chat</span>
+          </button>
+          <button
+            ref={termBtnRef}
+            onClick={() => onToggleView('terminal')}
+            className={`relative z-10 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center gap-1.5 transition-colors duration-300 ${
+              viewMode === 'terminal'
+                ? 'text-on-accent'
+                : 'text-fg-dim hover:text-fg-2'
+            }`}
+            title="Terminal"
+          >
+            <TerminalIcon className="w-3.5 h-3.5 shrink-0" />
+            <span
+              className="text-xs font-medium hidden sm:inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out"
+              style={{
+                maxWidth: viewMode === 'terminal' ? '4.5rem' : '0',
+                opacity: viewMode === 'terminal' ? 1 : 0,
+              }}
+            >Terminal</span>
+          </button>
+        </div>
         <div className="bg-inset rounded-md p-0.5 hidden sm:block">
           <button
             onClick={onToggleGamePanel}
