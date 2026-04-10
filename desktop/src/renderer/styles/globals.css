@@ -371,12 +371,20 @@ html, body, #root {
   z-index: 20;
 }
 
+/* Jump-to-bottom button — in glassmorphism mode the bottom chrome floats
+   over the content area, so push the button up above it */
+[data-panels-blur] .jump-to-bottom {
+  bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem);
+}
+
 /* Lightweight containment — skip layout/style for off-screen chat messages.
    Uses layout+style containment (not paint) so box-shadow glows from community
-   themes can overflow without being clipped at the entry edges. */
+   themes can overflow without being clipped at the entry edges.
+   Note: content-visibility:auto was removed because its implicit contain:paint
+   clips box-shadow glows. Without content-visibility, contain-intrinsic-size
+   has no effect and is omitted. */
 .timeline-entry {
   contain: layout style;
-  contain-intrinsic-size: auto 80px;
 }
 
 /* Status bar — frosted glass (slider-controlled) */

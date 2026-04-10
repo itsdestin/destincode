@@ -326,11 +326,12 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
         <div ref={bottomRef} className="h-1" />
       </div>
 
-      {/* Jump to bottom button */}
+      {/* Jump to bottom button — .jump-to-bottom class handles glassmorphism
+         offset so the button appears above the frosted input bar */}
       {!atBottom && (
         <button
           onClick={jumpToBottom}
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1.5 text-xs bg-inset hover:bg-edge text-fg-2 rounded-full shadow-lg transition-colors"
+          className="jump-to-bottom absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1.5 text-xs bg-inset hover:bg-edge text-fg-2 rounded-full shadow-lg transition-colors z-10"
         >
           Jump to bottom
         </button>
