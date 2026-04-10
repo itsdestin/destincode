@@ -1154,6 +1154,24 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
             }
 
+            // ── Phase 5a: Theme marketplace browsing ─────────────────
+            // Fetches theme registry from destinclaude-themes repo (same URL
+            // as desktop's theme-marketplace-provider.ts) and annotates each
+            // entry with installed status by scanning the local themes dir.
+            "theme-marketplace:list" -> {
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceList(msg.payload)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "theme-marketplace:detail" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceDetail(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }
@@ -1268,6 +1286,151 @@ class SessionService : Service() {
         }
 
         JSONObject().put("prUrl", prUrl)
+    }
+
+    // ── Phase 5a: Theme marketplace helpers ────────────────────────
+    // Registry URL matches desktop's theme-marketplace-provider.ts REGISTRY_URL
+    private val themeRegistryUrl =
+        "https://raw.githubusercontent.com/itsdestin/destinclaude-themes/main/registry/theme-registry.json"
+    // In-memory cache with 15-min TTL (same as desktop)
+    private var cachedThemeRegistry: org.json.JSONObject? = null
+    private var themeCacheTimestamp = 0L
+    private val themeCacheTtlMs = 15 * 60 * 1000L
+
+    /** Themes directory — same path as desktop's THEMES_DIR */
+    private val themesDir: File
+        get() = File(bootstrap?.homeDir ?: filesDir, ".claude/destinclaude-themes")
+
+    /** Fetch theme registry, apply filters, annotate install status. */
+    private fun themeMarketplaceList(filters: JSONObject): Any {
+        val registry = fetchThemeRegistry()
+        val themesArr = registry.optJSONArray("themes") ?: org.json.JSONArray()
+        val results = org.json.JSONArray()
+
+        // Read filter params
+        val query = filters.optString("query", "").lowercase()
+        val sourceFilter = filters.optString("source", "all")
+        val modeFilter = filters.optString("mode", "all")
+        val featuresArr = filters.optJSONArray("features")
+        val wantedFeatures = mutableSetOf<String>()
+        if (featuresArr != null) {
+            for (i in 0 until featuresArr.length()) wantedFeatures.add(featuresArr.getString(i))
+        }
+        val sort = filters.optString("sort", "newest")
+
+        // Collect matching themes
+        val matched = mutableListOf<JSONObject>()
+        for (i in 0 until themesArr.length()) {
+            val t = themesArr.getJSONObject(i)
+            // Source filter
+            if (sourceFilter != "all" && t.optString("source") != sourceFilter) continue
+            // Mode filter (dark/light)
+            if (modeFilter == "dark" && !t.optBoolean("dark", false)) continue
+            if (modeFilter == "light" && t.optBoolean("dark", false)) continue
+            // Features filter
+            if (wantedFeatures.isNotEmpty()) {
+                val feats = t.optJSONArray("features") ?: org.json.JSONArray()
+                var hasAny = false
+                for (j in 0 until feats.length()) {
+                    if (wantedFeatures.contains(feats.getString(j))) { hasAny = true; break }
+                }
+                if (!hasAny) continue
+            }
+            // Query filter
+            if (query.isNotEmpty()) {
+                val name = t.optString("name", "").lowercase()
+                val author = t.optString("author", "").lowercase()
+                val desc = t.optString("description", "").lowercase()
+                if (!name.contains(query) && !author.contains(query) && !desc.contains(query)) continue
+            }
+            matched.add(t)
+        }
+
+        // Sort
+        if (sort == "name") {
+            matched.sortBy { it.optString("name", "") }
+        } else {
+            // newest first
+            matched.sortByDescending { it.optString("created", "") }
+        }
+
+        // Annotate with installed status
+        for (t in matched) {
+            val slug = t.optString("slug", "")
+            t.put("installed", isThemeInstalled(slug))
+            results.put(t)
+        }
+
+        return results
+    }
+
+    /** Get a single theme's detail with install status. */
+    private fun themeMarketplaceDetail(slug: String): Any {
+        if (slug.isEmpty()) return JSONObject.NULL
+        val registry = fetchThemeRegistry()
+        val themesArr = registry.optJSONArray("themes") ?: org.json.JSONArray()
+        for (i in 0 until themesArr.length()) {
+            val t = themesArr.getJSONObject(i)
+            if (t.optString("slug") == slug) {
+                t.put("installed", isThemeInstalled(slug))
+                return t
+            }
+        }
+        return JSONObject.NULL
+    }
+
+    /** Check if a theme is installed by looking for its manifest.json on disk. */
+    private fun isThemeInstalled(slug: String): Boolean {
+        return try {
+            File(themesDir, "$slug/manifest.json").exists()
+        } catch (_: Exception) { false }
+    }
+
+    /** Fetch theme registry with in-memory + disk caching (mirrors desktop). */
+    private fun fetchThemeRegistry(): org.json.JSONObject {
+        // Return in-memory cache if fresh
+        val cached = cachedThemeRegistry
+        if (cached != null && System.currentTimeMillis() - themeCacheTimestamp < themeCacheTtlMs) {
+            return cached
+        }
+
+        // Disk cache path
+        val cacheDir = File(bootstrap?.homeDir ?: filesDir, ".claude/destincode-cache")
+        val cacheFile = File(cacheDir, "theme-registry.json")
+
+        // Try remote fetch
+        try {
+            val data = java.net.URL(themeRegistryUrl).readText()
+            val registry = org.json.JSONObject(data)
+            cachedThemeRegistry = registry
+            themeCacheTimestamp = System.currentTimeMillis()
+            // Write disk cache (best-effort)
+            try {
+                cacheDir.mkdirs()
+                cacheFile.writeText(data)
+            } catch (_: Exception) {}
+            return registry
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Theme registry fetch failed: ${e.message}")
+        }
+
+        // Fall back to disk cache
+        try {
+            if (cacheFile.exists()) {
+                val data = cacheFile.readText()
+                val registry = org.json.JSONObject(data)
+                cachedThemeRegistry = registry
+                themeCacheTimestamp = System.currentTimeMillis()
+                return registry
+            }
+        } catch (_: Exception) {}
+
+        // No cache — return empty registry
+        return org.json.JSONObject().apply {
+            put("version", 0)
+            put("generatedAt", "")
+            put("themes", org.json.JSONArray())
+        }
     }
 
     companion object {
