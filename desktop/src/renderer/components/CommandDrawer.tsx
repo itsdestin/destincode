@@ -6,6 +6,7 @@ import { useSkills } from '../state/skill-context';
 interface Props {
   open: boolean;
   searchMode: boolean;
+  externalFilter?: string; // Filter driven by InputBar when slash-triggered
   onSelect: (skill: SkillEntry) => void;
   onClose: () => void;
   onOpenManager: () => void;
@@ -21,14 +22,19 @@ const categoryLabels: Record<string, string> = {
   other: 'OTHER SKILLS',
 };
 
-export default function CommandDrawer({ open, searchMode, onSelect, onClose, onOpenManager, onOpenMarketplace }: Props) {
+export default function CommandDrawer({ open, searchMode, externalFilter, onSelect, onClose, onOpenManager, onOpenMarketplace }: Props) {
   const { drawerSkills } = useSkills();
   const [search, setSearch] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Focus search on open (always in search mode, optionally in browse mode)
+  // Effective query: in search mode (slash-triggered), the InputBar drives
+  // the filter via externalFilter; in browse mode, the drawer's own input does
+  const effectiveQuery = searchMode ? (externalFilter ?? '') : search;
+
+  // Focus internal search on open — only in browse mode (compass button).
+  // In search mode the InputBar keeps focus so the user sees the "/" prefix.
   useEffect(() => {
-    if (open) {
+    if (open && !searchMode) {
       setSearch('');
       // Small delay to let the transition start before focusing
       const t = setTimeout(() => searchRef.current?.focus(), 50);
@@ -46,21 +52,21 @@ export default function CommandDrawer({ open, searchMode, onSelect, onClose, onO
     return () => window.removeEventListener('keydown', handler);
   }, [open, onClose]);
 
-  // Filter skills by search query
+  // Filter skills by effective query (external in search mode, internal otherwise)
   const filtered = useMemo(() => {
-    if (!search.trim()) return drawerSkills;
-    const q = search.toLowerCase();
+    if (!effectiveQuery.trim()) return drawerSkills;
+    const q = effectiveQuery.toLowerCase();
     return drawerSkills.filter(
       (s) =>
         s.displayName.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
         s.category.toLowerCase().includes(q),
     );
-  }, [drawerSkills, search]);
+  }, [drawerSkills, effectiveQuery]);
 
   // Group by category (only when not searching)
   const grouped = useMemo(() => {
-    if (search.trim()) return null;
+    if (effectiveQuery.trim()) return null;
     const groups = new Map<string, SkillEntry[]>();
     for (const s of filtered) {
       const list = groups.get(s.category) || [];
@@ -68,7 +74,7 @@ export default function CommandDrawer({ open, searchMode, onSelect, onClose, onO
       groups.set(s.category, list);
     }
     return groups;
-  }, [filtered, search]);
+  }, [filtered, effectiveQuery]);
 
   return (
     <>
@@ -92,21 +98,32 @@ export default function CommandDrawer({ open, searchMode, onSelect, onClose, onO
           <div className="w-8 h-1 rounded-full bg-fg-faint" />
         </div>
 
-        {/* Search bar */}
+        {/* Search bar — read-only mirror in search mode (InputBar drives the
+             filter), interactive in browse mode (compass button) */}
         <div className="px-4 pb-3">
-          <div className="flex items-center gap-2 bg-well rounded-lg px-3 py-2 border border-edge-dim">
+          <div
+            className="flex items-center gap-2 bg-well rounded-lg px-3 py-2 border border-edge-dim"
+            {...(searchMode ? { onClick: () => {/* no-op: keep focus in InputBar */} } : {})}
+          >
             <svg className="w-4 h-4 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <circle cx="11" cy="11" r="7" />
               <path d="M21 21l-4.35-4.35" strokeLinecap="round" />
             </svg>
-            <input
-              ref={searchRef}
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search skills and commands..."
-              className="flex-1 bg-transparent text-sm text-fg placeholder-fg-muted outline-none"
-            />
+            {searchMode ? (
+              /* Read-only mirror showing what the user typed after "/" */
+              <span className="flex-1 text-sm text-fg-dim truncate select-none">
+                {externalFilter ? `/${externalFilter}` : '/'}
+              </span>
+            ) : (
+              <input
+                ref={searchRef}
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search skills and commands..."
+                className="flex-1 bg-transparent text-sm text-fg placeholder-fg-muted outline-none"
+              />
+            )}
             {/* Pencil icon — opens Skill Manager */}
             <button
               onClick={() => { onClose(); onOpenManager(); }}

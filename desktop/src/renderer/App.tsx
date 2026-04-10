@@ -1041,6 +1041,7 @@ function AppInner() {
                 <CommandDrawer
                   open={drawerOpen}
                   searchMode={drawerSearchMode}
+                  externalFilter={drawerFilter}
                   onSelect={handleSelectSkill}
                   onClose={handleCloseDrawer}
                   onOpenManager={() => setManagerOpen(true)}
