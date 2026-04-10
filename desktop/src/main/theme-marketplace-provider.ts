@@ -201,6 +201,24 @@ export class ThemeMarketplaceProvider {
   }
 
   /**
+   * Phase 3b: update a theme by re-downloading from registry, overwriting
+   * files at the same slug path. Config in ~/.claude/destincode-config/ is
+   * NOT touched. Returns the new version on success.
+   */
+  async updateTheme(slug: string): Promise<{ ok: boolean; newVersion?: string; error?: string }> {
+    // Re-install overwrites everything at the same path
+    const result = await this.installTheme(slug);
+    if (result.status === 'failed') {
+      return { ok: false, error: result.error };
+    }
+    // installTheme already called recordPackageInstall with the latest version.
+    // Read back the version from registry for the response.
+    const index = await this.fetchRegistry();
+    const entry = index.themes.find(t => t.slug === slug);
+    return { ok: true, newVersion: entry?.version };
+  }
+
+  /**
    * Uninstall a community theme. Refuses to delete user-created themes.
    */
   async uninstallTheme(slug: string): Promise<{ status: 'uninstalled' | 'failed'; error?: string }> {

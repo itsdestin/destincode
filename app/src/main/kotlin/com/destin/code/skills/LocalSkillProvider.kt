@@ -239,6 +239,42 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         return response
     }
 
+    /**
+     * Phase 3b: update an installed plugin/prompt to the latest marketplace
+     * version. Re-runs install logic at the same path. Config in
+     * ~/.claude/destincode-config/<id>.json is NOT touched.
+     */
+    suspend fun update(id: String): JSONObject {
+        val entry = getMarketplaceEntry(id)
+            ?: return JSONObject().put("ok", false).put("error", "Skill not found in marketplace: $id")
+
+        if (entry.optString("type") == "prompt") {
+            // Prompt update: the config store private skill gets replaced
+            configStore.updatePackageVersion(id, entry.optString("version", "1.0.0"))
+            installedCache = null
+            return JSONObject().put("ok", true).put("newVersion", entry.optString("version"))
+        }
+
+        // Plugin update: re-install at the same path
+        val installer = pluginInstaller
+            ?: return JSONObject().put("ok", false).put("error", "Plugin installer not initialized")
+
+        val result = installer.install(entry)
+        return when (result) {
+            is PluginInstaller.InstallResult.Success,
+            is PluginInstaller.InstallResult.AlreadyInstalled -> {
+                configStore.updatePackageVersion(id, entry.optString("version", "1.0.0"))
+                installedCache = null
+                onPluginsChanged?.invoke()
+                JSONObject().put("ok", true).put("newVersion", entry.optString("version"))
+            }
+            is PluginInstaller.InstallResult.Failed ->
+                JSONObject().put("ok", false).put("error", result.error)
+            is PluginInstaller.InstallResult.InProgress ->
+                JSONObject().put("ok", false).put("error", "Update already in progress")
+        }
+    }
+
     /** Uninstall a skill or plugin. Returns a JSON result. */
     suspend fun uninstall(id: String): JSONObject {
         // Check if this is a marketplace-installed plugin

@@ -194,6 +194,50 @@ export class LocalSkillProvider implements SkillProvider {
     return { ...result, type: 'plugin' };
   }
 
+  /**
+   * Phase 3b: update an installed plugin by re-running the install logic with
+   * the latest marketplace entry, overwriting files at the same path. Config
+   * in ~/.claude/destincode-config/<id>.json is NOT touched.
+   */
+  async update(id: string): Promise<{ ok: boolean; newVersion?: string; error?: string }> {
+    const index = await this.fetchIndex();
+    const entry = index.find(e => e.id === id);
+    if (!entry) return { ok: false, error: `Skill not found in marketplace: ${id}` };
+
+    const marketplaceEntry = entry as any;
+
+    if (entry.type === 'prompt') {
+      // Prompt update: overwrite the private skill entry with new content
+      const config = this.configStore.load();
+      const idx = config.privateSkills.findIndex(s => s.id === id);
+      if (idx >= 0) {
+        config.privateSkills[idx] = { ...config.privateSkills[idx], ...entry, id };
+      }
+      this.configStore.updatePackageVersion(id, entry.version || '1.0.0');
+      this.installedCache = null;
+      return { ok: true, newVersion: entry.version };
+    }
+
+    // Plugin update: re-install at the same path, overwriting files
+    const result = await installPlugin({
+      id: marketplaceEntry.id,
+      sourceType: marketplaceEntry.sourceType || 'unknown',
+      sourceRef: marketplaceEntry.sourceRef || '',
+      sourceSubdir: marketplaceEntry.sourceSubdir,
+      sourceMarketplace: marketplaceEntry.sourceMarketplace,
+      description: marketplaceEntry.description,
+      author: marketplaceEntry.author,
+    });
+
+    if (result.status === 'installed' || result.status === 'already_installed') {
+      this.configStore.updatePackageVersion(id, entry.version || '1.0.0');
+      this.installedCache = null;
+      return { ok: true, newVersion: entry.version };
+    }
+
+    return { ok: false, error: result.status === 'failed' ? (result as any).error : 'Update failed' };
+  }
+
   async uninstall(id: string): Promise<{ type: 'plugin' | 'prompt' }> {
     // Check if this is a marketplace-installed plugin
     const installed = this.configStore.getInstalledPlugins();

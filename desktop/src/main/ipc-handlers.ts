@@ -528,6 +528,26 @@ export function registerIpcHandlers(
     return skillProvider.configStore.getPackages();
   });
 
+  // Phase 3b: update an installed plugin/prompt to the latest marketplace
+  // version. Re-downloads files, overwrites at the same path, and bumps the
+  // version in destincode-skills.json. Config is NOT touched.
+  ipcMain.handle(IPC.SKILLS_UPDATE, async (_event, id: string) => {
+    const result = await skillProvider.update(id);
+    // Reload plugins in active sessions so Claude Code picks up updated code
+    if (result.ok) {
+      for (const s of sessionManager.listSessions()) {
+        if (s.status === 'active') sessionManager.sendInput(s.id, '/reload-plugins\r');
+      }
+    }
+    return result;
+  });
+
+  // Phase 3b: update an installed theme to the latest registry version.
+  // Re-downloads theme files at the same slug path and bumps the version.
+  ipcMain.handle(IPC.THEME_MARKETPLACE_UPDATE, async (_event, slug: string) => {
+    return themeMarketplace.updateTheme(slug);
+  });
+
   // --- Remote access settings ---
   let keepAwakeBlockerId: number | null = null;
   let keepAwakeTimeout: ReturnType<typeof setTimeout> | null = null;

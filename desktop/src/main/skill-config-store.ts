@@ -184,6 +184,16 @@ export class SkillConfigStore {
     this.save();
   }
 
+  // Phase 3b: update just the version field after a successful update.
+  // Does NOT touch components, config, or other metadata.
+  updatePackageVersion(id: string, newVersion: string): void {
+    const config = this.load();
+    const pkg = config.packages?.[id];
+    if (!pkg) return;
+    pkg.version = newVersion;
+    this.save();
+  }
+
   removePackage(id: string): void {
     const config = this.load();
     if (config.packages) {

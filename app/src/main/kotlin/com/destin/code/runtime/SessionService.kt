@@ -553,6 +553,31 @@ class SessionService : Service() {
                 val result = skillProvider?.configStore?.getPackages() ?: JSONObject()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
+            // Phase 3b: update an installed plugin to the latest marketplace version
+            "skills:update" -> {
+                val id = msg.payload.optString("id")
+                val result = skillProvider?.update(id)
+                    ?: JSONObject().put("ok", false).put("error", "Skill provider not initialized")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 3c: per-entry config storage
+            "marketplace:get-config" -> {
+                val id = msg.payload.optString("id")
+                val configDir = File(homeDir, ".claude/destincode-config")
+                val configFile = File(configDir, "$id.json")
+                val result = try {
+                    if (configFile.exists()) JSONObject(configFile.readText()) else JSONObject()
+                } catch (_: Exception) { JSONObject() }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "marketplace:set-config" -> {
+                val id = msg.payload.optString("id")
+                val values = msg.payload.optJSONObject("values") ?: JSONObject()
+                val configDir = File(homeDir, ".claude/destincode-config")
+                configDir.mkdirs()
+                File(configDir, "$id.json").writeText(values.toString(2))
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
             "github:auth" -> {
                 // No GitHub auth on Android — return null
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject.NULL) }

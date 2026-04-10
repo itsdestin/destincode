@@ -145,7 +145,8 @@ function InstalledTab({
   onOpenEditor?: (id: string) => void;
   onOpenCreatePrompt?: () => void;
 }) {
-  const { installedSkills, favorites, chips, loading, setFavorite, setChips, deletePrompt } = useMarketplace();
+  const { installedSkills, favorites, chips, loading, setFavorite, setChips, deletePrompt, updateAvailable, update, uninstallSkill, packages } = useMarketplace();
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'favorites' | 'private'>('all');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [chipsExpanded, setChipsExpanded] = useState(false);
@@ -236,8 +237,43 @@ function InstalledTab({
               <p className="text-[11px] text-fg-muted truncate">{skill.description}</p>
             </div>
 
+            {/* Phase 3b: update-available badge */}
+            {updateAvailable[skill.id] && (
+              <span className="text-[8px] font-medium px-1.5 py-0.5 rounded-full bg-[#f0ad4e]/15 text-[#f0ad4e] border border-[#f0ad4e]/25 shrink-0">
+                Update
+              </span>
+            )}
+
             {/* Actions */}
             <div className="flex items-center gap-1 shrink-0 opacity-60 hover:opacity-100 transition-opacity">
+              {/* Phase 3b: update button, visible only when an update is available */}
+              {updateAvailable[skill.id] && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    setUpdatingId(skill.id);
+                    try { await update(skill.id, 'skill'); } catch {} finally { setUpdatingId(null); }
+                  }}
+                  disabled={updatingId === skill.id}
+                  className="p-1 text-[#f0ad4e] hover:text-[#e09d3e] text-[10px] font-medium"
+                  title="Update to latest version"
+                >
+                  {updatingId === skill.id ? '...' : '\u2191'}
+                </button>
+              )}
+              {/* Phase 3b: uninstall button for marketplace packages */}
+              {packages[skill.id]?.removable && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try { await uninstallSkill(skill.id); } catch {}
+                  }}
+                  className="p-1 text-fg-muted hover:text-red-400 text-xs"
+                  title="Uninstall"
+                >
+                  &#10005;
+                </button>
+              )}
               {onOpenEditor && skill.type === 'prompt' && (skill.source === 'self' || skill.visibility === 'private') && (
                 <button onClick={(e) => { e.stopPropagation(); onOpenEditor(skill.id); }} className="p-1 text-fg-muted hover:text-fg text-xs" title="Edit">&#9998;</button>
               )}
@@ -423,7 +459,7 @@ const SORT_OPTIONS: { label: string; value: SortOption }[] = [
 ];
 
 function SkillsTab({ onSelectSkill }: { onSelectSkill: (id: string) => void }) {
-  const { skillEntries, installedSkills, installSkill, loading } = useMarketplace();
+  const { skillEntries, installedSkills, installSkill, loading, updateAvailable } = useMarketplace();
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all');
@@ -548,6 +584,7 @@ function SkillsTab({ onSelectSkill }: { onSelectSkill: (id: string) => void }) {
                 onClick={(s) => onSelectSkill(s.id)}
                 variant="marketplace"
                 installed={installedIds.has(skill.id)}
+                updateAvailable={updateAvailable[skill.id]}
                 onInstall={!installedIds.has(skill.id) ? handleInstall : undefined}
               />
             ))}
@@ -565,7 +602,7 @@ type ThemeSortOption = 'newest' | 'name';
 const FEATURE_PILLS = ['wallpaper', 'particles', 'glassmorphism', 'custom-font', 'custom-icons', 'mascot', 'custom-css'];
 
 function ThemesTab({ onSelectTheme }: { onSelectTheme: (theme: ThemeRegistryEntryWithStatus) => void }) {
-  const { themeEntries, loading } = useMarketplace();
+  const { themeEntries, loading, updateAvailable } = useMarketplace();
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'destinclaude' | 'community'>('all');
   const [modeFilter, setModeFilter] = useState<'all' | 'dark' | 'light'>('all');
@@ -696,6 +733,7 @@ function ThemesTab({ onSelectTheme }: { onSelectTheme: (theme: ThemeRegistryEntr
                 key={theme.slug}
                 entry={theme}
                 onClick={() => onSelectTheme(theme)}
+                updateAvailable={updateAvailable[theme.slug]}
               />
             ))}
           </div>

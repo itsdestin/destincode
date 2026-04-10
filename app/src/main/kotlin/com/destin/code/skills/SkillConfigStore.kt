@@ -175,6 +175,16 @@ class SkillConfigStore(private val homeDir: File) {
         save()
     }
 
+    // Phase 3b: update just the version after a successful update.
+    // Does NOT touch components, config, or other metadata.
+    fun updatePackageVersion(id: String, newVersion: String) {
+        val packages = getPackages()
+        val pkg = packages.optJSONObject(id) ?: return
+        pkg.put("version", newVersion)
+        config.put("packages", packages)
+        save()
+    }
+
     fun removePackage(id: String) {
         val packages = getPackages()
         packages.remove(id)
