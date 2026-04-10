@@ -7,6 +7,7 @@ import android.webkit.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import java.io.File
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -56,6 +57,69 @@ fun WebViewHost(
                             return true
                         }
                         return false
+                    }
+
+                    // Phase 5c: Intercept theme-asset:// URLs — Android equivalent
+                    // of Electron's protocol.handle('theme-asset') in theme-protocol.ts.
+                    // Resolves theme-asset://<slug>/<path> to files on disk.
+                    override fun shouldInterceptRequest(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): WebResourceResponse? {
+                        val uri = request?.url ?: return null
+                        if (uri.scheme != "theme-asset") return super.shouldInterceptRequest(view, request)
+
+                        val slug = uri.host ?: return WebResourceResponse(
+                            "text/plain", "utf-8", 404, "Not Found", null,
+                            "Missing theme slug".byteInputStream()
+                        )
+                        val assetPath = uri.path?.trimStart('/') ?: return WebResourceResponse(
+                            "text/plain", "utf-8", 404, "Not Found", null,
+                            "Missing asset path".byteInputStream()
+                        )
+
+                        // Resolve themes directory from app's internal storage
+                        val homeDir = context.filesDir
+                        val themesDir = File(homeDir, ".claude/destinclaude-themes")
+                        val file = File(themesDir, "$slug/$assetPath")
+
+                        // Security: verify canonical path is inside themes dir
+                        // to prevent path traversal attacks (e.g., ../../etc/passwd)
+                        if (!file.canonicalPath.startsWith(themesDir.canonicalPath + File.separator)
+                            && file.canonicalPath != themesDir.canonicalPath) {
+                            return WebResourceResponse(
+                                "text/plain", "utf-8", 403, "Forbidden", null,
+                                "Path traversal blocked".byteInputStream()
+                            )
+                        }
+
+                        if (!file.exists()) {
+                            return WebResourceResponse(
+                                "text/plain", "utf-8", 404, "Not Found", null,
+                                "File not found".byteInputStream()
+                            )
+                        }
+
+                        // MIME type detection — matches desktop's theme-protocol.ts
+                        val mimeType = when (file.extension.lowercase()) {
+                            "jpg", "jpeg" -> "image/jpeg"
+                            "png" -> "image/png"
+                            "webp" -> "image/webp"
+                            "svg" -> "image/svg+xml"
+                            "css" -> "text/css"
+                            "json" -> "application/json"
+                            "gif" -> "image/gif"
+                            else -> "application/octet-stream"
+                        }
+
+                        return try {
+                            WebResourceResponse(mimeType, null, file.inputStream())
+                        } catch (_: Exception) {
+                            WebResourceResponse(
+                                "text/plain", "utf-8", 500, "Internal Error", null,
+                                "Failed to read file".byteInputStream()
+                            )
+                        }
                     }
                 }
 

@@ -1457,11 +1457,52 @@ class SessionService : Service() {
             }
             manifest.put("source", "community")
 
-            // Create theme directory
+            // Create theme directory + assets subdirectory
             val themeDir = File(themesDir, slug)
-            themeDir.mkdirs()
+            val assetsDir = File(themeDir, "assets")
+            assetsDir.mkdirs()
 
-            // Write manifest.json
+            // Phase 5c: Download asset files listed in the registry entry's assetUrls
+            // map (mirrors desktop's theme-marketplace-provider.ts install flow).
+            var totalBytes = manifestText.toByteArray().size.toLong()
+            val assetUrls = entry.optJSONObject("assetUrls")
+            if (assetUrls != null) {
+                val keys = assetUrls.keys()
+                while (keys.hasNext()) {
+                    val relativePath = keys.next()
+                    val url = assetUrls.getString(relativePath)
+
+                    // Validate relative path — no path traversal
+                    val resolved = File(themeDir, relativePath).canonicalFile
+                    if (!resolved.path.startsWith(themeDir.canonicalPath + File.separator)) {
+                        // Cleanup partial download
+                        themeDir.deleteRecursively()
+                        return JSONObject().put("status", "failed")
+                            .put("error", "Invalid asset path: $relativePath")
+                    }
+
+                    val assetBytes = try {
+                        java.net.URL(url).readBytes()
+                    } catch (e: Exception) {
+                        themeDir.deleteRecursively()
+                        return JSONObject().put("status", "failed")
+                            .put("error", "Failed to download asset $relativePath: ${e.message}")
+                    }
+
+                    totalBytes += assetBytes.size
+                    if (totalBytes > maxThemeSizeBytes) {
+                        themeDir.deleteRecursively()
+                        return JSONObject().put("status", "failed")
+                            .put("error", "Theme exceeds 10MB size limit")
+                    }
+
+                    // Ensure parent directory exists for nested assets
+                    resolved.parentFile?.mkdirs()
+                    resolved.writeBytes(assetBytes)
+                }
+            }
+
+            // Write manifest last — theme-watcher triggers on manifest.json presence
             File(themeDir, "manifest.json").writeText(manifest.toString(2))
 
             // Phase 5b: record install in unified packages map (mirrors desktop)
