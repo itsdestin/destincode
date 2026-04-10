@@ -271,10 +271,6 @@ function AppInner() {
       if (action) {
         dispatch(action);
       }
-      // Play completion sound on Stop events
-      if (event.type === 'Stop') {
-        playSound('completion');
-      }
       // First hook event for a session = Claude is initialized
       if (event.sessionId) {
         setInitializedSessions((prev) => {
@@ -1203,16 +1199,74 @@ function ThemeBg() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <ThemeBg />
-      <ThemeEffects />
-      <SkillProvider>
-        <GameProvider>
-          <ChatProvider>
-            <AppInner />
-          </ChatProvider>
-        </GameProvider>
-      </SkillProvider>
-    </ThemeProvider>
+    // Root boundary catches provider-level crashes that sub-tree boundaries can't.
+    // Uses inline styles only — no theme tokens, no context — so it renders even
+    // when ThemeProvider itself is the thing that crashed.
+    <RootErrorBoundary>
+      <ThemeProvider>
+        <ThemeBg />
+        <ThemeEffects />
+        <SkillProvider>
+          <GameProvider>
+            <ChatProvider>
+              <AppInner />
+            </ChatProvider>
+          </GameProvider>
+        </SkillProvider>
+      </ThemeProvider>
+    </RootErrorBoundary>
   );
+}
+
+/**
+ * Outermost error boundary — renders without any provider context.
+ * Inline styles only so it works even if CSS/themes fail to load.
+ */
+class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[RootErrorBoundary]', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', height: '100vh', fontFamily: 'system-ui, sans-serif',
+          background: '#1a1a2e', color: '#ccc', padding: 24, textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>:(</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#e55' }}>
+            DestinCode failed to start
+          </div>
+          <div style={{
+            fontSize: 12, color: '#888', marginTop: 8, maxWidth: 400,
+            wordBreak: 'break-word',
+          }}>
+            {this.state.error.message}
+          </div>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{
+              marginTop: 16, padding: '6px 16px', borderRadius: 4,
+              border: '1px solid #444', background: '#2a2a3e', color: '#ccc',
+              cursor: 'pointer', fontSize: 12,
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
