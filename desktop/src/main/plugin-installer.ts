@@ -28,7 +28,26 @@ function isContainedIn(child: string, parent: string): boolean {
   return resolvedChild.startsWith(resolvedParent + path.sep) || resolvedChild === resolvedParent;
 }
 
-interface InstallMeta {
+/**
+ * Phase 3a: Map sourceMarketplace to its git repo URL.
+ * DestinCode/DestinClaude local entries live in the itsdestin/destincode-marketplace
+ * repo, while Anthropic upstream entries live in anthropics/claude-plugins-official.
+ */
+export function getMarketplaceRepo(sourceMarketplace?: string): string {
+  if (sourceMarketplace === 'destincode' || sourceMarketplace === 'destinclaude') {
+    return 'https://github.com/itsdestin/destincode-marketplace.git';
+  }
+  return MARKETPLACE_REPO;
+}
+
+function getCacheRepoName(sourceMarketplace?: string): string {
+  if (sourceMarketplace === 'destincode' || sourceMarketplace === 'destinclaude') {
+    return 'destincode-marketplace';
+  }
+  return 'claude-plugins-official';
+}
+
+export interface InstallMeta {
   installedAt: string;
   installedFrom: string;
   installPath: string;
@@ -113,13 +132,16 @@ function ensurePluginJson(id: string, entry: MarketplaceEntry): void {
   fs.writeFileSync(dotJson, JSON.stringify(meta, null, 2));
 }
 
-async function installFromLocal(id: string, sourceRef: string): Promise<InstallResult> {
-  const cacheRepo = path.join(CACHE_DIR, 'claude-plugins-official');
+async function installFromLocal(id: string, sourceRef: string, sourceMarketplace?: string): Promise<InstallResult> {
+  // Phase 3a: source-aware repo selection — DestinCode entries clone from
+  // itsdestin/destincode-marketplace, not the Anthropic upstream repo
+  const cacheRepo = path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace));
+  const repoUrl = getMarketplaceRepo(sourceMarketplace);
 
   // Ensure marketplace repo is cloned
   if (!fs.existsSync(cacheRepo)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    const { ok, output } = await runGit('clone', '--depth', '1', MARKETPLACE_REPO, cacheRepo);
+    const { ok, output } = await runGit('clone', '--depth', '1', repoUrl, cacheRepo);
     if (!ok) return { status: 'failed', error: `Failed to clone marketplace repo: ${output.slice(0, 200)}` };
   }
 
@@ -204,7 +226,8 @@ export async function installPlugin(entry: MarketplaceEntry): Promise<InstallRes
     let result: InstallResult;
     switch (sourceType) {
       case 'local':
-        result = await installFromLocal(id, sourceRef);
+        // Phase 3a: pass sourceMarketplace so the installer clones the right repo
+        result = await installFromLocal(id, sourceRef, entry.sourceMarketplace);
         break;
       case 'url':
         result = await installFromUrl(id, sourceRef);

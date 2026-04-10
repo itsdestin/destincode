@@ -29,6 +29,22 @@ class PluginInstaller(
         private const val TAG = "PluginInstaller"
         private const val GIT_TIMEOUT_SECONDS = 120L
         private const val MARKETPLACE_REPO = "https://github.com/anthropics/claude-plugins-official.git"
+        private const val DESTINCODE_MARKETPLACE_REPO = "https://github.com/itsdestin/destincode-marketplace.git"
+
+        /**
+         * Phase 3a: Map sourceMarketplace to its git repo URL.
+         * DestinCode/DestinClaude local entries live in itsdestin/destincode-marketplace
+         * while Anthropic upstream entries live in anthropics/claude-plugins-official.
+         */
+        fun getMarketplaceRepo(sourceMarketplace: String?): String =
+            if (sourceMarketplace == "destincode" || sourceMarketplace == "destinclaude")
+                DESTINCODE_MARKETPLACE_REPO
+            else MARKETPLACE_REPO
+
+        private fun getCacheRepoName(sourceMarketplace: String?): String =
+            if (sourceMarketplace == "destincode" || sourceMarketplace == "destinclaude")
+                "destincode-marketplace"
+            else "claude-plugins-official"
     }
 
     sealed class InstallResult {
@@ -66,9 +82,11 @@ class PluginInstaller(
 
             val sourceType = entry.optString("sourceType")
             val sourceRef = entry.optString("sourceRef")
+            val sourceMarketplace = entry.optString("sourceMarketplace").takeIf { it.isNotEmpty() }
 
             val result = when (sourceType) {
-                "local" -> installFromLocal(id, sourceRef)
+                // Phase 3a: pass sourceMarketplace so the installer clones the right repo
+                "local" -> installFromLocal(id, sourceRef, sourceMarketplace)
                 "url" -> installFromUrl(id, sourceRef)
                 "git-subdir" -> installFromGitSubdir(id, sourceRef, entry.optString("sourceSubdir"))
                 else -> InstallResult.Failed("Unknown source type: $sourceType")
@@ -77,14 +95,17 @@ class PluginInstaller(
             if (result is InstallResult.Success) {
                 // Ensure .claude-plugin/plugin.json exists (some plugins use root plugin.json)
                 ensurePluginJson(id, entry)
-                // Record in config store
-                configStore.recordPluginInstall(id, JSONObject().apply {
+                // Phase 3a: record as a PackageInfo carrying the marketplace version
+                // so update detection can compare against the latest index.
+                configStore.recordPackageInstall(id, JSONObject().apply {
+                    put("version", entry.optString("version", "1.0.0"))
+                    put("source", "marketplace")
                     put("installedAt", java.time.Instant.now().toString())
-                    put("installedFrom", entry.optString("sourceMarketplace", "unknown"))
-                    put("installPath", targetDir.absolutePath)
-                    put("sourceType", sourceType)
-                    put("sourceRef", sourceRef)
-                    if (entry.has("sourceSubdir")) put("sourceSubdir", entry.optString("sourceSubdir"))
+                    put("removable", true)
+                    put("components", org.json.JSONArray().put(JSONObject().apply {
+                        put("type", "plugin")
+                        put("path", targetDir.absolutePath)
+                    }))
                 })
             }
 
@@ -141,14 +162,17 @@ class PluginInstaller(
 
     // ── Source-specific install strategies ──────────────────────────
 
-    private suspend fun installFromLocal(id: String, sourceRef: String): InstallResult {
-        val cacheRepo = File(cacheDir, "claude-plugins-official")
+    private suspend fun installFromLocal(id: String, sourceRef: String, sourceMarketplace: String? = null): InstallResult {
+        // Phase 3a: source-aware repo — DestinCode local entries live in the
+        // itsdestin/destincode-marketplace repo, not the Anthropic upstream repo
+        val cacheRepo = File(cacheDir, getCacheRepoName(sourceMarketplace))
+        val repoUrl = getMarketplaceRepo(sourceMarketplace)
 
         // Ensure the marketplace repo is cloned
         if (!cacheRepo.exists()) {
-            Log.i(TAG, "Cloning marketplace repo...")
+            Log.i(TAG, "Cloning marketplace repo: $repoUrl")
             cacheDir.mkdirs()
-            val ok = runGit("clone", "--depth", "1", MARKETPLACE_REPO, cacheRepo.absolutePath)
+            val ok = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath)
             if (!ok) return InstallResult.Failed("Failed to clone marketplace repo")
         }
 

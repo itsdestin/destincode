@@ -547,6 +547,12 @@ class SessionService : Service() {
                 val result = skillProvider?.getCuratedDefaults() ?: org.json.JSONArray()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
+            // Phase 3a: unified packages map — lets the renderer compare installed
+            // versions against the marketplace index to detect available updates
+            "marketplace:get-packages" -> {
+                val result = skillProvider?.configStore?.getPackages() ?: JSONObject()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
             "github:auth" -> {
                 // No GitHub auth on Android — return null
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject.NULL) }

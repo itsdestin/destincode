@@ -76,7 +76,9 @@ export function registerIpcHandlers(
   });
 
   // --- Theme marketplace ---
-  const themeMarketplace = new ThemeMarketplaceProvider();
+  // Phase 3a: pass the shared config store so theme installs also record into
+  // the unified destincode-skills.json packages map used for update tracking.
+  const themeMarketplace = new ThemeMarketplaceProvider(skillProvider.configStore);
 
   ipcMain.handle(IPC.THEME_MARKETPLACE_LIST, async (_event, filters) => {
     return themeMarketplace.listThemes(filters);
@@ -517,6 +519,13 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.SKILLS_GET_CURATED_DEFAULTS, async () => {
     return skillProvider.getCuratedDefaults();
+  });
+
+  // Phase 3a: unified marketplace packages map — lets the renderer know which
+  // versions are currently installed (for update detection) and the on-disk
+  // component paths (for uninstall cascade).
+  ipcMain.handle(IPC.MARKETPLACE_GET_PACKAGES, async () => {
+    return skillProvider.configStore.getPackages();
   });
 
   // --- Remote access settings ---

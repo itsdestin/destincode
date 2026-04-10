@@ -10,7 +10,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import type { SkillEntry, ChipConfig } from '../../shared/types';
+import type { SkillEntry, ChipConfig, PackageInfo } from '../../shared/types';
 import type { ThemeRegistryEntryWithStatus } from '../../shared/theme-marketplace-types';
 
 // window.claude is typed for skills but not for theme.marketplace — cast via any
@@ -38,8 +38,11 @@ interface MarketplaceState {
   // Raw index data
   skillEntries: SkillEntry[];
   themeEntries: ThemeRegistryEntryWithStatus[];
-  // Package tracking from config (populated in Phase 3)
-  packages: Record<string, any>;
+  // Phase 3a: packages map from destincode-skills.json — tracks installed
+  // versions, sources, and component paths for update detection + uninstall
+  packages: Record<string, PackageInfo>;
+  // Phase 3b: map of entry id → whether a newer version is in the marketplace
+  updateAvailable: Record<string, boolean>;
   // Installed content (merged from all sources)
   installedSkills: SkillEntry[];
   // User content
@@ -57,6 +60,8 @@ interface MarketplaceActions {
   uninstallSkill: (id: string) => Promise<void>;
   installTheme: (slug: string) => Promise<void>;
   uninstallTheme: (slug: string) => Promise<void>;
+  // Phase 3b: update an installed entry to the latest marketplace version
+  update: (id: string, type: 'skill' | 'theme') => Promise<any>;
   // Favorites & chips
   setFavorite: (id: string, favorited: boolean) => Promise<void>;
   setChips: (chips: ChipConfig[]) => Promise<void>;
@@ -84,7 +89,7 @@ export function useMarketplace(): MarketplaceContextValue {
 export function MarketplaceProvider({ children }: { children: React.ReactNode }) {
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
   const [themeEntries, setThemeEntries] = useState<ThemeRegistryEntryWithStatus[]>([]);
-  const [packages, setPackages] = useState<Record<string, any>>({});
+  const [packages, setPackages] = useState<Record<string, PackageInfo>>({});
   const [installedSkills, setInstalledSkills] = useState<SkillEntry[]>([]);
   const [privateSkills, setPrivateSkills] = useState<SkillEntry[]>([]);
   const [chips, setChipsState] = useState<ChipConfig[]>([]);
@@ -97,18 +102,22 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     setLoading(true);
     setError(null);
     try {
+      // Phase 3a: include packages map so update detection works on first load
+      const marketplaceApi = (window as any).claude.marketplace;
       const [
         marketplaceSkills,
         themes,
         installed,
         favs,
         chipList,
+        pkgs,
       ] = await Promise.all([
         window.claude.skills.listMarketplace(),
         claude().theme.marketplace.list().catch(() => []),
         window.claude.skills.list(),
         window.claude.skills.getFavorites(),
         window.claude.skills.getChips(),
+        marketplaceApi?.getPackages?.().catch(() => ({})) ?? Promise.resolve({}),
       ]);
 
       setSkillEntries(marketplaceSkills || []);
@@ -116,6 +125,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       setInstalledSkills(installed || []);
       setFavoritesState(favs || []);
       setChipsState(chipList || []);
+      setPackages((pkgs as Record<string, PackageInfo>) || {});
 
       // Extract private skills from installed list
       const priv = (installed || []).filter((s: SkillEntry) =>
@@ -153,6 +163,20 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     await fetchAll();
   }, [fetchAll]);
 
+  // Phase 3b: update an installed package (skill plugin or theme) by re-downloading
+  // from source and overwriting files at the same install path. Config in
+  // ~/.claude/destincode-config/<id>.json is untouched.
+  const update = useCallback(async (id: string, type: 'skill' | 'theme') => {
+    let result: any;
+    if (type === 'theme') {
+      result = await claude().theme.marketplace.update(id);
+    } else {
+      result = await (window as any).claude.skills.update(id);
+    }
+    await fetchAll();
+    return result;
+  }, [fetchAll]);
+
   const setFavorite = useCallback(async (id: string, favorited: boolean) => {
     await window.claude.skills.setFavorite(id, favorited);
     // Optimistic update
@@ -177,12 +201,35 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     await fetchAll();
   }, [fetchAll]);
 
+  // Phase 3b: compute update-available map by comparing marketplace versions
+  // against installed package versions. Themes use the "theme:<slug>" key
+  // prefix in the packages map to avoid colliding with skill ids.
+  const updateAvailable = useMemo<Record<string, boolean>>(() => {
+    const result: Record<string, boolean> = {};
+    for (const entry of skillEntries) {
+      const pkg = packages[entry.id];
+      if (!pkg) continue; // not installed via marketplace
+      if (isNewerVersion(pkg.version, entry.version)) {
+        result[entry.id] = true;
+      }
+    }
+    for (const theme of themeEntries) {
+      const pkg = packages[`theme:${theme.slug}`];
+      if (!pkg) continue;
+      if (isNewerVersion(pkg.version, theme.version)) {
+        result[theme.slug] = true;
+      }
+    }
+    return result;
+  }, [skillEntries, themeEntries, packages]);
+
   // ── Memoized value ───────────────────────────────────────────────────────
 
   const value = useMemo<MarketplaceContextValue>(() => ({
     skillEntries,
     themeEntries,
     packages,
+    updateAvailable,
     installedSkills,
     privateSkills,
     chips,
@@ -193,15 +240,16 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     uninstallSkill,
     installTheme,
     uninstallTheme,
+    update,
     setFavorite,
     setChips,
     refresh: fetchAll,
     createPrompt,
     deletePrompt,
   }), [
-    skillEntries, themeEntries, packages, installedSkills, privateSkills,
+    skillEntries, themeEntries, packages, updateAvailable, installedSkills, privateSkills,
     chips, favorites, loading, error,
-    installSkill, uninstallSkill, installTheme, uninstallTheme,
+    installSkill, uninstallSkill, installTheme, uninstallTheme, update,
     setFavorite, setChips, fetchAll, createPrompt, deletePrompt,
   ]);
 

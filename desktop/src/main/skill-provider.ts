@@ -24,7 +24,9 @@ const INDEX_TTL = 24 * 60 * 60 * 1000; // 24 hours
 interface CacheMeta { fetchedAt: number; }
 
 export class LocalSkillProvider implements SkillProvider {
-  private configStore = new SkillConfigStore();
+  // Phase 3a: made public so ThemeMarketplaceProvider can share the same
+  // destincode-skills.json packages map and marketplace IPC can read it
+  public configStore = new SkillConfigStore();
   private installedCache: SkillEntry[] | null = null;
 
   constructor() {
@@ -173,13 +175,17 @@ export class LocalSkillProvider implements SkillProvider {
     });
 
     if (result.status === 'installed') {
-      // Record in config store
-      this.configStore.recordPluginInstall(id, {
+      // Phase 3a: record install as a PackageInfo with version from the marketplace
+      // entry so the update flow can detect when a newer version is available.
+      this.configStore.recordPackageInstall(id, {
+        version: marketplaceEntry.version || '1.0.0',
+        source: 'marketplace',
         installedAt: new Date().toISOString(),
-        installedFrom: marketplaceEntry.sourceMarketplace || 'unknown',
-        installPath: path.join(os.homedir(), '.claude', 'plugins', id),
-        sourceType: marketplaceEntry.sourceType,
-        sourceRef: marketplaceEntry.sourceRef,
+        removable: true,
+        components: [{
+          type: 'plugin',
+          path: path.join(os.homedir(), '.claude', 'plugins', id),
+        }],
       });
       this.installedCache = null;
     }

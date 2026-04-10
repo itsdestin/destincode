@@ -288,8 +288,14 @@ export const IPC = {
   THEME_MARKETPLACE_DETAIL: 'theme-marketplace:detail',
   THEME_MARKETPLACE_INSTALL: 'theme-marketplace:install',
   THEME_MARKETPLACE_UNINSTALL: 'theme-marketplace:uninstall',
+  THEME_MARKETPLACE_UPDATE: 'theme-marketplace:update',
   THEME_MARKETPLACE_PUBLISH: 'theme-marketplace:publish',
   THEME_MARKETPLACE_GENERATE_PREVIEW: 'theme-marketplace:generate-preview',
+  // Unified marketplace — packages + update + config (Phase 3)
+  MARKETPLACE_GET_PACKAGES: 'marketplace:get-packages',
+  SKILLS_UPDATE: 'skills:update',
+  MARKETPLACE_GET_CONFIG: 'marketplace:get-config',
+  MARKETPLACE_SET_CONFIG: 'marketplace:set-config',
   // First-run
   FIRST_RUN_STATE: 'first-run:state',
   FIRST_RUN_RETRY: 'first-run:retry',
