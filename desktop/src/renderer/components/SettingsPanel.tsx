@@ -1097,35 +1097,43 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
             <>
               <div className="fixed inset-0 bg-black/50 z-[70]" onClick={() => setConfirmOpen(false)} />
               <div
-                className="fixed z-[71] rounded-xl bg-panel border border-red-600/40 shadow-2xl overflow-hidden"
+                className="fixed z-[71] rounded-xl bg-panel/80 backdrop-blur-xl border border-red-600/40 shadow-2xl overflow-hidden"
                 style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(340px, 85vw)' }}
               >
                 <div className="px-4 py-3 border-b border-red-600/30 bg-red-600/10">
-                  <h3 className="text-xs font-bold text-[#DD4444]">Enable full auto-approve?</h3>
+                  {/* Warning: extreme danger header */}
+                  <h3 className="text-xs font-bold text-[#DD4444]">&#9888; This is extremely dangerous</h3>
                 </div>
                 <div className="px-4 py-3 space-y-2">
-                  <p className="text-[10px] text-fg-dim">
-                    This will silently approve <strong>all</strong> remaining permission requests in bypass mode, including:
+                  <p className="text-[10px] text-fg-dim leading-relaxed">
+                    <strong className="text-[#DD4444]">This setting is not recommended or condoned by Claude, Anthropic, or DestinCode.</strong>{' '}
+                    Do not enable this unless you fully understand the consequences.
+                  </p>
+                  <p className="text-[10px] text-fg-dim leading-relaxed">
+                    Full auto-approve silently grants <strong>every</strong> remaining permission request with zero human review. Claude will be able to:
                   </p>
                   <ul className="text-[10px] text-fg-muted space-y-1 ml-3 list-disc">
-                    <li>Writes to <code className="text-fg-dim">.git/</code> directories</li>
-                    <li>Writes to shell config (<code className="text-fg-dim">.bashrc</code>, <code className="text-fg-dim">.gitconfig</code>)</li>
-                    <li>Writes to <code className="text-fg-dim">.claude/</code> configuration</li>
-                    <li>Compound commands that bypass path resolution protections</li>
-                    <li>Compound commands that bypass bare repository protections</li>
+                    <li>Overwrite your <code className="text-fg-dim">.git/</code> history and repository internals</li>
+                    <li>Modify shell config files (<code className="text-fg-dim">.bashrc</code>, <code className="text-fg-dim">.gitconfig</code>, <code className="text-fg-dim">.zshrc</code>)</li>
+                    <li>Rewrite <code className="text-fg-dim">.claude/</code> configuration and MCP settings</li>
+                    <li>Execute compound commands that bypass path resolution safety checks</li>
+                    <li>Execute compound commands that bypass bare repository attack protections</li>
                   </ul>
+                  <p className="text-[10px] text-[#DD4444]/80 leading-relaxed font-medium">
+                    These protections exist for a reason. Disabling them means a single bad model output could corrupt your repository, hijack your shell environment, or escalate access beyond this project. There is no undo.
+                  </p>
                   <div className="flex gap-2 pt-2">
-                    <button
-                      onClick={() => { updateOverride('approveAll', true); setConfirmOpen(false); }}
-                      className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-red-600/70 hover:bg-red-600/90 text-white transition-colors"
-                    >
-                      Enable
-                    </button>
                     <button
                       onClick={() => setConfirmOpen(false)}
                       className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-inset hover:bg-edge text-fg-muted transition-colors"
                     >
                       Cancel
+                    </button>
+                    <button
+                      onClick={() => { updateOverride('approveAll', true); setConfirmOpen(false); }}
+                      className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-red-600/70 hover:bg-red-600/90 text-white transition-colors"
+                    >
+                      I understand, enable anyway
                     </button>
                   </div>
                 </div>
