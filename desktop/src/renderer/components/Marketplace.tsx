@@ -145,8 +145,11 @@ function InstalledTab({
   onOpenEditor?: (id: string) => void;
   onOpenCreatePrompt?: () => void;
 }) {
-  const { installedSkills, favorites, chips, loading, setFavorite, setChips, deletePrompt, updateAvailable, update, uninstallSkill, packages } = useMarketplace();
+  const { installedSkills, favorites, chips, loading, setFavorite, setChips, deletePrompt, updateAvailable, update, uninstallSkill, packages, publishSkill } = useMarketplace();
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  // Phase 4a: track publish-in-progress state per skill id
+  const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [publishResult, setPublishResult] = useState<{ id: string; prUrl?: string; error?: string } | null>(null);
   const [filter, setFilter] = useState<'all' | 'favorites' | 'private'>('all');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [chipsExpanded, setChipsExpanded] = useState(false);
@@ -280,6 +283,29 @@ function InstalledTab({
               {onOpenShareSheet && (
                 <button onClick={(e) => { e.stopPropagation(); onOpenShareSheet(skill.id); }} className="p-1 text-fg-muted hover:text-fg text-xs" title="Share">&#8599;</button>
               )}
+              {/* Phase 4a: Publish button — only for user-created plugins */}
+              {(skill.source === 'self' || skill.visibility === 'private') && skill.type === 'plugin' && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    setPublishingId(skill.id);
+                    setPublishResult(null);
+                    try {
+                      const result = await publishSkill(skill.id);
+                      setPublishResult({ id: skill.id, prUrl: result.prUrl });
+                    } catch (err: any) {
+                      setPublishResult({ id: skill.id, error: err?.message || 'Publish failed' });
+                    } finally {
+                      setPublishingId(null);
+                    }
+                  }}
+                  disabled={publishingId === skill.id}
+                  className="p-1 text-fg-muted hover:text-accent text-[10px] font-medium"
+                  title="Publish to marketplace"
+                >
+                  {publishingId === skill.id ? '...' : '\u2191 Publish'}
+                </button>
+              )}
               {(skill.source === 'self' || skill.visibility === 'private') && skill.type === 'prompt' && (
                 <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(skill.id); }} className="p-1 text-fg-muted hover:text-red-400 text-xs" title="Delete">&times;</button>
               )}
@@ -311,6 +337,39 @@ function InstalledTab({
               <button onClick={() => setConfirmDelete(null)} className="px-3 py-1.5 text-[11px] bg-well text-fg-muted rounded-md hover:text-fg">Cancel</button>
               <button onClick={() => handleDelete(confirmDelete)} className="px-3 py-1.5 text-[11px] bg-red-500/20 text-red-400 rounded-md hover:bg-red-500/30">Delete</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 4a: Publish result banner — shows PR URL on success or error message */}
+      {publishResult && (
+        <div className="fixed bottom-4 left-4 right-4 z-[60]">
+          <div className={`mx-auto max-w-sm px-4 py-3 rounded-lg border text-sm ${
+            publishResult.prUrl
+              ? 'bg-green-500/10 border-green-500/30 text-green-400'
+              : 'bg-red-500/10 border-red-500/30 text-red-400'
+          }`}>
+            {publishResult.prUrl ? (
+              <div>
+                <p className="font-medium">Published successfully!</p>
+                <a
+                  href={publishResult.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] underline break-all"
+                >
+                  {publishResult.prUrl}
+                </a>
+              </div>
+            ) : (
+              <p>{publishResult.error}</p>
+            )}
+            <button
+              onClick={() => setPublishResult(null)}
+              className="absolute top-1 right-2 text-fg-muted hover:text-fg text-xs"
+            >
+              &times;
+            </button>
           </div>
         </div>
       )}

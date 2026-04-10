@@ -96,6 +96,8 @@ interface MarketplaceActions {
   // Prompt skill management
   createPrompt: (skill: Omit<SkillEntry, 'id'>) => Promise<SkillEntry>;
   deletePrompt: (id: string) => Promise<void>;
+  // Phase 4a: publish a user-created skill to the community marketplace via PR
+  publishSkill: (id: string) => Promise<{ prUrl: string }>;
 }
 
 type MarketplaceContextValue = MarketplaceState & MarketplaceActions;
@@ -227,6 +229,14 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     await fetchAll();
   }, [fetchAll]);
 
+  // Phase 4a: publish a user-created skill to the community marketplace.
+  // Calls the skills:publish IPC which forks the marketplace repo, uploads
+  // files, and opens a PR via `gh` CLI.
+  const publishSkill = useCallback(async (id: string) => {
+    const result = await window.claude.skills.publish(id);
+    return result;
+  }, []);
+
   // Phase 3b: compute update-available map by comparing marketplace versions
   // against installed package versions. Themes use the "theme:<slug>" key
   // prefix in the packages map to avoid colliding with skill ids.
@@ -272,11 +282,12 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     refresh: fetchAll,
     createPrompt,
     deletePrompt,
+    publishSkill,
   }), [
     skillEntries, themeEntries, packages, updateAvailable, installedSkills, privateSkills,
     chips, favorites, loading, error,
     installSkill, uninstallSkill, installTheme, uninstallTheme, update,
-    setFavorite, setChips, fetchAll, createPrompt, deletePrompt,
+    setFavorite, setChips, fetchAll, createPrompt, deletePrompt, publishSkill,
   ]);
 
   return (

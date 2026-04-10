@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
@@ -10,6 +12,25 @@ import type {
   SkillEntry, SkillDetailView, SkillFilters, ChipConfig,
   MetadataOverride, SkillProvider,
 } from '../shared/types';
+
+const execFileAsync = promisify(execFile);
+
+// Resolve gh CLI path at module load (mirrors theme-marketplace-provider.ts)
+let ghPath = 'gh';
+try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
+
+const PLUGINS_DIR = path.join(os.homedir(), '.claude', 'plugins');
+
+// Patterns that indicate sensitive content — stripped before upload
+const SENSITIVE_PATTERNS = [
+  /\.env$/i,
+  /\.env\..*/i,
+  /credentials\.json$/i,
+  /secrets?\.(json|ya?ml|toml)$/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /token(s)?\.(json|txt)$/i,
+];
 
 const CACHE_DIR = path.join(os.homedir(), '.claude', 'destincode-marketplace-cache');
 const INDEX_CACHE = path.join(CACHE_DIR, 'index.json');
@@ -302,8 +323,210 @@ export class LocalSkillProvider implements SkillProvider {
 
   // --- Sharing ---
 
-  async publish(_id: string): Promise<{ prUrl: string }> {
-    throw new Error('Publishing not yet implemented — requires GitHub auth');
+  /**
+   * Phase 4a: Publish a user-created plugin to the destincode-marketplace repo
+   * via GitHub PR. Mirrors the theme publish flow in theme-marketplace-provider.ts.
+   *
+   * Flow:
+   * 1. Verify gh CLI auth
+   * 2. Verify the skill is user-created (source 'self' or visibility 'private')
+   * 3. Fork itsdestin/destincode-marketplace (idempotent)
+   * 4. Create branch, upload plugin files via GitHub Contents API
+   * 5. Open PR with auto-populated description
+   */
+  async publish(id: string): Promise<{ prUrl: string }> {
+    // Locate the plugin on disk
+    const pluginDir = path.join(PLUGINS_DIR, id);
+    if (!fs.existsSync(pluginDir)) {
+      throw new Error(`Plugin directory not found: ${id}`);
+    }
+
+    // Phase 4a: only allow publishing user-created items
+    const installed = await this.getInstalled();
+    const skill = installed.find(s => s.id === id);
+    if (!skill) {
+      throw new Error(`Skill not found: ${id}`);
+    }
+    if (skill.source !== 'self' && skill.visibility !== 'private') {
+      throw new Error('Only user-created skills can be published to the marketplace');
+    }
+
+    // 1. Verify gh CLI auth
+    let username: string;
+    try {
+      const { stdout } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login']);
+      username = stdout.trim();
+      if (!username) throw new Error('Empty username');
+    } catch {
+      throw new Error('GitHub CLI not authenticated. Run `gh auth login` first.');
+    }
+
+    const UPSTREAM_REPO = 'itsdestin/destincode-marketplace';
+    const branchName = `plugin/${id}`;
+
+    // 2. Fork the marketplace repo (idempotent — gh returns existing fork)
+    try {
+      await execFileAsync(ghPath, ['repo', 'fork', UPSTREAM_REPO, '--clone=false'], { timeout: 30000 });
+    } catch (err: any) {
+      if (err.code === 'ENOENT') throw new Error('gh CLI not found');
+      // gh repo fork returns exit 0 even if fork exists; only throw on real errors
+    }
+
+    const FORK_REPO = `${username}/destincode-marketplace`;
+
+    // 3. Get the default branch SHA from upstream
+    let baseSha: string;
+    try {
+      const { stdout } = await execFileAsync(ghPath, [
+        'api', `repos/${UPSTREAM_REPO}/git/ref/heads/main`, '--jq', '.object.sha',
+      ]);
+      baseSha = stdout.trim();
+    } catch {
+      throw new Error('Failed to read upstream repo. Does itsdestin/destincode-marketplace exist?');
+    }
+
+    // Create branch on the fork (or update if it already exists)
+    try {
+      await execFileAsync(ghPath, [
+        'api', `repos/${FORK_REPO}/git/refs`, '-X', 'POST',
+        '-f', `ref=refs/heads/${branchName}`,
+        '-f', `sha=${baseSha}`,
+      ]);
+    } catch {
+      try {
+        await execFileAsync(ghPath, [
+          'api', `repos/${FORK_REPO}/git/refs/heads/${branchName}`, '-X', 'PATCH',
+          '-f', `sha=${baseSha}`, '-f', 'force=true',
+        ]);
+      } catch (err: any) {
+        throw new Error(`Failed to create branch: ${err.message}`);
+      }
+    }
+
+    // 4. Collect plugin files, filtering out sensitive content
+    const filesToUpload: { repoPath: string; localPath: string }[] = [];
+    const allFiles = await this.walkPluginDirectory(pluginDir);
+
+    for (const absPath of allFiles) {
+      const relativePath = path.relative(pluginDir, absPath).replace(/\\/g, '/');
+
+      // Phase 4a: strip sensitive files before upload
+      if (SENSITIVE_PATTERNS.some(re => re.test(relativePath))) {
+        console.log(`[SkillProvider] Skipping sensitive file: ${relativePath}`);
+        continue;
+      }
+      // Skip node_modules and .git
+      if (relativePath.startsWith('node_modules/') || relativePath.startsWith('.git/')) {
+        continue;
+      }
+
+      filesToUpload.push({
+        repoPath: `plugins/${id}/${relativePath}`,
+        localPath: absPath,
+      });
+    }
+
+    if (filesToUpload.length === 0) {
+      throw new Error('No files to upload (all files were filtered as sensitive)');
+    }
+
+    // 5. Upload files via GitHub Contents API
+    for (const file of filesToUpload) {
+      const raw = await fs.promises.readFile(file.localPath);
+      const content = raw.toString('base64');
+
+      try {
+        await execFileAsync(ghPath, [
+          'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
+          '-f', `message=Add ${file.repoPath}`,
+          '-f', `content=${content}`,
+          '-f', `branch=${branchName}`,
+        ], { timeout: 30000 });
+      } catch {
+        // File may already exist — update it (need the sha)
+        try {
+          const { stdout: existingFile } = await execFileAsync(ghPath, [
+            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`,
+            '-q', '.sha', '-H', 'Accept: application/vnd.github.v3+json',
+            '--method', 'GET', '-f', `ref=${branchName}`,
+          ]);
+          await execFileAsync(ghPath, [
+            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
+            '-f', `message=Update ${file.repoPath}`,
+            '-f', `content=${content}`,
+            '-f', `sha=${existingFile.trim()}`,
+            '-f', `branch=${branchName}`,
+          ], { timeout: 30000 });
+        } catch {
+          throw new Error(`Failed to upload ${file.repoPath}`);
+        }
+      }
+    }
+
+    // 6. Create the PR
+    const prTitle = `[Plugin] ${skill.displayName || id}`;
+    const prBody = [
+      `## New Plugin: ${skill.displayName || id}`,
+      '',
+      skill.description ? `> ${skill.description}` : '',
+      '',
+      `- **Author:** ${skill.author || username}`,
+      `- **Type:** ${skill.type || 'plugin'}`,
+      `- **Category:** ${skill.category || 'other'}`,
+      `- **Plugin ID:** \`${id}\``,
+      '',
+      `### What it does`,
+      skill.description || '_No description provided_',
+      '',
+      `### Files`,
+      filesToUpload.map(f => `- \`${f.repoPath}\``).join('\n'),
+      '',
+      '_Submitted via DestinCode Marketplace_',
+    ].join('\n');
+
+    try {
+      const { stdout: prUrlRaw } = await execFileAsync(ghPath, [
+        'pr', 'create',
+        '--repo', UPSTREAM_REPO,
+        '--head', `${username}:${branchName}`,
+        '--title', prTitle,
+        '--body', prBody,
+      ], { timeout: 30000 });
+      return { prUrl: prUrlRaw.trim() };
+    } catch (err: any) {
+      // If PR already exists, try to get its URL
+      if (err.stderr?.includes('already exists')) {
+        try {
+          const { stdout: existingPr } = await execFileAsync(ghPath, [
+            'pr', 'list',
+            '--repo', UPSTREAM_REPO,
+            '--head', `${username}:${branchName}`,
+            '--json', 'url', '--jq', '.[0].url',
+          ]);
+          if (existingPr.trim()) {
+            return { prUrl: existingPr.trim() };
+          }
+        } catch { /* fall through */ }
+      }
+      throw new Error(`Failed to create PR: ${err.stderr || err.message}`);
+    }
+  }
+
+  /** Recursively walk a plugin directory and return all file paths. */
+  private async walkPluginDirectory(dir: string): Promise<string[]> {
+    const results: string[] = [];
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Skip .git and node_modules directories
+        if (entry.name === '.git' || entry.name === 'node_modules') continue;
+        results.push(...await this.walkPluginDirectory(fullPath));
+      } else {
+        results.push(fullPath);
+      }
+    }
+    return results;
   }
 
   async generateShareLink(id: string): Promise<string> {
