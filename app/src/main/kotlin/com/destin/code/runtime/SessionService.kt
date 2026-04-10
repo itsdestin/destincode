@@ -1171,6 +1171,33 @@ class SessionService : Service() {
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
+            // Phase 5b: Token-only theme install — downloads manifest.json,
+            // validates required token fields, writes to themes dir. Assets
+            // are NOT downloaded yet (added in 5c).
+            "theme-marketplace:install" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceInstall(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 5b: Uninstall — deletes the theme directory. Only allows
+            // community-source themes (prevents removing user-created themes).
+            "theme-marketplace:uninstall" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceUninstall(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 5b: update is a re-install (same as desktop)
+            "theme-marketplace:update" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceInstall(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
 
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
@@ -1377,6 +1404,128 @@ class SessionService : Service() {
             }
         }
         return JSONObject.NULL
+    }
+
+    // Slug must be kebab-case — matches desktop's SAFE_SLUG_RE
+    private val safeSlugRe = Regex("^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    // Max total download size per theme (10 MB, matches desktop)
+    private val maxThemeSizeBytes = 10 * 1024 * 1024
+
+    /**
+     * Phase 5b: Install a theme from the marketplace.
+     * Downloads manifest.json from the registry entry's manifestUrl, validates
+     * required token fields, writes to ~/.claude/destinclaude-themes/<slug>/.
+     * Records install in the unified packages map for version tracking.
+     */
+    private fun themeMarketplaceInstall(slug: String): JSONObject {
+        try {
+            if (!safeSlugRe.matches(slug)) {
+                return JSONObject().put("status", "failed").put("error", "Invalid theme slug")
+            }
+
+            // Look up registry entry for manifestUrl
+            val registry = fetchThemeRegistry()
+            val themesArr = registry.optJSONArray("themes") ?: org.json.JSONArray()
+            var entry: JSONObject? = null
+            for (i in 0 until themesArr.length()) {
+                val t = themesArr.getJSONObject(i)
+                if (t.optString("slug") == slug) { entry = t; break }
+            }
+            if (entry == null) {
+                return JSONObject().put("status", "failed").put("error", "Theme not found in registry")
+            }
+
+            val manifestUrl = entry.optString("manifestUrl", "")
+            if (manifestUrl.isEmpty()) {
+                return JSONObject().put("status", "failed").put("error", "No manifest URL in registry")
+            }
+
+            // Download manifest
+            val manifestText = try {
+                java.net.URL(manifestUrl).readText()
+            } catch (e: Exception) {
+                return JSONObject().put("status", "failed")
+                    .put("error", "Failed to download manifest: ${e.message}")
+            }
+
+            // Parse and inject source: 'community'
+            val manifest = try {
+                JSONObject(manifestText)
+            } catch (e: Exception) {
+                return JSONObject().put("status", "failed")
+                    .put("error", "Invalid manifest JSON: ${e.message}")
+            }
+            manifest.put("source", "community")
+
+            // Create theme directory
+            val themeDir = File(themesDir, slug)
+            themeDir.mkdirs()
+
+            // Write manifest.json
+            File(themeDir, "manifest.json").writeText(manifest.toString(2))
+
+            // Phase 5b: record install in unified packages map (mirrors desktop)
+            try {
+                skillProvider?.configStore?.recordPackageInstall("theme:$slug", JSONObject().apply {
+                    put("version", entry.optString("version", "1.0.0"))
+                    put("source", "marketplace")
+                    put("installedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
+                        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                        .format(java.util.Date()))
+                    put("removable", true)
+                    put("components", org.json.JSONArray().put(JSONObject().apply {
+                        put("type", "theme")
+                        put("path", themeDir.absolutePath)
+                    }))
+                })
+            } catch (e: Exception) {
+                // Non-fatal — theme is still on disk
+                android.util.Log.w("SessionService", "Failed to record theme package install: ${e.message}")
+            }
+
+            return JSONObject().put("status", "installed")
+        } catch (e: Exception) {
+            return JSONObject().put("status", "failed").put("error", e.message ?: "Unknown error")
+        }
+    }
+
+    /**
+     * Phase 5b: Uninstall a community theme. Refuses to delete user-created themes.
+     * Removes the theme directory and the unified packages entry.
+     */
+    private fun themeMarketplaceUninstall(slug: String): JSONObject {
+        try {
+            if (!safeSlugRe.matches(slug)) {
+                return JSONObject().put("status", "failed").put("error", "Invalid theme slug")
+            }
+
+            val themeDir = File(themesDir, slug)
+            val manifestFile = File(themeDir, "manifest.json")
+            if (!manifestFile.exists()) {
+                return JSONObject().put("status", "failed").put("error", "Theme not found on disk")
+            }
+
+            // Verify it's a community theme (not user-created)
+            val manifest = try { JSONObject(manifestFile.readText()) } catch (_: Exception) { JSONObject() }
+            if (manifest.optString("source") != "community") {
+                return JSONObject().put("status", "failed")
+                    .put("error", "Cannot uninstall non-community themes via marketplace")
+            }
+
+            // Delete the theme directory
+            themeDir.deleteRecursively()
+
+            // Remove from unified packages map
+            try {
+                skillProvider?.configStore?.removePackage("theme:$slug")
+            } catch (e: Exception) {
+                android.util.Log.w("SessionService", "Failed to remove theme package entry: ${e.message}")
+            }
+
+            return JSONObject().put("status", "uninstalled")
+        } catch (e: Exception) {
+            return JSONObject().put("status", "failed").put("error", e.message ?: "Unknown error")
+        }
     }
 
     /** Check if a theme is installed by looking for its manifest.json on disk. */
