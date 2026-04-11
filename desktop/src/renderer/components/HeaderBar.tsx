@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useState, useLayoutEffect, useEffect, useCallback } from 'react';
 import { ChatIcon, TerminalIcon, GamepadIcon } from './Icons';
 import SessionStrip from './SessionStrip';
 import type { SessionStatusColor } from './StatusDot';
@@ -76,6 +76,35 @@ export default function HeaderBar({
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   geminiEnabled,
 }: Props) {
+  // Sliding pill tracks active button position via ResizeObserver
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chatBtnRef = useRef<HTMLButtonElement>(null);
+  const termBtnRef = useRef<HTMLButtonElement>(null);
+  const [pillPos, setPillPos] = useState({ left: 0, width: 0 });
+
+  const measure = useCallback(() => {
+    const container = containerRef.current;
+    const activeBtn = viewMode === 'chat' ? chatBtnRef.current : termBtnRef.current;
+    if (!container || !activeBtn) return;
+    const cRect = container.getBoundingClientRect();
+    const bRect = activeBtn.getBoundingClientRect();
+    setPillPos({ left: bRect.left - cRect.left, width: bRect.width });
+  }, [viewMode]);
+
+  // Measure immediately on viewMode change
+  useLayoutEffect(measure, [measure]);
+
+  // Re-measure continuously as buttons resize (text expanding/collapsing)
+  useEffect(() => {
+    const chatBtn = chatBtnRef.current;
+    const termBtn = termBtnRef.current;
+    if (!chatBtn || !termBtn) return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(chatBtn);
+    ro.observe(termBtn);
+    return () => ro.disconnect();
+  }, [measure]);
+
   return (
     <div className="header-bar flex items-center h-10 px-2 sm:px-3 border-b border-edge shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
       {/* Left — settings + remote/announcement badges */}
@@ -125,20 +154,16 @@ export default function HeaderBar({
       {/* Right — view toggles */}
       <div className="flex-1 flex items-center justify-end gap-1 sm:gap-2">
         {/* Chat/Terminal toggle — sliding pill with text roll-out */}
-        <div className="relative flex bg-inset rounded-md p-0.5">
-          {/* Sliding background pill — pure CSS, no measurement needed */}
+        <div ref={containerRef} className="relative flex bg-inset rounded-md p-0.5 gap-0.5">
+          {/* Sliding background pill — tracks active button via ResizeObserver */}
           <div
             className="absolute top-0.5 bottom-0.5 bg-accent rounded-[var(--radius-toggle)] transition-all duration-300 ease-in-out"
-            style={{
-              left: '2px',
-              width: 'calc(50% - 2px)',
-              // Slide right via transform so width stays constant
-              transform: viewMode === 'terminal' ? 'translateX(100%)' : 'translateX(0)',
-            }}
+            style={{ left: pillPos.left, width: pillPos.width }}
           />
           <button
+            ref={chatBtnRef}
             onClick={() => onToggleView('chat')}
-            className={`relative z-10 flex-1 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center justify-center gap-1.5 transition-colors duration-300 ${
+            className={`relative z-10 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center gap-1.5 transition-colors duration-300 ${
               viewMode === 'chat'
                 ? 'text-on-accent'
                 : 'text-fg-dim hover:text-fg-2'
@@ -156,8 +181,9 @@ export default function HeaderBar({
             >Chat</span>
           </button>
           <button
+            ref={termBtnRef}
             onClick={() => onToggleView('terminal')}
-            className={`relative z-10 flex-1 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center justify-center gap-1.5 transition-colors duration-300 ${
+            className={`relative z-10 px-1.5 sm:px-2.5 py-1 rounded-[var(--radius-toggle)] flex items-center gap-1.5 transition-colors duration-300 ${
               viewMode === 'terminal'
                 ? 'text-on-accent'
                 : 'text-fg-dim hover:text-fg-2'
