@@ -370,7 +370,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
   return createPortal(
     <>
-      <div className="fixed inset-0 bg-black/30 z-[60]" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60]" onClick={onClose} />
       <div
         className="fixed z-[61] rounded-xl bg-panel border border-edge shadow-2xl overflow-hidden"
         style={{
@@ -551,71 +551,79 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
       )}
 
       {/* Session cost — estimated USD cost for this session */}
-      {show('session-cost') && ss?.costUsd != null && (
+      {show('session-cost') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title="Estimated session cost (informational for Pro/Max subscribers)"
         >
           <span>Cost:</span>
-          <span className="text-fg-2">${ss.costUsd < 0.01 ? '<0.01' : ss.costUsd.toFixed(2)}</span>
+          <span className="text-fg-2">
+            {ss?.costUsd != null ? `$${ss.costUsd < 0.01 ? '<0.01' : ss.costUsd.toFixed(2)}` : '--'}
+          </span>
         </span>
       )}
 
       {/* Session duration — wall time and API thinking time */}
-      {show('session-time') && ss?.duration != null && (
+      {show('session-time') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss.apiDuration != null ? `Wall: ${formatDuration(ss.duration)} | API: ${formatDuration(ss.apiDuration)}` : `Session duration: ${formatDuration(ss.duration)}`}
+          title={ss?.duration != null && ss?.apiDuration != null ? `Wall: ${formatDuration(ss.duration)} | API: ${formatDuration(ss.apiDuration)}` : 'Session duration'}
         >
-          <span>{formatDuration(ss.duration)}</span>
-          {ss.apiDuration != null && (
+          <span>{ss?.duration != null ? formatDuration(ss.duration) : '--'}</span>
+          {ss?.duration != null && ss?.apiDuration != null && (
             <span className="text-fg-faint hidden sm:inline">({formatDuration(ss.apiDuration)} API)</span>
           )}
         </span>
       )}
 
       {/* Input tokens */}
-      {show('tokens-in') && ss?.inputTokens != null && (
+      {show('tokens-in') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={`Input tokens: ${ss.inputTokens.toLocaleString()}`}
+          title={ss?.inputTokens != null ? `Input tokens: ${ss.inputTokens.toLocaleString()}` : 'Input tokens'}
         >
           <span className="text-fg-faint">In:</span>
-          <span className="text-fg-2">{formatTokens(ss.inputTokens)}</span>
+          <span className="text-fg-2">{ss?.inputTokens != null ? formatTokens(ss.inputTokens) : '--'}</span>
         </span>
       )}
 
       {/* Output tokens */}
-      {show('tokens-out') && ss?.outputTokens != null && (
+      {show('tokens-out') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={`Output tokens: ${ss.outputTokens.toLocaleString()}`}
+          title={ss?.outputTokens != null ? `Output tokens: ${ss.outputTokens.toLocaleString()}` : 'Output tokens'}
         >
           <span className="text-fg-faint">Out:</span>
-          <span className="text-fg-2">{formatTokens(ss.outputTokens)}</span>
+          <span className="text-fg-2">{ss?.outputTokens != null ? formatTokens(ss.outputTokens) : '--'}</span>
         </span>
       )}
 
       {/* Cache efficiency */}
-      {show('cache-stats') && ss?.cacheReadTokens != null && (
+      {show('cache-stats') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={`Cache read: ${(ss.cacheReadTokens ?? 0).toLocaleString()} | Cache created: ${(ss.cacheCreationTokens ?? 0).toLocaleString()}`}
+          title={ss?.cacheReadTokens != null ? `Cache read: ${ss.cacheReadTokens.toLocaleString()} | Cache created: ${(ss.cacheCreationTokens ?? 0).toLocaleString()}` : 'Cache efficiency'}
         >
           <span className="text-fg-faint">Cached:</span>
-          <span className="text-[#4CAF50]">{formatTokens(ss.cacheReadTokens)}</span>
+          <span className="text-[#4CAF50]">{ss?.cacheReadTokens != null ? formatTokens(ss.cacheReadTokens) : '--'}</span>
         </span>
       )}
 
       {/* Code changes — lines added/removed */}
-      {show('code-changes') && ss != null && (ss.linesAdded != null || ss.linesRemoved != null) && (
+      {show('code-changes') && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={`Lines added: ${ss.linesAdded ?? 0} | Lines removed: ${ss.linesRemoved ?? 0}`}
+          title={ss?.linesAdded != null ? `Lines added: ${ss.linesAdded} | Lines removed: ${ss.linesRemoved ?? 0}` : 'Code changes'}
         >
-          {ss.linesAdded != null && <span className="text-[#4CAF50]">+{ss.linesAdded}</span>}
-          {ss.linesRemoved != null && <span className="text-[#DD4444]">-{ss.linesRemoved}</span>}
-          <span className="text-fg-faint hidden sm:inline">lines</span>
+          {ss?.linesAdded != null || ss?.linesRemoved != null ? (
+            <>
+              <span className="text-[#4CAF50]">+{ss?.linesAdded ?? 0}</span>
+              <span className="text-[#DD4444]">-{ss?.linesRemoved ?? 0}</span>
+              <span className="text-fg-faint hidden sm:inline">lines</span>
+            </>
+          ) : (
+            <span className="text-fg-faint">No changes</span>
+          )}
         </span>
       )}
 
