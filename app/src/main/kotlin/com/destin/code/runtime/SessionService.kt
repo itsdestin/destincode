@@ -127,13 +127,12 @@ class SessionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
-    }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildSessionNotification())
-
-        val homeDir = bootstrap?.homeDir ?: filesDir
-        platformBridge = PlatformBridge(applicationContext, homeDir)
+        // Start the WebSocket bridge server early — before onServiceConnected fires —
+        // so it's already listening when ChatScreen renders the WebView. Previously
+        // this lived in onStartCommand, which races with BIND_AUTO_CREATE: the Activity
+        // could render ChatScreen (and load the React WebView) before startForegroundService
+        // triggered onStartCommand, causing the initial WebSocket connect to be refused.
         sessionRegistry.bridgeServer = bridgeServer
         if (!bridgeServer.isRunning) {
             bridgeServer.start { ws, msg ->
@@ -142,6 +141,13 @@ class SessionService : Service() {
                 }
             }
         }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(NOTIFICATION_ID, buildSessionNotification())
+
+        val homeDir = bootstrap?.homeDir ?: filesDir
+        platformBridge = PlatformBridge(applicationContext, homeDir)
 
         return START_STICKY
     }

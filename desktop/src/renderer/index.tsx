@@ -93,7 +93,7 @@ function Root() {
   // In browser mode: install shim once, attempt token auto-login, listen for state changes
   useEffect(() => {
     if (isElectron) return;
-    import('./remote-shim').then(({ installShim, connect, onConnectionStateChange }) => {
+    import('./remote-shim').then(({ installShim, connect, onConnectionStateChange, retryLocalBridge }) => {
       installShim();
       setShimReady(true);
 
@@ -103,10 +103,12 @@ function Root() {
         if (isConnected) setHasConnectedOnce(true);
       });
 
-      // Android WebView: auto-connect (LocalBridgeServer accepts without password)
+      // Android WebView: auto-connect to LocalBridgeServer. If the bridge
+      // server isn't listening yet (startup race), retry with backoff.
       if (location.protocol === 'file:') {
         connect('android-local', false).catch((err) => {
           console.error('Android auto-connect failed:', err);
+          retryLocalBridge();
         });
         return;
       }

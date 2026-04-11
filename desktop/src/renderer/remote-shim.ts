@@ -252,10 +252,16 @@ export function connect(passwordOrToken: string, isToken = false): Promise<strin
       }
 
       setConnectionState('disconnected');
-      // Attempt reconnection with stored token
-      const storedToken = localStorage.getItem('destincode-remote-token');
-      if (storedToken) {
-        scheduleReconnect(storedToken);
+      // Attempt reconnection — local bridge uses its own retry (token comes
+      // from the URL each time), remote connections use stored session tokens.
+      const isLocalBridge = location.protocol === 'file:' && !targetUrl;
+      if (isLocalBridge) {
+        retryLocalBridge();
+      } else {
+        const storedToken = localStorage.getItem('destincode-remote-token');
+        if (storedToken) {
+          scheduleReconnect(storedToken);
+        }
       }
     };
 
@@ -290,6 +296,39 @@ function scheduleReconnect(token: string): void {
       scheduleReconnect(token);
     }
   }, reconnectDelay);
+}
+
+/**
+ * Retry connecting to the local Android bridge server with exponential backoff.
+ * Unlike scheduleReconnect (which uses stored tokens for remote servers), this
+ * retries the local bridge auth flow — the bridge token comes from the URL each
+ * time. Needed because the bridge server may not be listening yet when the
+ * WebView first loads (race between onCreate and WebView render).
+ */
+const MAX_LOCAL_RETRIES = 5;
+let localRetryCount = 0;
+let localRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function retryLocalBridge(): void {
+  if (localRetryTimer) return;
+  if (localRetryCount >= MAX_LOCAL_RETRIES) {
+    console.error('[remote-shim] local bridge retry limit reached');
+    localRetryCount = 0;
+    return;
+  }
+
+  // Backoff: 500ms, 1s, 2s, 4s, 8s
+  const delay = 500 * Math.pow(2, localRetryCount);
+  localRetryTimer = setTimeout(async () => {
+    localRetryTimer = null;
+    localRetryCount++;
+    try {
+      await connect('android-local', false);
+      localRetryCount = 0; // Reset on success
+    } catch {
+      retryLocalBridge(); // Schedule next attempt
+    }
+  }, delay);
 }
 
 export function disconnect(): void {

@@ -91,9 +91,13 @@ class LocalBridgeServer(
                     return
                 }
 
-                // Security: handle auth messages — validate token before granting access
+                // Security: handle auth messages — validate token before granting access.
+                // Auth fields (token/password) are top-level siblings of "type" in the
+                // wire format, NOT nested inside "payload". Read from the raw JSON to
+                // match remote-shim.ts and remote-server.ts protocol conventions.
                 if (parsed.type == "auth") {
-                    val token = parsed.payload.optString("token", "")
+                    val json = JSONObject(message)
+                    val token = json.optString("token", "")
                     if (token == authToken) {
                         val clientId = conn.getAttachment<String>() ?: "unknown"
                         authenticatedClients.add(conn)

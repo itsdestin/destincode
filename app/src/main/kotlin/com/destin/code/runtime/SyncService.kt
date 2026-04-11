@@ -312,8 +312,9 @@ class SyncService(
     // Shell-out Wrappers (via Bootstrap.buildRuntimeEnv + linker64)
     // =========================================================================
 
-    /** Execute a command with the termux runtime environment. */
-    private fun execCommand(
+    /** Execute a command with the termux runtime environment.
+     *  Internal so SessionService (same package) can call it for sync setup wizard IPC. */
+    internal fun execCommand(
         command: List<String>,
         cwd: File? = null,
         timeoutSeconds: Long = PROCESS_TIMEOUT_S,
