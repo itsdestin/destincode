@@ -711,7 +711,7 @@ class SessionService : Service() {
                 val pluginId = msg.payload.optString("id")
                 if (pluginId.isBlank()) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "Missing plugin id")) }
-                    return@launch
+                    return
                 }
                 try {
                     val result = publishPluginViaGh(pluginId)
@@ -750,7 +750,7 @@ class SessionService : Service() {
             // Phase 3c: per-entry config storage
             "marketplace:get-config" -> {
                 val id = msg.payload.optString("id")
-                val configDir = File(homeDir, ".claude/destincode-config")
+                val configDir = File(bootstrap?.homeDir ?: filesDir, ".claude/destincode-config")
                 val configFile = File(configDir, "$id.json")
                 val result = try {
                     if (configFile.exists()) JSONObject(configFile.readText()) else JSONObject()
@@ -760,7 +760,7 @@ class SessionService : Service() {
             "marketplace:set-config" -> {
                 val id = msg.payload.optString("id")
                 val values = msg.payload.optJSONObject("values") ?: JSONObject()
-                val configDir = File(homeDir, ".claude/destincode-config")
+                val configDir = File(bootstrap?.homeDir ?: filesDir, ".claude/destincode-config")
                 configDir.mkdirs()
                 File(configDir, "$id.json").writeText(values.toString(2))
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
@@ -1488,7 +1488,7 @@ class SessionService : Service() {
                     try {
                         val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
                         intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
+                        applicationContext.startActivity(intent)
                     } catch (_: Exception) {}
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", url)) }
