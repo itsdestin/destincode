@@ -676,6 +676,10 @@ function AppInner() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Skip when a text input is focused — Shift+Space is a normal typing
+      // combo (capitalized word then space) and would fire accidentally.
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if (e.shiftKey && e.key === ' ') {
         e.preventDefault();
         cycleModelRef.current?.();

@@ -102,8 +102,8 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     return () => window.removeEventListener('keydown', handler);
   }, [disabled]);
 
-  // Unfocus textarea after 0.5s of no typing so global shortcuts (e.g. Shift
-  // to open session switcher) can be detected without conflicting with input
+  // Unfocus textarea after idle so global shortcuts (e.g. Shift to open
+  // session switcher, Shift+Space to cycle model) work without conflicting
   const idleBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const el = inputRef.current;
@@ -112,7 +112,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       if (idleBlurTimer.current) clearTimeout(idleBlurTimer.current);
       idleBlurTimer.current = setTimeout(() => {
         if (document.activeElement === el) el.blur();
-      }, 500);
+      }, 750);
     };
     el.addEventListener('keydown', resetTimer);
     el.addEventListener('input', resetTimer);
