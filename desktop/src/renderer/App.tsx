@@ -52,14 +52,10 @@ interface SessionStats {
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
   contextTokens: number | null;
-  duration: number | null;
-  apiDuration: number | null;
+  duration: number | null;       // seconds (converted from ms in statusline.sh)
+  apiDuration: number | null;    // seconds (converted from ms in statusline.sh)
   linesAdded: number | null;
   linesRemoved: number | null;
-  commits: number | null;
-  pullRequests: number | null;
-  toolsAccepted: number | null;
-  toolsRejected: number | null;
 }
 
 interface StatusDataState {

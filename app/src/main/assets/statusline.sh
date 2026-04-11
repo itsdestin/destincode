@@ -28,22 +28,26 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
     const rem=j.context_window?.remaining_percentage!=null?Math.round(j.context_window.remaining_percentage):100;
     console.log(name+SEP+m+SEP+rem+SEP+sid);
     // Write session stats JSON for desktop/Android status bar widgets
+    // Field mapping from Claude Code's actual status line JSON structure:
+    //   cost.total_cost_usd, cost.total_duration_ms, cost.total_api_duration_ms,
+    //   cost.total_lines_added, cost.total_lines_removed,
+    //   context_window.total_input_tokens, context_window.total_output_tokens,
+    //   context_window.current_usage.cache_read_input_tokens,
+    //   context_window.current_usage.cache_creation_input_tokens,
+    //   context_window.context_window_size
     if(sid){
+      const c=j.cost||{};const cw=j.context_window||{};const cu=cw.current_usage||{};
       const stats={
-        costUsd:j.costUsd??null,
-        inputTokens:j.inputTokens??null,
-        outputTokens:j.outputTokens??null,
-        cacheReadTokens:j.cacheReadTokens??null,
-        cacheCreationTokens:j.cacheCreationTokens??null,
-        contextTokens:j.contextTokens??null,
-        duration:j.duration??null,
-        apiDuration:j.apiDuration??null,
-        linesAdded:j.linesAdded??null,
-        linesRemoved:j.linesRemoved??null,
-        commits:j.commits??null,
-        pullRequests:j.pullRequests??null,
-        toolsAccepted:j.toolsAccepted??null,
-        toolsRejected:j.toolsRejected??null,
+        costUsd:c.total_cost_usd??null,
+        inputTokens:cw.total_input_tokens??null,
+        outputTokens:cw.total_output_tokens??null,
+        cacheReadTokens:cu.cache_read_input_tokens??null,
+        cacheCreationTokens:cu.cache_creation_input_tokens??null,
+        contextTokens:cw.context_window_size??null,
+        duration:c.total_duration_ms!=null?c.total_duration_ms/1000:null,
+        apiDuration:c.total_api_duration_ms!=null?c.total_api_duration_ms/1000:null,
+        linesAdded:c.total_lines_added??null,
+        linesRemoved:c.total_lines_removed??null,
       };
       const home=process.env.HOME||process.env.USERPROFILE||'';
       if(home){
