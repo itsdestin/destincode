@@ -1396,27 +1396,24 @@ interface PairedDevice {
   password: string;
 }
 
-function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
-  const [loading, setLoading] = useState(true);
-  const [tier, setTier] = useState('CORE');
-  const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
-  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
+function ConnectToDesktopButton() {
+  const [open, setOpen] = useState(false);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
+  const [remoteConnected, setRemoteConnected] = useState(false);
+  const [connectedDeviceName, setConnectedDeviceName] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [showConnectForm, setShowConnectForm] = useState(false);
   const [formName, setFormName] = useState('Desktop');
   const [formHost, setFormHost] = useState('');
   const [formPort, setFormPort] = useState('9900');
   const [formPassword, setFormPassword] = useState('');
-  const [remoteConnected, setRemoteConnected] = useState(false);
-  const [connectedDeviceName, setConnectedDeviceName] = useState('');
-  const [connecting, setConnecting] = useState(false);
-  const [connectError, setConnectError] = useState<string | null>(null);
-  const [showAbout, setShowAbout] = useState(false);
-  const [showDonateConfirm, setShowDonateConfirm] = useState(false);
-
+  const [tailscaleStatus, setTailscaleStatus] = useState<{ connected: boolean; ip?: string } | null>(null);
+  const [tailscaleLoading, setTailscaleLoading] = useState(false);
+  const popupRef = useRef<HTMLDivElement>(null);
   const claude = (window as any).claude;
 
-  // Sync remote connection state
+  // Track connection mode
   useEffect(() => {
     import('../platform').then(({ isRemoteMode, onConnectionModeChange }) => {
       setRemoteConnected(isRemoteMode());
@@ -1427,36 +1424,23 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
     });
   }, []);
 
+  // Load paired devices on mount
+  useEffect(() => {
+    claude.android?.getPairedDevices?.()
+      .then((devices: any) => setPairedDevices(devices?.devices || devices || []))
+      .catch(() => {});
+  }, []);
+
+  // Check Tailscale status when popup opens
   useEffect(() => {
     if (!open) return;
-    setLoading(true);
-    setShowConnectForm(false);
-    // Fix: defer IPC calls until after the 300ms slide-in animation. Firing
-    // four parallel bridge calls synchronously visibly stutters the panel.
-    const _deferTimer = setTimeout(() => {
-    Promise.all([
-      claude.android?.getTier?.() ?? 'CORE',
-      claude.android?.getAbout?.() ?? { version: 'unknown', build: '' },
-      claude.android?.getPairedDevices?.() ?? [],
-      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } },
-    ]).then(([t, about, devices, defs]) => {
-      setTier(t?.tier || t || 'CORE');
-      setAboutInfo(about);
-      setPairedDevices(devices?.devices || devices || []);
-      setDefaults(defs);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-    }, 350);
-    return () => clearTimeout(_deferTimer);
+    setTailscaleLoading(true);
+    setConnectError(null);
+    claude.remote?.detectTailscale?.()
+      .then((status: any) => setTailscaleStatus(status ?? null))
+      .catch(() => setTailscaleStatus(null))
+      .finally(() => setTailscaleLoading(false));
   }, [open]);
-
-  const handleSetTier = useCallback(async (newTier: string) => {
-    const result = await claude.android?.setTier?.(newTier);
-    setTier(newTier);
-    if (result?.restartRequired) {
-      // The bridge handles restart prompt natively
-    }
-  }, []);
 
   const doConnect = useCallback(async (device: PairedDevice) => {
     setConnecting(true);
@@ -1465,13 +1449,13 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
       const { connectToHost } = await import('../remote-shim');
       await connectToHost(device.host, device.port, device.password);
       setConnectedDeviceName(device.name);
-      onClose();
+      setOpen(false);
     } catch (err: any) {
       setConnectError(err?.message || 'Connection failed');
     } finally {
       setConnecting(false);
     }
-  }, [onClose]);
+  }, []);
 
   const handleSaveDevice = useCallback(async () => {
     if (!formHost.trim()) return;
@@ -1488,7 +1472,6 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
     setFormHost('');
     setFormPort('9900');
     setFormPassword('');
-    // Connect immediately after saving
     await doConnect(device);
   }, [formName, formHost, formPort, formPassword, doConnect]);
 
@@ -1496,10 +1479,6 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
     await claude.android?.removePairedDevice?.(device.host, device.port);
     setPairedDevices(prev => prev.filter(d => d.host !== device.host || d.port !== device.port));
   }, []);
-
-  const handleConnectToDesktop = useCallback(async (device: PairedDevice) => {
-    await doConnect(device);
-  }, [doConnect]);
 
   const handleDisconnect = useCallback(async () => {
     setConnecting(true);
@@ -1523,6 +1502,278 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
         setFormPort(u.port || '9900');
         setShowConnectForm(true);
       } catch { /* invalid URL */ }
+    }
+  }, []);
+
+  const subtitle = remoteConnected
+    ? `Connected · ${connectedDeviceName || 'Desktop'}`
+    : pairedDevices.length > 0
+      ? `${pairedDevices.length} saved device${pairedDevices.length !== 1 ? 's' : ''}`
+      : 'Not configured';
+
+  return (
+    <>
+      <button
+        onClick={() => { setOpen(true); setShowConnectForm(false); }}
+        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+      >
+        <div className="relative flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
+          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" />
+            <line x1="8" y1="21" x2="16" y2="21" />
+            <line x1="12" y1="17" x2="12" y2="21" />
+          </svg>
+          {remoteConnected && (
+            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400 ring-1 ring-panel" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <span className="text-xs text-fg font-medium">Connect to Desktop</span>
+          <p className={`text-[10px] ${remoteConnected ? 'text-green-400' : 'text-fg-muted'}`}>{subtitle}</p>
+        </div>
+        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
+      {open && createPortal(
+        <>
+          <div className="fixed inset-0 bg-black/30 z-[60]" onClick={() => setOpen(false)} />
+          <div
+            ref={popupRef}
+            className="fixed z-[61] rounded-xl bg-panel border border-edge shadow-2xl overflow-hidden flex flex-col"
+            style={{
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 'min(380px, 88vw)',
+              maxHeight: '80vh',
+            }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
+              <h2 className="text-sm font-bold text-fg">Connect to Desktop</h2>
+              <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
+            </div>
+
+            <div className="px-4 py-4 space-y-4 overflow-y-auto">
+
+              {/* Tailscale warning */}
+              {!tailscaleLoading && tailscaleStatus !== null && !tailscaleStatus.connected && (
+                <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                      <line x1="12" y1="9" x2="12" y2="13" />
+                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                    <span className="text-xs text-amber-400 font-medium">Tailscale not connected</span>
+                  </div>
+                  <p className="text-[10px] text-fg-dim">Enable Tailscale on this phone before connecting. Both devices must be on the same Tailscale network.</p>
+                </div>
+              )}
+
+              {/* Connected banner */}
+              {remoteConnected && (
+                <div className="bg-green-500/10 border border-green-500/25 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                    <span className="text-xs text-green-400 font-medium">
+                      Connected to {connectedDeviceName || 'Desktop'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleDisconnect}
+                    disabled={connecting}
+                    className="w-full px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs text-fg-2 disabled:opacity-50"
+                  >
+                    {connecting ? 'Disconnecting...' : 'Disconnect — Return to Local'}
+                  </button>
+                </div>
+              )}
+
+              {/* Error */}
+              {connectError && (
+                <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2">
+                  <p className="text-[10px] text-red-400">{connectError}</p>
+                </div>
+              )}
+
+              {/* Saved devices — always listed */}
+              {pairedDevices.length > 0 && (
+                <section>
+                  <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Saved Devices</h3>
+                  <div className="space-y-1">
+                    {pairedDevices.map(device => (
+                      <div key={`${device.host}:${device.port}`} className="flex items-center justify-between py-2 px-3 rounded-sm bg-inset/50">
+                        <button
+                          onClick={() => doConnect(device)}
+                          disabled={connecting || remoteConnected}
+                          className="min-w-0 flex-1 text-left disabled:opacity-50"
+                        >
+                          <span className="text-xs text-fg block">{device.name}</span>
+                          <span className="text-[10px] text-fg-muted font-mono block">{device.host}:{device.port}</span>
+                        </button>
+                        <button
+                          onClick={() => handleRemoveDevice(device)}
+                          className="text-fg-faint hover:text-red-400 text-sm leading-none px-1 shrink-0 ml-2"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {connecting && !remoteConnected && (
+                <div className="text-center py-2">
+                  <span className="text-xs text-fg-dim">Connecting...</span>
+                </div>
+              )}
+
+              {/* Add new device */}
+              {!remoteConnected && !connecting && (
+                <section>
+                  {pairedDevices.length > 0 && (
+                    <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Add Device</h3>
+                  )}
+                  {!showConnectForm ? (
+                    <div className="space-y-2">
+                      <button
+                        onClick={handleScanQr}
+                        className="w-full px-3 py-2 rounded-sm bg-accent text-on-accent text-xs font-medium active:brightness-110"
+                      >
+                        Scan QR Code
+                      </button>
+                      <button
+                        onClick={() => setShowConnectForm(true)}
+                        className="w-full px-3 py-2 rounded-sm border border-edge text-fg-dim text-xs active:bg-inset"
+                      >
+                        Enter Manually
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 bg-inset/50 rounded-lg p-3">
+                      <div>
+                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Device Name</label>
+                        <input
+                          type="text"
+                          value={formName}
+                          onChange={e => setFormName(e.target.value)}
+                          placeholder="My Desktop"
+                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Host / IP</label>
+                        <input
+                          type="text"
+                          value={formHost}
+                          onChange={e => setFormHost(e.target.value)}
+                          placeholder="100.x.x.x"
+                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Port</label>
+                        <input
+                          type="text"
+                          value={formPort}
+                          onChange={e => setFormPort(e.target.value)}
+                          placeholder="9900"
+                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Password</label>
+                        <input
+                          type="password"
+                          value={formPassword}
+                          onChange={e => setFormPassword(e.target.value)}
+                          placeholder="Remote access password"
+                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setShowConnectForm(false)}
+                          className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs text-fg-2"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSaveDevice}
+                          disabled={!formHost.trim()}
+                          className="flex-1 px-3 py-1.5 rounded-sm bg-accent text-on-accent text-xs font-medium disabled:opacity-50 active:brightness-110"
+                        >
+                          Save & Connect
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+
+              <p className="text-[10px] text-fg-faint">
+                Connect to the DestinCode desktop app on your computer. Set up remote access in the desktop app's settings first.
+              </p>
+            </div>
+          </div>
+        </>,
+        document.body
+      )}
+    </>
+  );
+}
+
+function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: { open: boolean; onClose: () => void; onSendInput: (text: string) => void; onOpenThemeMarketplace?: () => void; onPublishTheme?: (slug: string) => void; syncAutoOpen?: boolean; onSyncAutoOpenHandled?: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [tier, setTier] = useState('CORE');
+  const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
+  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
+  const [remoteConnected, setRemoteConnected] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showDonateConfirm, setShowDonateConfirm] = useState(false);
+
+  const claude = (window as any).claude;
+
+  // Sync remote connection state
+  useEffect(() => {
+    import('../platform').then(({ isRemoteMode, onConnectionModeChange }) => {
+      setRemoteConnected(isRemoteMode());
+      const unsub = onConnectionModeChange((mode) => {
+        setRemoteConnected(mode === 'remote');
+      });
+      return unsub;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    // Fix: defer IPC calls until after the 300ms slide-in animation. Firing
+    // three parallel bridge calls synchronously visibly stutters the panel.
+    const _deferTimer = setTimeout(() => {
+    Promise.all([
+      claude.android?.getTier?.() ?? 'CORE',
+      claude.android?.getAbout?.() ?? { version: 'unknown', build: '' },
+      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } },
+    ]).then(([t, about, defs]) => {
+      setTier(t?.tier || t || 'CORE');
+      setAboutInfo(about);
+      setDefaults(defs);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+    }, 350);
+    return () => clearTimeout(_deferTimer);
+  }, [open]);
+
+  const handleSetTier = useCallback(async (newTier: string) => {
+    const result = await claude.android?.setTier?.(newTier);
+    setTier(newTier);
+    if (result?.restartRequired) {
+      // The bridge handles restart prompt natively
     }
   }, []);
 
@@ -1555,144 +1806,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
           </>
         )}
 
-        {/* Connect to Desktop */}
-        <section>
-          <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Connect to Desktop</h3>
-
-          {/* Connection status banner */}
-          {remoteConnected && (
-            <div className="bg-green-500/10 border border-green-500/25 rounded-lg p-3 mb-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-xs text-green-400 font-medium">
-                  Connected to {connectedDeviceName || 'Desktop'}
-                </span>
-              </div>
-              <button
-                onClick={handleDisconnect}
-                disabled={connecting}
-                className="w-full px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs text-fg-2 disabled:opacity-50"
-              >
-                {connecting ? 'Disconnecting...' : 'Disconnect — Return to Local'}
-              </button>
-            </div>
-          )}
-
-          {connectError && (
-            <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2 mb-3">
-              <p className="text-[10px] text-red-400">{connectError}</p>
-            </div>
-          )}
-
-          {/* Paired devices — hidden when connected to remote */}
-          {!remoteConnected && pairedDevices.length > 0 && (
-            <div className="space-y-1 mb-3">
-              {pairedDevices.map(device => (
-                <div key={`${device.host}:${device.port}`} className="flex items-center justify-between py-2 px-3 rounded-sm bg-inset/50">
-                  <button
-                    onClick={() => handleConnectToDesktop(device)}
-                    disabled={connecting}
-                    className="min-w-0 flex-1 text-left disabled:opacity-50"
-                  >
-                    <span className="text-xs text-fg block">{device.name}</span>
-                    <span className="text-[10px] text-fg-muted font-mono block">{device.host}:{device.port}</span>
-                  </button>
-                  <button
-                    onClick={() => handleRemoveDevice(device)}
-                    className="text-fg-faint hover:text-red-400 text-sm leading-none px-1 shrink-0 ml-2"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {connecting && (
-            <div className="text-center py-3">
-              <span className="text-xs text-fg-dim">Connecting...</span>
-            </div>
-          )}
-
-          {!remoteConnected && !connecting && !showConnectForm ? (
-            <div className="space-y-2">
-              <button
-                onClick={handleScanQr}
-                className="w-full px-3 py-2 rounded-sm bg-accent text-on-accent text-xs font-medium active:brightness-110"
-              >
-                Scan QR Code
-              </button>
-              <button
-                onClick={() => setShowConnectForm(true)}
-                className="w-full px-3 py-2 rounded-sm border border-edge text-fg-dim text-xs active:bg-inset"
-              >
-                Enter Manually
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-3 bg-inset/50 rounded-lg p-3">
-              <div>
-                <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Device Name</label>
-                <input
-                  type="text"
-                  value={formName}
-                  onChange={e => setFormName(e.target.value)}
-                  placeholder="My Desktop"
-                  className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Host / IP</label>
-                <input
-                  type="text"
-                  value={formHost}
-                  onChange={e => setFormHost(e.target.value)}
-                  placeholder="100.x.x.x"
-                  className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Port</label>
-                <input
-                  type="text"
-                  value={formPort}
-                  onChange={e => setFormPort(e.target.value)}
-                  placeholder="9900"
-                  className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Password</label>
-                <input
-                  type="password"
-                  value={formPassword}
-                  onChange={e => setFormPassword(e.target.value)}
-                  placeholder="Remote access password"
-                  className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
-                />
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowConnectForm(false)}
-                  className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs text-fg-2"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSaveDevice}
-                  disabled={!formHost.trim()}
-                  className="flex-1 px-3 py-1.5 rounded-sm bg-accent text-on-accent text-xs font-medium disabled:opacity-50 active:brightness-110"
-                >
-                  Save & Connect
-                </button>
-              </div>
-            </div>
-          )}
-
-          <p className="text-[10px] text-fg-faint mt-3">
-            Connect to the DestinCode desktop app on your computer. Set up remote access in the desktop app's settings first.
-          </p>
-        </section>
+        <ConnectToDesktopButton />
 
         {/* Other */}
         <section>
