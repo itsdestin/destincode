@@ -3,6 +3,8 @@
  * Used by both the main process (provider) and renderer (UI).
  */
 
+import type { ConfigSchema } from './types';
+
 export interface ThemeRegistryEntry {
   slug: string;
   name: string;
@@ -32,6 +34,8 @@ export interface ThemeRegistryEntry {
   manifestUrl: string;
   /** Map of relative asset path → download URL */
   assetUrls?: Record<string, string>;
+  /** Phase 3c: optional config schema for the settings form */
+  configSchema?: ConfigSchema;
 }
 
 export interface ThemeRegistryIndex {

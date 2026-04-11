@@ -101,6 +101,8 @@ class SessionService : Service() {
     private var urlObserver: FileObserver? = null
     private var usageRefreshTimer: java.util.Timer? = null
     private var statusBroadcastTimer: java.util.Timer? = null
+    // Phase 5d: FileObserver for theme hot-reload
+    private var themeWatcher: FileObserver? = null
     var skillProvider: LocalSkillProvider? = null
         private set
     var pluginInstaller: PluginInstaller? = null
@@ -153,6 +155,16 @@ class SessionService : Service() {
         skillProvider = LocalSkillProvider(bs.homeDir, applicationContext)
         skillProvider?.ensureMigrated()
         pluginInstaller = PluginInstaller(bs.homeDir, bs, skillProvider!!.configStore)
+        // Wire up plugin installer and reload callback so LocalSkillProvider
+        // handles all install/uninstall routing (consolidates SessionService logic)
+        skillProvider?.pluginInstaller = pluginInstaller
+        skillProvider?.onPluginsChanged = {
+            sessionRegistry.getCurrentSession()
+                ?.takeIf { !it.shellMode && it.isRunning }
+                ?.writeInput("/reload-plugins\r")
+        }
+        // Phase 5d: start watching themes directory for hot-reload
+        startThemeWatcher(bs)
 
         // Start native sync engine — pulls on launch, pushes every 15 min
         syncService = SyncService(applicationContext, bs).also { it.start() }
@@ -265,6 +277,60 @@ class SessionService : Service() {
                 }
             }, 5_000, 10_000) // initial 5s delay, then every 10s (matches desktop)
         }
+    }
+
+    /**
+     * Phase 5d: Watch ~/.claude/destinclaude-themes/ for changes.
+     * Sends theme:reload push events via WebSocket when theme files change,
+     * matching desktop's theme-watcher.ts behavior with per-slug debouncing.
+     */
+    private fun startThemeWatcher(bs: Bootstrap) {
+        val watchDir = File(bs.homeDir, ".claude/destinclaude-themes")
+        watchDir.mkdirs()
+
+        themeWatcher?.stopWatching()
+
+        // Debounce map: slug → pending runnable
+        val debounceMap = java.util.concurrent.ConcurrentHashMap<String, Runnable>()
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+        // FileObserver watches CREATE, MODIFY, DELETE events on the themes dir.
+        // Android's FileObserver is non-recursive, so we watch the root dir and
+        // parse slug from subdirectory paths.
+        @Suppress("DEPRECATION") // FileObserver(String) deprecated in API 29 but still works
+        themeWatcher = object : FileObserver(
+            watchDir.absolutePath,
+            CREATE or MODIFY or DELETE or MOVED_TO or MOVED_FROM
+        ) {
+            override fun onEvent(event: Int, path: String?) {
+                if (path == null) return
+                // Extract slug from path (first component of relative path)
+                val normalized = path.replace("\\", "/")
+                val slug = normalized.split("/").firstOrNull() ?: return
+
+                // Only trigger on relevant file types
+                val ext = normalized.substringAfterLast(".", "").lowercase()
+                if (ext !in listOf("json", "svg", "png", "jpg", "jpeg", "webp", "css")) return
+
+                // Debounce per slug (~100ms, matching desktop)
+                val existing = debounceMap[slug]
+                if (existing != null) handler.removeCallbacks(existing)
+
+                val runnable = Runnable {
+                    debounceMap.remove(slug)
+                    // Send theme:reload push event (no id — it's a broadcast)
+                    bridgeServer.broadcast(JSONObject().apply {
+                        put("type", "theme:reload")
+                        put("payload", JSONObject().apply {
+                            put("slug", slug)
+                        })
+                    })
+                }
+                debounceMap[slug] = runnable
+                handler.postDelayed(runnable, 100)
+            }
+        }
+        themeWatcher?.startWatching()
     }
 
     val titlesDir: File get() = File(bootstrap?.homeDir ?: File("/"), ".claude-mobile/titles")
@@ -437,6 +503,9 @@ class SessionService : Service() {
         bridgeServer.stop()
         urlObserver?.stopWatching()
         urlObserver = null
+        // Phase 5d: stop theme watcher
+        themeWatcher?.stopWatching()
+        themeWatcher = null
         usageRefreshTimer?.cancel()
         usageRefreshTimer = null
         statusBroadcastTimer?.cancel()
@@ -581,61 +650,19 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             "skills:install" -> {
+                // All install routing consolidated in LocalSkillProvider — handles
+                // both prompts and plugins (any sourceMarketplace) with /reload-plugins
                 val id = msg.payload.optString("id")
-                val entry = skillProvider?.getMarketplaceEntry(id)
-
-                if (entry != null && entry.optString("type") == "plugin"
-                    && entry.optString("sourceMarketplace") != "destinclaude") {
-                    // Plugin install — delegate to PluginInstaller
-                    val result = pluginInstaller?.install(entry)
-                        ?: PluginInstaller.InstallResult.Failed("Installer not initialized")
-                    val response = when (result) {
-                        is PluginInstaller.InstallResult.Success -> {
-                            skillProvider?.invalidateCache()
-                            // Convenience: reload plugins in active Claude Code session
-                            sessionRegistry.getCurrentSession()
-                                ?.takeIf { !it.shellMode && it.isRunning }
-                                ?.writeInput("/reload-plugins\r")
-                            JSONObject().put("status", "installed")
-                        }
-                        is PluginInstaller.InstallResult.AlreadyInstalled ->
-                            JSONObject().put("status", "already_installed").put("via", result.via)
-                        is PluginInstaller.InstallResult.Failed ->
-                            JSONObject().put("status", "failed").put("error", result.error)
-                        is PluginInstaller.InstallResult.InProgress ->
-                            JSONObject().put("status", "installing")
-                    }
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
-                } else {
-                    // Prompt skill install — existing path
-                    try {
-                        skillProvider?.install(id)
-                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                            JSONObject().put("status", "installed")) }
-                    } catch (e: Exception) {
-                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                            JSONObject().put("status", "failed").put("error", e.message ?: "Unknown")) }
-                    }
-                }
+                val result = skillProvider?.install(id)
+                    ?: JSONObject().put("status", "failed").put("error", "Skill provider not initialized")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             "skills:uninstall" -> {
+                // All uninstall routing consolidated in LocalSkillProvider
                 val id = msg.payload.optString("id")
-                // Check if this is a marketplace-installed plugin
-                if (pluginInstaller?.isInstalled(id) == true) {
-                    val ok = pluginInstaller?.uninstall(id) ?: false
-                    skillProvider?.invalidateCache()
-                    if (ok) {
-                        sessionRegistry.getCurrentSession()
-                            ?.takeIf { !it.shellMode && it.isRunning }
-                            ?.writeInput("/reload-plugins\r")
-                    }
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                        JSONObject().put("ok", ok)) }
-                } else {
-                    skillProvider?.uninstall(id)
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                        JSONObject().put("ok", true)) }
-                }
+                val result = skillProvider?.uninstall(id)
+                    ?: JSONObject().put("ok", false).put("error", "Skill provider not initialized")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             "skills:get-favorites" -> {
                 val result = skillProvider?.getFavorites() ?: org.json.JSONArray()
@@ -676,8 +703,22 @@ class SessionService : Service() {
                 skillProvider?.deletePromptSkill(id)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
             }
+            // Phase 4a: publish a user-created plugin to the marketplace via gh CLI.
+            // Mirrors the desktop flow: verify auth, fork, create branch, upload files,
+            // open PR. Runs gh commands using the runtime environment so Termux's gh
+            // binary is available through linker64.
             "skills:publish" -> {
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "Publishing not yet implemented")) }
+                val pluginId = msg.payload.optString("id")
+                if (pluginId.isBlank()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "Missing plugin id")) }
+                    return@launch
+                }
+                try {
+                    val result = publishPluginViaGh(pluginId)
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+                } catch (e: Exception) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", e.message ?: "Publish failed")) }
+                }
             }
             "skills:get-share-link" -> {
                 val id = msg.payload.optString("id")
@@ -692,6 +733,37 @@ class SessionService : Service() {
             "skills:get-curated-defaults" -> {
                 val result = skillProvider?.getCuratedDefaults() ?: org.json.JSONArray()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 3a: unified packages map — lets the renderer compare installed
+            // versions against the marketplace index to detect available updates
+            "marketplace:get-packages" -> {
+                val result = skillProvider?.configStore?.getPackages() ?: JSONObject()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 3b: update an installed plugin to the latest marketplace version
+            "skills:update" -> {
+                val id = msg.payload.optString("id")
+                val result = skillProvider?.update(id)
+                    ?: JSONObject().put("ok", false).put("error", "Skill provider not initialized")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 3c: per-entry config storage
+            "marketplace:get-config" -> {
+                val id = msg.payload.optString("id")
+                val configDir = File(homeDir, ".claude/destincode-config")
+                val configFile = File(configDir, "$id.json")
+                val result = try {
+                    if (configFile.exists()) JSONObject(configFile.readText()) else JSONObject()
+                } catch (_: Exception) { JSONObject() }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "marketplace:set-config" -> {
+                val id = msg.payload.optString("id")
+                val values = msg.payload.optJSONObject("values") ?: JSONObject()
+                val configDir = File(homeDir, ".claude/destincode-config")
+                configDir.mkdirs()
+                File(configDir, "$id.json").writeText(values.toString(2))
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
             }
             "github:auth" -> {
                 // No GitHub auth on Android — return null
@@ -1422,10 +1494,593 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("url", url)) }
             }
 
+            // ── Phase 5a: Theme marketplace browsing ─────────────────
+            // Fetches theme registry from destinclaude-themes repo (same URL
+            // as desktop's theme-marketplace-provider.ts) and annotates each
+            // entry with installed status by scanning the local themes dir.
+            "theme-marketplace:list" -> {
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceList(msg.payload)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            "theme-marketplace:detail" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceDetail(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 5b: Token-only theme install — downloads manifest.json,
+            // validates required token fields, writes to themes dir. Assets
+            // are NOT downloaded yet (added in 5c).
+            "theme-marketplace:install" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceInstall(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 5b: Uninstall — deletes the theme directory. Only allows
+            // community-source themes (prevents removing user-created themes).
+            "theme-marketplace:uninstall" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceUninstall(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 5b: update is a re-install (same as desktop)
+            "theme-marketplace:update" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    themeMarketplaceInstall(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 5b: publish user theme to destinclaude-themes registry via gh CLI
+            "theme-marketplace:publish" -> {
+                val slug = msg.payload.optString("slug", "")
+                val result = withContext(Dispatchers.IO) {
+                    publishThemeViaGh(slug)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Phase 5b: generate theme preview — not supported on Android (no headless browser)
+            "theme-marketplace:generate-preview" -> {
+                android.util.Log.i("SessionService", "generate-preview not supported on Android")
+                msg.id?.let {
+                    bridgeServer.respond(ws, msg.type, it,
+                        JSONObject().put("path", JSONObject.NULL))
+                }
+            }
+
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }
             }
+        }
+    }
+
+    /**
+     * Phase 4a: Publish a user-created plugin to the marketplace via `gh` CLI.
+     * Runs gh commands using the Termux runtime environment (linker64 routing).
+     * Mirrors the desktop publish flow: verify auth, fork, branch, upload, PR.
+     */
+    private suspend fun publishPluginViaGh(pluginId: String): JSONObject = withContext(Dispatchers.IO) {
+        val bs = bootstrap ?: throw IllegalStateException("Bootstrap not initialized")
+        val env = bs.buildRuntimeEnv().toMutableMap()
+        val pluginDir = File(bs.homeDir, ".claude/plugins/$pluginId")
+        if (!pluginDir.exists()) throw IllegalStateException("Plugin directory not found: $pluginId")
+
+        val ghBin = File(bs.usrDir, "bin/gh").absolutePath
+
+        // Helper: run a gh command and return stdout
+        fun runGh(vararg args: String): String {
+            val envArray = env.map { "${it.key}=${it.value}" }.toTypedArray()
+            val cmd = arrayOf("/system/bin/linker64", ghBin, *args)
+            val process = Runtime.getRuntime().exec(cmd, envArray, bs.homeDir)
+            val stdout = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+            if (exitCode != 0 && !stderr.contains("already exists")) {
+                throw RuntimeException("gh ${args.firstOrNull()} failed: $stderr")
+            }
+            return stdout.trim()
+        }
+
+        // 1. Get GitHub username
+        val username = runGh("api", "user", "--jq", ".login")
+        if (username.isBlank()) throw IllegalStateException("GitHub CLI not authenticated")
+
+        val upstreamRepo = "itsdestin/destincode-marketplace"
+        val forkRepo = "$username/destincode-marketplace"
+        val branchName = "plugin/$pluginId"
+
+        // 2. Fork (idempotent)
+        try { runGh("repo", "fork", upstreamRepo, "--clone=false") } catch (_: Exception) {}
+
+        // 3. Get base SHA and create branch
+        val baseSha = runGh("api", "repos/$upstreamRepo/git/ref/heads/main", "--jq", ".object.sha")
+        try {
+            runGh("api", "repos/$forkRepo/git/refs", "-X", "POST",
+                "-f", "ref=refs/heads/$branchName", "-f", "sha=$baseSha")
+        } catch (_: Exception) {
+            runGh("api", "repos/$forkRepo/git/refs/heads/$branchName", "-X", "PATCH",
+                "-f", "sha=$baseSha", "-f", "force=true")
+        }
+
+        // 4. Upload plugin files (skip sensitive files, .git, node_modules)
+        val sensitivePatterns = listOf(
+            Regex("\\.env$", RegexOption.IGNORE_CASE),
+            Regex("\\.env\\..*", RegexOption.IGNORE_CASE),
+            Regex("credentials\\.json$", RegexOption.IGNORE_CASE),
+            Regex("secrets?\\.(json|ya?ml|toml)$", RegexOption.IGNORE_CASE),
+            Regex("\\.pem$", RegexOption.IGNORE_CASE),
+            Regex("\\.key$", RegexOption.IGNORE_CASE),
+            Regex("tokens?\\.(json|txt)$", RegexOption.IGNORE_CASE),
+        )
+        val uploadedFiles = mutableListOf<String>()
+
+        fun uploadRecursive(dir: File, prefix: String) {
+            dir.listFiles()?.sortedBy { it.name }?.forEach { file ->
+                val relPath = if (prefix.isEmpty()) file.name else "$prefix/${file.name}"
+                if (file.isDirectory) {
+                    if (file.name != ".git" && file.name != "node_modules") {
+                        uploadRecursive(file, relPath)
+                    }
+                } else {
+                    if (sensitivePatterns.any { it.containsMatchIn(relPath) }) return@forEach
+                    val repoPath = "plugins/$pluginId/$relPath"
+                    val content = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+                    try {
+                        runGh("api", "repos/$forkRepo/contents/$repoPath", "-X", "PUT",
+                            "-f", "message=Add $repoPath", "-f", "content=$content", "-f", "branch=$branchName")
+                    } catch (_: Exception) {
+                        // File exists — get SHA and update
+                        val sha = runGh("api", "repos/$forkRepo/contents/$repoPath",
+                            "-q", ".sha", "-H", "Accept: application/vnd.github.v3+json",
+                            "--method", "GET", "-f", "ref=$branchName")
+                        runGh("api", "repos/$forkRepo/contents/$repoPath", "-X", "PUT",
+                            "-f", "message=Update $repoPath", "-f", "content=$content",
+                            "-f", "sha=$sha", "-f", "branch=$branchName")
+                    }
+                    uploadedFiles.add(repoPath)
+                }
+            }
+        }
+        uploadRecursive(pluginDir, "")
+
+        if (uploadedFiles.isEmpty()) throw IllegalStateException("No files to upload")
+
+        // 5. Create PR
+        val prTitle = "[Plugin] $pluginId"
+        val prBody = "## New Plugin: $pluginId\n\nSubmitted via DestinCode (Android)\n\n" +
+            "### Files\n" + uploadedFiles.joinToString("\n") { "- `$it`" }
+
+        val prUrl = try {
+            runGh("pr", "create", "--repo", upstreamRepo,
+                "--head", "$username:$branchName", "--title", prTitle, "--body", prBody)
+        } catch (e: Exception) {
+            // PR may already exist
+            val existing = runGh("pr", "list", "--repo", upstreamRepo,
+                "--head", "$username:$branchName", "--json", "url", "--jq", ".[0].url")
+            if (existing.isNotBlank()) existing
+            else throw RuntimeException("Failed to create PR: ${e.message}")
+        }
+
+        JSONObject().put("prUrl", prUrl)
+    }
+
+    /**
+     * Phase 5b: Publish a user-created theme to destinclaude-themes registry via `gh` CLI.
+     * Mirrors publishPluginViaGh but targets the theme registry repo.
+     */
+    private suspend fun publishThemeViaGh(slug: String): JSONObject = withContext(Dispatchers.IO) {
+        val bs = bootstrap ?: throw IllegalStateException("Bootstrap not initialized")
+        val env = bs.buildRuntimeEnv().toMutableMap()
+        val themeDir = File(themesDir, slug)
+        if (!themeDir.exists()) throw IllegalStateException("Theme directory not found: $slug")
+
+        val ghBin = File(bs.usrDir, "bin/gh").absolutePath
+
+        // Helper: run a gh command and return stdout (routes through linker64 for SELinux)
+        fun runGh(vararg args: String): String {
+            val envArray = env.map { "${it.key}=${it.value}" }.toTypedArray()
+            val cmd = arrayOf("/system/bin/linker64", ghBin, *args)
+            val process = Runtime.getRuntime().exec(cmd, envArray, bs.homeDir)
+            val stdout = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+            if (exitCode != 0 && !stderr.contains("already exists")) {
+                throw RuntimeException("gh ${args.firstOrNull()} failed: $stderr")
+            }
+            return stdout.trim()
+        }
+
+        val username = runGh("api", "user", "--jq", ".login")
+        if (username.isBlank()) throw IllegalStateException("GitHub CLI not authenticated")
+
+        val upstreamRepo = "itsdestin/destinclaude-themes"
+        val forkRepo = "$username/destinclaude-themes"
+        val branchName = "theme/$slug"
+
+        // Fork (idempotent)
+        try { runGh("repo", "fork", upstreamRepo, "--clone=false") } catch (_: Exception) {}
+
+        // Create branch from upstream main
+        val baseSha = runGh("api", "repos/$upstreamRepo/git/ref/heads/main", "--jq", ".object.sha")
+        try {
+            runGh("api", "repos/$forkRepo/git/refs", "-X", "POST",
+                "-f", "ref=refs/heads/$branchName", "-f", "sha=$baseSha")
+        } catch (_: Exception) {
+            runGh("api", "repos/$forkRepo/git/refs/heads/$branchName", "-X", "PATCH",
+                "-f", "sha=$baseSha", "-f", "force=true")
+        }
+
+        // Upload theme files (skip sensitive files, .git, node_modules)
+        val sensitivePatterns = listOf(
+            Regex("\\.env$", RegexOption.IGNORE_CASE),
+            Regex("\\.env\\..*", RegexOption.IGNORE_CASE),
+            Regex("\\.pem$", RegexOption.IGNORE_CASE),
+            Regex("\\.key$", RegexOption.IGNORE_CASE),
+            Regex("tokens?\\.(json|txt)$", RegexOption.IGNORE_CASE),
+        )
+        val uploadedFiles = mutableListOf<String>()
+
+        fun uploadRecursive(dir: File, prefix: String) {
+            dir.listFiles()?.sortedBy { it.name }?.forEach { file ->
+                val relPath = if (prefix.isEmpty()) file.name else "$prefix/${file.name}"
+                if (file.isDirectory) {
+                    if (file.name != ".git" && file.name != "node_modules") {
+                        uploadRecursive(file, relPath)
+                    }
+                } else {
+                    if (sensitivePatterns.any { it.containsMatchIn(relPath) }) return@forEach
+                    val repoPath = "themes/$slug/$relPath"
+                    val content = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+                    try {
+                        runGh("api", "repos/$forkRepo/contents/$repoPath", "-X", "PUT",
+                            "-f", "message=Add $repoPath", "-f", "content=$content", "-f", "branch=$branchName")
+                    } catch (_: Exception) {
+                        val sha = runGh("api", "repos/$forkRepo/contents/$repoPath",
+                            "-q", ".sha", "-H", "Accept: application/vnd.github.v3+json",
+                            "--method", "GET", "-f", "ref=$branchName")
+                        runGh("api", "repos/$forkRepo/contents/$repoPath", "-X", "PUT",
+                            "-f", "message=Update $repoPath", "-f", "content=$content",
+                            "-f", "sha=$sha", "-f", "branch=$branchName")
+                    }
+                    uploadedFiles.add(repoPath)
+                }
+            }
+        }
+        uploadRecursive(themeDir, "")
+
+        if (uploadedFiles.isEmpty()) throw IllegalStateException("No files to upload")
+
+        // Create PR
+        val prTitle = "[Theme] $slug"
+        val prBody = "## New Theme: $slug\n\nSubmitted via DestinCode (Android)\n\n" +
+            "### Files\n" + uploadedFiles.joinToString("\n") { "- `$it`" }
+
+        val prUrl = try {
+            runGh("pr", "create", "--repo", upstreamRepo,
+                "--head", "$username:$branchName", "--title", prTitle, "--body", prBody)
+        } catch (e: Exception) {
+            val existing = runGh("pr", "list", "--repo", upstreamRepo,
+                "--head", "$username:$branchName", "--json", "url", "--jq", ".[0].url")
+            if (existing.isNotBlank()) existing
+            else throw RuntimeException("Failed to create PR: ${e.message}")
+        }
+
+        JSONObject().put("prUrl", prUrl)
+    }
+
+    // ── Phase 5a: Theme marketplace helpers ────────────────────────
+    // Registry URL matches desktop's theme-marketplace-provider.ts REGISTRY_URL
+    private val themeRegistryUrl =
+        "https://raw.githubusercontent.com/itsdestin/destinclaude-themes/main/registry/theme-registry.json"
+    // In-memory cache with 15-min TTL (same as desktop)
+    private var cachedThemeRegistry: org.json.JSONObject? = null
+    private var themeCacheTimestamp = 0L
+    private val themeCacheTtlMs = 15 * 60 * 1000L
+
+    /** Themes directory — same path as desktop's THEMES_DIR */
+    private val themesDir: File
+        get() = File(bootstrap?.homeDir ?: filesDir, ".claude/destinclaude-themes")
+
+    /** Fetch theme registry, apply filters, annotate install status. */
+    private fun themeMarketplaceList(filters: JSONObject): Any {
+        val registry = fetchThemeRegistry()
+        val themesArr = registry.optJSONArray("themes") ?: org.json.JSONArray()
+        val results = org.json.JSONArray()
+
+        // Read filter params
+        val query = filters.optString("query", "").lowercase()
+        val sourceFilter = filters.optString("source", "all")
+        val modeFilter = filters.optString("mode", "all")
+        val featuresArr = filters.optJSONArray("features")
+        val wantedFeatures = mutableSetOf<String>()
+        if (featuresArr != null) {
+            for (i in 0 until featuresArr.length()) wantedFeatures.add(featuresArr.getString(i))
+        }
+        val sort = filters.optString("sort", "newest")
+
+        // Collect matching themes
+        val matched = mutableListOf<JSONObject>()
+        for (i in 0 until themesArr.length()) {
+            val t = themesArr.getJSONObject(i)
+            // Source filter
+            if (sourceFilter != "all" && t.optString("source") != sourceFilter) continue
+            // Mode filter (dark/light)
+            if (modeFilter == "dark" && !t.optBoolean("dark", false)) continue
+            if (modeFilter == "light" && t.optBoolean("dark", false)) continue
+            // Features filter
+            if (wantedFeatures.isNotEmpty()) {
+                val feats = t.optJSONArray("features") ?: org.json.JSONArray()
+                var hasAny = false
+                for (j in 0 until feats.length()) {
+                    if (wantedFeatures.contains(feats.getString(j))) { hasAny = true; break }
+                }
+                if (!hasAny) continue
+            }
+            // Query filter
+            if (query.isNotEmpty()) {
+                val name = t.optString("name", "").lowercase()
+                val author = t.optString("author", "").lowercase()
+                val desc = t.optString("description", "").lowercase()
+                if (!name.contains(query) && !author.contains(query) && !desc.contains(query)) continue
+            }
+            matched.add(t)
+        }
+
+        // Sort
+        if (sort == "name") {
+            matched.sortBy { it.optString("name", "") }
+        } else {
+            // newest first
+            matched.sortByDescending { it.optString("created", "") }
+        }
+
+        // Annotate with installed status
+        for (t in matched) {
+            val slug = t.optString("slug", "")
+            t.put("installed", isThemeInstalled(slug))
+            results.put(t)
+        }
+
+        return results
+    }
+
+    /** Get a single theme's detail with install status. */
+    private fun themeMarketplaceDetail(slug: String): Any {
+        if (slug.isEmpty()) return JSONObject.NULL
+        val registry = fetchThemeRegistry()
+        val themesArr = registry.optJSONArray("themes") ?: org.json.JSONArray()
+        for (i in 0 until themesArr.length()) {
+            val t = themesArr.getJSONObject(i)
+            if (t.optString("slug") == slug) {
+                t.put("installed", isThemeInstalled(slug))
+                return t
+            }
+        }
+        return JSONObject.NULL
+    }
+
+    // Slug must be kebab-case — matches desktop's SAFE_SLUG_RE
+    private val safeSlugRe = Regex("^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    // Max total download size per theme (10 MB, matches desktop)
+    private val maxThemeSizeBytes = 10 * 1024 * 1024
+
+    /**
+     * Phase 5b: Install a theme from the marketplace.
+     * Downloads manifest.json from the registry entry's manifestUrl, validates
+     * required token fields, writes to ~/.claude/destinclaude-themes/<slug>/.
+     * Records install in the unified packages map for version tracking.
+     */
+    private fun themeMarketplaceInstall(slug: String): JSONObject {
+        try {
+            if (!safeSlugRe.matches(slug)) {
+                return JSONObject().put("status", "failed").put("error", "Invalid theme slug")
+            }
+
+            // Look up registry entry for manifestUrl
+            val registry = fetchThemeRegistry()
+            val themesArr = registry.optJSONArray("themes") ?: org.json.JSONArray()
+            var entry: JSONObject? = null
+            for (i in 0 until themesArr.length()) {
+                val t = themesArr.getJSONObject(i)
+                if (t.optString("slug") == slug) { entry = t; break }
+            }
+            if (entry == null) {
+                return JSONObject().put("status", "failed").put("error", "Theme not found in registry")
+            }
+
+            val manifestUrl = entry.optString("manifestUrl", "")
+            if (manifestUrl.isEmpty()) {
+                return JSONObject().put("status", "failed").put("error", "No manifest URL in registry")
+            }
+
+            // Download manifest
+            val manifestText = try {
+                java.net.URL(manifestUrl).readText()
+            } catch (e: Exception) {
+                return JSONObject().put("status", "failed")
+                    .put("error", "Failed to download manifest: ${e.message}")
+            }
+
+            // Parse and inject source: 'community'
+            val manifest = try {
+                JSONObject(manifestText)
+            } catch (e: Exception) {
+                return JSONObject().put("status", "failed")
+                    .put("error", "Invalid manifest JSON: ${e.message}")
+            }
+            manifest.put("source", "community")
+
+            // Create theme directory + assets subdirectory
+            val themeDir = File(themesDir, slug)
+            val assetsDir = File(themeDir, "assets")
+            assetsDir.mkdirs()
+
+            // Phase 5c: Download asset files listed in the registry entry's assetUrls
+            // map (mirrors desktop's theme-marketplace-provider.ts install flow).
+            var totalBytes = manifestText.toByteArray().size.toLong()
+            val assetUrls = entry.optJSONObject("assetUrls")
+            if (assetUrls != null) {
+                val keys = assetUrls.keys()
+                while (keys.hasNext()) {
+                    val relativePath = keys.next()
+                    val url = assetUrls.getString(relativePath)
+
+                    // Validate relative path — no path traversal
+                    val resolved = File(themeDir, relativePath).canonicalFile
+                    if (!resolved.path.startsWith(themeDir.canonicalPath + File.separator)) {
+                        // Cleanup partial download
+                        themeDir.deleteRecursively()
+                        return JSONObject().put("status", "failed")
+                            .put("error", "Invalid asset path: $relativePath")
+                    }
+
+                    val assetBytes = try {
+                        java.net.URL(url).readBytes()
+                    } catch (e: Exception) {
+                        themeDir.deleteRecursively()
+                        return JSONObject().put("status", "failed")
+                            .put("error", "Failed to download asset $relativePath: ${e.message}")
+                    }
+
+                    totalBytes += assetBytes.size
+                    if (totalBytes > maxThemeSizeBytes) {
+                        themeDir.deleteRecursively()
+                        return JSONObject().put("status", "failed")
+                            .put("error", "Theme exceeds 10MB size limit")
+                    }
+
+                    // Ensure parent directory exists for nested assets
+                    resolved.parentFile?.mkdirs()
+                    resolved.writeBytes(assetBytes)
+                }
+            }
+
+            // Write manifest last — theme-watcher triggers on manifest.json presence
+            File(themeDir, "manifest.json").writeText(manifest.toString(2))
+
+            // Phase 5b: record install in unified packages map (mirrors desktop)
+            try {
+                skillProvider?.configStore?.recordPackageInstall("theme:$slug", JSONObject().apply {
+                    put("version", entry.optString("version", "1.0.0"))
+                    put("source", "marketplace")
+                    put("installedAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
+                        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                        .format(java.util.Date()))
+                    put("removable", true)
+                    put("components", org.json.JSONArray().put(JSONObject().apply {
+                        put("type", "theme")
+                        put("path", themeDir.absolutePath)
+                    }))
+                })
+            } catch (e: Exception) {
+                // Non-fatal — theme is still on disk
+                android.util.Log.w("SessionService", "Failed to record theme package install: ${e.message}")
+            }
+
+            return JSONObject().put("status", "installed")
+        } catch (e: Exception) {
+            return JSONObject().put("status", "failed").put("error", e.message ?: "Unknown error")
+        }
+    }
+
+    /**
+     * Phase 5b: Uninstall a community theme. Refuses to delete user-created themes.
+     * Removes the theme directory and the unified packages entry.
+     */
+    private fun themeMarketplaceUninstall(slug: String): JSONObject {
+        try {
+            if (!safeSlugRe.matches(slug)) {
+                return JSONObject().put("status", "failed").put("error", "Invalid theme slug")
+            }
+
+            val themeDir = File(themesDir, slug)
+            val manifestFile = File(themeDir, "manifest.json")
+            if (!manifestFile.exists()) {
+                return JSONObject().put("status", "failed").put("error", "Theme not found on disk")
+            }
+
+            // Verify it's a community theme (not user-created)
+            val manifest = try { JSONObject(manifestFile.readText()) } catch (_: Exception) { JSONObject() }
+            if (manifest.optString("source") != "community") {
+                return JSONObject().put("status", "failed")
+                    .put("error", "Cannot uninstall non-community themes via marketplace")
+            }
+
+            // Delete the theme directory
+            themeDir.deleteRecursively()
+
+            // Remove from unified packages map
+            try {
+                skillProvider?.configStore?.removePackage("theme:$slug")
+            } catch (e: Exception) {
+                android.util.Log.w("SessionService", "Failed to remove theme package entry: ${e.message}")
+            }
+
+            return JSONObject().put("status", "uninstalled")
+        } catch (e: Exception) {
+            return JSONObject().put("status", "failed").put("error", e.message ?: "Unknown error")
+        }
+    }
+
+    /** Check if a theme is installed by looking for its manifest.json on disk. */
+    private fun isThemeInstalled(slug: String): Boolean {
+        return try {
+            File(themesDir, "$slug/manifest.json").exists()
+        } catch (_: Exception) { false }
+    }
+
+    /** Fetch theme registry with in-memory + disk caching (mirrors desktop). */
+    private fun fetchThemeRegistry(): org.json.JSONObject {
+        // Return in-memory cache if fresh
+        val cached = cachedThemeRegistry
+        if (cached != null && System.currentTimeMillis() - themeCacheTimestamp < themeCacheTtlMs) {
+            return cached
+        }
+
+        // Disk cache path
+        val cacheDir = File(bootstrap?.homeDir ?: filesDir, ".claude/destincode-cache")
+        val cacheFile = File(cacheDir, "theme-registry.json")
+
+        // Try remote fetch
+        try {
+            val data = java.net.URL(themeRegistryUrl).readText()
+            val registry = org.json.JSONObject(data)
+            cachedThemeRegistry = registry
+            themeCacheTimestamp = System.currentTimeMillis()
+            // Write disk cache (best-effort)
+            try {
+                cacheDir.mkdirs()
+                cacheFile.writeText(data)
+            } catch (_: Exception) {}
+            return registry
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Theme registry fetch failed: ${e.message}")
+        }
+
+        // Fall back to disk cache
+        try {
+            if (cacheFile.exists()) {
+                val data = cacheFile.readText()
+                val registry = org.json.JSONObject(data)
+                cachedThemeRegistry = registry
+                themeCacheTimestamp = System.currentTimeMillis()
+                return registry
+            }
+        } catch (_: Exception) {}
+
+        // No cache — return empty registry
+        return org.json.JSONObject().apply {
+            put("version", 0)
+            put("generatedAt", "")
+            put("themes", org.json.JSONArray())
         }
     }
 

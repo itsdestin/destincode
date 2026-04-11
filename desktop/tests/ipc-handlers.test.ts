@@ -1,4 +1,23 @@
 import { describe, it, expect, vi } from 'vitest';
+
+// Mock electron before importing ipc-handlers, which transitively imports
+// main.ts (for setPermissionOverrides). main.ts uses protocol.registerSchemesAsPrivileged
+// and Menu.setApplicationMenu at module scope, both of which crash without this mock.
+vi.mock('electron', () => ({
+  // whenReady must never resolve — otherwise main.ts runs its entire init chain
+  // (createWindow, RemoteServer, SyncService, etc.) which hits unmocked APIs.
+  app: { isPackaged: false, getPath: vi.fn(() => '/tmp'), whenReady: vi.fn(() => new Promise(() => {})), on: vi.fn(), quit: vi.fn() },
+  ipcMain: { handle: vi.fn(), on: vi.fn() },
+  BrowserWindow: vi.fn(() => ({ loadURL: vi.fn(), on: vi.fn(), webContents: { send: vi.fn() } })),
+  Menu: { setApplicationMenu: vi.fn() },
+  protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
+  dialog: { showOpenDialog: vi.fn() },
+  clipboard: { readImage: vi.fn(() => ({ isEmpty: () => true })) },
+  nativeImage: {},
+  shell: { openExternal: vi.fn() },
+  powerSaveBlocker: { start: vi.fn(() => 0), stop: vi.fn() },
+}));
+
 import { registerIpcHandlers } from '../src/main/ipc-handlers';
 
 describe('IPC Handlers', () => {
@@ -16,8 +35,30 @@ describe('IPC Handlers', () => {
       on: vi.fn(),
     };
     const mockWindow = { webContents: { send: vi.fn() }, isDestroyed: () => false };
+    // Fix: registerIpcHandlers now requires a skillProvider with a configStore
+    const mockSkillProvider = {
+      configStore: { getPackages: vi.fn(() => ({})) },
+      getInstalled: vi.fn(() => []),
+      listMarketplace: vi.fn(() => []),
+      getSkillDetail: vi.fn(),
+      search: vi.fn(() => []),
+      install: vi.fn(),
+      uninstall: vi.fn(),
+      getFavorites: vi.fn(() => []),
+      setFavorite: vi.fn(),
+      getChips: vi.fn(() => []),
+      setChips: vi.fn(),
+      getOverrides: vi.fn(() => ({})),
+      setOverride: vi.fn(),
+      createPromptSkill: vi.fn(),
+      deletePromptSkill: vi.fn(),
+      publish: vi.fn(),
+      generateShareLink: vi.fn(),
+      importFromLink: vi.fn(),
+      getCuratedDefaults: vi.fn(() => []),
+    };
 
-    registerIpcHandlers(mockIpcMain as any, mockSessionManager as any, mockWindow as any);
+    registerIpcHandlers(mockIpcMain as any, mockSessionManager as any, mockWindow as any, mockSkillProvider as any);
 
     const registeredChannels = mockIpcMain.handle.mock.calls.map((c: any) => c[0]);
     expect(registeredChannels).toContain('session:create');

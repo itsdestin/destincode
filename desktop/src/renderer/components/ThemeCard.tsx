@@ -4,6 +4,8 @@ import type { ThemeRegistryEntryWithStatus } from '../../shared/theme-marketplac
 interface ThemeCardProps {
   entry: ThemeRegistryEntryWithStatus;
   onClick: () => void;
+  // Phase 3b: show an amber badge when a newer version is available
+  updateAvailable?: boolean;
 }
 
 /** Mini mock UI rendered from theme token colors */
@@ -41,7 +43,7 @@ function TokenPreview({ tokens, dark }: { tokens: NonNullable<ThemeRegistryEntry
   );
 }
 
-export default function ThemeCard({ entry, onClick }: ThemeCardProps) {
+export default function ThemeCard({ entry, onClick, updateAvailable }: ThemeCardProps) {
   return (
     <button
       onClick={onClick}
@@ -110,10 +112,15 @@ export default function ThemeCard({ entry, onClick }: ThemeCardProps) {
         )}
       </div>
 
-      {/* Installed badge */}
+      {/* Installed / Update badge */}
       {entry.installed && (
-        <div className="absolute top-1.5 right-1.5 bg-accent text-on-accent text-[8px] font-bold px-1.5 py-0.5 rounded-sm">
-          Installed
+        <div className={`absolute top-1.5 right-1.5 text-[8px] font-bold px-1.5 py-0.5 rounded-sm ${
+          updateAvailable
+            ? 'bg-[#f0ad4e]/20 text-[#f0ad4e] border border-[#f0ad4e]/30'
+            : 'bg-accent text-on-accent'
+        }`}>
+          {/* Phase 3b: amber badge when update is available */}
+          {updateAvailable ? 'Update' : 'Installed'}
         </div>
       )}
     </button>

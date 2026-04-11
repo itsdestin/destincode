@@ -6,6 +6,8 @@ interface Props {
   onClick: (skill: SkillEntry) => void;
   variant?: 'drawer' | 'marketplace';
   installed?: boolean;
+  // Phase 3b: show an amber badge when a newer version is available
+  updateAvailable?: boolean;
   onInstall?: (skill: SkillEntry) => void;
 }
 
@@ -34,7 +36,7 @@ function StarRating({ rating }: { rating?: number }) {
   return <span className="text-[7px] text-[#f0ad4e]">{stars}</span>;
 }
 
-export default function SkillCard({ skill, onClick, variant = 'drawer', installed, onInstall }: Props) {
+export default function SkillCard({ skill, onClick, variant = 'drawer', installed, updateAvailable, onInstall }: Props) {
   if (variant === 'marketplace') {
     return (
       <div
@@ -61,8 +63,13 @@ export default function SkillCard({ skill, onClick, variant = 'drawer', installe
           </span>
         </div>
         {installed ? (
-          <div className="text-center text-[#4CAF50] text-[11px] py-1 mt-2 border border-[#4CAF50]/40 rounded-sm">
-            Installed
+          <div className={`text-center text-[11px] py-1 mt-2 border rounded-sm ${
+            updateAvailable
+              ? 'text-[#f0ad4e] border-[#f0ad4e]/40'
+              : 'text-[#4CAF50] border-[#4CAF50]/40'
+          }`}>
+            {/* Phase 3b: surface update-available state on browse cards */}
+            {updateAvailable ? 'Update Available' : 'Installed'}
           </div>
         ) : onInstall ? (
           <button

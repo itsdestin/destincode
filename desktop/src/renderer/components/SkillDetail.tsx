@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSkills } from '../state/skill-context';
 import type { SkillDetailView } from '../../shared/types';
+import ConfigForm from './ConfigForm';
 
 interface Props {
   skillId: string;
@@ -198,6 +199,13 @@ export default function SkillDetail({ skillId, onBack }: Props) {
               ))}
             </div>
           </div>
+        )}
+
+        {/* Phase 3c: config form — only rendered when the entry has a
+            configSchema AND is currently installed. Anthropic plugins using
+            their own native config.json won't have configSchema. */}
+        {isInstalled && detail.configSchema && detail.configSchema.fields.length > 0 && (
+          <ConfigForm id={detail.id} schema={detail.configSchema} />
         )}
 
         {/* Metadata */}

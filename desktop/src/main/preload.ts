@@ -74,8 +74,14 @@ const IPC = {
   THEME_MARKETPLACE_DETAIL: 'theme-marketplace:detail',
   THEME_MARKETPLACE_INSTALL: 'theme-marketplace:install',
   THEME_MARKETPLACE_UNINSTALL: 'theme-marketplace:uninstall',
+  THEME_MARKETPLACE_UPDATE: 'theme-marketplace:update',
   THEME_MARKETPLACE_PUBLISH: 'theme-marketplace:publish',
   THEME_MARKETPLACE_GENERATE_PREVIEW: 'theme-marketplace:generate-preview',
+  // Unified marketplace (Phase 3)
+  MARKETPLACE_GET_PACKAGES: 'marketplace:get-packages',
+  SKILLS_UPDATE: 'skills:update',
+  MARKETPLACE_GET_CONFIG: 'marketplace:get-config',
+  MARKETPLACE_SET_CONFIG: 'marketplace:set-config',
   FIRST_RUN_STATE: 'first-run:state',
   FIRST_RUN_RETRY: 'first-run:retry',
   FIRST_RUN_START_AUTH: 'first-run:start-auth',
@@ -194,6 +200,15 @@ contextBridge.exposeInMainWorld('claude', {
     getShareLink: (id: string): Promise<string> => ipcRenderer.invoke(IPC.SKILLS_GET_SHARE_LINK, id),
     importFromLink: (encoded: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_IMPORT_FROM_LINK, encoded),
     getCuratedDefaults: (): Promise<string[]> => ipcRenderer.invoke(IPC.SKILLS_GET_CURATED_DEFAULTS),
+    // Phase 3b: update an already-installed plugin
+    update: (id: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_UPDATE, id),
+  },
+  // Phase 3: unified marketplace APIs (packages map, per-entry config)
+  marketplace: {
+    getPackages: (): Promise<Record<string, any>> => ipcRenderer.invoke(IPC.MARKETPLACE_GET_PACKAGES),
+    getConfig: (id: string): Promise<Record<string, any>> => ipcRenderer.invoke(IPC.MARKETPLACE_GET_CONFIG, id),
+    setConfig: (id: string, values: Record<string, any>): Promise<void> =>
+      ipcRenderer.invoke(IPC.MARKETPLACE_SET_CONFIG, id, values),
   },
   dialog: {
     openFile: (): Promise<string[]> =>
@@ -300,6 +315,8 @@ contextBridge.exposeInMainWorld('claude', {
       detail: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_DETAIL, slug),
       install: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_INSTALL, slug),
       uninstall: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_UNINSTALL, slug),
+      // Phase 3b: re-install a theme at the same slug, overwriting files
+      update: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_UPDATE, slug),
       publish: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_PUBLISH, slug),
       generatePreview: (slug: string): Promise<string | null> => ipcRenderer.invoke(IPC.THEME_MARKETPLACE_GENERATE_PREVIEW, slug),
     },

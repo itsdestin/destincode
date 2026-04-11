@@ -119,6 +119,10 @@ export interface SkillEntry {
   installedAt?: string;
   updatedAt?: string;
   repoUrl?: string;
+  // Phase 3c: optional config schema — when present, the detail view renders
+  // a settings form for this entry. Anthropic plugins using native config.json
+  // should NOT set this field.
+  configSchema?: ConfigSchema;
 }
 
 export interface SkillDetailView extends SkillEntry {
@@ -148,12 +152,31 @@ export interface MetadataOverride {
   category?: SkillEntry['category'];
 }
 
+// Component of an installed marketplace package (plugin, theme, etc.)
+export interface PackageComponent {
+  type: 'plugin' | 'theme';
+  path: string;
+}
+
+// Tracked marketplace package — records what the marketplace installed
+export interface PackageInfo {
+  version: string;
+  source: 'marketplace' | 'user';
+  installedAt: string;
+  removable: boolean;
+  components: PackageComponent[];
+}
+
 export interface UserSkillConfig {
-  version: 1;
+  version: 1 | 2;
   favorites: string[];
   chips: ChipConfig[];
   overrides: Record<string, MetadataOverride>;
   privateSkills: SkillEntry[];
+  // v2: unified package tracking (replaces installed_plugins)
+  packages?: Record<string, PackageInfo>;
+  // Phase 6: set after one-time migration of toolkit layers + community themes
+  migrated?: boolean;
 }
 
 export interface SkillProvider {
@@ -165,7 +188,7 @@ export interface SkillProvider {
   getChips(): Promise<ChipConfig[]>;
   getOverrides(): Promise<Record<string, MetadataOverride>>;
   install(id: string): Promise<any>;
-  uninstall(id: string): Promise<void>;
+  uninstall(id: string): Promise<void | { type: 'plugin' | 'prompt' }>;
   setFavorite(id: string, favorited: boolean): Promise<void>;
   setChips(chips: ChipConfig[]): Promise<void>;
   setOverride(id: string, override: MetadataOverride): Promise<void>;
@@ -195,6 +218,23 @@ export interface HistoryMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+}
+
+// Phase 3c: per-entry config schema for marketplace packages. Entries
+// that declare configSchema get a settings form in the detail view.
+// Anthropic plugins using their own native config.json are left alone.
+export interface ConfigField {
+  name: string;
+  type: 'string' | 'boolean' | 'number' | 'select';
+  label: string;
+  description?: string;
+  default?: string | boolean | number;
+  required?: boolean;
+  options?: { value: string; label: string }[]; // for 'select' type
+}
+
+export interface ConfigSchema {
+  fields: ConfigField[];
 }
 
 // IPC channel names
@@ -276,8 +316,14 @@ export const IPC = {
   THEME_MARKETPLACE_DETAIL: 'theme-marketplace:detail',
   THEME_MARKETPLACE_INSTALL: 'theme-marketplace:install',
   THEME_MARKETPLACE_UNINSTALL: 'theme-marketplace:uninstall',
+  THEME_MARKETPLACE_UPDATE: 'theme-marketplace:update',
   THEME_MARKETPLACE_PUBLISH: 'theme-marketplace:publish',
   THEME_MARKETPLACE_GENERATE_PREVIEW: 'theme-marketplace:generate-preview',
+  // Unified marketplace — packages + update + config (Phase 3)
+  MARKETPLACE_GET_PACKAGES: 'marketplace:get-packages',
+  SKILLS_UPDATE: 'skills:update',
+  MARKETPLACE_GET_CONFIG: 'marketplace:get-config',
+  MARKETPLACE_SET_CONFIG: 'marketplace:set-config',
   // First-run
   FIRST_RUN_STATE: 'first-run:state',
   FIRST_RUN_RETRY: 'first-run:retry',

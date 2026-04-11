@@ -516,6 +516,33 @@ export function installShim(): void {
       getShareLink: (id: string) => invoke('skills:get-share-link', { id }),
       importFromLink: (encoded: string) => invoke('skills:import-from-link', { encoded }),
       getCuratedDefaults: () => invoke('skills:get-curated-defaults'),
+      // Phase 3b: update a plugin (re-installs at the same path)
+      update: (id: string) => invoke('skills:update', { id }),
+    },
+    // Phase 3: unified marketplace (packages map + per-entry config)
+    marketplace: {
+      getPackages: () => invoke('marketplace:get-packages'),
+      getConfig: (id: string) => invoke('marketplace:get-config', { id }),
+      setConfig: (id: string, values: Record<string, any>) =>
+        invoke('marketplace:set-config', { id, values }),
+    },
+    // Phase 3: theme namespace (stub + marketplace endpoints) so the unified
+    // Marketplace modal can reach theme install/uninstall/update on Android.
+    // Only marketplace methods are exposed — native theme editor lives elsewhere.
+    theme: {
+      list: () => invoke('theme:list').catch(() => []),
+      readFile: (slug: string) => invoke('theme:read-file', { slug }).catch(() => null),
+      writeFile: (slug: string, content: string) => invoke('theme:write-file', { slug, content }).catch(() => {}),
+      onReload: (_cb: Callback) => (() => {}),
+      marketplace: {
+        list: (filters?: any) => invoke('theme-marketplace:list', filters),
+        detail: (slug: string) => invoke('theme-marketplace:detail', { slug }),
+        install: (slug: string) => invoke('theme-marketplace:install', { slug }),
+        uninstall: (slug: string) => invoke('theme-marketplace:uninstall', { slug }),
+        update: (slug: string) => invoke('theme-marketplace:update', { slug }),
+        publish: (slug: string) => invoke('theme-marketplace:publish', { slug }),
+        generatePreview: (slug: string) => invoke('theme-marketplace:generate-preview', { slug }),
+      },
     },
     dialog: {
       openFile: () => targetUrl

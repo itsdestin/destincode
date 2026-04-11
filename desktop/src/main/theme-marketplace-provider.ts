@@ -11,6 +11,7 @@ import type {
 } from '../shared/theme-marketplace-types';
 import { THEMES_DIR } from './theme-watcher';
 import { generateThemePreview } from './theme-preview-generator';
+import { SkillConfigStore } from './skill-config-store';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,6 +37,14 @@ const SAFE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export class ThemeMarketplaceProvider {
   private cachedIndex: ThemeRegistryIndex | null = null;
   private cacheTimestamp = 0;
+  // Phase 3a: optional config store for unified package tracking across
+  // skills + themes. Passed by ipc-handlers so we write to the same
+  // destincode-skills.json "packages" map.
+  private configStore: SkillConfigStore | null = null;
+
+  constructor(configStore?: SkillConfigStore) {
+    this.configStore = configStore ?? null;
+  }
 
   /** Fetch registry (with cache), apply filters, annotate install status. */
   async listThemes(filters?: ThemeMarketplaceFilters): Promise<ThemeRegistryEntryWithStatus[]> {
@@ -163,10 +172,50 @@ export class ThemeMarketplaceProvider {
         'utf-8',
       );
 
+      // Phase 3a: record install in unified packages map for version tracking.
+      // Key by slug so the marketplace UI can look up install state alongside
+      // skill packages. Theme ids in the unified packages map are prefixed
+      // "theme:" to avoid collisions with skill ids.
+      if (this.configStore) {
+        try {
+          this.configStore.recordPackageInstall(`theme:${slug}`, {
+            version: entry.version || '1.0.0',
+            source: 'marketplace',
+            installedAt: new Date().toISOString(),
+            removable: true,
+            components: [{
+              type: 'theme',
+              path: themeDir,
+            }],
+          });
+        } catch (recordErr) {
+          // Non-fatal — log and continue. The theme is still on disk.
+          console.warn('[ThemeMarketplace] Failed to record package install:', recordErr);
+        }
+      }
+
       return { status: 'installed' };
     } catch (err: any) {
       return { status: 'failed', error: err?.message ?? 'Unknown error' };
     }
+  }
+
+  /**
+   * Phase 3b: update a theme by re-downloading from registry, overwriting
+   * files at the same slug path. Config in ~/.claude/destincode-config/ is
+   * NOT touched. Returns the new version on success.
+   */
+  async updateTheme(slug: string): Promise<{ ok: boolean; newVersion?: string; error?: string }> {
+    // Re-install overwrites everything at the same path
+    const result = await this.installTheme(slug);
+    if (result.status === 'failed') {
+      return { ok: false, error: result.error };
+    }
+    // installTheme already called recordPackageInstall with the latest version.
+    // Read back the version from registry for the response.
+    const index = await this.fetchRegistry();
+    const entry = index.themes.find(t => t.slug === slug);
+    return { ok: true, newVersion: entry?.version };
   }
 
   /**
@@ -192,6 +241,16 @@ export class ThemeMarketplaceProvider {
       }
 
       await fs.promises.rm(themeDir, { recursive: true, force: true });
+
+      // Phase 3a: mirror install — remove package entry when uninstalling
+      if (this.configStore) {
+        try {
+          this.configStore.removePackage(`theme:${slug}`);
+        } catch (removeErr) {
+          console.warn('[ThemeMarketplace] Failed to remove package entry:', removeErr);
+        }
+      }
+
       return { status: 'uninstalled' };
     } catch (err: any) {
       return { status: 'failed', error: err?.message ?? 'Unknown error' };

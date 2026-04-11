@@ -18,6 +18,7 @@ import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THE
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend } from './sync-state';
+import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -76,7 +77,9 @@ export function registerIpcHandlers(
   });
 
   // --- Theme marketplace ---
-  const themeMarketplace = new ThemeMarketplaceProvider();
+  // Phase 3a: pass the shared config store so theme installs also record into
+  // the unified destincode-skills.json packages map used for update tracking.
+  const themeMarketplace = new ThemeMarketplaceProvider(skillProvider.configStore);
 
   ipcMain.handle(IPC.THEME_MARKETPLACE_LIST, async (_event, filters) => {
     return themeMarketplace.listThemes(filters);
@@ -449,11 +452,27 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(IPC.SKILLS_INSTALL, async (_event, id: string) => {
-    return skillProvider.install(id);
+    const result = await skillProvider.install(id);
+    // Reload plugins in all active Claude Code sessions so the new plugin is
+    // discovered immediately — matches Android behavior (SessionService.kt:458)
+    if (result.status === 'installed' && result.type === 'plugin') {
+      for (const s of sessionManager.listSessions()) {
+        if (s.status === 'active') sessionManager.sendInput(s.id, '/reload-plugins\r');
+      }
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.SKILLS_UNINSTALL, async (_event, id: string) => {
-    return skillProvider.uninstall(id);
+    const result = await skillProvider.uninstall(id);
+    // Reload plugins so Claude Code drops the uninstalled plugin — matches
+    // Android behavior (SessionService.kt:490)
+    if (result.type === 'plugin') {
+      for (const s of sessionManager.listSessions()) {
+        if (s.status === 'active') sessionManager.sendInput(s.id, '/reload-plugins\r');
+      }
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.SKILLS_GET_FAVORITES, async () => {
@@ -502,6 +521,44 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.SKILLS_GET_CURATED_DEFAULTS, async () => {
     return skillProvider.getCuratedDefaults();
+  });
+
+  // Phase 3a: unified marketplace packages map — lets the renderer know which
+  // versions are currently installed (for update detection) and the on-disk
+  // component paths (for uninstall cascade).
+  ipcMain.handle(IPC.MARKETPLACE_GET_PACKAGES, async () => {
+    return skillProvider.configStore.getPackages();
+  });
+
+  // Phase 3b: update an installed plugin/prompt to the latest marketplace
+  // version. Re-downloads files, overwrites at the same path, and bumps the
+  // version in destincode-skills.json. Config is NOT touched.
+  ipcMain.handle(IPC.SKILLS_UPDATE, async (_event, id: string) => {
+    const result = await skillProvider.update(id);
+    // Reload plugins in active sessions so Claude Code picks up updated code
+    if (result.ok) {
+      for (const s of sessionManager.listSessions()) {
+        if (s.status === 'active') sessionManager.sendInput(s.id, '/reload-plugins\r');
+      }
+    }
+    return result;
+  });
+
+  // Phase 3b: update an installed theme to the latest registry version.
+  // Re-downloads theme files at the same slug path and bumps the version.
+  ipcMain.handle(IPC.THEME_MARKETPLACE_UPDATE, async (_event, slug: string) => {
+    return themeMarketplace.updateTheme(slug);
+  });
+
+  // Phase 3c: per-entry config — reads/writes ~/.claude/destincode-config/<id>.json.
+  // Only entries that declare configSchema in their marketplace JSON use this.
+  ipcMain.handle(IPC.MARKETPLACE_GET_CONFIG, async (_event, id: string) => {
+    return getMarketplaceConfig(id);
+  });
+
+  ipcMain.handle(IPC.MARKETPLACE_SET_CONFIG, async (_event, id: string, values: Record<string, unknown>) => {
+    setMarketplaceConfig(id, values);
+    return { ok: true };
   });
 
   // --- Remote access settings ---

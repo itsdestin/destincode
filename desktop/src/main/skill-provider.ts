@@ -1,14 +1,36 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
 import { installPlugin, uninstallPlugin, isPluginInstalled, type InstallResult } from './plugin-installer';
+import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import type {
   SkillEntry, SkillDetailView, SkillFilters, ChipConfig,
   MetadataOverride, SkillProvider,
 } from '../shared/types';
+
+const execFileAsync = promisify(execFile);
+
+// Resolve gh CLI path at module load (mirrors theme-marketplace-provider.ts)
+let ghPath = 'gh';
+try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
+
+const PLUGINS_DIR = path.join(os.homedir(), '.claude', 'plugins');
+
+// Patterns that indicate sensitive content — stripped before upload
+const SENSITIVE_PATTERNS = [
+  /\.env$/i,
+  /\.env\..*/i,
+  /credentials\.json$/i,
+  /secrets?\.(json|ya?ml|toml)$/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /token(s)?\.(json|txt)$/i,
+];
 
 const CACHE_DIR = path.join(os.homedir(), '.claude', 'destincode-marketplace-cache');
 const INDEX_CACHE = path.join(CACHE_DIR, 'index.json');
@@ -24,7 +46,9 @@ const INDEX_TTL = 24 * 60 * 60 * 1000; // 24 hours
 interface CacheMeta { fetchedAt: number; }
 
 export class LocalSkillProvider implements SkillProvider {
-  private configStore = new SkillConfigStore();
+  // Phase 3a: made public so ThemeMarketplaceProvider can share the same
+  // destincode-skills.json packages map and marketplace IPC can read it
+  public configStore = new SkillConfigStore();
   private installedCache: SkillEntry[] | null = null;
 
   constructor() {
@@ -157,7 +181,7 @@ export class LocalSkillProvider implements SkillProvider {
         installedAt: new Date().toISOString(),
       });
       this.installedCache = null;
-      return { status: 'installed' };
+      return { status: 'installed', type: 'prompt' };
     }
 
     // Plugin install — delegate to PluginInstaller
@@ -173,30 +197,104 @@ export class LocalSkillProvider implements SkillProvider {
     });
 
     if (result.status === 'installed') {
-      // Record in config store
-      this.configStore.recordPluginInstall(id, {
+      // Phase 3a: record install as a PackageInfo with version from the marketplace
+      // entry so the update flow can detect when a newer version is available.
+      this.configStore.recordPackageInstall(id, {
+        version: marketplaceEntry.version || '1.0.0',
+        source: 'marketplace',
         installedAt: new Date().toISOString(),
-        installedFrom: marketplaceEntry.sourceMarketplace || 'unknown',
-        installPath: path.join(os.homedir(), '.claude', 'plugins', id),
-        sourceType: marketplaceEntry.sourceType,
-        sourceRef: marketplaceEntry.sourceRef,
+        removable: true,
+        components: [{
+          type: 'plugin',
+          path: path.join(os.homedir(), '.claude', 'plugins', id),
+        }],
       });
       this.installedCache = null;
     }
 
-    return result;
+    // Tag result so callers know a plugin (not prompt) was installed
+    return { ...result, type: 'plugin' };
   }
 
-  async uninstall(id: string): Promise<void> {
+  /**
+   * Phase 3b: update an installed plugin by re-running the install logic with
+   * the latest marketplace entry, overwriting files at the same path. Config
+   * in ~/.claude/destincode-config/<id>.json is NOT touched.
+   */
+  async update(id: string): Promise<{ ok: boolean; newVersion?: string; error?: string; missingRequiredFields?: string[] }> {
+    const index = await this.fetchIndex();
+    const entry = index.find(e => e.id === id);
+    if (!entry) return { ok: false, error: `Skill not found in marketplace: ${id}` };
+
+    const marketplaceEntry = entry as any;
+
+    if (entry.type === 'prompt') {
+      // Prompt update: overwrite the private skill entry with new content
+      const config = this.configStore.load();
+      const idx = config.privateSkills.findIndex(s => s.id === id);
+      if (idx >= 0) {
+        config.privateSkills[idx] = { ...config.privateSkills[idx], ...entry, id };
+      }
+      this.configStore.updatePackageVersion(id, entry.version || '1.0.0');
+      this.installedCache = null;
+      return { ok: true, newVersion: entry.version };
+    }
+
+    // Plugin update: re-install at the same path, overwriting files
+    const result = await installPlugin({
+      id: marketplaceEntry.id,
+      sourceType: marketplaceEntry.sourceType || 'unknown',
+      sourceRef: marketplaceEntry.sourceRef || '',
+      sourceSubdir: marketplaceEntry.sourceSubdir,
+      sourceMarketplace: marketplaceEntry.sourceMarketplace,
+      description: marketplaceEntry.description,
+      author: marketplaceEntry.author,
+    });
+
+    if (result.status === 'installed' || result.status === 'already_installed') {
+      this.configStore.updatePackageVersion(id, entry.version || '1.0.0');
+      this.installedCache = null;
+
+      // Phase 3c: check if the new configSchema has required fields missing
+      // from the existing user config. Don't block the update — just surface
+      // the field names so the renderer can prompt the user.
+      const missingRequiredFields = this.checkMissingConfigFields(id, entry);
+      return { ok: true, newVersion: entry.version, ...(missingRequiredFields.length > 0 ? { missingRequiredFields } : {}) };
+    }
+
+    return { ok: false, error: result.status === 'failed' ? (result as any).error : 'Update failed' };
+  }
+
+  /**
+   * Phase 3c: compare the entry's configSchema against the user's saved config.
+   * Returns names of required fields that are missing from the saved config.
+   */
+  private checkMissingConfigFields(id: string, entry: SkillEntry): string[] {
+    const schema = (entry as any).configSchema;
+    if (!schema?.fields?.length) return [];
+    try {
+      const config = getMarketplaceConfig(id);
+      return schema.fields
+        .filter((f: { required?: boolean; name: string }) => f.required && (config[f.name] === undefined || config[f.name] === ''))
+        .map((f: { name: string }) => f.name);
+    } catch {
+      return [];
+    }
+  }
+
+  async uninstall(id: string): Promise<{ type: 'plugin' | 'prompt' }> {
     // Check if this is a marketplace-installed plugin
     const installed = this.configStore.getInstalledPlugins();
     if (installed[id]) {
       await uninstallPlugin(id);
       this.configStore.removePluginInstall(id);
+      this.installedCache = null;
+      return { type: 'plugin' };
     } else {
       this.configStore.deletePromptSkill(id);
+      this.installedCache = null;
+      return { type: 'prompt' };
     }
-    this.installedCache = null;
   }
 
   async setFavorite(id: string, favorited: boolean): Promise<void> {
@@ -225,8 +323,210 @@ export class LocalSkillProvider implements SkillProvider {
 
   // --- Sharing ---
 
-  async publish(_id: string): Promise<{ prUrl: string }> {
-    throw new Error('Publishing not yet implemented — requires GitHub auth');
+  /**
+   * Phase 4a: Publish a user-created plugin to the destincode-marketplace repo
+   * via GitHub PR. Mirrors the theme publish flow in theme-marketplace-provider.ts.
+   *
+   * Flow:
+   * 1. Verify gh CLI auth
+   * 2. Verify the skill is user-created (source 'self' or visibility 'private')
+   * 3. Fork itsdestin/destincode-marketplace (idempotent)
+   * 4. Create branch, upload plugin files via GitHub Contents API
+   * 5. Open PR with auto-populated description
+   */
+  async publish(id: string): Promise<{ prUrl: string }> {
+    // Locate the plugin on disk
+    const pluginDir = path.join(PLUGINS_DIR, id);
+    if (!fs.existsSync(pluginDir)) {
+      throw new Error(`Plugin directory not found: ${id}`);
+    }
+
+    // Phase 4a: only allow publishing user-created items
+    const installed = await this.getInstalled();
+    const skill = installed.find(s => s.id === id);
+    if (!skill) {
+      throw new Error(`Skill not found: ${id}`);
+    }
+    if (skill.source !== 'self' && skill.visibility !== 'private') {
+      throw new Error('Only user-created skills can be published to the marketplace');
+    }
+
+    // 1. Verify gh CLI auth
+    let username: string;
+    try {
+      const { stdout } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login']);
+      username = stdout.trim();
+      if (!username) throw new Error('Empty username');
+    } catch {
+      throw new Error('GitHub CLI not authenticated. Run `gh auth login` first.');
+    }
+
+    const UPSTREAM_REPO = 'itsdestin/destincode-marketplace';
+    const branchName = `plugin/${id}`;
+
+    // 2. Fork the marketplace repo (idempotent — gh returns existing fork)
+    try {
+      await execFileAsync(ghPath, ['repo', 'fork', UPSTREAM_REPO, '--clone=false'], { timeout: 30000 });
+    } catch (err: any) {
+      if (err.code === 'ENOENT') throw new Error('gh CLI not found');
+      // gh repo fork returns exit 0 even if fork exists; only throw on real errors
+    }
+
+    const FORK_REPO = `${username}/destincode-marketplace`;
+
+    // 3. Get the default branch SHA from upstream
+    let baseSha: string;
+    try {
+      const { stdout } = await execFileAsync(ghPath, [
+        'api', `repos/${UPSTREAM_REPO}/git/ref/heads/main`, '--jq', '.object.sha',
+      ]);
+      baseSha = stdout.trim();
+    } catch {
+      throw new Error('Failed to read upstream repo. Does itsdestin/destincode-marketplace exist?');
+    }
+
+    // Create branch on the fork (or update if it already exists)
+    try {
+      await execFileAsync(ghPath, [
+        'api', `repos/${FORK_REPO}/git/refs`, '-X', 'POST',
+        '-f', `ref=refs/heads/${branchName}`,
+        '-f', `sha=${baseSha}`,
+      ]);
+    } catch {
+      try {
+        await execFileAsync(ghPath, [
+          'api', `repos/${FORK_REPO}/git/refs/heads/${branchName}`, '-X', 'PATCH',
+          '-f', `sha=${baseSha}`, '-f', 'force=true',
+        ]);
+      } catch (err: any) {
+        throw new Error(`Failed to create branch: ${err.message}`);
+      }
+    }
+
+    // 4. Collect plugin files, filtering out sensitive content
+    const filesToUpload: { repoPath: string; localPath: string }[] = [];
+    const allFiles = await this.walkPluginDirectory(pluginDir);
+
+    for (const absPath of allFiles) {
+      const relativePath = path.relative(pluginDir, absPath).replace(/\\/g, '/');
+
+      // Phase 4a: strip sensitive files before upload
+      if (SENSITIVE_PATTERNS.some(re => re.test(relativePath))) {
+        console.log(`[SkillProvider] Skipping sensitive file: ${relativePath}`);
+        continue;
+      }
+      // Skip node_modules and .git
+      if (relativePath.startsWith('node_modules/') || relativePath.startsWith('.git/')) {
+        continue;
+      }
+
+      filesToUpload.push({
+        repoPath: `plugins/${id}/${relativePath}`,
+        localPath: absPath,
+      });
+    }
+
+    if (filesToUpload.length === 0) {
+      throw new Error('No files to upload (all files were filtered as sensitive)');
+    }
+
+    // 5. Upload files via GitHub Contents API
+    for (const file of filesToUpload) {
+      const raw = await fs.promises.readFile(file.localPath);
+      const content = raw.toString('base64');
+
+      try {
+        await execFileAsync(ghPath, [
+          'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
+          '-f', `message=Add ${file.repoPath}`,
+          '-f', `content=${content}`,
+          '-f', `branch=${branchName}`,
+        ], { timeout: 30000 });
+      } catch {
+        // File may already exist — update it (need the sha)
+        try {
+          const { stdout: existingFile } = await execFileAsync(ghPath, [
+            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`,
+            '-q', '.sha', '-H', 'Accept: application/vnd.github.v3+json',
+            '--method', 'GET', '-f', `ref=${branchName}`,
+          ]);
+          await execFileAsync(ghPath, [
+            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
+            '-f', `message=Update ${file.repoPath}`,
+            '-f', `content=${content}`,
+            '-f', `sha=${existingFile.trim()}`,
+            '-f', `branch=${branchName}`,
+          ], { timeout: 30000 });
+        } catch {
+          throw new Error(`Failed to upload ${file.repoPath}`);
+        }
+      }
+    }
+
+    // 6. Create the PR
+    const prTitle = `[Plugin] ${skill.displayName || id}`;
+    const prBody = [
+      `## New Plugin: ${skill.displayName || id}`,
+      '',
+      skill.description ? `> ${skill.description}` : '',
+      '',
+      `- **Author:** ${skill.author || username}`,
+      `- **Type:** ${skill.type || 'plugin'}`,
+      `- **Category:** ${skill.category || 'other'}`,
+      `- **Plugin ID:** \`${id}\``,
+      '',
+      `### What it does`,
+      skill.description || '_No description provided_',
+      '',
+      `### Files`,
+      filesToUpload.map(f => `- \`${f.repoPath}\``).join('\n'),
+      '',
+      '_Submitted via DestinCode Marketplace_',
+    ].join('\n');
+
+    try {
+      const { stdout: prUrlRaw } = await execFileAsync(ghPath, [
+        'pr', 'create',
+        '--repo', UPSTREAM_REPO,
+        '--head', `${username}:${branchName}`,
+        '--title', prTitle,
+        '--body', prBody,
+      ], { timeout: 30000 });
+      return { prUrl: prUrlRaw.trim() };
+    } catch (err: any) {
+      // If PR already exists, try to get its URL
+      if (err.stderr?.includes('already exists')) {
+        try {
+          const { stdout: existingPr } = await execFileAsync(ghPath, [
+            'pr', 'list',
+            '--repo', UPSTREAM_REPO,
+            '--head', `${username}:${branchName}`,
+            '--json', 'url', '--jq', '.[0].url',
+          ]);
+          if (existingPr.trim()) {
+            return { prUrl: existingPr.trim() };
+          }
+        } catch { /* fall through */ }
+      }
+      throw new Error(`Failed to create PR: ${err.stderr || err.message}`);
+    }
+  }
+
+  /** Recursively walk a plugin directory and return all file paths. */
+  private async walkPluginDirectory(dir: string): Promise<string[]> {
+    const results: string[] = [];
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Skip .git and node_modules directories
+        if (entry.name === '.git' || entry.name === 'node_modules') continue;
+        results.push(...await this.walkPluginDirectory(fullPath));
+      } else {
+        results.push(fullPath);
+      }
+    }
+    return results;
   }
 
   async generateShareLink(id: string): Promise<string> {
