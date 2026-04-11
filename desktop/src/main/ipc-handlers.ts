@@ -18,6 +18,7 @@ import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THE
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend } from './sync-state';
+import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -1066,6 +1067,15 @@ export function registerIpcHandlers(
       }
     }
   });
+
+  // Guided setup wizard: prerequisite detection, tool installation, OAuth, repo creation.
+  // Each handler runs one specific command — no generic shell exec.
+  ipcMain.handle('sync:setup:check-prereqs', (_e, backend) => checkSyncPrereqs(backend));
+  ipcMain.handle('sync:setup:install-rclone', () => installRclone());
+  ipcMain.handle('sync:setup:check-gdrive', () => checkGdriveRemote());
+  ipcMain.handle('sync:setup:auth-gdrive', () => authGdrive());
+  ipcMain.handle('sync:setup:auth-github', () => authGithub());
+  ipcMain.handle('sync:setup:create-repo', (_e, repoName) => createGithubRepo(repoName));
 
   // --- Permission response (blocking hooks) ---
   if (hookRelay) {
