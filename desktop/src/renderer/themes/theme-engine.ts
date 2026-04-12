@@ -347,8 +347,7 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     [data-wallpaper] .input-bar-container,
     [data-wallpaper] .settings-drawer,
     [data-wallpaper] .glass-overlay,
-    [data-wallpaper] .layer-surface,
-    [data-wallpaper] .layer-surface-blur {
+    [data-wallpaper] .layer-surface {
       backdrop-filter: blur(${panelsBlur}px) saturate(1.2);
       -webkit-backdrop-filter: blur(${panelsBlur}px) saturate(1.2);
     }

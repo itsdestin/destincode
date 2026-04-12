@@ -496,13 +496,6 @@ html, body, #root {
   border-radius: var(--radius-xl);
   box-shadow: 0 8px 32px rgba(0, 0, 0, var(--shadow-strength, 0.15));
 }
-/* Default position so the absolute .layer-surface-blur child (see
-   OverlayPanel) has a positioned ancestor. Uses :where() to drop
-   specificity to 0 so Tailwind utilities like `fixed`/`absolute`
-   on the same element still win. */
-:where(.layer-surface) {
-  position: relative;
-}
 [data-wallpaper] .layer-surface {
   background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
 }
