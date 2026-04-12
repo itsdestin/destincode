@@ -15,6 +15,13 @@ const TICK_MS = 1000;
 // dispatch. Suppresses transient false positives during spinner-render gaps.
 const STABILITY_TICKS = 5;
 
+// If no Claude Code spinner has been observed in the buffer for this long
+// while the classifier is active (isThinking + no tool running/awaiting),
+// escalate to 'stuck'. The gate conditions already rule out "busy with a
+// tool" and "waiting on user", so sustained spinner-absence really does mean
+// the CLI is silent in a way we should surface.
+const NO_SPINNER_STUCK_MS = 20_000;
+
 interface HookArgs {
   /** isThinking from reducer — gates the whole classifier. */
   isThinking: boolean;
@@ -78,6 +85,9 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
     // Per-run spinner tracking for active vs. stalled detection.
     let previousSpinnerSeconds: number | null = null;
     let previousSpinnerAt: number = Date.now();
+    // When we last saw any spinner (any seconds value) in the buffer. Seeded
+    // to run-start so the 20s no-spinner timer begins counting immediately.
+    let lastSpinnerSeenAt: number = Date.now();
     // Debounce: count how many consecutive ticks have mapped to the same
     // non-ok state. Only dispatch once it sticks — transitions back to 'ok'
     // fire immediately so the banner clears fast when Claude resumes.
@@ -99,13 +109,25 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
 
       // Track spinner progression for the next tick.
       if (result.spinnerSeconds !== null) {
+        lastSpinnerSeenAt = Date.now();
         if (result.spinnerSeconds !== previousSpinnerSeconds) {
           previousSpinnerSeconds = result.spinnerSeconds;
           previousSpinnerAt = Date.now();
         }
       }
 
-      const mapped = bufferClassToAttention(result.class);
+      let mapped = bufferClassToAttention(result.class);
+
+      // Escalate sustained spinner-absence to 'stuck'. Gate already rules out
+      // running tools / awaiting approval, so a missing spinner for 20s means
+      // the CLI is genuinely quiet while we thought it was thinking.
+      if (
+        mapped === 'ok' &&
+        result.class === 'unknown' &&
+        Date.now() - lastSpinnerSeenAt >= NO_SPINNER_STUCK_MS
+      ) {
+        mapped = 'stuck';
+      }
 
       // Track how long the mapped state has held across ticks.
       if (mapped === pendingState) {
