@@ -68,4 +68,14 @@ sealed class TranscriptEvent {
         override val uuid: String = "",
         override val timestamp: Long = 0L,
     ) : TranscriptEvent()
+
+    /** Canonical compaction-complete signal: emitted when Claude Code writes
+     *  a {type:"user", isCompactSummary:true} entry. Covers both in-session
+     *  /compact (appends to same JSONL, so shrink cannot fire) and
+     *  resume-from-summary (first entry of a new JSONL). */
+    data class CompactSummary(
+        override val sessionId: String,
+        override val uuid: String,
+        override val timestamp: Long,
+    ) : TranscriptEvent()
 }

@@ -61,6 +61,10 @@ object TranscriptSerializer {
         return build("turn-complete", sessionId, uuid, timestamp, JSONObject())
     }
 
+    fun compactSummary(sessionId: String, uuid: String, timestamp: Long): JSONObject {
+        return build("compact-summary", sessionId, uuid, timestamp, JSONObject())
+    }
+
     /** streamingText is a custom event — not part of the desktop protocol. Keep flat. */
     fun streamingText(sessionId: String, text: String): JSONObject =
         JSONObject().apply {

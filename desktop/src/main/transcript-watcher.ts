@@ -53,6 +53,22 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
   if (parsed.type === 'user') {
     const content = message.content;
 
+    // Compact-summary entry: Claude Code writes this after /compact (appended
+    // to the same JSONL) or resume-from-summary (first entry of a new JSONL).
+    // isVisibleInTranscriptOnly=true means it's meant to stay hidden from UI —
+    // we suppress the user-message event and emit a dedicated signal that
+    // App.tsx uses to clear compactionPending and finalize the marker.
+    if (parsed.isCompactSummary) {
+      events.push({
+        type: 'compact-summary',
+        sessionId,
+        uuid,
+        timestamp,
+        data: {},
+      });
+      return events;
+    }
+
     // Skip system-injected content (skills, CLAUDE.md, system reminders).
     // These have isMeta: true and should never appear in the chat timeline.
     if (parsed.isMeta) {

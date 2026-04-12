@@ -206,6 +206,16 @@ class TranscriptWatcher(
         state: WatcherState,
     ) {
         state.accumulatedStreamingText = ""
+
+        // Compact-summary entry — canonical "compaction finished" signal.
+        // Written after /compact (appended to same JSONL) or resume-from-summary
+        // (first entry of new JSONL). isVisibleInTranscriptOnly=true: suppress
+        // from chat timeline and emit the dedicated signal instead.
+        if (obj.optBoolean("isCompactSummary", false)) {
+            _events.tryEmit(TranscriptEvent.CompactSummary(sessionId, uuid, timestamp))
+            return
+        }
+
         val message = obj.optJSONObject("message") ?: return
         val content = message.opt("content")
 
