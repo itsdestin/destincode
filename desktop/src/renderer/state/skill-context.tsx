@@ -102,12 +102,15 @@ export function SkillProvider({ children }: { children: ReactNode }) {
     await refreshInstalled();
   }, [refreshInstalled]);
 
-  // Compute drawer skills: favorites ∪ curated defaults, favorites sorted first
+  // Compute drawer skills: favorites ∪ curated defaults, favorites sorted first.
+  // Curated defaults hold PACKAGE ids (e.g. "destinclaude-encyclopedia") post-decomposition,
+  // so match skill.pluginName as well as skill.id — a single curated package surfaces all
+  // the skills it provides.
   const drawerSkills = useMemo(() => {
     const favSet = new Set(favorites);
-    const ids = new Set([...favorites, ...curatedDefaults]);
+    const favOrCurated = new Set([...favorites, ...curatedDefaults]);
     return installed
-      .filter(s => ids.has(s.id))
+      .filter(s => favOrCurated.has(s.id) || (s.pluginName && favOrCurated.has(s.pluginName)))
       .sort((a, b) => {
         const aFav = favSet.has(a.id) ? 0 : 1;
         const bFav = favSet.has(b.id) ? 0 : 1;

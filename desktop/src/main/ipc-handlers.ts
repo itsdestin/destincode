@@ -782,6 +782,22 @@ export function registerIpcHandlers(
     return skillProvider.getCuratedDefaults();
   });
 
+  // Decomposition v3 §9.9: surface integration info for the detail view badges
+  ipcMain.handle(IPC.SKILLS_GET_INTEGRATION_INFO, async (_event, id: string) => {
+    return skillProvider.getIntegrationInfo(id);
+  });
+
+  // Decomposition v3 §9.10: onboarding bulk-install curated packages
+  ipcMain.handle(IPC.SKILLS_INSTALL_MANY, async (_event, ids: string[]) => {
+    return skillProvider.installMany(ids);
+  });
+
+  // Decomposition v3 §9.10: onboarding picks an output style
+  ipcMain.handle(IPC.SKILLS_APPLY_OUTPUT_STYLE, async (_event, styleId: string) => {
+    skillProvider.applyOutputStyle(styleId);
+    return { ok: true };
+  });
+
   // Phase 3a: unified marketplace packages map — lets the renderer know which
   // versions are currently installed (for update detection) and the on-disk
   // component paths (for uninstall cascade).

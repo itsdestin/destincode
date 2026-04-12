@@ -21,6 +21,20 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
     // Callback to reload plugins in active Claude Code session after install/uninstall
     var onPluginsChanged: (() -> Unit)? = null
 
+    // Decomposition v3: regenerates ~/.claude/integration-context.md after
+    // install/uninstall so new `provides` capabilities take effect immediately.
+    // Injected after construction (same pattern as pluginInstaller).
+    var integrationReconciler: IntegrationReconciler? = null
+
+    // Decomposition v3 §9.2: reconciles plugin hooks-manifest.json into
+    // settings.json after install. Injected from SessionService (lives in
+    // the runtime package, not skills).
+    var hookReconciler: com.destin.code.runtime.HookReconciler? = null
+
+    // Decomposition v3 §9.3: reconciles plugin mcp-manifest.json into
+    // .claude.json mcpServers after install.
+    var mcpReconciler: McpReconciler? = null
+
     private fun nowIso(): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date())
 
@@ -227,6 +241,20 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
                 installedCache = null
                 // Notify active sessions so Claude Code discovers the new plugin
                 onPluginsChanged?.invoke()
+                // Decomposition v3: regenerate integration-context.md so new
+                // `provides` capabilities are visible on next session start
+                try { integrationReconciler?.reconcile() } catch (e: Exception) {
+                    android.util.Log.w("LocalSkillProvider", "integration reconcile after install failed", e)
+                }
+                // Also reconcile plugin hooks — the newly-installed package may
+                // declare required hooks that need to land in settings.json.
+                try { hookReconciler?.reconcile() } catch (e: Exception) {
+                    android.util.Log.w("LocalSkillProvider", "hook reconcile after install failed", e)
+                }
+                // MCP reconcile — packages declaring auto:true servers land in .claude.json
+                try { mcpReconciler?.reconcile() } catch (e: Exception) {
+                    android.util.Log.w("LocalSkillProvider", "MCP reconcile after install failed", e)
+                }
                 JSONObject().put("status", "installed").put("type", "plugin")
             }
             is PluginInstaller.InstallResult.AlreadyInstalled ->
@@ -285,6 +313,11 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             if (ok) {
                 // Notify active sessions so Claude Code drops the plugin
                 onPluginsChanged?.invoke()
+                // Decomposition v3: regenerate integration-context.md so the
+                // uninstalled package's capabilities fall back to whenUnavailable
+                try { integrationReconciler?.reconcile() } catch (e: Exception) {
+                    android.util.Log.w("LocalSkillProvider", "integration reconcile after uninstall failed", e)
+                }
             }
             return JSONObject().put("ok", ok).put("type", "plugin")
         }
@@ -292,6 +325,113 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         configStore.deletePromptSkill(id)
         installedCache = null
         return JSONObject().put("ok", true).put("type", "prompt")
+    }
+
+    /**
+     * Decomposition v3 §9.9: integration metadata for a skill id — used by
+     * the detail view to render "Integrates with X (installed)" badges.
+     * For installed plugins, reads plugin.json from disk. For non-installed,
+     * falls back to the marketplace index entry.
+     */
+    fun getIntegrationInfo(id: String): JSONObject {
+        val pluginsRoot = File(homeDir, ".claude/plugins")
+        // Build capability → providing-package map across all installed plugins
+        val providerMap = mutableMapOf<String, String>()
+        if (pluginsRoot.exists()) {
+            pluginsRoot.listFiles { f -> f.isDirectory }?.forEach { pluginDir ->
+                val manifest = readPluginManifest(pluginDir) ?: return@forEach
+                val provides = manifest.optJSONObject("provides") ?: return@forEach
+                val keys = provides.keys()
+                while (keys.hasNext()) {
+                    val cap = keys.next()
+                    providerMap.putIfAbsent(cap, manifest.optString("name"))
+                }
+            }
+        }
+
+        // Try installed plugin manifest first; fall back to marketplace entry
+        val manifest = readPluginManifest(File(pluginsRoot, id))
+        val rawProvides: JSONObject
+        val rawOptional: JSONObject
+        if (manifest != null) {
+            rawProvides = manifest.optJSONObject("provides") ?: JSONObject()
+            rawOptional = manifest.optJSONObject("optionalIntegrations") ?: JSONObject()
+        } else {
+            val entry = getMarketplaceEntry(id)
+            rawProvides = entry?.optJSONObject("provides") ?: JSONObject()
+            rawOptional = entry?.optJSONObject("optionalIntegrations") ?: JSONObject()
+        }
+
+        val providesArr = org.json.JSONArray()
+        val provKeys = rawProvides.keys()
+        while (provKeys.hasNext()) {
+            val cap = provKeys.next()
+            val spec = rawProvides.optJSONObject(cap) ?: continue
+            providesArr.put(JSONObject().apply {
+                put("capability", cap)
+                put("description", spec.optString("description"))
+                put("skill", spec.optString("skill"))
+            })
+        }
+
+        val optionalArr = org.json.JSONArray()
+        val optKeys = rawOptional.keys()
+        while (optKeys.hasNext()) {
+            val cap = optKeys.next()
+            val spec = rawOptional.optJSONObject(cap) ?: continue
+            val provider = providerMap[cap]
+            optionalArr.put(JSONObject().apply {
+                put("capability", cap)
+                put("installed", provider != null)
+                if (provider != null) put("providerPackageId", provider)
+                put("whenAvailable", spec.optString("whenAvailable"))
+                put("whenUnavailable", spec.optString("whenUnavailable"))
+            })
+        }
+
+        return JSONObject().put("provides", providesArr).put("optionalIntegrations", optionalArr)
+    }
+
+    // Decomposition v3 §9.10: onboarding bulk install. Sequential (not parallel) so
+    // the cache clone doesn't hit git lock contention. Survives individual failures
+    // so one broken package doesn't block the rest of the curated set.
+    suspend fun installMany(ids: List<String>): JSONArray {
+        val results = JSONArray()
+        for (id in ids) {
+            val entry = JSONObject().put("id", id)
+            try {
+                val r = install(id)
+                entry.put("status", r.optString("status", "ok"))
+                if (r.has("error")) entry.put("error", r.optString("error"))
+            } catch (e: Exception) {
+                entry.put("status", "failed")
+                entry.put("error", e.message ?: e.toString())
+            }
+            results.put(entry)
+        }
+        return results
+    }
+
+    // Decomposition v3 §9.10: write activeStyle to
+    // ~/.claude/destincode-config/destinclaude-output-styles.json so session-start
+    // picks it up on next launch. Onboarding calls this after style selection.
+    fun applyOutputStyle(styleId: String) {
+        val configDir = File(homeDir, ".claude/destincode-config")
+        configDir.mkdirs()
+        File(configDir, "destinclaude-output-styles.json")
+            .writeText(JSONObject().put("activeStyle", styleId).toString(2))
+    }
+
+    private fun readPluginManifest(pluginDir: File): JSONObject? {
+        val candidates = listOf(
+            File(pluginDir, ".claude-plugin/plugin.json"),
+            File(pluginDir, "plugin.json"),
+        )
+        for (f in candidates) {
+            if (!f.exists()) continue
+            try { return JSONObject(f.readText()) } catch (_: Exception) {}
+        }
+        return null
     }
 
     fun invalidateCache() { installedCache = null }

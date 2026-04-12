@@ -291,6 +291,28 @@ export class SkillConfigStore {
     return this.getPackages()[id] || null;
   }
 
+  /**
+   * Decomposition v3 §9.8: after cross-device sync, a package may be tracked
+   * in config but not yet present on disk (e.g., Android just pulled a
+   * desktop config). Return packages with status computed against actual
+   * disk presence — "installed" when the plugin directory exists, "pending"
+   * when only config references it. Lets the UI show an Install CTA for
+   * pending packages without lying about what's actually available.
+   */
+  getPackagesWithStatus(): Record<string, PackageInfo> {
+    const packages = this.getPackages();
+    const result: Record<string, PackageInfo> = {};
+    for (const [id, pkg] of Object.entries(packages)) {
+      const pluginComponent = pkg.components.find(c => c.type === 'plugin');
+      let onDisk = true;
+      if (pluginComponent) {
+        try { onDisk = fs.existsSync(pluginComponent.path); } catch { onDisk = false; }
+      }
+      result[id] = { ...pkg, status: onDisk ? 'installed' : 'pending' };
+    }
+    return result;
+  }
+
   recordPackageInstall(id: string, pkg: PackageInfo): void {
     const config = this.load();
     if (!config.packages) config.packages = {};

@@ -57,14 +57,41 @@ export function scanSkills(): SkillEntry[] {
 
   const pluginsDir = path.join(os.homedir(), '.claude', 'plugins');
 
-  // 1. Scan DestinClaude skills (direct children of destinclaude/skills/)
-  const dcSkillsDir = path.join(pluginsDir, 'destinclaude', 'skills');
+  // Decomposition v3 §9.6: generic plugin scan. Previously destinclaude was
+  // special-cased (scanned at ~/.claude/plugins/destinclaude/skills/) because
+  // it wasn't tracked in installed_plugins.json. After decomposition, every
+  // package lives under ~/.claude/plugins/<id>/ and is discovered the same way.
+  //
+  // We scan every directory in plugins/ that has a plugin.json — both
+  // marketplace-installed packages (no installed_plugins.json entry) and
+  // Claude-Code-installed plugins (tracked in section 2 below, may duplicate
+  // here; addSkill() dedupes by id).
   try {
-    const entries = fs.readdirSync(dcSkillsDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() || entry.isSymbolicLink()) {
-        addSkill(entry.name, entry.name, '', 'destinclaude');
-      }
+    const pluginEntries = fs.readdirSync(pluginsDir, { withFileTypes: true });
+    for (const pluginEntry of pluginEntries) {
+      if (!pluginEntry.isDirectory()) continue;
+      const pluginRoot = path.join(pluginsDir, pluginEntry.name);
+      const hasManifest =
+        fs.existsSync(path.join(pluginRoot, 'plugin.json')) ||
+        fs.existsSync(path.join(pluginRoot, '.claude-plugin', 'plugin.json'));
+      if (!hasManifest) continue;
+
+      const skillsDir = path.join(pluginRoot, 'skills');
+      try {
+        const skillEntries = fs.readdirSync(skillsDir, { withFileTypes: true });
+        for (const e of skillEntries) {
+          if (e.isDirectory() || e.isSymbolicLink()) {
+            // For destinclaude-prefixed packages, keep the bare skill id for
+            // backward compatibility with existing favorites/curated defaults
+            // that reference skill names like "journaling-assistant".
+            const skillId = pluginEntry.name.startsWith('destinclaude')
+              ? e.name
+              : `${pluginEntry.name}:${e.name}`;
+            const source = pluginEntry.name.startsWith('destinclaude') ? 'destinclaude' : 'plugin';
+            addSkill(skillId, e.name, '', source, pluginEntry.name);
+          }
+        }
+      } catch {}
     }
   } catch {}
 

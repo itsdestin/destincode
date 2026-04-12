@@ -40,6 +40,7 @@ const IPC = {
   SKILLS_GET_SHARE_LINK: 'skills:get-share-link',
   SKILLS_IMPORT_FROM_LINK: 'skills:import-from-link',
   SKILLS_GET_CURATED_DEFAULTS: 'skills:get-curated-defaults',
+  SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
   OPEN_CHANGELOG: 'shell:open-changelog',
   OPEN_EXTERNAL: 'shell:open-external',
   TERMINAL_READY: 'session:terminal-ready',
@@ -275,6 +276,13 @@ contextBridge.exposeInMainWorld('claude', {
     getShareLink: (id: string): Promise<string> => ipcRenderer.invoke(IPC.SKILLS_GET_SHARE_LINK, id),
     importFromLink: (encoded: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_IMPORT_FROM_LINK, encoded),
     getCuratedDefaults: (): Promise<string[]> => ipcRenderer.invoke(IPC.SKILLS_GET_CURATED_DEFAULTS),
+    // Decomposition v3 §9.9: integration badges for SkillDetail
+    getIntegrationInfo: (id: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_GET_INTEGRATION_INFO, id),
+    // Decomposition v3 §9.10: onboarding helpers
+    installMany: (ids: string[]): Promise<Array<{ id: string; status: string; error?: string }>> =>
+      ipcRenderer.invoke(IPC.SKILLS_INSTALL_MANY, ids),
+    applyOutputStyle: (styleId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(IPC.SKILLS_APPLY_OUTPUT_STYLE, styleId),
     // Phase 3b: update an already-installed plugin
     update: (id: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_UPDATE, id),
   },
