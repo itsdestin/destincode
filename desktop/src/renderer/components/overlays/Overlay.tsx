@@ -48,6 +48,32 @@ type OverlayPanelProps = {
   'aria-labelledby'?: string;
 };
 
+// Fix: Chrome's backdrop-filter doesn't sample correctly when applied to an
+// element that also carries a transform (e.g., `translate(-50%, -50%)` for
+// centered modals). The same workaround that landed for `.settings-drawer`
+// in 83ce87ca applies to every OverlayPanel consumer that uses centering
+// transforms. Split into:
+//   - Outer wrapper: positioning, sizing, layout, overflow, any caller
+//     transforms (all flowing through `className` and `style`).
+//   - Inner `.layer-surface`: absolutely-positioned sibling sandwiched
+//     *behind* the caller's children (z-index:0). It owns the glass
+//     treatment — backdrop-filter, border, border-radius, box-shadow,
+//     background-color — on an untransformed element so Chrome samples
+//     the backdrop correctly.
+// The inner is aria-hidden and non-interactive so it doesn't affect the
+// semantic tree or click handling. Caller children remain direct flex/grid
+// participants of the outer wrapper — no layout regressions.
+// The outer keeps caller-provided positioning/sizing/layout/overflow
+// classes. `.layer-surface` stays on the outer for border, border-radius,
+// shadow, and background-color — these are NOT affected by transforms.
+// The inner `.layer-surface-blur` sibling is the ONE piece the transform
+// bug affects: backdrop-filter. By hosting it on an absolutely-positioned,
+// untransformed child, Chrome samples the backdrop correctly even when
+// the outer carries a centering `translate(-50%, -50%)` or slide transform.
+// The inner is pointer-events:none and aria-hidden; children paint on top
+// via normal flow (positioned ancestor is the outer, so z-index:0 sits
+// beneath normal children without needing explicit stacking). See 83ce87ca
+// for the original per-component proof of this pattern.
 export const OverlayPanel = React.forwardRef<HTMLDivElement, OverlayPanelProps>(
   ({ layer, destructive, className = '', style, children, ...rest }, ref) => (
     <div
@@ -58,6 +84,11 @@ export const OverlayPanel = React.forwardRef<HTMLDivElement, OverlayPanelProps>(
       style={{ zIndex: CONTENT_Z[layer], ...style }}
       {...rest}
     >
+      <div
+        aria-hidden="true"
+        className="layer-surface-blur pointer-events-none"
+        style={{ position: 'absolute', inset: 0, zIndex: 0, borderRadius: 'inherit' }}
+      />
       {children}
     </div>
   ),

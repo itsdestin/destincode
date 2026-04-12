@@ -61,6 +61,10 @@ interface ThemeContextValue {
   /** Update a glass override for a non-user theme (community/builtin).
    *  Overrides persist per-slug so switching themes preserves the user's preference. */
   setGlassOverride: (slug: string, field: string, value: number) => void;
+  /** Re-read user themes from disk. Call after install/uninstall so the
+   *  context's userThemes list stays in sync (the active-theme fallback
+   *  effect then auto-resets to the default if the active slug vanished). */
+  reloadUserThemes: () => Promise<void>;
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
@@ -71,6 +75,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   showTimestamps: true, setShowTimestamps: () => {},
   allThemes: BUILTIN_THEMES, activeTheme: BUILTIN_THEMES[0], bgStyle: null, patternStyle: null,
   setGlassOverride: () => {},
+  reloadUserThemes: async () => {},
 });
 
 function getStored(key: string, fallback: string): string {
@@ -118,14 +123,21 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const allThemes = useMemo(() => allThemesInternal.filter(t => t.slug !== PREVIEW_SLUG), [allThemesInternal]);
   const activeThemeRaw = useMemo(() => allThemesInternal.find(t => t.slug === activeSlug) ?? BUILTIN_THEMES[0], [allThemesInternal, activeSlug]);
 
-  // Merge glass overrides into the active theme for non-user themes with
-  // a non-solid background. User themes write glass values directly to the
-  // theme file, so they don't need the override layer.
+  // Merge glass overrides into the active theme for non-user themes.
+  // User themes write glass values directly to the theme file. For solid
+  // themes the sliders are disabled (see ThemeScreen.tsx) so overrides
+  // wouldn't normally be written — but we keep the override values in
+  // place so if a user later upgrades a solid theme to a wallpaper theme
+  // their saved glass values survive. Fix: dropped the solid-background
+  // guard that used to discard overrides for non-image backgrounds.
   const activeTheme = useMemo(() => {
     const overrides = glassOverrides[activeSlug];
     if (!overrides || activeThemeRaw.source === 'user') return activeThemeRaw;
-    if (!activeThemeRaw.background || activeThemeRaw.background.type === 'solid') return activeThemeRaw;
-    return { ...activeThemeRaw, background: { ...activeThemeRaw.background, ...overrides } };
+    const base = activeThemeRaw.background ?? ({ type: 'solid', value: '' } as const);
+    return {
+      ...activeThemeRaw,
+      background: { ...base, ...overrides },
+    };
   }, [activeThemeRaw, activeSlug, glassOverrides]);
 
   // Fallback if active theme was uninstalled (slug no longer in allThemes).
@@ -140,32 +152,35 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }
   }, [allThemes, activeSlug, userThemesLoaded]);
 
-  // Load user themes from disk on mount
-  useEffect(() => {
-    const loadUserThemes = async () => {
-      try {
-        const claude = (window as any).claude;
-        if (!claude?.theme?.list) { setUserThemesLoaded(true); return; }
-        const slugs: string[] = await claude.theme.list();
-        const loaded: LoadedTheme[] = [];
-        for (const slug of slugs) {
-          try {
-            const raw = await claude.theme.readFile(slug);
-            const theme = validateTheme(JSON.parse(raw));
-            const source = (theme as any).source === 'community' ? 'community' as const : 'user' as const;
-            loaded.push(resolveAllAssetPaths({ ...theme, source }));
-          } catch (e) {
-            console.warn(`[ThemeProvider] Failed to load user theme "${slug}":`, e);
-          }
+  // Re-read all user themes from disk. Exposed so install/uninstall flows
+  // can refresh the list; the active-theme fallback effect (above) uses the
+  // refreshed list to reset to the default if the user just uninstalled the
+  // theme they had applied.
+  const reloadUserThemes = useCallback(async () => {
+    try {
+      const claude = (window as any).claude;
+      if (!claude?.theme?.list) { setUserThemesLoaded(true); return; }
+      const slugs: string[] = await claude.theme.list();
+      const loaded: LoadedTheme[] = [];
+      for (const slug of slugs) {
+        try {
+          const raw = await claude.theme.readFile(slug);
+          const theme = validateTheme(JSON.parse(raw));
+          const source = (theme as any).source === 'community' ? 'community' as const : 'user' as const;
+          loaded.push(resolveAllAssetPaths({ ...theme, source }));
+        } catch (e) {
+          console.warn(`[ThemeProvider] Failed to load user theme "${slug}":`, e);
         }
-        setUserThemes(loaded);
-        setUserThemesLoaded(true);
-      } catch {
-        setUserThemesLoaded(true); // Mark loaded even on error so fallback can run
       }
-    };
-    loadUserThemes();
+      setUserThemes(loaded);
+      setUserThemesLoaded(true);
+    } catch {
+      setUserThemesLoaded(true); // Mark loaded even on error so fallback can run
+    }
   }, []);
+
+  // Initial load on mount
+  useEffect(() => { reloadUserThemes(); }, [reloadUserThemes]);
 
   // Load appearance preferences from disk (source of truth) on mount
   useEffect(() => {
@@ -342,10 +357,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     reducedEffects, setReducedEffects,
     showTimestamps, setShowTimestamps,
     allThemes, activeTheme, bgStyle, patternStyle,
-    setGlassOverride,
+    setGlassOverride, reloadUserThemes,
   }), [activeSlug, setTheme, cycleTheme, cycleList, setCycleList, font,
        reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps,
-       allThemes, activeTheme, bgStyle, patternStyle, setGlassOverride]);
+       allThemes, activeTheme, bgStyle, patternStyle, setGlassOverride, reloadUserThemes]);
 
   return (
     <ThemeContext.Provider value={value}>

@@ -318,6 +318,57 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   const staleOverridesEl = document.getElementById('theme-engine-overrides');
   if (staleOverridesEl) staleOverridesEl.textContent = '';
 
+  // 7c. Wallpaper-only glass stylesheet.
+  //     Fix: Chromium does NOT repaint backdrop-filter: blur(var(--x)) when
+  //     --x changes, so sliders appear inert. Injecting the blur value as a
+  //     LITERAL in the rule declaration forces the declaration itself to
+  //     change on each apply → Chrome reruns the filter pipeline. Gated on
+  //     [data-wallpaper] so solid themes never pay the stacking-context +
+  //     GPU cost for zero visual benefit. See GLASSMORPHISM-BLUR-FIX-PLAN.md.
+  const glassCSSId = 'theme-glass';
+  let glassEl = document.getElementById(glassCSSId) as HTMLStyleElement | null;
+  if (!glassEl) {
+    glassEl = document.createElement('style');
+    glassEl.id = glassCSSId;
+    document.head.appendChild(glassEl);
+  }
+  const isWallpaper = bg?.type === 'image' && !!bg.value;
+  if (isWallpaper && !reducedEffects && panelsBlur > 0) {
+    const scrimBlur = Math.min(panelsBlur, 8);
+    const bubbleRule = bubbleBlur > 0 ? `
+    [data-wallpaper] .in-view .bg-inset,
+    [data-wallpaper] .in-view .bg-accent {
+      backdrop-filter: blur(${bubbleBlur}px) saturate(1.1);
+      -webkit-backdrop-filter: blur(${bubbleBlur}px) saturate(1.1);
+    }` : '';
+    glassEl.textContent = `
+    [data-wallpaper] .header-bar,
+    [data-wallpaper] .status-bar,
+    [data-wallpaper] .input-bar-container,
+    [data-wallpaper] .settings-drawer,
+    [data-wallpaper] .glass-overlay,
+    [data-wallpaper] .layer-surface,
+    [data-wallpaper] .layer-surface-blur {
+      backdrop-filter: blur(${panelsBlur}px) saturate(1.2);
+      -webkit-backdrop-filter: blur(${panelsBlur}px) saturate(1.2);
+    }
+    [data-wallpaper] .layer-scrim {
+      backdrop-filter: blur(${scrimBlur}px);
+      -webkit-backdrop-filter: blur(${scrimBlur}px);
+    }${bubbleRule}
+    [data-toggling] .header-bar,
+    [data-toggling] .status-bar,
+    [data-toggling] .input-bar-container {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+    `;
+  } else {
+    // Keep the tag in place but empty it — avoids layout thrash from
+    // repeatedly creating/removing the element across theme switches.
+    glassEl.textContent = '';
+  }
+
   // 8. Theme font — inject Google Font <link> and set --font-sans/--font-mono
   applyThemeFont(theme.font);
 
