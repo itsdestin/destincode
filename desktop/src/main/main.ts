@@ -228,6 +228,9 @@ function createWindow(firstRunManager?: FirstRunManager) {
   // still works. Without this, pinch gestures double-fire (compositor + our handler).
   mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
 
+  // Always open maximized — width/height above are the restore-size fallback
+  mainWindow.maximize();
+
   if (!app.isPackaged) {
     mainWindow.loadURL(DEV_SERVER_URL);
   } else {
