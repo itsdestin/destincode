@@ -94,6 +94,29 @@ export default function TerminalView({ sessionId, visible }: Props) {
       // Falls back to DOM renderer if WebGL unavailable
     }
 
+    // Ctrl+C copies the selection (if any) instead of sending SIGINT;
+    // Ctrl+C with no selection falls through to xterm's default so users
+    // can still interrupt a runaway process. Ctrl+V reads the system
+    // clipboard and pastes into the PTY. Matches VS Code / Windows
+    // Terminal conventions. Shift+Ctrl variants are left alone.
+    terminal.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.shiftKey || e.altKey) return true;
+      const key = e.key.toLowerCase();
+      if (key === 'c' && terminal.hasSelection()) {
+        navigator.clipboard.writeText(terminal.getSelection()).catch(() => {});
+        return false;
+      }
+      if (key === 'v') {
+        navigator.clipboard.readText().then((text) => {
+          if (text) terminal.paste(text);
+        }).catch(() => {});
+        return false;
+      }
+      return true;
+    });
+
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     registerTerminal(sessionId, terminal);
