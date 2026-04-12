@@ -298,6 +298,7 @@ class ManagedSession(
                         is TranscriptEvent.ToolResult -> TranscriptSerializer.toolResult(event.sessionId, event.uuid, event.timestamp, event.toolUseId, event.result, event.isError)
                         is TranscriptEvent.TurnComplete -> TranscriptSerializer.turnComplete(event.sessionId, event.uuid, event.timestamp)
                         is TranscriptEvent.StreamingText -> TranscriptSerializer.streamingText(event.sessionId, event.text)
+                        is TranscriptEvent.CompactSummary -> TranscriptSerializer.compactSummary(event.sessionId, event.uuid, event.timestamp)
                     }
                     server.broadcast(JSONObject().apply {
                         put("type", "transcript:event")

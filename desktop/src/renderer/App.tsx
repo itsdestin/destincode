@@ -465,29 +465,31 @@ function AppInner() {
             uuid: event.uuid,
             timestamp: event.timestamp,
           });
-          // Resume-from-summary fallback: resume creates a NEW JSONL file so
-          // transcript-shrink never fires on it. The summary arrives as the
-          // first turn-complete after COMPACTION_PENDING was set — use that
-          // as the completion signal instead.
-          {
-            const sessionState = chatStateMapRef.current.get(event.sessionId);
-            if (sessionState?.compactionPending) {
-              const contextTokens = statusData.sessionStatsMap[event.sessionId]?.contextTokens ?? null;
-              dispatch({
-                type: 'COMPACTION_COMPLETE',
-                sessionId: event.sessionId,
-                markerId: `compact-done-${Date.now()}`,
-                afterContextTokens: contextTokens,
-              });
-            }
+          break;
+        case 'compact-summary': {
+          // Canonical compaction-complete signal — fired by the transcript
+          // watcher when Claude Code writes an isCompactSummary entry. Works
+          // for both in-session /compact (appends to same JSONL, so shrink
+          // never fires) and resume-from-summary (first entry of new JSONL).
+          const sessionState = chatStateMapRef.current.get(event.sessionId);
+          if (sessionState?.compactionPending) {
+            const contextTokens = statusData.sessionStatsMap[event.sessionId]?.contextTokens ?? null;
+            dispatch({
+              type: 'COMPACTION_COMPLETE',
+              sessionId: event.sessionId,
+              markerId: `compact-done-${Date.now()}`,
+              afterContextTokens: contextTokens,
+            });
           }
           break;
+        }
       }
     });
 
-    // /compact completion (primary path): Claude Code rewrites the JSONL with
-    // the compacted summary; we see the file shrink and finalize the marker.
-    // For typed /compact (not resume-from-summary), this is the reliable signal.
+    // Backup completion path: file-shrink detection. Primary detection now
+    // runs through the 'compact-summary' transcript event above (canonical
+    // isCompactSummary field). Shrink is still wired so we recover correctly
+    // if Claude Code's future behavior changes to rewrite/truncate the JSONL.
     const shrinkHandler = (window.claude.on as any).transcriptShrink?.((payload: { sessionId: string }) => {
       if (!payload?.sessionId) return;
       const sessionState = chatStateMapRef.current.get(payload.sessionId);

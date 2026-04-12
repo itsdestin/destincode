@@ -50,7 +50,11 @@ export type TranscriptEventType =
   | 'tool-use'
   | 'tool-result'
   | 'thinking'
-  | 'turn-complete';
+  | 'turn-complete'
+  // Emitted when Claude Code writes a {type:"user", isCompactSummary:true}
+  // entry — the canonical "compaction finished" signal. In-session /compact
+  // appends to the SAME file (no shrink), so we can't use file-size heuristics.
+  | 'compact-summary';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;

@@ -200,16 +200,18 @@ export function menuToButtons(menu: ParsedMenu): PromptButton[] {
   const UP = '\u001b[A';
   const DOWN = '\u001b[B';
 
-  return menu.options.map((label, index) => {
-    const offset = index - menu.selectedIndex;
-    let input: string;
-    if (offset < 0) {
-      input = UP.repeat(-offset) + '\r';
-    } else if (offset > 0) {
-      input = DOWN.repeat(offset) + '\r';
-    } else {
-      input = '\r';
-    }
-    return { label, input };
-  });
+  // Anchor-then-navigate: always overshoot UP to snap Ink's cursor to the top
+  // of the menu (Ink clamps arrow-up at index 0), THEN press DOWN to reach the
+  // target. This makes the keystroke sequence independent of cursor state at
+  // click time — previously we computed a relative offset from the parsed
+  // selectedIndex, which went stale the moment the user arrowed in the
+  // terminal view or Ink re-rendered (same menu.id, so usePromptDetector
+  // doesn't re-emit SHOW_PROMPT). Stale offset was the root cause of
+  // "clicked option N, got option M" bugs on the Resume Session menu.
+  const anchorUps = UP.repeat(menu.options.length + 2);
+
+  return menu.options.map((label, index) => ({
+    label,
+    input: anchorUps + DOWN.repeat(index) + '\r',
+  }));
 }
