@@ -3,6 +3,7 @@ import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import { AttachIcon, CompassIcon } from './Icons';
 import BrailleBurst from './BrailleBurst';
+import FlowingKeywordsText from './FlowingKeywords';
 // Central slash-command router. All /-prefixed messages flow through here
 // so interception is consistent between typed input and drawer selection.
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
@@ -54,6 +55,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Mirror content rendered behind the transparent textarea so ultrathink /
+  // ultraplan / plan / brainstorm can flow with a gradient while the user types.
+  // We translateY the inner div to keep its position in sync with the
+  // textarea's scrollTop (overflow:hidden + transform is more reliable across
+  // browsers than setting scrollTop on a hidden-overflow element).
+  const mirrorContentRef = useRef<HTMLDivElement>(null);
   const dispatch = useChatDispatch();
 
   // Per-session draft store — keeps input text and attachments separate
@@ -243,6 +250,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     el.style.height = `${clamped}px`;
     // Only show scrollbar when content actually overflows the max height
     el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    // Keep the flowing-keyword mirror aligned with the textarea's scroll
+    if (mirrorContentRef.current) {
+      mirrorContentRef.current.style.transform = `translateY(${-el.scrollTop}px)`;
+    }
   }, []);
 
   useEffect(() => {
@@ -397,10 +408,32 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               <CompassIcon className="w-5 h-5" />
             </BrailleBurst>
           )}
+          <div className="relative flex-1">
+            {/* Mirror layer: renders the same text behind the transparent
+                textarea, with keyword spans that animate via CSS. aria-hidden
+                because the textarea still owns the accessible value. */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 overflow-hidden"
+            >
+              <div
+                ref={mirrorContentRef}
+                className="text-sm text-fg leading-snug whitespace-pre-wrap break-words"
+              >
+                <FlowingKeywordsText text={text} />
+                {/* Zero-width char keeps a trailing newline visible in the mirror */}
+                {'\u200B'}
+              </div>
+            </div>
           <textarea
             ref={inputRef}
             value={text}
             rows={1}
+            onScroll={(e) => {
+              if (mirrorContentRef.current) {
+                mirrorContentRef.current.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`;
+              }
+            }}
             onChange={(e) => {
               const val = e.target.value;
               setText(val);
@@ -439,8 +472,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             onPaste={handlePaste}
             placeholder={disabled ? 'Waiting for approval...' : 'Message Claude...'}
             disabled={disabled}
-            className="flex-1 bg-transparent text-sm text-fg placeholder-fg-muted outline-none disabled:opacity-50 resize-none overflow-y-hidden leading-snug"
+            // Text color is transparent so the mirror div behind it shows
+            // through (with animated keyword spans). caret-color keeps the
+            // cursor visible. Selection highlight still renders from the
+            // browser. Placeholder uses its own color token so it's unaffected.
+            style={{ caretColor: 'var(--fg)' }}
+            className="relative w-full bg-transparent text-sm text-transparent placeholder-fg-muted outline-none disabled:opacity-50 resize-none overflow-y-hidden leading-snug"
           />
+          </div>
           <button
             type="submit"
             disabled={disabled || (!minimal && !text.trim() && attachments.length === 0)}
