@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
@@ -17,6 +17,96 @@ const MODELS: { id: ModelAlias; label: string }[] = [
   { id: 'sonnet', label: 'Sonnet' },
   { id: 'opus[1m]', label: 'Opus 1M' },
 ];
+
+const MODEL_INFO: Record<ModelAlias, { tagline: string; pros: string[]; cons: string[] }> = {
+  haiku: {
+    tagline: 'Fast & lightweight',
+    pros: ['Fastest responses', 'Great for quick tasks', 'Lighter on capacity'],
+    cons: ['Less capable on complex reasoning'],
+  },
+  sonnet: {
+    tagline: 'Balanced everyday model',
+    pros: ['Strong reasoning & quality', 'Fast enough for most work', 'Versatile across tasks'],
+    cons: ['Not as deep as Opus for complex analysis'],
+  },
+  'opus[1m]': {
+    tagline: 'Most powerful — 1M context',
+    pros: ['Deepest reasoning & analysis', '1 million token context window', 'Best for complex multi-step tasks'],
+    cons: ['Slowest responses', 'Uses more plan capacity'],
+  },
+};
+
+// Fix: use portal so tooltip renders above all overflow:auto scroll containers
+export function ModelInfoTooltip({ model }: { model: ModelAlias }) {
+  const info = MODEL_INFO[model];
+  const [visible, setVisible] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const ref = useRef<HTMLSpanElement>(null);
+
+  const handleEnter = () => {
+    if (ref.current) {
+      const rect = ref.current.getBoundingClientRect();
+      setPos({ x: rect.left + rect.width / 2, y: rect.top });
+    }
+    setVisible(true);
+  };
+
+  return (
+    <span
+      ref={ref}
+      className="inline-flex items-center ml-1 cursor-default"
+      onMouseEnter={handleEnter}
+      onMouseLeave={() => setVisible(false)}
+      // Stop click from bubbling so hovering the icon doesn't trigger the outer model button twice
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* ⓘ icon */}
+      <svg
+        className="w-3 h-3 opacity-40 hover:opacity-75 transition-opacity shrink-0"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={2}
+        aria-hidden
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 11v5" />
+        <circle cx="12" cy="8" r="0.5" fill="currentColor" />
+      </svg>
+
+      {/* Tooltip rendered to document.body so overflow containers don't clip it */}
+      {visible && createPortal(
+        <div
+          style={{ left: pos.x, top: pos.y - 10, transform: 'translate(-50%, -100%)' }}
+          className="fixed z-[9999] w-52 pointer-events-none"
+        >
+          <div className="bg-panel border border-edge rounded-lg shadow-lg p-3 text-left">
+            <p className="text-xs font-semibold text-fg mb-2">{info.tagline}</p>
+            <div className="space-y-1">
+              {info.pros.map((pro) => (
+                <div key={pro} className="flex items-start gap-1.5 text-[11px] text-fg-2 leading-snug">
+                  <span className="text-green-500 shrink-0 font-bold mt-px">✓</span>
+                  <span>{pro}</span>
+                </div>
+              ))}
+            </div>
+            {info.cons.length > 0 && (
+              <div className="space-y-1 mt-2 pt-2 border-t border-edge-dim">
+                {info.cons.map((con) => (
+                  <div key={con} className="flex items-start gap-1.5 text-[11px] text-fg-muted leading-snug">
+                    <span className="shrink-0 mt-px">·</span>
+                    <span>{con}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </span>
+  );
+}
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'max', 'auto'] as const;
 export type EffortLevel = typeof EFFORT_LEVELS[number];
@@ -119,13 +209,14 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                   <button
                     key={m.id}
                     onClick={() => handleModelSelect(m.id)}
-                    className={`flex-1 py-2 px-3 text-sm rounded transition-colors ${
+                    className={`flex-1 py-2 px-3 text-sm rounded transition-colors flex items-center justify-center ${
                       currentModel === m.id
                         ? 'bg-accent text-on-accent font-medium'
                         : 'bg-inset text-fg-2 hover:bg-well'
                     }`}
                   >
                     {m.label}
+                    <ModelInfoTooltip model={m.id} />
                   </button>
                 ))}
               </div>

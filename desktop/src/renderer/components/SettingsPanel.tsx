@@ -10,6 +10,7 @@ import { useTheme } from '../state/theme-context';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
+import { ModelInfoTooltip } from './ModelPickerPopup';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -1244,13 +1245,14 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                       <button
                         key={m}
                         onClick={() => onDefaultsChange({ model: m })}
-                        className={`flex-1 px-1.5 py-1.5 rounded-sm text-[11px] transition-colors ${
+                        className={`flex-1 px-1.5 py-1.5 rounded-sm text-[11px] transition-colors flex items-center justify-center ${
                           defaults.model === m
                             ? 'bg-accent text-on-accent font-medium'
                             : 'bg-inset text-fg-dim hover:bg-edge'
                         }`}
                       >
                         {MODEL_LABELS[m] || m}
+                        <ModelInfoTooltip model={m} />
                       </button>
                     ))}
                   </div>

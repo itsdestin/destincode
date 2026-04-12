@@ -4,6 +4,7 @@ import { SessionStatusColor } from './StatusDot';
 import { isAndroid } from '../platform';
 import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
+import { ModelInfoTooltip } from './ModelPickerPopup';
 
 /* ── Narrow viewport hook — mirrors Android's single-session behavior ── */
 const NARROW_BREAKPOINT = 640;
@@ -602,13 +603,14 @@ export default function SessionStrip({
                     <button
                       key={m}
                       onClick={() => setNewModel(m)}
-                      className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                      className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors flex items-center justify-center ${
                         newModel === m
                           ? 'bg-accent text-on-accent font-medium'
                           : 'bg-inset text-fg-dim hover:bg-edge'
                       }`}
                     >
                       {MODEL_LABELS[m] || m}
+                      <ModelInfoTooltip model={m} />
                     </button>
                   ))}
                 </div>
