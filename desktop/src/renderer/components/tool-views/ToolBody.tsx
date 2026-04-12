@@ -199,20 +199,19 @@ function WriteView({ tool }: { tool: ToolCallState }) {
 // Shared renderer for shell-like tools (Bash, MCP PowerShell, etc.). Shows the
 // command prominently, routes output through CR-strip + collapse, and promotes
 // error state to a pill at the top.
-function ShellView({ tool, commandField, descriptionField }: {
+function ShellView({ tool, commandField }: {
   tool: ToolCallState;
   commandField: string;
-  descriptionField?: string;
 }) {
   const cmd = (tool.input[commandField] as string) || '';
-  const desc = descriptionField ? (tool.input[descriptionField] as string | undefined) : undefined;
   const bg = tool.input.run_in_background as boolean | undefined;
   const response = tool.response ? stripCarriageReturns(tool.response) : '';
   const failed = tool.status === 'failed';
 
+  // Description is already shown as the collapsed-header label (see
+  // friendlyToolDisplay in ToolCard.tsx); don't repeat it in the expanded body.
   return (
     <div className="space-y-2">
-      {desc && <div className="text-xs text-fg-2">{desc}</div>}
       <div className="flex items-start gap-2">
         <pre className="flex-1 text-xs font-mono bg-canvas border border-edge rounded-sm px-2 py-1 overflow-auto whitespace-pre-wrap break-all text-fg">
           {cmd || <span className="text-fg-muted italic">(no command)</span>}
@@ -590,7 +589,7 @@ export default function ToolBody({ tool }: { tool: ToolCallState }) {
       case 'Write':
         return <WriteView tool={tool} />;
       case 'Bash':
-        return <ShellView tool={tool} commandField="command" descriptionField="description" />;
+        return <ShellView tool={tool} commandField="command" />;
       case 'TodoWrite':
         return <TodoWriteView tool={tool} />;
       case 'TaskCreate':
