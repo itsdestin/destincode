@@ -8,15 +8,11 @@ import {
 } from '../state/attention-classifier';
 import type { AttentionState } from '../state/chat-types';
 
-// How long to treat 'unknown' as normal silence before escalating to 'stuck'.
-const UNKNOWN_GRACE_MS = 90_000;
-
 // How often the classifier re-reads the buffer while active.
 const TICK_MS = 1000;
 
 // A non-ok classification must hold for this many consecutive ticks before we
-// dispatch. Suppresses transient false positives between tool calls when the
-// spinner hasn't rendered yet but tool output still sits in the buffer tail.
+// dispatch. Suppresses transient false positives during spinner-render gaps.
 const STABILITY_TICKS = 5;
 
 interface HookArgs {
@@ -32,27 +28,16 @@ interface HookArgs {
   currentAttentionState: AttentionState;
 }
 
-function bufferClassToAttention(
-  cls: BufferClass,
-  runStartedAt: number,
-): AttentionState {
+function bufferClassToAttention(cls: BufferClass): AttentionState {
+  // Classifier now only distinguishes spinner states. Anything else ('unknown')
+  // maps to 'ok' — we don't trust content-based heuristics to flag attention.
+  // See attention-classifier.ts header for why.
   switch (cls) {
-    case 'thinking-active':
-      return 'ok';
     case 'thinking-stalled':
       return 'stuck';
-    case 'awaiting-input':
-      return 'awaiting-input';
-    case 'shell-idle':
-      return 'shell-idle';
-    case 'error':
-      return 'error';
-    case 'unknown': {
-      // Grace window — brief silence is normal (typing pause, network hop).
-      // Only call it 'stuck' after sustained unknown-ness.
-      const elapsed = Date.now() - runStartedAt;
-      return elapsed > UNKNOWN_GRACE_MS ? 'stuck' : 'ok';
-    }
+    case 'thinking-active':
+    case 'unknown':
+      return 'ok';
   }
 }
 
@@ -90,11 +75,9 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
       return;
     }
 
-    // Per-run state: when the spinner counter last advanced, and when the
-    // run itself started (used for the 'unknown' grace window).
-    const runStartedAt = Date.now();
+    // Per-run spinner tracking for active vs. stalled detection.
     let previousSpinnerSeconds: number | null = null;
-    let previousSpinnerAt: number = runStartedAt;
+    let previousSpinnerAt: number = Date.now();
     // Debounce: count how many consecutive ticks have mapped to the same
     // non-ok state. Only dispatch once it sticks — transitions back to 'ok'
     // fire immediately so the banner clears fast when Claude resumes.
@@ -122,7 +105,7 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
         }
       }
 
-      const mapped = bufferClassToAttention(result.class, runStartedAt);
+      const mapped = bufferClassToAttention(result.class);
 
       // Track how long the mapped state has held across ticks.
       if (mapped === pendingState) {

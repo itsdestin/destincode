@@ -55,36 +55,27 @@ describe('classifyBuffer', () => {
     expect(result.class).toBe('thinking-active');
   });
 
-  it('y/n prompt in tail → awaiting-input', () => {
+  // Content-based classifications (awaiting-input, shell-idle, error) were
+  // removed — they fired on tool output during active turns. We now default
+  // to 'unknown' (upstream maps to 'ok') whenever no spinner is visible.
+  it('y/n prompt without spinner → unknown (no false banner)', () => {
     expect(
       classifyBuffer(ctx(['Do you want to continue? (y/n)'])).class,
-    ).toBe('awaiting-input');
+    ).toBe('unknown');
   });
 
-  it('[y/n] bracketed prompt → awaiting-input', () => {
-    expect(classifyBuffer(ctx(['Proceed [y/N]'])).class).toBe('awaiting-input');
+  it('shell-prompt-looking line without spinner → unknown', () => {
+    expect(classifyBuffer(ctx(['user@host ~ $ '])).class).toBe('unknown');
+    expect(classifyBuffer(ctx(['~/project $'])).class).toBe('unknown');
   });
 
-  it('numbered choice menu (1./2.) → awaiting-input', () => {
-    expect(
-      classifyBuffer(
-        ctx(['Choose an option:', '  1. First', '  2. Second', '  3. Third']),
-      ).class,
-    ).toBe('awaiting-input');
-  });
-
-  it('shell prompt at tail with no spinner → shell-idle', () => {
-    expect(classifyBuffer(ctx(['user@host ~ $ '])).class).toBe('shell-idle');
-    expect(classifyBuffer(ctx(['~/project $'])).class).toBe('shell-idle');
-  });
-
-  it('error line near tail → error', () => {
+  it('error-looking line without spinner → unknown (tool output often shows these)', () => {
     expect(
       classifyBuffer(ctx(['something', 'Error: ENOENT: file not found', ''])).class,
-    ).toBe('error');
+    ).toBe('unknown');
     expect(
       classifyBuffer(ctx(['Traceback: at main.py:42'])).class,
-    ).toBe('error');
+    ).toBe('unknown');
   });
 
   it('plain noise → unknown', () => {
