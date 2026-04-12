@@ -10,6 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { isAndroid as checkIsAndroid } from '../platform';
 
 // --- Types ---
 
@@ -123,11 +124,11 @@ export default function SyncSetupWizard({ initialType, existingCounts, onComplet
 
   // --- Step: Type Picker ---
   if (step === 'type') {
-    const isAndroid = typeof location !== 'undefined' && location.protocol === 'file:';
     const types: { type: BackendType; desc: string }[] = [
       { type: 'drive', desc: 'Stores your data in a Google Drive folder. Works on any device.' },
       { type: 'github', desc: 'Stores your data in a private GitHub repository. Includes full version history.' },
-      ...(!isAndroid ? [{ type: 'icloud' as BackendType, desc: 'Stores your data in iCloud Drive. Best for Mac and iPhone users.' }] : []),
+      // iCloud not available on Android — no iCloud Drive support
+      ...(!checkIsAndroid() ? [{ type: 'icloud' as BackendType, desc: 'Stores your data in iCloud Drive. Best for Mac and iPhone users.' }] : []),
     ];
 
     return (
