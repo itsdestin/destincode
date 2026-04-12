@@ -200,7 +200,7 @@ export class SessionManager extends EventEmitter {
    * and (b) be ready for input at the prompt. Firing immediately after an
    * install races with both and the reload silently no-ops.
    */
-  broadcastReloadPlugins(delayMs: number = 1000): void {
+  broadcastReloadPlugins(delayMs: number = 1500): void {
     setTimeout(() => {
       for (const s of this.listSessions()) {
         if (s.status === 'active') this.sendInput(s.id, '/reload-plugins\r');
