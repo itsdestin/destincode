@@ -168,41 +168,20 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // into separate PTY inputs (each \n would act as Enter).
       const sanitized = combined.replace(/[\r\n]+/g, ' ');
 
-      // Claude Code's TextInput has a length-based paste heuristic: any single
-      // stdin read >800 chars triggers paste accumulation mode, showing
-      // "[Pasted N lines]" and requiring manual Enter. To avoid this, chunk
-      // long messages so each PTY write stays under the threshold. Delays
-      // between chunks prevent the OS/ConPTY from batching multiple writes
-      // into a single read that would exceed 800 chars.
-      const CHUNK_SIZE = 700; // Well under the 800-char paste threshold
-      if (sanitized.length <= CHUNK_SIZE) {
-        // Short message — no paste detection risk, send text then Enter
-        window.claude.session.sendInput(sessionId, sanitized);
-        setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 50);
-      } else {
-        // Long message — send in chunks to avoid paste detection
-        // Split into chunks, snapping boundaries to avoid splitting UTF-16
-        // surrogate pairs (emoji, some CJK) which would send malformed chars
-        const chunks: string[] = [];
-        for (let i = 0; i < sanitized.length; ) {
-          let end = Math.min(i + CHUNK_SIZE, sanitized.length);
-          if (end < sanitized.length) {
-            const code = sanitized.charCodeAt(end - 1);
-            if (code >= 0xD800 && code <= 0xDBFF) end--; // Don't split a surrogate pair
-          }
-          chunks.push(sanitized.slice(i, end));
-          i = end;
-        }
-        chunks.forEach((chunk, idx) => {
-          setTimeout(() => {
-            window.claude.session.sendInput(sessionId, chunk);
-            // After the last chunk, send Enter to submit
-            if (idx === chunks.length - 1) {
-              setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 100);
-            }
-          }, idx * 100); // 100ms between chunks prevents OS batching
-        });
-      }
+      // Wrap in bracketed paste escapes (\x1b[200~ … \x1b[201~). Claude Code's
+      // Ink parser natively handles these: the start marker flips it into
+      // IN_PASTE mode, the end marker commits the paste to its cache
+      // synchronously (no timer involvement). Without brackets, Ink falls
+      // back to a length/timing heuristic with a 500ms PASTE_TIMEOUT silence
+      // window — our previous chunking approach kept resetting that timer
+      // and our Enter landed inside the window, so messages wouldn't submit.
+      // Bracketed paste is the protocol Ink is designed to handle: one atomic
+      // write, then Enter after a tiny gap so it isn't coalesced with the
+      // end marker on the same stdin read.
+      const PASTE_START = '\x1b[200~';
+      const PASTE_END = '\x1b[201~';
+      window.claude.session.sendInput(sessionId, PASTE_START + sanitized + PASTE_END);
+      setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 20);
     },
     [sessionId, disabled, dispatch],
   );
