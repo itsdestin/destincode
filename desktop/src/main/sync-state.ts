@@ -55,6 +55,12 @@ export interface BackendInstance {
   label: string;                       // User-visible name, e.g. "Personal Drive"
   syncEnabled: boolean;                // true = auto-sync; false = storage only
   config: Record<string, string>;      // Type-specific connection details
+  /**
+   * Set when the user explicitly picks "Start fresh" during onboarding despite
+   * detecting existing backup data. Prevents the restore probe from nagging on
+   * every launch. Absence means "never prompted yet" — presence means "user chose local".
+   */
+  freshStartConfirmedEpoch?: number;
 }
 
 /**
