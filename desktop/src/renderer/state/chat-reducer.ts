@@ -66,27 +66,55 @@ function injectPlanSegment(
   if (typeof plan !== 'string' || !plan) return assistantTurns;
   const turn = assistantTurns.get(currentTurnId);
   if (!turn) return assistantTurns;
-  if (turn.segments.some((s) => s.type === 'plan' && s.toolUseId === toolUseId)) {
-    return assistantTurns;
-  }
-  const planSeg: AssistantTurnSegment = {
-    type: 'plan',
-    messageId: nextMessageId(),
-    toolUseId,
-    content: plan,
-    planFilePath: typeof toolInput.planFilePath === 'string' ? toolInput.planFilePath : undefined,
-    allowedPrompts: toolInput.allowedPrompts,
-  };
+  const planFilePath = typeof toolInput.planFilePath === 'string' ? toolInput.planFilePath : undefined;
+  const existingIdx = turn.segments.findIndex(
+    (s) => s.type === 'plan' && s.toolUseId === toolUseId,
+  );
   let newSegments: AssistantTurnSegment[];
-  if (beforeGroupId) {
-    const idx = turn.segments.findIndex(
-      (s) => s.type === 'tool-group' && s.groupId === beforeGroupId,
-    );
-    newSegments = idx >= 0
-      ? [...turn.segments.slice(0, idx), planSeg, ...turn.segments.slice(idx)]
-      : [...turn.segments, planSeg];
+  if (existingIdx >= 0) {
+    // Update in place: dedup must prevent duplicate bubbles, NOT freeze stale
+    // content. If an earlier tool_use emit carried partial/empty input and a
+    // later emit has the full plan, the bubble needs to reflect the latest.
+    // Preserve the original messageId so React keeps the same bubble identity.
+    const existing = turn.segments[existingIdx];
+    if (existing.type !== 'plan') return assistantTurns;
+    if (
+      existing.content === plan &&
+      existing.planFilePath === planFilePath &&
+      existing.allowedPrompts === toolInput.allowedPrompts
+    ) {
+      return assistantTurns;
+    }
+    const updatedSeg: AssistantTurnSegment = {
+      ...existing,
+      content: plan,
+      planFilePath,
+      allowedPrompts: toolInput.allowedPrompts,
+    };
+    newSegments = [
+      ...turn.segments.slice(0, existingIdx),
+      updatedSeg,
+      ...turn.segments.slice(existingIdx + 1),
+    ];
   } else {
-    newSegments = [...turn.segments, planSeg];
+    const planSeg: AssistantTurnSegment = {
+      type: 'plan',
+      messageId: nextMessageId(),
+      toolUseId,
+      content: plan,
+      planFilePath,
+      allowedPrompts: toolInput.allowedPrompts,
+    };
+    if (beforeGroupId) {
+      const idx = turn.segments.findIndex(
+        (s) => s.type === 'tool-group' && s.groupId === beforeGroupId,
+      );
+      newSegments = idx >= 0
+        ? [...turn.segments.slice(0, idx), planSeg, ...turn.segments.slice(idx)]
+        : [...turn.segments, planSeg];
+    } else {
+      newSegments = [...turn.segments, planSeg];
+    }
   }
   const updated = new Map(assistantTurns);
   updated.set(currentTurnId, { ...turn, segments: newSegments });
