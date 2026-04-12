@@ -222,95 +222,89 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
           </div>
         )}
 
-        {/* Visual effects toggle — lives above Glass sliders so it's clear
-            Reduce Effects is what hides them. Enabling Reduce Effects forces
-            blur to 0 at the theme-engine level, so the sliders would be inert;
-            we hide the whole Glass block in that case (below) to avoid the
-            "why doesn't the slider do anything?" confusion. */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-fg-2">Reduce Visual Effects</p>
-            <p className="text-[10px] text-fg-faint">Disables particles, glassmorphism, and animations</p>
-          </div>
-          <button
-            onClick={() => setReducedEffects(!reducedEffects)}
-            className={`w-9 h-5 rounded-full transition-colors relative ${reducedEffects ? 'bg-accent' : 'bg-edge'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${reducedEffects ? 'left-[18px]' : 'left-0.5'}`} />
-          </button>
-        </div>
-
-        {/* Glass sliders — hidden entirely when Reduce Effects is on (blur is
-            forced to 0 there, so sliders would be inert and misleading).
-            For solid/gradient themes the sliders render disabled with a hint,
-            since glass only renders under [data-wallpaper]. */}
-        {!reducedEffects && (() => {
-          const isWallpaper = activeTheme?.background?.type === 'image';
-          const glassDisabled = !isWallpaper;
+        {/* Glass + Reduce Effects — only meaningful for wallpaper themes.
+            Solid/gradient themes render opaque chrome (no glass at all), so
+            both the sliders AND the Reduce Effects toggle are hidden on them.
+            When Reduce Effects is on for a wallpaper theme, blur is forced
+            to 0 at the engine level, so we hide the two blur sliders but
+            keep the opacity sliders (opacity still works). */}
+        {activeTheme?.background?.type === 'image' && (() => {
           const setField = (field: string, v: number) => {
             activeTheme.source === 'user' ? updateBackground(field, v) : setGlassOverride(activeTheme.slug, field, v);
           };
           return (
-            <div>
-              <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Glass</p>
-              {glassDisabled && (
-                <p className="text-[10px] text-fg-muted mb-2">Requires a wallpaper theme</p>
-              )}
-              <div className={`space-y-3 ${glassDisabled ? 'opacity-50' : ''}`}>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-fg-2 shrink-0">Panel Blur</span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="range" min="0" max="30" step="1"
-                      disabled={glassDisabled}
-                      value={activeTheme.background?.['panels-blur'] ?? 24}
-                      onChange={e => setField('panels-blur', parseFloat(e.target.value))}
-                      className="flex-1 accent-accent disabled:cursor-not-allowed"
-                    />
-                    <span className="text-[10px] text-fg-muted w-7 text-right">{activeTheme.background?.['panels-blur'] ?? 24}</span>
-                  </div>
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-fg-2">Reduce Visual Effects</p>
+                  <p className="text-[10px] text-fg-faint">Disables particles, blur, and animations</p>
                 </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-fg-2 shrink-0">Panel Opacity</span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="range" min="0.3" max="1" step="0.02"
-                      disabled={glassDisabled}
-                      value={activeTheme.background?.['panels-opacity'] ?? 0.88}
-                      onChange={e => setField('panels-opacity', parseFloat(e.target.value))}
-                      className="flex-1 accent-accent disabled:cursor-not-allowed"
-                    />
-                    <span className="text-[10px] text-fg-muted w-7 text-right">{Math.round((activeTheme.background?.['panels-opacity'] ?? 0.88) * 100)}%</span>
+                <button
+                  onClick={() => setReducedEffects(!reducedEffects)}
+                  className={`w-9 h-5 rounded-full transition-colors relative ${reducedEffects ? 'bg-accent' : 'bg-edge'}`}
+                >
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${reducedEffects ? 'left-[18px]' : 'left-0.5'}`} />
+                </button>
+              </div>
+
+              <div>
+                <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Glass</p>
+                <div className="space-y-3">
+                  {!reducedEffects && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-fg-2 shrink-0">Panel Blur</span>
+                      <div className="flex items-center gap-2 flex-1">
+                        <input
+                          type="range" min="0" max="30" step="1"
+                          value={activeTheme.background?.['panels-blur'] ?? 24}
+                          onChange={e => setField('panels-blur', parseFloat(e.target.value))}
+                          className="flex-1 accent-accent"
+                        />
+                        <span className="text-[10px] text-fg-muted w-7 text-right">{activeTheme.background?.['panels-blur'] ?? 24}</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-fg-2 shrink-0">Panel Opacity</span>
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        type="range" min="0.3" max="1" step="0.02"
+                        value={activeTheme.background?.['panels-opacity'] ?? 0.88}
+                        onChange={e => setField('panels-opacity', parseFloat(e.target.value))}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-[10px] text-fg-muted w-7 text-right">{Math.round((activeTheme.background?.['panels-opacity'] ?? 0.88) * 100)}%</span>
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-fg-2 shrink-0">Bubble Blur</span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="range" min="0" max="24" step="1"
-                      disabled={glassDisabled}
-                      value={activeTheme.background?.['bubble-blur'] ?? 16}
-                      onChange={e => setField('bubble-blur', parseFloat(e.target.value))}
-                      className="flex-1 accent-accent disabled:cursor-not-allowed"
-                    />
-                    <span className="text-[10px] text-fg-muted w-7 text-right">{activeTheme.background?.['bubble-blur'] ?? 16}</span>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-fg-2 shrink-0">Bubble Opacity</span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="range" min="0.3" max="1" step="0.02"
-                      disabled={glassDisabled}
-                      value={activeTheme.background?.['bubble-opacity'] ?? 0.88}
-                      onChange={e => setField('bubble-opacity', parseFloat(e.target.value))}
-                      className="flex-1 accent-accent disabled:cursor-not-allowed"
-                    />
-                    <span className="text-[10px] text-fg-muted w-7 text-right">{Math.round((activeTheme.background?.['bubble-opacity'] ?? 0.88) * 100)}%</span>
+                  {!reducedEffects && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-fg-2 shrink-0">Bubble Blur</span>
+                      <div className="flex items-center gap-2 flex-1">
+                        <input
+                          type="range" min="0" max="24" step="1"
+                          value={activeTheme.background?.['bubble-blur'] ?? 16}
+                          onChange={e => setField('bubble-blur', parseFloat(e.target.value))}
+                          className="flex-1 accent-accent"
+                        />
+                        <span className="text-[10px] text-fg-muted w-7 text-right">{activeTheme.background?.['bubble-blur'] ?? 16}</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-fg-2 shrink-0">Bubble Opacity</span>
+                    <div className="flex items-center gap-2 flex-1">
+                      <input
+                        type="range" min="0.3" max="1" step="0.02"
+                        value={activeTheme.background?.['bubble-opacity'] ?? 0.88}
+                        onChange={e => setField('bubble-opacity', parseFloat(e.target.value))}
+                        className="flex-1 accent-accent"
+                      />
+                      <span className="text-[10px] text-fg-muted w-7 text-right">{Math.round((activeTheme.background?.['bubble-opacity'] ?? 0.88) * 100)}%</span>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            </>
           );
         })()}
 
