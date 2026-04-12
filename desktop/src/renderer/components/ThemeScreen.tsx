@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useTheme } from '../state/theme-context';
 import { computeOnAccent } from '../themes/theme-validator';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
@@ -222,12 +222,29 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
           </div>
         )}
 
-        {/* Glass sliders — always shown, but disabled for themes without an
-            image background. Glass (blur + translucency) only renders under
-            [data-wallpaper], so sliders are meaningless on solid/gradient
-            themes. We still render them disabled with a hint so users know
-            why moving them does nothing, rather than silently hiding. */}
-        {(() => {
+        {/* Visual effects toggle — lives above Glass sliders so it's clear
+            Reduce Effects is what hides them. Enabling Reduce Effects forces
+            blur to 0 at the theme-engine level, so the sliders would be inert;
+            we hide the whole Glass block in that case (below) to avoid the
+            "why doesn't the slider do anything?" confusion. */}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-fg-2">Reduce Visual Effects</p>
+            <p className="text-[10px] text-fg-faint">Disables particles, glassmorphism, and animations</p>
+          </div>
+          <button
+            onClick={() => setReducedEffects(!reducedEffects)}
+            className={`w-9 h-5 rounded-full transition-colors relative ${reducedEffects ? 'bg-accent' : 'bg-edge'}`}
+          >
+            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${reducedEffects ? 'left-[18px]' : 'left-0.5'}`} />
+          </button>
+        </div>
+
+        {/* Glass sliders — hidden entirely when Reduce Effects is on (blur is
+            forced to 0 there, so sliders would be inert and misleading).
+            For solid/gradient themes the sliders render disabled with a hint,
+            since glass only renders under [data-wallpaper]. */}
+        {!reducedEffects && (() => {
           const isWallpaper = activeTheme?.background?.type === 'image';
           const glassDisabled = !isWallpaper;
           const setField = (field: string, v: number) => {
@@ -297,9 +314,6 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
           );
         })()}
 
-        {/* TEMP diagnostic — glassmorphism blur inertness. Remove once fixed. */}
-        <GlassDiagnostic reducedEffects={reducedEffects} activeSlug={activeSlug} />
-
         {/* Browse marketplace */}
         {onOpenMarketplace && (
           <button
@@ -312,20 +326,6 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
             Browse Theme Marketplace
           </button>
         )}
-
-        {/* Visual effects toggle */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-fg-2">Reduce Visual Effects</p>
-            <p className="text-[10px] text-fg-faint">Disables particles, glassmorphism, and animations</p>
-          </div>
-          <button
-            onClick={() => setReducedEffects(!reducedEffects)}
-            className={`w-9 h-5 rounded-full transition-colors relative ${reducedEffects ? 'bg-accent' : 'bg-edge'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${reducedEffects ? 'left-[18px]' : 'left-0.5'}`} />
-          </button>
-        </div>
 
         {/* Message timestamps toggle */}
         <div className="flex items-center justify-between">
@@ -352,65 +352,6 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
           ✦ Build New Theme with Claude
         </button>
       </div>
-    </div>
-  );
-}
-
-// TEMP diagnostic block — surfaces runtime glass state in the UI so we can
-// diagnose the "blur does nothing" bug without DevTools. Remove after fix.
-function GlassDiagnostic({ reducedEffects, activeSlug }: { reducedEffects: boolean; activeSlug: string }) {
-  const [snapshot, setSnapshot] = useState<Record<string, string>>({});
-  const refresh = useCallback(() => {
-    const html = document.documentElement;
-    const glassEl = document.getElementById('theme-glass');
-    const headerEl = document.querySelector('.header-bar');
-    const layerEl = document.querySelector('.layer-surface');
-    const headerBF = headerEl ? getComputedStyle(headerEl).backdropFilter || getComputedStyle(headerEl).getPropertyValue('-webkit-backdrop-filter') : '(no .header-bar in DOM)';
-    const layerBF = layerEl ? getComputedStyle(layerEl).backdropFilter || getComputedStyle(layerEl).getPropertyValue('-webkit-backdrop-filter') : '(no .layer-surface in DOM)';
-    let overrides = '';
-    try { overrides = localStorage.getItem('destincode-glass-overrides') || '(empty)'; } catch { overrides = '(read failed)'; }
-    const panelsBlurVar = getComputedStyle(html).getPropertyValue('--panels-blur').trim();
-    const panelsOpacityVar = getComputedStyle(html).getPropertyValue('--panels-opacity').trim();
-    setSnapshot({
-      'data-wallpaper': html.hasAttribute('data-wallpaper') ? 'yes' : 'NO',
-      'data-toggling': html.hasAttribute('data-toggling') ? 'YES (blur suppressed!)' : 'no',
-      'reducedEffects': reducedEffects ? 'YES (blur forced to 0!)' : 'no',
-      '#theme-glass length': glassEl ? String(glassEl.textContent?.length ?? 0) : '(tag missing)',
-      '#theme-glass has blur rule': glassEl?.textContent?.includes('backdrop-filter: blur(') ? 'yes' : 'NO',
-      '--panels-blur': panelsBlurVar || '(unset)',
-      '--panels-opacity': panelsOpacityVar || '(unset)',
-      '.header-bar backdrop-filter': headerBF,
-      '.layer-surface backdrop-filter': layerBF,
-      'glass-overrides (localStorage)': overrides.length > 120 ? overrides.slice(0, 120) + '…' : overrides,
-    });
-  }, [reducedEffects]);
-  useEffect(() => { refresh(); }, [refresh, activeSlug]);
-
-  const resetOverrides = () => {
-    try { localStorage.removeItem('destincode-glass-overrides'); } catch {}
-    window.location.reload();
-  };
-
-  return (
-    <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 space-y-1.5">
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] font-bold text-amber-500 uppercase tracking-wider">Glass Diagnostic</p>
-        <button onClick={refresh} className="text-[10px] text-fg-muted hover:text-fg-2 underline">refresh</button>
-      </div>
-      <div className="space-y-0.5 font-mono text-[10px] text-fg-2">
-        {Object.entries(snapshot).map(([k, v]) => (
-          <div key={k} className="flex gap-2 break-all">
-            <span className="text-fg-muted shrink-0">{k}:</span>
-            <span className={v.includes('YES (') || v === 'NO' ? 'text-amber-400' : ''}>{v}</span>
-          </div>
-        ))}
-      </div>
-      <button
-        onClick={resetOverrides}
-        className="w-full mt-2 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-400 text-[10px] font-medium hover:bg-amber-500/20"
-      >
-        Reset glass overrides & reload
-      </button>
     </div>
   );
 }
