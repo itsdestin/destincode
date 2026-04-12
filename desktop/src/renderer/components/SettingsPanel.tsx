@@ -9,6 +9,7 @@ import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './Sett
 import { useTheme } from '../state/theme-context';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -1162,6 +1163,11 @@ interface DefaultsButtonProps {
 function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
+  // Close-session prompt suppression — reads/writes localStorage directly since
+  // this is a UI preference, not a session default backed by sessionDefaults.
+  const [closePromptDisabled, setClosePromptDisabled] = useState(
+    () => localStorage.getItem(CLOSE_PROMPT_SUPPRESS_KEY) === '1',
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -1282,6 +1288,33 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                       style={{ backgroundColor: defaults.geminiEnabled ? '#4285F4' : 'var(--inset)' }}
                     >
                       <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${defaults.geminiEnabled ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
+                    </button>
+                  </div>
+                </section>
+
+                {/* Close-session prompt — toggle off to skip the tag-before-closing
+                    popup and destroy sessions immediately. Mirrors the "Don't show
+                    again" checkbox inside the prompt itself. */}
+                <section>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Close-session prompt</h3>
+                      <p className="text-[10px] text-fg-faint mt-0.5">Show tag options when closing a session</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const next = !closePromptDisabled;
+                        setClosePromptDisabled(next);
+                        if (next) {
+                          localStorage.setItem(CLOSE_PROMPT_SUPPRESS_KEY, '1');
+                        } else {
+                          localStorage.removeItem(CLOSE_PROMPT_SUPPRESS_KEY);
+                        }
+                      }}
+                      className="w-8 h-4.5 rounded-full relative transition-colors shrink-0"
+                      style={{ backgroundColor: closePromptDisabled ? 'var(--inset)' : 'var(--accent)' }}
+                    >
+                      <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${closePromptDisabled ? 'left-0.5' : 'left-[calc(100%-16px)]'}`} />
                     </button>
                   </div>
                 </section>
