@@ -219,8 +219,15 @@ function createWindow(firstRunManager?: FirstRunManager) {
       event.preventDefault();
     }
   });
-  // Security: deny all window.open() calls from renderer
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' as const }));
+  // Security: deny window.open() from renderer, but route safe http(s)/mailto
+  // links (e.g. target="_blank" anchors in chat markdown) to the OS browser so
+  // they are actually clickable. Without this, chat view links silently do nothing.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^(https?:|mailto:)/i.test(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' as const };
+  });
 
   // Disable Chromium's built-in visual pinch-to-zoom so our custom zoom handler
   // (Ctrl+Wheel / trackpad pinch → IPC → setZoomLevel) is the sole zoom path.
