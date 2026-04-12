@@ -38,13 +38,15 @@ interface StatusData {
   syncWarnings: string | null;
 }
 
-const MODELS = ['haiku', 'sonnet', 'opus[1m]'] as const;
+const MODELS = ['haiku', 'sonnet', 'opus[1m]', 'gemini-1.5-pro', 'gemini-1.5-flash'] as const;
 type ModelAlias = typeof MODELS[number];
 
 const MODEL_DISPLAY: Record<ModelAlias, { label: string; color: string; bg: string; border: string }> = {
   sonnet:      { label: 'Sonnet 4.6', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
   'opus[1m]':  { label: 'Opus 4.6',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
   haiku:       { label: 'Haiku 4.5',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
+  'gemini-1.5-pro':   { label: 'Gemini Pro',  color: '#4285F4', bg: 'rgba(66,133,244,0.15)',  border: 'rgba(66,133,244,0.25)' },
+  'gemini-1.5-flash': { label: 'Gemini Flash', color: '#7B68EE', bg: 'rgba(123,104,238,0.15)', border: 'rgba(123,104,238,0.25)' },
 };
 
 const PERMISSION_DISPLAY: Record<PermissionMode, { label: string; shortLabel: string; color: string; bg: string; border: string }> = {

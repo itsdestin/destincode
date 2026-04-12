@@ -35,6 +35,8 @@ const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
   'opus[1m]': 'Opus 1M',
   haiku: 'Haiku',
+  'gemini-1.5-pro': 'Gemini Pro',
+  'gemini-1.5-flash': 'Gemini Flash',
 };
 
 interface Props {
@@ -595,8 +597,8 @@ export default function SessionStrip({
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
                 <FolderSwitcher value={newCwd} onChange={setNewCwd} />
               </div>
-              {/* Model selector — grayed out when Gemini is selected */}
-              <div style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
+              {/* Model selector */}
+              <div>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
                 <div className="flex gap-1">
                   {MODELS.map((m) => (
@@ -615,8 +617,8 @@ export default function SessionStrip({
                   ))}
                 </div>
               </div>
-              {/* Skip Permissions — grayed out when Gemini is selected */}
-              <div className="flex items-center justify-between" style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
+              {/* Skip Permissions */}
+              <div className="flex items-center justify-between">
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
                 <button
                   onClick={() => setDangerous(!dangerous)}
@@ -625,8 +627,8 @@ export default function SessionStrip({
                   <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${dangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
                 </button>
               </div>
-              {dangerous && !isGemini && (
-                <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+              {dangerous && (
+                <p className="text-[10px] text-[#DD4444]">{isGemini ? 'Gemini' : 'Claude'} will execute tools without asking for approval.</p>
               )}
               {/* Gemini CLI toggle — only visible when enabled in settings */}
               {geminiEnabled && (
@@ -636,8 +638,9 @@ export default function SessionStrip({
                     onClick={() => {
                       const next = !isGemini;
                       setIsGemini(next);
-                      // Gemini sessions don't support skip-permissions
-                      if (next) setDangerous(false);
+                      // Default to Gemini Pro when switching to Gemini provider
+                      if (next) setNewModel('gemini-1.5-pro');
+                      else setNewModel(defaultModel || 'sonnet');
                     }}
                     className="w-8 h-4.5 rounded-full relative transition-colors"
                     style={{ backgroundColor: isGemini ? '#4285F4' : 'var(--inset)' }}

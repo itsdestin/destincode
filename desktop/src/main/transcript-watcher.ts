@@ -236,7 +236,8 @@ function extractToolResultContent(content: any): string {
 
 interface WatchedSession {
   desktopSessionId: string;
-  claudeSessionId: string;
+  providerSessionId: string;
+  provider: 'claude' | 'gemini';
   cwd: string;
   jsonlPath: string;
   offset: number;
@@ -247,35 +248,40 @@ interface WatchedSession {
 }
 
 /**
- * Watches Claude Code JSONL transcript files and emits structured events.
- *
- * @param claudeConfigDir  Override for `~/.claude` — used in tests to
- *                         point at a temp directory instead of the real home.
+ * Watches provider JSONL transcript files and emits structured events.
  */
 export class TranscriptWatcher extends EventEmitter {
   private sessions = new Map<string, WatchedSession>();
   private claudeConfigDir: string;
+  private geminiConfigDir: string;
 
-  constructor(claudeConfigDir?: string) {
+  constructor(claudeConfigDir?: string, geminiConfigDir?: string) {
     super();
     this.claudeConfigDir = claudeConfigDir || path.join(os.homedir(), '.claude', 'projects');
+    this.geminiConfigDir = geminiConfigDir || path.join(os.homedir(), '.gemini', 'transcripts');
   }
 
   /**
    * Start watching the transcript for a session.
    */
-  startWatching(desktopSessionId: string, claudeSessionId: string, cwd: string): void {
+  startWatching(desktopSessionId: string, providerSessionId: string, cwd: string, provider: 'claude' | 'gemini' = 'claude'): void {
     // Don't double-watch
     if (this.sessions.has(desktopSessionId)) {
       this.stopWatching(desktopSessionId);
     }
 
-    const slug = cwdToProjectSlug(cwd);
-    const jsonlPath = path.join(this.claudeConfigDir, slug, `${claudeSessionId}.jsonl`);
+    let jsonlPath: string;
+    if (provider === 'gemini') {
+      jsonlPath = path.join(this.geminiConfigDir, `${providerSessionId}.jsonl`);
+    } else {
+      const slug = cwdToProjectSlug(cwd);
+      jsonlPath = path.join(this.claudeConfigDir, slug, `${providerSessionId}.jsonl`);
+    }
 
     const session: WatchedSession = {
       desktopSessionId,
-      claudeSessionId,
+      providerSessionId,
+      provider,
       cwd,
       jsonlPath,
       offset: 0,

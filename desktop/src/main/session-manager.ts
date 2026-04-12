@@ -44,20 +44,17 @@ export class SessionManager extends EventEmitter {
     // Resolve CWD: fall back to home directory if empty or nonexistent
     const resolvedCwd = (opts.cwd && fs.existsSync(opts.cwd)) ? opts.cwd : os.homedir();
 
-    // Build CLI args — Gemini CLI has no equivalent for Claude's flags
+    // Build CLI args
     const args: string[] = [];
-    if (provider === 'claude') {
-      if (opts.skipPermissions) {
-        args.push('--dangerously-skip-permissions');
-      }
-      if (opts.resumeSessionId) {
-        args.push('--resume', opts.resumeSessionId);
-      }
-      if (opts.model) {
-        args.push('--model', opts.model);
-      }
+    if (opts.skipPermissions) {
+      args.push('--dangerously-skip-permissions');
     }
-    // Gemini CLI launches with no special args for now
+    if (provider === 'claude' && opts.resumeSessionId) {
+      args.push('--resume', opts.resumeSessionId);
+    }
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
 
     // Spawn a separate Node.js process for node-pty so it uses Node's
     // native binary instead of Electron's (which requires electron-rebuild).
@@ -150,9 +147,9 @@ export class SessionManager extends EventEmitter {
         cwd: resolvedCwd,
         cols: opts.cols || 80,
         rows: opts.rows || 24,
-        // Claude-specific: session ID + pipe name for hook event correlation
-        sessionId: provider === 'claude' ? id : '',
-        pipeName: provider === 'claude' ? this.pipeName : '',
+        // Session ID + pipe name for hook event correlation
+        sessionId: id,
+        pipeName: this.pipeName,
       });
     } catch {
       // The 'error' handler above will clean up the session asynchronously.

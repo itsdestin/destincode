@@ -844,13 +844,18 @@ export function registerIpcHandlers(
   // that aren't associated with a running session.
   try {
     const claudeDir = path.join(os.homedir(), '.claude');
-    const entries = fs.readdirSync(claudeDir);
-    for (const entry of entries) {
-      // Prune orphaned context + session-stats files from crashed sessions
-      if (entry.startsWith('.context-') || entry.startsWith('.session-stats-')) {
-        fs.unlink(path.join(claudeDir, entry), () => {});
+    const geminiDir = path.join(os.homedir(), '.gemini');
+    
+    [claudeDir, geminiDir].forEach(dir => {
+      if (!fs.existsSync(dir)) return;
+      const entries = fs.readdirSync(dir);
+      for (const entry of entries) {
+        // Prune orphaned context + session-stats files from crashed sessions
+        if (entry.startsWith('.context-') || entry.startsWith('.session-stats-')) {
+          fs.unlink(path.join(dir, entry), () => {});
+        }
       }
-    }
+    });
   } catch { /* directory doesn't exist or unreadable — fine */ }
 
   // --- Status data poller ---
@@ -1181,7 +1186,7 @@ export function registerIpcHandlers(
       // Start watching the transcript file for this session
       const sessionInfo = sessionManager.getSession(desktopId);
       if (sessionInfo) {
-        transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd);
+        transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd, sessionInfo.provider);
       }
     });
   }
