@@ -125,6 +125,18 @@ export function ChevronIcon({ className = 'w-3.5 h-3.5', expanded = false }: Ico
   );
 }
 
+/** Fast mode icon — stylized bolt in the line-art style (not the filled ⚡ emoji) */
+export function FastIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+      <path
+        d="M13 3 L5 13.5 L11 13.5 L10 21 L19 9.5 L13 9.5 L13 3 Z"
+        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** App mascot variant — tall oval eyes, O mouth, arms raised out (surprised/whoa) */
 export function ShockedAppIcon({ className = 'w-6 h-6' }: IconProps) {
   return (

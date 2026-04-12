@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { FastIcon } from './Icons';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -123,6 +124,9 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   const [fast, setFast] = useState(false);
   const [effort, setEffort] = useState<EffortLevel>('auto');
   const [loaded, setLoaded] = useState(false);
+  // Enabling fast mode is a paid action (API billing, not Pro/Max subscription) —
+  // gate behind an explicit confirmation popup so it can't be flipped accidentally.
+  const [fastConfirmOpen, setFastConfirmOpen] = useState(false);
 
   // Load persisted state when opening. We don't live-sync with external changes
   // (Claude Code doesn't broadcast these); the popup is the source of truth
@@ -153,13 +157,23 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
     }
   };
 
-  const updateFast = (v: boolean) => {
+  const applyFast = (v: boolean) => {
     setFast(v);
     const api = (window.claude as any).modes;
     api?.set({ fast: v }).catch(() => {});
     // Forward to Claude Code via PTY — command affects the running session
     if (sessionId) {
       window.claude.session.sendInput(sessionId, `/fast ${v ? 'on' : 'off'}\r`);
+    }
+  };
+
+  const handleFastToggle = () => {
+    if (fast) {
+      // Turning OFF is always safe — no confirmation needed
+      applyFast(false);
+    } else {
+      // Turning ON triggers billing — require explicit confirmation
+      setFastConfirmOpen(true);
     }
   };
 
@@ -259,12 +273,12 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
               <div className="flex items-start justify-between gap-3 p-2 rounded hover:bg-inset">
                 <div className="flex-1">
                   <div className="text-sm text-fg flex items-center gap-1.5">
-                    <span>⚡</span> Fast mode
+                    <FastIcon className="w-3.5 h-3.5 text-yellow-500" /> Fast mode
                   </div>
                   <div className="text-xs text-fg-muted">Same model, faster output streaming</div>
                 </div>
                 <button
-                  onClick={() => updateFast(!fast)}
+                  onClick={handleFastToggle}
                   className={`shrink-0 w-8 h-4 rounded-full transition-colors relative ${fast ? 'bg-green-600' : 'bg-inset border border-edge-dim'}`}
                   role="switch"
                   aria-checked={fast}
@@ -276,6 +290,70 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
           </div>
         )}
       </OverlayPanel>
+
+      {/* Fast mode confirmation — L3 (critical/destructive) because enabling
+         Fast mode bills per-token on top of any Pro/Max subscription. */}
+      {fastConfirmOpen && (
+        <>
+          <Scrim layer={3} onClick={() => setFastConfirmOpen(false)} />
+          <OverlayPanel
+            layer={3}
+            destructive
+            role="alertdialog"
+            aria-modal={true}
+            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-sm w-[calc(100%-2rem)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 w-9 h-9 rounded-full bg-[#FF9800]/15 border border-[#FF9800]/40 flex items-center justify-center text-[#FF9800]">
+                  <FastIcon className="w-5 h-5" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-sm font-semibold text-fg">Enable Fast mode?</h3>
+                  <p className="text-xs text-fg-muted mt-0.5">This costs extra money on top of your plan.</p>
+                </div>
+              </div>
+
+              <div className="rounded border border-[#FF9800]/40 bg-[#FF9800]/10 p-3 space-y-1.5">
+                <div className="text-xs font-semibold text-[#FF9800] uppercase tracking-wider">⚠ Billed Per Token</div>
+                <div className="text-xs text-fg">
+                  Fast mode routes requests through a priority tier with per-token billing:
+                </div>
+                <div className="text-xs text-fg font-mono">
+                  <span className="text-fg-2">Input:</span> $30 / million tokens<br />
+                  <span className="text-fg-2">Output:</span> $150 / million tokens
+                </div>
+                <div className="text-[11px] text-fg-muted pt-1 border-t border-[#FF9800]/25">
+                  Your Claude Pro/Max subscription does not cover these charges. They bill directly against API credits on your Anthropic account.
+                </div>
+              </div>
+
+              <div className="text-xs text-fg-muted">
+                You get the same model with faster streaming output. Turn off anytime from the status bar or this menu.
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  onClick={() => setFastConfirmOpen(false)}
+                  className="px-3 py-1.5 text-xs rounded bg-inset text-fg-2 hover:bg-well transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    applyFast(true);
+                    setFastConfirmOpen(false);
+                  }}
+                  className="px-3 py-1.5 text-xs rounded bg-[#FF9800] text-black font-medium hover:brightness-110 transition-all"
+                >
+                  Enable & Accept Charges
+                </button>
+              </div>
+            </div>
+          </OverlayPanel>
+        </>
+      )}
     </>,
     document.body,
   );

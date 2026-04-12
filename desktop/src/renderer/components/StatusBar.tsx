@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTheme } from '../state/theme-context';
 import type { PermissionMode } from '../../shared/types';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { FastIcon } from './Icons';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -41,9 +42,9 @@ const MODELS = ['haiku', 'sonnet', 'opus[1m]'] as const;
 type ModelAlias = typeof MODELS[number];
 
 const MODEL_DISPLAY: Record<ModelAlias, { label: string; color: string; bg: string; border: string }> = {
-  sonnet:      { label: 'Sonnet',   color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
-  'opus[1m]':  { label: 'Opus 1M',  color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
-  haiku:       { label: 'Haiku',    color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
+  sonnet:      { label: 'Sonnet 4.6', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
+  'opus[1m]':  { label: 'Opus 4.6',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
+  haiku:       { label: 'Haiku 4.5',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
 };
 
 const PERMISSION_DISPLAY: Record<PermissionMode, { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
@@ -502,19 +503,22 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
 
   return (
     <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-[10px] text-fg-muted border-t border-edge-dim">
-      {/* Model selector chip — always first */}
+      {/* Combined model + effort pill — clicking opens the full picker (same as /effort).
+         Shift+Space still cycles models via the keyboard shortcut in App.tsx. */}
       {model && (
         <button
-          onClick={onCycleModel}
-          className="px-1.5 py-0.5 rounded-sm border cursor-pointer hover:brightness-125 transition-colors"
+          onClick={onOpenModelPicker}
+          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm border cursor-pointer hover:brightness-125 transition-colors"
           style={{
             backgroundColor: MODEL_DISPLAY[model].bg,
             color: MODEL_DISPLAY[model].color,
             borderColor: MODEL_DISPLAY[model].border,
           }}
-          title={`Model: ${MODEL_DISPLAY[model].label} (click to cycle · type /model for picker)`}
+          title="Click to change model and effort (Shift+Space cycles model)"
         >
-          {MODEL_DISPLAY[model].label}
+          <span>{MODEL_DISPLAY[model].label}</span>
+          <span className="opacity-40">|</span>
+          <span className="capitalize">{effort || 'auto'} Effort</span>
         </button>
       )}
 
@@ -522,21 +526,11 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
       {fast && (
         <button
           onClick={onOpenModelPicker}
-          className="px-1.5 py-0.5 rounded-sm border border-yellow-500/40 bg-yellow-500/15 text-yellow-500 cursor-pointer hover:brightness-125 transition-colors"
+          className="flex items-center px-1.5 py-0.5 rounded-sm border border-yellow-500/40 bg-yellow-500/15 text-yellow-500 cursor-pointer hover:brightness-125 transition-colors"
           title="Fast mode on — click to configure"
+          aria-label="Fast mode on"
         >
-          ⚡
-        </button>
-      )}
-
-      {/* Effort chip — only rendered when non-default (non-auto). Short letter label. */}
-      {effort && effort !== 'auto' && (
-        <button
-          onClick={onOpenModelPicker}
-          className="px-1.5 py-0.5 rounded-sm border border-edge-dim bg-inset text-fg-2 cursor-pointer hover:bg-well transition-colors"
-          title={`Effort: ${effort} — click to configure`}
-        >
-          {effort === 'max' ? 'Max' : effort.charAt(0).toUpperCase()}
+          <FastIcon className="w-3 h-3" />
         </button>
       )}
 
