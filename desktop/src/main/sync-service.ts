@@ -411,7 +411,11 @@ export class SyncService extends EventEmitter {
 
   /** Append a structured log entry to backup.log. */
   private logBackup(level: string, msg: string, op?: string, extra?: Record<string, any>): void {
-    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    // Local time (matches sync.sh hook's `date '+%Y-%m-%d %H:%M:%S'` format)
+    // so a single backup.log has consistent timestamps regardless of writer.
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     const sessionId = (process.env.CLAUDE_SESSION_ID || '').slice(0, 8);
 
     if (op) {
