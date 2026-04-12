@@ -1081,12 +1081,36 @@ export class RemoteServer {
         break;
       }
       case 'sync:open-folder': {
-        // Remote clients can't open local folders — return the URL for them to open manually
+        // Remote clients can't open local folders — return the URL for them to open manually.
+        // For Drive, resolve the actual sync folder ID via rclone so the client deep-links
+        // to the synced folder, not just drive.google.com's homepage.
         const cfg = await getSyncConfig();
         const backend = cfg.backends.find((b: any) => b.id === (payload.id || payload));
         let url = '';
-        if (backend?.type === 'drive') url = 'https://drive.google.com';
-        else if (backend?.type === 'github') url = backend.config?.PERSONAL_SYNC_REPO || '';
+        if (backend?.type === 'drive') {
+          const rcloneRemote = backend.config?.rcloneRemote || 'gdrive';
+          const driveRoot = backend.config?.DRIVE_ROOT || 'Claude';
+          try {
+            const { execFile } = require('child_process');
+            const stdout: string = await new Promise((resolve, reject) => {
+              execFile(
+                'rclone',
+                ['lsjson', `${rcloneRemote}:${driveRoot}/Backup`, '--dirs-only'],
+                { timeout: 15000 },
+                (err: any, out: string) => (err ? reject(err) : resolve(String(out || ''))),
+              );
+            });
+            const entries = JSON.parse(stdout) as Array<{ Name: string; ID?: string }>;
+            const match = entries.find((e) => e.Name === 'personal' && e.ID);
+            url = match?.ID
+              ? `https://drive.google.com/drive/folders/${match.ID}`
+              : 'https://drive.google.com';
+          } catch {
+            url = 'https://drive.google.com';
+          }
+        } else if (backend?.type === 'github') {
+          url = backend.config?.PERSONAL_SYNC_REPO || '';
+        }
         this.respond(client.ws, type, id, { url });
         break;
       }

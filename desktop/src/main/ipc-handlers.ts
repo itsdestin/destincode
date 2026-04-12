@@ -1258,10 +1258,36 @@ export function registerIpcHandlers(
     if (!backend) return;
 
     switch (backend.type) {
-      case 'drive':
-        // Open Google Drive in browser (can't deep-link to a specific folder via rclone)
-        shell.openExternal('https://drive.google.com');
+      case 'drive': {
+        // Deep-link to the actual sync folder on Google Drive by resolving its
+        // file ID via rclone, then opening https://drive.google.com/drive/folders/<id>.
+        // Falls back to the generic Drive homepage if rclone or the folder lookup fails.
+        const rcloneRemote = backend.config?.rcloneRemote || 'gdrive';
+        const driveRoot = backend.config?.DRIVE_ROOT || 'Claude';
+        const parentPath = `${rcloneRemote}:${driveRoot}/Backup`;
+        const targetName = 'personal';
+        const fallbackUrl = 'https://drive.google.com';
+        try {
+          const stdout: string = await new Promise((resolve, reject) => {
+            execFile(
+              'rclone',
+              ['lsjson', parentPath, '--dirs-only'],
+              { timeout: 15000 },
+              (err, out) => (err ? reject(err) : resolve(String(out || ''))),
+            );
+          });
+          const entries = JSON.parse(stdout) as Array<{ Name: string; ID?: string }>;
+          const match = entries.find((e) => e.Name === targetName && e.ID);
+          if (match?.ID) {
+            shell.openExternal(`https://drive.google.com/drive/folders/${match.ID}`);
+          } else {
+            shell.openExternal(fallbackUrl);
+          }
+        } catch {
+          shell.openExternal(fallbackUrl);
+        }
         break;
+      }
       case 'github': {
         const repoUrl = backend.config?.PERSONAL_SYNC_REPO || '';
         if (repoUrl) shell.openExternal(repoUrl);

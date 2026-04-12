@@ -195,6 +195,28 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
     return () => clearTimeout(timer);
   }, [loadStatus]);
 
+  // Keep the compact row fresh: patch sync fields from the 10s status:data push
+  // so "Last synced X ago" doesn't freeze on the value captured at mount.
+  // (Full status still comes from getSyncStatus — status:data only has the
+  // live-updating fields: lastSyncEpoch, syncInProgress, backupMeta.)
+  useEffect(() => {
+    const handler = (window as any).claude?.on?.statusData?.((data: any) => {
+      if (!data) return;
+      setStatus(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          lastSyncEpoch: data.lastSyncEpoch ?? prev.lastSyncEpoch,
+          syncInProgress: data.syncInProgress ?? prev.syncInProgress,
+          backupMeta: data.backupMeta ?? prev.backupMeta,
+        };
+      });
+    });
+    return () => {
+      if (handler) (window as any).claude?.off?.('status:data', handler);
+    };
+  }, []);
+
   useEffect(() => {
     if (autoOpen && !open) {
       setOpen(true);
@@ -318,6 +340,35 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
       onRefresh();
     } catch {}
   }, [claude, onRefresh]);
+
+  // While the popup is open, patch live-updating fields from the 10s status:data
+  // push so the header "Last synced Xm ago" and the syncInProgress spinner stay
+  // fresh. When the global marker advances, also refetch full status to pick up
+  // new per-backend lastPushEpoch values (those aren't in status:data).
+  useEffect(() => {
+    const handler = (window as any).claude?.on?.statusData?.((data: any) => {
+      if (!data) return;
+      setStatus(prev => {
+        if (!prev) return prev;
+        const advanced =
+          typeof data.lastSyncEpoch === 'number' &&
+          data.lastSyncEpoch !== prev.lastSyncEpoch;
+        if (advanced) {
+          // New sync cycle completed — refetch full status so per-backend markers update
+          refreshStatus();
+        }
+        return {
+          ...prev,
+          lastSyncEpoch: data.lastSyncEpoch ?? prev.lastSyncEpoch,
+          syncInProgress: data.syncInProgress ?? prev.syncInProgress,
+          backupMeta: data.backupMeta ?? prev.backupMeta,
+        };
+      });
+    });
+    return () => {
+      if (handler) (window as any).claude?.off?.('status:data', handler);
+    };
+  }, [refreshStatus]);
 
   // Force sync all sync-enabled backends
   const handleForceSync = useCallback(async () => {
