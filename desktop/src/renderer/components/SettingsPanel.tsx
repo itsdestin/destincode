@@ -795,6 +795,18 @@ function RemoteButton({
                             <p className="text-xs text-red-400 text-center">{setupError || 'Setup failed'}</p>
                             <button onClick={onRunSetup} className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium">Retry</button>
                           </div>
+                        ) : tailscale?.installed && !tailscale.connected ? (
+                          // Fix: Tailscale is installed but VPN is off — tailscale.url is null in this state,
+                          // so we used to fall through to the install-button branch and pretend it wasn't installed.
+                          <p className="text-[11px] text-fg-2 text-center py-1">
+                            Tailscale is installed, but the VPN isn't active. Open the Tailscale app and turn it on, then come back here.
+                          </p>
+                        ) : tailscale?.installed && !config?.hasPassword ? (
+                          // Installed + connected but no password yet — guide the user down to the password field
+                          // rather than re-prompting to install.
+                          <p className="text-[11px] text-fg-2 text-center py-1">
+                            Set a password below to finish enabling remote access.
+                          </p>
                         ) : (
                           <button
                             onClick={onRunSetup}
