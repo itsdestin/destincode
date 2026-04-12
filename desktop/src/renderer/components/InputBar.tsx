@@ -178,39 +178,56 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // Dispatcher may rewrite the message (e.g. strip escape-hatch backslash)
       const effectiveMessage = dispatchResult.rewritten ?? message;
 
-      const parts: string[] = [];
-      for (const f of files) {
-        parts.push(f.path);
-      }
-      if (effectiveMessage.trim()) {
-        parts.push(effectiveMessage.trim());
-      }
-      const combined = parts.join(' ');
-      if (!combined || disabled) return;
+      const userText = effectiveMessage.trim();
+      const hasFiles = files.length > 0;
+      if (!userText && !hasFiles) return;
+      if (disabled) return;
 
+      // Optimistic chat bubble: show what the user sent (paths + text,
+      // space-joined) before Claude's transcript event arrives.
+      const displayCombined = [...files.map((f) => f.path), userText].filter(Boolean).join(' ');
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
-        content: combined,
+        content: displayCombined,
         timestamp: Date.now(),
       });
 
-      // Replace newlines with spaces so multi-line pastes don't get split
-      // into separate PTY inputs (each \n would act as Enter).
-      const sanitized = combined.replace(/[\r\n]+/g, ' ');
+      // Sending strategy:
+      //
+      // Claude Code's input handler auto-resolves file paths into attachments
+      // — but if multiple paths arrive in one PTY write, each new detection
+      // REPLACES the staged attachment instead of appending. Result: only
+      // the last image survives (verified via transcript JSONL — content
+      // array had only [Image #4] when 4 were attached).
+      //
+      // Fix: send each path as its own PTY write with a gap between so
+      // Claude processes each as a discrete attachment and they accumulate.
+      // Then send the user's text (if any), wait 700ms for Ink's 500ms
+      // PASTE_TIMEOUT to clear, then \r to submit.
+      //
+      // Newlines in user text are replaced with spaces so they don't act
+      // as early Enters.
+      const FILE_GAP_MS = 350; // time for Claude to ingest each attachment
+      const PASTE_SETTLE_MS = 700; // > Ink's 500ms PASTE_TIMEOUT
+      const sanitizedText = userText.replace(/[\r\n]+/g, ' ');
 
-      // Send text, wait, then Enter as two separate PTY writes. Claude
-      // Code's Ink parser has a 500ms PASTE_TIMEOUT that fires when long
-      // input is detected — during that window any \r we send is absorbed
-      // as content rather than submit. Waiting 700ms (> PASTE_TIMEOUT)
-      // guarantees the paste buffer has committed before Enter arrives.
-      // Short messages don't trigger paste mode, so the wait is just a
-      // harmless delay. Previous attempts chunked the text or wrapped it
-      // in bracketed-paste escapes — both raced other timers and failed
-      // on Windows ConPTY. The simplest fix is also the most reliable:
-      // one write, wait long enough, then submit.
-      window.claude.session.sendInput(sessionId, sanitized);
-      setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 700);
+      files.forEach((f, idx) => {
+        setTimeout(() => {
+          window.claude.session.sendInput(sessionId, f.path + ' ');
+        }, idx * FILE_GAP_MS);
+      });
+
+      const textStart = files.length * FILE_GAP_MS;
+      if (sanitizedText) {
+        setTimeout(() => {
+          window.claude.session.sendInput(sessionId, sanitizedText);
+        }, textStart);
+      }
+
+      setTimeout(() => {
+        window.claude.session.sendInput(sessionId, '\r');
+      }, textStart + PASTE_SETTLE_MS);
     },
     [sessionId, disabled, dispatch, view, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker],
   );
