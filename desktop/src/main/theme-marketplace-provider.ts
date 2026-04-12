@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import type {
   ThemeRegistryIndex,
@@ -30,6 +30,35 @@ const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 // Max total download size per theme (10 MB)
 const MAX_THEME_SIZE_BYTES = 10 * 1024 * 1024;
+
+// Max size per individual file when publishing. Matches the destinclaude-themes
+// CI rule — any file over this will be rejected at PR review anyway, so we
+// surface it as a clear pre-flight error instead of a cryptic mid-upload failure.
+const MAX_PUBLISH_FILE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Invoke `gh api ... --input -` with a JSON body piped via stdin.
+ *
+ * Why: passing large base64 asset content as `-f content=<base64>` args blows
+ * past Windows's ~32 KB argv limit for any file more than a few KB, and the
+ * failure surfaces as an opaque "Failed to upload". Stdin has no length limit,
+ * so this bypasses the whole class of argv-length bugs.
+ */
+function ghApiWithBody(ghBin: string, args: string[], body: string, timeoutMs = 60000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ghBin, [...args, '--input', '-'], { timeout: timeoutMs });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`gh api exited ${code}: ${stderr.trim() || stdout.trim()}`));
+    });
+    proc.stdin?.end(body);
+  });
+}
 
 // Slug must be kebab-case: lowercase letters, digits, hyphens only
 const SAFE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -382,41 +411,69 @@ export class ThemeMarketplaceProvider {
       });
     }
 
-    // 6. Upload files via GitHub Contents API
+    // 5b. Pre-flight size validation — reject oversized files before any API
+    // call so the user gets a specific actionable error instead of discovering
+    // the problem halfway through the upload (leaving a half-populated branch).
+    const oversized: { repoPath: string; bytes: number }[] = [];
+    for (const file of filesToUpload) {
+      // Skip the cleaned manifest — its size is computed at upload time, but
+      // it's always small enough that this doesn't matter.
+      if (file.repoPath.endsWith('manifest.json') && file.localPath === manifestPath) continue;
+      try {
+        const stat = await fs.promises.stat(file.localPath);
+        if (stat.size > MAX_PUBLISH_FILE_BYTES) {
+          oversized.push({ repoPath: file.repoPath, bytes: stat.size });
+        }
+      } catch {
+        // File disappeared between collection and stat — let the upload loop report it
+      }
+    }
+    if (oversized.length > 0) {
+      const fmt = (b: number) => `${(b / 1024 / 1024).toFixed(1)} MB`;
+      const list = oversized.map(f => `  • ${f.repoPath} (${fmt(f.bytes)})`).join('\n');
+      throw new Error(
+        `Cannot publish — the following files exceed the 10 MB registry limit:\n${list}\n\nResize or recompress them, then try again.`
+      );
+    }
+
+    // 6. Upload files via GitHub Contents API.
+    // Content is piped as a JSON body via stdin (not argv) to avoid Windows's
+    // ~32 KB command-line limit — see ghApiWithBody() comment.
     for (const file of filesToUpload) {
       let content: string;
       if (file.repoPath.endsWith('manifest.json') && file.localPath === manifestPath) {
-        // Use the cleaned manifest
         content = Buffer.from(JSON.stringify(cleanManifest, null, 2)).toString('base64');
       } else {
         const raw = await fs.promises.readFile(file.localPath);
         content = raw.toString('base64');
       }
 
+      const putArgs = ['api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT'];
+      const createBody = JSON.stringify({
+        message: `Add ${file.repoPath}`,
+        content,
+        branch: branchName,
+      });
+
       try {
-        await execFileAsync(ghPath, [
-          'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
-          '-f', `message=Add ${file.repoPath}`,
-          '-f', `content=${content}`,
-          '-f', `branch=${branchName}`,
-        ], { timeout: 30000 });
-      } catch (err: any) {
-        // File may already exist — update it (need the sha)
+        await ghApiWithBody(ghPath, putArgs, createBody);
+      } catch {
+        // File may already exist on the branch — fetch its sha and update.
         try {
           const { stdout: existingFile } = await execFileAsync(ghPath, [
             'api', `repos/${FORK_REPO}/contents/${file.repoPath}`,
             '-q', '.sha', '-H', 'Accept: application/vnd.github.v3+json',
             '--method', 'GET', '-f', `ref=${branchName}`,
           ]);
-          await execFileAsync(ghPath, [
-            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
-            '-f', `message=Update ${file.repoPath}`,
-            '-f', `content=${content}`,
-            '-f', `sha=${existingFile.trim()}`,
-            '-f', `branch=${branchName}`,
-          ], { timeout: 30000 });
-        } catch {
-          throw new Error(`Failed to upload ${file.repoPath}`);
+          const updateBody = JSON.stringify({
+            message: `Update ${file.repoPath}`,
+            content,
+            sha: existingFile.trim(),
+            branch: branchName,
+          });
+          await ghApiWithBody(ghPath, putArgs, updateBody);
+        } catch (err: any) {
+          throw new Error(`Failed to upload ${file.repoPath}: ${err?.message || 'unknown error'}`);
         }
       }
     }
