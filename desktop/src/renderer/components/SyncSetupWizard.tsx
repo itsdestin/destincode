@@ -12,6 +12,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { isAndroid as checkIsAndroid } from '../platform';
 
+// Detect desktop OS so prereq warnings can show install steps specific to the
+// user's machine (iCloud setup on Windows differs from macOS, gh install varies, etc.)
+type DesktopOS = 'mac' | 'windows' | 'linux' | 'other';
+function detectDesktopOS(): DesktopOS {
+  const ua = (navigator.userAgent || '').toLowerCase();
+  const platform = (navigator.platform || '').toLowerCase();
+  if (platform.includes('mac') || ua.includes('mac os')) return 'mac';
+  if (platform.includes('win') || ua.includes('windows')) return 'windows';
+  if (platform.includes('linux') || ua.includes('linux')) return 'linux';
+  return 'other';
+}
+
 // --- Types ---
 
 type BackendType = 'drive' | 'github' | 'icloud';
@@ -581,38 +593,12 @@ function PrereqCheckStep({
 
         {/* Action: install gh (similar pattern) */}
         {needsGh && !checking && (
-          <div className="pt-2 space-y-2">
-            <div className="text-[11px] text-fg-dim">
-              DestinCode needs GitHub's command-line tool to connect your account.
-            </div>
-            <div className="text-[10px] text-fg-faint">
-              Install it from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>, then come back and tap "Check Again".
-            </div>
-            <button
-              onClick={runCheck}
-              className="px-4 py-1.5 rounded-md text-[11px] font-medium bg-inset hover:bg-inset/80 text-fg cursor-pointer transition-colors"
-            >
-              Check Again
-            </button>
-          </div>
+          <GhInstallHelp onRecheck={runCheck} />
         )}
 
-        {/* iCloud not found */}
+        {/* iCloud not found — platform-specific guidance since setup differs per OS */}
         {icloudMissing && !checking && (
-          <div className="pt-2 space-y-2">
-            <div className="text-[11px] text-fg-dim">
-              iCloud Drive wasn't found on this computer.
-            </div>
-            <div className="text-[10px] text-fg-faint">
-              Make sure iCloud Drive is enabled in System Settings &gt; Apple ID &gt; iCloud &gt; iCloud Drive.
-            </div>
-            <button
-              onClick={runCheck}
-              className="px-4 py-1.5 rounded-md text-[11px] font-medium bg-inset hover:bg-inset/80 text-fg cursor-pointer transition-colors"
-            >
-              Check Again
-            </button>
-          </div>
+          <IcloudMissingHelp onRecheck={runCheck} />
         )}
 
         {/* Install error */}
@@ -627,6 +613,108 @@ function PrereqCheckStep({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// --- Platform-specific prereq help blocks ---
+// Split out so each OS gets the right install path (Windows users often don't
+// realize iCloud needs a separate app, Linux doesn't support it at all, etc.)
+
+function IcloudMissingHelp({ onRecheck }: { onRecheck: () => void }) {
+  const claude = (window as any).claude;
+  const os: DesktopOS = checkIsAndroid() ? 'other' : detectDesktopOS();
+  return (
+    <div className="pt-2 space-y-2">
+      <div className="text-[11px] text-fg-dim">
+        iCloud Drive wasn't found on this computer.
+      </div>
+      {os === 'mac' && (
+        <div className="text-[10px] text-fg-faint space-y-1">
+          <div>On macOS, enable it in <span className="text-fg-dim">System Settings &gt; Apple ID &gt; iCloud &gt; iCloud Drive</span>.</div>
+          <div>Make sure iCloud Drive is turned on and has finished its first sync, then check again.</div>
+        </div>
+      )}
+      {os === 'windows' && (
+        <div className="text-[10px] text-fg-faint space-y-1">
+          <div>On Windows, iCloud isn't built in — you need to install <span className="text-fg-dim">iCloud for Windows</span> from the Microsoft Store or Apple's website.</div>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button className="text-accent underline" onClick={() => claude.openExternal('https://apps.microsoft.com/detail/9PKTQ5699M62')}>
+              Microsoft Store
+            </button>
+            <span className="text-fg-faint">or</span>
+            <button className="text-accent underline" onClick={() => claude.openExternal('https://www.apple.com/icloud/setup/pc.html')}>
+              apple.com/icloud
+            </button>
+          </div>
+          <div>After installing, sign in with your Apple ID and enable iCloud Drive. Then come back and tap "Check Again".</div>
+        </div>
+      )}
+      {os === 'linux' && (
+        <div className="text-[10px] text-fg-faint space-y-1">
+          <div>iCloud Drive isn't officially supported on Linux — Apple doesn't provide a client.</div>
+          <div>Use <span className="text-fg-dim">Google Drive</span> or <span className="text-fg-dim">GitHub</span> for backup on this computer instead.</div>
+        </div>
+      )}
+      {os === 'other' && (
+        <div className="text-[10px] text-fg-faint">
+          Couldn't detect your operating system. iCloud Drive works best on macOS and Windows. If you're on Linux, try Google Drive or GitHub instead.
+        </div>
+      )}
+      {os !== 'linux' && (
+        <button
+          onClick={onRecheck}
+          className="px-4 py-1.5 rounded-md text-[11px] font-medium bg-inset hover:bg-inset/80 text-fg cursor-pointer transition-colors"
+        >
+          Check Again
+        </button>
+      )}
+    </div>
+  );
+}
+
+function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
+  const claude = (window as any).claude;
+  const os: DesktopOS = checkIsAndroid() ? 'other' : detectDesktopOS();
+  return (
+    <div className="pt-2 space-y-2">
+      <div className="text-[11px] text-fg-dim">
+        DestinCode needs GitHub's command-line tool (gh) to connect your account.
+      </div>
+      {os === 'mac' && (
+        <div className="text-[10px] text-fg-faint space-y-1">
+          <div>On macOS, the easiest way is Homebrew. In Terminal, run:</div>
+          <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">brew install gh</div>
+          <div>No Homebrew? Download the installer from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>.</div>
+        </div>
+      )}
+      {os === 'windows' && (
+        <div className="text-[10px] text-fg-faint space-y-1">
+          <div>On Windows, download the installer from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>.</div>
+          <div>Or, if you use winget, open PowerShell and run:</div>
+          <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">winget install GitHub.cli</div>
+        </div>
+      )}
+      {os === 'linux' && (
+        <div className="text-[10px] text-fg-faint space-y-1">
+          <div>On Linux, install with your package manager:</div>
+          <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">sudo apt install gh  # Debian/Ubuntu</div>
+          <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">sudo dnf install gh  # Fedora</div>
+          <div>Full instructions: <button className="text-accent underline" onClick={() => claude.openExternal('https://github.com/cli/cli/blob/trunk/docs/install_linux.md')}>install guide</button>.</div>
+        </div>
+      )}
+      {os === 'other' && (
+        <div className="text-[10px] text-fg-faint">
+          Install from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>, then come back and tap "Check Again".
+        </div>
+      )}
+      <div className="text-[10px] text-fg-faint">After installing, come back and tap "Check Again".</div>
+      <button
+        onClick={onRecheck}
+        className="px-4 py-1.5 rounded-md text-[11px] font-medium bg-inset hover:bg-inset/80 text-fg cursor-pointer transition-colors"
+      >
+        Check Again
+      </button>
     </div>
   );
 }
