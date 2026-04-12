@@ -398,7 +398,12 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
             </div>
           )}
 
-          {/* Duplicate destination warning — same backend already points here */}
+          {/* Duplicate destination heads-up — informational only.
+              The sync engine uses a global lock and backend-safe write strategies
+              (rclone --update for Drive, atomic fs.cpSync for iCloud, per-instance
+              clone dirs for GitHub), so two backends pointing to the same location
+              don't actually corrupt data. We still show a neutral note so users
+              who add one by accident notice, but we don't color it as a warning. */}
           {(() => {
             const dupes = existingBackends.filter(b => b.type === backendType);
             let isDup = false;
@@ -414,8 +419,8 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
               isDup = dupes.some(b => (b.config.ICLOUD_PATH || '') === icloudPath);
             }
             return isDup ? (
-              <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400">
-                You already have a backup pointing to this location. Adding another may cause conflicts.
+              <div className="px-3 py-2 rounded-lg bg-inset/50 text-[11px] text-fg-dim">
+                Heads up: you already have a backup in this location. Adding another is fine — they'll both keep the same place in sync.
               </div>
             ) : null;
           })()}
