@@ -101,6 +101,17 @@ export class SyncService extends EventEmitter {
 
   /** Start the sync service: write marker, initial pull, start push timer. */
   async start(): Promise<void> {
+    // Self-heal: if a stale marker exists from a previous crash, log and overwrite.
+    // Without this, a crash leaves the marker indefinitely and hooks never sync.
+    try {
+      if (this.fileExists(this.appSyncMarkerPath)) {
+        const stalePid = parseInt(fs.readFileSync(this.appSyncMarkerPath, 'utf8').trim(), 10);
+        if (stalePid > 0 && stalePid !== process.pid && !this.isPidAlive(stalePid)) {
+          this.logBackup('WARN', `Cleaned stale .app-sync-active marker (PID ${stalePid} is dead — previous crash?)`, 'sync.lifecycle');
+        }
+      }
+    } catch {}
+
     // Write .app-sync-active marker so bash hooks skip sync
     try {
       fs.mkdirSync(path.dirname(this.appSyncMarkerPath), { recursive: true });
@@ -436,12 +447,41 @@ export class SyncService extends EventEmitter {
     }
   }
 
-  /** Atomic write via same-directory temp file + rename. */
+  /** Atomic write via same-directory temp file + rename.
+   *  Retries on EPERM/EACCES (Windows file locking) before falling back
+   *  to direct overwrite. Cleans up the temp file on all paths. */
   private atomicWrite(target: string, content: string): void {
     const tmp = `${target}.tmp.${process.pid}`;
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(tmp, content);
-    fs.renameSync(tmp, target);
+
+    // Retry rename up to 3 times — Windows file locks cause transient EPERM
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        fs.renameSync(tmp, target);
+        return; // Success
+      } catch (e: any) {
+        if (e.code !== 'EPERM' && e.code !== 'EACCES') {
+          // Non-locking error — clean up and rethrow
+          try { fs.unlinkSync(tmp); } catch {}
+          throw e;
+        }
+        if (attempt < 2) {
+          // Brief pause to let the other process release the handle
+          const waitMs = 100 * (attempt + 1);
+          const start = Date.now();
+          while (Date.now() - start < waitMs) { /* busy-wait in sync context */ }
+        }
+      }
+    }
+
+    // All retries exhausted — fall back to direct overwrite (non-atomic but data-preserving)
+    this.logBackup('WARN', `Atomic rename failed for ${path.basename(target)}, falling back to direct write`, 'sync.atomicWrite');
+    try {
+      fs.writeFileSync(target, content);
+    } finally {
+      try { fs.unlinkSync(tmp); } catch {}
+    }
   }
 
   private dirExists(p: string): boolean {
@@ -929,8 +969,10 @@ export class SyncService extends EventEmitter {
       }
     }
 
-    // Parallel pulls for non-dependent resources
-    await Promise.all([
+    // Parallel pulls for non-dependent resources.
+    // Each wrapped in its own catch so a single rclone failure (network timeout,
+    // DNS error) doesn't abort the entire pull via unhandled rejection.
+    const pullResults = await Promise.allSettled([
       // CLAUDE.md
       this.rclone(['copyto', `${remoteBase}/CLAUDE.md`, path.join(this.claudeDir, 'CLAUDE.md'), '--update']),
       // System config
@@ -951,6 +993,14 @@ export class SyncService extends EventEmitter {
         await this.rclone(['copy', `${sysRemote}/conversation-index.json`, this.indexStagingDir + '/', '--checksum']);
       })(),
     ]);
+    // Log any individual failures (rclone() already wraps errors, but the async
+    // IIFEs above can throw on fs.mkdirSync or other Node operations)
+    const pullLabels = ['CLAUDE.md', 'config.json', 'encyclopedia', 'conversations', 'conversation-index'];
+    pullResults.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        this.logBackup('WARN', `Pull ${pullLabels[i]} failed: ${r.reason}`, 'sync.pull.drive');
+      }
+    });
   }
 
   // =========================================================================

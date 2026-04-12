@@ -73,6 +73,18 @@ class SyncService(
 
     /** Start the sync service: write marker, initial pull, start push timer. */
     fun start() {
+        // Self-heal: if a stale marker exists from a previous crash, log and overwrite.
+        // Without this, a crash leaves the marker indefinitely and hooks never sync.
+        try {
+            if (appSyncMarkerPath.exists()) {
+                val stalePid = appSyncMarkerPath.readText().trim().toIntOrNull() ?: 0
+                val myPid = android.os.Process.myPid()
+                if (stalePid > 0 && stalePid != myPid && !isPidAlive(stalePid)) {
+                    logBackup("WARN", "Cleaned stale .app-sync-active marker (PID $stalePid is dead — previous crash?)", "sync.lifecycle")
+                }
+            }
+        } catch (_: Exception) {}
+
         // Write .app-sync-active marker so bash hooks skip sync
         try {
             appSyncMarkerPath.parentFile?.mkdirs()
@@ -399,12 +411,29 @@ class SyncService(
         return try { JSONObject(file.readText()) } catch (_: Exception) { null }
     }
 
-    /** Atomic write via same-directory temp file + rename. */
+    /** Atomic write via same-directory temp file + rename.
+     *  Retries on rename failure (file locking) before falling back
+     *  to direct overwrite. Cleans up the temp file on all paths. */
     private fun atomicWrite(target: File, content: String) {
         val tmp = File(target.parentFile, "${target.name}.tmp.${android.os.Process.myPid()}")
         target.parentFile?.mkdirs()
         tmp.writeText(content)
-        tmp.renameTo(target)
+
+        // Retry rename up to 3 times — renameTo() returns false on failure (no exception)
+        for (attempt in 0 until 3) {
+            if (tmp.renameTo(target)) return // Success
+            if (attempt < 2) {
+                try { Thread.sleep(100L * (attempt + 1)) } catch (_: InterruptedException) {}
+            }
+        }
+
+        // All retries exhausted — fall back to direct overwrite (non-atomic but data-preserving)
+        logBackup("WARN", "Atomic rename failed for ${target.name}, falling back to direct write", "sync.atomicWrite")
+        try {
+            target.writeText(content)
+        } finally {
+            try { tmp.delete() } catch (_: Exception) {}
+        }
     }
 
     // =========================================================================
@@ -755,23 +784,33 @@ class SyncService(
         }
 
         // CLAUDE.md
-        rclone(listOf("copyto", "$remoteBase/CLAUDE.md", File(claudeDir, "CLAUDE.md").absolutePath, "--update"))
+        rclone(listOf("copyto", "$remoteBase/CLAUDE.md", File(claudeDir, "CLAUDE.md").absolutePath, "--update")).also {
+            if (it.code != 0) logBackup("WARN", "Pull CLAUDE.md failed: ${it.stderr}", "sync.pull.drive")
+        }
 
         // System config
-        rclone(listOf("copyto", "$sysRemote/config.json", configPath.absolutePath, "--update"))
+        rclone(listOf("copyto", "$sysRemote/config.json", configPath.absolutePath, "--update")).also {
+            if (it.code != 0) logBackup("WARN", "Pull config.json failed: ${it.stderr}", "sync.pull.drive")
+        }
 
         // Encyclopedia
         val encDir = File(claudeDir, "encyclopedia").also { it.mkdirs() }
-        rclone(listOf("copy", "$remoteBase/encyclopedia/", "${encDir.absolutePath}/", "--update", "--max-depth", "1", "--include", "*.md"))
+        rclone(listOf("copy", "$remoteBase/encyclopedia/", "${encDir.absolutePath}/", "--update", "--max-depth", "1", "--include", "*.md")).also {
+            if (it.code != 0) logBackup("WARN", "Pull encyclopedia failed: ${it.stderr}", "sync.pull.drive")
+        }
 
         // Conversations — checksum + ignore-existing (don't overwrite local)
         val projectsDir = File(claudeDir, "projects")
         projectsDir.mkdirs()
-        rclone(listOf("copy", "$remoteBase/conversations/", "${projectsDir.absolutePath}/", "--checksum", "--include", "*.jsonl", "--ignore-existing"))
+        rclone(listOf("copy", "$remoteBase/conversations/", "${projectsDir.absolutePath}/", "--checksum", "--include", "*.jsonl", "--ignore-existing")).also {
+            if (it.code != 0) logBackup("WARN", "Pull conversations failed: ${it.stderr}", "sync.pull.drive")
+        }
 
         // Conversation index to staging dir for post-pull merge
         indexStagingDir.mkdirs()
-        rclone(listOf("copy", "$sysRemote/conversation-index.json", "${indexStagingDir.absolutePath}/", "--checksum"))
+        rclone(listOf("copy", "$sysRemote/conversation-index.json", "${indexStagingDir.absolutePath}/", "--checksum")).also {
+            if (it.code != 0) logBackup("WARN", "Pull conversation-index failed: ${it.stderr}", "sync.pull.drive")
+        }
     }
 
     // =========================================================================
