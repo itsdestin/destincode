@@ -61,6 +61,10 @@ interface ThemeContextValue {
   /** Update a glass override for a non-user theme (community/builtin).
    *  Overrides persist per-slug so switching themes preserves the user's preference. */
   setGlassOverride: (slug: string, field: string, value: number) => void;
+  /** Re-read user themes from disk. Call after install/uninstall so the
+   *  context's userThemes list stays in sync (the active-theme fallback
+   *  effect then auto-resets to the default if the active slug vanished). */
+  reloadUserThemes: () => Promise<void>;
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
@@ -71,6 +75,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   showTimestamps: true, setShowTimestamps: () => {},
   allThemes: BUILTIN_THEMES, activeTheme: BUILTIN_THEMES[0], bgStyle: null, patternStyle: null,
   setGlassOverride: () => {},
+  reloadUserThemes: async () => {},
 });
 
 function getStored(key: string, fallback: string): string {
@@ -140,32 +145,35 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }
   }, [allThemes, activeSlug, userThemesLoaded]);
 
-  // Load user themes from disk on mount
-  useEffect(() => {
-    const loadUserThemes = async () => {
-      try {
-        const claude = (window as any).claude;
-        if (!claude?.theme?.list) { setUserThemesLoaded(true); return; }
-        const slugs: string[] = await claude.theme.list();
-        const loaded: LoadedTheme[] = [];
-        for (const slug of slugs) {
-          try {
-            const raw = await claude.theme.readFile(slug);
-            const theme = validateTheme(JSON.parse(raw));
-            const source = (theme as any).source === 'community' ? 'community' as const : 'user' as const;
-            loaded.push(resolveAllAssetPaths({ ...theme, source }));
-          } catch (e) {
-            console.warn(`[ThemeProvider] Failed to load user theme "${slug}":`, e);
-          }
+  // Re-read all user themes from disk. Exposed so install/uninstall flows
+  // can refresh the list; the active-theme fallback effect (above) uses the
+  // refreshed list to reset to the default if the user just uninstalled the
+  // theme they had applied.
+  const reloadUserThemes = useCallback(async () => {
+    try {
+      const claude = (window as any).claude;
+      if (!claude?.theme?.list) { setUserThemesLoaded(true); return; }
+      const slugs: string[] = await claude.theme.list();
+      const loaded: LoadedTheme[] = [];
+      for (const slug of slugs) {
+        try {
+          const raw = await claude.theme.readFile(slug);
+          const theme = validateTheme(JSON.parse(raw));
+          const source = (theme as any).source === 'community' ? 'community' as const : 'user' as const;
+          loaded.push(resolveAllAssetPaths({ ...theme, source }));
+        } catch (e) {
+          console.warn(`[ThemeProvider] Failed to load user theme "${slug}":`, e);
         }
-        setUserThemes(loaded);
-        setUserThemesLoaded(true);
-      } catch {
-        setUserThemesLoaded(true); // Mark loaded even on error so fallback can run
       }
-    };
-    loadUserThemes();
+      setUserThemes(loaded);
+      setUserThemesLoaded(true);
+    } catch {
+      setUserThemesLoaded(true); // Mark loaded even on error so fallback can run
+    }
   }, []);
+
+  // Initial load on mount
+  useEffect(() => { reloadUserThemes(); }, [reloadUserThemes]);
 
   // Load appearance preferences from disk (source of truth) on mount
   useEffect(() => {
@@ -342,10 +350,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     reducedEffects, setReducedEffects,
     showTimestamps, setShowTimestamps,
     allThemes, activeTheme, bgStyle, patternStyle,
-    setGlassOverride,
+    setGlassOverride, reloadUserThemes,
   }), [activeSlug, setTheme, cycleTheme, cycleList, setCycleList, font,
        reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps,
-       allThemes, activeTheme, bgStyle, patternStyle, setGlassOverride]);
+       allThemes, activeTheme, bgStyle, patternStyle, setGlassOverride, reloadUserThemes]);
 
   return (
     <ThemeContext.Provider value={value}>
