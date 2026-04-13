@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { PluginManifest, ProvidedCapability, OptionalIntegration } from '../shared/types';
+import { listInstalledPluginDirs } from './claude-code-registry';
 
 /**
  * Integration Reconciler (decomposition v3, §4)
@@ -18,7 +19,6 @@ import { PluginManifest, ProvidedCapability, OptionalIntegration } from '../shar
  * table + closing rule sentence.
  */
 
-const PLUGINS_DIR = path.join(os.homedir(), '.claude', 'plugins');
 const OUTPUT_PATH = path.join(os.homedir(), '.claude', 'integration-context.md');
 
 interface ProviderEntry {
@@ -56,11 +56,11 @@ function readPluginManifest(pluginDir: string): PluginManifest | null {
 }
 
 function listInstalledManifests(): PluginManifest[] {
-  if (!fs.existsSync(PLUGINS_DIR)) return [];
+  // See claude-code-registry.listInstalledPluginDirs() — walks top-level
+  // toolkit clone AND the marketplace subtree so both install paths surface.
   const manifests: PluginManifest[] = [];
-  for (const entry of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const manifest = readPluginManifest(path.join(PLUGINS_DIR, entry.name));
+  for (const pluginDir of listInstalledPluginDirs()) {
+    const manifest = readPluginManifest(pluginDir);
     if (manifest && manifest.name) manifests.push(manifest);
   }
   return manifests;

@@ -7,7 +7,7 @@ import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
 import { installPlugin, uninstallPlugin, isPluginInstalled, type InstallResult } from './plugin-installer';
-import { pluginInstallDir } from './claude-code-registry';
+import { pluginInstallDir, DESTINCODE_PLUGINS_DIR, listInstalledPluginDirs } from './claude-code-registry';
 import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import { reconcileIntegrations } from './integration-reconciler';
 import { reconcileHooks } from './hook-reconciler';
@@ -24,7 +24,20 @@ const execFileAsync = promisify(execFile);
 let ghPath = 'gh';
 try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
-const PLUGINS_DIR = path.join(os.homedir(), '.claude', 'plugins');
+const CLAUDE_PLUGINS_ROOT = path.join(os.homedir(), '.claude', 'plugins');
+
+/**
+ * Resolve a plugin id to its on-disk directory. Checks the top-level toolkit
+ * clone path first (for the core `destinclaude` id cloned by install.sh)
+ * and falls back to the marketplace subtree (for plugin-installer packages).
+ */
+function resolvePluginDir(id: string): string | null {
+  const topLevel = path.join(CLAUDE_PLUGINS_ROOT, id);
+  if (fs.existsSync(topLevel)) return topLevel;
+  const marketplace = path.join(DESTINCODE_PLUGINS_DIR, id);
+  if (fs.existsSync(marketplace)) return marketplace;
+  return null;
+}
 
 // Patterns that indicate sensitive content — stripped before upload
 const SENSITIVE_PATTERNS = [
@@ -375,9 +388,10 @@ export class LocalSkillProvider implements SkillProvider {
    * 5. Open PR with auto-populated description
    */
   async publish(id: string): Promise<{ prUrl: string }> {
-    // Locate the plugin on disk
-    const pluginDir = path.join(PLUGINS_DIR, id);
-    if (!fs.existsSync(pluginDir)) {
+    // Locate the plugin on disk — could be top-level (core toolkit clone)
+    // or under the marketplace subtree (plugin-installer packages).
+    const pluginDir = resolvePluginDir(id);
+    if (!pluginDir) {
       throw new Error(`Plugin directory not found: ${id}`);
     }
 
@@ -736,23 +750,19 @@ export class LocalSkillProvider implements SkillProvider {
     // Build a map of capability → providing package by scanning all installed
     // plugin manifests. Same logic as integration-reconciler but read-only.
     const providerMap = new Map<string, string>();
-    const pluginsRoot = path.join(os.homedir(), '.claude', 'plugins');
-    try {
-      for (const entry of fs.readdirSync(pluginsRoot, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const manifest = this.readPluginManifest(path.join(pluginsRoot, entry.name));
-        if (!manifest?.provides) continue;
-        for (const cap of Object.keys(manifest.provides)) {
-          if (!providerMap.has(cap)) providerMap.set(cap, manifest.name);
-        }
+    for (const pluginDir of listInstalledPluginDirs()) {
+      const manifest = this.readPluginManifest(pluginDir);
+      if (!manifest?.provides) continue;
+      for (const cap of Object.keys(manifest.provides)) {
+        if (!providerMap.has(cap)) providerMap.set(cap, manifest.name);
       }
-    } catch { /* empty plugins dir — no providers */ }
+    }
 
     // Try installed manifest first; fall back to marketplace entry fields
     let rawProvides: Record<string, { description: string; skill: string }> = {};
     let rawOptional: Record<string, { whenAvailable: string; whenUnavailable: string }> = {};
-    const pluginDir = path.join(pluginsRoot, id);
-    const manifest = this.readPluginManifest(pluginDir);
+    const pluginDir = resolvePluginDir(id);
+    const manifest = pluginDir ? this.readPluginManifest(pluginDir) : null;
     if (manifest) {
       rawProvides = manifest.provides ?? {};
       rawOptional = manifest.optionalIntegrations ?? {};

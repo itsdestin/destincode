@@ -43,6 +43,50 @@ export const DESTINCODE_MARKETPLACE_ID = 'destincode';
 export const DESTINCODE_MARKETPLACE_ROOT = path.join(PLUGIN_CACHE_DIR, 'marketplaces', DESTINCODE_MARKETPLACE_ID);
 export const DESTINCODE_PLUGINS_DIR = path.join(DESTINCODE_MARKETPLACE_ROOT, 'plugins');
 
+/**
+ * Enumerate every directory that should be treated as an "installed plugin"
+ * by reconcilers and skill-provider introspection.
+ *
+ * Two sources produce installed plugins:
+ *   1. `bootstrap/install.sh` clones the core toolkit to
+ *      `~/.claude/plugins/destinclaude/` directly (not via plugin-installer),
+ *      so top-level children of PLUGIN_CACHE_DIR with a plugin.json count.
+ *   2. `plugin-installer.ts` writes marketplace-installed packages to
+ *      `DESTINCODE_PLUGINS_DIR` — every direct child there is a plugin.
+ *
+ * PLUGIN_CACHE_DIR also contains `installed_plugins.json`,
+ * `known_marketplaces.json`, and the `marketplaces/` subtree. The plugin.json
+ * check filters those out — they have no manifest. Scanning both sources
+ * handles the pre-decomposition toolkit clone AND the marketplace packages
+ * it split into without duplicating anything (the two roots don't overlap).
+ */
+export function listInstalledPluginDirs(): string[] {
+  const dirs: string[] = [];
+
+  if (fs.existsSync(PLUGIN_CACHE_DIR)) {
+    for (const entry of fs.readdirSync(PLUGIN_CACHE_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === 'marketplaces') continue;
+      const candidate = path.join(PLUGIN_CACHE_DIR, entry.name);
+      if (
+        fs.existsSync(path.join(candidate, 'plugin.json')) ||
+        fs.existsSync(path.join(candidate, '.claude-plugin', 'plugin.json'))
+      ) {
+        dirs.push(candidate);
+      }
+    }
+  }
+
+  if (fs.existsSync(DESTINCODE_PLUGINS_DIR)) {
+    for (const entry of fs.readdirSync(DESTINCODE_PLUGINS_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      dirs.push(path.join(DESTINCODE_PLUGINS_DIR, entry.name));
+    }
+  }
+
+  return dirs;
+}
+
 const MARKETPLACE_MANIFEST = path.join(DESTINCODE_MARKETPLACE_ROOT, '.claude-plugin', 'marketplace.json');
 const KNOWN_MARKETPLACES = path.join(PLUGIN_CACHE_DIR, 'known_marketplaces.json');
 const INSTALLED_PLUGINS = path.join(PLUGIN_CACHE_DIR, 'installed_plugins.json');

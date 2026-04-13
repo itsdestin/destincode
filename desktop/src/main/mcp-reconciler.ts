@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { listInstalledPluginDirs } from './claude-code-registry';
 
 /**
  * MCP Reconciler (decomposition v3, §9.3)
@@ -20,7 +21,6 @@ import os from 'os';
  * and surfacing that belongs in the marketplace UI, not a silent reconciler.
  */
 
-const PLUGINS_DIR = path.join(os.homedir(), '.claude', 'plugins');
 const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 
 interface McpManifestEntry {
@@ -70,11 +70,11 @@ function readManifest(pluginDir: string): { entries: McpManifestEntry[]; pluginR
 }
 
 function listManifests(): Array<{ entries: McpManifestEntry[]; pluginRoot: string }> {
-  if (!fs.existsSync(PLUGINS_DIR)) return [];
+  // See claude-code-registry.listInstalledPluginDirs() — walks top-level
+  // toolkit clone AND the marketplace subtree so both install paths surface.
   const out: Array<{ entries: McpManifestEntry[]; pluginRoot: string }> = [];
-  for (const entry of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const m = readManifest(path.join(PLUGINS_DIR, entry.name));
+  for (const pluginDir of listInstalledPluginDirs()) {
+    const m = readManifest(pluginDir);
     if (m) out.push(m);
   }
   return out;

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { listInstalledPluginDirs } from './claude-code-registry';
 
 /**
  * Hook Reconciler (decomposition v3, §9.2)
@@ -20,7 +21,6 @@ import os from 'os';
  * Those belong to the desktop app; this one belongs to plugins.
  */
 
-const PLUGINS_DIR = path.join(os.homedir(), '.claude', 'plugins');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 
 interface ManifestHookSpec {
@@ -73,11 +73,11 @@ function readPluginManifest(pluginDir: string): PluginHooksManifest | null {
 }
 
 function listPluginManifests(): PluginHooksManifest[] {
-  if (!fs.existsSync(PLUGINS_DIR)) return [];
+  // Walk both the top-level toolkit clone and the marketplace subtree.
+  // See listInstalledPluginDirs() for why both are needed.
   const manifests: PluginHooksManifest[] = [];
-  for (const entry of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const m = readPluginManifest(path.join(PLUGINS_DIR, entry.name));
+  for (const pluginDir of listInstalledPluginDirs()) {
+    const m = readPluginManifest(pluginDir);
     if (m && m.hooks) manifests.push(m);
   }
   return manifests;
