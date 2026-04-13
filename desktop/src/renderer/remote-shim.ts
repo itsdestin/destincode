@@ -642,6 +642,10 @@ export function installShim(): void {
     appearance: {
       get: () => invoke('appearance:get'),
       set: (prefs: Record<string, any>) => invoke('appearance:set', prefs),
+      // Cross-window appearance sync is Electron-only; single-window hosts
+      // don't need these but renderer code calls them unconditionally.
+      broadcast: (_prefs: Record<string, any>) => {},
+      onSync: (_cb: (prefs: Record<string, any>) => void) => () => {},
     },
     defaults: {
       get: () => invoke('defaults:get'),

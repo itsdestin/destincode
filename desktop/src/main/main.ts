@@ -487,6 +487,17 @@ function registerDetachIpc() {
   // treating its own directory entry as a remote session.
   ipcMain.handle(IPC.WINDOW_GET_ID, (evt) => evt.sender.id);
 
+  // Appearance sync across peer windows. When one window writes a theme /
+  // font / reduced-effects change, it broadcasts and every OTHER window
+  // receives the same prefs via appearance:sync. ThemeProvider applies
+  // locally without re-broadcasting (guarded by a ref) so there's no loop.
+  ipcMain.on(IPC.APPEARANCE_BROADCAST, (evt, prefs) => {
+    for (const wid of windowRegistry.getWindowIds()) {
+      if (wid === evt.sender.id) continue;
+      BrowserWindow.fromId(wid)?.webContents.send(IPC.APPEARANCE_SYNC, prefs);
+    }
+  });
+
   // Transfer a session from its current owner window to a target window.
   // Rejects if the source claim is stale (race protection). Emits ownership
   // events to both windows so renderers can update their reducers.

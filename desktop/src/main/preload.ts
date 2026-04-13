@@ -138,6 +138,8 @@ const IPC = {
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
+  APPEARANCE_BROADCAST: 'appearance:broadcast',
+  APPEARANCE_SYNC: 'appearance:sync',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -307,6 +309,15 @@ contextBridge.exposeInMainWorld('claude', {
     // glass slider overrides for community/builtin themes
     set: (prefs: { theme?: string; themeCycle?: string[]; reducedEffects?: boolean; showTimestamps?: boolean; glassOverrides?: Record<string, Record<string, number>> }): Promise<boolean> =>
       ipcRenderer.invoke(IPC.APPEARANCE_SET, prefs),
+    // Multi-window appearance sync: any window calling broadcast forwards its
+    // change to every OTHER peer window so ThemeProvider can apply it without
+    // reading from disk. onSync receives those forwards.
+    broadcast: (prefs: Record<string, unknown>) => ipcRenderer.send(IPC.APPEARANCE_BROADCAST, prefs),
+    onSync: (cb: (prefs: Record<string, unknown>) => void) => {
+      const h = (_e: IpcRendererEvent, prefs: any) => cb(prefs);
+      ipcRenderer.on(IPC.APPEARANCE_SYNC, h);
+      return () => ipcRenderer.removeListener(IPC.APPEARANCE_SYNC, h);
+    },
   },
   defaults: {
     get: (): Promise<{ skipPermissions: boolean; model: string; projectFolder: string }> =>

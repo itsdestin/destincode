@@ -386,6 +386,11 @@ export const IPC = {
   // Request the full transcript history for a session — used when a window
   // acquires ownership and needs to hydrate its reducer from disk.
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
+  // Appearance sync across peer windows — Renderer → Main broadcasts, Main
+  // → other Renderers applies without re-broadcasting. Lets a theme change
+  // in window 2 propagate to window 1 without a reload.
+  APPEARANCE_BROADCAST: 'appearance:broadcast',
+  APPEARANCE_SYNC: 'appearance:sync',
 } as const;
 
 // --- Window registry / detach types ---
