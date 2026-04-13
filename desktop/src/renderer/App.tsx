@@ -1278,6 +1278,16 @@ function AppInner() {
 
   const sessionInitialized = sessionId ? initializedSessions.has(sessionId) : true;
 
+  // Show a "something may be wrong" hint after 15s of waiting on initialization.
+  // Resets whenever the active session changes or the session becomes initialized.
+  const [initSlowWarning, setInitSlowWarning] = useState(false);
+  useEffect(() => {
+    if (sessionInitialized) { setInitSlowWarning(false); return; }
+    setInitSlowWarning(false);
+    const t = setTimeout(() => setInitSlowWarning(true), 15000);
+    return () => clearTimeout(t);
+  }, [sessionId, sessionInitialized]);
+
   // Terminal mode on touch/remote platforms — show minimal input with special keys
   const isTerminalTouch = currentViewMode === 'terminal' && getPlatform() !== 'electron';
 
@@ -1420,12 +1430,19 @@ function AppInner() {
                   )}
                 </React.Fragment>
               ))}
-              {/* Initializing overlay — shown before Claude is ready.
+              {/* Initializing overlay — shown before Claude is ready, but only in chat view.
+                 Terminal view must stay accessible during init so the user can interact there.
                  z-10: must stay below glassmorphism chrome (z-20) so header/bottom bars remain accessible */}
-              {!sessionInitialized && sessionId && (
+              {!sessionInitialized && sessionId && currentViewMode !== 'terminal' && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-canvas">
                   <ThemeMascot variant="idle" fallback={AppIcon} className="w-16 h-16 text-fg-dim mb-6 animate-pulse" />
                   <p className="text-sm text-fg-dim font-medium">Initializing session...</p>
+                  {initSlowWarning && (
+                    <div className="mt-4 text-xs text-fg-muted text-center max-w-xs flex flex-col gap-1">
+                      <p>Something may be wrong.</p>
+                      <p>Use the chat/terminal toggle to check terminal view for messages.</p>
+                    </div>
+                  )}
                 </div>
               )}
               {trustGateActive && sessionId && <TrustGate sessionId={sessionId} />}
