@@ -5,6 +5,7 @@ import { isAndroid } from '../platform';
 import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
 import { ModelInfoTooltip } from './ModelPickerPopup';
+import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 
 /* ── Narrow viewport hook — mirrors Android's single-session behavior ── */
 const NARROW_BREAKPOINT = 640;
@@ -619,7 +620,10 @@ export default function SessionStrip({
               </div>
               {/* Skip Permissions — grayed out when Gemini is selected */}
               <div className="flex items-center justify-between" style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
+                <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
+                  Skip Permissions
+                  <SkipPermissionsInfoTooltip />
+                </label>
                 <button
                   onClick={() => setDangerous(!dangerous)}
                   className={`w-8 h-4.5 rounded-full relative transition-colors ${dangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}

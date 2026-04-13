@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
@@ -256,7 +257,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
 
         {/* Skip Permissions */}
         <div className="flex items-center justify-between">
-          <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
+          <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
+            Skip Permissions
+            <SkipPermissionsInfoTooltip />
+          </label>
           <button
             onClick={() => setResumeDangerous(!resumeDangerous)}
             className={`w-8 h-4.5 rounded-full relative transition-colors ${resumeDangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
