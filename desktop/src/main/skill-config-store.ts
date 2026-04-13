@@ -72,10 +72,10 @@ export class SkillConfigStore {
         if (!this.config.packages) this.config.packages = {};
       }
 
-      // Phase 6: one-time migration of toolkit layers + community themes
-      if (!this.config.migrated) {
-        this.migrateExistingInstalls();
-      }
+      // Phase 6 monolith-layer migration removed: decomposition-v3 is a clean
+      // break (plan §9.1). The packages map is now authoritative; hook-,
+      // integration-, and mcp-reconciler populate runtime state from
+      // filesystem manifests on launch instead of a one-time migration.
 
       return this.config;
     } catch (err) {
@@ -88,115 +88,6 @@ export class SkillConfigStore {
       }
       return this.migrate([]);
     }
-  }
-
-  /**
-   * Phase 6: Migrate existing toolkit layer installs and community themes
-   * into the unified packages map. Runs once, guarded by `migrated` flag.
-   * Non-destructive — only adds entries, never deletes files or overwrites
-   * existing package entries.
-   */
-  private migrateExistingInstalls(): void {
-    const config = this.config!;
-    if (!config.packages) config.packages = {};
-    const now = new Date().toISOString();
-
-    // --- Toolkit layers ---
-    try {
-      const toolkitConfigPath = path.join(os.homedir(), '.claude', 'toolkit-state', 'config.json');
-      if (fs.existsSync(toolkitConfigPath)) {
-        const toolkitConfig = JSON.parse(fs.readFileSync(toolkitConfigPath, 'utf8'));
-        const installedLayers: string[] = toolkitConfig.installed_layers || [];
-        const toolkitRoot: string = toolkitConfig.toolkit_root || '';
-
-        for (const layer of installedLayers) {
-          const layerName = `destinclaude-${layer}`;
-
-          // Don't overwrite existing package entries (idempotent)
-          if (config.packages[layerName]) continue;
-
-          // Determine layer directory path from toolkit root
-          const layerDir = toolkitRoot
-            ? path.join(toolkitRoot, layer)
-            : path.join(os.homedir(), '.claude', 'plugins', 'destinclaude', layer);
-
-          // Verify the layer directory actually exists
-          if (!fs.existsSync(layerDir)) {
-            console.warn(`[SkillConfigStore] Migration: skipping layer "${layer}" — directory not found at ${layerDir}`);
-            continue;
-          }
-
-          // Try to read version from the layer's plugin.json
-          let version = '0.1.0';
-          try {
-            const pluginJson = JSON.parse(fs.readFileSync(path.join(layerDir, 'plugin.json'), 'utf8'));
-            if (pluginJson.version) version = pluginJson.version;
-          } catch {
-            // Fallback to default version
-          }
-
-          // Core layer is not removable; other layers are
-          const removable = layer !== 'core';
-
-          config.packages[layerName] = {
-            version,
-            source: 'marketplace',
-            installedAt: now,
-            removable,
-            components: [{ type: 'plugin', path: layerDir }],
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('[SkillConfigStore] Migration: failed to read toolkit config, skipping layers:', err);
-    }
-
-    // --- Community themes ---
-    try {
-      const themesDir = path.join(os.homedir(), '.claude', 'destinclaude-themes');
-      if (fs.existsSync(themesDir)) {
-        const entries = fs.readdirSync(themesDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          const slug = entry.name;
-          const packageKey = `theme:${slug}`;
-
-          // Don't overwrite existing package entries (idempotent)
-          if (config.packages[packageKey]) continue;
-
-          const manifestPath = path.join(themesDir, slug, 'manifest.json');
-          if (!fs.existsSync(manifestPath)) continue;
-
-          try {
-            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-            const source = manifest.source;
-
-            // Skip built-in themes (destinclaude or missing source)
-            if (!source || source === 'destinclaude') continue;
-
-            // Map manifest source to package source
-            const pkgSource: 'marketplace' | 'user' =
-              source === 'community' ? 'marketplace' : source === 'user' ? 'user' : 'marketplace';
-
-            config.packages[packageKey] = {
-              version: manifest.version || '1.0.0',
-              source: pkgSource,
-              installedAt: now,
-              removable: true,
-              components: [{ type: 'theme', path: path.join(themesDir, slug) }],
-            };
-          } catch (manifestErr) {
-            console.warn(`[SkillConfigStore] Migration: skipping theme "${slug}" — corrupt manifest:`, manifestErr);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[SkillConfigStore] Migration: failed to scan themes directory, skipping themes:', err);
-    }
-
-    // Mark migration complete and persist
-    config.migrated = true;
-    this.save();
   }
 
   /** First-run migration: create config with all existing skills as favorites */
