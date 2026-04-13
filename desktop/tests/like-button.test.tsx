@@ -176,4 +176,27 @@ describe('LikeButton', () => {
     // State must remain unliked
     expect(getHeartButton(container).getAttribute('aria-pressed')).toBe('false');
   });
+
+  // ── Stats-context reactivity (count sync after mount) ─────────────────────────
+
+  it('updates count when initialCount prop changes (stats load after mount)', async () => {
+    setupApiMock(vi.fn());
+    mockAuth(false);
+
+    const { rerender, container } = render(
+      <LikeButton themeId="t" initialCount={0} />
+    );
+
+    // Initial render with 0 — count element should be empty (component hides 0)
+    // The aria-label still reflects the count, which is the reliable assertion here
+    expect(getHeartButton(container).getAttribute('aria-label')).toContain('0');
+
+    // Stats context loads — re-render with the real count
+    await act(async () => {
+      rerender(<LikeButton themeId="t" initialCount={42} />);
+    });
+
+    // aria-label should now reflect the updated count
+    expect(getHeartButton(container).getAttribute('aria-label')).toContain('42');
+  });
 });

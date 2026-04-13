@@ -97,6 +97,17 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
     return () => { cancelledRef.current = true; };
   }, []);
 
+  // Sync external count updates (stats-context loading late) into local state.
+  // Skip while a like is in flight so we don't clobber the optimistic +/-1 delta.
+  useEffect(() => {
+    if (!inFlight) setCount(initialCount);
+  }, [initialCount, inFlight]);
+
+  // Note: initialLiked is NOT synced here intentionally. The backend doesn't expose
+  // per-user liked state today, so initialLiked is always undefined → false. Adding
+  // a sync effect for it would cause a re-render storm on every stats reload with no
+  // benefit. Revisit when the backend exposes per-user liked state.
+
   const handleClick = useCallback(async (e: React.MouseEvent) => {
     // Stop click from bubbling up to ThemeCard's onClick (which opens detail)
     e.stopPropagation();
@@ -183,6 +194,11 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
           role="status"
           aria-live="polite"
           className="absolute bottom-full right-0 mb-1 whitespace-nowrap px-2 py-1 rounded-md bg-panel border border-edge text-[10px] text-fg shadow-md"
+          // zIndex 62 = one above CONTENT_Z[2] (61, L2 content). The toast anchors inline
+          // beside the button inside an OverlayPanel, so it needs to clear the panel's
+          // own surface. Not L3 (70) — destructive confirmations only. Not using the
+          // layer primitives because this is an ephemeral position:absolute sibling,
+          // not a full overlay surface.
           style={{ zIndex: 62 }}
         >
           {toastMessage}
