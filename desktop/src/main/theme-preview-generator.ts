@@ -35,18 +35,53 @@ export async function generateThemePreview(
     // Load the HTML content
     await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 
-    // Wait for fonts/rendering to settle
-    await new Promise(r => setTimeout(r, 300));
+    // Wait for an event-based ready signal (fonts + wallpaper/pattern decoded).
+    // The old 300ms fixed delay raced large base64 wallpapers — Chromium's
+    // image decode can easily exceed that, producing previews that were either
+    // missing the wallpaper or captured mid-paint.
+    await waitForPreviewReady(win, 3000);
+
+    // One frame of settle after decode so layout + any reflow from late
+    // background-size:cover computation has flushed.
+    await new Promise(r => setTimeout(r, 50));
 
     // Capture the page
     const image = await win.webContents.capturePage();
     const pngBuffer = image.toPNG();
+
+    // Validate: a zero-byte or tiny PNG means capture fired before paint.
+    // 800x500 solid color still compresses to ~200-400 bytes, so 150 is a safe
+    // "something went wrong" floor without false positives on clean themes.
+    if (pngBuffer.length < 150) {
+      throw new Error(`Preview capture produced suspiciously small PNG (${pngBuffer.length} bytes) — wallpaper likely did not decode in time.`);
+    }
 
     await fs.promises.writeFile(outputPath, pngBuffer);
     return outputPath;
   } finally {
     win.destroy();
   }
+}
+
+/**
+ * Poll the offscreen window for a `window.__previewReady` flag that the
+ * injected preview HTML sets once fonts + wallpaper + pattern images have all
+ * resolved their decode() promises. Returns as soon as the flag is true, or
+ * after `capMs` as a hard fallback so a broken theme can't hang publish.
+ */
+async function waitForPreviewReady(win: BrowserWindow, capMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < capMs) {
+    try {
+      const ready = await win.webContents.executeJavaScript('window.__previewReady === true');
+      if (ready) return;
+    } catch {
+      // Page not navigated yet or window destroyed — loop and recheck
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  // Cap hit — proceed anyway with whatever's rendered. Validation below will
+  // reject if the result is obviously empty.
 }
 
 /**
@@ -364,6 +399,31 @@ function buildPreviewHTML(manifest: Record<string, any>, themeDir: string): stri
     <span style="flex:1"></span>
     <span class="status-pill">${dark ? 'Dark' : 'Light'}</span>
   </div>
+  <script>
+    // Signal to the main-process capture loop that fonts + wallpaper + pattern
+    // have all finished decoding. Main process polls window.__previewReady
+    // every 50ms and captures as soon as it's true (or after a 3s cap).
+    // Without this the old fixed 300ms delay raced large wallpapers.
+    (async () => {
+      const wait = [];
+      if (document.fonts && document.fonts.ready) wait.push(document.fonts.ready);
+      ${wallpaperDataUri ? `{
+        const img = new Image();
+        img.src = ${JSON.stringify(wallpaperDataUri)};
+        wait.push(img.decode().catch(() => {}));
+      }` : ''}
+      ${patternDataUri ? `{
+        const img = new Image();
+        img.src = ${JSON.stringify(patternDataUri)};
+        wait.push(img.decode().catch(() => {}));
+      }` : ''}
+      try { await Promise.all(wait); } catch {}
+      // Double-rAF so Chromium has actually painted the decoded frames before
+      // we let capturePage fire.
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      window.__previewReady = true;
+    })();
+  </script>
 </body>
 </html>`;
 }
