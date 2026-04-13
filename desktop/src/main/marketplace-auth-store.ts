@@ -17,6 +17,8 @@ interface Backing {
   get<T>(key: string): T | undefined;
   set<T>(key: string, value: T): void;
   delete(key: string): void;
+  // clearAll: deletes all auth keys in a single operation so signOut() is atomic
+  clearAll(): void;
 }
 
 export class MarketplaceAuthStore {
@@ -40,8 +42,10 @@ export class MarketplaceAuthStore {
   }
 
   signOut(): void {
-    this.backing.delete("marketplace.token");
-    this.backing.delete("marketplace.user");
+    // Fix: use clearAll() so token and user profile are removed in one atomic
+    // operation — prevents a crash between two deletes leaving inconsistent state
+    // (e.g. token gone but stale user profile still present).
+    this.backing.clearAll();
   }
 }
 
@@ -75,7 +79,9 @@ class FsStoreBacking implements Backing {
     // Atomic write: write to temp file then rename to prevent corruption on crash
     const tmp = this.filePath + '.tmp';
     // Intentionally no JSON pretty-print: token file is never read by humans
-    fs.writeFileSync(tmp, JSON.stringify(this.data), 'utf8');
+    // Fix: 0o600 so only the owner can read this file (bearer token inside).
+    // Windows ignores the mode; macOS/Linux enforce it. renameSync preserves permissions.
+    fs.writeFileSync(tmp, JSON.stringify(this.data), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, this.filePath);
   }
 
@@ -93,6 +99,14 @@ class FsStoreBacking implements Backing {
   delete(key: string): void {
     this.load();
     delete this.data[key];
+    this.save();
+  }
+
+  clearAll(): void {
+    // Fix: delete all keys in memory first, then save once — single atomic write
+    // instead of two separate saves (avoids partial-state on crash between them).
+    this.load();
+    this.data = {};
     this.save();
   }
 }

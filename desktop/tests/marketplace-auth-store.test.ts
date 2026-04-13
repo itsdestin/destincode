@@ -10,6 +10,7 @@ describe("MarketplaceAuthStore", () => {
       get: (k) => backing.get(k),
       set: (k, v) => backing.set(k, v),
       delete: (k) => backing.delete(k),
+      clearAll: () => backing.clear(),
     });
   });
 
@@ -31,5 +32,12 @@ describe("MarketplaceAuthStore", () => {
   it("persists the user profile alongside the token", () => {
     store.setSession("tok", { id: "github:1", login: "u", avatar_url: "http://a" });
     expect(store.getUser()).toEqual({ id: "github:1", login: "u", avatar_url: "http://a" });
+  });
+
+  it("signOut clears user profile too", () => {
+    store.setSession("tok", { id: "github:1", login: "u", avatar_url: "http://a" });
+    store.signOut();
+    expect(store.getUser()).toBeNull();
+    expect(store.getToken()).toBeNull();
   });
 });
