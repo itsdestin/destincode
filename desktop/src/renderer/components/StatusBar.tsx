@@ -390,8 +390,25 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 }) {
   // Track which widget's (i) tooltip is expanded
   const [expandedInfo, setExpandedInfo] = useState<WidgetId | null>(null);
+  // Track whether the Theme widget's cycle editor is expanded. Separate from
+  // expandedInfo because the cycle editor is Theme-specific and collapses the
+  // info panel when opened (and vice-versa) — they're mutually exclusive rows.
+  const [cycleEditorOpen, setCycleEditorOpen] = useState(false);
+  // Theme list + cycle membership come from the theme context, consumed here
+  // so the Theme pill's cycle can be edited without leaving the widget popup.
+  const { allThemes, cycleList, setCycleList } = useTheme();
 
   if (!open) return null;
+
+  const toggleCycle = (slug: string) => {
+    if (cycleList.includes(slug)) {
+      // Keep at least one theme in the cycle — otherwise the pill has nothing to rotate to.
+      const next = cycleList.filter(s => s !== slug);
+      if (next.length > 0) setCycleList(next);
+    } else {
+      setCycleList([...cycleList, slug]);
+    }
+  };
 
   return createPortal(
     <>
@@ -430,6 +447,8 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                 <div className="space-y-0.5">
                   {cat.widgets.map((w) => {
                     const isExpanded = expandedInfo === w.id;
+                    const isThemeRow = w.id === 'theme';
+                    const showCycleEditor = isThemeRow && cycleEditorOpen;
                     return (
                       <div key={w.id}>
                         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-inset transition-colors">
@@ -454,9 +473,33 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                             <span className="text-[11px] text-fg">{w.label}</span>
                           </button>
 
+                          {/* Pencil — Theme widget only. Opens the cycle editor
+                              (which themes the pill rotates through). Moved here
+                              from per-card checkmarks in the Appearance popup. */}
+                          {isThemeRow && (
+                            <button
+                              onClick={() => {
+                                setCycleEditorOpen(v => !v);
+                                setExpandedInfo(null);
+                              }}
+                              className={`flex-shrink-0 p-0.5 rounded-sm transition-colors ${
+                                showCycleEditor ? 'text-accent' : 'text-fg-faint hover:text-fg-muted'
+                              }`}
+                              title="Edit theme cycle"
+                              aria-label="Edit theme cycle"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                              </svg>
+                            </button>
+                          )}
+
                           {/* (i) info toggle */}
                           <button
-                            onClick={() => setExpandedInfo(isExpanded ? null : w.id)}
+                            onClick={() => {
+                              setExpandedInfo(isExpanded ? null : w.id);
+                              if (isThemeRow) setCycleEditorOpen(false);
+                            }}
                             className={`flex-shrink-0 p-0.5 rounded-sm transition-colors ${
                               isExpanded ? 'text-accent' : 'text-fg-faint hover:text-fg-muted'
                             }`}
@@ -473,6 +516,51 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                             <p className="text-fg-faint leading-relaxed">
                               <span className="font-medium text-fg-muted">Best for:</span> {w.bestFor}
                             </p>
+                          </div>
+                        )}
+
+                        {/* Theme cycle editor — inline, mirrors the info-panel layout.
+                            Tapping the theme pill in the status bar rotates through
+                            every theme checked here. Must keep ≥1 in the cycle. */}
+                        {showCycleEditor && (
+                          <div className="ml-7 mr-2 mb-1.5 px-2.5 py-2 rounded-md bg-inset border border-edge-dim text-[10px] space-y-1.5">
+                            <p className="text-fg-dim leading-relaxed">
+                              Pick which themes the pill rotates through when you tap it.
+                            </p>
+                            <div className="space-y-0.5 pt-1">
+                              {allThemes.map(t => {
+                                const inCycle = cycleList.includes(t.slug);
+                                const isOnly = inCycle && cycleList.length === 1;
+                                return (
+                                  <button
+                                    key={t.slug}
+                                    onClick={() => toggleCycle(t.slug)}
+                                    disabled={isOnly}
+                                    className={`flex items-center gap-2 w-full px-1.5 py-1 rounded-sm text-left transition-colors ${
+                                      isOnly ? 'opacity-50 cursor-not-allowed' : 'hover:bg-panel'
+                                    }`}
+                                    title={isOnly ? 'At least one theme must stay in the cycle' : undefined}
+                                  >
+                                    <span
+                                      className={`w-3 h-3 rounded-sm border flex-shrink-0 flex items-center justify-center transition-colors ${
+                                        inCycle ? 'bg-accent border-accent text-on-accent' : 'border-edge-dim'
+                                      }`}
+                                    >
+                                      {inCycle && (
+                                        <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor">
+                                          <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z" />
+                                        </svg>
+                                      )}
+                                    </span>
+                                    <span
+                                      className="w-2.5 h-2.5 rounded-full flex-shrink-0 border border-edge-dim"
+                                      style={{ background: `linear-gradient(135deg, ${t.tokens.canvas}, ${t.tokens.accent})` }}
+                                    />
+                                    <span className="text-fg truncate">{t.name}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
                           </div>
                         )}
                       </div>
