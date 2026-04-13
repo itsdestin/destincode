@@ -315,6 +315,39 @@ export default function SessionStrip({
       if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
       isDragging.current = true;
       suppressClick.current = true;
+      // Tell main this is a real drag — it starts the cross-window cursor
+      // ticker so peer windows can highlight their strip as a drop target.
+      const draggedSession = sessions[dragIdx];
+      (window as any).claude?.detach?.dragStarted?.({ sessionId: draggedSession.id });
+    }
+
+    // Detach: once the cursor crosses outside the window's own bounds,
+    // hand off to main to spawn a peer window and transfer ownership.
+    // Pointer capture keeps events flowing after we leave the viewport.
+    const oob =
+      e.clientX < 0 || e.clientY < 0 ||
+      e.clientX > window.innerWidth || e.clientY > window.innerHeight;
+    if (oob) {
+      const draggedSession = sessions[dragIdx];
+      if (draggedSession) {
+        const screenX = (e as any).screenX ?? (window.screenX + e.clientX);
+        const screenY = (e as any).screenY ?? (window.screenY + e.clientY);
+        (window as any).claude?.detach?.detachStart?.({
+          sessionId: draggedSession.id,
+          screenX,
+          screenY,
+        });
+      }
+      (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+      (window as any).claude?.detach?.dragEnded?.();
+      setDragIdx(null);
+      setOverIdx(null);
+      setDragPos(null);
+      setGhostTarget(null);
+      dragOrigin.current = null;
+      isDragging.current = false;
+      setTimeout(() => { suppressClick.current = false; }, 0);
+      return;
     }
 
     setDragPos({ x: e.clientX, y: e.clientY });
@@ -379,6 +412,11 @@ export default function SessionStrip({
       if (draggedSession) {
         onSelectSession(draggedSession.id);
       }
+    }
+    // Stop main's cross-window cursor ticker (started on real-drag threshold).
+    // Idempotent — main no-ops the event if no ticker is active.
+    if (isDragging.current) {
+      (window as any).claude?.detach?.dragEnded?.();
     }
     // Reset all drag state
     setDragIdx(null);
@@ -465,7 +503,7 @@ export default function SessionStrip({
 
   return (
     <>
-      <div ref={pillBarRef} className="session-strip flex items-center gap-0.5 bg-inset rounded-full px-1.5 py-0.5 overflow-hidden min-w-0 shrink">
+      <div ref={pillBarRef} data-session-strip className="session-strip flex items-center gap-0.5 bg-inset rounded-full px-1.5 py-0.5 overflow-hidden min-w-0 shrink">
         {/* ── Session pills ──────────────────────────────── */}
         {visibleSessions.map((s, idx) => {
           const color = sessionStatuses?.get(s.id) || 'gray';
