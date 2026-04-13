@@ -75,6 +75,12 @@ export class ThemeMarketplaceProvider {
     this.configStore = configStore ?? null;
   }
 
+  /** Drop the in-memory registry cache so the next list/detail call refetches. */
+  invalidateRegistryCache(): void {
+    this.cachedIndex = null;
+    this.cacheTimestamp = 0;
+  }
+
   /** Fetch registry (with cache), apply filters, annotate install status. */
   async listThemes(filters?: ThemeMarketplaceFilters): Promise<ThemeRegistryEntryWithStatus[]> {
     const index = await this.fetchRegistry();
@@ -295,7 +301,10 @@ export class ThemeMarketplaceProvider {
    * 2. Fork itsdestin/destinclaude-themes (idempotent — gh handles existing forks)
    * 3. Create a branch, commit theme files, push, and open a PR
    */
-  async publishTheme(slug: string): Promise<{ prUrl: string }> {
+  async publishTheme(
+    slug: string,
+    opts: { existingEntry?: ThemeRegistryEntry } = {},
+  ): Promise<{ prUrl: string; prNumber: number }> {
     if (!SAFE_SLUG_RE.test(slug)) {
       throw new Error('Invalid theme slug');
     }
@@ -324,7 +333,10 @@ export class ThemeMarketplaceProvider {
     }
 
     const UPSTREAM_REPO = 'itsdestin/destinclaude-themes';
-    const branchName = `theme/${slug}`;
+    const isUpdate = !!opts.existingEntry;
+    const branchName = isUpdate
+      ? `update-theme/${slug}-${Date.now()}`
+      : `theme/${slug}`;
 
     // 2. Fork the themes repo (idempotent — gh returns existing fork)
     try {
@@ -377,10 +389,19 @@ export class ThemeMarketplaceProvider {
     // 5. Collect all theme files (manifest + assets + preview)
     const filesToUpload: { repoPath: string; localPath: string; binary: boolean }[] = [];
 
-    // Add manifest.json (strip source field for the PR — reviewer decides)
+    // Compute a stable content hash of manifest + assets (excluding preview.png
+    // and the three ephemeral fields stripped below). Baked into the manifest so
+    // destinclaude-themes CI can copy it into the registry entry without
+    // recomputing — this is what lets the app later detect local drift.
+    const { computeThemeContentHash } = await import('./theme-content-hash');
+    const contentHash = await computeThemeContentHash(themeDir);
+
+    // Strip ephemeral fields, then bake in the content hash.
     const cleanManifest = { ...manifest };
     delete cleanManifest.source;
     delete cleanManifest.basePath;
+    cleanManifest.contentHash = contentHash;
+
     filesToUpload.push({
       repoPath: `themes/${slug}/manifest.json`,
       localPath: manifestPath,
@@ -479,17 +500,25 @@ export class ThemeMarketplaceProvider {
     }
 
     // 6. Create the PR
-    const prTitle = `[Theme] ${manifest.name || slug}`;
+    const prTitle = isUpdate
+      ? `[Theme Update] ${manifest.name || slug}`
+      : `[Theme] ${manifest.name || slug}`;
+
     const prBody = [
-      `## New Theme: ${manifest.name || slug}`,
+      isUpdate
+        ? `## Theme Update: ${manifest.name || slug}`
+        : `## New Theme: ${manifest.name || slug}`,
       '',
       manifest.description ? `> ${manifest.description}` : '',
       '',
       `- **Author:** ${manifest.author || username}`,
       `- **Mode:** ${manifest.dark ? 'Dark' : 'Light'}`,
       `- **Slug:** \`${slug}\``,
+      `- **Content hash:** \`${contentHash}\``,
       '',
-      '_Submitted via DestinCode Theme Marketplace_',
+      isUpdate
+        ? '_Update submitted via DestinCode Theme Marketplace_'
+        : '_Submitted via DestinCode Theme Marketplace_',
     ].join('\n');
 
     try {
@@ -500,7 +529,9 @@ export class ThemeMarketplaceProvider {
         '--title', prTitle,
         '--body', prBody,
       ], { timeout: 30000 });
-      return { prUrl: prUrlRaw.trim() };
+      const prUrl = prUrlRaw.trim();
+      this.invalidateRegistryCache();
+      return { prUrl, prNumber: extractPRNumber(prUrl) };
     } catch (err: any) {
       // If PR already exists, try to get its URL
       if (err.stderr?.includes('already exists')) {
@@ -512,7 +543,9 @@ export class ThemeMarketplaceProvider {
             '--json', 'url', '--jq', '.[0].url',
           ]);
           if (existingPr.trim()) {
-            return { prUrl: existingPr.trim() };
+            const prUrl = existingPr.trim();
+            this.invalidateRegistryCache();
+            return { prUrl, prNumber: extractPRNumber(prUrl) };
           }
         } catch { /* fall through */ }
       }
@@ -597,4 +630,11 @@ export class ThemeMarketplaceProvider {
       // Non-critical — continue without caching
     }
   }
+}
+
+/** Pull the numeric PR id out of a github.com PR url. Throws on malformed input. */
+function extractPRNumber(url: string): number {
+  const m = url.match(/\/pull\/(\d+)/);
+  if (!m) throw new Error(`Could not parse PR number from ${url}`);
+  return Number(m[1]);
 }
