@@ -256,8 +256,23 @@ export function registerIpcHandlers(
     return result;
   });
 
-  ipcMain.handle(IPC.SESSION_LIST, async () => {
-    return sessionManager.listSessions();
+  // Multi-window aware: when a windowRegistry is wired up, scope the list to
+  // sessions owned by the calling renderer's window — otherwise a freshly-
+  // spawned peer window picks up every session on mount and its ownership-
+  // acquired dedup leaves strangers stuck in the local list. Sessions with no
+  // owner yet (e.g., remote-created) fall back to the primary window's list
+  // so remote clients still see everything. RemoteServer uses its own path
+  // and doesn't go through this handler.
+  ipcMain.handle(IPC.SESSION_LIST, async (event) => {
+    const all = sessionManager.listSessions();
+    if (!windowRegistry) return all;
+    const callerId = event.sender.id;
+    const primaryId = windowRegistry.getLeaderId();
+    return all.filter((s) => {
+      const owner = windowRegistry.getOwner(s.id);
+      if (owner == null) return callerId === primaryId; // unowned → primary only
+      return owner === callerId;
+    });
   });
 
   ipcMain.handle(IPC.SESSION_SWITCH, async (_event, sessionId: string) => {
