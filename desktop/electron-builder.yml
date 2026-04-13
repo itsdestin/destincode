@@ -9,7 +9,8 @@ mac:
   target:
     - target: dmg
       arch:
-        - universal
+        - x64
+        - arm64
   category: public.app-category.developer-tools
 linux:
   target: AppImage
