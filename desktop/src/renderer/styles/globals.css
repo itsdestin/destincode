@@ -437,34 +437,49 @@ html, body, #root {
 }
 
 /* Scroll-fade affordance. Applied via useScrollFade hook — hides the scrollbar
-   and fades the content at whichever edge still has hidden scroll room. The
-   hook toggles data-fade-top / data-fade-bottom based on scrollTop; the mask
-   gradient reads the resulting --fade-top-size / --fade-bottom-size to show
-   or hide each fade edge. No fade when content fits (both vars stay 0). */
+   and overlays a panel-colored gradient at whichever edge still has hidden
+   scroll room. The hook toggles data-fade-top / data-fade-bottom based on
+   scrollTop; the pseudo-element overlays fade in/out via opacity.
+   Why pseudo-element overlays instead of mask-image: mask makes content
+   transparent (revealing the same panel color behind), which produces a barely
+   visible change. Painting a panel-colored gradient ON TOP of content gives a
+   visible "wash" — the bottom row is clearly covered, signalling more content.
+   position:sticky pins each overlay to the viewport edge of the scroll
+   container; the matching negative margin cancels the layout height so it
+   never displaces real content. */
 .scroll-fade {
-  --fade-top-size: 0px;
-  --fade-bottom-size: 0px;
   overflow-y: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    black var(--fade-top-size),
-    black calc(100% - var(--fade-bottom-size)),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    black var(--fade-top-size),
-    black calc(100% - var(--fade-bottom-size)),
-    transparent 100%
-  );
+  position: relative;
 }
 .scroll-fade::-webkit-scrollbar { display: none; }
-.scroll-fade[data-fade-top="true"] { --fade-top-size: 24px; }
-.scroll-fade[data-fade-bottom="true"] { --fade-bottom-size: 24px; }
+
+.scroll-fade::before,
+.scroll-fade::after {
+  content: '';
+  display: block;
+  position: sticky;
+  left: 0;
+  right: 0;
+  height: 36px;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+.scroll-fade::before {
+  top: 0;
+  margin-bottom: -36px;
+  background: linear-gradient(to bottom, var(--panel) 0%, transparent 100%);
+}
+.scroll-fade::after {
+  bottom: 0;
+  margin-top: -36px;
+  background: linear-gradient(to top, var(--panel) 0%, transparent 100%);
+}
+.scroll-fade[data-fade-top="true"]::before { opacity: 1; }
+.scroll-fade[data-fade-bottom="true"]::after { opacity: 1; }
 
 /* Floating overlays (portaled menus/popups). Solid themes: opaque.
    Wallpaper themes: translucent + blur (injected by theme-engine). */
