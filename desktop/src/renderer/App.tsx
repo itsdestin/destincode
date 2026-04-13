@@ -255,7 +255,13 @@ function AppInner() {
   }, [chatStateMap, dispatch]);
   const gameState = useGameState();
   const gameDispatch = useGameDispatch();
-  const lobby = usePartyLobby();
+  // Gate on isLeader so only the first-launched window opens the lobby
+  // socket — avoids duplicate presence for the same GitHub identity when
+  // multiple peer windows are open. When detach isn't available (remote
+  // shim / Android), myWindowId stays null so isLeader is false — fall
+  // back to true-by-default so the lobby still connects.
+  const lobbyLeader = (window as any).claude?.detach?.openDetached ? isLeader : true;
+  const lobby = usePartyLobby(lobbyLeader);
   const game = usePartyGame(lobby.updateStatus, lobby.challengePlayer);
 
   const gameConnection = useMemo(() => ({
