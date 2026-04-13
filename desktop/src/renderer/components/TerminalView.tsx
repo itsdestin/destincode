@@ -215,7 +215,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
   // at a gentler 0.92 opacity — the blurred layer handles ambience. Without
   // one (gradient, glass-only, or reduced-effects themes), fall back to the
   // old 0.88 container opacity trick so the sharp background peeks through.
-  const xtermOpacity = terminalBg ? 0.82 : (seeThrough ? 0.82 : 1);
+  const xtermOpacity = terminalBg ? 0.6 : (seeThrough ? 0.6 : 1);
 
   return (
     <div
@@ -252,10 +252,10 @@ export default function TerminalView({ sessionId, visible }: Props) {
             // Runtime `filter` on a static image paints once — unlike
             // backdrop-filter which recomposites every frame. Only applied
             // when the theme didn't ship a pre-baked terminal asset.
-            filter: needsRuntimeBlur ? 'blur(14px) brightness(0.86)' : undefined,
+            filter: needsRuntimeBlur ? 'blur(8px) brightness(0.86)' : undefined,
             // Blur expands beyond the element's bounds; scale up so the
             // soft edges don't reveal clipped pixels at the corners.
-            transform: needsRuntimeBlur ? 'scale(1.05)' : undefined,
+            transform: needsRuntimeBlur ? 'scale(1.03)' : undefined,
           }}
         />
       )}
