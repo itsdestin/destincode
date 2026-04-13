@@ -234,13 +234,20 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   // compound — the 5th flick in a row scrolls farther than the 1st. A pause
   // (~350ms) resets the multiplier so an intentional small scroll stays small.
   // Mirrors the arrow-key acceleration pattern above but for wheel input.
+  //
+  // Important: a single touchpad flick fires ~20-30 wheel events (initial
+  // input + OS momentum tail). We only bump the multiplier at the START of a
+  // new burst (gap > BURST_GAP since last bump) so one flick stays at 1x;
+  // only a SECOND deliberate flick within RESET_MS compounds.
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
     let multiplier = 1;
     let lastWheelTime = 0;
+    let lastBumpTime = 0;
     const RESET_MS = 350;
+    const BURST_GAP = 120;
     const STEP = 0.25;
     const MAX = 4;
 
@@ -250,11 +257,19 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
       if (Math.abs(e.deltaY) < 1) return;
 
       const now = performance.now();
-      if (now - lastWheelTime > RESET_MS) {
+      const gapSinceLastEvent = now - lastWheelTime;
+      const gapSinceLastBump = now - lastBumpTime;
+
+      if (gapSinceLastEvent > RESET_MS) {
+        // Long pause — reset to baseline (next flick = 1x)
         multiplier = 1;
-      } else {
+        lastBumpTime = now;
+      } else if (gapSinceLastBump > BURST_GAP) {
+        // New flick after previous flick's momentum settled — compound
         multiplier = Math.min(multiplier + STEP, MAX);
+        lastBumpTime = now;
       }
+      // else: mid-burst momentum events — leave multiplier alone
       lastWheelTime = now;
 
       e.preventDefault();
