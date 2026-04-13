@@ -4,6 +4,7 @@ import { isAndroid } from '../platform';
 import { useSkills } from '../state/skill-context';
 import type { ChipConfig } from '../../shared/types';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { useScrollFade } from '../hooks/useScrollFade';
 
 // Pencil SVG icon — matches the one used in StatusBar.tsx
 function PencilIcon({ size = 10 }: { size?: number }) {
@@ -148,6 +149,9 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
   const dragOrigin = useRef<{ x: number; y: number } | null>(null);
   const isDragging = useRef(false);
   const suppressClick = useRef(false);
+  // Scroll-fade: header stays outside scroll region; body mask shows fade edges.
+  const bodyRef = useScrollFade<HTMLDivElement>();
+  const skillPickerRef = useScrollFade<HTMLDivElement>();
 
   const handlePointerDown = useCallback((e: React.PointerEvent, idx: number) => {
     if (e.button !== 0) return;
@@ -259,7 +263,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
       <Scrim layer={2} onClick={onClose} />
       <OverlayPanel
         layer={2}
-        className="fixed overflow-y-auto"
+        className="fixed flex flex-col"
         style={{
           top: '50%',
           left: '50%',
@@ -268,22 +272,21 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
           maxHeight: '80vh',
         }}
       >
-        <div>
-          {/* Sticky header — matches panel surface so scrolled content
-              doesn't bleed through. */}
-          <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b border-edge bg-[var(--panel)]">
-            <h2 className="text-sm font-bold text-fg">Edit Quick Chips</h2>
-            <button
-              onClick={onClose}
-              className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+        {/* Header stays outside the scroll region so the fade mask
+            never clips it. Matches PreferencesPopup/StatusBar pattern. */}
+        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-edge">
+          <h2 className="text-sm font-bold text-fg">Edit Quick Chips</h2>
+          <button
+            onClick={onClose}
+            className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
 
-          <div className="px-4 py-3 space-y-4">
+        <div ref={bodyRef} className="scroll-fade px-4 py-3 space-y-4">
             {/* Chip list — drag-to-reorder via pointer events (mirrors
                 SessionStrip dropdown). Grip icon appears on hover; drop
                 splices the row into the target position. */}
@@ -370,7 +373,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                   <>
                     <div className="border-t border-edge-dim" />
                     <p className="text-[10px] text-fg-faint font-medium">Or pick from installed skills:</p>
-                    <div className="max-h-32 overflow-y-auto space-y-0.5">
+                    <div ref={skillPickerRef} className="scroll-fade max-h-32 space-y-0.5">
                       {availableSkills.map(skill => (
                         <button
                           key={skill.id}
@@ -389,7 +392,6 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
             {chips.length >= 10 && (
               <p className="text-[10px] text-fg-faint text-center">Maximum 10 chips reached</p>
             )}
-          </div>
         </div>
       </OverlayPanel>
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useScrollFade } from '../hooks/useScrollFade';
 import { createPortal } from 'react-dom';
 import { useTheme } from '../state/theme-context';
 import type { PermissionMode } from '../../shared/types';
@@ -411,6 +412,8 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
   // Theme list + cycle membership come from the theme context, consumed here
   // so the Theme pill's cycle can be edited without leaving the widget popup.
   const { allThemes, cycleList, setCycleList } = useTheme();
+  // Scroll-fade: hide scrollbar, fade edges to signal hidden scroll room.
+  const widgetListRef = useScrollFade<HTMLDivElement>();
 
   if (!open) return null;
 
@@ -452,7 +455,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
           </div>
 
           {/* Widget list grouped by category — scrolls within the panel */}
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+          <div ref={widgetListRef} className="scroll-fade flex-1 px-4 py-3 space-y-4">
             {WIDGET_CATEGORIES.map((cat) => (
               <section key={cat.name}>
                 <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">

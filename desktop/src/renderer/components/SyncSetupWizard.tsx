@@ -11,6 +11,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { isAndroid as checkIsAndroid } from '../platform';
+import { useScrollFade } from '../hooks/useScrollFade';
 
 // Detect desktop OS so prereq warnings can show install steps specific to the
 // user's machine (iCloud setup on Windows differs from macOS, gh install varies, etc.)
@@ -129,6 +130,11 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
   const [icloudPath, setIcloudPath] = useState<string | null>(null);
   const [syncEnabled, setSyncEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Separate refs per step — only one scroll region mounts at a time,
+  // and useScrollFade's observer needs to bind to that mounted element.
+  // PrereqCheckStep is a separate component and owns its own scroll ref.
+  const typeStepRef = useScrollFade<HTMLDivElement>();
+  const configureStepRef = useScrollFade<HTMLDivElement>();
 
   const claude = (window as any).claude;
 
@@ -151,7 +157,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
     return (
       <div className="flex flex-col h-full">
         <WizardHeader title="Add a Backup Destination" onClose={onClose} />
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+        <div ref={typeStepRef} className="scroll-fade flex-1 px-4 py-4 space-y-3">
           {types.map(({ type, desc }) => {
             const existing = existingBackends.filter(b => b.type === type).length;
             // Only Drive supports multiple accounts — rclone gives each its own remote.
@@ -295,7 +301,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           onBack={() => setStep(backendType === 'icloud' ? 'prereqs' : 'auth')}
           onClose={onClose}
         />
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <div ref={configureStepRef} className="scroll-fade flex-1 px-4 py-4 space-y-4">
           {/* Name */}
           <div>
             <label className="block text-[10px] text-fg-muted mb-1">Give this backup a name</label>
@@ -526,6 +532,7 @@ function PrereqCheckStep({
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const claude = (window as any).claude;
+  const bodyRef = useScrollFade<HTMLDivElement>();
 
   // Run prereq check on mount
   const runCheck = useCallback(async () => {
@@ -578,7 +585,7 @@ function PrereqCheckStep({
   return (
     <div className="flex flex-col h-full">
       <WizardHeader title="Checking Setup" onBack={onBack} onClose={onClose} />
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div ref={bodyRef} className="scroll-fade flex-1 px-4 py-4 space-y-4">
 
         {/* Checklist */}
         {backendType === 'drive' && (
