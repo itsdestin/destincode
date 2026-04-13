@@ -20,6 +20,7 @@ import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend, getSyncService } from './sync-state';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
+import { log } from './logger';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -32,6 +33,9 @@ export function registerIpcHandlers(
   hookRelay?: HookRelay,
   remoteConfig?: RemoteConfig,
   remoteServer?: RemoteServer,
+  // Multi-window ownership: when a session is created via IPC, assign it to
+  // the calling renderer's window so subsequent per-session events route there.
+  windowRegistry?: import('./window-registry').WindowRegistry,
 ) {
   const send = (channel: string, ...args: any[]) => {
     if (!mainWindow.isDestroyed()) {
@@ -209,8 +213,14 @@ export function registerIpcHandlers(
   });
 
   // Session CRUD
-  ipcMain.handle(IPC.SESSION_CREATE, async (_event, opts) => {
+  ipcMain.handle(IPC.SESSION_CREATE, async (event, opts) => {
     const info = sessionManager.createSession(opts);
+    // Assign the new session to the calling window so per-session events (transcript,
+    // pty output, permission prompts) route here once Task 1.4 migrates the emits.
+    if (windowRegistry) {
+      try { windowRegistry.assignSession(info.id, event.sender.id); }
+      catch (e) { log('WARN', 'IPC', 'assignSession failed', { error: String(e) }); }
+    }
     return info;
   });
 

@@ -369,6 +369,20 @@ export const IPC = {
   SYNC_FORCE: 'sync:force',
   SYNC_GET_LOG: 'sync:get-log',
   SYNC_DISMISS_WARNING: 'sync:dismiss-warning',
+  // Multi-window detach subsystem (Renderer <-> Main)
+  WINDOW_GET_ID: 'window:get-id',
+  WINDOW_DIRECTORY_UPDATED: 'window:directory-updated',
+  WINDOW_LEADER_CHANGED: 'window:leader-changed',
+  WINDOW_OPEN_DETACHED: 'window:open-detached',
+  WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
+  SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
+  SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  SESSION_DETACH_START: 'session:detach-start',
+  SESSION_DRAG_STARTED: 'session:drag-started',
+  SESSION_DRAG_ENDED: 'session:drag-ended',
+  SESSION_DRAG_DROPPED: 'session:drag-dropped',
+  SESSION_DROP_RESOLVE: 'session:drop-resolve',
+  CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
 } as const;
 
 // --- Window registry / detach types ---

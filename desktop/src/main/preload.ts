@@ -123,6 +123,20 @@ const IPC = {
   SYNC_FORCE: 'sync:force',
   SYNC_GET_LOG: 'sync:get-log',
   SYNC_DISMISS_WARNING: 'sync:dismiss-warning',
+  // Window detach / multi-window ownership (feature: drag session to new window)
+  WINDOW_GET_ID: 'window:get-id',
+  WINDOW_DIRECTORY_UPDATED: 'window:directory-updated',
+  WINDOW_LEADER_CHANGED: 'window:leader-changed',
+  WINDOW_OPEN_DETACHED: 'window:open-detached',
+  WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
+  SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
+  SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  SESSION_DETACH_START: 'session:detach-start',
+  SESSION_DRAG_STARTED: 'session:drag-started',
+  SESSION_DRAG_ENDED: 'session:drag-ended',
+  SESSION_DRAG_DROPPED: 'session:drag-dropped',
+  SESSION_DROP_RESOLVE: 'session:drop-resolve',
+  CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -365,6 +379,55 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on('window:fullscreen-changed', wrapped);
       return () => ipcRenderer.removeListener('window:fullscreen-changed', wrapped);
     },
+    // Returns this renderer's BrowserWindow webContents id — used by the detach
+    // subsystem so a window can identify itself when resolving cross-window drops.
+    getId: (): Promise<number> => ipcRenderer.invoke(IPC.WINDOW_GET_ID),
+  },
+  // Multi-window detach: drag a session pill to a new OS window, re-dock, etc.
+  // Main owns a WindowRegistry (sessionId → windowId); per-session events route
+  // only to the owning window. See docs/superpowers/specs/2026-04-12-drag-session-detach-window-design.md.
+  detach: {
+    // Subscriptions — main pushes these
+    onDirectoryUpdated: (cb: (dir: any) => void) => {
+      const h = (_e: IpcRendererEvent, dir: any) => cb(dir);
+      ipcRenderer.on(IPC.WINDOW_DIRECTORY_UPDATED, h);
+      return () => ipcRenderer.removeListener(IPC.WINDOW_DIRECTORY_UPDATED, h);
+    },
+    onLeaderChanged: (cb: (leaderId: number) => void) => {
+      const h = (_e: IpcRendererEvent, id: number) => cb(id);
+      ipcRenderer.on(IPC.WINDOW_LEADER_CHANGED, h);
+      return () => ipcRenderer.removeListener(IPC.WINDOW_LEADER_CHANGED, h);
+    },
+    onOwnershipAcquired: (cb: (payload: any) => void) => {
+      const h = (_e: IpcRendererEvent, p: any) => cb(p);
+      ipcRenderer.on(IPC.SESSION_OWNERSHIP_ACQUIRED, h);
+      return () => ipcRenderer.removeListener(IPC.SESSION_OWNERSHIP_ACQUIRED, h);
+    },
+    onOwnershipLost: (cb: (payload: any) => void) => {
+      const h = (_e: IpcRendererEvent, p: any) => cb(p);
+      ipcRenderer.on(IPC.SESSION_OWNERSHIP_LOST, h);
+      return () => ipcRenderer.removeListener(IPC.SESSION_OWNERSHIP_LOST, h);
+    },
+    onCrossWindowCursor: (cb: (payload: { screenX: number; screenY: number }) => void) => {
+      const h = (_e: IpcRendererEvent, p: any) => cb(p);
+      ipcRenderer.on(IPC.CROSS_WINDOW_CURSOR, h);
+      return () => ipcRenderer.removeListener(IPC.CROSS_WINDOW_CURSOR, h);
+    },
+    // Commands — renderer → main
+    openDetached: (payload: { sessionId: string }) =>
+      ipcRenderer.send(IPC.WINDOW_OPEN_DETACHED, payload),
+    detachStart: (payload: { sessionId: string; screenX: number; screenY: number }) =>
+      ipcRenderer.send(IPC.SESSION_DETACH_START, payload),
+    dragStarted: (payload: { sessionId: string }) =>
+      ipcRenderer.send(IPC.SESSION_DRAG_STARTED, payload),
+    dragEnded: () => ipcRenderer.send(IPC.SESSION_DRAG_ENDED),
+    dragDropped: (payload: { sessionId: string; targetWindowId: number; insertIndex: number }) =>
+      ipcRenderer.send(IPC.SESSION_DRAG_DROPPED, payload),
+    focusAndSwitch: (payload: { windowId: number; sessionId: string }) =>
+      ipcRenderer.send(IPC.WINDOW_FOCUS_AND_SWITCH, payload),
+    // Request/response — ask main which window's strip currently contains the cursor
+    dropResolve: (): Promise<{ targetWindowId: number | null }> =>
+      ipcRenderer.invoke(IPC.SESSION_DROP_RESOLVE),
   },
   theme: {
     list: () => ipcRenderer.invoke(IPC.THEME_LIST),
