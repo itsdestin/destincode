@@ -233,9 +233,12 @@ function readCachedPluginVersion(sourceDir: string): string | null {
 
 async function installFromLocal(id: string, sourceRef: string, sourceMarketplace?: string, expectedVersion?: string): Promise<InstallResult> {
   // Phase 3a: source-aware repo selection — DestinCode entries clone from
-  // itsdestin/destincode-marketplace, not the Anthropic upstream repo
+  // itsdestin/destincode-marketplace, not the Anthropic upstream repo.
+  // DESTINCODE_MARKETPLACE_BRANCH overrides the branch for test harnesses
+  // (e.g., running the decomposition-v3 branch on a scratch machine).
   const cacheRepo = path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace));
   const repoUrl = getMarketplaceRepo(sourceMarketplace);
+  const marketplaceBranch = process.env.DESTINCODE_MARKETPLACE_BRANCH || 'master';
 
   // Ensure marketplace repo is cloned, or refresh it if:
   //   (a) it's been >1h since the last pull (time-based refresh), OR
@@ -248,7 +251,7 @@ async function installFromLocal(id: string, sourceRef: string, sourceMarketplace
   let shouldRefresh = false;
   if (!fs.existsSync(cacheRepo)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    const { ok, output } = await runGit('clone', '--depth', '1', repoUrl, cacheRepo);
+    const { ok, output } = await runGit('clone', '--depth', '1', '--branch', marketplaceBranch, repoUrl, cacheRepo);
     if (!ok) return { status: 'failed', error: `Failed to clone marketplace repo: ${output.slice(0, 200)}` };
     setCacheTimestamp(cacheRepo);
   } else {
@@ -265,9 +268,10 @@ async function installFromLocal(id: string, sourceRef: string, sourceMarketplace
   if (shouldRefresh) {
     const fetchResult = await runGit('-C', cacheRepo, 'fetch', 'origin');
     if (fetchResult.ok) {
-      // Default branch defaults to master per workspace convention. If a
-      // marketplace repo later standardizes on `main`, detect origin/HEAD here.
-      const resetResult = await runGit('-C', cacheRepo, 'reset', '--hard', 'origin/master');
+      // Default branch is master per workspace convention; DESTINCODE_MARKETPLACE_BRANCH
+      // overrides. If a marketplace repo later standardizes on `main`, detect
+      // origin/HEAD here.
+      const resetResult = await runGit('-C', cacheRepo, 'reset', '--hard', `origin/${marketplaceBranch}`);
       if (resetResult.ok) setCacheTimestamp(cacheRepo);
       // Reset failure → proceed with cached copy, don't bump stamp
     }

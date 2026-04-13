@@ -55,7 +55,8 @@ const INDEX_CACHE = path.join(CACHE_DIR, 'index.json');
 const DEFAULTS_CACHE = path.join(CACHE_DIR, 'curated-defaults.json');
 
 // GitHub raw content base URL — set this to your marketplace repo
-const REGISTRY_BASE = 'https://raw.githubusercontent.com/itsdestin/destincode-marketplace/master';
+// DESTINCODE_MARKETPLACE_BRANCH overrides the branch for test harnesses.
+const REGISTRY_BASE = `https://raw.githubusercontent.com/itsdestin/destincode-marketplace/${process.env.DESTINCODE_MARKETPLACE_BRANCH || 'master'}`;
 
 const INDEX_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
