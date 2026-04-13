@@ -22,6 +22,9 @@ icon-drafts/
 tmp-screenshots/
 screenshot.png
 
+# Git worktrees (isolated feature workspaces)
+.worktrees/
+
 # Desktop app (Electron)
 node_modules/
 desktop/dist/
