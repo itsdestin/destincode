@@ -37,7 +37,17 @@ export function registerIpcHandlers(
   // the calling renderer's window so subsequent per-session events route there.
   windowRegistry?: import('./window-registry').WindowRegistry,
 ) {
+  // Broadcast a non-session-scoped event to every renderer. Status data, UI
+  // actions, and similar globals must reach every window — not just window 1.
+  // Session-scoped events should use sendForSession instead.
   const send = (channel: string, ...args: any[]) => {
+    if (windowRegistry) {
+      for (const wid of windowRegistry.getWindowIds()) {
+        const wc = webContents.fromId(wid);
+        if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
+      }
+      return;
+    }
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel, ...args);
     }
