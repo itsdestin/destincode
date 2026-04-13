@@ -1351,6 +1351,7 @@ function AppInner() {
                   statusData={{
                     usage: statusData.usage,
                     updateStatus: statusData.updateStatus,
+                    announcement: statusData.announcement,
                     contextPercent: sessionId ? (statusData.contextMap[sessionId] ?? null) : null,
                     gitBranch: sessionId ? (statusData.gitBranchMap[sessionId] ?? null) : null,
                     sessionStats: sessionId ? (statusData.sessionStatsMap[sessionId] ?? null) : null,
