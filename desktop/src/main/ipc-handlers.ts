@@ -101,17 +101,23 @@ export function registerIpcHandlers(
     await fs.promises.writeFile(path.join(themeDir, 'manifest.json'), content, 'utf-8');
   });
 
-  // Window controls — used by custom caption buttons on Windows/Linux
-  ipcMain.handle(IPC.WINDOW_MINIMIZE, () => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+  // Window controls — used by custom caption buttons on Windows/Linux.
+  // Operate on the SENDING window (BrowserWindow.fromWebContents), not the
+  // primary mainWindow — otherwise window 2's caption buttons all act on
+  // window 1.
+  ipcMain.handle(IPC.WINDOW_MINIMIZE, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) win.minimize();
   });
-  ipcMain.handle(IPC.WINDOW_MAXIMIZE, () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+  ipcMain.handle(IPC.WINDOW_MAXIMIZE, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) {
+      win.isMaximized() ? win.unmaximize() : win.maximize();
     }
   });
-  ipcMain.handle(IPC.WINDOW_CLOSE, () => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+  ipcMain.handle(IPC.WINDOW_CLOSE, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) win.close();
   });
 
   // Theme-driven window + dock icon hot-swap. Called from theme-context whenever
