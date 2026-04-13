@@ -6,7 +6,10 @@ directories:
 win:
   target: nsis
 mac:
-  target: dmg
+  target:
+    - target: dmg
+      arch:
+        - universal
   category: public.app-category.developer-tools
 linux:
   target: AppImage
