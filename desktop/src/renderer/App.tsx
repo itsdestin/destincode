@@ -1046,22 +1046,27 @@ function AppInner() {
     [sessionId, dispatch, viewModes, getUsageSnapshot],
   );
 
-  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini') => {
+  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini', launchInNewWindow?: boolean) => {
     const m = sessionModel || model;
     // Update the active model to match what was chosen in the form
     if (sessionModel && MODELS.includes(sessionModel as any)) {
       setModel(sessionModel as ModelAlias);
     }
-    await (window.claude.session.create as any)({
+    const info = await (window.claude.session.create as any)({
       name: provider === 'gemini' ? 'Gemini Session' : 'New Session',
       cwd,
       skipPermissions: dangerous,
       model: m,
       provider: provider || 'claude',
     });
+    // Launch-in-new-window: hand the freshly-created session off to a peer
+    // window via the same ownership-transfer path used by drag-detach.
+    if (launchInNewWindow && info?.id) {
+      (window as any).claude?.detach?.openDetached?.({ sessionId: info.id });
+    }
   }, [model]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean) => {
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean) => {
     const cwd = projectPath;
     const m = resumeModel || model;
     if (resumeModel && MODELS.includes(resumeModel as any)) {
@@ -1077,6 +1082,11 @@ function AppInner() {
       model: m,
     });
     if (!newSession?.id) return;
+
+    // Launch-in-new-window for resumed sessions — same peer-window spawn path.
+    if (launchInNewWindow) {
+      (window as any).claude?.detach?.openDetached?.({ sessionId: newSession.id });
+    }
 
     setResumeInfo((prev) => new Map(prev).set(newSession.id, { claudeSessionId, projectSlug }));
 

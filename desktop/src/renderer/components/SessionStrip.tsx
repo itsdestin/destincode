@@ -26,7 +26,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini') => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini', launchInNewWindow?: boolean) => void;
   onCloseSession: (id: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
   onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
@@ -150,6 +150,10 @@ export default function SessionStrip({
   const [newModel, setNewModel] = useState<string>('sonnet');
   // Gemini CLI session toggle — only visible when enabled in settings
   const [isGemini, setIsGemini] = useState(false);
+  // Launch the new session in its own peer window instead of this one.
+  // Hidden on platforms without multi-window support (Android / remote-shim).
+  const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
+  const detachAvailable = typeof (window as any).claude?.detach?.openDetached === 'function';
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -303,13 +307,14 @@ export default function SessionStrip({
   }, []);
 
   const handleCreate = useCallback(() => {
-    onCreateSession(newCwd, dangerous, newModel, isGemini ? 'gemini' : 'claude');
+    onCreateSession(newCwd, dangerous, newModel, isGemini ? 'gemini' : 'claude', launchInNewWindow);
     setMenuOpen(false);
     setShowNewForm(false);
     setDangerous(defaultSkipPermissions || false);
     setNewModel(defaultModel || 'sonnet');
     setIsGemini(false);
-  }, [newCwd, dangerous, newModel, isGemini, onCreateSession, defaultSkipPermissions, defaultModel]);
+    setLaunchInNewWindow(false);
+  }, [newCwd, dangerous, newModel, isGemini, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
 
@@ -756,6 +761,18 @@ export default function SessionStrip({
               </div>
               {dangerous && !isGemini && (
                 <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+              )}
+              {/* Launch in new window — hidden on platforms without multi-window support */}
+              {detachAvailable && (
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] uppercase tracking-wider text-fg-muted">Launch in New Window</label>
+                  <button
+                    onClick={() => setLaunchInNewWindow(!launchInNewWindow)}
+                    className={`w-8 h-4.5 rounded-full relative transition-colors ${launchInNewWindow ? 'bg-accent' : 'bg-inset'}`}
+                  >
+                    <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${launchInNewWindow ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
+                  </button>
+                </div>
               )}
               {/* Gemini CLI toggle — only visible when enabled in settings */}
               {geminiEnabled && (
