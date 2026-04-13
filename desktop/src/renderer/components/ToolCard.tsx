@@ -579,7 +579,9 @@ export default React.memo(function ToolCard({ tool, sessionId }: Props) {
   const display = friendlyToolDisplay(tool);
 
   return (
-    <div className="border border-edge rounded-lg overflow-hidden">
+    // Fix: bg-inset on the card itself gives tool cards a distinct "lifted"
+    // color inside tool groups (group wrapper has no bg, inherits bubble color).
+    <div className="border border-edge rounded-lg overflow-hidden bg-inset">
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}

@@ -55,7 +55,10 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
         <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={expanded} />
       </button>
       {expanded && (
-        <div className="px-2 pb-1.5 space-y-0.5 bg-inset rounded-b-lg">
+        // Fix: no bg — lets bubble color show through so header + body share
+        // one seamless background. Each ToolCard carries its own bg-inset
+        // to give tools a distinct "lifted" color vs the group wrapper.
+        <div className="px-2 pb-1.5 space-y-0.5 rounded-b-lg">
           {tools.map((tool) => (
             <ToolCard key={tool.toolUseId} tool={tool} sessionId={sessionId} />
           ))}
