@@ -3,6 +3,18 @@
  * Provides the same API surface as the Electron preload bridge.
  */
 
+// ── Marketplace types re-declared locally ─────────────────────────────────────
+// WHY: remote-shim.ts lives in renderer/ and cannot import from main/ (Node.js
+// boundary). These interfaces mirror marketplace-auth-store.ts and
+// marketplace-api-handlers.ts exactly — keep in sync if those change.
+interface MarketplaceUser {
+  id: string;
+  login: string;
+  avatar_url: string;
+}
+
+type ApiResult<T> = { ok: true; value: T } | { ok: false; status: number; message: string };
+
 type Callback = (...args: any[]) => void;
 
 interface PendingRequest {
@@ -581,6 +593,31 @@ export function installShim(): void {
       getConfig: (id: string) => invoke('marketplace:get-config', { id }),
       setConfig: (id: string, values: Record<string, any>) =>
         invoke('marketplace:set-config', { id, values }),
+    },
+    // Marketplace sign-in (device-code OAuth flow) — same shape as preload.ts.
+    // On Android the handlers live in SessionService.kt (Task 13). Until then
+    // these will time-out gracefully — no crash, just a pending Promise.
+    // start/poll return ApiResult; signedIn/user/signOut return plain values.
+    marketplaceAuth: {
+      start: (): Promise<ApiResult<any>> => invoke('marketplace:auth:start'),
+      poll: (deviceCode: string): Promise<ApiResult<any>> =>
+        invoke('marketplace:auth:poll', { deviceCode }),
+      signedIn: (): Promise<boolean> => invoke('marketplace:auth:signed-in'),
+      user: (): Promise<MarketplaceUser | null> => invoke('marketplace:auth:user'),
+      signOut: (): Promise<void> => invoke('marketplace:auth:sign-out'),
+    },
+    // Marketplace write endpoints — same shape as preload.ts.
+    marketplaceApi: {
+      install: (pluginId: string): Promise<ApiResult<any>> =>
+        invoke('marketplace:install', { pluginId }),
+      rate: (input: { plugin_id: string; stars: number; review_text?: string }): Promise<ApiResult<any>> =>
+        invoke('marketplace:rate', { input }),
+      deleteRating: (pluginId: string): Promise<ApiResult<any>> =>
+        invoke('marketplace:rate:delete', { pluginId }),
+      likeTheme: (themeId: string): Promise<ApiResult<any>> =>
+        invoke('marketplace:theme:like', { themeId }),
+      report: (input: { rating_user_id: string; rating_plugin_id: string; reason?: string }): Promise<ApiResult<any>> =>
+        invoke('marketplace:report', { input }),
     },
     // Phase 3: theme namespace (stub + marketplace endpoints) so the unified
     // Marketplace modal can reach theme install/uninstall/update on Android.
