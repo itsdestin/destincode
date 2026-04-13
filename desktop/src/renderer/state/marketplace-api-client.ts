@@ -28,6 +28,24 @@ export interface StatsResponse {
   themes: Record<string, { likes: number }>;
 }
 
+// Shape of a single rating entry from GET /ratings/:plugin_id
+export interface RatingEntry {
+  /** Composite key: "<user_id>:<plugin_id>" */
+  id: string;
+  /** GitHub user id string, e.g. "github:123456" */
+  user_id: string;
+  user_login: string;
+  user_avatar_url: string;
+  stars: number;
+  review_text: string | null;
+  /** Unix timestamp in seconds */
+  created_at: number;
+}
+
+export interface ListRatingsResponse {
+  ratings: RatingEntry[];
+}
+
 export interface PostRatingInput {
   plugin_id: string;
   stars: 1 | 2 | 3 | 4 | 5;
@@ -43,6 +61,8 @@ export interface MarketplaceApiClient {
   deleteRating(pluginId: string): Promise<void>;
   toggleThemeLike(themeId: string): Promise<{ liked: boolean }>;
   postReport(input: { rating_user_id: string; rating_plugin_id: string; reason?: string }): Promise<void>;
+  /** Fetch all visible ratings for a plugin. Unauthenticated; newest-first, LIMIT 50. */
+  listRatings(pluginId: string): Promise<ListRatingsResponse>;
 }
 
 export function createMarketplaceApiClient(opts: {
@@ -97,5 +117,8 @@ export function createMarketplaceApiClient(opts: {
     postReport: async (input) => {
       await request("/reports", { method: "POST", body: JSON.stringify(input), auth: true });
     },
+    // Unauthenticated — public read endpoint, no Authorization header needed.
+    listRatings: (plugin_id) =>
+      request<ListRatingsResponse>(`/ratings/${encodeURIComponent(plugin_id)}`, { method: "GET" }),
   };
 }

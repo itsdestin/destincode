@@ -58,4 +58,31 @@ describe("MarketplaceApiClient", () => {
     const out = await client.authPoll("d");
     expect(out.status).toBe("pending");
   });
+
+  it("listRatings fetches GET /ratings/:plugin_id without auth", async () => {
+    const mockRating = {
+      id: "github:42:my-plugin",
+      user_id: "github:42",
+      user_login: "alice",
+      user_avatar_url: "https://avatars.githubusercontent.com/u/42",
+      stars: 5,
+      review_text: "Great plugin!",
+      created_at: 1712880000,
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ratings: [mockRating] })));
+    const client = createMarketplaceApiClient({ host: HOST, getToken: () => null });
+    const out = await client.listRatings("my-plugin");
+
+    // Verify URL uses the encoded plugin id
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${HOST}/ratings/my-plugin`,
+      expect.objectContaining({ method: "GET" })
+    );
+    // Verify no Authorization header is set (unauthenticated endpoint)
+    const callArgs = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((callArgs.headers as Record<string, string>)?.Authorization).toBeUndefined();
+    // Verify response shape
+    expect(out.ratings).toHaveLength(1);
+    expect(out.ratings[0]).toMatchObject({ user_login: "alice", stars: 5, review_text: "Great plugin!" });
+  });
 });
