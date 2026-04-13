@@ -98,18 +98,32 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
     currentAttentionState: state.attentionState,
   });
 
-  // Scroll to bottom when this view becomes visible (tab switch or initial mount).
-  // Each ChatView is mounted per session, so sessionId never changes for a given
-  // instance — keying on `visible` is what makes the scroll fire on tab switch.
-  // requestAnimationFrame defers until after layout so the chrome-wrapper's
-  // ResizeObserver has updated --bottom-chrome-height for the current session's
-  // input bar height (drafts, multi-line content can differ between sessions).
+  // Scroll to bottom on tab switch / mount. The follow-up ResizeObserver below
+  // handles the chrome-height race (input bar can differ per session).
   useEffect(() => {
     if (!visible) return;
     const raf = requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
     });
     return () => cancelAnimationFrame(raf);
+  }, [visible]);
+
+  // Fix: input bar height can differ between sessions (drafts, multi-line),
+  // so --bottom-chrome-height changes right after tab switch. App's ResizeObserver
+  // updates the CSS var asynchronously, which grows .chat-scroll's padding-bottom
+  // AFTER we already scrolled — leaving the last message a few px behind the bar.
+  // Re-snap to bottom whenever the chrome-wrapper resizes while atBottom && visible.
+  useEffect(() => {
+    if (!visible) return;
+    const chrome = document.querySelector('.chrome-wrapper');
+    if (!chrome) return;
+    const observer = new ResizeObserver(() => {
+      if (atBottomRef.current && bottomRef.current) {
+        bottomRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }
+    });
+    observer.observe(chrome);
+    return () => observer.disconnect();
   }, [visible]);
 
   // Track whether user is scrolled to bottom
