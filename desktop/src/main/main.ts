@@ -412,6 +412,16 @@ function createWindow(firstRunManager?: FirstRunManager) {
       }
     }
 
+    // Route to the window that owns this session; fall back to mainWindow if
+    // ownership is unknown (e.g., session not yet created via IPC).
+    const ownerId = windowRegistry.getOwner(event.sessionId);
+    if (ownerId != null) {
+      const win = BrowserWindow.fromId(ownerId);
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.HOOK_EVENT, event);
+        return;
+      }
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(IPC.HOOK_EVENT, event);
     }
@@ -419,13 +429,22 @@ function createWindow(firstRunManager?: FirstRunManager) {
 
   // Notify renderer when a permission request socket closes (timeout/killed)
   hookRelay.on('permission-expired', (sessionId: string, requestId: string) => {
+    const evt = {
+      type: 'PermissionExpired',
+      sessionId,
+      payload: { _requestId: requestId },
+      timestamp: Date.now(),
+    };
+    const ownerId = windowRegistry.getOwner(sessionId);
+    if (ownerId != null) {
+      const win = BrowserWindow.fromId(ownerId);
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.HOOK_EVENT, evt);
+        return;
+      }
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(IPC.HOOK_EVENT, {
-        type: 'PermissionExpired',
-        sessionId,
-        payload: { _requestId: requestId },
-        timestamp: Date.now(),
-      });
+      mainWindow.webContents.send(IPC.HOOK_EVENT, evt);
     }
   });
 }
