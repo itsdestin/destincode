@@ -36,6 +36,7 @@ class MarketplaceAuthStore(private val prefs: SharedPreferences) {
     fun getToken(): String? = prefs.getString(KEY_TOKEN, null)
 
     fun getUser(): MarketplaceUser? {
+        // Reads the camelCase internal format — see setSession for why.
         val raw = prefs.getString(KEY_USER, null) ?: return null
         return try {
             val obj = JSONObject(raw)
@@ -57,6 +58,10 @@ class MarketplaceAuthStore(private val prefs: SharedPreferences) {
         val userJson = JSONObject().apply {
             put("id",        user.id)
             put("login",     user.login)
+            // WHY: internal storage format uses camelCase because Kotlin property names
+            // match. The wire format to the React renderer uses snake_case avatar_url
+            // (see SessionService's marketplace:auth:user handler). Never read this JSON
+            // externally — the getUser() reader is the only consumer.
             put("avatarUrl", user.avatarUrl)
         }.toString()
         prefs.edit()

@@ -27,8 +27,10 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import com.destin.code.marketplace.ApiResult
 import com.destin.code.marketplace.MarketplaceApiClient
 import com.destin.code.marketplace.MarketplaceAuthStore
+import com.destin.code.marketplace.MarketplaceUser
 import com.destin.code.skills.LocalSkillProvider
 import com.destin.code.skills.PluginInstaller
 
@@ -1769,7 +1771,7 @@ class SessionService : Service() {
                 // WHY Activity callback: Service cannot startActivity() with FLAG_ACTIVITY_NEW_TASK
                 // for browser intents reliably — we delegate to MainActivity which is in foreground.
                 val result = marketplaceApiClient.authStart()
-                if (result is com.destin.code.marketplace.ApiResult.Ok) {
+                if (result is ApiResult.Ok) {
                     val authUrl = result.value.optString("auth_url", "")
                     if (authUrl.isNotEmpty()) {
                         // Non-fatal: if no browser is installed, log and no-op —
@@ -1792,7 +1794,7 @@ class SessionService : Service() {
                 // payload: { deviceCode } (camelCase — matches remote-shim.ts invoke call)
                 val deviceCode = msg.payload.optString("deviceCode", "")
                 val result = marketplaceApiClient.authPoll(deviceCode)
-                if (result is com.destin.code.marketplace.ApiResult.Ok) {
+                if (result is ApiResult.Ok) {
                     // If complete, persist the token immediately so subsequent calls are authenticated
                     val pollBody = result.value
                     if (pollBody.optString("status") == "complete") {
@@ -1804,7 +1806,7 @@ class SessionService : Service() {
                             // Persist user info if returned alongside token
                             val userObj = pollBody.optJSONObject("user")
                             if (userObj != null) {
-                                val user = com.destin.code.marketplace.MarketplaceUser(
+                                val user = MarketplaceUser(
                                     id        = userObj.optString("id", ""),
                                     login     = userObj.optString("login", ""),
                                     avatarUrl = userObj.optString("avatar_url", ""),
