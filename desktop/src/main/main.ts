@@ -280,6 +280,14 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
   if (!app.isPackaged) win.loadURL(DEV_SERVER_URL);
   else win.loadFile(path.join(__dirname, '../renderer/index.html'));
 
+  // Auto-open DevTools in dev — the app's menu is nulled so F12/Ctrl+Shift+I
+  // don't work by default. Opens detached so it doesn't steal window width.
+  if (!app.isPackaged) {
+    win.webContents.on('did-finish-load', () => {
+      if (!win.isDestroyed()) win.webContents.openDevTools({ mode: 'detach' });
+    });
+  }
+
   // Fullscreen state relay — per-window so macOS traffic-light padding is correct
   win.on('enter-full-screen', () => {
     if (!win.isDestroyed()) win.webContents.send('window:fullscreen-changed', true);
