@@ -44,6 +44,7 @@ import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
 import { ThemeProvider, useTheme } from './state/theme-context';
 import { SkillProvider } from './state/skill-context';
+import { MarketplaceAuthProvider } from './state/marketplace-auth-context';
 import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 
@@ -1606,13 +1607,17 @@ export default function App() {
       <ThemeProvider>
         <ThemeBg />
         <ThemeEffects />
-        <SkillProvider>
-          <GameProvider>
-            <ChatProvider>
-              <AppInner />
-            </ChatProvider>
-          </GameProvider>
-        </SkillProvider>
+        {/* Fix: MarketplaceAuthProvider sits outside SkillProvider so marketplace-
+            context can consume auth state without introducing a circular dependency. */}
+        <MarketplaceAuthProvider>
+          <SkillProvider>
+            <GameProvider>
+              <ChatProvider>
+                <AppInner />
+              </ChatProvider>
+            </GameProvider>
+          </SkillProvider>
+        </MarketplaceAuthProvider>
       </ThemeProvider>
     </RootErrorBoundary>
   );

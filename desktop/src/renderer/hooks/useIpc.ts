@@ -72,6 +72,14 @@ declare global {
       getHomePath: () => Promise<string>;
       getFavorites: () => Promise<any>;
       setFavorites: (favorites: any) => Promise<void>;
+      // Fix: marketplace auth — start/poll return ApiResult; the rest are plain returns
+      marketplaceAuth: {
+        start: () => Promise<{ ok: boolean; value?: any; message?: string }>;
+        poll: (deviceCode: string) => Promise<{ ok: boolean; value?: any; message?: string }>;
+        signedIn: () => Promise<boolean>;
+        user: () => Promise<import('../../main/marketplace-auth-store').MarketplaceUser | null>;
+        signOut: () => Promise<void>;
+      };
     };
   }
 }
