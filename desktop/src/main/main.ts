@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, webContents } from 'electron';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -54,13 +54,22 @@ const sessionManager = new SessionManager();
 const windowRegistry = new WindowRegistry();
 export function getWindowRegistry() { return windowRegistry; }
 
+// IDs in the registry are webContents.id values, NOT BrowserWindow.id values.
+// BrowserWindow.fromId(webContentsId) silently returns null, so previously
+// every peer-window send fell through to the mainWindow fallback (window 1
+// received events meant for window 2/3/etc). Always look up via webContents.
+function windowFromWcId(wid: number): BrowserWindow | null {
+  const wc = webContents.fromId(wid);
+  return wc ? BrowserWindow.fromWebContents(wc) : null;
+}
+
 // Route a session-scoped IPC event to the window that currently owns the
 // session. No-op if ownership is unknown (e.g., during teardown). Task 1.4
 // will migrate ipc-handlers.ts emits to use this helper.
 export function routeToOwner(sessionId: string, channel: string, ...args: unknown[]): void {
   const wid = windowRegistry.getOwner(sessionId);
   if (wid == null) return;
-  const win = BrowserWindow.fromId(wid);
+  const win = windowFromWcId(wid);
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 
@@ -72,7 +81,7 @@ function broadcastWindowState() {
   const dir = windowRegistry.getDirectory((id) => sessionManager.getSession(id));
   const newLeader = windowRegistry.getLeaderId() ?? -1;
   for (const wid of windowRegistry.getWindowIds()) {
-    const win = BrowserWindow.fromId(wid);
+    const win = windowFromWcId(wid);
     if (!win || win.isDestroyed()) continue;
     win.webContents.send(IPC.WINDOW_DIRECTORY_UPDATED, dir);
     if (newLeader !== currentLeaderId) {
@@ -454,7 +463,7 @@ function createWindow(firstRunManager?: FirstRunManager) {
     // ownership is unknown (e.g., session not yet created via IPC).
     const ownerId = windowRegistry.getOwner(event.sessionId);
     if (ownerId != null) {
-      const win = BrowserWindow.fromId(ownerId);
+      const win = windowFromWcId(ownerId);
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.HOOK_EVENT, event);
         return;
@@ -475,7 +484,7 @@ function createWindow(firstRunManager?: FirstRunManager) {
     };
     const ownerId = windowRegistry.getOwner(sessionId);
     if (ownerId != null) {
-      const win = BrowserWindow.fromId(ownerId);
+      const win = windowFromWcId(ownerId);
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.HOOK_EVENT, evt);
         return;
@@ -504,7 +513,7 @@ function registerDetachIpc() {
   ipcMain.on(IPC.APPEARANCE_BROADCAST, (evt, prefs) => {
     for (const wid of windowRegistry.getWindowIds()) {
       if (wid === evt.sender.id) continue;
-      BrowserWindow.fromId(wid)?.webContents.send(IPC.APPEARANCE_SYNC, prefs);
+      windowFromWcId(wid)?.webContents.send(IPC.APPEARANCE_SYNC, prefs);
     }
   });
 
@@ -517,8 +526,8 @@ function registerDetachIpc() {
     const currentOwner = windowRegistry.getOwner(sessionId);
     if (currentOwner !== srcWindowId) return; // stale — another event already moved it
     windowRegistry.assignSession(sessionId, targetWindowId);
-    const src = BrowserWindow.fromId(srcWindowId);
-    const tgt = BrowserWindow.fromId(targetWindowId);
+    const src = windowFromWcId(srcWindowId);
+    const tgt = windowFromWcId(targetWindowId);
     src?.webContents.send(IPC.SESSION_OWNERSHIP_LOST, { sessionId });
     tgt?.webContents.send(IPC.SESSION_OWNERSHIP_ACQUIRED, { sessionId, sessionInfo: info, freshWindow });
   }
@@ -528,7 +537,7 @@ function registerDetachIpc() {
   function maybeAutoCloseEmpty(windowId: number) {
     if (windowRegistry.sessionsForWindow(windowId).length > 0) return;
     if (windowRegistry.getWindowIds().length <= 1) return;
-    BrowserWindow.fromId(windowId)?.close();
+    windowFromWcId(windowId)?.close();
   }
 
   // "Launch in new window" entry point and the direct-spawn fallback for drops
@@ -561,7 +570,7 @@ function registerDetachIpc() {
   // switch its active session.
   ipcMain.on(IPC.WINDOW_FOCUS_AND_SWITCH, (_evt, { windowId, sessionId }: { windowId: number; sessionId: string }) => {
     const info = sessionManager.getSession(sessionId);
-    const win = BrowserWindow.fromId(windowId);
+    const win = windowFromWcId(windowId);
     if (!win || !info) return;
     win.focus();
     // refocusOnly tells the target its state already has this session — just switch active.
@@ -581,7 +590,7 @@ function registerDetachIpc() {
     cursorTicker = setInterval(() => {
       const { x, y } = screen.getCursorScreenPoint();
       for (const wid of windowRegistry.getWindowIds()) {
-        BrowserWindow.fromId(wid)?.webContents.send(IPC.CROSS_WINDOW_CURSOR, { screenX: x, screenY: y });
+        windowFromWcId(wid)?.webContents.send(IPC.CROSS_WINDOW_CURSOR, { screenX: x, screenY: y });
       }
     }, 33);
   });
@@ -593,7 +602,7 @@ function registerDetachIpc() {
   ipcMain.handle(IPC.SESSION_DROP_RESOLVE, async () => {
     const { x, y } = screen.getCursorScreenPoint();
     for (const wid of windowRegistry.getWindowIds()) {
-      const win = BrowserWindow.fromId(wid);
+      const win = windowFromWcId(wid);
       if (!win || win.isDestroyed()) continue;
       try {
         const hit = await win.webContents.executeJavaScript(

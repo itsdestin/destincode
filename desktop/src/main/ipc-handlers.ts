@@ -1,4 +1,4 @@
-import { app, IpcMain, BrowserWindow, dialog, clipboard, nativeImage, shell, powerSaveBlocker } from 'electron';
+import { app, IpcMain, BrowserWindow, dialog, clipboard, nativeImage, shell, powerSaveBlocker, webContents } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -52,9 +52,13 @@ export function registerIpcHandlers(
   const sendForSession = (sessionId: string, channel: string, ...args: any[]) => {
     const wid = windowRegistry?.getOwner(sessionId);
     if (wid != null) {
-      const win = BrowserWindow.fromId(wid);
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(channel, ...args);
+      // wid is a webContents.id, NOT a BrowserWindow.id — use webContents.fromId
+      // (different ID space; BrowserWindow.fromId silently returns null and we
+      // fall through to mainWindow, which made every peer-window event land in
+      // window 1).
+      const wc = webContents.fromId(wid);
+      if (wc && !wc.isDestroyed()) {
+        wc.send(channel, ...args);
         return;
       }
     }

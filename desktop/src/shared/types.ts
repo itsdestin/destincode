@@ -372,6 +372,7 @@ export const IPC = {
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',
   WINDOW_DIRECTORY_UPDATED: 'window:directory-updated',
+  WINDOW_GET_DIRECTORY: 'window:get-directory',
   WINDOW_LEADER_CHANGED: 'window:leader-changed',
   WINDOW_OPEN_DETACHED: 'window:open-detached',
   WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
