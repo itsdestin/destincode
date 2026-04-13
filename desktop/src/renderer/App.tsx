@@ -45,6 +45,7 @@ import type { SessionStatusColor } from './components/StatusDot';
 import { ThemeProvider, useTheme } from './state/theme-context';
 import { SkillProvider } from './state/skill-context';
 import { MarketplaceAuthProvider } from './state/marketplace-auth-context';
+import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
 import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 
@@ -1608,8 +1609,12 @@ export default function App() {
         <ThemeBg />
         <ThemeEffects />
         {/* Fix: MarketplaceAuthProvider sits outside SkillProvider so marketplace-
-            context can consume auth state without introducing a circular dependency. */}
+            context can consume auth state without introducing a circular dependency.
+            MarketplaceStatsProvider sits inside auth so it can co-exist with auth
+            state, but outside SkillProvider/GameProvider/ChatProvider which may
+            eventually consume live stats via useMarketplaceStats(). */}
         <MarketplaceAuthProvider>
+          <MarketplaceStatsProvider>
           <SkillProvider>
             <GameProvider>
               <ChatProvider>
@@ -1617,6 +1622,7 @@ export default function App() {
               </ChatProvider>
             </GameProvider>
           </SkillProvider>
+          </MarketplaceStatsProvider>
         </MarketplaceAuthProvider>
       </ThemeProvider>
     </RootErrorBoundary>
