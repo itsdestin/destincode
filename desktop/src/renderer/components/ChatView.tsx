@@ -98,10 +98,19 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
     currentAttentionState: state.attentionState,
   });
 
-  // Scroll to bottom when switching sessions
+  // Scroll to bottom when this view becomes visible (tab switch or initial mount).
+  // Each ChatView is mounted per session, so sessionId never changes for a given
+  // instance — keying on `visible` is what makes the scroll fire on tab switch.
+  // requestAnimationFrame defers until after layout so the chrome-wrapper's
+  // ResizeObserver has updated --bottom-chrome-height for the current session's
+  // input bar height (drafts, multi-line content can differ between sessions).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [sessionId]);
+    if (!visible) return;
+    const raf = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [visible]);
 
   // Track whether user is scrolled to bottom
   useEffect(() => {
