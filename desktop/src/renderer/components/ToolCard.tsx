@@ -571,17 +571,19 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
 interface Props {
   tool: ToolCallState;
   sessionId?: string;
+  // inGroup: true when rendered inside a CollapsedToolGroup. Gates bg-inset so
+  // the "lifted card" color only shows inside groups; standalone cards stay
+  // transparent and inherit the bubble color.
+  inGroup?: boolean;
 }
 
-export default React.memo(function ToolCard({ tool, sessionId }: Props) {
+export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }: Props) {
   const [expanded, setExpanded] = useState(false);
   const dispatch = useChatDispatch();
   const display = friendlyToolDisplay(tool);
 
   return (
-    // Fix: bg-inset on the card itself gives tool cards a distinct "lifted"
-    // color inside tool groups (group wrapper has no bg, inherits bubble color).
-    <div className="border border-edge rounded-lg overflow-hidden bg-inset">
+    <div className={`border border-edge rounded-lg overflow-hidden ${inGroup ? 'bg-inset' : ''}`}>
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}

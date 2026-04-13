@@ -60,7 +60,7 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
         // to give tools a distinct "lifted" color vs the group wrapper.
         <div className="px-2 pb-1.5 space-y-0.5 rounded-b-lg">
           {tools.map((tool) => (
-            <ToolCard key={tool.toolUseId} tool={tool} sessionId={sessionId} />
+            <ToolCard key={tool.toolUseId} tool={tool} sessionId={sessionId} inGroup />
           ))}
         </div>
       )}
