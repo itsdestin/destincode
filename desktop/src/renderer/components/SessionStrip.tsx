@@ -7,6 +7,7 @@ import FolderSwitcher from './FolderSwitcher';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
+import { useScrollFade } from '../hooks/useScrollFade';
 
 interface SessionEntry {
   id: string;
@@ -154,6 +155,7 @@ export default function SessionStrip({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerBtnRef = useRef<HTMLButtonElement>(null);
   const pillBarRef = useRef<HTMLDivElement>(null);
+  const sessionListRef = useScrollFade<HTMLDivElement>();
 
   /* ── Pointer-event drag state ──────────────────────────── */
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -562,7 +564,7 @@ export default function SessionStrip({
           })()}
         >
           {sessions.length > 0 && (
-            <div className="py-1 overflow-y-auto" style={{ maxHeight: 'min(336px, 50vh)' }}>
+            <div ref={sessionListRef} className="scroll-fade py-1" style={{ maxHeight: 'min(336px, 50vh)' }}>
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
                 const isBeingDragged = dragIdx === idx && isDragging.current;

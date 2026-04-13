@@ -11,6 +11,7 @@
  */
 
 import React from 'react';
+import { useScrollFade } from '../hooks/useScrollFade';
 
 export interface ExplainerBullet {
   /** Optional bold lead-in (e.g. a setting name). */
@@ -40,6 +41,7 @@ interface Props {
 }
 
 export default function SettingsExplainer({ title, intro, sections, onBack, onClose }: Props) {
+  const bodyRef = useScrollFade<HTMLDivElement>();
   return (
     <div className="flex flex-col h-full">
       {/* Header — back arrow on the left, "About <title>" centered, close on the right.
@@ -66,7 +68,7 @@ export default function SettingsExplainer({ title, intro, sections, onBack, onCl
       </div>
 
       {/* Body — intro paragraph, then each section with its own heading. */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
+      <div ref={bodyRef} className="scroll-fade flex-1 px-4 py-4 space-y-5">
         <p className="text-xs text-fg-2 leading-relaxed">{intro}</p>
 
         {sections.map((section, i) => (

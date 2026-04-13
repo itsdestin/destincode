@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useSkills } from '../state/skill-context';
+import { useScrollFade } from '../hooks/useScrollFade';
 import type { SkillDetailView } from '../../shared/types';
 import ConfigForm from './ConfigForm';
 
@@ -32,6 +33,7 @@ export default function SkillDetail({ skillId, onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+  const bodyRef = useScrollFade<HTMLDivElement>();
 
   const isInstalled = installed.some(s => s.id === skillId);
   const isFavorite = favorites.includes(skillId);
@@ -117,7 +119,7 @@ export default function SkillDetail({ skillId, onBack }: Props) {
         <h2 className="text-sm font-bold text-fg">Skill Details</h2>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4">
+      <div ref={bodyRef} className="scroll-fade flex-1 px-4 py-4">
         {/* Name and author */}
         <div className="text-center mb-3">
           <h3 className="text-lg font-semibold text-fg">{detail.displayName}</h3>

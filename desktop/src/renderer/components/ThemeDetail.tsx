@@ -5,6 +5,7 @@ import { useMarketplace } from '../state/marketplace-context';
 import { applyThemeToDom } from '../themes/theme-engine';
 import type { ThemeDefinition } from '../themes/theme-types';
 import ConfigForm from './ConfigForm';
+import { useScrollFade } from '../hooks/useScrollFade';
 
 interface ThemeDetailProps {
   entry: ThemeRegistryEntryWithStatus;
@@ -21,6 +22,7 @@ export default function ThemeDetail({ entry, onBack, onInstallComplete }: ThemeD
   const [trying, setTrying] = useState(false);
   const [manifest, setManifest] = useState<ThemeDefinition | null>(null);
   const [fetchingManifest, setFetchingManifest] = useState(false);
+  const bodyRef = useScrollFade<HTMLDivElement>();
 
   // Store the theme to revert to when leaving the try preview
   const revertThemeRef = useRef<ThemeDefinition | null>(null);
@@ -152,7 +154,7 @@ export default function ThemeDetail({ entry, onBack, onInstallComplete }: ThemeD
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div ref={bodyRef} className="scroll-fade flex-1">
         {/* Preview */}
         <div className="w-full h-48 bg-well overflow-hidden">
           {entry.preview ? (
