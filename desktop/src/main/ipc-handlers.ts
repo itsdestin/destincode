@@ -46,8 +46,9 @@ export function registerIpcHandlers(
     return listUserThemes();
   });
 
-  // Security: strict slug format to prevent path traversal before path.resolve
-  const SAFE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+  // Security: strict slug format to prevent path traversal before path.resolve.
+  // Allow leading underscore for reserved internal slugs (e.g. _preview used by theme-builder).
+  const SAFE_SLUG_RE = /^[a-z0-9_]+(?:-[a-z0-9_]+)*$/;
 
   ipcMain.handle(IPC.THEME_READ_FILE, async (_event, slug: string) => {
     if (!SAFE_SLUG_RE.test(slug)) throw new Error('Invalid theme slug');
