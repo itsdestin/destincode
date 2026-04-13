@@ -4,7 +4,21 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import https from 'https';
+import { app } from 'electron';
 import { log } from './logger';
+
+/**
+ * ANSI CSI/OSC/SGR stripper.
+ * `claude auth login` inside a PTY emits colored/styled output; stripping makes
+ * URL regex matching robust across CLI versions that decorate the link.
+ */
+function stripAnsi(s: string): string {
+  // Covers CSI (ESC [...m and friends), OSC (ESC ]...BEL/ST), and stray ESC-sequences.
+  return s
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b[@-Z\\-_]/g, '');
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -498,40 +512,99 @@ export async function cloneToolkit(): Promise<{ success: boolean; error?: string
 }
 
 /**
- * Start OAuth login by spawning `claude auth login` and extracting the auth URL.
+ * Start OAuth login by spawning `claude auth login` inside a PTY.
+ *
+ * Why a PTY, not piped stdio: newer Claude Code CLI versions detect a
+ * non-TTY stdin and either abort or fail to fully bring up the local
+ * OAuth callback HTTP server. The symptom in the UI was the browser
+ * reaching Claude's auth page, signing in, then getting "localhost
+ * refused to connect" on the redirect — nothing was listening on the
+ * callback port because the CLI had already bailed. A PTY makes the
+ * CLI behave exactly as if run from Terminal.app.
+ *
  * Returns the URL so the caller can open it via shell.openExternal().
  * The CLI process is kept alive — it waits for the OAuth callback.
  * Call pollAuthStatus() to detect when login completes.
  */
 export function startOAuthLogin(): { url: string | null; kill: () => void } {
   const claudePath = resolveCommand('claude');
-  let authUrl: string | null = null;
 
-  const child = spawn(claudePath, ['auth', 'login'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+  // Locate pty-worker.js the same way SessionManager does — in packaged builds
+  // it lives under app.asar.unpacked/ so the system node can read it.
+  let workerPath = path.join(__dirname, 'pty-worker.js');
+  if (app?.isPackaged) {
+    const unpacked = workerPath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    if (fs.existsSync(unpacked)) workerPath = unpacked;
+  }
+  let nodePath = 'node';
+  try { if (whichSync) nodePath = whichSync('node'); } catch { /* use bare 'node' */ }
+
+  const worker = spawn(nodePath, [workerPath], {
+    stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
   });
 
-  // Capture the auth URL from stdout
-  child.stdout?.on('data', (data: Buffer) => {
-    const text = data.toString();
-    const match = text.match(/https:\/\/claude\.com\/[^\s]+/);
-    if (match) authUrl = match[0];
+  let authUrl: string | null = null;
+  let buffer = '';                 // accumulated stdout (ANSI-stripped) for regex matches across chunks
+  const DIAG_MAX = 2000;           // cap diagnostic log volume
+  let diagBuf = '';
+
+  // Modern CLI versions may render the link as claude.com, console.anthropic.com,
+  // or claude.ai — accept any of them so regex drift doesn't silently break auth.
+  const URL_RE = /https:\/\/(?:claude\.com|claude\.ai|console\.anthropic\.com)\/[^\s\x1b]+/;
+
+  worker.stderr?.on('data', (chunk: Buffer) => {
+    log('WARN', 'prereq', 'OAuth worker stderr', { output: chunk.toString().trim() });
   });
 
-  child.stderr?.on('data', (data: Buffer) => {
-    log('WARN', 'prereq', 'OAuth stderr', { output: data.toString().trim() });
+  worker.on('error', (err) => {
+    log('ERROR', 'prereq', 'OAuth worker spawn failed', { error: String(err) });
   });
 
-  child.on('error', (err) => {
-    log('ERROR', 'prereq', 'OAuth process error', { error: String(err) });
+  worker.on('message', (msg: any) => {
+    if (msg.type === 'data') {
+      const clean = stripAnsi(String(msg.data));
+      buffer += clean;
+      if (diagBuf.length < DIAG_MAX) diagBuf += clean;
+      if (!authUrl) {
+        const m = buffer.match(URL_RE);
+        if (m) {
+          authUrl = m[0];
+          log('INFO', 'prereq', 'OAuth URL captured', { url: authUrl });
+        }
+      }
+    } else if (msg.type === 'exit') {
+      log('WARN', 'prereq', 'OAuth CLI exited', {
+        exitCode: msg.exitCode,
+        authUrlCaptured: Boolean(authUrl),
+        // If the URL was never captured, the tail of output is the best debugging clue.
+        stdoutTail: authUrl ? undefined : diagBuf.slice(-DIAG_MAX),
+      });
+    } else if (msg.type === 'spawned') {
+      log('INFO', 'prereq', 'OAuth PTY spawned', { pid: msg.pid });
+    }
   });
 
-  // Return URL getter + cleanup. URL may not be available immediately —
-  // the caller should wait briefly then read it.
+  // Kick off the CLI inside the PTY worker.
+  try {
+    worker.send({
+      type: 'spawn',
+      command: claudePath,
+      args: ['auth', 'login'],
+      cols: 120,
+      rows: 30,
+      cwd: os.homedir(),
+    });
+  } catch (err) {
+    log('ERROR', 'prereq', 'OAuth worker.send failed', { error: String(err) });
+  }
+
   return {
     get url() { return authUrl; },
-    kill: () => { try { child.kill(); } catch {} },
+    kill: () => {
+      try { worker.send({ type: 'kill' }); } catch {}
+      try { worker.kill(); } catch {}
+    },
   };
 }
 
