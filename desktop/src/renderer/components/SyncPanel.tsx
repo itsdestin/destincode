@@ -337,8 +337,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   useEffect(() => {
     (async () => {
       try {
+        // Always fetch fresh on popup open — initialStatus comes from the
+        // parent's compact-row state which only gets patched by status:data
+        // pushes (no experimentalFlags). Reusing it would mean a flag flip
+        // never shows up until a full page reload.
         const [s, log] = await Promise.all([
-          initialStatus ? Promise.resolve(initialStatus) : claude.sync.getStatus(),
+          claude.sync.getStatus(),
           claude.sync.getLog(30),
         ]);
         setStatus(s);

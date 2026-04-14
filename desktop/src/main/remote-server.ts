@@ -1217,6 +1217,17 @@ export class RemoteServer {
         this.respond(client.ws, type, id, probeResult);
         break;
       }
+      case 'sync:restore:browse-url': {
+        // Browser clients can't open the local shell, so we just resolve + return
+        // the URL and let the browser open it via window.open.
+        const url = await getRestoreService()!.browseCategoryUrl(
+          payload.backendId,
+          payload.category,
+          payload.versionRef || 'HEAD',
+        );
+        this.respond(client.ws, type, id, { url });
+        break;
+      }
 
       case 'config:set-experimental-flag': {
         setExperimentalFlag(payload.name, payload.value);

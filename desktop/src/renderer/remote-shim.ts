@@ -757,6 +757,8 @@ export function installShim(): void {
         deleteSnapshot: (snapshotId: string) =>
           invoke('sync:restore:delete-snapshot', { snapshotId }),
         probe: (backendId: string) => invoke('sync:restore:probe', { backendId }),
+        browseCategory: (backendId: string, category: string, versionRef: string) =>
+          invoke('sync:restore:browse-url', { backendId, category, versionRef }),
         onProgress: (cb: (evt: any) => void) => {
           const handler: Callback = (evt: any) => cb(evt);
           addListener('sync:restore:progress', handler);

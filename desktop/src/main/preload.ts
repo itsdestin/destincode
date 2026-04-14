@@ -151,6 +151,7 @@ const IPC = {
   SYNC_RESTORE_UNDO: 'sync:restore:undo',
   SYNC_RESTORE_DELETE_SNAPSHOT: 'sync:restore:delete-snapshot',
   SYNC_RESTORE_PROBE: 'sync:restore:probe',
+  SYNC_RESTORE_BROWSE_URL: 'sync:restore:browse-url',
   // Window detach / multi-window ownership (feature: drag session to new window)
   WINDOW_GET_ID: 'window:get-id',
   WINDOW_DIRECTORY_UPDATED: 'window:directory-updated',
@@ -473,6 +474,8 @@ contextBridge.exposeInMainWorld('claude', {
       deleteSnapshot: (snapshotId: string) =>
         ipcRenderer.invoke(IPC.SYNC_RESTORE_DELETE_SNAPSHOT, snapshotId),
       probe: (backendId: string) => ipcRenderer.invoke(IPC.SYNC_RESTORE_PROBE, backendId),
+      browseCategory: (backendId: string, category: string, versionRef: string) =>
+        ipcRenderer.invoke(IPC.SYNC_RESTORE_BROWSE_URL, backendId, category, versionRef),
       // Subscribe to progress events for an in-flight restore. Returns an
       // unsubscribe function — callers MUST invoke it on unmount to avoid
       // leaking listeners across restore attempts.

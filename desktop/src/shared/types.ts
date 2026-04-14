@@ -575,6 +575,7 @@ export const IPC = {
   SYNC_RESTORE_UNDO: 'sync:restore:undo',
   SYNC_RESTORE_DELETE_SNAPSHOT: 'sync:restore:delete-snapshot',
   SYNC_RESTORE_PROBE: 'sync:restore:probe',
+  SYNC_RESTORE_BROWSE_URL: 'sync:restore:browse-url',
 } as const;
 
 // --- Window registry / detach types ---
@@ -643,11 +644,24 @@ export interface RestorePoint {
   summary?: string;
 }
 
+/**
+ * Restore mode. Two very different semantics:
+ *   - 'merge': union. Remote→local adds + overwrites only (no local deletions),
+ *              then local→remote uploads anything that was local-only. Reuses
+ *              the sync loop's push/pull under the hood. Non-destructive on
+ *              both sides. toDelete in the preview is always 0.
+ *   - 'wipe':  mirror. Local tree is replaced with the backup's tree exactly.
+ *              Files on device but NOT on the backup are deleted. Snapshot-first
+ *              is forced ON so the user can always Undo within retention.
+ */
+export type RestoreMode = 'merge' | 'wipe';
+
 export interface RestoreOptions {
   backendId: string;
   versionRef: string;
   categories: RestoreCategory[];
   snapshotFirst: boolean;
+  mode: RestoreMode;
 }
 
 export interface CategoryPreview {
@@ -656,8 +670,10 @@ export interface CategoryPreview {
   localFiles: number;
   toAdd: number;
   toOverwrite: number;
-  /** Files on device NOT on the backup — restore semantics will delete these. */
+  /** Files on device NOT on the backup — wipe mode deletes these; merge leaves them. */
   toDelete: number;
+  /** Merge-mode only: files present locally but NOT on backup (will be uploaded). */
+  toUpload?: number;
   bytes: number;
 }
 
@@ -666,6 +682,8 @@ export interface RestorePreview {
   totalBytes: number;
   estimatedSeconds: number;
   warnings: string[];
+  /** Echoes the mode the preview was computed for — UI keys column labels off this. */
+  mode: RestoreMode;
 }
 
 export interface RestoreResult {

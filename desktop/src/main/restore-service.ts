@@ -62,6 +62,9 @@ export interface RestoreAdapter {
     onFile?: (filename: string, done: number, total: number) => void,
   ): Promise<void>;
   probe(): Promise<{ hasData: boolean; categories: RestoreCategory[] }>;
+  /** Optional — when present, returns a URL that opens this category's remote
+   *  browse view (e.g., Drive folder, GitHub tree). Used by the preview UI. */
+  remoteBrowseUrlFor?(category: RestoreCategory, versionRef: string): Promise<string>;
 }
 
 export class RestoreService {
@@ -155,40 +158,120 @@ export class RestoreService {
 
   async previewRestore(opts: RestoreOptions): Promise<RestorePreview> {
     const adapter = this.adapterFor(opts.backendId);
-    const perCategory: CategoryPreview[] = [];
-    let totalBytes = 0;
     const warnings: string[] = [];
 
-    for (const category of opts.categories) {
-      try {
-        const preview = await adapter.previewCategory(category, opts.versionRef);
-        perCategory.push(preview);
-        totalBytes += preview.bytes;
-      } catch (e: any) {
-        warnings.push(`Preview failed for ${category}: ${e?.message || e}`);
-        perCategory.push({
-          category,
-          remoteFiles: 0,
-          localFiles: 0,
-          toAdd: 0,
-          toOverwrite: 0,
-          toDelete: 0,
-          bytes: 0,
-        });
-      }
-    }
+    // Run category previews in parallel — each adapter call is a separate
+    // rclone/git invocation so they don't contend on local CPU. Sequential
+    // was making 6 categories feel like a minute+ on Drive because each
+    // rclone lsjson spends most of its time on network latency.
+    const raw: CategoryPreview[] = await Promise.all(
+      opts.categories.map(async (category) => {
+        try {
+          return await adapter.previewCategory(category, opts.versionRef);
+        } catch (e: any) {
+          warnings.push(`Preview failed for ${category}: ${e?.message || e}`);
+          return {
+            category,
+            remoteFiles: 0,
+            localFiles: 0,
+            toAdd: 0,
+            toOverwrite: 0,
+            toDelete: 0,
+            bytes: 0,
+          };
+        }
+      }),
+    );
 
-    if (opts.categories.includes('skills') || opts.categories.includes('memory')) {
+    // For merge mode, reinterpret the same raw counts:
+    //   - toDelete=0 (merge never deletes; those files will stay + be uploaded)
+    //   - toUpload = original toDelete (they go up to the backup instead of away)
+    // Wipe keeps the as-measured shape.
+    const perCategory: CategoryPreview[] = raw.map((p) =>
+      opts.mode === 'merge'
+        ? { ...p, toUpload: p.toDelete, toDelete: 0 }
+        : p,
+    );
+
+    const totalBytes = perCategory.reduce((sum, p) => sum + p.bytes, 0);
+
+    if (opts.mode === 'wipe' && (opts.categories.includes('skills') || opts.categories.includes('memory'))) {
       warnings.push('Skills or memory restored — app restart recommended to pick up changes.');
+    }
+    if (opts.mode === 'wipe') {
+      const anyDelete = perCategory.some((p) => p.toDelete > 0);
+      if (anyDelete) {
+        warnings.push('Wipe & restore will DELETE local files not present in the backup.');
+      }
     }
 
     // Rough estimate: 10 MB/s effective throughput after overhead.
     const estimatedSeconds = Math.max(3, Math.ceil(totalBytes / (10 * 1024 * 1024)));
 
-    return { perCategory, totalBytes, estimatedSeconds, warnings };
+    return { perCategory, totalBytes, estimatedSeconds, warnings, mode: opts.mode };
+  }
+
+  /**
+   * Resolve a browse URL for a single category on the remote backend.
+   * Returns null if the adapter doesn't support browse links.
+   */
+  async browseCategoryUrl(backendId: string, category: RestoreCategory, versionRef: string): Promise<string | null> {
+    const adapter = this.adapterFor(backendId);
+    if (!adapter.remoteBrowseUrlFor) return null;
+    try {
+      return await adapter.remoteBrowseUrlFor(category, versionRef);
+    } catch {
+      return null;
+    }
   }
 
   async executeRestore(
+    opts: RestoreOptions,
+    onProgress: (e: RestoreProgressEvent) => void,
+  ): Promise<RestoreResult> {
+    // Merge mode reuses the sync loop's pull + push (remote → local add/overwrite
+    // with no deletions, then local → remote upload for anything local-only).
+    // This is NON-destructive on both sides, so no snapshot is needed and we
+    // don't flip restoreInProgress — we actually want pushBackend to run.
+    if (opts.mode === 'merge') {
+      return this.executeMerge(opts, onProgress);
+    }
+    return this.executeWipe(opts, onProgress);
+  }
+
+  private async executeMerge(
+    opts: RestoreOptions,
+    onProgress: (e: RestoreProgressEvent) => void,
+  ): Promise<RestoreResult> {
+    const startedAt = Date.now();
+
+    // Emit a single 'fetching' phase for each category up-front so the UI
+    // renders per-category rows. Merge doesn't stage per-category, so we don't
+    // get file-level progress — just the two top-level phases (fetching, done).
+    for (const category of opts.categories) {
+      onProgress({ category, filesDone: 0, filesTotal: 0, phase: 'fetching' });
+    }
+
+    // Phase 1: pull remote → local (add + overwrite-newer, no deletions).
+    await this.syncService.pull({ backendId: opts.backendId });
+
+    // Phase 2: push local → remote (uploads anything local-only). `force: true`
+    // so the push isn't skipped for being recent — the user just asked for a sync.
+    await this.syncService.push({ backendId: opts.backendId, force: true });
+
+    for (const category of opts.categories) {
+      onProgress({ category, filesDone: 1, filesTotal: 1, phase: 'done' });
+    }
+
+    return {
+      categoriesRestored: opts.categories,
+      filesWritten: 0, // merge doesn't track per-file writes; sync-service logs it
+      durationMs: Date.now() - startedAt,
+      requiresRestart: opts.categories.includes('skills') || opts.categories.includes('memory'),
+    };
+  }
+
+  private async executeWipe(
     opts: RestoreOptions,
     onProgress: (e: RestoreProgressEvent) => void,
   ): Promise<RestoreResult> {

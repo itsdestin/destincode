@@ -39,6 +39,18 @@ export class GithubRestoreAdapter implements RestoreAdapter {
     }
   }
 
+  async remoteBrowseUrlFor(category: RestoreCategory, versionRef: string): Promise<string> {
+    // Resolve the sha or branch ref into a GitHub tree URL. Falls back to the
+    // repo homepage if the configured URL isn't an https github URL.
+    const base = (this.instance.config.PERSONAL_SYNC_REPO || '').replace(/\.git$/, '').replace(/\/$/, '');
+    const sub = this.categoryRepoSubpath(category);
+    const ref = versionRef === 'HEAD' ? 'main' : versionRef;
+    if (/^https:\/\/github\.com\//i.test(base)) {
+      return `${base}/tree/${ref}/${sub}`;
+    }
+    return base || 'https://github.com';
+  }
+
   async listVersions(): Promise<RestorePoint[]> {
     if (!fs.existsSync(this.repoDir)) return [];
     const { stdout } = await run('git', ['-C', this.repoDir, 'log', '--format=%H%x09%ct%x09%s', '-n', '100'], { timeoutMs: 30_000 });

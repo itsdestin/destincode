@@ -42,6 +42,12 @@ export class IcloudRestoreAdapter implements RestoreAdapter {
     return [{ ref: 'HEAD', timestamp: Date.now(), label: 'Current backup' }];
   }
 
+  async remoteBrowseUrlFor(category: RestoreCategory, _versionRef: string): Promise<string> {
+    // iCloud is a local mount — return a file:// URL so shell.openExternal
+    // pops Finder/Explorer at that folder.
+    return 'file://' + this.remoteDir(category).replace(/\\/g, '/');
+  }
+
   async probe(): Promise<{ hasData: boolean; categories: RestoreCategory[] }> {
     if (!this.icloudRoot || !fs.existsSync(this.icloudRoot)) return { hasData: false, categories: [] };
     const categories: RestoreCategory[] = [];
