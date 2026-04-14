@@ -792,7 +792,12 @@ function RemoteButton({
                         {tailscale?.installed && tailscale.url && config?.hasPassword ? (
                           showSetupQR ? (
                             <div className="mt-2">
-                              <p className="text-[10px] text-fg-muted mb-2">Scan to connect a device:</p>
+                              {/* Remind users that Tailscale must be installed + running on the receiving device too */}
+                              <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
+                                <p className="text-[10px] text-amber-400 font-medium mb-0.5">Before scanning:</p>
+                                <p className="text-[10px] text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
+                              </div>
+                              <p className="text-[10px] text-fg-muted mb-2">Then scan to connect:</p>
                               <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                                 <QRCodeSVG value={tailscale.url} size={140} />
                               </div>
@@ -805,12 +810,19 @@ function RemoteButton({
                               </button>
                             </div>
                           ) : (
-                            <button
-                              onClick={() => onSetShowSetupQR(true)}
-                              className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
-                            >
-                              Set Up Remote Access
-                            </button>
+                            <div className="space-y-2">
+                              {/* Persistent reminder — visible whenever Tailscale is ready but no device has connected yet */}
+                              <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2">
+                                <p className="text-[10px] text-amber-400 font-medium mb-0.5">Other device setup required:</p>
+                                <p className="text-[10px] text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running before scanning. The page won't load without it.</p>
+                              </div>
+                              <button
+                                onClick={() => onSetShowSetupQR(true)}
+                                className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
+                              >
+                                Set Up Remote Access
+                              </button>
+                            </div>
                           )
                         ) : setupStatus === 'confirm' ? (
                           <div className="space-y-2">
@@ -967,7 +979,12 @@ function RemoteButton({
                             ✕
                           </button>
                         </div>
-                        <p className="text-[10px] text-fg-muted mb-2">Scan QR or copy link to connect a new device:</p>
+                        {/* Remind users that Tailscale must be installed + running on the receiving device too */}
+                        <div className="bg-amber-500/10 border border-amber-500/25 rounded-md px-2.5 py-2 mb-2">
+                          <p className="text-[10px] text-amber-400 font-medium mb-0.5">Before scanning:</p>
+                          <p className="text-[10px] text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running. The page won't load without it.</p>
+                        </div>
+                        <p className="text-[10px] text-fg-muted mb-2">Then scan QR or copy link to connect:</p>
                         <div className="flex justify-center bg-white rounded-lg p-3 w-fit mx-auto">
                           <QRCodeSVG value={tailscale.url} size={140} />
                         </div>
