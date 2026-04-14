@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { FirstRunState, PrerequisiteState } from '../../shared/first-run-types';
+import BrailleSpinner from './BrailleSpinner';
 
 /* ------------------------------------------------------------------ */
 /*  StatusIcon                                                        */
@@ -8,17 +9,18 @@ import type { FirstRunState, PrerequisiteState } from '../../shared/first-run-ty
 function StatusIcon({ status }: { status: PrerequisiteState['status'] }) {
   switch (status) {
     case 'installed':
-      return <span className="text-green-400">&#10003;</span>;
+      return <span className="text-accent">&#10003;</span>;
     case 'installing':
     case 'checking':
-      return <span className="text-blue-400 inline-block animate-spin">&#9696;</span>;
+      return <BrailleSpinner size="sm" />;
     case 'failed':
-      return <span className="text-red-400">&#10007;</span>;
+      // Status colors stay theme-independent per CLAUDE.md.
+      return <span className="text-red-500">&#10007;</span>;
     case 'skipped':
-      return <span className="text-gray-500">&#8212;</span>;
+      return <span className="text-fg-faint">&#8212;</span>;
     case 'waiting':
     default:
-      return <span className="text-gray-500">&#9675;</span>;
+      return <span className="text-fg-faint">&#9675;</span>;
   }
 }
 
