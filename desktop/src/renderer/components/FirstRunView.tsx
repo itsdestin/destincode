@@ -270,8 +270,8 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
     state?.currentStep === 'LAUNCH_WIZARD' || state?.currentStep === 'COMPLETE';
 
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-950 text-gray-100">
-      <h1 className="text-4xl font-bold mb-6">DestinCode</h1>
+    <div className="absolute inset-0 flex flex-col items-center justify-center bg-canvas text-fg">
+      <h1 className="text-4xl font-semibold tracking-tight mb-6 text-fg">DestinCode</h1>
 
       {launching ? (
         <CompletionCard />
@@ -329,10 +329,13 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
           {/* Error display */}
           {state?.lastError && (
             <div className="flex flex-col items-center gap-2 mt-2">
-              <p className="text-xs text-red-400 text-center">{state.lastError}</p>
+              {/* Status colors stay theme-independent per CLAUDE.md. */}
+              <p className="text-xs text-red-500 text-center max-w-md">
+                {state.lastError}
+              </p>
               <button
                 onClick={handleRetry}
-                className="px-3 py-1.5 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium transition-colors"
+                className="px-3 py-1.5 rounded-full bg-well border border-edge hover:bg-inset text-fg text-xs font-medium transition-colors"
               >
                 Try Again
               </button>
@@ -344,7 +347,7 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
       {/* Skip link */}
       <button
         onClick={handleSkip}
-        className="mt-10 text-xs text-gray-700 hover:text-gray-500 transition-colors"
+        className="mt-10 text-xs text-fg-faint hover:text-fg-muted transition-colors"
       >
         Skip setup (I installed via terminal)
       </button>
