@@ -10,7 +10,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import type { SkillEntry, PackageInfo } from '../../shared/types';
+import type { SkillEntry, PackageInfo, FeaturedData } from '../../shared/types';
 import type { ThemeRegistryEntryWithStatus } from '../../shared/theme-marketplace-types';
 
 // window.claude is typed for skills but not for theme.marketplace — cast via any
@@ -64,6 +64,9 @@ interface MarketplaceState {
   // Raw index data
   skillEntries: SkillEntry[];
   themeEntries: ThemeRegistryEntryWithStatus[];
+  // Marketplace redesign Phase 1: hero + rails curation. Empty-default so UIs
+  // that don't need it can ignore this field entirely.
+  featured: FeaturedData;
   // Phase 3a: packages map from destincode-skills.json — tracks installed
   // versions, sources, and component paths for update detection + uninstall
   packages: Record<string, PackageInfo>;
@@ -110,6 +113,7 @@ export function useMarketplace(): MarketplaceContextValue {
 export function MarketplaceProvider({ children }: { children: React.ReactNode }) {
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
   const [themeEntries, setThemeEntries] = useState<ThemeRegistryEntryWithStatus[]>([]);
+  const [featured, setFeatured] = useState<FeaturedData>({ hero: [], rails: [] });
   const [packages, setPackages] = useState<Record<string, PackageInfo>>({});
   const [installedSkills, setInstalledSkills] = useState<SkillEntry[]>([]);
   const [favorites, setFavoritesState] = useState<string[]>([]);
@@ -126,18 +130,26 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     try {
       // Phase 3a: include packages map so update detection works on first load
       const marketplaceApi = (window as any).claude.marketplace;
+      // Marketplace redesign Phase 1: featured is additive and non-blocking;
+      // fall back to empty hero/rails if the endpoint isn't available (older
+      // app versions) or the network call fails.
+      const featuredCall =
+        (window.claude.skills as any).getFeatured?.().catch(() => ({ hero: [], rails: [] }))
+          ?? Promise.resolve({ hero: [], rails: [] });
       const [
         marketplaceSkills,
         themes,
         installed,
         favs,
         pkgs,
+        feat,
       ] = await Promise.all([
         window.claude.skills.listMarketplace(),
         claude().theme.marketplace.list().catch(() => []),
         window.claude.skills.list(),
         window.claude.skills.getFavorites(),
         marketplaceApi?.getPackages?.().catch(() => ({})) ?? Promise.resolve({}),
+        featuredCall,
       ]);
 
       // Discard stale response — a newer fetchAll was triggered while we were awaiting
@@ -152,6 +164,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       setInstalledSkills(installed || []);
       setFavoritesState(favs || []);
       setPackages((pkgs as Record<string, PackageInfo>) || {});
+      setFeatured((feat && typeof feat === 'object') ? feat : { hero: [], rails: [] });
     } catch (err: any) {
       if (gen !== fetchGeneration.current) return;
       setError(err?.message || 'Failed to load marketplace data');
@@ -257,6 +270,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   const value = useMemo<MarketplaceContextValue>(() => ({
     skillEntries,
     themeEntries,
+    featured,
     packages,
     updateAvailable,
     installedSkills,
@@ -272,7 +286,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     refresh: fetchAll,
     publishSkill,
   }), [
-    skillEntries, themeEntries, packages, updateAvailable, installedSkills,
+    skillEntries, themeEntries, featured, packages, updateAvailable, installedSkills,
     favorites, loading, error,
     installSkill, uninstallSkill, installTheme, uninstallTheme, update,
     setFavorite, fetchAll, publishSkill,

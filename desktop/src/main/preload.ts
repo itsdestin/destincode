@@ -40,6 +40,15 @@ const IPC = {
   SKILLS_GET_SHARE_LINK: 'skills:get-share-link',
   SKILLS_IMPORT_FROM_LINK: 'skills:import-from-link',
   SKILLS_GET_CURATED_DEFAULTS: 'skills:get-curated-defaults',
+  SKILLS_GET_FEATURED: 'skills:get-featured',
+  // Marketplace redesign Phase 3 — integrations namespace.
+  INTEGRATIONS_LIST: 'integrations:list',
+  INTEGRATIONS_INSTALL: 'integrations:install',
+  INTEGRATIONS_UNINSTALL: 'integrations:uninstall',
+  INTEGRATIONS_STATUS: 'integrations:status',
+  INTEGRATIONS_CONFIGURE: 'integrations:configure',
+  // Phase 4 — skip 24h cache after /feature curation.
+  MARKETPLACE_INVALIDATE_CACHE: 'marketplace:invalidate-cache',
   SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
   SKILLS_INSTALL_MANY: 'skills:install-many',
   SKILLS_APPLY_OUTPUT_STYLE: 'skills:apply-output-style',
@@ -278,6 +287,7 @@ contextBridge.exposeInMainWorld('claude', {
     getShareLink: (id: string): Promise<string> => ipcRenderer.invoke(IPC.SKILLS_GET_SHARE_LINK, id),
     importFromLink: (encoded: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_IMPORT_FROM_LINK, encoded),
     getCuratedDefaults: (): Promise<string[]> => ipcRenderer.invoke(IPC.SKILLS_GET_CURATED_DEFAULTS),
+    getFeatured: (): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_GET_FEATURED),
     // Decomposition v3 §9.9: integration badges for SkillDetail
     getIntegrationInfo: (id: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_GET_INTEGRATION_INFO, id),
     // Decomposition v3 §9.10: onboarding helpers
@@ -294,6 +304,19 @@ contextBridge.exposeInMainWorld('claude', {
     getConfig: (id: string): Promise<Record<string, any>> => ipcRenderer.invoke(IPC.MARKETPLACE_GET_CONFIG, id),
     setConfig: (id: string, values: Record<string, any>): Promise<void> =>
       ipcRenderer.invoke(IPC.MARKETPLACE_SET_CONFIG, id, values),
+    // Phase 4 — user-initiated cache bust.
+    invalidateCache: (): Promise<void> => ipcRenderer.invoke(IPC.MARKETPLACE_INVALIDATE_CACHE),
+  },
+  // Marketplace redesign Phase 3 — integrations as a first-class content kind.
+  // Scaffold only: list/status return real data from integrations.json, but
+  // install/uninstall/configure are stubbed pending Google OAuth work.
+  integrations: {
+    list: (): Promise<any> => ipcRenderer.invoke(IPC.INTEGRATIONS_LIST),
+    install: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.INTEGRATIONS_INSTALL, slug),
+    uninstall: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.INTEGRATIONS_UNINSTALL, slug),
+    status: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.INTEGRATIONS_STATUS, slug),
+    configure: (slug: string, settings: Record<string, any>): Promise<any> =>
+      ipcRenderer.invoke(IPC.INTEGRATIONS_CONFIGURE, slug, settings),
   },
   // Marketplace sign-in (device-code OAuth flow) — token stays in main process.
   // start/poll wrap API calls and return ApiResult so the renderer can inspect
