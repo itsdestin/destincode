@@ -86,6 +86,47 @@ interface MarketplaceEntry {
   sourceMarketplace?: string;
   description?: string;
   author?: string;
+  // Used to detect when a cached local-source package has drifted from the
+  // marketplace index (see installFromLocal). Optional — missing version
+  // falls through to pure time-based cache refresh.
+  version?: string;
+  // Decomposition v3: shell command run after install. Only executed when
+  // sourceRef URL points to a trusted GitHub org — see installPlugin().
+  postInstall?: string;
+  // Decomposition v3: soft recommendations (surfaced in marketplace UI, not
+  // enforced). `provides` / `optionalIntegrations` are read from the installed
+  // plugin.json by the integration reconciler, not from the marketplace entry.
+  recommends?: string[];
+}
+
+// Decomposition v3 §9.5: postInstall scripts run arbitrary shell — restrict
+// to entries whose sourceRef URL points to a trusted GitHub org. Do NOT trust
+// `sourceMarketplace` alone; it comes from fetchable JSON and can be spoofed
+// if the registry is compromised. This is an allowlist on the canonical
+// repo URL the code was actually fetched from.
+const TRUSTED_POSTINSTALL_ORGS = ['itsdestin/', 'destinationunknown/'];
+
+function isPostInstallTrusted(entry: MarketplaceEntry): boolean {
+  if (!entry.postInstall || !entry.sourceRef) return false;
+  return TRUSTED_POSTINSTALL_ORGS.some(org =>
+    entry.sourceRef.includes(`github.com/${org}`),
+  );
+}
+
+function runShell(command: string, cwd: string): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    execFile('bash', ['-c', command], {
+      cwd,
+      timeout: GIT_TIMEOUT,
+      maxBuffer: 10 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        resolve({ ok: false, output: `${stderr}\n${stdout}`.trim() });
+      } else {
+        resolve({ ok: true, output: stdout.trim() });
+      }
+    });
+  });
 }
 
 const installsInProgress = new Set<string>();
@@ -153,17 +194,88 @@ function ensurePluginJson(id: string, entry: MarketplaceEntry): void {
   fs.writeFileSync(dotJson, JSON.stringify(meta, null, 2));
 }
 
-async function installFromLocal(id: string, sourceRef: string, sourceMarketplace?: string): Promise<InstallResult> {
+// Decomposition v3 §9.4: cache refresh rate-limit window. Local-source packages
+// (encyclopedia, inbox, etc.) live in the marketplace repo as subdirs — without
+// a periodic `git pull` the cached copy diverges from master and users never
+// see updates. 1 hour is frequent enough for iteration, low-volume enough to
+// avoid hammering GitHub.
+const CACHE_REFRESH_MS = 60 * 60 * 1000; // 1 hour
+
+function getCacheTimestamp(cacheRepo: string): number {
+  try {
+    const stampFile = path.join(cacheRepo, '.destincode-last-pull');
+    if (!fs.existsSync(stampFile)) return 0;
+    return parseInt(fs.readFileSync(stampFile, 'utf8'), 10) || 0;
+  } catch { return 0; }
+}
+
+function setCacheTimestamp(cacheRepo: string): void {
+  try {
+    fs.writeFileSync(path.join(cacheRepo, '.destincode-last-pull'), String(Date.now()));
+  } catch { /* non-fatal — just means we'll retry next install */ }
+}
+
+function readCachedPluginVersion(sourceDir: string): string | null {
+  // Check both standard plugin.json layouts.
+  const candidates = [
+    path.join(sourceDir, 'plugin.json'),
+    path.join(sourceDir, '.claude-plugin', 'plugin.json'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const v = JSON.parse(fs.readFileSync(p, 'utf8')).version;
+      if (typeof v === 'string') return v;
+    } catch { /* corrupt manifest — treat as missing */ }
+  }
+  return null;
+}
+
+async function installFromLocal(id: string, sourceRef: string, sourceMarketplace?: string, expectedVersion?: string): Promise<InstallResult> {
   // Phase 3a: source-aware repo selection — DestinCode entries clone from
-  // itsdestin/destincode-marketplace, not the Anthropic upstream repo
+  // itsdestin/destincode-marketplace, not the Anthropic upstream repo.
+  // DESTINCODE_MARKETPLACE_BRANCH overrides the branch for test harnesses
+  // (e.g., running the decomposition-v3 branch on a scratch machine).
   const cacheRepo = path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace));
   const repoUrl = getMarketplaceRepo(sourceMarketplace);
+  const marketplaceBranch = process.env.DESTINCODE_MARKETPLACE_BRANCH || 'master';
 
-  // Ensure marketplace repo is cloned
+  // Ensure marketplace repo is cloned, or refresh it if:
+  //   (a) it's been >1h since the last pull (time-based refresh), OR
+  //   (b) the cached copy's plugin.json version doesn't match the version
+  //       declared in the marketplace index (version-based refresh).
+  // (b) catches the case where a critical fix bumped a package version within
+  // the 1h time window — without it, users would stay on the old copy until
+  // their timer elapsed. Pull failures fall back to the cached copy
+  // (offline-safe) and skip updating the timestamp so the next install retries.
+  let shouldRefresh = false;
   if (!fs.existsSync(cacheRepo)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    const { ok, output } = await runGit('clone', '--depth', '1', repoUrl, cacheRepo);
+    const { ok, output } = await runGit('clone', '--depth', '1', '--branch', marketplaceBranch, repoUrl, cacheRepo);
     if (!ok) return { status: 'failed', error: `Failed to clone marketplace repo: ${output.slice(0, 200)}` };
+    setCacheTimestamp(cacheRepo);
+  } else {
+    shouldRefresh = Date.now() - getCacheTimestamp(cacheRepo) > CACHE_REFRESH_MS;
+    if (!shouldRefresh && expectedVersion) {
+      const cachedVersion = readCachedPluginVersion(path.join(cacheRepo, sourceRef));
+      // Version present and mismatched → refresh. Missing version → fall back
+      // to time-based refresh only (don't thrash the cache on manifests that
+      // never declare a version).
+      if (cachedVersion && cachedVersion !== expectedVersion) shouldRefresh = true;
+    }
+  }
+
+  if (shouldRefresh) {
+    const fetchResult = await runGit('-C', cacheRepo, 'fetch', 'origin');
+    if (fetchResult.ok) {
+      // Default branch is master per workspace convention; DESTINCODE_MARKETPLACE_BRANCH
+      // overrides. If a marketplace repo later standardizes on `main`, detect
+      // origin/HEAD here.
+      const resetResult = await runGit('-C', cacheRepo, 'reset', '--hard', `origin/${marketplaceBranch}`);
+      if (resetResult.ok) setCacheTimestamp(cacheRepo);
+      // Reset failure → proceed with cached copy, don't bump stamp
+    }
+    // Fetch failure (offline, rate-limited) → proceed with cached copy
   }
 
   const sourceDir = path.join(cacheRepo, sourceRef);
@@ -251,8 +363,9 @@ export async function installPlugin(entry: MarketplaceEntry): Promise<InstallRes
     let result: InstallResult;
     switch (sourceType) {
       case 'local':
-        // Phase 3a: pass sourceMarketplace so the installer clones the right repo
-        result = await installFromLocal(id, sourceRef, entry.sourceMarketplace);
+        // Phase 3a: pass sourceMarketplace so the installer clones the right repo.
+        // Pass entry.version so the cache refreshes when a package bumped mid-TTL.
+        result = await installFromLocal(id, sourceRef, entry.sourceMarketplace, entry.version);
         break;
       case 'url':
         result = await installFromUrl(id, sourceRef);
@@ -279,6 +392,17 @@ export async function installPlugin(entry: MarketplaceEntry): Promise<InstallRes
         });
       } catch (err: any) {
         return { status: 'failed', error: `Registry write failed: ${err?.message || String(err)}` };
+      }
+      // Decomposition v3 §9.5: run postInstall AFTER registry wiring so a
+      // failing script never leaves orphan registry entries pointing at a
+      // half-installed plugin. Gated on the trusted-org allowlist. Failures
+      // log but don't fail the install — files and registry are already in
+      // place.
+      if (isPostInstallTrusted(entry)) {
+        const { ok, output } = await runShell(entry.postInstall!, path.join(PLUGINS_DIR, id));
+        if (!ok) {
+          console.warn(`[plugin-installer] postInstall failed for ${id}: ${output.slice(0, 200)}`);
+        }
       }
     }
 

@@ -687,6 +687,50 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to start hook relay', { error: String(e) });
   }
 
+  // Decomposition v3: generate ~/.claude/integration-context.md from installed
+  // plugin manifests so session-start.sh can inject capability routing into
+  // the preamble. Regenerated after every install/uninstall too.
+  try {
+    const { reconcileIntegrations } = require('./integration-reconciler');
+    const summary = reconcileIntegrations();
+    log('INFO', 'Main', 'Integration context generated', summary);
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to generate integration context', { error: String(e) });
+  }
+
+  // Decomposition v3 §9.2: reconcile plugin hooks-manifest.json into
+  // ~/.claude/settings.json. Adds missing required hooks, updates stale paths
+  // (e.g., flattened core/hooks/ → hooks/), enforces MAX timeout. Never
+  // removes user-added hooks. Runs after install-hooks.js so the app's own
+  // relay entries win any ordering contention.
+  try {
+    const { reconcileHooks } = require('./hook-reconciler');
+    const hookSummary = reconcileHooks();
+    log('INFO', 'Main', 'Plugin hooks reconciled', hookSummary);
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to reconcile plugin hooks', { error: String(e) });
+  }
+
+  // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
+  // ~/.claude.json mcpServers. Only auto:true entries, filtered by platform.
+  // Never overwrites user-configured servers.
+  try {
+    const { reconcileMcp } = require('./mcp-reconciler');
+    const mcpSummary = reconcileMcp();
+    log('INFO', 'Main', 'MCP servers reconciled', mcpSummary);
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to reconcile MCP servers', { error: String(e) });
+  }
+
+  // Decomposition v3 §9.1: replace hooks/announcement-fetch.js with a native
+  // service. First fetch fires immediately, 24h refresh loop thereafter.
+  try {
+    const { startAnnouncementService } = require('./announcement-service');
+    startAnnouncementService();
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to start announcement service', { error: String(e) });
+  }
+
   try {
     await remoteServer.start();
   } catch (e) {

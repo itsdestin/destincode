@@ -293,6 +293,38 @@ class SkillConfigStore(private val homeDir: File) {
     fun getPackage(id: String): JSONObject? =
         getPackages().optJSONObject(id)
 
+    /**
+     * Decomposition v3 §9.8: return packages with status computed from disk
+     * presence. After cross-device sync, Android may have a desktop-installed
+     * package in config but no files on disk yet — surface that as "pending"
+     * so the UI can show an Install CTA.
+     */
+    fun getPackagesWithStatus(): JSONObject {
+        val packages = getPackages()
+        val result = JSONObject()
+        val keys = packages.keys()
+        while (keys.hasNext()) {
+            val id = keys.next()
+            val pkg = packages.optJSONObject(id) ?: continue
+            val components = pkg.optJSONArray("components")
+            var onDisk = true
+            if (components != null) {
+                for (i in 0 until components.length()) {
+                    val c = components.optJSONObject(i) ?: continue
+                    if (c.optString("type") == "plugin") {
+                        onDisk = java.io.File(c.optString("path")).exists()
+                        break
+                    }
+                }
+            }
+            // Clone + annotate without mutating the stored object
+            val copy = JSONObject(pkg.toString())
+            copy.put("status", if (onDisk) "installed" else "pending")
+            result.put(id, copy)
+        }
+        return result
+    }
+
     fun recordPackageInstall(id: String, pkg: JSONObject) {
         val packages = getPackages()
         packages.put(id, pkg)

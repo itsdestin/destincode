@@ -189,6 +189,40 @@ class SessionService : Service() {
                 ?.takeIf { !it.shellMode && it.isRunning }
                 ?.writeInput("/reload-plugins\r")
         }
+        // Decomposition v3: wire integration reconciler + run once on launch so
+        // ~/.claude/integration-context.md reflects currently-installed packages
+        // before any session starts. Also re-runs after every install/uninstall.
+        val reconciler = com.destin.code.skills.IntegrationReconciler(bs.homeDir)
+        skillProvider?.integrationReconciler = reconciler
+        try {
+            val summary = reconciler.reconcile()
+            android.util.Log.i("SessionService", "Integration context generated: rows=${summary.rowCount} providers=${summary.providerCount}")
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Initial integration reconcile failed", e)
+        }
+
+        // Decomposition v3 §9.2: reconcile plugin hooks-manifest.json into
+        // settings.json. Adds required hooks, updates stale paths (e.g.,
+        // flattened core/hooks/ → hooks/), enforces MAX timeout.
+        val hookReconciler = HookReconciler(bs.homeDir)
+        skillProvider?.hookReconciler = hookReconciler
+        try {
+            val hr = hookReconciler.reconcile()
+            android.util.Log.i("SessionService", "Hook reconciled: added=${hr.added} updatedPath=${hr.updatedPath} updatedTimeout=${hr.updatedTimeout}")
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Initial hook reconcile failed", e)
+        }
+
+        // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
+        // .claude.json mcpServers. Only auto:true entries; filtered to "linux"/"all".
+        val mcpReconciler = com.destin.code.skills.McpReconciler(bs.homeDir)
+        skillProvider?.mcpReconciler = mcpReconciler
+        try {
+            val mr = mcpReconciler.reconcile()
+            android.util.Log.i("SessionService", "MCP reconciled: added=${mr.added} skippedPlatform=${mr.skippedPlatform} skippedManual=${mr.skippedManual}")
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Initial MCP reconcile failed", e)
+        }
         // Phase 5d: start watching themes directory for hot-reload
         startThemeWatcher(bs)
 
@@ -759,6 +793,26 @@ class SessionService : Service() {
             "skills:get-curated-defaults" -> {
                 val result = skillProvider?.getCuratedDefaults() ?: org.json.JSONArray()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Decomposition v3 §9.9: integration badges for the detail view
+            "skills:get-integration-info" -> {
+                val idArg = msg.payload?.optString("id") ?: ""
+                val result = skillProvider?.getIntegrationInfo(idArg) ?: JSONObject()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Decomposition v3 §9.10: onboarding bulk install of curated packages
+            "skills:install-many" -> {
+                val idsJson = msg.payload?.optJSONArray("ids")
+                val ids = mutableListOf<String>()
+                if (idsJson != null) for (i in 0 until idsJson.length()) ids.add(idsJson.optString(i))
+                val result = skillProvider?.installMany(ids) ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Decomposition v3 §9.10: onboarding output style selection
+            "skills:apply-output-style" -> {
+                val styleId = msg.payload?.optString("styleId") ?: ""
+                skillProvider?.applyOutputStyle(styleId)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
             }
             // Phase 3a: unified packages map — lets the renderer compare installed
             // versions against the marketplace index to detect available updates

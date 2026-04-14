@@ -584,6 +584,11 @@ export function installShim(): void {
       getShareLink: (id: string) => invoke('skills:get-share-link', { id }),
       importFromLink: (encoded: string) => invoke('skills:import-from-link', { encoded }),
       getCuratedDefaults: () => invoke('skills:get-curated-defaults'),
+      // Decomposition v3 §9.9: shim parity for integration badges
+      getIntegrationInfo: (id: string) => invoke('skills:get-integration-info', { id }),
+      // Decomposition v3 §9.10: shim parity for onboarding helpers
+      installMany: (ids: string[]) => invoke('skills:install-many', { ids }),
+      applyOutputStyle: (styleId: string) => invoke('skills:apply-output-style', { styleId }),
       // Phase 3b: update a plugin (re-installs at the same path)
       update: (id: string) => invoke('skills:update', { id }),
     },

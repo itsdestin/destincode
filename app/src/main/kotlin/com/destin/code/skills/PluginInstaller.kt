@@ -31,6 +31,16 @@ class PluginInstaller(
         private const val MARKETPLACE_REPO = "https://github.com/anthropics/claude-plugins-official.git"
         private const val DESTINCODE_MARKETPLACE_REPO = "https://github.com/itsdestin/destincode-marketplace.git"
 
+        // Decomposition v3 §9.4: rate-limit marketplace cache refreshes so
+        // installs don't hammer GitHub but local-source packages still get
+        // updates without requiring a DestinCode release.
+        private const val CACHE_REFRESH_MS = 60L * 60L * 1000L // 1 hour
+
+        // Decomposition v3 §9.5: postInstall runs arbitrary shell — only allow
+        // it for entries whose sourceRef points to an org we control. `sourceMarketplace`
+        // is NOT a trust boundary (comes from fetchable JSON, can be spoofed).
+        private val TRUSTED_POSTINSTALL_ORGS = listOf("itsdestin/", "destinationunknown/")
+
         /**
          * Phase 3a: Map sourceMarketplace to its git repo URL.
          * DestinCode/DestinClaude local entries live in itsdestin/destincode-marketplace
@@ -95,6 +105,13 @@ class PluginInstaller(
             if (result is InstallResult.Success) {
                 // Ensure .claude-plugin/plugin.json exists (some plugins use root plugin.json)
                 ensurePluginJson(id, entry)
+                // Decomposition v3 §9.5: run postInstall only if trusted. Failures
+                // are logged but don't fail the install — files are already in place.
+                if (isPostInstallTrusted(entry)) {
+                    val cmd = entry.optString("postInstall")
+                    val ok = runShell(cmd, targetDir)
+                    if (!ok) Log.w(TAG, "postInstall failed for $id")
+                }
                 // Phase 3a: record as a PackageInfo carrying the marketplace version
                 // so update detection can compare against the latest index.
                 configStore.recordPackageInstall(id, JSONObject().apply {
@@ -168,12 +185,24 @@ class PluginInstaller(
         val cacheRepo = File(cacheDir, getCacheRepoName(sourceMarketplace))
         val repoUrl = getMarketplaceRepo(sourceMarketplace)
 
-        // Ensure the marketplace repo is cloned
+        // Ensure the marketplace repo is cloned, or refresh it if it's been >1h
+        // since the last pull. Pull failures fall back to the cached copy
+        // (offline-safe) and skip updating the timestamp so next install retries.
         if (!cacheRepo.exists()) {
             Log.i(TAG, "Cloning marketplace repo: $repoUrl")
             cacheDir.mkdirs()
             val ok = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath)
             if (!ok) return InstallResult.Failed("Failed to clone marketplace repo")
+            setCacheTimestamp(cacheRepo)
+        } else if (System.currentTimeMillis() - getCacheTimestamp(cacheRepo) > CACHE_REFRESH_MS) {
+            val fetchOk = runGit("-C", cacheRepo.absolutePath, "fetch", "origin")
+            if (fetchOk) {
+                // Default branch: master per workspace convention
+                val resetOk = runGit("-C", cacheRepo.absolutePath, "reset", "--hard", "origin/master")
+                if (resetOk) setCacheTimestamp(cacheRepo)
+                // reset failure → proceed with cached copy, don't bump stamp
+            }
+            // fetch failure (offline) → proceed with cached copy
         }
 
         val sourceDir = File(cacheRepo, sourceRef)
@@ -223,6 +252,48 @@ class PluginInstaller(
             return InstallResult.Success
         } finally {
             tmpDir.deleteRecursively()
+        }
+    }
+
+    // ── Cache refresh + postInstall helpers (decomposition v3) ─────
+
+    private fun getCacheTimestamp(cacheRepo: File): Long = try {
+        val stamp = File(cacheRepo, ".destincode-last-pull")
+        if (stamp.exists()) stamp.readText().trim().toLongOrNull() ?: 0L else 0L
+    } catch (_: Exception) { 0L }
+
+    private fun setCacheTimestamp(cacheRepo: File) {
+        try {
+            File(cacheRepo, ".destincode-last-pull").writeText(System.currentTimeMillis().toString())
+        } catch (_: Exception) { /* non-fatal — retry next install */ }
+    }
+
+    private fun isPostInstallTrusted(entry: JSONObject): Boolean {
+        val cmd = entry.optString("postInstall")
+        val sourceRef = entry.optString("sourceRef")
+        if (cmd.isEmpty() || sourceRef.isEmpty()) return false
+        return TRUSTED_POSTINSTALL_ORGS.any { org -> sourceRef.contains("github.com/$org") }
+    }
+
+    /** Run a shell command via the embedded bash. Returns true on exit 0. */
+    private suspend fun runShell(command: String, cwd: File): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val bashPath = File(homeDir, "usr/bin/bash").absolutePath
+            val pb = ProcessBuilder("/system/bin/linker64", bashPath, "-c", command)
+                .directory(cwd)
+                .redirectErrorStream(true)
+            pb.environment().clear()
+            pb.environment().putAll(buildEnv())
+            val process = pb.start()
+            val output = process.inputStream.bufferedReader().readText()
+            val exited = process.waitFor(GIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            if (!exited) { process.destroyForcibly(); return@withContext false }
+            val code = process.exitValue()
+            if (code != 0) Log.w(TAG, "postInstall exit $code: ${output.take(500)}")
+            code == 0
+        } catch (e: Exception) {
+            Log.e(TAG, "postInstall execution error", e)
+            false
         }
     }
 

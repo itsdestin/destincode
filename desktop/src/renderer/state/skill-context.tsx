@@ -131,9 +131,11 @@ export function SkillProvider({ children }: { children: ReactNode }) {
 
   // Drawer shows only user favorites. Curated defaults seed favorites on first run
   // (see initial-load effect); after that the user fully controls what's in the drawer.
+  // Favorites may hold PACKAGE ids (e.g. "destinclaude-encyclopedia") post-decomposition,
+  // so also match skill.pluginName — a single favorited package surfaces all its skills.
   const drawerSkills = useMemo(() => {
     const favSet = new Set(favorites);
-    return installed.filter(s => favSet.has(s.id));
+    return installed.filter(s => favSet.has(s.id) || (s.pluginName && favSet.has(s.pluginName)));
   }, [installed, favorites]);
 
   // Stable references for pass-through IPC methods (no state dependencies)

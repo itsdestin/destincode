@@ -18,6 +18,18 @@ const typeBadgeStyles: Record<string, string> = {
   plugin: 'bg-inset/50 text-fg-dim border border-edge/25',
 };
 
+interface IntegrationInfoUI {
+  provides: Array<{ capability: string; description: string; skill: string }>;
+  optionalIntegrations: Array<{
+    capability: string;
+    installed: boolean;
+    providerPackageId?: string;
+    whenAvailable?: string;
+    whenUnavailable?: string;
+  }>;
+}
+
+
 export default function SkillDetail({ skillId, onBack }: Props) {
   const { getDetail, install, uninstall, setFavorite, getShareLink, installed, favorites } = useSkills();
   // Task 9 (scope-expanded): pull live install count + rating from /stats for this skill.
@@ -34,6 +46,9 @@ export default function SkillDetail({ skillId, onBack }: Props) {
   const [ratingModalOpen, setRatingModalOpen] = useState(false);
   // Bumped on every successful submission to trigger a ReviewList re-fetch
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
+  // Decomposition v3 §9.9: integration badges — loaded separately since the
+  // detail endpoint doesn't currently surface provides/optionalIntegrations
+  const [integrations, setIntegrations] = useState<IntegrationInfoUI | null>(null);
 
   const isInstalled = installed.some(s => s.id === skillId);
   const isFavorite = favorites.includes(skillId);
@@ -45,6 +60,15 @@ export default function SkillDetail({ skillId, onBack }: Props) {
       .then(d => { setDetail(d); setLoading(false); })
       .catch(err => { setError(err.message || 'Failed to load skill details'); setLoading(false); });
   }, [skillId, getDetail]);
+
+  useEffect(() => {
+    // Fetch integration info in parallel with detail — never blocks rendering
+    const api = (window as any).claude?.skills;
+    if (!api?.getIntegrationInfo) return;
+    api.getIntegrationInfo(skillId)
+      .then((info: IntegrationInfoUI) => setIntegrations(info))
+      .catch(() => setIntegrations(null));
+  }, [skillId]);
 
   const handleInstall = async () => {
     setInstalling(true);
@@ -224,6 +248,58 @@ export default function SkillDetail({ skillId, onBack }: Props) {
             their own native config.json won't have configSchema. */}
         {isInstalled && detail.configSchema && detail.configSchema.fields.length > 0 && (
           <ConfigForm id={detail.id} schema={detail.configSchema} />
+        )}
+
+        {/* Decomposition v3 §9.9: integration badges — shown when the package
+            declares provides/optionalIntegrations. Doubles as a cross-package
+            discovery hint: an uninstalled integration partner shows a CTA. */}
+        {integrations && (integrations.provides.length > 0 || integrations.optionalIntegrations.length > 0) && (
+          <div className="mb-4">
+            <h4 className="text-xs font-semibold text-fg-muted uppercase tracking-wide mb-1">Integrations</h4>
+            {integrations.provides.length > 0 && (
+              <div className="mb-2">
+                <p className="text-xs text-fg-muted mb-1">Provides</p>
+                <div className="flex flex-wrap gap-1">
+                  {integrations.provides.map(p => (
+                    <span
+                      key={p.capability}
+                      title={p.description}
+                      className="text-[10px] px-1.5 py-0.5 rounded-sm bg-accent/10 text-accent border border-accent/25"
+                    >
+                      {p.capability}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {integrations.optionalIntegrations.length > 0 && (
+              <div>
+                <p className="text-xs text-fg-muted mb-1">Works with</p>
+                <ul className="space-y-1">
+                  {integrations.optionalIntegrations.map(i => (
+                    <li key={i.capability} className="flex items-center justify-between text-xs">
+                      <span className="text-fg">
+                        {i.capability}
+                        {i.installed ? (
+                          <span className="ml-1.5 text-[10px] text-[#5cb85c]">✓ installed</span>
+                        ) : (
+                          <span className="ml-1.5 text-[10px] text-fg-muted">not installed</span>
+                        )}
+                      </span>
+                      {!i.installed && i.providerPackageId && (
+                        <button
+                          onClick={() => install(i.providerPackageId!)}
+                          className="text-[10px] text-accent hover:underline"
+                        >
+                          Install
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Metadata */}

@@ -166,6 +166,37 @@ export interface PackageComponent {
   path: string;
 }
 
+// --- Plugin integration manifest (decomposition v3) ---
+//
+// Packages declare capabilities they `provide` and `optionalIntegrations`
+// they can use if available. The app merges these across all installed
+// plugins into ~/.claude/integration-context.md which Claude reads at
+// session start to route cross-skill references correctly.
+//
+// See TOOLKIT-DECOMPOSITION-v2.md §4 for the full design.
+
+export interface ProvidedCapability {
+  description: string;
+  skill: string; // name of the skill that fulfills this capability
+}
+
+export interface OptionalIntegration {
+  whenAvailable: string;   // instruction Claude follows if the capability is installed
+  whenUnavailable: string; // fallback instruction if no installed package provides it
+}
+
+export interface PluginManifest {
+  name: string;
+  version?: string;
+  description?: string;
+  author?: { name?: string } | string;
+  license?: string;
+  recommends?: string[];                                    // soft recommendation — package works without these
+  provides?: Record<string, ProvidedCapability>;            // capability name -> fulfillment
+  optionalIntegrations?: Record<string, OptionalIntegration>; // capability name -> routing
+  postInstall?: string;                                     // shell command run after install (trusted-org only)
+}
+
 // Tracked marketplace package — records what the marketplace installed
 export interface PackageInfo {
   version: string;
@@ -173,6 +204,11 @@ export interface PackageInfo {
   installedAt: string;
   removable: boolean;
   components: PackageComponent[];
+  // Decomposition v3 §9.8: cross-device sync can surface a package that's
+  // present in config but not yet on disk (e.g., Android pulled a desktop
+  // config but hasn't installed the package yet). "pending" UIs can show an
+  // Install CTA without confusing the user about whether it's really there.
+  status?: 'installed' | 'pending';
 }
 
 export interface UserSkillConfig {
@@ -183,8 +219,6 @@ export interface UserSkillConfig {
   privateSkills: SkillEntry[];
   // v2: unified package tracking (replaces installed_plugins)
   packages?: Record<string, PackageInfo>;
-  // Phase 6: set after one-time migration of toolkit layers + community themes
-  migrated?: boolean;
 }
 
 export interface SkillProvider {
@@ -253,6 +287,22 @@ export interface ConfigSchema {
   fields: ConfigField[];
 }
 
+// Decomposition v3 §9.9: what SkillDetail needs to render integration badges.
+// Populated by skill-provider.getIntegrationInfo() which reads the plugin's
+// own plugin.json (if installed) or the marketplace entry (if not).
+export interface IntegrationInfo {
+  // Capabilities the package says it needs (with fallback behavior)
+  optionalIntegrations: Array<{
+    capability: string;
+    installed: boolean;                 // does any installed plugin provide this?
+    providerPackageId?: string;         // which one, if installed
+    whenAvailable?: string;
+    whenUnavailable?: string;
+  }>;
+  // Capabilities the package itself provides
+  provides: Array<{ capability: string; description: string; skill: string }>;
+}
+
 // IPC channel names
 export const IPC = {
   // Renderer -> Main
@@ -280,6 +330,11 @@ export const IPC = {
   SKILLS_GET_SHARE_LINK: 'skills:get-share-link',
   SKILLS_IMPORT_FROM_LINK: 'skills:import-from-link',
   SKILLS_GET_CURATED_DEFAULTS: 'skills:get-curated-defaults',
+  // Decomposition v3 §9.9: used by SkillDetail to render integration badges
+  SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
+  // Decomposition v3 §9.10: onboarding bulk install + output-style apply
+  SKILLS_INSTALL_MANY: 'skills:install-many',
+  SKILLS_APPLY_OUTPUT_STYLE: 'skills:apply-output-style',
   TERMINAL_READY: 'session:terminal-ready',
   // Main -> Renderer
   SESSION_CREATED: 'session:created',

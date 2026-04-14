@@ -7,8 +7,12 @@ import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
 import { installPlugin, uninstallPlugin, isPluginInstalled, type InstallResult } from './plugin-installer';
-import { pluginInstallDir } from './claude-code-registry';
+import { pluginInstallDir, DESTINCODE_PLUGINS_DIR, listInstalledPluginDirs } from './claude-code-registry';
 import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
+import { reconcileIntegrations } from './integration-reconciler';
+import { reconcileHooks } from './hook-reconciler';
+import { reconcileMcp } from './mcp-reconciler';
+import { log } from './logger';
 import type {
   SkillEntry, SkillDetailView, SkillFilters, ChipConfig,
   MetadataOverride, SkillProvider,
@@ -20,7 +24,20 @@ const execFileAsync = promisify(execFile);
 let ghPath = 'gh';
 try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
-const PLUGINS_DIR = path.join(os.homedir(), '.claude', 'plugins');
+const CLAUDE_PLUGINS_ROOT = path.join(os.homedir(), '.claude', 'plugins');
+
+/**
+ * Resolve a plugin id to its on-disk directory. Checks the top-level toolkit
+ * clone path first (for the core `destinclaude` id cloned by install.sh)
+ * and falls back to the marketplace subtree (for plugin-installer packages).
+ */
+function resolvePluginDir(id: string): string | null {
+  const topLevel = path.join(CLAUDE_PLUGINS_ROOT, id);
+  if (fs.existsSync(topLevel)) return topLevel;
+  const marketplace = path.join(DESTINCODE_PLUGINS_DIR, id);
+  if (fs.existsSync(marketplace)) return marketplace;
+  return null;
+}
 
 // Patterns that indicate sensitive content — stripped before upload
 const SENSITIVE_PATTERNS = [
@@ -38,7 +55,8 @@ const INDEX_CACHE = path.join(CACHE_DIR, 'index.json');
 const DEFAULTS_CACHE = path.join(CACHE_DIR, 'curated-defaults.json');
 
 // GitHub raw content base URL — set this to your marketplace repo
-const REGISTRY_BASE = 'https://raw.githubusercontent.com/itsdestin/destincode-marketplace/master';
+// DESTINCODE_MARKETPLACE_BRANCH overrides the branch for test harnesses.
+const REGISTRY_BASE = `https://raw.githubusercontent.com/itsdestin/destincode-marketplace/${process.env.DESTINCODE_MARKETPLACE_BRANCH || 'master'}`;
 
 const INDEX_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -207,6 +225,10 @@ export class LocalSkillProvider implements SkillProvider {
       sourceMarketplace: marketplaceEntry.sourceMarketplace,
       description: marketplaceEntry.description,
       author: marketplaceEntry.author,
+      // Decomposition v3 §9.5: pass through postInstall + recommends so
+      // installer can run trusted-org-gated scripts / surface soft deps
+      postInstall: marketplaceEntry.postInstall,
+      recommends: marketplaceEntry.recommends,
     });
 
     if (result.status === 'installed') {
@@ -225,6 +247,16 @@ export class LocalSkillProvider implements SkillProvider {
         }],
       });
       this.installedCache = null;
+      // Decomposition v3: regenerate integration-context.md so newly-installed
+      // `provides` capabilities are visible to Claude on the next session start.
+      try { reconcileIntegrations(); } catch (e) { log('ERROR', 'SkillProvider', 'integration reconcile after install failed', { error: String(e) }); }
+      // Also reconcile hooks — the newly-installed plugin may declare
+      // required hooks that need to land in settings.json before the user's
+      // next Claude session starts.
+      try { reconcileHooks(); } catch (e) { log('ERROR', 'SkillProvider', 'hook reconcile after install failed', { error: String(e) }); }
+      // Also reconcile MCP servers — packages like destinclaude-messaging
+      // declare MCP servers that need to land in .claude.json on install.
+      try { reconcileMcp(); } catch (e) { log('ERROR', 'SkillProvider', 'MCP reconcile after install failed', { error: String(e) }); }
     }
 
     // Tag result so callers know a plugin (not prompt) was installed
@@ -264,6 +296,10 @@ export class LocalSkillProvider implements SkillProvider {
       sourceMarketplace: marketplaceEntry.sourceMarketplace,
       description: marketplaceEntry.description,
       author: marketplaceEntry.author,
+      // Decomposition v3 §9.5: pass through postInstall + recommends so
+      // installer can run trusted-org-gated scripts / surface soft deps
+      postInstall: marketplaceEntry.postInstall,
+      recommends: marketplaceEntry.recommends,
     });
 
     if (result.status === 'installed' || result.status === 'already_installed') {
@@ -304,6 +340,9 @@ export class LocalSkillProvider implements SkillProvider {
       await uninstallPlugin(id);
       this.configStore.removePluginInstall(id);
       this.installedCache = null;
+      // Decomposition v3: regenerate integration-context.md so removed
+      // capabilities fall back to their `whenUnavailable` instruction.
+      try { reconcileIntegrations(); } catch (e) { log('ERROR', 'SkillProvider', 'integration reconcile after uninstall failed', { error: String(e) }); }
       return { type: 'plugin' };
     } else {
       this.configStore.deletePromptSkill(id);
@@ -350,9 +389,10 @@ export class LocalSkillProvider implements SkillProvider {
    * 5. Open PR with auto-populated description
    */
   async publish(id: string): Promise<{ prUrl: string }> {
-    // Locate the plugin on disk
-    const pluginDir = path.join(PLUGINS_DIR, id);
-    if (!fs.existsSync(pluginDir)) {
+    // Locate the plugin on disk — could be top-level (core toolkit clone)
+    // or under the marketplace subtree (plugin-installer packages).
+    const pluginDir = resolvePluginDir(id);
+    if (!pluginDir) {
       throw new Error(`Plugin directory not found: ${id}`);
     }
 
@@ -686,5 +726,118 @@ export class LocalSkillProvider implements SkillProvider {
     try {
       fs.writeFileSync(filePath, JSON.stringify({ fetchedAt: Date.now(), data }), 'utf8');
     } catch { /* best-effort cache */ }
+  }
+
+  /**
+   * Decomposition v3 §9.9: return integration metadata for a skill id.
+   *
+   * For installed plugins: read plugin.json from disk (most up-to-date).
+   * For non-installed skills: fall back to marketplace entry fields.
+   *
+   * For each optionalIntegrations entry, cross-reference against currently
+   * installed `provides` so the UI can render "Integrates with X (installed)"
+   * vs "Integrates with Y (not installed — install?)".
+   */
+  async getIntegrationInfo(id: string): Promise<{
+    optionalIntegrations: Array<{
+      capability: string;
+      installed: boolean;
+      providerPackageId?: string;
+      whenAvailable?: string;
+      whenUnavailable?: string;
+    }>;
+    provides: Array<{ capability: string; description: string; skill: string }>;
+  }> {
+    // Build a map of capability → providing package by scanning all installed
+    // plugin manifests. Same logic as integration-reconciler but read-only.
+    const providerMap = new Map<string, string>();
+    for (const pluginDir of listInstalledPluginDirs()) {
+      const manifest = this.readPluginManifest(pluginDir);
+      if (!manifest?.provides) continue;
+      for (const cap of Object.keys(manifest.provides)) {
+        if (!providerMap.has(cap)) providerMap.set(cap, manifest.name);
+      }
+    }
+
+    // Try installed manifest first; fall back to marketplace entry fields
+    let rawProvides: Record<string, { description: string; skill: string }> = {};
+    let rawOptional: Record<string, { whenAvailable: string; whenUnavailable: string }> = {};
+    const pluginDir = resolvePluginDir(id);
+    const manifest = pluginDir ? this.readPluginManifest(pluginDir) : null;
+    if (manifest) {
+      rawProvides = manifest.provides ?? {};
+      rawOptional = manifest.optionalIntegrations ?? {};
+    } else {
+      const index = await this.fetchIndex();
+      const entry = index.find(e => e.id === id) as any;
+      if (entry) {
+        rawProvides = entry.provides ?? {};
+        rawOptional = entry.optionalIntegrations ?? {};
+      }
+    }
+
+    return {
+      provides: Object.entries(rawProvides).map(([capability, spec]) => ({
+        capability,
+        description: spec.description,
+        skill: spec.skill,
+      })),
+      optionalIntegrations: Object.entries(rawOptional).map(([capability, spec]) => {
+        const provider = providerMap.get(capability);
+        return {
+          capability,
+          installed: !!provider,
+          providerPackageId: provider,
+          whenAvailable: spec.whenAvailable,
+          whenUnavailable: spec.whenUnavailable,
+        };
+      }),
+    };
+  }
+
+  private readPluginManifest(pluginDir: string): { name: string; provides?: Record<string, { description: string; skill: string }>; optionalIntegrations?: Record<string, { whenAvailable: string; whenUnavailable: string }> } | null {
+    const candidates = [
+      path.join(pluginDir, '.claude-plugin', 'plugin.json'),
+      path.join(pluginDir, 'plugin.json'),
+    ];
+    for (const p of candidates) {
+      try {
+        if (!fs.existsSync(p)) continue;
+        return JSON.parse(fs.readFileSync(p, 'utf8'));
+      } catch { continue; }
+    }
+    return null;
+  }
+
+  /**
+   * Decomposition v3 §9.10: apply an output style by writing its id to
+   * ~/.claude/destincode-config/destinclaude-output-styles.json. Session-start
+   * reads this file and injects the corresponding style markdown into the
+   * preamble. Onboarding calls this with "casual" after first-run install.
+   */
+  applyOutputStyle(styleId: string): void {
+    const configDir = path.join(os.homedir(), '.claude', 'destincode-config');
+    fs.mkdirSync(configDir, { recursive: true });
+    const configFile = path.join(configDir, 'destinclaude-output-styles.json');
+    fs.writeFileSync(configFile, JSON.stringify({ activeStyle: styleId }, null, 2));
+  }
+
+  /**
+   * Decomposition v3 §9.10: bulk install for onboarding "install curated
+   * defaults" button. Runs sequentially (not in parallel) to avoid git lock
+   * contention on the marketplace cache clone. Continues past individual
+   * failures so one broken entry doesn't block the rest.
+   */
+  async installMany(ids: string[]): Promise<Array<{ id: string; status: string; error?: string }>> {
+    const results: Array<{ id: string; status: string; error?: string }> = [];
+    for (const id of ids) {
+      try {
+        const r = await this.install(id);
+        results.push({ id, status: r.status, error: (r as any).error });
+      } catch (e: any) {
+        results.push({ id, status: 'failed', error: e?.message || String(e) });
+      }
+    }
+    return results;
   }
 }

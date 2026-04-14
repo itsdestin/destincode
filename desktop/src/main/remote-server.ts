@@ -668,6 +668,27 @@ export class RemoteServer {
         this.respond(client.ws, type, id, result);
         break;
       }
+      // Decomposition v3 §9.9: integration badges via remote/Android session
+      case 'skills:get-integration-info': {
+        const result = this.skillProvider
+          ? await this.skillProvider.getIntegrationInfo(payload.id as string)
+          : { provides: [], optionalIntegrations: [] };
+        this.respond(client.ws, type, id, result);
+        break;
+      }
+      // Decomposition v3 §9.10: onboarding helpers via remote/Android
+      case 'skills:install-many': {
+        const result = this.skillProvider
+          ? await this.skillProvider.installMany((payload.ids as string[]) || [])
+          : [];
+        this.respond(client.ws, type, id, result);
+        break;
+      }
+      case 'skills:apply-output-style': {
+        if (this.skillProvider) this.skillProvider.applyOutputStyle(payload.styleId as string);
+        this.respond(client.ws, type, id, { ok: true });
+        break;
+      }
       case 'file:upload': {
         const uploadDir = path.join(os.tmpdir(), 'claude-desktop-uploads');
         try {

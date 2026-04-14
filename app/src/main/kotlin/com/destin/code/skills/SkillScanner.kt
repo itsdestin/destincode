@@ -43,11 +43,26 @@ class SkillScanner(private val homeDir: File, private val context: Context) {
 
         val pluginsDir = File(homeDir, ".claude/plugins")
 
-        // 1. Scan DestinClaude skills
-        val dcSkillsDir = File(pluginsDir, "destinclaude/skills")
+        // Decomposition v3 §9.6: generic plugin scan. Previously destinclaude
+        // was special-cased (scanned at ~/.claude/plugins/destinclaude/skills/).
+        // After decomposition every package lives under a sibling directory,
+        // so we scan every plugin directory that has a plugin.json manifest.
         try {
-            dcSkillsDir.listFiles()?.forEach { entry ->
-                if (entry.isDirectory) addSkill(entry.name, entry.name, "", "destinclaude")
+            pluginsDir.listFiles { f -> f.isDirectory }?.forEach { pluginRoot ->
+                val hasManifest = File(pluginRoot, "plugin.json").exists() ||
+                    File(pluginRoot, ".claude-plugin/plugin.json").exists()
+                if (!hasManifest) return@forEach
+
+                File(pluginRoot, "skills").listFiles()?.forEach { entry ->
+                    if (entry.isDirectory) {
+                        // destinclaude-prefixed packages use bare skill ids for
+                        // backward compat with existing favorites/curated defaults
+                        val skillId = if (pluginRoot.name.startsWith("destinclaude")) entry.name
+                            else "${pluginRoot.name}:${entry.name}"
+                        val source = if (pluginRoot.name.startsWith("destinclaude")) "destinclaude" else "plugin"
+                        addSkill(skillId, entry.name, "", source, pluginRoot.name)
+                    }
+                }
             }
         } catch (_: Exception) {}
 

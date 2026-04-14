@@ -1620,8 +1620,20 @@ export class SyncService extends EventEmitter {
 
     const routesFile = path.join(this.claudeDir, 'toolkit-state', 'skill-routes.json');
     const routes = this.readJson(routesFile) || {};
-    const toolkitRoot = this.configGet('toolkit_root', '');
-    const toolkitLayers = ['core/skills', 'productivity/skills', 'life/skills'];
+    const pluginsDir = path.join(this.claudeDir, 'plugins');
+
+    // Decomposition v3 §9.7: after decomposition there are no more core/life/
+    // productivity layers inside the monolith — every destinclaude-owned skill
+    // lives in its own plugin directory (destinclaude, destinclaude-encyclopedia,
+    // destinclaude-food, etc.). A skill under ~/.claude/skills/ is considered a
+    // toolkit copy if any destinclaude-prefixed plugin ships the same skill.
+    const destinclaudePluginDirs: string[] = (() => {
+      try {
+        return fs.readdirSync(pluginsDir, { withFileTypes: true })
+          .filter(d => d.isDirectory() && d.name.startsWith('destinclaude'))
+          .map(d => path.join(pluginsDir, d.name));
+      } catch { return []; }
+    })();
 
     const unrouted: string[] = [];
 
@@ -1629,20 +1641,20 @@ export class SyncService extends EventEmitter {
       const skillDir = path.join(skillsDir, skillName);
       if (!this.dirExists(skillDir)) continue;
 
-      // Skip symlinks (toolkit-managed)
+      // Skip symlinks (toolkit-managed — legacy, pre-decomposition)
       try { if (fs.lstatSync(skillDir).isSymbolicLink()) continue; } catch { continue; }
 
-      // Skip if it's a copy of a toolkit skill
-      if (toolkitRoot) {
-        let isToolkitCopy = false;
-        for (const layer of toolkitLayers) {
-          if (this.dirExists(path.join(toolkitRoot, layer, skillName))) {
-            isToolkitCopy = true;
-            break;
-          }
+      // Skip if any destinclaude-prefixed plugin ships this skill under its
+      // skills/ directory — that means the user's local copy is a mirror of
+      // a toolkit-managed skill, not a user-authored one.
+      let isToolkitCopy = false;
+      for (const pluginDir of destinclaudePluginDirs) {
+        if (this.dirExists(path.join(pluginDir, 'skills', skillName))) {
+          isToolkitCopy = true;
+          break;
         }
-        if (isToolkitCopy) continue;
       }
+      if (isToolkitCopy) continue;
 
       // Skip if already routed (any route means it's accounted for)
       if (routes[skillName]?.route) continue;
