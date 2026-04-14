@@ -41,6 +41,8 @@ const IPC = {
   SKILLS_IMPORT_FROM_LINK: 'skills:import-from-link',
   SKILLS_GET_CURATED_DEFAULTS: 'skills:get-curated-defaults',
   SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
+  SKILLS_INSTALL_MANY: 'skills:install-many',
+  SKILLS_APPLY_OUTPUT_STYLE: 'skills:apply-output-style',
   OPEN_CHANGELOG: 'shell:open-changelog',
   OPEN_EXTERNAL: 'shell:open-external',
   TERMINAL_READY: 'session:terminal-ready',
