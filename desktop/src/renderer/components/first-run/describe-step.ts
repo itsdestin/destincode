@@ -45,5 +45,11 @@ export function describeStep(state: FirstRunState): string {
     case 'LAUNCH_WIZARD':
     case 'COMPLETE':
       return 'All set. Opening DestinCode…';
+
+    default: {
+      // Exhaustiveness check — if a new FirstRunStep is added the compiler flags this.
+      const _exhaustive: never = state.currentStep;
+      return '';
+    }
   }
 }
