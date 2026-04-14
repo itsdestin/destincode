@@ -53,6 +53,7 @@ const SENSITIVE_PATTERNS = [
 const CACHE_DIR = path.join(os.homedir(), '.claude', 'destincode-marketplace-cache');
 const INDEX_CACHE = path.join(CACHE_DIR, 'index.json');
 const DEFAULTS_CACHE = path.join(CACHE_DIR, 'curated-defaults.json');
+const FEATURED_CACHE = path.join(CACHE_DIR, 'featured.json');
 
 // GitHub raw content base URL — set this to your marketplace repo
 // DESTINCODE_MARKETPLACE_BRANCH overrides the branch for test harnesses.
@@ -650,6 +651,25 @@ export class LocalSkillProvider implements SkillProvider {
     if (!this.configStore.configExists()) {
       const scanned = scanSkills();
       this.configStore.migrate(scanned.map(s => s.id));
+    }
+  }
+
+  // Marketplace redesign Phase 1: new `hero` + `rails` fields drive the
+  // redesigned discovery UI. Old `skills`/`themes` fields are passed through
+  // unchanged so older clients keep working. 24h cache mirrors fetchIndex.
+  async getFeatured(): Promise<{ hero?: any[]; rails?: any[]; skills?: any[]; themes?: any[] }> {
+    try {
+      const cached = this.readCache<any>(FEATURED_CACHE, INDEX_TTL);
+      if (cached) return cached;
+      const resp = await fetch(`${REGISTRY_BASE}/featured.json`);
+      if (!resp.ok) {
+        return this.readCache<any>(FEATURED_CACHE, Infinity) ?? { hero: [], rails: [] };
+      }
+      const data = await resp.json() as any;
+      this.writeCache(FEATURED_CACHE, data);
+      return data;
+    } catch {
+      return this.readCache<any>(FEATURED_CACHE, Infinity) ?? { hero: [], rails: [] };
     }
   }
 

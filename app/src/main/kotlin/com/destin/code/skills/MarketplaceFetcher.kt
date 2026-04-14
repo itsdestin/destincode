@@ -57,6 +57,27 @@ class MarketplaceFetcher(
         }
     }
 
+    // Marketplace redesign Phase 1: fetch discovery curation (hero/rails).
+    // Pass-through — returns the full object so both legacy fields and the
+    // new hero/rails flow to the renderer without schema assumptions.
+    fun fetchFeatured(): JSONObject {
+        val cacheFile = File(cacheDir, "featured.json")
+        readCache(cacheFile, indexTtl)?.let {
+            return try { JSONObject(it) } catch (_: Exception) { JSONObject() }
+        }
+        return try {
+            val data = URL("$registryBase/featured.json").readText()
+            val obj = JSONObject(data)
+            writeCache(cacheFile, data)
+            obj
+        } catch (e: Exception) {
+            Log.w("MarketplaceFetcher", "Failed to fetch featured", e)
+            readCache(cacheFile, Long.MAX_VALUE)?.let {
+                try { JSONObject(it) } catch (_: Exception) { JSONObject() }
+            } ?: JSONObject()
+        }
+    }
+
     fun fetchCuratedDefaults(): JSONArray {
         val cacheFile = File(cacheDir, "curated-defaults.json")
         readCache(cacheFile, indexTtl)?.let {

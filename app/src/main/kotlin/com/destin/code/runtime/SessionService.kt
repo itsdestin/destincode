@@ -794,6 +794,11 @@ class SessionService : Service() {
                 val result = skillProvider?.getCuratedDefaults() ?: org.json.JSONArray()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
+            // Marketplace redesign Phase 1 — curation data for hero/rails UI
+            "skills:get-featured" -> {
+                val result = skillProvider?.getFeatured() ?: JSONObject()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
             // Decomposition v3 §9.9: integration badges for the detail view
             "skills:get-integration-info" -> {
                 val idArg = msg.payload?.optString("id") ?: ""

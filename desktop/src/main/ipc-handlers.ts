@@ -782,6 +782,10 @@ export function registerIpcHandlers(
     return skillProvider.getCuratedDefaults();
   });
 
+  ipcMain.handle(IPC.SKILLS_GET_FEATURED, async () => {
+    return skillProvider.getFeatured();
+  });
+
   // Decomposition v3 §9.9: surface integration info for the detail view badges
   ipcMain.handle(IPC.SKILLS_GET_INTEGRATION_INFO, async (_event, id: string) => {
     return skillProvider.getIntegrationInfo(id);

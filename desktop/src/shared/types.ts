@@ -131,6 +131,25 @@ export interface SkillEntry {
   // a settings form for this entry. Anthropic plugins using native config.json
   // should NOT set this field.
   configSchema?: ConfigSchema;
+
+  // Marketplace redesign Phase 1 — soft filter/curation fields populated from
+  // overrides/<id>.json; all optional so pre-extension cache reads still work.
+  tags?: string[];
+  tagline?: string;
+  longDescription?: string;
+  lifeArea?: string[];
+  audience?: 'general' | 'developer';
+
+  // Marketplace redesign Phase 1 — component inventory from extract-components.
+  // `null` means extraction failed (see componentsError). UI should hide the
+  // "What's inside" peek for null; empty object {} means the plugin genuinely
+  // has no components.
+  components?: SkillComponents | null;
+  componentsError?: string;
+
+  // Propagated from sync.js for UI "deprecated" badges. Present only when true.
+  deprecated?: boolean;
+  deprecatedAt?: string;
 }
 
 export interface SkillDetailView extends SkillEntry {
@@ -239,6 +258,43 @@ export interface SkillProvider {
   publish(id: string): Promise<{ prUrl: string }>;
   generateShareLink(id: string): Promise<string>;
   importFromLink(encoded: string): Promise<SkillEntry>;
+  getFeatured?(): Promise<FeaturedData>;
+}
+
+// Marketplace redesign Phase 1 — discovery curation. Driven by featured.json
+// in the destincode-marketplace repo; edited via /feature admin skill.
+export interface FeaturedHeroSlot {
+  id: string;
+  blurb: string;
+  accentColor?: string;
+}
+
+export interface FeaturedRail {
+  title: string;
+  description?: string;
+  slugs: string[];
+}
+
+export interface FeaturedData {
+  hero?: FeaturedHeroSlot[];
+  rails?: FeaturedRail[];
+  // Legacy shape — passed through for older clients; to be dropped in Phase 2.
+  skills?: Array<{ id: string; tagline?: string }>;
+  themes?: Array<{ slug: string; tagline?: string }>;
+}
+
+// Marketplace redesign Phase 1 — per-entry component inventory for the
+// "What's inside" peek on cards and detail overlays. Extracted at sync time
+// by scripts/extract-components.js; `null` on the entry signals extraction
+// failure and the UI should hide the peek.
+export interface SkillComponents {
+  skills: string[];
+  hooks: string[];
+  commands: string[];
+  agents: string[];
+  mcpServers: string[];
+  hasHooksManifest: boolean;
+  hasMcpConfig: boolean;
 }
 
 // Known session flag names. Add new flags here + in the renderer's pill list.
@@ -330,6 +386,9 @@ export const IPC = {
   SKILLS_GET_SHARE_LINK: 'skills:get-share-link',
   SKILLS_IMPORT_FROM_LINK: 'skills:import-from-link',
   SKILLS_GET_CURATED_DEFAULTS: 'skills:get-curated-defaults',
+  // Marketplace redesign Phase 1: featured (hero/rails) for the redesigned
+  // discovery UI.
+  SKILLS_GET_FEATURED: 'skills:get-featured',
   // Decomposition v3 §9.9: used by SkillDetail to render integration badges
   SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
   // Decomposition v3 §9.10: onboarding bulk install + output-style apply

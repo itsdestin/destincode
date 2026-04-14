@@ -584,6 +584,7 @@ export function installShim(): void {
       getShareLink: (id: string) => invoke('skills:get-share-link', { id }),
       importFromLink: (encoded: string) => invoke('skills:import-from-link', { encoded }),
       getCuratedDefaults: () => invoke('skills:get-curated-defaults'),
+      getFeatured: () => invoke('skills:get-featured'),
       // Decomposition v3 §9.9: shim parity for integration badges
       getIntegrationInfo: (id: string) => invoke('skills:get-integration-info', { id }),
       // Decomposition v3 §9.10: shim parity for onboarding helpers

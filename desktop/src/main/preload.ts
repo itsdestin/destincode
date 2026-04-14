@@ -40,6 +40,7 @@ const IPC = {
   SKILLS_GET_SHARE_LINK: 'skills:get-share-link',
   SKILLS_IMPORT_FROM_LINK: 'skills:import-from-link',
   SKILLS_GET_CURATED_DEFAULTS: 'skills:get-curated-defaults',
+  SKILLS_GET_FEATURED: 'skills:get-featured',
   SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
   SKILLS_INSTALL_MANY: 'skills:install-many',
   SKILLS_APPLY_OUTPUT_STYLE: 'skills:apply-output-style',
@@ -278,6 +279,7 @@ contextBridge.exposeInMainWorld('claude', {
     getShareLink: (id: string): Promise<string> => ipcRenderer.invoke(IPC.SKILLS_GET_SHARE_LINK, id),
     importFromLink: (encoded: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_IMPORT_FROM_LINK, encoded),
     getCuratedDefaults: (): Promise<string[]> => ipcRenderer.invoke(IPC.SKILLS_GET_CURATED_DEFAULTS),
+    getFeatured: (): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_GET_FEATURED),
     // Decomposition v3 §9.9: integration badges for SkillDetail
     getIntegrationInfo: (id: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_GET_INTEGRATION_INFO, id),
     // Decomposition v3 §9.10: onboarding helpers

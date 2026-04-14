@@ -519,6 +519,12 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         }
     }
 
+    // Marketplace redesign Phase 1: expose featured (hero/rails) to the
+    // shared React UI via the bridge.
+    fun getFeatured(): JSONObject {
+        return try { fetcher.fetchFeatured() } catch (_: Exception) { JSONObject() }
+    }
+
     private fun getFallbackDefaults(): JSONArray {
         return try {
             val input = context.assets.open("web/data/skill-registry.json")
