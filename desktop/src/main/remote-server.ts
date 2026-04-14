@@ -985,8 +985,9 @@ export class RemoteServer {
           let ghPath = 'gh';
           try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
           const { stdout: username } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login']);
-          console.log(`[remote] github:auth — username '${username.trim()}' requested by ${(client.ws as any)._socket?.remoteAddress || 'unknown'}`);
-          // Return username only — raw token is not forwarded to remote clients
+          // Return username only — raw token is not forwarded to remote clients.
+          // Intentionally not logging username+IP here: it's correlatable metadata
+          // and the successful response is sufficient signal for debugging.
           this.respond(client.ws, type, id, { username: username.trim() });
         } catch {
           this.respond(client.ws, type, id, null);

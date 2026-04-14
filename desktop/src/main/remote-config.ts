@@ -19,7 +19,6 @@ interface ConfigData {
   enabled: boolean;
   port: number;
   passwordHash: string | null;
-  passwordPlain: string | null;
   trustTailscale: boolean;
   keepAwakeHours: number; // 0 = off
   everPaired: boolean;
@@ -29,7 +28,6 @@ export class RemoteConfig {
   enabled: boolean;
   port: number;
   passwordHash: string | null;
-  passwordPlain: string | null;
   trustTailscale: boolean;
   keepAwakeHours: number;
   everPaired: boolean;
@@ -41,7 +39,6 @@ export class RemoteConfig {
       // don't fight over the same port when both have remote access enabled.
       port: REMOTE_SERVER_DEFAULT_PORT,
       passwordHash: null,
-      passwordPlain: null,
       trustTailscale: false,
       keepAwakeHours: 0,
       everPaired: false,
@@ -55,7 +52,9 @@ export class RemoteConfig {
         // Shift saved port by PORT_OFFSET in dev so we don't collide with built app.
         this.port = (data.port ?? defaults.port) + (IS_DEV_PROFILE ? PORT_OFFSET : 0);
         this.passwordHash = data.passwordHash ?? defaults.passwordHash;
-        this.passwordPlain = data.passwordPlain ?? defaults.passwordPlain;
+        // Note: a `passwordPlain` field used to exist on disk (never read, only
+        // written). save() no longer serializes it, so it'll disappear on the
+        // next save. We intentionally don't load it into memory here.
         this.trustTailscale = data.trustTailscale ?? defaults.trustTailscale;
         this.keepAwakeHours = data.keepAwakeHours ?? defaults.keepAwakeHours;
         this.everPaired = data.everPaired ?? defaults.everPaired;
@@ -68,7 +67,6 @@ export class RemoteConfig {
     this.enabled = defaults.enabled;
     this.port = defaults.port;
     this.passwordHash = defaults.passwordHash;
-    this.passwordPlain = defaults.passwordPlain;
     this.trustTailscale = defaults.trustTailscale;
     this.keepAwakeHours = defaults.keepAwakeHours;
     this.everPaired = defaults.everPaired;
@@ -76,7 +74,6 @@ export class RemoteConfig {
 
   async setPassword(plaintext: string): Promise<void> {
     this.passwordHash = await bcrypt.hash(plaintext, BCRYPT_ROUNDS);
-    this.passwordPlain = plaintext;
     this.save();
   }
 
