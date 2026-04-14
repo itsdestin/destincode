@@ -14,6 +14,11 @@ export function usePartyLobby(isLeader: boolean = true) {
   const [incognito, setIncognitoState] = useState(false);
   // State (not ref) so the connection effect re-runs when the preference loads
   const [incognitoLoaded, setIncognitoLoaded] = useState(false);
+  // Bumping this nonce forces the connection effect to fully tear down the
+  // existing socket and rebuild from scratch — used by the Retry button when
+  // partysocket's internal reconnect loop has given up (e.g. after a long
+  // network drop or repeated server 5xx responses).
+  const [reconnectNonce, setReconnectNonce] = useState(0);
 
   // Load incognito preference on mount
   useEffect(() => {
@@ -123,9 +128,14 @@ export function usePartyLobby(isLeader: boolean = true) {
           clientRef.current?.send({ type: 'ping' });
         }, PING_INTERVAL);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!cancelled) {
-          dispatch({ type: 'PARTY_ERROR', message: 'Failed to get GitHub auth' });
+          // Surface the actual error — "Failed to get GitHub auth" alone gave
+          // no signal whether the IPC was missing, gh wasn't on PATH, or the
+          // token call failed. The detail makes the lobby ErrorScreen useful.
+          const detail = err instanceof Error ? err.message : String(err);
+          console.warn('[lobby] getGitHubAuth failed:', err);
+          dispatch({ type: 'PARTY_ERROR', message: `GitHub auth failed: ${detail}` });
         }
       });
 
@@ -136,7 +146,15 @@ export function usePartyLobby(isLeader: boolean = true) {
       clientRef.current?.close();
       clientRef.current = null;
     };
-  }, [dispatch, incognito, incognitoLoaded, isLeader]);
+  }, [dispatch, incognito, incognitoLoaded, isLeader, reconnectNonce]);
+
+  const reconnect = useCallback(() => {
+    // Clear the banner immediately so the UI returns to the spinner state,
+    // then bump the nonce — the cleanup function above closes the dead socket
+    // and the effect re-runs to build a fresh PartyClient + re-fetch gh auth.
+    dispatch({ type: 'PARTY_ERROR_CLEARED' });
+    setReconnectNonce(n => n + 1);
+  }, [dispatch]);
 
   const updateStatus = useCallback((status: 'idle' | 'in-game') => {
     clientRef.current?.send({ type: 'status', status });
@@ -158,5 +176,5 @@ export function usePartyLobby(isLeader: boolean = true) {
     });
   }, []);
 
-  return { updateStatus, challengePlayer, respondToChallenge, incognito, toggleIncognito };
+  return { updateStatus, challengePlayer, respondToChallenge, incognito, toggleIncognito, reconnect };
 }

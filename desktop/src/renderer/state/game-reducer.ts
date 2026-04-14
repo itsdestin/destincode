@@ -10,22 +10,33 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       // it on reconnect anyway. Clear onlineUsers so incognito self-filter works
       // and stale entries don't linger.
       //
-      // Surface the close code in the UI so a user without DevTools can see
-      // *why* the lobby keeps dropping. Useful codes: 1006 abnormal/network,
-      // 4001 superseded, 4003 heartbeat timeout, 1000 normal close.
-      const codeInfo = action.code !== undefined
-        ? ` (code ${action.code}${action.reason ? `: ${action.reason}` : ''})`
-        : '';
+      // Distinguish two paths:
+      //  - No `code` → intentional local disconnect (incognito toggle, leader
+      //    handoff). Stay silent — don't show the error screen.
+      //  - `code` present → real socket close. Surface the code so a user
+      //    without DevTools can see *why* the lobby dropped. Codes:
+      //    1000 normal, 1006 abnormal/network, 1011 server error,
+      //    4000 missing username, 4001 superseded, 4003 heartbeat timeout.
+      if (action.code === undefined) {
+        return { ...state, connected: false, onlineUsers: [], partyError: null };
+      }
+      const reason = action.reason ? `: ${action.reason}` : '';
       return {
         ...state,
         connected: false,
         onlineUsers: [],
-        partyError: `Disconnected from game server${codeInfo} — reconnecting...`,
+        partyError: `Disconnected from game server (code ${action.code}${reason}) — reconnecting...`,
       };
     }
 
     case 'PARTY_ERROR':
       return { ...state, connected: false, partyError: action.message };
+
+    case 'PARTY_ERROR_CLEARED':
+      // User hit Retry on the ErrorScreen — clear the banner so partysocket's
+      // ongoing reconnect attempts can promote to PARTY_CONNECTED, or so the
+      // lobby effect re-runs the auth fetch on next dependency change.
+      return { ...state, partyError: null };
 
     case 'PRESENCE_UPDATE':
       return { ...state, onlineUsers: action.online };

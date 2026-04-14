@@ -15,10 +15,50 @@ interface Props {
   onToggleIncognito?: () => void;
 }
 
-function ErrorScreen() {
+// Classify the lobby error so the hint matches the actual cause.
+// Old version blanket-suggested `gh auth login` for ANY connection error —
+// misleading when the real failure is server-side (PartyKit 5xx) or network.
+function classifyPartyError(msg: string | null): {
+  hint: string;
+  showAuthCmd: boolean;
+} {
+  const text = (msg ?? '').toLowerCase();
+  if (text.includes('github') || text.includes('gh auth') || text.includes('auth failed')) {
+    return {
+      hint: 'Make sure GitHub CLI is installed and authenticated:',
+      showAuthCmd: true,
+    };
+  }
+  if (text.includes('code 1011') || text.includes('code 500') || text.includes('code 1012') || text.includes('code 1013')) {
+    return { hint: 'The game server is having trouble. This usually clears up on its own.', showAuthCmd: false };
+  }
+  if (text.includes('code 1006') || text.includes('code 1015') || text.includes('lost connection')) {
+    return { hint: 'Network looks down. Check your internet connection.', showAuthCmd: false };
+  }
+  if (text.includes('code 4000')) {
+    return { hint: 'Lobby refused the connection (no username). Try reloading the app.', showAuthCmd: false };
+  }
+  return { hint: 'Reconnecting automatically… if it never recovers, try reloading.', showAuthCmd: false };
+}
+
+function ErrorScreen({ connection }: { connection: GameConnection }) {
   const state = useGameState();
   const dispatch = useGameDispatch();
-  const isConnectionError = !state.connected;
+  const { hint, showAuthCmd } = classifyPartyError(state.partyError);
+  // Track retries so we can offer a harder reload after repeated failures —
+  // partysocket reconnect can fail forever if e.g. the host name is bad or the
+  // user is rate-limited. After 2 manual retries we surface "Reload app" too.
+  const [retryCount, setRetryCount] = useState(0);
+  const [retrying, setRetrying] = useState(false);
+
+  const handleRetry = () => {
+    setRetryCount(n => n + 1);
+    setRetrying(true);
+    connection.reconnectLobby();
+    // Re-arm after a short window so the spinner clears whether or not we
+    // reconnect. PARTY_CONNECTED will swap the screen out from under us.
+    setTimeout(() => setRetrying(false), 4000);
+  };
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
@@ -26,16 +66,34 @@ function ErrorScreen() {
         <span className="text-2xl">!</span>
       </div>
       <p className="text-sm text-red-400 text-center">{state.partyError}</p>
-      {isConnectionError ? (
-        <p className="text-xs text-fg-muted text-center">Make sure GitHub CLI is installed and authenticated: gh auth login</p>
-      ) : (
+      <p className="text-xs text-fg-muted text-center max-w-xs">{hint}</p>
+      {showAuthCmd && (
+        <code className="text-xs text-fg-2 bg-inset px-2 py-1 rounded-sm">gh auth login</code>
+      )}
+      <div className="flex gap-2 mt-1 items-center">
+        <button
+          onClick={handleRetry}
+          disabled={retrying}
+          className="text-xs text-[#66AAFF] hover:text-[#88CCFF] transition-colors disabled:opacity-50"
+        >
+          {retrying ? 'Retrying…' : 'Retry'}
+        </button>
+        {retryCount >= 2 && (
+          <button
+            onClick={() => window.location.reload()}
+            className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+            title="Hard reload the renderer — drops all in-memory state"
+          >
+            Reload app
+          </button>
+        )}
         <button
           onClick={() => dispatch({ type: 'CLEAR_CHALLENGE' })}
-          className="text-xs text-[#66AAFF] hover:text-[#88CCFF] transition-colors"
+          className="text-xs text-fg-muted hover:text-fg-2 transition-colors"
         >
           Dismiss
         </button>
-      )}
+      </div>
     </div>
   );
 }
@@ -307,7 +365,7 @@ function WaitingScreen({ connection }: Props) {
 
 export default function GameLobby({ connection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
-  if (state.partyError && !incognito) return <ErrorScreen />;
+  if (state.partyError && !incognito) return <ErrorScreen connection={connection} />;
   if (state.screen === 'joining') return <JoiningScreen connection={connection} />;
   if (state.screen === 'waiting') return <WaitingScreen connection={connection} />;
   // Show connecting spinner while waiting for PartyKit (setup screen, not incognito)

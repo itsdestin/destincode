@@ -44,6 +44,7 @@ export type GameAction =
   | { type: 'PARTY_CONNECTED'; username: string }
   | { type: 'PARTY_DISCONNECTED'; code?: number; reason?: string }
   | { type: 'PARTY_ERROR'; message: string }
+  | { type: 'PARTY_ERROR_CLEARED' }
   | { type: 'PRESENCE_UPDATE'; online: OnlineUser[] }
   | { type: 'USER_JOINED'; username: string; status: string }
   | { type: 'USER_LEFT'; username: string }
@@ -75,6 +76,9 @@ export interface GameConnection {
   leaveGame: () => void;
   challengePlayer: (target: string) => void;
   respondToChallenge: (from: string, accept: boolean) => void;
+  /** Force a fresh lobby socket — used by the ErrorScreen Retry button when
+   * partysocket's auto-reconnect has given up. */
+  reconnectLobby: () => void;
 }
 
 export function createInitialGameState(): GameState {

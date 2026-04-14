@@ -307,7 +307,8 @@ function AppInner() {
     leaveGame: game.leaveGame,
     challengePlayer: game.challengePlayer,
     respondToChallenge: lobby.respondToChallenge,
-  }), [game.createGame, game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge]);
+    reconnectLobby: lobby.reconnect,
+  }), [game.createGame, game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
 
   // Derive session status colors for status dots.
   // chatStateMap is a new Map reference on every dispatch, so we stabilize with
