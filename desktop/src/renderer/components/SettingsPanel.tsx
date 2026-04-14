@@ -2108,6 +2108,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   const [setupError, setSetupError] = useState('');
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -2349,18 +2350,89 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
               document.body
             )}
 
-            <div className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 text-left">
-              <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-                <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+            {/* Clickable About — mirrors Android pattern but with desktop-specific content */}
+            <div>
+              <button
+                onClick={() => setShowAbout(v => !v)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+              >
+                <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
+                  <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10" />
                     <line x1="12" y1="16" x2="12" y2="12" />
                     <line x1="12" y1="8" x2="12.01" y2="8" />
                   </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <span className="text-xs text-fg font-medium">About</span>
-                <p className="text-[10px] text-fg-muted">DestinCode {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}</p>
-              </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs text-fg font-medium">About</span>
+                  <p className="text-[10px] text-fg-muted">DestinCode {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}</p>
+                </div>
+                <svg className={`w-3.5 h-3.5 text-fg-muted shrink-0 transition-transform ${showAbout ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+
+              {showAbout && (
+                <div className="mt-2 space-y-3 px-3 py-3 rounded-lg bg-inset/30 border border-edge-dim">
+                  {/* Disclaimer */}
+                  <div className="space-y-1.5">
+                    <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Disclaimer</h4>
+                    <p className="text-[10px] text-fg-dim leading-relaxed">
+                      DestinCode is an independent, community-built project. It is not affiliated with, endorsed by, or officially supported by Anthropic.
+                    </p>
+                    <p className="text-[10px] text-fg-dim leading-relaxed">
+                      "Claude" and "Claude Code" are trademarks of Anthropic, PBC.
+                    </p>
+                    <p className="text-[10px] text-fg-dim leading-relaxed">
+                      Thanks to the Anthropic team for building Claude Code. This project exists because of their work.
+                    </p>
+                  </div>
+
+                  <hr className="border-edge-dim" />
+
+                  {/* Privacy */}
+                  <div className="space-y-1.5">
+                    <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Privacy</h4>
+                    <p className="text-[10px] text-fg-dim leading-relaxed">
+                      DestinCode does not collect, transmit, or store any telemetry or personal data. All Claude interactions happen between the Claude Code CLI on your machine and Anthropic's servers using your own sign-in.
+                    </p>
+                    <p className="text-[10px] text-fg-dim leading-relaxed">
+                      Remote access (when enabled) serves the UI over your local network or Tailscale. Remote connections are NOT TLS-encrypted — use Tailscale for sensitive conversations since it provides WireGuard encryption end-to-end.
+                    </p>
+                    <p className="text-[10px] text-fg-dim leading-relaxed">
+                      Multiplayer games connect to a PartyKit server (Cloudflare) only while a lobby or game is open. No game traffic is retained server-side beyond the active room.
+                    </p>
+                  </div>
+
+                  <hr className="border-edge-dim" />
+
+                  {/* Licenses */}
+                  <div className="space-y-1.5">
+                    <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Licenses</h4>
+                    <p className="text-[10px] text-fg-dim leading-relaxed">
+                      DestinCode is licensed under the GNU General Public License v3.0 (GPLv3).
+                    </p>
+                    <div className="mt-1 space-y-1 pl-2">
+                      {[
+                        { lib: 'Electron', license: 'MIT', source: 'github.com/electron/electron' },
+                        { lib: 'React', license: 'MIT', source: 'github.com/facebook/react' },
+                        { lib: 'Vite', license: 'MIT', source: 'github.com/vitejs/vite' },
+                        { lib: 'xterm.js', license: 'MIT', source: 'github.com/xtermjs/xterm.js' },
+                        { lib: 'node-pty', license: 'MIT', source: 'github.com/microsoft/node-pty' },
+                        { lib: 'Tailwind CSS', license: 'MIT', source: 'github.com/tailwindlabs/tailwindcss' },
+                        { lib: 'highlight.js', license: 'BSD 3-Clause', source: 'github.com/highlightjs/highlight.js' },
+                        { lib: 'partysocket / PartyKit', license: 'MIT / ISC', source: 'github.com/partykit/partykit' },
+                        { lib: 'Cascadia Code', license: 'SIL OFL', source: 'github.com/microsoft/cascadia-code' },
+                      ].map(({ lib, license, source }) => (
+                        <div key={lib}>
+                          <span className="text-[10px] text-fg-2 font-medium">{lib}</span>
+                          <span className="text-[10px] text-fg-faint ml-1">· {license} · {source}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </section>
