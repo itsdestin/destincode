@@ -50,12 +50,18 @@ function statusLabel(status: PrerequisiteState['status'], version?: string): str
 /* ------------------------------------------------------------------ */
 
 function ProgressBar({ percent }: { percent: number }) {
+  const clamped = Math.min(100, Math.max(0, percent));
   return (
-    <div className="max-w-sm h-2.5 rounded-full bg-gray-800 overflow-hidden">
-      <div
-        className="h-full rounded-full bg-blue-500 transition-all duration-500"
-        style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
-      />
+    <div className="w-full flex items-center gap-3">
+      <div className="flex-1 h-1.5 rounded-full bg-inset overflow-hidden">
+        <div
+          className="h-full rounded-full bg-accent transition-all duration-500"
+          style={{ width: `${clamped}%` }}
+        />
+      </div>
+      <span className="text-xs text-fg-muted tabular-nums w-10 text-right">
+        {Math.round(clamped)}%
+      </span>
     </div>
   );
 }
@@ -263,13 +269,8 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
             </ul>
           )}
 
-          {/* Progress bar */}
-          {state && (
-            <div className="w-full flex flex-col items-center gap-1.5">
-              <ProgressBar percent={state.overallProgress} />
-              <span className="text-xs text-gray-500">{state.overallProgress}%</span>
-            </div>
-          )}
+          {/* Progress bar (percent rendered inline) */}
+          {state && <ProgressBar percent={state.overallProgress} />}
 
           {/* Status message */}
           {state?.statusMessage && (
