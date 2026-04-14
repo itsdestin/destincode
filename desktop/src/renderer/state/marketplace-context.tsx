@@ -143,7 +143,11 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       // Discard stale response — a newer fetchAll was triggered while we were awaiting
       if (gen !== fetchGeneration.current) return;
 
-      setSkillEntries(marketplaceSkills || []);
+      // Filter out entries sync.js flagged as deprecated — they refer to
+      // upstream plugins that no longer exist (e.g. pre-decomposition
+      // journaling-assistant prompt stubs). Metadata is preserved in the
+      // registry but shouldn't surface in the install UI.
+      setSkillEntries((marketplaceSkills || []).filter((e: any) => !e.deprecated));
       setThemeEntries(themes || []);
       setInstalledSkills(installed || []);
       setFavoritesState(favs || []);
