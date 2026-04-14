@@ -1464,7 +1464,7 @@ function AppInner() {
             {/* Always mounted so draft text survives chat↔terminal switches.
                inert disables focus/keyboard/paste when hidden so keystrokes
                reach xterm instead of the buried textarea. */}
-              <div ref={bottomBarRef} className={`chrome-wrapper bg-canvas${currentViewMode === 'chat' ? ' bottom-float' : ''}`} {...(currentViewMode !== 'chat' && getPlatform() === 'electron' ? { inert: true, style: { position: 'absolute', width: 0, height: 0, overflow: 'hidden' } as React.CSSProperties } : {})}>
+              <div ref={bottomBarRef} className={`chrome-wrapper chrome-wrapper--bottom bg-canvas${currentViewMode === 'chat' ? ' bottom-float' : ''}`} {...(currentViewMode !== 'chat' && getPlatform() === 'electron' ? { inert: true, style: { position: 'absolute', width: 0, height: 0, overflow: 'hidden' } as React.CSSProperties } : {})}>
                 {isTerminalTouch && sessionId && (
                   <TerminalToolbar sessionId={sessionId} />
                 )}

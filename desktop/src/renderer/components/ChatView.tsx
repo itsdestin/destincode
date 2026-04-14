@@ -66,6 +66,7 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
 
   // Single pass — compute all tool status flags, memoized to avoid re-iterating
@@ -98,15 +99,24 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
     currentAttentionState: state.attentionState,
   });
 
+  // Scroll container directly to scrollHeight instead of using
+  // bottomRef.scrollIntoView. Why: .chat-scroll has padding-bottom equal to
+  // --bottom-chrome-height so the last message clears the input bar. The sentinel
+  // sits ABOVE that padding, so scrollIntoView({block:'end'}) stops short of the
+  // true bottom by exactly chrome-height — leaving the last message behind the
+  // input bar. scrollTop = scrollHeight always reaches the real bottom.
+  const scrollToBottom = useCallback(() => {
+    const c = scrollContainerRef.current;
+    if (c) c.scrollTop = c.scrollHeight;
+  }, []);
+
   // Scroll to bottom on tab switch / mount. The follow-up ResizeObserver below
   // handles the chrome-height race (input bar can differ per session).
   useEffect(() => {
     if (!visible) return;
-    const raf = requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-    });
+    const raf = requestAnimationFrame(scrollToBottom);
     return () => cancelAnimationFrame(raf);
-  }, [visible]);
+  }, [visible, scrollToBottom]);
 
   // Fix: input bar height can differ between sessions (drafts, multi-line),
   // so --bottom-chrome-height changes right after tab switch. App's ResizeObserver
@@ -115,16 +125,18 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   // Re-snap to bottom whenever the chrome-wrapper resizes while atBottom && visible.
   useEffect(() => {
     if (!visible) return;
-    const chrome = document.querySelector('.chrome-wrapper');
+    // Fix: target the BOTTOM chrome-wrapper (input bar) specifically — there are
+    // two .chrome-wrapper elements in App.tsx (header + bottom), and plain
+    // querySelector returns the first (header), whose height doesn't change per
+    // session. The bottom bar is the one whose height varies with drafts/multi-line.
+    const chrome = document.querySelector('.chrome-wrapper--bottom');
     if (!chrome) return;
     const observer = new ResizeObserver(() => {
-      if (atBottomRef.current && bottomRef.current) {
-        bottomRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
-      }
+      if (atBottomRef.current) scrollToBottom();
     });
     observer.observe(chrome);
     return () => observer.disconnect();
-  }, [visible]);
+  }, [visible, scrollToBottom]);
 
   // Track whether user is scrolled to bottom
   useEffect(() => {
@@ -143,10 +155,8 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   // Uses lastActivityAt (a timestamp that updates on content-producing actions)
   // instead of Map references which changed on every reducer dispatch.
   useEffect(() => {
-    if (atBottom && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'auto' });
-    }
-  }, [state.timeline.length, state.lastActivityAt, state.isThinking, atBottom]);
+    if (atBottom) scrollToBottom();
+  }, [state.timeline.length, state.lastActivityAt, state.isThinking, atBottom, scrollToBottom]);
 
   // Fix: when a tool/permission card expands at the bottom of the chat, its new
   // content grows below the input bar and the user has to manually scroll. The
@@ -164,17 +174,18 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
     let lastHeight = node.scrollHeight;
     const observer = new ResizeObserver(() => {
       const next = node.scrollHeight;
-      if (next > lastHeight && atBottomRef.current && bottomRef.current) {
-        bottomRef.current.scrollIntoView({ behavior: 'auto' });
+      if (next > lastHeight && atBottomRef.current) {
+        scrollToBottom();
       }
       lastHeight = next;
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, []);
+  }, [scrollToBottom]);
 
   const jumpToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const c = scrollContainerRef.current;
+    if (c) c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' });
   }, []);
 
   // IntersectionObserver for backdrop-filter optimization: only apply blur
@@ -197,7 +208,6 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   }, []);
 
   // Arrow key scrolling with acceleration when not typing
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollSpeed = useRef(0);
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
