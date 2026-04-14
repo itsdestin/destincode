@@ -144,20 +144,23 @@ function AuthScreen({
 
 function DevModeScreen({ onEnable }: { onEnable: () => void }) {
   return (
-    <div className="mt-6 flex flex-col items-center gap-4 max-w-md text-center">
-      <p className="text-sm text-gray-300 leading-relaxed">
+    <div className="mt-6 w-full max-w-md rounded-2xl bg-panel border border-edge p-6 flex flex-col items-center gap-4 text-center">
+      <p className="text-sm text-fg leading-relaxed">
         Windows Developer Mode allows DestinCode to create symbolic links, which
         the toolkit uses for configuration files. This is a one-time system setting.
       </p>
       <button
         onClick={onEnable}
-        className="px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors"
+        className="px-5 py-2.5 rounded-full bg-accent text-on-accent font-medium hover:opacity-90 transition-opacity"
       >
         Enable Developer Mode
       </button>
-      <p className="text-xs text-gray-500 leading-relaxed">
-        If the button doesn't work, open <span className="font-mono text-gray-400">Settings &gt; Update &amp; Security &gt; For Developers</span> and
-        enable Developer Mode manually, then click retry.
+      <p className="text-xs text-fg-muted leading-relaxed">
+        If the button doesn't work, open{' '}
+        <span className="font-mono text-fg-dim">
+          Settings &gt; Update &amp; Security &gt; For Developers
+        </span>{' '}
+        and enable Developer Mode manually, then click retry.
       </p>
     </div>
   );
