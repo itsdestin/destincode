@@ -531,7 +531,20 @@ export default function SessionStrip({
     // ownership mid-drag — nothing to resolve on release.
     if (wasLiveDetached) return;
 
-    if (!wasDragging || !releasedSession) return;
+    // Pointer capture is set on the strip container (not the pill button) so
+    // that capture survives live tear-off ownership transfer. Side-effect: the
+    // browser won't synthesize a click event on the button after pointerup
+    // (click requires the same physical target for both down and up). Handle
+    // session selection here for the no-drag case instead of relying on onClick.
+    if (!wasDragging) {
+      if (releasedSession) {
+        suppressClick.current = true; // guard against onClick double-fire
+        onSelectSession(releasedSession.id);
+      }
+      return;
+    }
+
+    if (!releasedSession) return;
 
     // Resolve drop across all peer windows: main hit-tests [data-session-strip]
     // in each window against the current cursor. If a hit, re-dock there;
