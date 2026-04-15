@@ -201,6 +201,13 @@
    Global styles
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/* Suppress browser focus ring on mouse/pointer clicks — it looks out of place
+   in a desktop app. :focus-visible still fires for keyboard navigation so
+   accessibility is preserved. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 /* Use dynamic viewport height on mobile — prevents content from scrolling behind browser chrome.
    --vvp-offset is set by useVisualViewport hook when the mobile keyboard is open. */
 html, body, #root {
