@@ -729,12 +729,25 @@ function AppInner() {
     }).catch(() => {});
     if (!det) return;
 
-    const cleanupDir = det.onDirectoryUpdated?.((dir: any) => setWindowDirectory(dir));
+    const cleanupDir = det.onDirectoryUpdated?.((dir: any) => {
+      setWindowDirectory(dir);
+      // The directory snapshot carries leaderWindowId too. Pull it from every
+      // directory push so non-leader windows still learn who the leader is —
+      // main only fires WINDOW_LEADER_CHANGED when the id *changes* from the
+      // previously broadcast value, so window 2+ would otherwise never hear
+      // about the existing leader and stay stuck on "Connecting…" forever.
+      if (typeof dir?.leaderWindowId === 'number') setLeaderWindowId(dir.leaderWindowId);
+    });
     const cleanupLeader = det.onLeaderChanged?.((id: number) => setLeaderWindowId(id));
     // Pull the current directory immediately — the push from main may have
     // fired before this effect ran (on a brand-new window, React mounts after
-    // registerWindow already broadcast, so we'd miss it).
-    det.getDirectory?.().then((dir: any) => { if (dir) setWindowDirectory(dir); }).catch(() => {});
+    // registerWindow already broadcast, so we'd miss it). Same applies to the
+    // leader — hydrate both from this response.
+    det.getDirectory?.().then((dir: any) => {
+      if (!dir) return;
+      setWindowDirectory(dir);
+      if (typeof dir.leaderWindowId === 'number') setLeaderWindowId(dir.leaderWindowId);
+    }).catch(() => {});
 
     const cleanupAcquired = det.onOwnershipAcquired?.((payload: any) => {
       const { sessionId: sid, sessionInfo, freshWindow, refocusOnly } = payload;
