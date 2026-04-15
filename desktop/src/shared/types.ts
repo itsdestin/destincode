@@ -74,12 +74,28 @@ export interface TranscriptEvent {
     toolResult?: string;
     isError?: boolean;
     stopReason?: string;
+    /** Edit/MultiEdit tool-result payloads carry structuredPatch hunks. */
+    structuredPatch?: StructuredPatchHunk[];
   };
 }
 
 // --- Chat view types ---
 
 export type ToolCallStatus = 'running' | 'complete' | 'failed' | 'awaiting-approval';
+
+// jsdiff-style hunk. Claude Code's Edit/MultiEdit tool results include
+// `toolUseResult.structuredPatch`: pre-computed hunks with absolute file
+// line numbers + interleaved context/add/del rows. Preferred over
+// reconstructing a diff from old_string/new_string because line numbers
+// reflect the real file position.
+export interface StructuredPatchHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  /** Each string begins with ' ' (context), '-' (deletion), or '+' (addition). */
+  lines: string[];
+}
 
 export interface ToolCallState {
   toolUseId: string;
@@ -90,6 +106,8 @@ export interface ToolCallState {
   permissionSuggestions?: string[];
   response?: string;
   error?: string;
+  /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
+  structuredPatch?: StructuredPatchHunk[];
 }
 
 export interface ToolGroupState {

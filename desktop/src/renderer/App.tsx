@@ -495,6 +495,7 @@ function AppInner() {
             toolUseId: event.data.toolUseId,
             result: event.data.toolResult || '',
             isError: event.data.isError || false,
+            structuredPatch: event.data.structuredPatch,
           });
           break;
         case 'turn-complete':

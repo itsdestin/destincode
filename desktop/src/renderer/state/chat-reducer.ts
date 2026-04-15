@@ -500,13 +500,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const toolCalls = new Map(session.toolCalls);
       const existing = toolCalls.get(action.toolUseId);
       if (existing) {
+        // Carry structuredPatch onto the tool state so DiffView can render
+        // with absolute file line numbers (Claude Code ships it pre-computed).
+        const patch = action.structuredPatch;
         if (action.isError) {
           toolCalls.set(action.toolUseId, {
             ...existing, status: 'failed', error: action.result,
+            ...(patch ? { structuredPatch: patch } : {}),
           });
         } else {
           toolCalls.set(action.toolUseId, {
             ...existing, status: 'complete', response: action.result,
+            ...(patch ? { structuredPatch: patch } : {}),
           });
         }
       }

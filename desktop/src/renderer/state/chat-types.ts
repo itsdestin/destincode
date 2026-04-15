@@ -247,6 +247,7 @@ export type ChatAction =
       toolUseId: string;
       result: string;
       isError: boolean;
+      structuredPatch?: import('../../shared/types').StructuredPatchHunk[];
     }
   | {
       type: 'TRANSCRIPT_TURN_COMPLETE';

@@ -80,6 +80,13 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
     if (Array.isArray(content)) {
       const hasToolResult = content.some((b: any) => b.type === 'tool_result');
       if (hasToolResult) {
+        // Edit/MultiEdit results carry a jsdiff-style `structuredPatch` array
+        // at the JSONL line's top level (NOT inside message.content). Pull it
+        // through so the renderer can show absolute file line numbers instead
+        // of re-diffing old_string/new_string from 1.
+        const structuredPatch = Array.isArray(parsed.toolUseResult?.structuredPatch)
+          ? parsed.toolUseResult.structuredPatch
+          : undefined;
         for (const block of content) {
           if (block.type === 'tool_result') {
             events.push({
@@ -91,6 +98,7 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
                 toolUseId: block.tool_use_id,
                 toolResult: extractToolResultContent(block.content),
                 isError: block.is_error ?? false,
+                ...(structuredPatch ? { structuredPatch } : {}),
               },
             });
           }
