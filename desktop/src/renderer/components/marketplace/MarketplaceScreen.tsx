@@ -107,13 +107,27 @@ export default function MarketplaceScreen({
     return m;
   }, [mp.themeEntries]);
 
+  // Set of slugs that count as "Destin's picks" — prefer the rail explicitly
+  // titled "Destin's picks" for tight scoping; fall back to the union of all
+  // rails so the chip still does something if the rail gets renamed.
+  const pickSlugs = useMemo(() => {
+    const rails = mp.featured.rails || [];
+    const named = rails.find((r) => r.title.toLowerCase() === "destin's picks");
+    const source = named ? [named] : rails;
+    return new Set(source.flatMap((r) => r.slugs));
+  }, [mp.featured.rails]);
+
   // Search-mode filtered list — union of skills + themes that pass the chips.
   const filtered = useMemo(() => {
     if (mode !== "search") return [];
     const q = filter.query.trim().toLowerCase();
+    const picksOnly = filter.meta.has("picks");
 
     const skillPass = (s: SkillEntry): boolean => {
       if (filter.type !== null && filter.type !== "skill") return false;
+      // "Destin's picks" chip: hard filter against the curated slug set so the
+      // chip actually narrows results instead of just reordering them.
+      if (picksOnly && !pickSlugs.has(s.id)) return false;
       if (filter.vibes.size > 0) {
         const areas = s.lifeArea || [];
         if (!areas.some((a) => filter.vibes.has(a as any))) return false;
@@ -126,6 +140,7 @@ export default function MarketplaceScreen({
     };
     const themePass = (t: ThemeRegistryEntryWithStatus): boolean => {
       if (filter.type !== null && filter.type !== "theme") return false;
+      if (picksOnly && !pickSlugs.has(t.slug)) return false;
       if (filter.vibes.size > 0) return false; // themes have no lifeArea (yet)
       if (q) {
         const hay = `${t.name} ${t.description || ""}`.toLowerCase();
@@ -137,25 +152,27 @@ export default function MarketplaceScreen({
     const skills = mp.skillEntries.filter(skillPass);
     const themes = mp.themeEntries.filter(themePass);
 
-    // Meta chips reorder the combined list. `new` + `popular` sort by fields
-    // we have today; `picks` is featured.rails-first.
     const combined: Array<{ kind: "skill"; entry: SkillEntry } | { kind: "theme"; entry: ThemeRegistryEntryWithStatus }> = [
       ...skills.map((entry) => ({ kind: "skill" as const, entry })),
       ...themes.map((entry) => ({ kind: "theme" as const, entry })),
     ];
+
+    // Recency timestamp lives under different field names per entry type:
+    // skills use `updatedAt`, themes use `updated`. Read both so the "New"
+    // chip surfaces recent themes too instead of always sinking them.
+    const recency = (item: typeof combined[number]): string =>
+      item.kind === "skill" ? (item.entry.updatedAt || "") : (item.entry.updated || "");
+
     if (filter.meta.has("popular")) {
       combined.sort((a, b) => (
         (b.kind === "skill" ? (b.entry.installs || 0) : 0) -
         (a.kind === "skill" ? (a.entry.installs || 0) : 0)
       ));
     } else if (filter.meta.has("new")) {
-      combined.sort((a, b) => (
-        (b.kind === "skill" ? b.entry.updatedAt || "" : "")
-          .localeCompare(a.kind === "skill" ? a.entry.updatedAt || "" : "")
-      ));
+      combined.sort((a, b) => recency(b).localeCompare(recency(a)));
     }
     return combined;
-  }, [mode, filter, mp.skillEntries, mp.themeEntries]);
+  }, [mode, filter, mp.skillEntries, mp.themeEntries, pickSlugs]);
 
   const open = (t: DetailTarget) => setDetail(t);
 
