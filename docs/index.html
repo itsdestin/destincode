@@ -157,7 +157,14 @@
 
   ::selection { background: var(--selection-bg); color: var(--selection-fg); }
 
-  html { scroll-behavior: smooth; scrollbar-gutter: stable; }
+  /* scroll-padding-top offsets anchor jumps by the sticky nav's height so
+     section labels/titles don't land hidden under the header bar. +16px
+     adds a bit of breathing room above the landing point. */
+  html {
+    scroll-behavior: smooth;
+    scrollbar-gutter: stable;
+    scroll-padding-top: calc(var(--nav-height) + 16px);
+  }
 
   /* Theme swap: two .bg-crossfade layers hold the page's primary gradient
      backdrop, one per "current" + "outgoing" theme. On theme change, the
@@ -833,13 +840,15 @@
     border: 1px solid var(--border);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-glow);
     width: 100%;
-    max-width: 680px;
+    max-width: 960px;
     margin: 0 auto;
     position: relative;
-    /* Fixed height + flex column so the frame never grows as animated
-       bubbles/tool cards load in. Internal .demo-chat gets flex:1 and
-       overflow:hidden below, which caps the content to this box. */
-    height: 480px;
+    /* 16:10 aspect-ratio (replaces fixed 480px height). Keeps every mockup
+       the same desktop-window shape at every viewport width, instead of
+       drifting between tall-narrow and widescreen as the container resizes.
+       Internal .demo-chat still gets flex:1 + overflow:hidden below to
+       cap animated content to this box. */
+    aspect-ratio: 16 / 10;
     display: flex;
     flex-direction: column;
     /* Midnight initial state — aliased to --m-* for shared CSS */
@@ -870,13 +879,12 @@
     border: 1px solid var(--border);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-glow);
     position: relative;
-    /* Match .demo-app so every showcase mockup is the same rectangle.
-       Internal .mock-chat flexes to fill the remaining space between the
-       header and the input/status bars, and clips any overflow. */
+    /* Match .demo-app: same 960px max-width + 16:10 aspect-ratio so every
+       mockup renders as the same desktop-window shape. */
     width: 100%;
-    max-width: 680px;
+    max-width: 960px;
     margin: 0 auto;
-    height: 480px;
+    aspect-ratio: 16 / 10;
     display: flex;
     flex-direction: column;
   }
@@ -1120,7 +1128,9 @@
     padding: 16px 16px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    /* 10px between bubbles gives the left/right align-self alternation
+       enough room to read as distinct turns. 2px was too cramped. */
+    gap: 10px;
     position: relative;
     z-index: 1;
     background: var(--m-canvas);
@@ -1567,8 +1577,13 @@
     transition: all 1.8s;
   }
 
-  /* Generic status bar pill (context, theme, usage) */
+  /* Generic status bar pill (context, theme, usage) — matches real app:
+     flex row with small gap between label + value, no margin-left:auto
+     on any pill so everything flows left-to-right like the real StatusBar. */
   .mock-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     padding: 2px 6px;
     border-radius: var(--m-radius-sm, 4px);
     background: var(--m-panel);
@@ -1576,19 +1591,24 @@
     transition: all 1.8s;
   }
 
-  .mock-status-spacer { margin-left: auto; }
+  /* Inline-value colors inside status pills — mirror the real StatusBar:
+     usage% / context% / +lines are greenish, -lines is red. Kept theme-
+     independent on purpose, like the real app's hardcoded status colors. */
+  .mock-pill-val-ok { color: #4CAF50; }
+  .mock-pill-val-warn { color: #f0b040; }
+  .mock-pill-val-fg2 { color: var(--m-fg-2); }
+  .mock-pill-add { color: #4CAF50; }
+  .mock-pill-rem { color: #DD4444; }
+  .mock-pill-faint { color: var(--m-fg-faint); }
 
-  /* Pencil customize button */
-  .mock-customize-btn {
-    width: 20px; height: 20px;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: var(--m-radius-sm, 4px);
-    background: var(--m-panel);
-    border: 1px solid var(--m-edge-dim);
-    margin-left: auto;
-    flex-shrink: 0;
+  /* Git branch pill — teal-tinted like the real app's git-branch widget
+     (octicon icon + teal bg at 10% opacity, teal border at 25%). */
+  .mock-git-pill {
+    background: rgba(45, 212, 191, 0.10);
+    color: #2DD4BF;
+    border-color: rgba(45, 212, 191, 0.25);
   }
-  .mock-customize-btn svg { width: 10px; height: 10px; fill: none; stroke: var(--m-fg-muted); stroke-width: 2; }
+  .mock-git-pill svg { width: 10px; height: 10px; fill: currentColor; flex-shrink: 0; }
 
   /* ═══ Showcase layout ═══ */
   .showcase-grid {
@@ -1598,20 +1618,19 @@
     margin-top: 48px;
   }
 
+
+  /* Stacked layout: text description sits above a full-width mockup, so
+     each mockup can render at a 960x600 desktop-shape without being
+     squeezed into a half-width grid cell. Default align-items: stretch
+     lets the text block span the same width as the mockup below it. */
   .showcase-item {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 32px;
-    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
   }
 
-  .showcase-item.reverse { direction: rtl; }
-  .showcase-item.reverse > * { direction: ltr; }
-  /* Grid items default to min-width: auto (= min-content) which lets long
-     mono-font bubble text or tool-detail strings push the grid track wider
-     than 1fr. Pinning min-width:0 forces the cell to honor the 1fr share,
-     and the .demo-app/.mock-frame inside then fill their cell without
-     growing when mid-animation content appears. */
+  /* Prevents long mono-font tool-detail strings from forcing a flex item
+     above its max-width allocation. */
   .showcase-item > * { min-width: 0; }
 
   .showcase-text { display: flex; flex-direction: column; gap: 12px; }
@@ -1640,11 +1659,33 @@
   }
 
   /* ═══ Connect 4 game mockup ═══ */
-  .mock-game-layout { display: flex; position: relative; z-index: 1; }
+  /* Fill the frame below the header so the right-side game panel can span
+     full top-to-bottom of the mockup, with input/status bars docked inside
+     the chat column on the left instead of spanning below the whole frame. */
+  .mock-game-layout {
+    display: flex;
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Chat column on the left: chat area grows to fill, input + status bars
+     dock at the bottom. Sits alongside the full-height game panel. */
+  .mock-game-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
 
   .mock-game-chat {
     flex: 1;
-    min-height: 260px;
+    /* min-height:0 lets the flex child shrink if content overflows, rather
+       than forcing the chat to 260px+ and pushing input/status off-frame. */
+    min-height: 0;
+    overflow: hidden;
     padding: 16px 16px;
     display: flex;
     flex-direction: column;
@@ -1719,10 +1760,8 @@
   }
 
   @media (max-width: 768px) {
-    .showcase-item, .showcase-item.reverse {
-      grid-template-columns: 1fr;
-      direction: ltr;
-    }
+    /* .showcase-item mobile override removed: the layout is now single-column
+       at every viewport width, so no breakpoint reshaping is needed. */
     .mock-game-panel { width: 180px; }
     .mock-games-btn-wrap { display: none; }
   }
@@ -1745,10 +1784,13 @@
     -webkit-backdrop-filter: blur(14px);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 24px;
+    padding: 18px 20px;
   }
 
-  .prereq-badges { display: flex; gap: 6px; margin-bottom: 12px; }
+  /* Badges sit inline with the service name (right-aligned) instead of
+     taking their own row above it — removes the tall blank band the cards
+     had when badges stacked on top. */
+  .prereq-badges { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
 
   .prereq-badge {
     font-family: var(--font-mono);
@@ -1763,11 +1805,21 @@
   .prereq-badge.paid { background: rgba(255, 234, 0, 0.08); color: var(--yellow); border: 1px solid rgba(255, 234, 0, 0.2); }
   .prereq-badge.free { background: rgba(76, 175, 80, 0.1); color: #4CAF50; border: 1px solid rgba(76, 175, 80, 0.2); }
 
-  .prereq-header h3 { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 8px; }
-  .prereq-card p { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.55; }
+  /* Service-name row: h3 on the left, badges pushed to the right. gap
+     keeps them from colliding on narrower columns. align-items:flex-start
+     pins the badges to the top line of the service name so they don't
+     drift down when the h3 wraps to two lines. */
+  .prereq-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .prereq-header h3 { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .prereq-card p { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5; }
   .prereq-link {
     display: inline-block;
-    margin-top: 12px;
+    margin-top: 8px;
     font-size: 0.78rem;
     font-weight: 500;
     color: var(--accent);
@@ -1781,12 +1833,7 @@
   }
 
   /* --- Integrations --- */
-  .integrations-section { margin-top: 32px; }
-  .integrations-title {
-    font-size: 1rem;
-    font-weight: 600;
-    margin-bottom: 8px;
-  }
+  .integrations-section { margin-top: 0; }
   .integrations-intro {
     font-size: 0.82rem;
     color: var(--text-dim);
@@ -2245,8 +2292,9 @@
     font-size: 1.05rem;
     color: var(--text-secondary);
     line-height: 1.7;
-    max-width: 680px;
-    margin: 0 auto;
+    /* No max-width: let the text span the card's interior so it doesn't
+       sit in a narrow centered column with big blank gutters on either
+       side. The card's own padding (32px) still gives it breathing room. */
   }
 
   .origin-story-text strong { color: var(--text-primary); font-weight: 600; }
@@ -2361,9 +2409,8 @@
       </a>
       <ul class="nav-links" id="nav-links">
         <li><a href="#about">About</a></li>
-        <li><a href="#demo">Demo</a></li>
-        <li><a href="#features">Features</a></li>
-        <li><a href="#download">Download</a></li>
+        <li><a href="#demo">Features</a></li>
+        <li><a href="#prerequisites">Download</a></li>
         <li><a href="#faq">FAQ</a></li>
         <li class="nav-theme-desktop">
           <button class="theme-toggle" id="theme-toggle" aria-label="Cycle theme" title="Cycle theme">
@@ -2418,7 +2465,8 @@
   <!-- DEMO — Showcase gallery -->
   <section class="demo-section" id="demo">
     <div class="container">
-      <p class="section-label reveal">See it in action</p>
+      <p class="section-label reveal">What you get</p>
+      <h2 class="section-title reveal">Everything the app gives you.</h2>
 
       <div class="showcase-grid">
 
@@ -2439,7 +2487,7 @@
               <div class="mock-session-strip">
                 <div class="mock-session-pill">
                   <div class="mock-session-dot"></div>
-                  <span class="mock-session-name">Session 1</span>
+                  <span class="mock-session-name">anime theme</span>
                 </div>
                 <svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
               </div>
@@ -2454,7 +2502,7 @@
                 </div>
                 <div class="mock-games-btn-wrap">
                   <div class="mock-games-btn">
-                    <svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="3"/><circle cx="8" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.5" fill="currentColor" stroke="none"/><line x1="11" y1="10" x2="13" y2="10"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="5" y="3" width="14" height="18" rx="2.5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="8" y="6" width="8" height="5" rx="1" stroke-width="1.4"/><path d="M9 15.5 L11 15.5" stroke-width="2" stroke-linecap="round"/><path d="M10 14.5 L10 16.5" stroke-width="2" stroke-linecap="round"/><path d="M14.5 15 L14.5 15.01" stroke-width="2.8" stroke-linecap="round"/><path d="M16.5 16.5 L16.5 16.51" stroke-width="2.8" stroke-linecap="round"/></svg>
                     <div class="mock-games-dot"></div>
                   </div>
                 </div>
@@ -2502,11 +2550,11 @@
             <div class="demo-statusbar">
               <span class="mock-model-chip opus">Opus 1M</span>
               <span class="mock-perm-chip">Normal</span>
-              <span class="mock-status-pill">Context: 24%</span>
-              <span class="mock-status-pill mock-status-spacer" id="demo-theme-pill">midnight</span>
-              <div class="mock-customize-btn">
-                <svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-              </div>
+              <span class="mock-status-pill"><span>5h:</span><span class="mock-pill-val-ok">24%</span></span>
+              <span class="mock-status-pill"><span>Context:</span><span class="mock-pill-val-ok">76%</span><span class="mock-pill-faint">Remaining</span></span>
+              <span class="mock-status-pill"><span class="mock-pill-add">+42</span><span class="mock-pill-rem">-8</span><span class="mock-pill-faint">lines</span></span>
+              <span class="mock-status-pill mock-git-pill"><svg viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span>main</span></span>
+              <span class="mock-status-pill" id="demo-theme-pill">midnight</span>
             </div>
           </div>
         </div>
@@ -2623,10 +2671,10 @@
             <div class="mock-wallpaper"></div>
             <div class="mock-header">
               <div class="mock-settings-btn"><svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></div>
-              <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">Session 2</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+              <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">daily journal</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
               <div class="mock-header-right">
                 <div class="mock-toggle-group"><div class="mock-toggle-btn active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 5 L20 5 A2 2 0 0 1 22 7 L22 15 A2 2 0 0 1 20 17 L10 17 L6 20 L7 17 L4 17 A2 2 0 0 1 2 15 L2 7 A2 2 0 0 1 4 5 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 11 L8.5 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M12 11 L12 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M15.5 11 L15.5 11.01" stroke-width="2.5" stroke-linecap="round"/></svg></div><div class="mock-toggle-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4 L20 4 A2 2 0 0 1 22 6 L22 18 A2 2 0 0 1 20 20 L4 20 A2 2 0 0 1 2 18 L2 6 A2 2 0 0 1 4 4 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 9 L10 12 L6 15" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 15 L17 15" stroke-width="2" stroke-linecap="round"/></svg></div></div>
-                <div class="mock-games-btn-wrap"><div class="mock-games-btn"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="3"/><circle cx="8" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.5" fill="currentColor" stroke="none"/><line x1="11" y1="10" x2="13" y2="10"/></svg><div class="mock-games-dot"></div></div></div>
+                <div class="mock-games-btn-wrap"><div class="mock-games-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="5" y="3" width="14" height="18" rx="2.5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="8" y="6" width="8" height="5" rx="1" stroke-width="1.4"/><path d="M9 15.5 L11 15.5" stroke-width="2" stroke-linecap="round"/><path d="M10 14.5 L10 16.5" stroke-width="2" stroke-linecap="round"/><path d="M14.5 15 L14.5 15.01" stroke-width="2.8" stroke-linecap="round"/><path d="M16.5 16.5 L16.5 16.51" stroke-width="2.8" stroke-linecap="round"/></svg><div class="mock-games-dot"></div></div></div>
               </div>
             </div>
             <div class="mock-chat">
@@ -2649,9 +2697,11 @@
             <div class="mock-statusbar">
               <span class="mock-model-chip opus">Opus 1M</span>
               <span class="mock-perm-chip">Normal</span>
-              <span class="mock-status-pill">Context: 31%</span>
-              <span class="mock-status-pill mock-status-spacer">midnight</span>
-              <div class="mock-customize-btn"><svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></div>
+              <span class="mock-status-pill"><span>5h:</span><span class="mock-pill-val-ok">12%</span></span>
+              <span class="mock-status-pill"><span>Context:</span><span class="mock-pill-val-ok">69%</span><span class="mock-pill-faint">Remaining</span></span>
+              <span class="mock-status-pill"><span class="mock-pill-faint">No code changes</span></span>
+              <span class="mock-status-pill mock-git-pill"><svg viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span>journal-entries</span></span>
+              <span class="mock-status-pill">midnight</span>
             </div>
           </div>
         </div>
@@ -2667,10 +2717,10 @@
             <div class="mock-wallpaper"></div>
             <div class="mock-header">
               <div class="mock-settings-btn"><svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></div>
-              <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">Session 1</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+              <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">device sync</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
               <div class="mock-header-right">
                 <div class="mock-toggle-group"><div class="mock-toggle-btn active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 5 L20 5 A2 2 0 0 1 22 7 L22 15 A2 2 0 0 1 20 17 L10 17 L6 20 L7 17 L4 17 A2 2 0 0 1 2 15 L2 7 A2 2 0 0 1 4 5 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 11 L8.5 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M12 11 L12 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M15.5 11 L15.5 11.01" stroke-width="2.5" stroke-linecap="round"/></svg></div><div class="mock-toggle-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4 L20 4 A2 2 0 0 1 22 6 L22 18 A2 2 0 0 1 20 20 L4 20 A2 2 0 0 1 2 18 L2 6 A2 2 0 0 1 4 4 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 9 L10 12 L6 15" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 15 L17 15" stroke-width="2" stroke-linecap="round"/></svg></div></div>
-                <div class="mock-games-btn-wrap"><div class="mock-games-btn"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="3"/><circle cx="8" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.5" fill="currentColor" stroke="none"/><line x1="11" y1="10" x2="13" y2="10"/></svg><div class="mock-games-dot"></div></div></div>
+                <div class="mock-games-btn-wrap"><div class="mock-games-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="5" y="3" width="14" height="18" rx="2.5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="8" y="6" width="8" height="5" rx="1" stroke-width="1.4"/><path d="M9 15.5 L11 15.5" stroke-width="2" stroke-linecap="round"/><path d="M10 14.5 L10 16.5" stroke-width="2" stroke-linecap="round"/><path d="M14.5 15 L14.5 15.01" stroke-width="2.8" stroke-linecap="round"/><path d="M16.5 16.5 L16.5 16.51" stroke-width="2.8" stroke-linecap="round"/></svg><div class="mock-games-dot"></div></div></div>
               </div>
             </div>
             <div class="mock-chat">
@@ -2691,9 +2741,11 @@
             <div class="mock-statusbar">
               <span class="mock-model-chip opus">Opus 1M</span>
               <span class="mock-perm-chip">Normal</span>
-              <span class="mock-status-pill">Context: 48%</span>
-              <span class="mock-status-pill mock-status-spacer">halftone-dimension</span>
-              <div class="mock-customize-btn"><svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></div>
+              <span class="mock-status-pill"><span>5h:</span><span class="mock-pill-val-ok">8%</span></span>
+              <span class="mock-status-pill"><span>Context:</span><span class="mock-pill-val-ok">52%</span><span class="mock-pill-faint">Remaining</span></span>
+              <span class="mock-status-pill"><span class="mock-pill-faint">No code changes</span></span>
+              <span class="mock-status-pill mock-git-pill"><svg viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span>main</span></span>
+              <span class="mock-status-pill">halftone-dimension</span>
             </div>
           </div>
         </div>
@@ -2707,25 +2759,46 @@
           </div>
           <div class="mock-frame mock-golden reveal">
             <div class="mock-wallpaper"></div>
-            <div class="mock-header">
-              <div class="mock-settings-btn"><svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></div>
-              <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">Session 1</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
-              <div class="mock-header-right">
-                <div class="mock-toggle-group"><div class="mock-toggle-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 5 L20 5 A2 2 0 0 1 22 7 L22 15 A2 2 0 0 1 20 17 L10 17 L6 20 L7 17 L4 17 A2 2 0 0 1 2 15 L2 7 A2 2 0 0 1 4 5 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 11 L8.5 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M12 11 L12 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M15.5 11 L15.5 11.01" stroke-width="2.5" stroke-linecap="round"/></svg></div><div class="mock-toggle-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4 L20 4 A2 2 0 0 1 22 6 L22 18 A2 2 0 0 1 20 20 L4 20 A2 2 0 0 1 2 18 L2 6 A2 2 0 0 1 4 4 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 9 L10 12 L6 15" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 15 L17 15" stroke-width="2" stroke-linecap="round"/></svg></div></div>
-                <div class="mock-games-btn-wrap"><div class="mock-games-btn active"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="3"/><circle cx="8" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.5" fill="currentColor" stroke="none"/><line x1="11" y1="10" x2="13" y2="10"/></svg><div class="mock-games-dot"></div></div></div>
-              </div>
-            </div>
             <div class="mock-game-layout">
-              <!-- Chat side (Claude working in background) -->
-              <div class="mock-game-chat">
-                <div class="mock-bubble user" style="font-size:0.72rem;">refactor the authentication module to use JWT tokens instead of sessions</div>
-                <div class="mock-bubble assistant" style="font-size:0.72rem;">I'll refactor the auth module. This will touch several files — let me start by reading the current implementation.
-                  <div class="mock-tool-card"><div class="mock-tool-card-header"><div class="mock-tool-icon check"><svg class="mock-tool-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9" stroke-width="1.5"/><path d="M8 12.5 L11 15.5 L16.5 9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="mock-tool-sep">|</span><span class="mock-tool-detail"> Reading auth/session-manager.ts</span></div></div>
-                  <div class="mock-tool-card"><div class="mock-tool-card-header"><div class="mock-tool-icon check"><svg class="mock-tool-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9" stroke-width="1.5"/><path d="M8 12.5 L11 15.5 L16.5 9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="mock-tool-sep">|</span><span class="mock-tool-detail"> Reading auth/middleware.ts</span></div></div>
-                  <div class="mock-tool-card"><div class="mock-tool-card-header"><div class="mock-tool-icon spinner"><span class="mock-braille-spinner"></span></div><span class="mock-tool-sep">|</span><span class="mock-tool-label">Write</span><span class="mock-tool-detail">auth/jwt-provider.ts&hellip;</span></div></div>
+              <!-- Main column: header + chat + input/status stacked in one
+                   column so the right-side game panel spans the entire
+                   frame height, floor-to-ceiling. -->
+              <div class="mock-game-main">
+                <div class="mock-header">
+                  <div class="mock-settings-btn"><svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></div>
+                  <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">auth refactor</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+                  <div class="mock-header-right">
+                    <div class="mock-toggle-group"><div class="mock-toggle-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 5 L20 5 A2 2 0 0 1 22 7 L22 15 A2 2 0 0 1 20 17 L10 17 L6 20 L7 17 L4 17 A2 2 0 0 1 2 15 L2 7 A2 2 0 0 1 4 5 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 11 L8.5 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M12 11 L12 11.01" stroke-width="2.5" stroke-linecap="round"/><path d="M15.5 11 L15.5 11.01" stroke-width="2.5" stroke-linecap="round"/></svg></div><div class="mock-toggle-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4 L20 4 A2 2 0 0 1 22 6 L22 18 A2 2 0 0 1 20 20 L4 20 A2 2 0 0 1 2 18 L2 6 A2 2 0 0 1 4 4 Z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 9 L10 12 L6 15" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 15 L17 15" stroke-width="2" stroke-linecap="round"/></svg></div></div>
+                    <div class="mock-games-btn-wrap"><div class="mock-games-btn active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="5" y="3" width="14" height="18" rx="2.5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="8" y="6" width="8" height="5" rx="1" stroke-width="1.4"/><path d="M9 15.5 L11 15.5" stroke-width="2" stroke-linecap="round"/><path d="M10 14.5 L10 16.5" stroke-width="2" stroke-linecap="round"/><path d="M14.5 15 L14.5 15.01" stroke-width="2.8" stroke-linecap="round"/><path d="M16.5 16.5 L16.5 16.51" stroke-width="2.8" stroke-linecap="round"/></svg><div class="mock-games-dot"></div></div></div>
+                  </div>
+                </div>
+                <!-- Chat side (Claude working in background) -->
+                <div class="mock-game-chat">
+                  <div class="mock-bubble user" style="font-size:0.72rem;">refactor the authentication module to use JWT tokens instead of sessions</div>
+                  <div class="mock-bubble assistant" style="font-size:0.72rem;">I'll refactor the auth module. This will touch several files — let me start by reading the current implementation.
+                    <div class="mock-tool-card"><div class="mock-tool-card-header"><div class="mock-tool-icon check"><svg class="mock-tool-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9" stroke-width="1.5"/><path d="M8 12.5 L11 15.5 L16.5 9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="mock-tool-sep">|</span><span class="mock-tool-detail"> Reading auth/session-manager.ts</span></div></div>
+                    <div class="mock-tool-card"><div class="mock-tool-card-header"><div class="mock-tool-icon check"><svg class="mock-tool-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9" stroke-width="1.5"/><path d="M8 12.5 L11 15.5 L16.5 9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="mock-tool-sep">|</span><span class="mock-tool-detail"> Reading auth/middleware.ts</span></div></div>
+                    <div class="mock-tool-card"><div class="mock-tool-card-header"><div class="mock-tool-icon spinner"><span class="mock-braille-spinner"></span></div><span class="mock-tool-sep">|</span><span class="mock-tool-label">Write</span><span class="mock-tool-detail">auth/jwt-provider.ts&hellip;</span></div></div>
+                  </div>
+                </div>
+                <div class="mock-inputbar">
+                  <div class="mock-input-inner">
+                    <div class="mock-input-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div>
+                    <div class="mock-input-text">Message Claude&hellip;</div>
+                    <div class="mock-send"><svg viewBox="0 0 24 24" fill="none" stroke="var(--m-on-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+                  </div>
+                </div>
+                <div class="mock-statusbar">
+                  <span class="mock-model-chip opus">Opus 1M</span>
+                  <span class="mock-perm-chip">Normal</span>
+                  <span class="mock-status-pill"><span>5h:</span><span class="mock-pill-val-warn">31%</span></span>
+                  <span class="mock-status-pill"><span>Context:</span><span class="mock-pill-val-ok">85%</span><span class="mock-pill-faint">Remaining</span></span>
+                  <span class="mock-status-pill"><span class="mock-pill-add">+127</span><span class="mock-pill-rem">-42</span><span class="mock-pill-faint">lines</span></span>
+                  <span class="mock-status-pill mock-git-pill"><svg viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span>auth-refactor</span></span>
+                  <span class="mock-status-pill">golden-sunbreak</span>
                 </div>
               </div>
-              <!-- Game panel -->
+              <!-- Game panel (full top-to-bottom height of the layout) -->
               <div class="mock-game-panel">
                 <div class="mock-game-panel-header">
                   <span>Connect 4</span>
@@ -2749,35 +2822,54 @@
                 </div>
               </div>
             </div>
-            <div class="mock-inputbar">
-              <div class="mock-input-inner">
-                <div class="mock-input-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div>
-                <div class="mock-input-text">Message Claude&hellip;</div>
-                <div class="mock-send"><svg viewBox="0 0 24 24" fill="none" stroke="var(--m-on-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
-              </div>
-            </div>
-            <div class="mock-statusbar">
-              <span class="mock-model-chip opus">Opus 1M</span>
-              <span class="mock-perm-chip">Normal</span>
-              <span class="mock-status-pill">Context: 15%</span>
-              <span class="mock-status-pill mock-status-spacer">golden-sunbreak</span>
-              <div class="mock-customize-btn"><svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></div>
-            </div>
           </div>
         </div>
 
-      </div>
-    </div>
-  </section>
+        <!-- Integrations — styled as a showcase-item so it inherits the
+             same label/title rhythm and 48px spacing as the mockup rows
+             above (integrations are a feature, not a prerequisite). -->
+        <div class="showcase-item reveal">
+          <div class="showcase-text">
+            <span class="showcase-label">Integrations <span class="toolkit-badge">WeCoded</span></span>
+            <h3 class="showcase-title">Connect your services.</h3>
+          </div>
+          <div class="integrations-section">
+        <p class="integrations-intro">With skills from the WeCoded marketplace, YouCoded can link with all of the following services:</p>
+        <div class="integrations-tags">
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can automatically back up your journal entries, Encyclopedia, and system files to Google Drive — keeping everything safe and synced across sessions."><img class="tag-icon" src="icons/google-drive.svg" alt="">Google Drive</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can create, read, and edit documents — drafting cover letters, memos, reports, and more directly in Google Docs."><img class="tag-icon" src="icons/google-docs.svg" alt="">Google Docs</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can create and analyze spreadsheets — building trackers, organizing data, and working with structured information in Google Sheets."><img class="tag-icon" src="icons/google-sheets.svg" alt="">Google Sheets</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can create and edit slide decks and visual presentations in Google Slides."><img class="tag-icon" src="icons/google-slides.svg" alt="">Google Slides</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read and create events on your Google Calendar. Mention an appointment in conversation or screenshot a flyer, and it can get scheduled automatically."><img class="tag-icon" src="icons/google-calendar.svg" alt="">Google Calendar</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can search your inbox, read threads, and compose replies in Gmail — all without leaving the app."><img class="tag-icon" src="icons/gmail.svg" alt="">Gmail</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read your SMS and RCS conversations and send texts on your behalf through Google Messages."><img class="tag-icon" src="icons/google-messages.svg" alt="">Google Messages</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can access your Apple Messages conversations and send texts through iMessage."><img class="tag-icon" src="icons/imessage.svg" alt="">iMessage</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can automatically back up your journal entries, Encyclopedia, and system files to iCloud Drive — keeping everything safe and synced across sessions."><img class="tag-icon" src="icons/icloud.svg" alt="">iCloud</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read your existing Apple Notes and create new ones for quick reference and capture."><img class="tag-icon" src="icons/apple-notes.svg" alt="">Apple Notes</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can add items to your Apple Reminders lists and help you keep track of things to do."><img class="tag-icon" src="icons/apple-reminders.svg" alt="">Apple Reminders</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read and create events on your Apple Calendar. Mention an appointment in conversation or screenshot a flyer, and it can get scheduled automatically."><img class="tag-icon" src="icons/apple-calendar.svg" alt="">Apple Calendar</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can search your inbox, read threads, and compose replies through Apple Mail."><img class="tag-icon" src="icons/apple-mail.svg" alt="">Apple Mail</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can manage your task list, process inbox items captured from your phone, create tasks from conversations, and help you stay on top of priorities."><img class="tag-icon" src="icons/todoist.svg" alt="">Todoist</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can receive marketplace updates and sync your configuration through GitHub, keeping your installation current with the latest features and fixes."><img class="tag-icon" src="icons/github.svg" alt="">GitHub</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can navigate websites, fill out forms, take screenshots, and interact with web pages through Chrome."><img class="tag-icon" src="icons/chrome.svg" alt="">Chrome</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can navigate websites, fill out forms, take screenshots, and interact with web pages through Safari."><img class="tag-icon" src="icons/safari.svg" alt="">Safari</button>
+          <button class="integration-tag" tabindex="0" data-desc="YouCoded can generate graphics, edit presentations, and work with visual content directly in Canva."><img class="tag-icon" src="icons/canva.svg" alt="">Canva</button>
+          <span class="integration-tag soon">More coming soon...</span>
+        </div>
+        <div class="integration-desc" id="integration-desc"></div>
+        <p class="prereq-note"><strong>NOTE:</strong> Some integrations require account authorization or additional setup. You can link these services at any time from within the app.</p>
+          </div>
+        </div>
 
-  <div class="container"><div class="divider"></div></div>
-
-  <!-- FEATURES — collapsible accordion -->
-  <section id="features">
-    <div class="container">
-      <p class="section-label reveal">What you get</p>
-      <h2 class="section-title reveal">Everything the app gives you.</h2>
-      <div class="faq-list">
+        <!-- Other features — FAQ accordion as a showcase-item so the label/
+             title pair above it matches the mockup + integrations rhythm.
+             id="features" preserves the nav deep-link to the accordion. -->
+        <div class="showcase-item reveal">
+          <div class="showcase-text">
+            <span class="showcase-label">Other features</span>
+            <h3 class="showcase-title">Everything else you get.</h3>
+          </div>
+          <div class="faq-list" id="features">
         <div class="faq-item reveal">
           <button class="faq-question" aria-expanded="false">
             Claude Code on Android
@@ -2882,6 +2974,8 @@
             <div class="faq-answer-inner">No separate API key, no per-token billing, no hidden costs. YouCoded signs in with your existing <a href="https://claude.ai/upgrade">Claude Pro or Max plan</a> and uses your subscription for everything the app does. If you already pay Anthropic for Claude, you pay nothing more to use YouCoded. Pro handles most light-to-medium workloads; Max gives you Opus-tier reasoning and the larger context window for big projects.</div>
           </div>
         </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -2894,7 +2988,7 @@
       <p class="section-label reveal">Story</p>
       <h2 class="section-title reveal">How we got here.</h2>
       <div class="origin-story reveal">
-        <p class="origin-story-text">Honestly? I really just wanted to journal. I built the Journaling and Life History system now available in the marketplace, and pretty quickly realized I wanted to share it with friends. However, the idea of opening "Claude Code" in the terminal scared away most of my friends almost immediately. I realized that the idea of advanced agentic AI is still rather new to most people, and that persuading them to adopt my fancy new journaling system would require it to be <em>much</em> more accessible and user-friendly. Towards this end, I kind of just&hellip; kept adding things. And now we're here.</p>
+        <p class="origin-story-text">Honestly, I really just wanted a cooler and more efficient way to journal and track my own tasks/goals. The very first thing I built with Claude is the Journaling and Life History system (now available in the marketplace), and I pretty quickly decided that I wanted to share it with my friends. However, the thought of installing and opening "Claude Code" in the terminal scared away most people almost immediately. I realized that the idea of advanced agentic AI is still rather new to most people, and that persuading them to adopt my fancy new journaling system would require it to be <em>much</em> more accessible and user-friendly. Towards this end, I kind of just&hellip; kept adding things. And now we're here.</p>
         <p class="origin-story-text" style="margin-top: 16px;">Every line of YouCoded was written through conversation with Claude by me, <strong>someone who has never written code</strong>. Every feature, every platform port, every theme, every multiplayer game. The entire app was built, and is currently maintained, without a single line typed by hand.</p>
         <a href="https://github.com/itsdestin" target="_blank" class="origin-story-link">Built by Destin &rarr;</a>
       </div>
@@ -2906,79 +3000,50 @@
   <!-- PREREQUISITES — shown before Download so visitors know the cost upfront -->
   <section id="prerequisites">
     <div class="container">
-      <p class="section-label reveal">Before you begin</p>
+      <p class="section-label reveal">Get started</p>
       <h2 class="section-title reveal">You'll need a couple of accounts.</h2>
       <div class="prereq-grid">
         <div class="prereq-card reveal reveal-d1">
-          <div class="prereq-badges">
-            <span class="prereq-badge required">Required</span>
-            <span class="prereq-badge paid">Paid</span>
-          </div>
           <div class="prereq-header">
             <h3>Anthropic</h3>
+            <div class="prereq-badges">
+              <span class="prereq-badge required">Required</span>
+              <span class="prereq-badge paid">Paid</span>
+            </div>
           </div>
           <p>A Claude Pro ($20/mo) or Max ($100&ndash;200/mo) subscription for Claude Code, which powers everything in YouCoded. The app itself is free &mdash; you're paying for the AI.</p>
           <a href="https://claude.ai/upgrade" target="_blank" class="prereq-link">Subscribe to Claude &rarr;</a>
         </div>
         <div class="prereq-card reveal reveal-d2">
-          <div class="prereq-badges">
-            <span class="prereq-badge required">Required</span>
-            <span class="prereq-badge free">Free</span>
-          </div>
           <div class="prereq-header">
             <h3>Google or Apple</h3>
+            <div class="prereq-badges">
+              <span class="prereq-badge required">Required</span>
+              <span class="prereq-badge free">Free</span>
+            </div>
           </div>
           <p>WeCoded marketplace skills store your personal data in your own Google Drive or iCloud account.</p>
           <a href="https://accounts.google.com/signup" target="_blank" class="prereq-link">Create Google Account &rarr;</a>
         </div>
         <div class="prereq-card reveal reveal-d3">
-          <div class="prereq-badges">
-            <span class="prereq-badge required">Required</span>
-            <span class="prereq-badge free">Free</span>
-          </div>
           <div class="prereq-header">
             <h3>GitHub</h3>
+            <div class="prereq-badges">
+              <span class="prereq-badge required">Required</span>
+              <span class="prereq-badge free">Free</span>
+            </div>
           </div>
           <p>Required to receive marketplace updates. Sign up with your Google or Apple account.</p>
           <a href="https://github.com/signup" target="_blank" class="prereq-link">Create GitHub Account &rarr;</a>
         </div>
       </div>
-      <div class="integrations-section reveal">
-        <h3 class="integrations-title">Available Integrations <span class="toolkit-badge">WeCoded</span></h3>
-        <p class="integrations-intro">With skills from the WeCoded marketplace, YouCoded can link with all of the following services:</p>
-        <div class="integrations-tags">
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can automatically back up your journal entries, Encyclopedia, and system files to Google Drive — keeping everything safe and synced across sessions."><img class="tag-icon" src="icons/google-drive.svg" alt="">Google Drive</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can create, read, and edit documents — drafting cover letters, memos, reports, and more directly in Google Docs."><img class="tag-icon" src="icons/google-docs.svg" alt="">Google Docs</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can create and analyze spreadsheets — building trackers, organizing data, and working with structured information in Google Sheets."><img class="tag-icon" src="icons/google-sheets.svg" alt="">Google Sheets</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can create and edit slide decks and visual presentations in Google Slides."><img class="tag-icon" src="icons/google-slides.svg" alt="">Google Slides</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read and create events on your Google Calendar. Mention an appointment in conversation or screenshot a flyer, and it can get scheduled automatically."><img class="tag-icon" src="icons/google-calendar.svg" alt="">Google Calendar</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can search your inbox, read threads, and compose replies in Gmail — all without leaving the app."><img class="tag-icon" src="icons/gmail.svg" alt="">Gmail</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read your SMS and RCS conversations and send texts on your behalf through Google Messages."><img class="tag-icon" src="icons/google-messages.svg" alt="">Google Messages</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can access your Apple Messages conversations and send texts through iMessage."><img class="tag-icon" src="icons/imessage.svg" alt="">iMessage</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can automatically back up your journal entries, Encyclopedia, and system files to iCloud Drive — keeping everything safe and synced across sessions."><img class="tag-icon" src="icons/icloud.svg" alt="">iCloud</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read your existing Apple Notes and create new ones for quick reference and capture."><img class="tag-icon" src="icons/apple-notes.svg" alt="">Apple Notes</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can add items to your Apple Reminders lists and help you keep track of things to do."><img class="tag-icon" src="icons/apple-reminders.svg" alt="">Apple Reminders</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can read and create events on your Apple Calendar. Mention an appointment in conversation or screenshot a flyer, and it can get scheduled automatically."><img class="tag-icon" src="icons/apple-calendar.svg" alt="">Apple Calendar</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can search your inbox, read threads, and compose replies through Apple Mail."><img class="tag-icon" src="icons/apple-mail.svg" alt="">Apple Mail</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can manage your task list, process inbox items captured from your phone, create tasks from conversations, and help you stay on top of priorities."><img class="tag-icon" src="icons/todoist.svg" alt="">Todoist</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can receive marketplace updates and sync your configuration through GitHub, keeping your installation current with the latest features and fixes."><img class="tag-icon" src="icons/github.svg" alt="">GitHub</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can navigate websites, fill out forms, take screenshots, and interact with web pages through Chrome."><img class="tag-icon" src="icons/chrome.svg" alt="">Chrome</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can navigate websites, fill out forms, take screenshots, and interact with web pages through Safari."><img class="tag-icon" src="icons/safari.svg" alt="">Safari</button>
-          <button class="integration-tag" tabindex="0" data-desc="YouCoded can generate graphics, edit presentations, and work with visual content directly in Canva."><img class="tag-icon" src="icons/canva.svg" alt="">Canva</button>
-          <span class="integration-tag soon">More coming soon...</span>
-        </div>
-        <div class="integration-desc" id="integration-desc"></div>
-        <p class="prereq-note"><strong>NOTE:</strong> Some integrations require account authorization or additional setup. You can link these services at any time from within the app.</p>
-      </div>
     </div>
   </section>
 
-  <div class="container"><div class="divider"></div></div>
-
-  <!-- DOWNLOAD -->
+  <!-- Prereqs and Download are one logical "Get started" flow — no divider
+       between them and no duplicate section-label on the download block. -->
   <section class="download-section" id="download">
     <div class="container">
-      <p class="section-label reveal">Get started</p>
       <h2 class="section-title reveal">Download YouCoded</h2>
       <div class="download-grid reveal">
         <!-- href is set dynamically by latest-release fetch below; releases page is the safe fallback.
@@ -3132,7 +3197,7 @@
   </footer>
 
   <!-- Floating Get Started pill -->
-  <a href="#download" class="floating-cta" id="floating-cta">Download &darr;</a>
+  <a href="#prerequisites" class="floating-cta" id="floating-cta">Download &darr;</a>
 
   <!-- Back to top button -->
   <button class="back-to-top" id="back-to-top" aria-label="Back to top">&uarr;</button>
@@ -3603,18 +3668,21 @@
     })();
 
     // --- Floating CTA visibility ---
+    // CTA targets #prerequisites (the start of the merged Get-started flow),
+    // so it should also hide based on that section's visibility — not the
+    // inner #download block which sits further down in the same flow.
     var floatingCta = document.getElementById('floating-cta');
-    var downloadSection = document.getElementById('download');
-    if (floatingCta && downloadSection) {
+    var ctaTarget = document.getElementById('prerequisites');
+    if (floatingCta && ctaTarget) {
       floatingCta.classList.add('visible');
       var ctaObserver = new IntersectionObserver(function(entries) {
         entries.forEach(function(entry) {
           floatingCta.classList.toggle('visible', !entry.isIntersecting);
         });
       }, { threshold: 0.2 });
-      ctaObserver.observe(downloadSection);
+      ctaObserver.observe(ctaTarget);
       window.addEventListener('scroll', function() {
-        if (downloadSection.getBoundingClientRect().bottom < 0) {
+        if (ctaTarget.getBoundingClientRect().bottom < 0) {
           floatingCta.classList.remove('visible');
         }
       });
