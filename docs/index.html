@@ -58,7 +58,10 @@
     --nav-height: 56px;
     --selection-bg: rgba(136, 180, 216, 0.22);
     --selection-fg: #ffffff;
-    --heading-shadow: none;
+    /* Placeholder pair matching halftone's 2-shadow structure so text-shadow
+       can interpolate smoothly when cycling into/out of halftone. Transparent
+       + zero offset = invisible in non-halftone themes. */
+    --heading-shadow: 0 0 transparent, 0 0 transparent;
     --title-highlight: #88B4D8;
   }
 
@@ -86,7 +89,10 @@
     --border-dim: rgba(227, 214, 191, 0.55);
     --selection-bg: rgba(194, 121, 107, 0.22);
     --selection-fg: #2A211A;
-    --heading-shadow: none;
+    /* Placeholder pair matching halftone's 2-shadow structure so text-shadow
+       can interpolate smoothly when cycling into/out of halftone. Transparent
+       + zero offset = invisible in non-halftone themes. */
+    --heading-shadow: 0 0 transparent, 0 0 transparent;
     --title-highlight: #C2796B;
   }
 
@@ -142,7 +148,10 @@
     --border-dim: rgba(224, 154, 168, 0.5);
     --selection-bg: rgba(217, 78, 107, 0.30);
     --selection-fg: #FFFFFF;
-    --heading-shadow: none;
+    /* Placeholder pair matching halftone's 2-shadow structure so text-shadow
+       can interpolate smoothly when cycling into/out of halftone. Transparent
+       + zero offset = invisible in non-halftone themes. */
+    --heading-shadow: 0 0 transparent, 0 0 transparent;
     --title-highlight: #D94E6B;
   }
 
@@ -321,6 +330,7 @@
     line-height: 1.2;
     margin-bottom: 32px;
     text-shadow: var(--heading-shadow);
+    transition: text-shadow 0.5s;
   }
 
   /* --- Toolkit badge --- */
@@ -496,6 +506,11 @@
     line-height: 1.05;
     color: var(--text-primary);
     text-shadow: var(--heading-shadow);
+    /* Smoothly fade in halftone's RGB-split shadow (and out on theme exit)
+       instead of the shadow popping in instantly with the theme swap.
+       Works because every theme's --heading-shadow has 2 shadows — the
+       non-halftone themes use transparent placeholders. */
+    transition: text-shadow 0.5s;
   }
 
   .title-accent { color: var(--title-highlight); }
@@ -1615,6 +1630,7 @@
     font-weight: 700;
     line-height: 1.3;
     text-shadow: var(--heading-shadow);
+    transition: text-shadow 0.5s;
   }
 
   .showcase-desc {
