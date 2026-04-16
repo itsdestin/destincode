@@ -163,7 +163,13 @@
     pointer-events: none;
     z-index: 0;
     opacity: 0;
-    transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+    /* Default `ease` (not a snappy quart-out) so this layer stays in
+       lockstep with `body { transition: background 0.5s }` and the
+       .nav/.feature-card/etc. 0.5s-ease rules. A sharper curve made
+       the layer pop ahead of the body-bg on midnight↔halftone, where
+       midnight's gradient is nearly transparent so the body color is
+       the thing actually changing. */
+    transition: opacity 0.5s;
   }
   .bg-crossfade.is-active { opacity: 1; }
   @media (prefers-reduced-motion: reduce) {
@@ -564,8 +570,9 @@
     will-change: transform, opacity;
     /* Smooth color transition when the theme's --title-highlight var
        changes mid-animation, so the visible word doesn't flash-flip
-       color while bumping or holding. Matches the 0.5s bg-crossfade. */
-    transition: color 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+       color while bumping or holding. Matches the 0.5s bg-crossfade
+       (default ease, same curve as body bg + card transitions). */
+    transition: color 0.5s;
   }
   /* Words 1–3 bump through: enter with overshoot, settle, hold, bumped out. */
   .cycler-word-1,
