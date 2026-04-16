@@ -1764,6 +1764,63 @@
        at every viewport width, so no breakpoint reshaping is needed. */
     .mock-game-panel { width: 180px; }
     .mock-games-btn-wrap { display: none; }
+
+    /* Mockup chrome scales down at narrow widths so the chat area stays
+       visible. At ~400px viewport the 16:10 frame is only ~250px tall, so
+       the desktop-sized 40px header + wrapping status bar ate most of it.
+       Key change: status bar flex-wrap:wrap -> nowrap so pills don't
+       pile onto 3-4 rows; a single-row horizontal scroll keeps them all
+       accessible without eating the chat area. */
+    .demo-header, .mock-header {
+      height: 30px;
+      padding: 0 6px 0 8px;
+      gap: 4px;
+    }
+    .demo-inputbar, .mock-inputbar { padding: 3px 6px; }
+    .demo-app.theme-golden .demo-inputbar,
+    .mock-golden .mock-inputbar {
+      margin: 0 6px;
+      padding: 3px 6px;
+    }
+    .mock-input-inner { padding: 4px 8px; gap: 4px; }
+    .mock-input-icon { width: 16px; height: 16px; }
+    .mock-input-icon svg { width: 14px; height: 14px; }
+    .mock-input-text { font-size: 11px; }
+    .mock-send { width: 22px; height: 22px; }
+    .mock-send svg { width: 12px; height: 12px; }
+
+    .demo-statusbar, .mock-statusbar {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      gap: 4px;
+      padding: 2px 6px;
+      font-size: 9px;
+      scrollbar-width: none;
+    }
+    .demo-statusbar::-webkit-scrollbar,
+    .mock-statusbar::-webkit-scrollbar { display: none; }
+    .mock-status-pill,
+    .mock-model-chip,
+    .mock-perm-chip {
+      padding: 1px 5px;
+      font-size: 9px;
+      flex-shrink: 0;
+    }
+    .mock-git-pill svg { width: 8px; height: 8px; }
+
+    /* Tool cards inside bubbles — shrink so the mobile chat can actually
+       show a bubble or two without the tool-card headers alone filling
+       the available height. */
+    .mock-tool-card-header { padding: 4px 8px; font-size: 10px; }
+
+    /* Bubbles: smaller padding + font so more content fits in ~180px of
+       chat area on a phone. Mono font at 14px was dominating. */
+    .demo-bubble, .mock-bubble {
+      padding: 10px 14px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .demo-chat, .mock-chat { padding: 10px 10px; gap: 6px; }
   }
 
   @media (max-width: 480px) {
