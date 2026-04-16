@@ -2261,6 +2261,99 @@
   .back-to-top.visible { opacity: 1; pointer-events: auto; }
   .back-to-top:hover { border-color: var(--accent); color: var(--accent); }
 
+  /* --- Install-tips modal ---
+     Shown after any download card is clicked. Tells the user the download
+     is starting, gives platform-specific "your OS will warn about unsigned
+     app" guidance (macOS right-click-Open / Windows Run-anyway), and signs
+     off with a custom outro. Plain CSS modal (no overlay primitives in use
+     on this static page). */
+  .install-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+  }
+  .install-modal[data-open] { display: block; }
+  .install-modal-scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .install-modal-panel {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: calc(100% - 32px);
+    max-width: 520px;
+    background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+    backdrop-filter: blur(24px) saturate(1.2);
+    -webkit-backdrop-filter: blur(24px) saturate(1.2);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius);
+    padding: 28px 28px 24px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+    max-height: calc(100vh - 48px);
+    overflow: auto;
+  }
+  .install-modal-close {
+    position: absolute;
+    top: 10px; right: 12px;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.6rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .install-modal-close:hover { color: var(--text-primary); background: var(--bg-surface); }
+  .install-modal-title {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 16px;
+    color: var(--text-primary);
+  }
+  .install-modal-heading {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+  .install-modal-tips ol {
+    margin: 0 0 0 18px;
+    padding: 0;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+  }
+  .install-modal-tips li { margin-bottom: 8px; }
+  .install-modal-tips li:last-child { margin-bottom: 0; }
+  .install-modal-tips strong { color: var(--text-primary); font-weight: 600; }
+  .install-modal-tips code {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  .install-modal-outro {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
   /* --- HERO MINI MOCKUP --- */
   .hero-mini-mockup {
     max-width: 560px;
@@ -3199,6 +3292,18 @@
   <!-- Floating Get Started pill -->
   <a href="#prerequisites" class="floating-cta" id="floating-cta">Download &darr;</a>
 
+  <!-- Install-tips modal: opened by any download-card click; content inside
+       .install-modal-tips is replaced per-platform at click time by JS. -->
+  <div class="install-modal" id="install-modal" aria-hidden="true">
+    <div class="install-modal-scrim" data-close></div>
+    <div class="install-modal-panel" role="dialog" aria-modal="true" aria-labelledby="install-modal-title">
+      <button class="install-modal-close" data-close aria-label="Close">&times;</button>
+      <h3 class="install-modal-title" id="install-modal-title">Installing now&hellip;</h3>
+      <div class="install-modal-tips" id="install-modal-tips"></div>
+      <p class="install-modal-outro">Now go make it YouCoded.</p>
+    </div>
+  </div>
+
   <!-- Back to top button -->
   <button class="back-to-top" id="back-to-top" aria-label="Back to top">&uarr;</button>
 
@@ -3687,6 +3792,74 @@
         }
       });
     }
+
+    // --- Install-tips modal ---
+    // Any download card click shows the "Installing now..." popup with
+    // platform-gated "heads up about unsigned-app prompts" instructions.
+    // The download itself proceeds normally — we don't preventDefault.
+    (function() {
+      var modal = document.getElementById('install-modal');
+      if (!modal) return;
+      var tips = document.getElementById('install-modal-tips');
+
+      // macOS and Windows have Gatekeeper / SmartScreen prompts that users
+      // will hit on first launch of an unsigned app. Linux (AppImage) and
+      // Android (sideload) have their own friction but not the same warning
+      // dialog, so keep their entries minimal. Each entry starts with the
+      // shared heading so HTML structure stays consistent.
+      var HEADING = '<p class="install-modal-heading">A few things to know while you wait:</p>';
+      var tipsByPlatform = {
+        'dl-windows': HEADING +
+          '<ol>' +
+            '<li>On first launch, Windows will likely show a blue <strong>"Windows protected your PC"</strong> dialog &mdash; YouCoded isn\'t Microsoft-signed yet.</li>' +
+            '<li>Click <strong>"More info"</strong> in that dialog, then the <strong>"Run anyway"</strong> button that appears below the app name.</li>' +
+            '<li>You\'ll only see this prompt the first time. Windows remembers your choice for future launches.</li>' +
+          '</ol>',
+        'dl-macos': HEADING +
+          '<ol>' +
+            '<li>macOS blocks unsigned apps from launching by double-click. Instead, <strong>right-click (or Control-click) the app in your Applications folder and choose "Open"</strong>.</li>' +
+            '<li>macOS will ask if you\'re sure &mdash; click <strong>"Open"</strong> again.</li>' +
+            '<li>You only need to do this the first time. After that, normal double-click works.</li>' +
+          '</ol>',
+        'dl-linux': HEADING +
+          '<ol>' +
+            '<li>Make the downloaded AppImage executable: <code>chmod +x YouCoded-*.AppImage</code></li>' +
+            '<li>Double-click it, or run it directly from your terminal.</li>' +
+          '</ol>',
+        'dl-android': HEADING +
+          '<ol>' +
+            '<li>Android will ask to <strong>allow installs from your browser</strong> the first time you sideload an APK.</li>' +
+            '<li>Tap through the prompt, return to the download, and retry the install.</li>' +
+          '</ol>'
+      };
+
+      function openModal(platformKey) {
+        tips.innerHTML = tipsByPlatform[platformKey] || '';
+        modal.setAttribute('data-open', '');
+        modal.setAttribute('aria-hidden', 'false');
+        document.body.style.overflow = 'hidden';
+      }
+      function closeModal() {
+        modal.removeAttribute('data-open');
+        modal.setAttribute('aria-hidden', 'true');
+        document.body.style.overflow = '';
+      }
+
+      ['dl-windows', 'dl-macos', 'dl-linux', 'dl-android'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('click', function() {
+          openModal(id);
+        });
+      });
+
+      modal.addEventListener('click', function(e) {
+        if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-close')) closeModal();
+      });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && modal.hasAttribute('data-open')) closeModal();
+      });
+    })();
   </script>
 
 </body>
