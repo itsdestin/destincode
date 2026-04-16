@@ -150,19 +150,24 @@
 
   html { scroll-behavior: smooth; scrollbar-gutter: stable; }
 
-  /* Theme swap: cross-fade the whole document via View Transitions. The
-     hero word-cycler stays in the root snapshot (no view-transition-name)
-     so it doesn't ghost against itself across the swap — but the swaps
-     are timed in the JS (HERO_THEME_SEQUENCE) to fire during the word's
-     static hold phase, so the 0.9s snapshot freeze is indistinguishable
-     from the live word sitting still. */
-  @keyframes theme-fade-in  { from { opacity: 0; } to { opacity: 1; } }
-  @keyframes theme-fade-out { from { opacity: 1; } to { opacity: 0; } }
-  ::view-transition-old(root) { animation: 0.9s cubic-bezier(0.22, 1, 0.36, 1) theme-fade-out both; }
-  ::view-transition-new(root) { animation: 0.9s cubic-bezier(0.22, 1, 0.36, 1) theme-fade-in both; }
+  /* Theme swap: two .bg-crossfade layers hold the page's primary gradient
+     backdrop, one per "current" + "outgoing" theme. On theme change, the
+     outgoing one opacity-fades to 0 while the incoming one fades to 1 over
+     0.5s — matching the same 0.5s CSS transitions on body color, cards,
+     nav, etc. The cycler keeps its own keyframe animation running live
+     underneath (unlike the old View Transitions approach, which froze the
+     cycler into a snapshot for the duration of the crossfade). */
+  .bg-crossfade {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0;
+    transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .bg-crossfade.is-active { opacity: 1; }
   @media (prefers-reduced-motion: reduce) {
-    ::view-transition-old(root),
-    ::view-transition-new(root) { animation-duration: 0s; }
+    .bg-crossfade { transition-duration: 0s; }
   }
 
   body {
@@ -177,16 +182,10 @@
     transition: background 0.5s;
   }
 
-  /* --- Background layers (theme-dependent) --- */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    transition: opacity 0.5s;
-  }
-
+  /* --- Background layers (theme-dependent) ---
+     Primary gradient lives on .bg-crossfade (two layers, crossfaded on
+     theme change). Pattern overlay stays on body::after (subtle dot/stripe
+     textures at ≤22% alpha — snap on theme change is imperceptible). */
   body::after {
     content: '';
     position: fixed;
@@ -196,21 +195,19 @@
     transition: opacity 0.5s;
   }
 
-  /* Midnight background — subtle cool neutral glow */
-  :root body::before {
+  /* Midnight primary — subtle cool neutral glow (no pattern). */
+  .bg-crossfade[data-bg-theme=""] {
     background: radial-gradient(ellipse at 30% 20%, rgba(177, 186, 196, 0.03) 0%, transparent 60%),
                 radial-gradient(ellipse at 70% 80%, rgba(139, 148, 158, 0.02) 0%, transparent 60%);
-    opacity: 1;
   }
   :root body::after { opacity: 0; }
 
-  /* Crème background — soft white-to-creme gradient with dusty-rose glow + cozy dot pattern */
-  [data-theme="creme"] body::before {
+  /* Crème primary — soft white-to-creme gradient with dusty-rose glow. */
+  .bg-crossfade[data-bg-theme="creme"] {
     background:
       radial-gradient(ellipse at 20% 10%, rgba(194, 121, 107, 0.10) 0%, transparent 55%),
       radial-gradient(ellipse at 85% 80%, rgba(213, 142, 128, 0.08) 0%, transparent 60%),
       linear-gradient(165deg, #FFFBF3 0%, #FBF6EC 35%, #F4EADB 70%, #EFE1CA 100%);
-    opacity: 1;
   }
   [data-theme="creme"] body::after {
     background-image:
@@ -220,8 +217,8 @@
     opacity: 1;
   }
 
-  /* Strawberry Kitty background — berry wallpaper + pattern overlay */
-  [data-theme="strawberry-kitty"] body::before {
+  /* Strawberry Kitty primary — berry wallpaper + gradient blend. */
+  .bg-crossfade[data-bg-theme="strawberry-kitty"] {
     background:
       radial-gradient(ellipse at 25% 15%, rgba(255,255,255,0.30) 0%, transparent 60%),
       radial-gradient(ellipse at 80% 85%, rgba(217,78,107,0.22) 0%, transparent 60%),
@@ -229,7 +226,6 @@
       url('assets/strawberry-kitty-wallpaper.webp') center center / cover no-repeat,
       #F8D7DE;
     background-blend-mode: screen, multiply, normal, normal, normal;
-    opacity: 1;
   }
   [data-theme="strawberry-kitty"] body::after {
     background-image: url('assets/strawberry-kitty-pattern.svg');
@@ -237,10 +233,9 @@
     opacity: 0.22;
   }
 
-  /* Halftone background — gradient + dot pattern */
-  [data-theme="halftone"] body::before {
+  /* Halftone primary — dark purple gradient with warm/cool accents. */
+  .bg-crossfade[data-bg-theme="halftone"] {
     background: linear-gradient(135deg, #08060e 0%, #18102e 25%, #200e3a 50%, rgba(232,35,74,0.07) 70%, rgba(0,184,255,0.05) 85%, #08060e 100%);
-    opacity: 1;
   }
   [data-theme="halftone"] body::after {
     background-image: url('assets/halftone-pattern.svg');
@@ -455,7 +450,11 @@
     padding-top: 0;
     padding-bottom: 0;
   }
-  body.intro-mode > *:not(.nav):not(.hero) {
+  /* .bg-crossfade exempt: they render the themed backdrop and MUST stay
+     visible through intro. .scanlines/.vignette are suppressed by the
+     default rule — they only surface on halftone, which the intro passes
+     through too quickly for them to matter. */
+  body.intro-mode > *:not(.nav):not(.hero):not(.bg-crossfade) {
     opacity: 0;
     pointer-events: none;
   }
@@ -463,13 +462,13 @@
      in when intro-mode lifts. The delay lets the hero start collapsing first
      so content fades in behind/below the descending headline rather than
      popping up into it. */
-  body > *:not(.nav):not(.hero) {
+  body > *:not(.nav):not(.hero):not(.bg-crossfade) {
     transition: opacity 0.8s ease 0.35s;
   }
   @media (prefers-reduced-motion: reduce) {
     body.intro-mode { overflow: auto; }
     body.intro-mode .hero { min-height: 0; padding: 56px 0 64px; }
-    body.intro-mode > *:not(.nav):not(.hero) { opacity: 1; pointer-events: auto; }
+    body.intro-mode > *:not(.nav):not(.hero):not(.bg-crossfade) { opacity: 1; pointer-events: auto; }
   }
 
   /* Legacy mono kicker — no longer rendered in the hero (the brand name now
@@ -563,6 +562,10 @@
     animation-iteration-count: 1;
     animation-timing-function: linear;
     will-change: transform, opacity;
+    /* Smooth color transition when the theme's --title-highlight var
+       changes mid-animation, so the visible word doesn't flash-flip
+       color while bumping or holding. Matches the 0.5s bg-crossfade. */
+    transition: color 0.5s cubic-bezier(0.22, 1, 0.36, 1);
   }
   /* Words 1–3 bump through: enter with overshoot, settle, hold, bumped out. */
   .cycler-word-1,
@@ -2310,6 +2313,15 @@
 </head>
 <body class="intro-mode">
 
+  <!-- Themed backdrop pair. One layer is "active" (opacity 1) and holds
+       the current theme's primary gradient; the other waits at opacity 0.
+       On theme change the inactive layer is primed with the new theme
+       and fades in while the active layer fades out — gives us a smooth
+       0.5s gradient crossfade instead of an instant swap. Page opens on
+       creme so layer A starts primed with it. -->
+  <div class="bg-crossfade is-active" data-bg-theme="creme" aria-hidden="true"></div>
+  <div class="bg-crossfade" data-bg-theme="" aria-hidden="true"></div>
+
   <!-- Overlay effects -->
   <div class="scanlines"></div>
   <div class="vignette"></div>
@@ -3156,29 +3168,48 @@
       });
     }
 
-    // Cross-fade themes via the View Transitions API. Falls back to instant
-    // swap on browsers without support (older Safari/Firefox).
-    function applyTheme(theme) {
-      if (document.startViewTransition) {
-        document.startViewTransition(function() { applyThemeRaw(theme); });
-      } else {
-        applyThemeRaw(theme);
-      }
+    // Crossfade the themed backdrop by swapping which .bg-crossfade layer
+    // is "active" (opacity 1). The inactive layer is primed with the new
+    // theme, then opacities swap — both layers transition over 0.5s.
+    // Applied BEFORE applyThemeRaw so the outgoing layer still carries the
+    // old theme's gradient while the incoming layer fades in with the new.
+    function crossfadeBg(theme) {
+      var layers = document.querySelectorAll('.bg-crossfade');
+      if (layers.length < 2) return;
+      var active = document.querySelector('.bg-crossfade.is-active') || layers[0];
+      var incoming = active === layers[0] ? layers[1] : layers[0];
+      incoming.dataset.bgTheme = THEME_ATTRS[theme] || '';
+      // Flush styles on the incoming layer so the new background paints
+      // before the opacity transition starts, preventing a 1-frame flash
+      // of the wrong theme.
+      /* eslint-disable-next-line no-unused-expressions */
+      incoming.offsetHeight;
+      incoming.classList.add('is-active');
+      active.classList.remove('is-active');
     }
 
-    // Hero-synced theme swap. Page opens on creme with blank "Make Claude"
-    // for ~1s, then cycling begins. Words are spaced 1.8s apart (slightly
-    // faster than the original 2.0s). Swap timings are shifted ~0.4s AFTER
-    // each word's settle-point so the View Transition snapshot captures
-    // the h1 during its static hold phase.
+    // Combined theme apply: crossfade the backdrop + flip data-theme.
+    // data-theme drives CSS vars (colors, borders) which transition via
+    // the 0.5s rules on body/nav/cards. Backdrop gradient crossfades via
+    // the .bg-crossfade pair. Both finish in 0.5s, in sync.
+    function applyTheme(theme) {
+      crossfadeBg(theme);
+      applyThemeRaw(theme);
+    }
+
+    // Hero-synced theme swap. Each swap fires 100ms BEFORE its word's
+    // animation-delay — the 0.5s crossfade then lands exactly as the
+    // word settles. Word entry + theme shift feel like one motion: the
+    // word carries the new color/theme in with it.
     //
-    // Word delays (CSS): 1.3s / 3.1s / 4.9s / 6.7s  (1.8s spacing)
-    // Word settle times:  1.7s / 3.5s / 5.3s / 7.1s  (delay + 0.4s)
+    // Word delays (CSS):  1.3s / 3.1s / 4.9s / 6.7s  (1.8s spacing)
+    // Swap fires (-0.1s): 1.2s / 3.0s / 4.8s / 6.6s
+    // Word settles + theme completes (both):  1.7s / 3.5s / 5.3s / 7.1s
     var HERO_THEME_SEQUENCE = [
-      { theme: 'midnight',         at: 1700 },
-      { theme: 'halftone',         at: 3500 },
-      { theme: 'strawberry-kitty', at: 5300 },
-      { theme: 'creme',            at: 7100 }
+      { theme: 'midnight',         at: 1200 },
+      { theme: 'halftone',         at: 3000 },
+      { theme: 'strawberry-kitty', at: 4800 },
+      { theme: 'creme',            at: 6600 }
     ];
     var heroSyncCancelled = false;
     var heroSyncTimers = [];
@@ -3257,12 +3288,13 @@
         heroSyncTimers.push(id);
       });
 
-      // Release intro-mode after the final "Yours." crossfade completes
-      // (7100ms swap + 900ms transition = 8000ms, +100ms buffer).
+      // Release intro-mode shortly after the final "Yours." + creme theme
+      // settle together at 7100ms. 200ms buffer lets the eye register the
+      // settled frame before the rest of the page starts fading in.
       var exitId = setTimeout(function() {
         if (heroSyncCancelled) return;
         exitIntroMode();
-      }, 8100);
+      }, 7300);
       heroSyncTimers.push(exitId);
     }
 
