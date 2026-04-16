@@ -849,6 +849,11 @@
        Internal .demo-chat still gets flex:1 + overflow:hidden below to
        cap animated content to this box. */
     aspect-ratio: 16 / 10;
+    /* container-type: inline-size lets .mock-stage inside scale itself
+       proportionally via 100cqw container-query units, so ALL inner
+       content (bubbles, tool cards, marketplace rails) shrinks uniformly
+       on narrow viewports instead of needing per-element mobile rules. */
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
     /* Midnight initial state — aliased to --m-* for shared CSS */
@@ -880,13 +885,35 @@
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-glow);
     position: relative;
     /* Match .demo-app: same 960px max-width + 16:10 aspect-ratio so every
-       mockup renders as the same desktop-window shape. */
+       mockup renders as the same desktop-window shape, with
+       container-type so .mock-stage can scale via 100cqw. */
     width: 100%;
     max-width: 960px;
     margin: 0 auto;
     aspect-ratio: 16 / 10;
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Fixed-size inner stage: content is authored at 960x600 natural size
+     and the whole stage is visually scaled down (transform: scale) so
+     every child — chrome, bubbles, tool cards, marketplace cards, game
+     board — shrinks proportionally. 100cqw is the parent frame's actual
+     rendered width, so at viewport 400px the scale is 400/960 ≈ 0.417,
+     and at desktop 960+ the scale is 1. The parent's overflow:hidden
+     clips the unscaled layout-box overflow. */
+  .mock-stage {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 960px;
+    height: 600px;
+    transform-origin: top left;
+    transform: scale(calc(100cqw / 960));
+    display: flex;
+    flex-direction: column;
+    z-index: 1;
   }
 
   /* --- Theme palettes for static mocks --- */
@@ -1761,70 +1788,10 @@
 
   @media (max-width: 768px) {
     /* .showcase-item mobile override removed: the layout is now single-column
-       at every viewport width, so no breakpoint reshaping is needed. */
-    .mock-game-panel { width: 180px; }
+       at every viewport width, so no breakpoint reshaping is needed.
+       Mockup chrome no longer needs per-element mobile rules either —
+       .mock-stage transform:scale() shrinks every inner element uniformly. */
     .mock-games-btn-wrap { display: none; }
-
-    /* Mockup chrome scales down at narrow widths so the chat area stays
-       visible. At ~400px viewport the 16:10 frame is only ~250px tall, so
-       the desktop-sized 40px header + wrapping status bar ate most of it.
-       Key change: status bar flex-wrap:wrap -> nowrap so pills don't
-       pile onto 3-4 rows; a single-row horizontal scroll keeps them all
-       accessible without eating the chat area. */
-    .demo-header, .mock-header {
-      height: 30px;
-      padding: 0 6px 0 8px;
-      gap: 4px;
-    }
-    .demo-inputbar, .mock-inputbar { padding: 3px 6px; }
-    .demo-app.theme-golden .demo-inputbar,
-    .mock-golden .mock-inputbar {
-      margin: 0 6px;
-      padding: 3px 6px;
-    }
-    .mock-input-inner { padding: 4px 8px; gap: 4px; }
-    .mock-input-icon { width: 16px; height: 16px; }
-    .mock-input-icon svg { width: 14px; height: 14px; }
-    .mock-input-text { font-size: 11px; }
-    .mock-send { width: 22px; height: 22px; }
-    .mock-send svg { width: 12px; height: 12px; }
-
-    .demo-statusbar, .mock-statusbar {
-      flex-wrap: nowrap;
-      overflow-x: auto;
-      gap: 4px;
-      padding: 2px 6px;
-      font-size: 9px;
-      scrollbar-width: none;
-    }
-    .demo-statusbar::-webkit-scrollbar,
-    .mock-statusbar::-webkit-scrollbar { display: none; }
-    .mock-status-pill,
-    .mock-model-chip,
-    .mock-perm-chip {
-      padding: 1px 5px;
-      font-size: 9px;
-      flex-shrink: 0;
-    }
-    .mock-git-pill svg { width: 8px; height: 8px; }
-
-    /* Tool cards inside bubbles — shrink so the mobile chat can actually
-       show a bubble or two without the tool-card headers alone filling
-       the available height. */
-    .mock-tool-card-header { padding: 4px 8px; font-size: 10px; }
-
-    /* Bubbles: smaller padding + font so more content fits in ~180px of
-       chat area on a phone. Mono font at 14px was dominating. */
-    .demo-bubble, .mock-bubble {
-      padding: 10px 14px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .demo-chat, .mock-chat { padding: 10px 10px; gap: 6px; }
-  }
-
-  @media (max-width: 480px) {
-    .mock-game-panel { display: none; }
   }
 
   /* --- PREREQUISITES --- */
@@ -2629,6 +2596,7 @@
           </div>
           <div class="demo-app reveal" id="demo-app">
             <div class="demo-wallpaper"></div>
+            <div class="mock-stage">
             <!-- Header — matches real app: settings | session strip | toggle + games -->
             <div class="demo-header">
               <div class="mock-settings-btn">
@@ -2706,6 +2674,7 @@
               <span class="mock-status-pill mock-git-pill"><svg viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span>main</span></span>
               <span class="mock-status-pill" id="demo-theme-pill">midnight</span>
             </div>
+            </div>
           </div>
         </div>
 
@@ -2719,6 +2688,7 @@
           </div>
           <div class="mock-frame mock-midnight reveal">
             <div class="mock-wallpaper"></div>
+            <div class="mock-stage">
             <!-- Marketplace filter bar — replaces the session header. Multi-group
                  chip filters left (Type / Vibe / Meta) + small search right. -->
             <div class="mock-mp-filterbar">
@@ -2807,6 +2777,7 @@
                 </div>
               </div>
             </div>
+            </div>
           </div>
         </div>
 
@@ -2819,6 +2790,7 @@
           </div>
           <div class="mock-frame mock-midnight reveal">
             <div class="mock-wallpaper"></div>
+            <div class="mock-stage">
             <div class="mock-header">
               <div class="mock-settings-btn"><svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></div>
               <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">daily journal</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
@@ -2853,6 +2825,7 @@
               <span class="mock-status-pill mock-git-pill"><svg viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span>journal-entries</span></span>
               <span class="mock-status-pill">midnight</span>
             </div>
+            </div>
           </div>
         </div>
 
@@ -2865,6 +2838,7 @@
           </div>
           <div class="mock-frame mock-halftone-dim reveal">
             <div class="mock-wallpaper"></div>
+            <div class="mock-stage">
             <div class="mock-header">
               <div class="mock-settings-btn"><svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></div>
               <div class="mock-session-strip"><div class="mock-session-pill"><div class="mock-session-dot"></div><span class="mock-session-name">device sync</span></div><svg class="mock-session-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
@@ -2897,6 +2871,7 @@
               <span class="mock-status-pill mock-git-pill"><svg viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span>main</span></span>
               <span class="mock-status-pill">halftone-dimension</span>
             </div>
+            </div>
           </div>
         </div>
 
@@ -2909,6 +2884,7 @@
           </div>
           <div class="mock-frame mock-golden reveal">
             <div class="mock-wallpaper"></div>
+            <div class="mock-stage">
             <div class="mock-game-layout">
               <!-- Main column: header + chat + input/status stacked in one
                    column so the right-side game panel spans the entire
@@ -2971,6 +2947,7 @@
                   <div class="mock-game-input-field">Message&hellip;</div>
                 </div>
               </div>
+            </div>
             </div>
           </div>
         </div>
