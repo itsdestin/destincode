@@ -910,7 +910,9 @@
     width: 960px;
     height: 600px;
     transform-origin: top left;
-    transform: scale(calc(100cqw / 960));
+    /* Both sides of the division need units so the result is a unitless
+       number (scale() rejects lengths). 100cqw / 960px → 0..1 ratio. */
+    transform: scale(calc(100cqw / 960px));
     display: flex;
     flex-direction: column;
     z-index: 1;
