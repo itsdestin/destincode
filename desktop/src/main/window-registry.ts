@@ -81,8 +81,11 @@ export class WindowRegistry extends EventEmitter {
   // are routed to owner UNION subscribers in the IPC router.
   private readonly subscriptions = new Map<string, Set<number>>();
 
-  /** Add a subscription. Idempotent. Emits 'changed' on mutation. */
+  /** Add a subscription. Idempotent. Emits 'changed' on mutation. Throws if window unknown. */
   subscribe(sessionId: string, windowId: number): void {
+    if (!this.windows.has(windowId)) {
+      throw new Error(`WindowRegistry: unknown window ${windowId}`);
+    }
     let set = this.subscriptions.get(sessionId);
     if (!set) {
       set = new Set();

@@ -53,4 +53,20 @@ describe('WindowRegistry subscriptions', () => {
     reg.unsubscribe('sess-1', 100);
     expect(count).toBe(2);
   });
+
+  it('subscribe throws when the window is not registered', () => {
+    expect(() => reg.subscribe('sess-1', 999)).toThrow(/unknown window 999/);
+  });
+
+  it('releaseAllSubscriptionsForWindow with silent=true does not emit changed', () => {
+    reg.subscribe('sess-1', 100);
+    reg.subscribe('sess-2', 100);
+    let count = 0;
+    reg.on('changed', () => count++);
+    reg.releaseAllSubscriptionsForWindow(100, true);
+    expect(count).toBe(0);
+    // Verify the release still happened
+    expect(reg.getSubscribers('sess-1').size).toBe(0);
+    expect(reg.getSubscribers('sess-2').size).toBe(0);
+  });
 });
