@@ -25,10 +25,13 @@ import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import {
   type BackendInstance,
-  migrateConfigToV2,
-  syncLegacyKeys,
+  type SyncWarning,
   addOrReplaceWarning,
   clearWarningsByBackend,
+  migrateConfigToV2,
+  readWarnings,
+  syncLegacyKeys,
+  writeWarnings,
 } from './sync-state';
 import { classifyPushError, truncateStderr } from './sync-error-classifier';
 
@@ -1789,11 +1792,11 @@ export class SyncService extends EventEmitter {
    *   SKILLS:unrouted:name1,name2, PROJECTS:N
    * Called after pull completes and on app startup.
    */
-  async runHealthCheck(): Promise<string[]> {
-    const warningsFile = path.join(this.claudeDir, '.sync-warnings');
-    const warnings: string[] = [];
+  async runHealthCheck(): Promise<SyncWarning[]> {
+    const warnings: SyncWarning[] = [];
+    const now = Math.floor(Date.now() / 1000);
 
-    // 0. Internet connectivity check (DNS lookup)
+    // 0. Internet connectivity
     try {
       const dns = await import('dns');
       await new Promise<void>((resolve, reject) => {
@@ -1804,16 +1807,21 @@ export class SyncService extends EventEmitter {
         });
       });
     } catch {
-      warnings.push('OFFLINE');
+      warnings.push({
+        code: 'OFFLINE',
+        level: 'danger',
+        title: 'No internet',
+        body: "Can't reach the network. Syncing will resume automatically when you're back online.",
+        dismissible: true,
+        createdEpoch: now,
+      });
     }
 
     // 1. Personal data sync backend status
     const syncBackends = this.getSyncEnabledBackends();
     if (syncBackends.length === 0) {
-      // Auto-detect: check if a known sync provider works
       const detected = await this.autoDetectBackend();
       if (detected) {
-        // Self-heal: write detected backend to config
         try {
           const config = this.readJson(this.configPath) || {};
           config.PERSONAL_SYNC_BACKEND = detected;
@@ -1821,48 +1829,72 @@ export class SyncService extends EventEmitter {
           this.logBackup('INFO', `Auto-detected sync backend: ${detected}`, 'sync.health');
         } catch {}
       } else {
-        warnings.push('PERSONAL:NOT_CONFIGURED');
+        warnings.push({
+          code: 'PERSONAL_NOT_CONFIGURED',
+          level: 'danger',
+          title: 'No sync configured',
+          body: "Your backups aren't set up. Connect a cloud provider so your data is protected.",
+          fixAction: { label: 'Set up sync', kind: 'open-sync-setup' },
+          dismissible: false,
+          createdEpoch: now,
+        });
       }
     } else {
-      // Check if last sync is stale (>24 hours)
       try {
         const markerText = fs.readFileSync(this.syncMarkerPath, 'utf8').trim();
         const lastEpoch = parseInt(markerText, 10);
         if (!isNaN(lastEpoch)) {
           const age = Math.floor(Date.now() / 1000) - lastEpoch;
           if (age >= 86400) {
-            warnings.push('PERSONAL:STALE');
+            warnings.push({
+              code: 'PERSONAL_STALE',
+              level: 'warn',
+              title: 'Sync is stale',
+              body: "Backups haven't succeeded in over 24 hours. Check the sync panel for details.",
+              dismissible: true,
+              createdEpoch: now,
+            });
           }
         }
-      } catch {
-        // No marker file — first run, not stale
-      }
+      } catch {}
     }
 
-    // 2. Unrouted user skills (not toolkit symlinks, not in skill-routes.json)
+    // 2. Unrouted user skills
     const unroutedSkills = this.findUnroutedSkills();
     if (unroutedSkills.length > 0) {
-      warnings.push(`SKILLS:unrouted:${unroutedSkills.join(',')}`);
+      warnings.push({
+        code: 'SKILLS_UNROUTED',
+        level: 'warn',
+        title: 'Unsynced skills',
+        body: `Some skills aren't being backed up: ${unroutedSkills.join(', ')}. Route them through the toolkit to include them.`,
+        dismissible: true,
+        createdEpoch: now,
+      });
     }
 
-    // 3. Unsynced projects — discover git repos not tracked
+    // 3. Unsynced projects
     const discoveredProjects = this.discoverProjects();
     if (discoveredProjects.length > 0) {
-      // Write discovered paths for /sync skill to consume
       const unsyncedFile = path.join(this.claudeDir, '.unsynced-projects');
       this.atomicWrite(unsyncedFile, discoveredProjects.join('\n'));
-      warnings.push(`PROJECTS:${discoveredProjects.length}`);
+      warnings.push({
+        code: 'PROJECTS_UNSYNCED',
+        level: 'warn',
+        title: 'Projects excluded',
+        body: `${discoveredProjects.length} project(s) aren't being synced. Check the sync panel to include them.`,
+        dismissible: true,
+        createdEpoch: now,
+      });
     } else {
-      // Clean up stale file
       try { fs.unlinkSync(path.join(this.claudeDir, '.unsynced-projects')); } catch {}
     }
 
-    // Write warnings file (or remove if empty)
-    if (warnings.length > 0) {
-      fs.writeFileSync(warningsFile, warnings.join('\n') + '\n');
-    } else {
-      try { fs.unlinkSync(warningsFile); } catch {}
-    }
+    // Merge with existing push-failure warnings (preserve them; only replace
+    // the health-check-owned codes).
+    const existing = await readWarnings();
+    const healthCodes = new Set(['OFFLINE', 'PERSONAL_NOT_CONFIGURED', 'PERSONAL_STALE', 'SKILLS_UNROUTED', 'PROJECTS_UNSYNCED']);
+    const preserved = existing.filter((w) => !healthCodes.has(w.code));
+    await writeWarnings([...preserved, ...warnings]);
 
     return warnings;
   }
