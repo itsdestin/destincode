@@ -14,6 +14,11 @@ import type { AttentionSummary } from '../../shared/types';
 export function useAnyAttentionNeeded(): boolean {
   const [needs, setNeeds] = useState(false);
   useEffect(() => {
+    // Defensive guard: buddy windows render in a separate BrowserWindow where
+    // preload-initialization order is less predictable. If the API isn't
+    // exposed yet, silently do nothing rather than throwing — the summary
+    // will simply never fire, leaving the mascot idle (safe default).
+    if (!window.claude?.buddy?.onAttentionSummary) return;
     const unsub = window.claude.buddy.onAttentionSummary((summary: AttentionSummary) => {
       setNeeds(summary.anyNeedsAttention);
     });
