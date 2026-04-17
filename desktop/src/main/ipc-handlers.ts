@@ -72,15 +72,21 @@ export function registerIpcHandlers(
     }
     if (ids.size > 0) {
       for (const wid of ids) {
-        // wid is a webContents.id, NOT a BrowserWindow.id — see the original
-        // comment in this file for why that distinction matters.
+        // wid is a webContents.id, NOT a BrowserWindow.id — different ID
+        // spaces. BrowserWindow.fromId silently returns null for a
+        // webContents.id, so previously every peer-window event fell through
+        // to the mainWindow fallback (window 1). webContents.fromId does the
+        // correct lookup.
         const wc = webContents.fromId(wid);
         if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
       }
       return;
     }
     // Fallback: no known owner and no subscribers (e.g., remote-created
-    // session pre-assignment). Send to mainWindow to preserve existing behavior.
+    // session pre-assignment). Send to mainWindow so these orphaned events
+    // still reach a renderer. Note: if `ids` was non-empty but every target
+    // webContents was destroyed, the event is silently dropped — the fallback
+    // is only taken when no recipients were identified at all.
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   };
 
