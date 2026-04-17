@@ -21,6 +21,7 @@ import { setSyncService } from './sync-state';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
+import { BuddyWindowManager } from './buddy-window-manager';
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
@@ -988,6 +989,48 @@ app.whenReady().then(async () => {
 
   createWindow(isFirstRun ? firstRunManager : undefined);
   registerDetachIpc();
+
+  // Buddy window position persistence — JSON file in userData so restarts
+  // restore the mascot and chat to where the user left them. Keyed by
+  // 'mascot' / 'chat'.
+  const BUDDY_POS_FILE = path.join(app.getPath('userData'), 'buddy-positions.json');
+  function loadBuddyPositions(): Record<string, { x: number; y: number } | undefined> {
+    try { return JSON.parse(fs.readFileSync(BUDDY_POS_FILE, 'utf8')); } catch { return {}; }
+  }
+  function saveBuddyPositions(obj: Record<string, { x: number; y: number } | undefined>): void {
+    try { fs.writeFileSync(BUDDY_POS_FILE, JSON.stringify(obj)); } catch {}
+  }
+  const buddyPositions = loadBuddyPositions();
+
+  const buddyManager = new BuddyWindowManager({
+    createBuddyWindow: (variant, { x, y }) => createAppWindow({ x, y, buddy: variant }),
+    getPersistedPosition: (key) => buddyPositions[key] ?? null,
+    setPersistedPosition: (key, pos) => {
+      buddyPositions[key] = pos;
+      saveBuddyPositions(buddyPositions);
+    },
+    registry: windowRegistry,
+    mainWindow: () => mainWindow,
+  });
+
+  ipcMain.handle(IPC.BUDDY_SHOW, () => buddyManager.show());
+  ipcMain.handle(IPC.BUDDY_HIDE, () => buddyManager.hide());
+  ipcMain.handle(IPC.BUDDY_TOGGLE_CHAT, () => buddyManager.toggleChat());
+  ipcMain.handle(IPC.BUDDY_SET_SESSION, (_evt, sessionId: string) => {
+    buddyManager.setViewedSession(sessionId);
+  });
+  ipcMain.handle(IPC.BUDDY_SUBSCRIBE, (evt, sessionId: string) => {
+    windowRegistry.subscribe(sessionId, evt.sender.id);
+    // No replay kick is needed here — the renderer calls
+    // window.claude.detach.requestTranscriptReplay(sessionId) right after
+    // subscribe resolves, which sends IPC.TRANSCRIPT_REPLAY; history
+    // streams back via the normal TRANSCRIPT_EVENT channel, which reaches
+    // owner ∪ subscribers (including this new subscription) thanks to A2.
+  });
+  ipcMain.handle(IPC.BUDDY_UNSUBSCRIBE, (evt, sessionId: string) => {
+    windowRegistry.unsubscribe(sessionId, evt.sender.id);
+  });
+  ipcMain.handle(IPC.BUDDY_GET_VIEWED_SESSION, () => buddyManager.getViewedSession());
 
   // Start native sync service — owns push/pull lifecycle, background timer,
   // session-end sync. Replaces bash hook sync when app is running.
