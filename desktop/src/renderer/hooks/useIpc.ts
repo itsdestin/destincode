@@ -117,6 +117,8 @@ declare global {
           reason?: string;
         }): Promise<ApiResult<void>>;
       };
+      buddy: import('../../shared/types').BuddyApi;
+      attention: import('../../shared/types').AttentionApi;
     };
   }
 }

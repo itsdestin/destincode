@@ -41,7 +41,7 @@ import ThemeShareSheet from './components/ThemeShareSheet';
 import SkillEditor from './components/SkillEditor';
 import ShareSheet from './components/ShareSheet';
 
-import type { SkillEntry, PermissionMode } from '../shared/types';
+import type { SkillEntry, PermissionMode, AttentionState } from '../shared/types';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -281,26 +281,28 @@ function AppInner() {
   // chatStateMap is a new Map reference on every dispatch, so we compare
   // the derived {attentionState, awaitingApproval} pair before sending.
   // Session removal sends { clear: true } so main drops stale entries.
-  const lastAttentionReportedRef = useRef<Map<string, { attentionState: string; awaitingApproval: boolean }>>(new Map());
+  const lastAttentionReportedRef = useRef<Map<string, { attentionState: AttentionState; awaitingApproval: boolean }>>(new Map());
   useEffect(() => {
     const prev = lastAttentionReportedRef.current;
     const currentIds = new Set<string>();
     for (const [sessionId, state] of chatStateMap) {
       currentIds.add(sessionId);
-      const awaitingApproval = !!(state.activeTurnToolIds && [...state.toolCalls.values()].some(
-        (t) => t.status === 'awaiting-approval' && state.activeTurnToolIds.has(t.toolUseId)
-      ));
+      let awaitingApproval = false;
+      for (const id of state.activeTurnToolIds) {
+        const t = state.toolCalls.get(id);
+        if (t?.status === 'awaiting-approval') { awaitingApproval = true; break; }
+      }
       const next = { attentionState: state.attentionState, awaitingApproval };
       const last = prev.get(sessionId);
       if (!last || last.attentionState !== next.attentionState || last.awaitingApproval !== next.awaitingApproval) {
-        (window as any).claude?.attention?.report({ sessionId, ...next });
+        window.claude.attention.report({ sessionId, ...next });
         prev.set(sessionId, next);
       }
     }
     // Session removal — send clear so main drops the stale entry
     for (const sid of prev.keys()) {
       if (!currentIds.has(sid)) {
-        (window as any).claude?.attention?.report({ sessionId: sid, clear: true });
+        window.claude.attention.report({ sessionId: sid, clear: true });
         prev.delete(sid);
       }
     }
