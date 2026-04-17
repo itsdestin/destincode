@@ -109,6 +109,14 @@ interface SyncSetupWizardProps {
     config: Record<string, string>;
   }) => Promise<void>;
   onClose: () => void;
+  /**
+   * When set, skip the provider picker and land directly on the reconnect
+   * step for this backend. Used when invoked from a push-failure warning's
+   * "Fix it" button so the user doesn't have to re-pick Google Drive.
+   */
+  preselectedBackendId?: string;
+  /** Must be set when preselectedBackendId is set; determines which auth flow to jump to. */
+  preselectedBackendType?: 'drive' | 'github' | 'icloud';
 }
 
 // Normalize a GitHub repo URL for duplicate comparison (strip trailing slash and .git)
@@ -116,14 +124,28 @@ function normalizeRepoUrl(url: string): string {
   return url.trim().replace(/\.git$/, '').replace(/\/+$/, '').toLowerCase();
 }
 
-export default function SyncSetupWizard({ initialType, existingBackends, onComplete, onClose }: SyncSetupWizardProps) {
-  const [step, setStep] = useState<WizardStep>(initialType ? 'prereqs' : 'type');
-  const [backendType, setBackendType] = useState<BackendType | null>(initialType ?? null);
+export default function SyncSetupWizard({ initialType, existingBackends, onComplete, onClose, preselectedBackendId, preselectedBackendType }: SyncSetupWizardProps) {
+  // If a specific backend needs reconnecting, jump straight to auth for that type.
+  // iCloud has no auth step (no OAuth flow), so land at 'prereqs' for it instead.
+  // Falls back to the initialType behavior (skip type-picker → prereqs) if set,
+  // or the default 'type' picker if neither preselect nor initialType is provided.
+  const [step, setStep] = useState<WizardStep>(() => {
+    if (preselectedBackendId && preselectedBackendType) {
+      return preselectedBackendType === 'icloud' ? 'prereqs' : 'auth';
+    }
+    return initialType ? 'prereqs' : 'type';
+  });
+  const [backendType, setBackendType] = useState<BackendType | null>(
+    preselectedBackendType ?? initialType ?? null
+  );
   const [prereqs, setPrereqs] = useState<PrereqStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Config fields
-  const [label, setLabel] = useState('');
+  // Config fields — pre-populate label when jumping straight to auth/reconnect
+  // so the Configure step has a sensible default even though selectType() was skipped.
+  const [label, setLabel] = useState(
+    preselectedBackendType ? `My ${BACKEND_LABELS[preselectedBackendType]}` : ''
+  );
   const [driveFolder, setDriveFolder] = useState('Claude');
   const [remoteName, setRemoteName] = useState<string | null>(null);
   const [ghUsername, setGhUsername] = useState<string | null>(null);
