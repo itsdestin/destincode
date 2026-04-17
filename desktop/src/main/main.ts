@@ -265,22 +265,45 @@ function registerFirstRunIpc(
 // windows spawned by the detach subsystem. Keeps webPreferences, security
 // hardening, and fullscreen relay consistent across every window so renderers
 // don't have to guess which features are available.
-function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean }): BrowserWindow {
+function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const isMac = process.platform === 'darwin';
 
+  // Buddy-specific window options: transparent, frameless, always-on-top, etc.
+  const buddyExtras: Electron.BrowserWindowConstructorOptions = opts?.buddy
+    ? {
+        transparent: true,
+        frame: false,
+        resizable: false,
+        alwaysOnTop: true,
+        hasShadow: false,
+        skipTaskbar: true,
+        // Exclude buddy windows from macOS Dock + Mission Control
+        ...(isMac ? { type: 'panel' as const } : {}),
+      }
+    : {};
+
+  // Buddy window dimensions: mascot = 80×80; chat = 320×480
+  const buddyDimensions: { width?: number; height?: number } = opts?.buddy === 'mascot'
+    ? { width: 80, height: 80 }
+    : opts?.buddy === 'chat'
+    ? { width: 320, height: 480 }
+    : {};
+
   const win = new BrowserWindow({
-    width: opts?.width ?? 1200,
-    height: opts?.height ?? 800,
+    width: buddyDimensions.width ?? opts?.width ?? 1200,
+    height: buddyDimensions.height ?? opts?.height ?? 800,
     x: opts?.x,
     y: opts?.y,
     icon,
-    titleBarStyle: isMac ? 'hiddenInset' as const : 'hidden' as const,
+    titleBarStyle: opts?.buddy ? undefined : (isMac ? 'hiddenInset' as const : 'hidden' as const),
     // Live tear-off spawns this window mid-drag and needs the source window to
     // keep keyboard/pointer focus. show: false + showInactive() below prevents
     // the OS from focusing the new window on creation.
-    show: !opts?.inactive,
+    // Buddy windows start hidden — BuddyWindowManager will show them explicitly.
+    show: !opts?.inactive && !opts?.buddy,
+    ...buddyExtras,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -288,6 +311,14 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
       sandbox: true,
     },
   });
+
+  // Lift alwaysOnTop to 'screen-saver' level for buddy windows after construction.
+  // 'screen-saver' is the highest reliable always-on-top level; floats over
+  // minimized apps on Win/Mac/Linux. Applied after construction because
+  // BrowserWindowConstructorOptions only supports boolean here.
+  if (opts?.buddy) {
+    win.setAlwaysOnTop(true, 'screen-saver');
+  }
 
   if (opts?.inactive) {
     win.webContents.once('did-finish-load', () => {
@@ -315,8 +346,16 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
 
   if (opts?.maximize) win.maximize();
 
-  if (!app.isPackaged) win.loadURL(DEV_SERVER_URL);
-  else win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  // Append mode query param for buddy windows so React can branch on the mode
+  const modeQuery = opts?.buddy ? `?mode=buddy-${opts.buddy}` : '';
+  if (!app.isPackaged) {
+    win.loadURL(`${DEV_SERVER_URL}${modeQuery}`);
+  } else {
+    win.loadFile(path.join(__dirname, '../renderer/index.html'), {
+      // loadFile expects search string WITHOUT the leading '?'
+      search: modeQuery ? modeQuery.slice(1) : undefined,
+    });
+  }
 
   // Auto-open DevTools in dev — the app's menu is nulled so F12/Ctrl+Shift+I
   // don't work by default. Opens detached so it doesn't steal window width.
