@@ -507,17 +507,18 @@ function AppInner() {
           });
           break;
         case 'turn-complete':
-          // Metadata (stopReason/model/usage/anthropicRequestId) defaults to null here;
-          // Task 2.2 will forward the real values from the transcript event payload.
+          // Task 2.2: forward the full metadata payload. transcript-watcher emits these as
+          // optional fields on event.data (shared/types.ts); coalesce undefined → null so
+          // the action type (string | null, not optional) stays well-typed.
           batchTranscriptDispatch({
             type: 'TRANSCRIPT_TURN_COMPLETE',
             sessionId: event.sessionId,
             uuid: event.uuid,
             timestamp: event.timestamp,
-            stopReason: null,
-            model: null,
-            anthropicRequestId: null,
-            usage: null,
+            stopReason: event.data.stopReason ?? null,
+            model: event.data.model ?? null,
+            anthropicRequestId: event.data.anthropicRequestId ?? null,
+            usage: event.data.usage ?? null,
           });
           break;
         case 'assistant-thinking':
