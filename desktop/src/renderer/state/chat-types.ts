@@ -18,11 +18,26 @@ export type AssistantTurnSegment =
   // Linked to the tool via toolUseId so the reducer can dedup across re-emits.
   | { type: 'plan'; messageId: string; toolUseId: string; content: string; planFilePath?: string; allowedPrompts?: unknown };
 
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
 export interface AssistantTurn {
   id: string;
   segments: AssistantTurnSegment[];
   /** Epoch ms — captured from the first segment's transcript event */
   timestamp?: number;
+  /** Only set when stop_reason is non-end_turn (max_tokens, refusal, etc.). Null for normal completions. */
+  stopReason: string | null;
+  /** Model ID from the transcript (e.g. 'claude-opus-4-7'). Drives per-turn model chip + drift detection. */
+  model: string | null;
+  /** Token + cache usage from message.usage. Rendered in the opt-in metadata strip. */
+  usage: TurnUsage | null;
+  /** Anthropic API request ID (req_…). Surfaced in error banners for support correlation. */
+  anthropicRequestId: string | null;
 }
 
 // Snapshot of session stats + rate limits captured when /cost or /usage was typed.
@@ -254,6 +269,10 @@ export type ChatAction =
       sessionId: string;
       uuid: string;
       timestamp: number;
+      stopReason: string | null;
+      model: string | null;
+      anthropicRequestId: string | null;
+      usage: TurnUsage | null;
     }
   | {
       type: 'HISTORY_LOADED';

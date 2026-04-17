@@ -41,7 +41,16 @@ function getOrCreateTurn(session: SessionChatState): {
   }
 
   currentTurnId = nextTurnId();
-  assistantTurns.set(currentTurnId, { id: currentTurnId, segments: [], timestamp: Date.now() });
+  // Metadata fields default to null here; turn-complete populates them later (see TRANSCRIPT_TURN_COMPLETE).
+  assistantTurns.set(currentTurnId, {
+    id: currentTurnId,
+    segments: [],
+    timestamp: Date.now(),
+    stopReason: null,
+    model: null,
+    usage: null,
+    anthropicRequestId: null,
+  });
   timeline = [...timeline, { kind: 'assistant-turn' as const, turnId: currentTurnId }];
   return { assistantTurns, timeline, currentTurnId };
 }
@@ -707,10 +716,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         } else {
           const turnId = `hist-turn-${historyMsgCounter}`;
           const msgId = `hist-msg-${historyMsgCounter}`;
+          // History-loaded turns never saw a turn-complete, so metadata fields stay null.
           historyTurns.set(turnId, {
             id: turnId,
             segments: [{ type: 'text', content: msg.content, messageId: msgId }],
             timestamp: msg.timestamp,
+            stopReason: null,
+            model: null,
+            usage: null,
+            anthropicRequestId: null,
           });
           historyTimeline.push({ kind: 'assistant-turn', turnId });
         }

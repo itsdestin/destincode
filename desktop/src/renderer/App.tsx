@@ -507,11 +507,17 @@ function AppInner() {
           });
           break;
         case 'turn-complete':
+          // Metadata (stopReason/model/usage/anthropicRequestId) defaults to null here;
+          // Task 2.2 will forward the real values from the transcript event payload.
           batchTranscriptDispatch({
             type: 'TRANSCRIPT_TURN_COMPLETE',
             sessionId: event.sessionId,
             uuid: event.uuid,
             timestamp: event.timestamp,
+            stopReason: null,
+            model: null,
+            anthropicRequestId: null,
+            usage: null,
           });
           break;
         case 'assistant-thinking':
