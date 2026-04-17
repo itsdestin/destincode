@@ -71,6 +71,9 @@ export class BuddyWindowManager {
     if (this.mascot && !this.mascot.isDestroyed()) this.mascot.destroy();
     this.chat = null;
     this.mascot = null;
+    // Reset so a subsequent show() + setViewedSession(sameId) doesn't
+    // early-return in setViewedSession and skip re-subscription.
+    this.viewedSessionId = null;
   }
 
   toggleChat(): void {
@@ -116,6 +119,13 @@ export class BuddyWindowManager {
     const clamped = clampToWorkArea(raw, CHAT_SIZE, display.workArea);
     this.chat = this.deps.createBuddyWindow('chat', clamped);
     this.wireChatLifecycle(this.chat);
+    // If a session was already chosen (via setViewedSession) before the
+    // chat window was ever opened, subscribe now. Without this, the first
+    // render of chat renders empty because no transcript events are
+    // reaching this webContents.
+    if (this.viewedSessionId) {
+      this.deps.registry.subscribe(this.viewedSessionId, this.chat.webContents.id);
+    }
     this.chat.show();
     this.chat.focus();
   }
@@ -127,7 +137,17 @@ export class BuddyWindowManager {
       this.deps.setPersistedPosition('mascot', { x, y });
     }, 300);
     win.on('move', save);
-    win.webContents.on('render-process-gone', () => this.hide());
+    // Catch non-clean teardowns (crashes, OOM, force-kill). Clean renderer
+    // reloads during `npm run dev` fire with reason === 'clean-exit' — those
+    // should NOT trigger hide(), otherwise the buddy vanishes on every hot
+    // reload in dev mode.
+    win.webContents.on('render-process-gone', (_evt, details) => {
+      if (details.reason !== 'clean-exit') this.hide();
+    });
+    // OS-level close (force-quit via Task Manager or app exit). Clear our
+    // ref so show() doesn't try to operate on a destroyed BrowserWindow and
+    // hide() doesn't double-destroy.
+    win.on('closed', () => { this.mascot = null; });
   }
 
   private wireChatLifecycle(win: BrowserWindow): void {
@@ -137,7 +157,9 @@ export class BuddyWindowManager {
       this.deps.setPersistedPosition('chat', { x, y });
     }, 300);
     win.on('move', save);
-    win.webContents.on('render-process-gone', () => this.hide());
+    win.webContents.on('render-process-gone', (_evt, details) => {
+      if (details.reason !== 'clean-exit') this.hide();
+    });
     win.on('closed', () => { this.chat = null; });
   }
 }
