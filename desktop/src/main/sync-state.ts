@@ -42,6 +42,25 @@ export function getSyncService(): SyncService | null {
 /** The three cloud service types the sync system supports. */
 export type BackendType = 'drive' | 'github' | 'icloud';
 
+/** A user-facing sync warning. Written to .sync-warnings.json. */
+export interface SyncWarning {
+  code: string;
+  level: 'danger' | 'warn';
+  backendId?: string;
+  title: string;
+  body: string;
+  fixAction?: SyncFixAction;
+  dismissible: boolean;
+  stderr?: string;
+  createdEpoch: number;
+}
+
+export type SyncFixAction =
+  | { label: string; kind: 'open-sync-setup'; payload?: { backendId?: string } }
+  | { label: string; kind: 'open-external'; payload: { url: string } }
+  | { label: string; kind: 'retry'; payload: { backendId: string } }
+  | { label: string; kind: 'dismiss' };
+
 /**
  * A single connected cloud backend instance.
  * Users can have multiple instances of the same type (e.g., two Drive accounts).
