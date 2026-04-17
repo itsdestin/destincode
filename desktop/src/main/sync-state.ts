@@ -345,7 +345,12 @@ export async function clearWarningsByBackend(backendId: string): Promise<void> {
   if (filtered.length !== all.length) await writeWarnings(filtered);
 }
 
-/** Remove a warning by code (used by runHealthCheck to clear resolved codes). */
+/**
+ * Remove a warning by code (used by runHealthCheck to clear resolved codes).
+ * Only call for global (non-backendId-scoped) codes like OFFLINE/PERSONAL_STALE.
+ * For backend-specific push failures, use clearWarningsByBackend instead — this
+ * function would wipe UNKNOWN/CONFIG_MISSING across every backend simultaneously.
+ */
 export async function clearWarningsByCode(code: string): Promise<void> {
   const all = await readWarnings();
   const filtered = all.filter((x) => x.code !== code);

@@ -16,8 +16,6 @@ const tmpHome = path.join(os.tmpdir(), `sync-warnings-test-${Date.now()}`);
 const claudeDir = path.join(tmpHome, '.claude');
 const warningsPath = path.join(claudeDir, '.sync-warnings.json');
 
-const originalHome = process.env.USERPROFILE || process.env.HOME;
-
 beforeEach(() => {
   // sync-state.ts computes paths from os.homedir() at module-load time,
   // so tests here work by redirecting HOME before the module is imported.
