@@ -36,3 +36,4 @@ desktop/release/
 # Built React UI bundle (copied from desktop build) — except placeholder
 app/src/main/assets/web/*
 !app/src/main/assets/web/index.html
+.worktrees/
