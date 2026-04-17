@@ -367,9 +367,21 @@ export interface IntegrationState {
   error?: string;
 }
 
+// AttentionState drives the UI decision between ThinkingIndicator (ok) and
+// the AttentionBanner (everything else). A classifier reads the PTY buffer
+// and maps its conclusions onto these states; process-exit events also
+// transition to 'session-died' directly. See docs/chat-reducer.md.
+export type AttentionState =
+  | 'ok'              // Default — indicator renders if isThinking
+  | 'awaiting-input'  // PTY shows a non-hook prompt (CLI-level confirm, etc.)
+  | 'shell-idle'      // PTY shows bash/shell prompt; session not actively running
+  | 'error'           // PTY tail matches error pattern
+  | 'stuck'           // Spinner frame stale ≥ 10s OR unknown silence > 60s
+  | 'session-died';   // Process exited mid-turn
+
 export interface AttentionSummary {
   anyNeedsAttention: boolean;
-  perSession: Record<string, { attentionState: string; awaitingApproval: boolean }>;
+  perSession: Record<string, { attentionState: AttentionState; awaitingApproval: boolean }>;
 }
 
 export interface BuddyApi {
@@ -647,6 +659,7 @@ export const IPC = {
   BUDDY_UNSUBSCRIBE: 'buddy:unsubscribe',
   BUDDY_GET_VIEWED_SESSION: 'buddy:get-viewed-session',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
+  ATTENTION_REPORT: 'attention:report',
 } as const;
 
 // --- Window registry / detach types ---

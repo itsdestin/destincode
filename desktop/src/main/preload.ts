@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 import type { AuthStartResponse, AuthPollResponse, PostRatingInput } from '../renderer/state/marketplace-api-client';
 import type { MarketplaceUser } from './marketplace-auth-store';
 import type { ApiResult } from './marketplace-api-handlers';
+import type { AttentionSummary } from '../shared/types';
 
 // IPC channel names inlined here because Electron's sandboxed preload
 // cannot resolve relative imports to other modules
@@ -193,6 +194,7 @@ const IPC = {
   BUDDY_UNSUBSCRIBE: 'buddy:unsubscribe',
   BUDDY_GET_VIEWED_SESSION: 'buddy:get-viewed-session',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
+  ATTENTION_REPORT: 'attention:report',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -638,17 +640,17 @@ contextBridge.exposeInMainWorld('claude', {
     get: (): Promise<number> => ipcRenderer.invoke(IPC.ZOOM_GET),
   },
   buddy: {
-    show: () => ipcRenderer.invoke('buddy:show'),
-    hide: () => ipcRenderer.invoke('buddy:hide'),
-    toggleChat: () => ipcRenderer.invoke('buddy:toggle-chat'),
-    setSession: (sessionId: string) => ipcRenderer.invoke('buddy:set-session', sessionId),
-    subscribe: (sessionId: string) => ipcRenderer.invoke('buddy:subscribe', sessionId),
-    unsubscribe: (sessionId: string) => ipcRenderer.invoke('buddy:unsubscribe', sessionId),
-    getViewedSession: () => ipcRenderer.invoke('buddy:get-viewed-session'),
-    onAttentionSummary: (cb: (summary: unknown) => void) => {
-      const listener = (_: unknown, summary: unknown) => cb(summary);
-      ipcRenderer.on('session:attention-summary', listener);
-      return () => ipcRenderer.removeListener('session:attention-summary', listener);
+    show: () => ipcRenderer.invoke(IPC.BUDDY_SHOW),
+    hide: () => ipcRenderer.invoke(IPC.BUDDY_HIDE),
+    toggleChat: () => ipcRenderer.invoke(IPC.BUDDY_TOGGLE_CHAT),
+    setSession: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_SET_SESSION, sessionId),
+    subscribe: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_SUBSCRIBE, sessionId),
+    unsubscribe: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_UNSUBSCRIBE, sessionId),
+    getViewedSession: () => ipcRenderer.invoke(IPC.BUDDY_GET_VIEWED_SESSION),
+    onAttentionSummary: (cb: (summary: AttentionSummary) => void) => {
+      const listener = (_: unknown, summary: AttentionSummary) => cb(summary);
+      ipcRenderer.on(IPC.SESSION_ATTENTION_SUMMARY, listener);
+      return () => ipcRenderer.removeListener(IPC.SESSION_ATTENTION_SUMMARY, listener);
     },
   },
 });
