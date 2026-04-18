@@ -485,6 +485,9 @@ function AppInner() {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Task 2.4: forward the per-message model from the transcript so the
+            // reducer can stamp turn.model on the first text of each turn.
+            model: event.data.model,
           });
           break;
         case 'tool-use':
@@ -509,11 +512,18 @@ function AppInner() {
           });
           break;
         case 'turn-complete':
+          // Task 2.2: forward the full metadata payload. transcript-watcher emits these as
+          // optional fields on event.data (shared/types.ts); coalesce undefined → null so
+          // the action type (string | null, not optional) stays well-typed.
           batchTranscriptDispatch({
             type: 'TRANSCRIPT_TURN_COMPLETE',
             sessionId: event.sessionId,
             uuid: event.uuid,
             timestamp: event.timestamp,
+            stopReason: event.data.stopReason ?? null,
+            model: event.data.model ?? null,
+            anthropicRequestId: event.data.anthropicRequestId ?? null,
+            usage: event.data.usage ?? null,
           });
           break;
         case 'assistant-thinking':
@@ -1038,6 +1048,62 @@ function AppInner() {
       }
     };
   }, [pendingModel, sessionId]);
+
+  // Passive drift reconciliation: silently align the session pill with what
+  // Claude actually used, whenever the transcript reveals they disagree.
+  //
+  // The verify-model-switch effect above only runs during a user-initiated
+  // Shift+Space / picker flip (pendingModel !== null). This effect catches the
+  // cases that flow doesn't see:
+  //   - user typed `/model sonnet` directly into the terminal view
+  //   - Claude Code auto-downshifted on rate-limit
+  //   - session resume picked up a different model than was selected
+  //
+  // Walks the timeline back to the most recent assistant turn with a known
+  // model (set by TRANSCRIPT_ASSISTANT_TEXT in Task 2.4 and reconfirmed by
+  // TRANSCRIPT_TURN_COMPLETE in Task 2.3), maps it to a ModelAlias, and if it
+  // disagrees with sessionModels[sessionId], silently updates both the pill
+  // state AND the persisted preference. No PTY writes — we're reflecting
+  // reality, not trying to change the backend model.
+  //
+  // Gated on !pendingModel so this doesn't race with the verify effect during
+  // a user-initiated switch (the in-flight turn still carries the old model
+  // and would cause this effect to undo the user's intent prematurely).
+  useEffect(() => {
+    if (!sessionId || pendingModel) return;
+    const session = chatStateMap.get(sessionId);
+    if (!session) return;
+
+    // Walk backward through the timeline for the most recent assistant-turn
+    // with a known model. turn.model is null until the first assistant-text
+    // arrives, so new/empty sessions exit here.
+    let latestModel: string | null = null;
+    for (let i = session.timeline.length - 1; i >= 0; i--) {
+      const entry = session.timeline[i];
+      if (entry.kind === 'assistant-turn') {
+        const turn = session.assistantTurns.get(entry.turnId);
+        if (turn?.model) {
+          latestModel = turn.model;
+          break;
+        }
+      }
+    }
+    if (!latestModel) return;
+
+    // Match the raw transcript model (e.g. 'claude-opus-4-7') → ModelAlias,
+    // mirroring the SessionInfo matcher at line 372.
+    const alias = MODELS.find((m) => latestModel!.includes(m.replace(/\[.*\]/, '')));
+    if (!alias) return;
+
+    const currentAlias = sessionModels.get(sessionId);
+    if (currentAlias && currentAlias !== alias) {
+      // Drift detected — reconcile silently. setPreference persists to disk
+      // (so next session boots with the correct default); setSessionModels
+      // updates the status-bar pill + Shift+Space cycle start point.
+      (window.claude as any).model?.setPreference(alias);
+      setSessionModels((prev) => new Map(prev).set(sessionId, alias));
+    }
+  }, [sessionId, chatStateMap, sessionModels, pendingModel]);
 
   // Snapshot factory for /cost and /usage. Pulls live stats from statusData
   // and freezes them as a point-in-time snapshot. Returns null if stats haven't

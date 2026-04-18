@@ -41,7 +41,16 @@ function getOrCreateTurn(session: SessionChatState): {
   }
 
   currentTurnId = nextTurnId();
-  assistantTurns.set(currentTurnId, { id: currentTurnId, segments: [], timestamp: Date.now() });
+  // Metadata fields default to null here; turn-complete populates them later (see TRANSCRIPT_TURN_COMPLETE).
+  assistantTurns.set(currentTurnId, {
+    id: currentTurnId,
+    segments: [],
+    timestamp: Date.now(),
+    stopReason: null,
+    model: null,
+    usage: null,
+    anthropicRequestId: null,
+  });
   timeline = [...timeline, { kind: 'assistant-turn' as const, turnId: currentTurnId }];
   return { assistantTurns, timeline, currentTurnId };
 }
@@ -352,12 +361,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const turn = assistantTurns.get(currentTurnId)!;
+      // Task 2.4: Capture model on first text of the turn so the model pill is
+      // visible while the turn is in-flight. `?? turn.model` preserves the
+      // existing value when a later text chunk arrives without a model, so we
+      // never clobber a previously-captured model with null.
       assistantTurns.set(currentTurnId, {
         ...turn,
         segments: [
           ...turn.segments,
           { type: 'text', content: action.text, messageId: nextMessageId() },
         ],
+        model: action.model ?? turn.model,
       });
 
       next.set(action.sessionId, {
@@ -526,7 +540,30 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'TRANSCRIPT_TURN_COMPLETE': {
       const session = next.get(action.sessionId);
       if (!session) return state;
-      next.set(action.sessionId, { ...session, ...endTurn(session) });
+
+      // Attach completion metadata to the completing turn before clearing
+      // turn-scoped state via endTurn(). currentTurnId is the in-flight turn;
+      // if it's already null (edge case: turn-complete arrived before any
+      // assistant text), skip metadata attachment but still call endTurn.
+      const completingTurnId = session.currentTurnId;
+      const assistantTurns = new Map(session.assistantTurns);
+      if (completingTurnId) {
+        const turn = assistantTurns.get(completingTurnId);
+        if (turn) {
+          assistantTurns.set(completingTurnId, {
+            ...turn,
+            stopReason: action.stopReason,
+            // Preserve any model already captured on the turn (e.g. from
+            // assistant-text in Task 2.4) — only override when the action
+            // carries one. The two should agree when both are present.
+            model: action.model ?? turn.model,
+            anthropicRequestId: action.anthropicRequestId,
+            usage: action.usage,
+          });
+        }
+      }
+
+      next.set(action.sessionId, { ...session, assistantTurns, ...endTurn(session) });
       return next;
     }
 
@@ -707,10 +744,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         } else {
           const turnId = `hist-turn-${historyMsgCounter}`;
           const msgId = `hist-msg-${historyMsgCounter}`;
+          // History-loaded turns never saw a turn-complete, so metadata fields stay null.
           historyTurns.set(turnId, {
             id: turnId,
             segments: [{ type: 'text', content: msg.content, messageId: msgId }],
             timestamp: msg.timestamp,
+            stopReason: null,
+            model: null,
+            usage: null,
+            anthropicRequestId: null,
           });
           historyTimeline.push({ kind: 'assistant-turn', turnId });
         }

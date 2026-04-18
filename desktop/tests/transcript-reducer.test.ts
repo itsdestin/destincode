@@ -208,6 +208,10 @@ describe('TRANSCRIPT_* reducer actions', () => {
       sessionId: SESSION,
       uuid: 'uuid-done',
       timestamp: 2000,
+      stopReason: null,
+      model: null,
+      anthropicRequestId: null,
+      usage: null,
     });
 
     const session = state.get(SESSION)!;
