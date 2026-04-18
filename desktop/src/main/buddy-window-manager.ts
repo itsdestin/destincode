@@ -101,6 +101,21 @@ export class BuddyWindowManager {
     return this.viewedSessionId;
   }
 
+  /**
+   * Move the mascot window by a pointer-drag delta, clamped to the visible
+   * workArea of whichever display the window ends up on. Replaces CSS
+   * -webkit-app-region: drag, which on Windows consumes all pointer events
+   * via WM_NCHITTEST → HTCAPTION and breaks click detection.
+   */
+  moveMascot(dx: number, dy: number): void {
+    if (!this.mascot || this.mascot.isDestroyed()) return;
+    const [x, y] = this.mascot.getPosition();
+    const raw = { x: x + dx, y: y + dy };
+    const display = screen.getDisplayMatching({ ...raw, ...MASCOT_SIZE }) ?? screen.getPrimaryDisplay();
+    const clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
+    this.mascot.setPosition(clamped.x, clamped.y);
+  }
+
   private createChat(): void {
     const saved = this.deps.getPersistedPosition('chat');
     let raw: Point;

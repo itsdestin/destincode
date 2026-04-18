@@ -403,6 +403,9 @@ export interface BuddyApi {
   subscribe(sessionId: string): Promise<void>;
   unsubscribe(sessionId: string): Promise<void>;
   getViewedSession(): Promise<string | null>;
+  // Fire-and-forget. Called by BuddyMascot during pointer drag; main
+  // moves the window by the supplied delta (clamped to visible workArea).
+  moveMascot(delta: { dx: number; dy: number }): void;
   onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
 }
 
@@ -669,6 +672,10 @@ export const IPC = {
   BUDDY_SUBSCRIBE: 'buddy:subscribe',
   BUDDY_UNSUBSCRIBE: 'buddy:unsubscribe',
   BUDDY_GET_VIEWED_SESSION: 'buddy:get-viewed-session',
+  // Renderer → main drag events. Fire-and-forget because drag generates
+  // ~60 events/sec while the pointer moves; invoke() round-trips would
+  // starve the renderer's event loop. Main clamps and calls setPosition.
+  BUDDY_MOVE_MASCOT: 'buddy:move-mascot',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
 } as const;

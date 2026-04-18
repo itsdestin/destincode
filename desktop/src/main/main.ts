@@ -1077,6 +1077,15 @@ app.whenReady().then(async () => {
     windowRegistry.unsubscribe(sessionId, evt.sender.id);
   });
   ipcMain.handle(IPC.BUDDY_GET_VIEWED_SESSION, () => buddyManager.getViewedSession());
+  // Fire-and-forget drag handler. High-frequency (one event per pointermove);
+  // using ipcMain.on rather than ipcMain.handle avoids the async round-trip.
+  // CSS -webkit-app-region: drag was removed from BuddyMascot because on
+  // Windows Electron implements it via WM_NCHITTEST → HTCAPTION, which makes
+  // the OS consume all pointer events for window dragging — the renderer
+  // never gets pointerup, so click-to-toggle-chat never fires.
+  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, delta: { dx: number; dy: number }) => {
+    buddyManager.moveMascot(delta.dx, delta.dy);
+  });
 
   // Wire the attention:report IPC channel. Renderers push per-session states
   // here; module-scope attentionReports + debouncedBroadcastAttention aggregate

@@ -5,6 +5,16 @@ import { useAnyAttentionNeeded } from '../../hooks/useAnyAttentionNeeded';
 
 const DRAG_THRESHOLD_PX = 4;
 
+// Pointer-driven drag state. We track screen-space deltas (not client coords)
+// because the window moves during the drag, which would invalidate any
+// client-space math.
+interface DragState {
+  lastX: number;
+  lastY: number;
+  totalTravel: number;
+  pointerId: number;
+}
+
 export function BuddyMascot() {
   const attention = useAnyAttentionNeeded();
   // When attention is needed, use the theme's 'shocked' variant. When idle,
@@ -13,24 +23,43 @@ export function BuddyMascot() {
   const variant: MascotVariant = attention ? 'shocked' : 'idle';
   const customMascot = useThemeMascot(variant);
 
-  // Track pointer travel so drag doesn't register as click.
-  const downRef = useRef<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<DragState | null>(null);
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    downRef.current = { x: e.screenX, y: e.screenY };
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // setPointerCapture keeps pointermove/up flowing even if the pointer
+    // leaves the 80×80 window during a fast drag.
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    dragRef.current = {
+      lastX: e.screenX,
+      lastY: e.screenY,
+      totalTravel: 0,
+      pointerId: e.pointerId,
+    };
   }, []);
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
-    const down = downRef.current;
-    downRef.current = null;
-    if (!down) return;
-    const dx = Math.abs(e.screenX - down.x);
-    const dy = Math.abs(e.screenY - down.y);
-    if (dx + dy <= DRAG_THRESHOLD_PX) {
-      // Ignore if buddy API isn't exposed (same guard logic as the hook)
-      if (window.claude?.buddy?.toggleChat) {
-        window.claude.buddy.toggleChat();
-      }
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragRef.current;
+    if (!st) return;
+    const dx = e.screenX - st.lastX;
+    const dy = e.screenY - st.lastY;
+    if (dx === 0 && dy === 0) return;
+    st.lastX = e.screenX;
+    st.lastY = e.screenY;
+    st.totalTravel += Math.abs(dx) + Math.abs(dy);
+    // Only start forwarding moves once we've crossed the click-vs-drag
+    // threshold, so a jittery click doesn't nudge the window by a pixel.
+    if (st.totalTravel > DRAG_THRESHOLD_PX) {
+      window.claude?.buddy?.moveMascot?.({ dx, dy });
+    }
+  }, []);
+
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragRef.current;
+    dragRef.current = null;
+    if (!st) return;
+    try { e.currentTarget.releasePointerCapture(st.pointerId); } catch { /* ignore */ }
+    if (st.totalTravel <= DRAG_THRESHOLD_PX && window.claude?.buddy?.toggleChat) {
+      window.claude.buddy.toggleChat();
     }
   }, []);
 
@@ -39,14 +68,20 @@ export function BuddyMascot() {
       style={{
         width: 80,
         height: 80,
-        // OS-level drag handle — lets user reposition the transparent window
-        // by dragging the mascot itself. The pointer events below are still
-        // delivered to React; both work in parallel.
-        WebkitAppRegion: 'drag',
+        // NOTE: we deliberately do NOT set -webkit-app-region: drag here.
+        // On Windows, Electron implements drag regions via WM_NCHITTEST →
+        // HTCAPTION, which makes the OS consume ALL pointer events for
+        // window dragging — pointerdown/up never reach React and the click
+        // handler never fires. Instead we drive drag ourselves via the
+        // buddy.moveMascot IPC (main-process setPosition with clamping).
         cursor: 'grab',
         background: 'transparent',
-      } as any}
+        // touchAction: 'none' lets us capture the pointer cleanly without
+        // the browser's default scroll/pan gestures interfering.
+        touchAction: 'none',
+      }}
       onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
     >
       {customMascot ? (
@@ -54,7 +89,7 @@ export function BuddyMascot() {
           src={customMascot}
           alt=""
           style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
-          // Dragging an <img> would otherwise start a file drag. Disable.
+          // Dragging an <img> would otherwise start an HTML drag. Disable.
           draggable={false}
         />
       ) : (
@@ -80,6 +115,10 @@ function DefaultMascot({ variant }: { variant: 'idle' | 'shocked' }) {
         alignItems: 'center',
         justifyContent: 'center',
         userSelect: 'none',
+        // pointer-events:none so clicks still reach the parent drag-handler
+        // div. Without this, clicks on the emoji land on this child and the
+        // parent's pointerdown never fires.
+        pointerEvents: 'none',
       }}
     >
       {variant === 'shocked' ? '😲' : '🐱'}

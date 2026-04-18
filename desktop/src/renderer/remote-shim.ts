@@ -887,6 +887,11 @@ export function installShim(): void {
       subscribe: () => { throw new Error('Buddy is desktop-only in this version'); },
       unsubscribe: () => { throw new Error('Buddy is desktop-only in this version'); },
       getViewedSession: () => { throw new Error('Buddy is desktop-only in this version'); },
+      // No-op (not throw): drag handlers fire constantly while the user moves
+      // the pointer; throwing would spam the console on any platform where
+      // the buddy mascot window somehow loaded remote-shim (shouldn't happen,
+      // but the cost of being defensive is one line).
+      moveMascot: (_d: { dx: number; dy: number }) => { /* desktop-only */ },
       onAttentionSummary: () => () => { /* no-op unsubscribe */ },
     },
     // Remote clients do not participate in buddy attention aggregation —

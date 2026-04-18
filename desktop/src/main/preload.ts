@@ -193,6 +193,7 @@ const IPC = {
   BUDDY_SUBSCRIBE: 'buddy:subscribe',
   BUDDY_UNSUBSCRIBE: 'buddy:unsubscribe',
   BUDDY_GET_VIEWED_SESSION: 'buddy:get-viewed-session',
+  BUDDY_MOVE_MASCOT: 'buddy:move-mascot',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
 } as const;
@@ -647,6 +648,9 @@ contextBridge.exposeInMainWorld('claude', {
     subscribe: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_SUBSCRIBE, sessionId),
     unsubscribe: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_UNSUBSCRIBE, sessionId),
     getViewedSession: () => ipcRenderer.invoke(IPC.BUDDY_GET_VIEWED_SESSION),
+    // Fire-and-forget: pointer drag fires ~60 events/sec; invoke() round-trips
+    // would starve the renderer. Main clamps to visible workArea.
+    moveMascot: (delta: { dx: number; dy: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, delta),
     onAttentionSummary: (cb: (summary: AttentionSummary) => void) => {
       const listener = (_: unknown, summary: AttentionSummary) => cb(summary);
       ipcRenderer.on(IPC.SESSION_ATTENTION_SUMMARY, listener);
