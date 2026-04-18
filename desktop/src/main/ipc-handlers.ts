@@ -1252,7 +1252,16 @@ export function registerIpcHandlers(
       if (stats) sessionStatsMap[desktopId] = stats;
     }
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap };
+    // Per-session attention state populated by the `remote:attention-changed`
+    // IPC listener. Remote browsers diff this on receipt to update StatusDot
+    // colors for sessions that have diffed since the last broadcast.
+    const attentionMap: Record<string, string> = {};
+    for (const [desktopId] of sessionIdMap) {
+      const state = lastAttentionBySession.get(desktopId);
+      if (state) attentionMap[desktopId] = state;
+    }
+
+    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -1318,6 +1327,23 @@ export function registerIpcHandlers(
   const topicDir = path.join(os.homedir(), '.claude', 'topics');
   // Maps desktop session ID → Claude Code session ID
   const sessionIdMap = new Map<string, string>();
+
+  // Per-session attention state, updated by the renderer via
+  // `remote:attention-changed` and read by buildStatusData() so remote
+  // browsers see matching StatusDot colors.
+  const lastAttentionBySession = new Map<string, string>();
+
+  ipcMain.on('remote:attention-changed', (_e, payload: { sessionId: string; state: string }) => {
+    if (!payload?.sessionId) return;
+    lastAttentionBySession.set(payload.sessionId, payload.state);
+    // Broadcast immediately so remote clients see the change without waiting
+    // for the 10s status:data timer. Payload rebuild is cheap.
+    if (remoteServer) {
+      const data = buildStatusData();
+      remoteServer.broadcastStatusData(data);
+    }
+  });
+
   const transcriptWatcher = new TranscriptWatcher();
 
   transcriptWatcher.on('transcript-event', (event: any) => {
@@ -1459,6 +1485,7 @@ export function registerIpcHandlers(
       fs.unlink(path.join(os.homedir(), '.claude', `.session-stats-${claudeId}.json`), () => {});
     }
     sessionIdMap.delete(sessionId);
+    lastAttentionBySession.delete(sessionId);
   });
 
   // Set a named flag on a session (complete, priority, helpful). Persists in
