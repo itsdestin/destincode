@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AttentionSummary } from '../../../shared/types';
 import { SessionPill } from './SessionPill';
+import { BubbleFeed } from './BubbleFeed';
 
 /**
  * Compact chat surface rendered inside the buddy chat BrowserWindow.
@@ -98,8 +99,8 @@ export function BuddyChat() {
         onChange={setViewedSession}
         attentionSummary={attentionSummary}
       />
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        <BubbleFeedPlaceholder sessionId={viewedSession} />
+      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <BubbleFeed sessionId={viewedSession} />
       </div>
       <InputBarPlaceholder sessionId={viewedSession} />
       <AttentionStripPlaceholder sessionId={viewedSession} />
