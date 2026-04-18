@@ -13,7 +13,8 @@ interface PerFileState {
   seenUuids: Set<string>;
   watcher: fs.FSWatcher | null;
   pollTimer: ReturnType<typeof setInterval> | null;
-  bound: boolean; // true once SubagentIndex has a parent for this agent
+  // Fix 5: cache meta on first read so deliver() never re-reads from disk
+  meta: { description: string; agentType: string };
 }
 
 export interface SubagentWatcherOptions {
@@ -69,9 +70,11 @@ export class SubagentWatcher {
     if (this.dirWatcher) { this.dirWatcher.close(); this.dirWatcher = null; }
     if (this.dirPollTimer) { clearInterval(this.dirPollTimer); this.dirPollTimer = null; }
     if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = null; }
+    // Fix 3: null each watcher/timer before clearing the map so a
+    // one-more-firing callback finds state already cleaned up.
     for (const state of this.perFile.values()) {
-      if (state.watcher) state.watcher.close();
-      if (state.pollTimer) clearInterval(state.pollTimer);
+      if (state.watcher) { state.watcher.close(); state.watcher = null; }
+      if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
     }
     this.perFile.clear();
   }
@@ -79,7 +82,11 @@ export class SubagentWatcher {
   /**
    * Full-history replay. Called by TranscriptWatcher.getHistory() so a
    * detach/re-dock or remote-access replay can rebuild nested state.
-   * Does NOT mutate live watcher state — safe alongside an active start().
+   *
+   * CAUTION: This consumes `unmatchedParents` from the shared SubagentIndex.
+   * Call on a freshly constructed watcher instance paired with a fresh index,
+   * NOT alongside an actively-running start() — otherwise live tracking will
+   * miss parent bindings the replay already popped.
    */
   getHistory(): TranscriptEvent[] {
     if (!fs.existsSync(this.subagentsDir)) return [];
@@ -111,14 +118,23 @@ export class SubagentWatcher {
    * tool_use. Attempts to flush any pending (buffered) events for any
    * agentId whose meta matches.
    */
+  // Fix 1: remove state.bound mutation — index.lookup is single source of truth.
   flushPendingFor(agentId: string): void {
     const res = this.index.tryFlushPending(agentId);
     if (!res) return;
     for (const ev of res.events as TranscriptEvent[]) {
       this.emitFn(this.stamp(ev, res.parentToolUseId, agentId));
     }
-    const state = this.perFile.get(agentId);
-    if (state) state.bound = true;
+  }
+
+  /**
+   * Convenience wrapper for TranscriptWatcher: after the parent parses any
+   * new Agent tool_use, flush every agentId with pending buffered events.
+   * Most calls are no-ops.
+   */
+  // Fix 6: expose flushAllPending for Task 4 callers.
+  flushAllPending(): void {
+    for (const agentId of this.perFile.keys()) this.flushPendingFor(agentId);
   }
 
   /** Test-only hook: force a re-read of a single subagent file. */
@@ -154,6 +170,8 @@ export class SubagentWatcher {
       // The directory is created by Claude Code only once a subagent runs.
       // Poll the parent until it exists; upgrade to fs.watch once it does.
       this.dirPollTimer = setInterval(() => {
+        // Fix 2: stop() was called after setInterval was scheduled — bail.
+        if (!this.started) return;
         if (fs.existsSync(this.subagentsDir)) {
           if (this.dirPollTimer) { clearInterval(this.dirPollTimer); this.dirPollTimer = null; }
           this.scanDirectory();
@@ -176,7 +194,11 @@ export class SubagentWatcher {
 
   private startDirPoll(): void {
     if (this.dirPollTimer) return;
-    this.dirPollTimer = setInterval(() => this.scanDirectory(), 1000);
+    // Fix 2 (defensive): guard against one-more-firing after stop().
+    this.dirPollTimer = setInterval(() => {
+      if (!this.started) return;
+      this.scanDirectory();
+    }, 1000);
   }
 
   private trackSubagent(agentId: string): void {
@@ -185,6 +207,8 @@ export class SubagentWatcher {
     if (!meta) return;
     const jsonlPath = path.join(this.subagentsDir, `agent-${agentId}.jsonl`);
     const metaPath = path.join(this.subagentsDir, `agent-${agentId}.meta.json`);
+    // Fix 1 + 5: removed `bound` field; meta is cached on state so deliver()
+    // never re-reads from disk and has no fragile two-source binding check.
     const state: PerFileState = {
       agentId,
       jsonlPath,
@@ -194,14 +218,13 @@ export class SubagentWatcher {
       seenUuids: new Set(),
       watcher: null,
       pollTimer: null,
-      bound: false,
+      meta,
     };
     this.perFile.set(agentId, state);
 
     // Try to bind immediately. If no parent yet, events read from the file
     // will be buffered until flushPendingFor() is called by TranscriptWatcher.
-    const parentToolUseId = this.index.bindSubagent(agentId, meta);
-    state.bound = !!parentToolUseId;
+    this.index.bindSubagent(agentId, meta);
 
     this.attachFileWatch(state);
     // Initial read — catches all existing bytes.
@@ -225,7 +248,9 @@ export class SubagentWatcher {
 
   private startFilePoll(state: PerFileState): void {
     if (state.pollTimer) return;
+    // Fix 2 (defensive): guard against one-more-firing after stop().
     state.pollTimer = setInterval(() => {
+      if (!this.started) return;
       this.readNewLines(state).catch(() => undefined);
     }, state.watcher ? 2000 : 1000);
   }
@@ -243,11 +268,20 @@ export class SubagentWatcher {
     const buffer = Buffer.alloc(fileSize - state.offset);
     let handle: fs.promises.FileHandle;
     try { handle = await fs.promises.open(state.jsonlPath, 'r'); } catch { return; }
-    try { await handle.read(buffer, 0, buffer.length, state.offset); }
-    finally { await handle.close(); }
-    state.offset = fileSize;
+    // Fix 4: advance offset only by bytesRead (not fileSize) so a short read
+    // or throw never skips unread bytes. Also slice the buffer to bytesRead so
+    // we don't stringify uninitialized padding.
+    let bytesRead = 0;
+    try {
+      const result = await handle.read(buffer, 0, buffer.length, state.offset);
+      bytesRead = result.bytesRead;
+    } finally {
+      await handle.close();
+    }
+    if (bytesRead === 0) return;
+    state.offset += bytesRead;
 
-    const text = buffer.toString('utf8');
+    const text = buffer.toString('utf8', 0, bytesRead);
     const chunks = text.split('\n');
     chunks[0] = state.partialLine + chunks[0];
     state.partialLine = chunks.pop() || '';
@@ -269,17 +303,17 @@ export class SubagentWatcher {
     }
   }
 
+  // Fix 1: consult index.lookup as the single source of truth for binding.
+  // The old two-check pattern (state.bound + index.lookup) was fragile —
+  // a stale state.bound=true after an unbind() would silently drop events.
   private deliver(state: PerFileState, ev: TranscriptEvent): void {
-    if (state.bound) {
-      const parentToolUseId = this.index.lookup(state.agentId);
-      if (parentToolUseId) {
-        this.emitFn(this.stamp(ev, parentToolUseId, state.agentId));
-        return;
-      }
+    const parentToolUseId = this.index.lookup(state.agentId);
+    if (parentToolUseId) {
+      this.emitFn(this.stamp(ev, parentToolUseId, state.agentId));
+      return;
     }
-    // Not bound yet — buffer for eventual flush.
-    const meta = this.readMeta(state.agentId);
-    if (meta) this.index.bufferPendingEvent(state.agentId, meta, ev);
+    // Not bound yet — buffer for eventual flush using cached meta.
+    this.index.bufferPendingEvent(state.agentId, state.meta, ev);
   }
 
   private stamp(ev: TranscriptEvent, parentAgentToolUseId: string, agentId: string): TranscriptEvent {
