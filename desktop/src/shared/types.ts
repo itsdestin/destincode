@@ -78,6 +78,10 @@ export interface TranscriptEvent {
     stopReason?: string;
     /** Edit/MultiEdit tool-result payloads carry structuredPatch hunks. */
     structuredPatch?: StructuredPatchHunk[];
+    // Populated only on events emitted from a subagent JSONL — identify
+    // the parent Agent tool_use that this subagent's work threads into.
+    parentAgentToolUseId?: string;
+    agentId?: string;
   };
 }
 
@@ -99,6 +103,26 @@ export interface StructuredPatchHunk {
   lines: string[];
 }
 
+/**
+ * One entry in a subagent's nested timeline rendered inside AgentView.
+ * Narrower than ToolCallState — no awaiting-approval, no tool groups,
+ * no turn tracking (subagents don't hit the permission hook flow and
+ * don't have user-typed messages).
+ */
+export type SubagentSegment =
+  | { type: 'text'; id: string; content: string }
+  | {
+      type: 'tool';
+      id: string;
+      toolUseId: string;
+      toolName: string;
+      input: Record<string, unknown>;
+      status: 'running' | 'complete' | 'failed';
+      response?: string;
+      error?: string;
+      structuredPatch?: StructuredPatchHunk[];
+    };
+
 export interface ToolCallState {
   toolUseId: string;
   toolName: string;
@@ -110,6 +134,11 @@ export interface ToolCallState {
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
   structuredPatch?: StructuredPatchHunk[];
+  // Populated for tools where toolName === 'Agent'. Appended to as the
+  // subagent's JSONL streams in. Drives the nested timeline in AgentView.
+  subagentSegments?: SubagentSegment[];
+  agentType?: string;
+  agentId?: string;
 }
 
 export interface ToolGroupState {

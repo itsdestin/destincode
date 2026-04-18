@@ -231,6 +231,8 @@ export type ChatAction =
       uuid: string;
       text: string;
       timestamp: number;
+      parentAgentToolUseId?: string;
+      agentId?: string;
     }
   | {
       type: 'TRANSCRIPT_TOOL_USE';
@@ -239,6 +241,8 @@ export type ChatAction =
       toolUseId: string;
       toolName: string;
       toolInput: Record<string, unknown>;
+      parentAgentToolUseId?: string;
+      agentId?: string;
     }
   | {
       type: 'TRANSCRIPT_TOOL_RESULT';
@@ -248,6 +252,8 @@ export type ChatAction =
       result: string;
       isError: boolean;
       structuredPatch?: import('../../shared/types').StructuredPatchHunk[];
+      parentAgentToolUseId?: string;
+      agentId?: string;
     }
   | {
       type: 'TRANSCRIPT_TURN_COMPLETE';
