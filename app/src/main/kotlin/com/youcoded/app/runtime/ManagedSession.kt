@@ -433,13 +433,21 @@ class ManagedSession(
             absentPollCounts.remove("auth")
             if ("auth" !in activePrompts && "auth" !in completedPromptIds) {
                 activePrompts.add("auth")
-                // Forward prompt to React UI via bridge
+                // Anchor-then-navigate: overshoot UP to snap Ink's cursor to
+                // the top of the menu, THEN press DOWN to the target index.
+                // Cursor-independent — survives user arrowing in the terminal
+                // before clicking a button. Matches desktop InkSelectParser.
+                val up = "\u001b[A"
                 val down = "\u001b[B"
-                broadcastPrompt("auth", "Select Login Method", listOf(
-                    PromptButton("Claude Account (Pro/Max/Team)", "\r"),
-                    PromptButton("Anthropic Console (API)", "$down\r"),
-                    PromptButton("3rd-Party Platform", "$down$down\r"),
-                ))
+                val options = listOf(
+                    "Claude Account (Pro/Max/Team)",
+                    "Anthropic Console (API)",
+                    "3rd-Party Platform",
+                )
+                val anchorUps = up.repeat(options.size + 2)
+                broadcastPrompt("auth", "Select Login Method", options.mapIndexed { idx, label ->
+                    PromptButton(label, anchorUps + down.repeat(idx) + "\r")
+                })
             }
             return
         } else if ("auth" in activePrompts) {
@@ -453,23 +461,23 @@ class ManagedSession(
         }
 
         // --- Hardcoded: Bypass permissions warning ---
-        // Detect ❯ position to determine correct input. The prompt defaults ❯ to
-        // "No, exit" — accepting requires navigating DOWN to "Yes" first.
-        // PtyBridge.writeInput splits escape+Enter with a delay to prevent PTY
-        // buffering from causing ESC to be read as standalone Escape key.
+        // Two-option menu: "No, exit" (index 0, default selected) and
+        // "Yes, accept" (index 1). Use anchor-then-navigate so "Accept" works
+        // regardless of current ❯ position (previously we read ❯ and chose
+        // between "\r" and "DOWN\r", which was brittle if the user had arrowed
+        // in the terminal view). Exit still sends just ESC.
         if ("bypass permission" in screenLower && "enter to confirm" in screenLower) {
             absentPollCounts.remove("bypass_warning")
             if ("bypass_warning" !in activePrompts && "bypass_warning" !in completedPromptIds) {
                 activePrompts.add("bypass_warning")
-                // Check if ❯ is already on a "Yes"/"accept" option
-                val afterSelector = screenText.substringAfter("❯", "").lowercase().trim()
-                val selectorOnAccept = afterSelector.startsWith("yes") ||
-                    afterSelector.startsWith("2.") || afterSelector.startsWith("accept")
-                val acceptInput = if (selectorOnAccept) "\r" else "\u001b[B\r"
+                val up = "\u001b[A"
+                val down = "\u001b[B"
+                // 2 options → 4 UP presses (options.size + 2) anchors at top.
+                val anchorUps = up.repeat(4)
                 broadcastPrompt("bypass_warning",
                     "Bypass Permissions Mode — Claude will run tools without asking for approval.",
                     listOf(
-                        PromptButton("Accept the Risks", acceptInput),
+                        PromptButton("Accept the Risks", anchorUps + down.repeat(1) + "\r"),
                         PromptButton("Exit", "\u001b"),
                     ))
             }

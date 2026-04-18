@@ -182,19 +182,25 @@ object InkSelectParser {
 
     /**
      * Generate PromptButtons from a parsed menu.
-     * Sends up-arrows for items above the selector and down-arrows for items below.
+     *
+     * Anchor-then-navigate: always overshoot UP to snap Ink's cursor to the top
+     * of the menu (Ink clamps arrow-up at index 0), THEN press DOWN to reach the
+     * target. This makes the keystroke sequence independent of cursor state at
+     * click time — previously we computed a relative offset from the parsed
+     * selectedIndex, which went stale the moment the user arrowed in the
+     * terminal view or Ink re-rendered (same menu.id, so the prompt detector
+     * doesn't re-emit SHOW_PROMPT). Stale offset was the root cause of
+     * "clicked option N, got option M" bugs on the Resume Session menu.
+     *
+     * Ported from desktop (youcoded/desktop/src/renderer/parser/ink-select-parser.ts)
+     * so both platforms emit identical keystroke sequences.
      */
     fun toPromptButtons(menu: ParsedMenu): List<PromptButton> {
         val up = "\u001b[A"
         val down = "\u001b[B"
+        val anchorUps = up.repeat(menu.options.size + 2)
         return menu.options.mapIndexed { index, label ->
-            val offset = index - menu.selectedIndex
-            val sequence = when {
-                offset < 0 -> up.repeat(-offset) + "\r"
-                offset > 0 -> down.repeat(offset) + "\r"
-                else -> "\r"  // already selected
-            }
-            PromptButton(label = label, input = sequence)
+            PromptButton(label = label, input = anchorUps + down.repeat(index) + "\r")
         }
     }
 }

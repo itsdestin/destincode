@@ -117,12 +117,15 @@ const remoteServer = new RemoteServer(sessionManager, hookRelay, remoteConfig, s
 // (via shared/ports.ts) so Vite and main stay in sync without a second env var.
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || `http://localhost:${VITE_DEV_PORT}`;
 
-// Dev-profile isolation: when YOUCODED_PROFILE=dev, split Electron userData so
-// a dev instance doesn't clobber the built app's localStorage, cookies, cache,
-// or window state. Must be called before app.whenReady().
-if (process.env.YOUCODED_PROFILE === 'dev') {
-  app.setPath('userData', path.join(app.getPath('appData'), 'youcoded-dev'));
-  app.setName('YouCoded Dev');
+// Dev-profile isolation: when YOUCODED_PROFILE starts with "dev" (dev, dev2,
+// dev3, …), split Electron userData so a dev instance doesn't clobber the
+// built app's localStorage, cookies, cache, or window state. Multiple
+// concurrent dev instances get distinct userData dirs (youcoded-dev,
+// youcoded-dev2, …). Must be called before app.whenReady().
+const YOUCODED_DEV_PROFILE = process.env.YOUCODED_PROFILE ?? '';
+if (YOUCODED_DEV_PROFILE.startsWith('dev')) {
+  app.setPath('userData', path.join(app.getPath('appData'), `youcoded-${YOUCODED_DEV_PROFILE}`));
+  app.setName(YOUCODED_DEV_PROFILE === 'dev' ? 'YouCoded Dev' : `YouCoded ${YOUCODED_DEV_PROFILE}`);
 }
 
 // Must be called before app.whenReady() — Electron requirement
@@ -790,7 +793,7 @@ app.whenReady().then(async () => {
   // so simply calling it repairs any stale paths. We scan first only to log a
   // visible warning when staleness is detected — useful for diagnosing the
   // "stuck on Initializing" symptom that follows a removed dev worktree.
-  if (process.env.YOUCODED_PROFILE !== 'dev') {
+  if (!YOUCODED_DEV_PROFILE.startsWith('dev')) {
     try {
       const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
       try {

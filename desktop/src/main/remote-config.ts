@@ -13,7 +13,9 @@ const BCRYPT_ROUNDS = 10;
 // Dev profile shares ~/.claude/youcoded-remote.json with the built app, but
 // must NOT bind the built app's saved port and must NOT overwrite that saved
 // port on user actions. Offset-shift on read; no-op on save.
-const IS_DEV_PROFILE = process.env.YOUCODED_PROFILE === 'dev';
+// Recognizes any `dev`-prefixed profile (dev, dev2, dev3, …) so multiple
+// concurrent dev instances (each with its own PORT_OFFSET) coexist.
+const IS_DEV_PROFILE = (process.env.YOUCODED_PROFILE ?? '').startsWith('dev');
 
 interface ConfigData {
   enabled: boolean;

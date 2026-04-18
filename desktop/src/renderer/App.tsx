@@ -1689,7 +1689,9 @@ function AppInner() {
         onOpenAdvanced={() => {
           if (!sessionId) return;
           setViewModes((prev) => new Map(prev).set(sessionId, 'terminal'));
-          // Small delay so the view switch happens before input lands
+          // Small delay so the view switch happens before input lands.
+          // pty-worker will auto-split "/config\r" into "/config" + 600ms + "\r"
+          // to avoid Ink's paste timer swallowing Enter.
           setTimeout(() => window.claude.session.sendInput(sessionId, '/config\r'), 50);
         }}
       />

@@ -63,7 +63,60 @@ process.on('message', (msg) => {
       break;
     }
     case 'input': {
-      if (ptyProcess) ptyProcess.write(msg.data);
+      // Two stacked fixes for Windows ConPTY + Ink paste handling:
+      //
+      // (A) Atomic-write-then-Enter bug: Claude Code's Ink has a 500ms
+      //     PASTE_TIMEOUT that treats bulk writes as one paste event and
+      //     swallows a trailing \r. Split "content + trailing \r" into two
+      //     writes with ENTER_DELAY_MS > PASTE_TIMEOUT so Enter arrives as
+      //     a distinct keystroke that submits.
+      //
+      // (B) ConPTY input-buffer truncation: Windows ConPTY drops bytes when
+      //     a single write exceeds its buffer (symptom: paste >~600 chars →
+      //     only the tail reaches Claude). Chunk writes >CHUNK_SIZE into
+      //     small pieces with CHUNK_DELAY_MS gaps so ConPTY can drain
+      //     between them. Each gap must stay < 500ms PASTE_TIMEOUT so Ink
+      //     continues treating the stream as one paste. 64-byte / 50ms was
+      //     the smallest/slowest config that reliably delivered 2500+ chars
+      //     end-to-end in manual testing; 128/30ms and 256/10ms both still
+      //     dropped middle sections.
+      //
+      // Single-char writes, escape sequences without trailing \r, and
+      // bracketed-paste data (\x1b[200~...\x1b[201~) pass through untouched.
+      if (!ptyProcess) break;
+      const text = msg.data;
+      const CHUNK_SIZE = 64;
+      const CHUNK_DELAY_MS = 50;
+      const ENTER_DELAY_MS = 600;
+
+      const writeChunked = (body, onDone) => {
+        if (body.length <= CHUNK_SIZE) {
+          ptyProcess.write(body);
+          if (onDone) setTimeout(onDone, 0);
+          return;
+        }
+        let offset = 0;
+        const sendNext = () => {
+          if (!ptyProcess) return;
+          const end = Math.min(offset + CHUNK_SIZE, body.length);
+          ptyProcess.write(body.slice(offset, end));
+          offset = end;
+          if (offset < body.length) setTimeout(sendNext, CHUNK_DELAY_MS);
+          else if (onDone) setTimeout(onDone, 0);
+        };
+        sendNext();
+      };
+
+      if (typeof text === 'string' && text.length > 1 && text.endsWith('\r')) {
+        const preamble = text.slice(0, -1);
+        writeChunked(preamble, () => {
+          setTimeout(() => { if (ptyProcess) ptyProcess.write('\r'); }, ENTER_DELAY_MS);
+        });
+      } else if (typeof text === 'string' && text.length > CHUNK_SIZE) {
+        writeChunked(text);
+      } else {
+        ptyProcess.write(text);
+      }
       break;
     }
     case 'resize': {
