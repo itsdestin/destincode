@@ -38,6 +38,15 @@ class SubagentIndexTest {
     }
 
     @Test
+    fun `binding consumes the parent so it is not reused`() {
+        val idx = SubagentIndex()
+        idx.recordParentAgentToolUse("toolu_A", "Find bug", "Explore")
+        idx.bindSubagent("agent1", "Find bug", "Explore")
+        val second = idx.bindSubagent("agent2", "Find bug", "Explore")
+        assertNull(second)
+    }
+
+    @Test
     fun `unbind clears binding`() {
         val idx = SubagentIndex()
         idx.recordParentAgentToolUse("toolu_A", "Find bug", "Explore")
