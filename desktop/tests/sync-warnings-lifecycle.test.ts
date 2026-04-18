@@ -128,11 +128,10 @@ describe('dismissWarning', () => {
   });
 });
 
-describe('SyncService start() cleanup', () => {
-  it('removes stale .sync-error-* files on start', async () => {
-    // This test pokes at the shared ~/.claude/toolkit-state/ directory,
-    // same approach as the other tests in this file. Safe because
-    // .sync-error-* files are retired and never otherwise written.
+describe('cleanupStaleBackendErrorFiles', () => {
+  it('removes leftover .sync-error-* files', async () => {
+    // Pokes at the shared ~/.claude/toolkit-state/ dir like the rest of this file.
+    // Safe because .sync-error-* files are retired and never otherwise written.
     const toolkitStateDir = path.join(os.homedir(), '.claude', 'toolkit-state');
     fs.mkdirSync(toolkitStateDir, { recursive: true });
 
@@ -143,16 +142,15 @@ describe('SyncService start() cleanup', () => {
     expect(fs.existsSync(staleA)).toBe(true);
     expect(fs.existsSync(staleB)).toBe(true);
 
-    // Import lazily to avoid kicking off a full SyncService elsewhere in the test suite.
+    // Call the migration helper directly rather than invoking start(), which
+    // would also kick off a network pull and timeout the test.
     const { SyncService } = await import('../src/main/sync-service');
     const svc = new SyncService();
     try {
-      await svc.start();
+      svc.cleanupStaleBackendErrorFiles();
       expect(fs.existsSync(staleA)).toBe(false);
       expect(fs.existsSync(staleB)).toBe(false);
     } finally {
-      svc.stop();
-      // Defensive: clean up if start() didn't.
       try { fs.unlinkSync(staleA); } catch {}
       try { fs.unlinkSync(staleB); } catch {}
     }

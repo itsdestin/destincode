@@ -167,18 +167,7 @@ export class SyncService extends EventEmitter {
       }
     } catch {}
 
-    // V2 cleanup: stale .sync-error-* files from the pre-warnings-refactor era.
-    // The typed .sync-warnings.json replaces them; old files would confuse
-    // anyone debugging and serve no purpose.
-    try {
-      const toolkitStateDir = path.join(this.claudeDir, 'toolkit-state');
-      const entries = fs.readdirSync(toolkitStateDir);
-      for (const name of entries) {
-        if (name.startsWith('.sync-error-')) {
-          try { fs.unlinkSync(path.join(toolkitStateDir, name)); } catch {}
-        }
-      }
-    } catch {}
+    this.cleanupStaleBackendErrorFiles();
 
     // Write .app-sync-active marker so bash hooks skip sync
     try {
@@ -293,6 +282,25 @@ export class SyncService extends EventEmitter {
   /** Clear all push-failure warnings for a backend (call on successful push). */
   private async clearBackendFailures(backendId: string): Promise<void> {
     await clearWarningsByBackend(backendId);
+  }
+
+  /**
+   * Delete leftover .sync-error-* files from the pre-warnings-refactor era.
+   * The typed .sync-warnings.json replaces them; old files would confuse
+   * anyone debugging and serve no purpose. Called from start() — extracted
+   * to its own method so tests can exercise just this migration without
+   * spinning up the whole sync service.
+   */
+  cleanupStaleBackendErrorFiles(): void {
+    try {
+      const toolkitStateDir = path.join(this.claudeDir, 'toolkit-state');
+      const entries = fs.readdirSync(toolkitStateDir);
+      for (const name of entries) {
+        if (name.startsWith('.sync-error-')) {
+          try { fs.unlinkSync(path.join(toolkitStateDir, name)); } catch {}
+        }
+      }
+    } catch {}
   }
 
   // Legacy helpers kept for health check auto-detect (reads flat keys)
