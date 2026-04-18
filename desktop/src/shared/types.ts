@@ -78,9 +78,12 @@ export interface TranscriptEvent {
     stopReason?: string;
     /** Edit/MultiEdit tool-result payloads carry structuredPatch hunks. */
     structuredPatch?: StructuredPatchHunk[];
-    // Populated only on events emitted from a subagent JSONL — identify
-    // the parent Agent tool_use that this subagent's work threads into.
+    /**
+     * Populated only on events emitted from a subagent JSONL — identifies
+     * the parent Agent tool_use that this subagent's work threads into.
+     */
     parentAgentToolUseId?: string;
+    /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
   };
 }
@@ -134,8 +137,10 @@ export interface ToolCallState {
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
   structuredPatch?: StructuredPatchHunk[];
-  // Populated for tools where toolName === 'Agent'. Appended to as the
-  // subagent's JSONL streams in. Drives the nested timeline in AgentView.
+  // Populated for Agent tools only (toolName === 'Agent'):
+  // - subagentSegments: appended to as the subagent's JSONL streams in; drives AgentView timeline
+  // - agentType: copied from meta.json once the subagent is bound (e.g. 'Explore', 'Plan')
+  // - agentId: stable subagent ID, matches the filename agent-<agentId>.jsonl on disk
   subagentSegments?: SubagentSegment[];
   agentType?: string;
   agentId?: string;
