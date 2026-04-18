@@ -677,6 +677,7 @@ function AgentView({ tool }: { tool: ToolCallState }) {
       {prompt && (
         <div>
           <button
+            aria-expanded={showPrompt}
             onClick={() => setShowPrompt(s => !s)}
             className="text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2"
           >
@@ -692,6 +693,7 @@ function AgentView({ tool }: { tool: ToolCallState }) {
       {segments.length > 0 && (
         <div>
           <button
+            aria-expanded={showTimeline}
             onClick={() => { setShowTimeline(s => !s); setUserToggled(true); }}
             className="text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2"
           >
