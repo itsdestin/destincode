@@ -383,7 +383,9 @@ export class RemoteServer {
       this.config.markPaired();
       this.addClient(ws, token, ip);
       ws.send(JSON.stringify({ type: 'auth:ok', token, platform: 'desktop' }));
-      this.replayBuffers(ws);
+      this.replayBuffers(ws).catch((err) => {
+        console.error('[remote-server] replayBuffers failed:', err);
+      });
       return;
     }
 
@@ -428,7 +430,9 @@ export class RemoteServer {
           this.config.markPaired();
           this.addClient(ws, token, ip);
           ws.send(JSON.stringify({ type: 'auth:ok', token, platform: 'desktop' }));
-          this.replayBuffers(ws);
+          this.replayBuffers(ws).catch((err) => {
+            console.error('[remote-server] replayBuffers failed:', err);
+          });
         } else {
           this.recordFailedAttempt(ip);
           ws.send(JSON.stringify({ type: 'auth:failed', reason: 'invalid-credentials' }));
@@ -454,7 +458,7 @@ export class RemoteServer {
 
   // --- Replay buffers on new connection ---
 
-  private replayBuffers(ws: WebSocket): void {
+  private async replayBuffers(ws: WebSocket): Promise<void> {
     // Session list — sent immediately so client can initialize chat state
     const sessions = this.sessionManager.listSessions();
     ws.send(JSON.stringify({
@@ -470,6 +474,19 @@ export class RemoteServer {
     // Send current topic names for all mapped sessions
     for (const [desktopId, name] of this.lastTopics) {
       ws.send(JSON.stringify({ type: 'session:renamed', payload: { sessionId: desktopId, name } }));
+    }
+
+    // NEW: request a snapshot of the desktop's chat reducer state and push it
+    // to the connecting client so they see the full chat history immediately.
+    // Must happen before PTY/hook replay so the reducer has state to merge
+    // subsequent transcript events into.
+    try {
+      const snapshot = await this.requestSnapshot();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'chat:hydrate', payload: snapshot }));
+      }
+    } catch (err) {
+      console.error('[remote-server] chat:hydrate failed:', err);
     }
 
     // Delay PTY + hook replay to give the client time to process SESSION_INIT.
