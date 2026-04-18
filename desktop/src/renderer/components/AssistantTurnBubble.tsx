@@ -15,6 +15,27 @@ interface Props {
   showTimestamps: boolean;
 }
 
+// Non-end_turn stop reasons rendered inline under the affected turn.
+// `end_turn` and `tool_use` never reach the UI (filtered at transcript-watcher.ts:198),
+// so the only values we see here are the ones worth explaining.
+// WHY: makes abnormal completions (truncation, refusal, paused thinking) legible
+// to non-technical users instead of showing a chopped-off response with no context.
+const STOP_REASON_COPY: Record<string, string> = {
+  max_tokens: 'Response truncated — Claude hit the output token limit.',
+  stop_sequence: 'Response stopped at a configured stop sequence.',
+  refusal: 'Claude declined to respond.',
+  pause_turn: 'Extended thinking paused mid-turn.',
+};
+
+function StopReasonFooter({ reason }: { reason: string }) {
+  const copy = STOP_REASON_COPY[reason] ?? `Response ended: ${reason}.`;
+  return (
+    <div className="text-xs text-fg-muted italic mt-1 pl-1 border-l-2 border-edge-dim" role="status">
+      {copy}
+    </div>
+  );
+}
+
 /** Renders a collapsed summary for 3+ tools in a group. */
 function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sessionId: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -155,6 +176,8 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                   ))}
                 </div>
               )}
+              {/* Render stopReason explainer only once per turn — on the last bubble. */}
+              {isLastBubble && turn.stopReason && <StopReasonFooter reason={turn.stopReason} />}
               {showTimestamps && isLastBubble && turn.timestamp && (
                 <div className="bubble-timestamp text-[9px] text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
                   {formatBubbleTime(turn.timestamp)}
