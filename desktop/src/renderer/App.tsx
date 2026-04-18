@@ -52,6 +52,7 @@ import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
 import { WorkerHealthProvider, useWorkerHealth } from './state/worker-health-context';
 import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
+import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 
 type ViewMode = 'chat' | 'terminal';
 
@@ -1407,6 +1408,9 @@ function AppInner() {
 
   return (
     <div className={`app-shell flex w-screen h-full text-fg ${getPlatform() === 'android' && currentViewMode === 'terminal' ? '' : 'bg-canvas'}`}>
+      {/* Mount-only: listens for chat:export-snapshot from main, serializes
+          ChatState, and sends the snapshot back for remote-browser hydration. */}
+      <RemoteSnapshotExporter />
       {/* Main area — relative so bottom-float chrome can position against it.
           When a Phase-2 full-screen destination is active, hide the chat
           chrome entirely. Unmounting via `hidden` is cleaner than z-index
