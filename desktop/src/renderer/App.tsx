@@ -346,6 +346,12 @@ function AppInner() {
   // Play sounds when session status transitions to red (attention) or blue (ready).
   // Uses a separate ref so we only fire once per transition, not on every render.
   const prevStatusSoundRef = useRef<Map<string, SessionStatusColor>>(new Map());
+  // Remote attention diffing: tracks the last-seen attentionMap from status:data
+  // so we only dispatch ATTENTION_STATE_CHANGED when a session's state actually flips.
+  // On desktop, useAttentionClassifier already handles this locally (no-op here because
+  // the reducer is idempotent for same-value transitions and the diff prevents redundant
+  // dispatches). On remote browsers the classifier doesn't run, so this is the only path.
+  const prevAttentionRef = useRef<Record<string, string>>({});
   useEffect(() => {
     const prev = prevStatusSoundRef.current;
     for (const [id, color] of sessionStatuses) {
@@ -604,6 +610,23 @@ function AppInner() {
         gitBranchMap: data.gitBranchMap || prev.gitBranchMap,
         sessionStatsMap: data.sessionStatsMap || prev.sessionStatsMap,
       }));
+
+      // Diff attentionMap and dispatch per-session when state flips.
+      // On desktop, useAttentionClassifier already does this from the xterm buffer —
+      // the reducer's same-value guard and the diff here make this a no-op locally.
+      // On remote browsers the classifier never runs, so this is the only attention path.
+      const incoming = (data?.attentionMap ?? {}) as Record<string, string>;
+      const prev = prevAttentionRef.current;
+      for (const [sessionId, state] of Object.entries(incoming)) {
+        if (prev[sessionId] !== state) {
+          dispatch({
+            type: 'ATTENTION_STATE_CHANGED',
+            sessionId,
+            state: state as any,
+          });
+        }
+      }
+      prevAttentionRef.current = incoming;
     });
 
     // UI action sync — receive actions broadcast from other devices
