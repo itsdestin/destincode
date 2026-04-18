@@ -358,8 +358,9 @@ export function registerIpcHandlers(
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+        // All Files first so the picker opens in unrestricted mode by default
         { name: 'All Files', extensions: ['*'] },
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
       ],
     });
     return result.canceled ? [] : result.filePaths;
