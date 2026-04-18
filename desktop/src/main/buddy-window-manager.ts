@@ -107,9 +107,12 @@ export class BuddyWindowManager {
     const target = overlapsX
       ? clampToWorkArea({ x: cb.x + cb.width + 8, y: cb.y + cb.height - MASCOT_SIZE.height }, MASCOT_SIZE, display.workArea)
       : leftClamped;
-    this.mascot.setPosition(target.x, target.y);
+    // Round: setPosition requires integer args (see moveMascot for details).
+    // Chat bounds are integers but arithmetic could introduce fractions.
+    const rounded = { x: Math.round(target.x), y: Math.round(target.y) };
+    this.mascot.setPosition(rounded.x, rounded.y);
     // Persist so next launch respects the docked position.
-    this.deps.setPersistedPosition('mascot', target);
+    this.deps.setPersistedPosition('mascot', rounded);
   }
 
   /** Move the chat's subscription from the previous session to the new one. */
@@ -140,7 +143,11 @@ export class BuddyWindowManager {
     const raw = { x: x + dx, y: y + dy };
     const display = screen.getDisplayMatching({ ...raw, ...MASCOT_SIZE }) ?? screen.getPrimaryDisplay();
     const clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
-    this.mascot.setPosition(clamped.x, clamped.y);
+    // setPosition requires integer args. Pointer screenX/Y on HiDPI displays
+    // can be fractional, so dx/dy (and therefore clamped.x/y) may be floats —
+    // passing a float throws "Error processing argument at index 1, conversion
+    // failure" from Electron's native bridge.
+    this.mascot.setPosition(Math.round(clamped.x), Math.round(clamped.y));
   }
 
   private createChat(): void {
