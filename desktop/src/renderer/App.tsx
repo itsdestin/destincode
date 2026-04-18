@@ -25,6 +25,7 @@ import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
 import { usePartyLobby } from './hooks/usePartyLobby';
 import { usePartyGame } from './hooks/usePartyGame';
+import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { AppIcon, WelcomeAppIcon, ThemeMascot } from './components/Icons';
 import CommandDrawer from './components/CommandDrawer';
 import TerminalToolbar, { TerminalScrollButtons } from './components/TerminalToolbar';
@@ -228,6 +229,7 @@ function AppInner() {
   }, [settingsOpen]);
 
   usePromptDetector();
+  useRemoteAttentionSync();
   const dispatch = useChatDispatch();
   const chatStateMap = useChatStateMap();
   // Latest-value ref so transcript-shrink and turn-complete handlers see
