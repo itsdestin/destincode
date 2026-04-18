@@ -309,3 +309,77 @@ export type ChatAction =
     };
 
 export type ChatState = Map<string, SessionChatState>;
+
+// ───────────────────────── Serialization ─────────────────────────
+// Maps and Sets are not JSON-safe. These helpers flatten a ChatState
+// into tuple arrays for transport over IPC / WebSocket, and restore
+// the live structure on the other side. Used by remote-access hydration
+// so a newly-connected browser can receive the desktop's full chat state
+// in a single message.
+
+export interface SerializedSessionChatState {
+  timeline: TimelineEntry[];
+  toolCalls: Array<[string, ToolCallState]>;
+  toolGroups: Array<[string, ToolGroupState]>;
+  assistantTurns: Array<[string, AssistantTurn]>;
+  isThinking: boolean;
+  streamingText: string;
+  currentGroupId: string | null;
+  currentTurnId: string | null;
+  lastActivityAt: number;
+  activeTurnToolIds: string[];
+  attentionState: AttentionState;
+  lastBufferActivityAt: number;
+  compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
+}
+
+export interface SerializedChatState {
+  sessions: Array<[string, SerializedSessionChatState]>;
+}
+
+export function serializeChatState(state: ChatState): SerializedChatState {
+  const sessions: Array<[string, SerializedSessionChatState]> = [];
+  for (const [sessionId, s] of state) {
+    sessions.push([
+      sessionId,
+      {
+        timeline: s.timeline,
+        toolCalls: Array.from(s.toolCalls.entries()),
+        toolGroups: Array.from(s.toolGroups.entries()),
+        assistantTurns: Array.from(s.assistantTurns.entries()),
+        isThinking: s.isThinking,
+        streamingText: s.streamingText,
+        currentGroupId: s.currentGroupId,
+        currentTurnId: s.currentTurnId,
+        lastActivityAt: s.lastActivityAt,
+        activeTurnToolIds: Array.from(s.activeTurnToolIds),
+        attentionState: s.attentionState,
+        lastBufferActivityAt: s.lastBufferActivityAt,
+        compactionPending: s.compactionPending,
+      },
+    ]);
+  }
+  return { sessions };
+}
+
+export function deserializeChatState(s: SerializedChatState): ChatState {
+  const result: ChatState = new Map();
+  for (const [sessionId, ser] of s.sessions) {
+    result.set(sessionId, {
+      timeline: ser.timeline,
+      toolCalls: new Map(ser.toolCalls),
+      toolGroups: new Map(ser.toolGroups),
+      assistantTurns: new Map(ser.assistantTurns),
+      isThinking: ser.isThinking,
+      streamingText: ser.streamingText,
+      currentGroupId: ser.currentGroupId,
+      currentTurnId: ser.currentTurnId,
+      lastActivityAt: ser.lastActivityAt,
+      activeTurnToolIds: new Set(ser.activeTurnToolIds),
+      attentionState: ser.attentionState,
+      lastBufferActivityAt: ser.lastBufferActivityAt,
+      compactionPending: ser.compactionPending,
+    });
+  }
+  return result;
+}
