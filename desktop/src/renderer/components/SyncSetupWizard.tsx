@@ -270,11 +270,19 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
 
   // --- Step: OAuth / Sign-In ---
   if (step === 'auth' && backendType) {
-    const isAdditionalDrive = backendType === 'drive' && existingBackends.some(b => b.type === 'drive');
+    // Reconnect mode: preselectedBackendId is set when the user arrived via
+    // a push-failure warning's "Fix it" button. Copy must steer them to
+    // sign in with the SAME Google account — not a different one, and not
+    // the "add another account" flow.
+    const isReconnect = !!preselectedBackendId;
+    const isAdditionalDrive = !isReconnect
+      && backendType === 'drive'
+      && existingBackends.some(b => b.type === 'drive');
     return (
       <AuthStep
         backendType={backendType}
         isAdditionalDrive={isAdditionalDrive}
+        isReconnect={isReconnect}
         onSuccess={(authResult) => {
           if (backendType === 'drive') {
             setRemoteName(authResult.remoteName || 'gdrive');
@@ -879,12 +887,18 @@ function PrereqRow({ label, status }: { label: string; status: 'checking' | 'rea
 function AuthStep({
   backendType,
   isAdditionalDrive = false,
+  isReconnect = false,
   onSuccess,
   onBack,
   onClose,
 }: {
   backendType: BackendType;
   isAdditionalDrive?: boolean;
+  // True when the user arrived via a push-failure warning's "Fix it" button.
+  // In that case we want them to sign in with the SAME account they used
+  // before (we don't yet store the email — that's a follow-up) rather than
+  // seeing the "connect another account" copy intended for a second Drive.
+  isReconnect?: boolean;
   onSuccess: (result: { remoteName?: string; username?: string }) => void;
   onBack: () => void;
   onClose: () => void;
@@ -920,9 +934,13 @@ function AuthStep({
   };
 
   const title = backendType === 'drive'
-    ? (isAdditionalDrive ? 'Connect another Google account' : 'Connect your Google account')
-    : 'Sign in to GitHub';
-  const buttonLabel = backendType === 'drive' ? 'Connect to Google' : 'Sign in to GitHub';
+    ? (isReconnect ? 'Reconnect Google Drive'
+       : isAdditionalDrive ? 'Connect another Google account'
+       : 'Connect your Google account')
+    : (isReconnect ? 'Reconnect to GitHub' : 'Sign in to GitHub');
+  const buttonLabel = backendType === 'drive'
+    ? (isReconnect ? 'Reconnect to Google' : 'Connect to Google')
+    : (isReconnect ? 'Reconnect to GitHub' : 'Sign in to GitHub');
 
   return (
     <div className="flex flex-col h-full">
@@ -937,6 +955,11 @@ function AuthStep({
           <>
             <div className="text-fg-dim text-[11px] mb-6 max-w-xs space-y-2">
               <div>A browser window will open for you to sign in. After you sign in, come back here — it'll update automatically.</div>
+              {isReconnect && backendType === 'drive' && (
+                <div className="text-amber-400 text-[10px] pt-1">
+                  Important: sign in with the <strong>same Google account</strong> you originally connected. Picking a different account would start a new backup instead of restoring the existing one.
+                </div>
+              )}
               {isAdditionalDrive && (
                 <div className="text-amber-400 text-[10px] pt-1">
                   Tip: make sure you pick the <strong>other</strong> Google account (e.g., work vs. personal vs. school) in the browser — not the same one you already connected. You may need to sign out of Google in your browser first, or use an incognito window.
