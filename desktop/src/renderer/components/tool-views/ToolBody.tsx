@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { StructuredPatchHunk, ToolCallState } from '../../../shared/types';
 import MarkdownContent from '../MarkdownContent';
 import { useChatState } from '../../state/chat-context';
 import { buildTasksById, TASK_LIFECYCLE, TaskState, TaskStatus } from '../../state/task-state';
+import { SubagentTimeline } from './SubagentTimeline';
 
 // Parsed views for expanded tool cards. One dispatcher + inline view functions;
 // splitting per-file only becomes worthwhile if a single view grows past ~80
@@ -648,7 +649,23 @@ function AgentView({ tool }: { tool: ToolCallState }) {
   const desc = (tool.input.description as string) || '';
   const subagent = (tool.input.subagent_type as string) || 'general-purpose';
   const prompt = (tool.input.prompt as string) || '';
+  const segments = tool.subagentSegments || [];
   const [showPrompt, setShowPrompt] = useState(false);
+
+  // Auto-expand while the subagent is running; auto-collapse once the
+  // parent Agent tool has a response (i.e., subagent completed). The user
+  // can override either direction and their choice sticks for the rest of
+  // the session.
+  const [showTimeline, setShowTimeline] = useState(() => !tool.response);
+  const [userToggled, setUserToggled] = useState(false);
+  const prevHadResponse = useRef(!!tool.response);
+  useEffect(() => {
+    if (userToggled) return;
+    const hasResponse = !!tool.response;
+    if (!prevHadResponse.current && hasResponse) setShowTimeline(false);
+    prevHadResponse.current = hasResponse;
+  }, [tool.response, userToggled]);
+
   const tone = SUBAGENT_TONE[subagent] || 'neutral';
 
   return (
@@ -670,6 +687,17 @@ function AgentView({ tool }: { tool: ToolCallState }) {
               {prompt}
             </pre>
           )}
+        </div>
+      )}
+      {segments.length > 0 && (
+        <div>
+          <button
+            onClick={() => { setShowTimeline(s => !s); setUserToggled(true); }}
+            className="text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2"
+          >
+            {showTimeline ? 'Hide agent activity' : `Show agent activity (${segments.length})`}
+          </button>
+          {showTimeline && <SubagentTimeline segments={segments} />}
         </div>
       )}
       {tool.response && (
