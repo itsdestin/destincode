@@ -35,7 +35,7 @@ Each entry has three fields:
 - **Break symptom:** AttentionBanner states misfire; user sees wrong guidance during PTY-based interactions.
 
 ### Hook protocol
-- **Files:** `app/src/main/assets/hook-relay.js` (Android), `desktop/src/main/hook-relay.ts` (desktop), `youcoded-core/core/hooks/hooks-manifest.json`
+- **Files:** `app/src/main/assets/hook-relay.js` (Android), `desktop/src/main/hook-relay.ts` (desktop), `youcoded-core/hooks/hooks-manifest.json`
 - **Depends on:** CC's hook event JSON shape (`SessionStart`, `PreToolUse`, `Notification`, etc. — fields `tool_name`, `tool_input`, `session_id`, etc.), CC's `settings.json` hooks schema accepted by the loader
 - **Break symptom:** Hooks silently stop firing or fail with cryptic errors; write-guard / worktree-guard / statusline stop functioning.
 
