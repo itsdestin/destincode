@@ -60,4 +60,22 @@ describe('SubagentTimeline', () => {
     const { container } = render(<SubagentTimeline segments={segments} />);
     expect(container.textContent).toMatch(/First thought[\s\S]*Read[\s\S]*Second thought/);
   });
+
+  it('shows running indicator only when status is running', () => {
+    const runningSegments: SubagentSegment[] = [
+      { type: 'tool', id: 't1', toolUseId: 'toolu_X', toolName: 'Bash',
+        input: { command: 'ls' }, status: 'running' },
+    ];
+    const { rerender, container } = render(<SubagentTimeline segments={runningSegments} />);
+    // Scope queries to this render's container so stale DOM from other tests
+    // (jsdom persists across renders in the same describe block) doesn't interfere.
+    expect(container.querySelector('.animate-pulse')).toBeTruthy();
+
+    const doneSegments: SubagentSegment[] = [
+      { type: 'tool', id: 't1', toolUseId: 'toolu_X', toolName: 'Bash',
+        input: { command: 'ls' }, status: 'complete', response: 'ok' },
+    ];
+    rerender(<SubagentTimeline segments={doneSegments} />);
+    expect(container.querySelector('.animate-pulse')).toBeNull();
+  });
 });

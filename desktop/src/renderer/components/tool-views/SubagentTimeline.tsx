@@ -40,9 +40,20 @@ function SubagentToolRow({ segment }: { segment: Extract<SubagentSegment, { type
     response: segment.response,
     error: segment.error,
     structuredPatch: segment.structuredPatch,
+    // requestId and permissionSuggestions are intentionally omitted:
+    // subagents run in auto-accept mode and never go through the
+    // permission hook flow, so those fields don't apply here.
   };
   return (
     <div className="subagent-tool-row" style={{ contentVisibility: 'auto' }}>
+      {/*
+        Tool-name header is intentionally duplicated here even though
+        several specialized ToolBody views (ReadView, BashView) render
+        their own label — when a subagent emits 20+ rows, this small
+        uppercase label lets the user scan the timeline at a glance.
+        Tools that fall through to RawFallbackView get their only label
+        here; don't scope this away without an alternative.
+      */}
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-fg-muted">
         <span>{segment.toolName}</span>
         {segment.status === 'running' && <span>·</span>}
