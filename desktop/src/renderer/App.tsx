@@ -678,6 +678,13 @@ function AppInner() {
       });
     });
 
+    // Remote-only: host sends a full chat state snapshot immediately after the
+    // remote client connects. Dispatches HYDRATE_CHAT_STATE so the reducer
+    // pre-populates all session timelines without waiting for transcript replay.
+    const chatHydrateHandler = (window.claude.on as any).chatHydrate?.((payload: any) => {
+      dispatch({ type: 'HYDRATE_CHAT_STATE', sessions: payload });
+    });
+
     return () => {
       transcriptBatchCancelled = true;
       if (transcriptRafId !== null) cancelAnimationFrame(transcriptRafId);
@@ -694,6 +701,7 @@ function AppInner() {
       if (promptDismissHandler) window.claude.off('prompt:dismiss', promptDismissHandler);
       if (promptCompleteHandler) window.claude.off('prompt:complete', promptCompleteHandler);
       if (sessionPermissionModeHandler) window.claude.off('session:permission-mode', sessionPermissionModeHandler);
+      if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
     };
   }, [dispatch]);
 

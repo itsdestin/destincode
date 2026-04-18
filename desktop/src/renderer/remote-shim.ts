@@ -198,6 +198,11 @@ function handleMessage(data: string): void {
       // window.claude.sync.restore.onProgress(). Broadcast (no sessionId).
       dispatchEvent('sync:restore:progress', payload);
       break;
+    case 'chat:hydrate':
+      // Full chat state snapshot sent by the host when a remote client connects.
+      // Dispatched into the chat reducer via window.claude.on.chatHydrate in App.tsx.
+      dispatchEvent('chat:hydrate', payload);
+      break;
   }
 }
 
@@ -569,6 +574,8 @@ export function installShim(): void {
       promptShow: (cb: Callback) => addListener('prompt:show', cb),
       promptDismiss: (cb: Callback) => addListener('prompt:dismiss', cb),
       promptComplete: (cb: Callback) => addListener('prompt:complete', cb),
+      // Full chat state snapshot received from host on connect (remote browsers only).
+      chatHydrate: (cb: Callback) => addListener('chat:hydrate', cb),
     },
     skills: {
       list: () => invoke('skills:list'),
