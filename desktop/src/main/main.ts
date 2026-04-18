@@ -21,6 +21,7 @@ import { setSyncService } from './sync-state';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
+import { requestChatSnapshot } from './chat-snapshot';
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
@@ -111,7 +112,16 @@ const hookRelay = new HookRelay(pipeName);
 const remoteConfig = new RemoteConfig();
 const skillProvider = new LocalSkillProvider();
 skillProvider.ensureMigrated();
-const remoteServer = new RemoteServer(sessionManager, hookRelay, remoteConfig, skillProvider);
+// Pass a snapshot provider so RemoteServer can request the full chat state from
+// the renderer when new remote clients connect. The closure captures mainWindow
+// by reference — mainWindow is null here but will be set before any client
+// can connect (the server only starts after the window is created).
+const remoteServer = new RemoteServer(sessionManager, hookRelay, remoteConfig, skillProvider, {
+  requestSnapshot: () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve({ sessions: [] });
+    return requestChatSnapshot(mainWindow.webContents);
+  },
+});
 
 // Dev server URL — env override wins; otherwise compute from YOUCODED_PORT_OFFSET
 // (via shared/ports.ts) so Vite and main stay in sync without a second env var.

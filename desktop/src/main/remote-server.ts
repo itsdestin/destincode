@@ -9,6 +9,7 @@ import type { SessionManager } from './session-manager';
 import type { HookRelay } from './hook-relay';
 import type { RemoteConfig } from './remote-config';
 import type { LocalSkillProvider } from './skill-provider';
+import type { SerializedChatState } from '../renderer/state/chat-types';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory } from './session-browser';
@@ -51,15 +52,22 @@ export class RemoteServer {
   private lastTopics = new Map<string, string>();
   // Last-known context remaining %, fed by ipc-handlers.ts via broadcastStatusData()
   private contextMap: Record<string, number> = {};
+  // Provider injected at construction — called when new clients connect to get the full chat state.
+  // Task 6 wires this into replayBuffers(); declared here so the field exists before that step.
+  private requestSnapshot: () => Promise<SerializedChatState>;
 
   constructor(
     private sessionManager: SessionManager,
     private hookRelay: HookRelay,
     private config: RemoteConfig,
     private skillProvider?: LocalSkillProvider,
+    opts?: { requestSnapshot?: () => Promise<SerializedChatState> },
   ) {
     this.tokensPath = path.join(os.homedir(), '.claude', '.remote-tokens.json');
     this.loadTokens();
+    // Default is a no-op that returns an empty snapshot — allows the server to
+    // be constructed before the main window exists (e.g. during first-run setup).
+    this.requestSnapshot = opts?.requestSnapshot ?? (() => Promise.resolve({ sessions: [] }));
   }
 
   private loadTokens(): void {
