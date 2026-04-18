@@ -336,6 +336,19 @@ html, body, #root {
   opacity: 0;
 }
 
+/* Buddy window transparency override.
+   Buddy mascot and chat windows are transparent frameless windows; they should
+   not render the theme background layer or default body background. */
+body[data-mode="buddy-mascot"],
+body[data-mode="buddy-chat"] {
+  background: transparent !important;
+}
+
+body[data-mode="buddy-mascot"] #theme-bg,
+body[data-mode="buddy-chat"] #theme-bg {
+  display: none;
+}
+
 /* Glassmorphism — wallpaper-gated treatment for chrome + popup surfaces.
    Fix: gate ALL backdrop-filter behind [data-wallpaper] so solid themes
    don't create stacking contexts or pay GPU cost for invisible blur.
