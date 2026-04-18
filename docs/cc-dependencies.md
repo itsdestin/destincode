@@ -39,18 +39,28 @@ Each entry has three fields:
 - **Depends on:** CC's hook event JSON shape (`SessionStart`, `PreToolUse`, `Notification`, etc. — fields `tool_name`, `tool_input`, `session_id`, etc.), CC's `settings.json` hooks schema accepted by the loader
 - **Break symptom:** Hooks silently stop firing or fail with cryptic errors; write-guard / worktree-guard / statusline stop functioning.
 
+### Statusline hook payload
+- **Files:** `desktop/hook-scripts/statusline.sh`, `app/src/main/assets/statusline.sh`, `desktop/hook-scripts/usage-fetch.js`
+- **Depends on:** CC's statusline JSON payload fields (`model`, `session_id`, `version`, and any usage counters surfaced to the statusline hook)
+- **Break symptom:** Status bar goes blank or shows stale values; usage counters stop updating; session-context pill loses model/version info.
+
 ### Plugin registry four-file format
 - **Files:** `desktop/src/main/claude-code-registry.ts`, `app/src/main/.../skills/PluginInstaller.kt`
 - **Depends on:** Exact file format of (a) `~/.claude/settings.json` `enabledPlugins` entry key shape `"<id>@<marketplace>": true`, (b) `~/.claude/plugins/installed_plugins.json` v2 entry schema with absolute `installPath`, (c) `~/.claude/plugins/known_marketplaces.json`, (d) `~/.claude/plugins/marketplaces/<marketplace>/.claude-plugin/marketplace.json`
 - **Break symptom:** Installed plugins invisible to CC loader; skill marketplace installs report success but `/reload-plugins` shows "0 new plugins".
 
+### MCP configuration schema
+- **Files:** `desktop/src/main/mcp-reconciler.ts`
+- **Depends on:** CC's MCP-server configuration schema in `~/.claude/mcp.json` or `~/.claude/settings.json` (server entries with `command`, `args`, `env`, and any transport/scope fields owned by Claude Code)
+- **Break symptom:** MCP reconciliation writes invalid config; CC refuses to load MCP servers after YouCoded touches the file; silent MCP-server drop-offs.
+
 ### Slash commands YouCoded references or intercepts
-- **Files:** `desktop/src/renderer/components/SessionPill.tsx` (references `/model`), any component that suggests a slash command to the user
+- **Files:** `desktop/src/renderer/state/slash-command-dispatcher.ts`, `desktop/src/renderer/components/InputBar.tsx`, `desktop/src/renderer/components/ModelPickerPopup.tsx`
 - **Depends on:** CC's command names stable across releases (`/model`, `/resume`, `/compact`, `/help`, etc.)
 - **Break symptom:** Session-pill reconciliation mis-detects model drift; user-facing tips reference dead commands.
 
 ### Anthropic model ID convention
-- **Files:** `desktop/src/renderer/state/chat-reducer.ts` (per-turn metadata), `desktop/src/renderer/components/SessionPill.tsx`
+- **Files:** `desktop/src/renderer/state/chat-reducer.ts` (per-turn metadata), `desktop/src/renderer/App.tsx` (session-pill model reconciliation useEffect)
 - **Depends on:** Dotted-hyphen model ID form (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) served by CC in transcript `message.model`
 - **Break symptom:** Unknown model IDs render raw in session pill; display-name lookup fails silently.
 
@@ -60,7 +70,7 @@ Each entry has three fields:
 - **Break symptom:** Session resume breaks; PTY spawns fail; new sessions launch in unexpected state.
 
 ### Permission flow messages
-- **Files:** `desktop/src/main/permission-handler.ts` (if present under that name; the code path that dispatches `PERMISSION_REQUEST` and consumes `PERMISSION_RESPONSE`), `desktop/src/renderer/state/chat-reducer.ts`
+- **Files:** `desktop/src/renderer/state/hook-dispatcher.ts`, `desktop/src/renderer/hooks/usePromptDetector.ts`, `desktop/src/renderer/state/chat-reducer.ts`
 - **Depends on:** CC's approval-request shape in transcript or hook-relay, matching the IPC message YouCoded constructs for `PERMISSION_REQUEST`
 - **Break symptom:** Permission prompts don't appear; approvals never propagate back to CC; tool calls hang in `awaiting-approval`.
 
