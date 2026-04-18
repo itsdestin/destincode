@@ -21,6 +21,7 @@ import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
+import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
 import { usePartyLobby } from './hooks/usePartyLobby';
 import { usePartyGame } from './hooks/usePartyGame';
@@ -79,7 +80,7 @@ interface StatusDataState {
   gitBranchMap: Record<string, string>;
   sessionStatsMap: Record<string, SessionStats>;
   syncStatus: string | null;
-  syncWarnings: string | null;
+  syncWarnings: SyncWarning[] | null;
   lastSyncEpoch: number | null;
   syncInProgress: boolean;
   backupMeta: any;
@@ -100,7 +101,7 @@ function AppInner() {
   const [statusData, setStatusData] = useState<StatusDataState>({
     usage: null, announcement: null, updateStatus: null,
     model: null, contextMap: {}, gitBranchMap: {}, sessionStatsMap: {},
-    syncStatus: null, syncWarnings: null,
+    syncStatus: null, syncWarnings: [],
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
   });
 
@@ -116,6 +117,7 @@ function AppInner() {
   const bottomBarRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBadge, setSettingsBadge] = useState(false);
+  const [settingsDangerBadge, setSettingsDangerBadge] = useState(false);
   const [syncAutoOpen, setSyncAutoOpen] = useState(false);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   // Track which sessions the user has "seen" (switched to after activity completed)
@@ -591,7 +593,7 @@ function AppInner() {
         announcement: data.announcement,
         updateStatus: data.updateStatus,
         syncStatus: data.syncStatus,
-        syncWarnings: data.syncWarnings,
+        syncWarnings: Array.isArray(data.syncWarnings) ? data.syncWarnings : [],
         lastSyncEpoch: data.lastSyncEpoch ?? prev.lastSyncEpoch,
         syncInProgress: data.syncInProgress ?? prev.syncInProgress,
         backupMeta: data.backupMeta ?? prev.backupMeta,
@@ -911,6 +913,25 @@ function AppInner() {
     };
     check();
     const interval = setInterval(check, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Poll sync status; if any danger-level warning exists, surface a red
+  // dot on the gear icon so the user can't miss a push failure.
+  useEffect(() => {
+    const claude = (window as any).claude;
+    if (!claude?.sync?.getStatus) return;
+    const check = () => {
+      claude.sync.getStatus()
+        .then((s: any) => {
+          const hasDanger = Array.isArray(s?.warnings)
+            && s.warnings.some((w: any) => w?.level === 'danger');
+          setSettingsDangerBadge(hasDanger);
+        })
+        .catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1436,6 +1457,7 @@ function AppInner() {
                 settingsOpen={settingsOpen}
                 onToggleSettings={() => setSettingsOpen(prev => !prev)}
                 settingsBadge={settingsBadge}
+                settingsDangerBadge={settingsDangerBadge}
                 sessionStatuses={sessionStatuses}
                 onResumeSession={handleResumeSession}
                 onOpenResumeBrowser={() => setResumeRequested(true)}
