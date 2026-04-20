@@ -143,15 +143,31 @@ export default function TerminalView({ sessionId, visible }: Props) {
     // Skip when container is collapsed to 0x0 (hidden terminals) to avoid
     // setting a 1-column width on the PTY that causes text bunching.
     //
-    // Dedup on unchanged dims: Windows ConPTY (used by node-pty on Win) reflows
-    // and re-emits visible buffer contents on every resize call. The
-    // ResizeObserver fires for any layout shift (font load, sibling resize,
-    // 1-pixel container jitter), and fit() can return the same cols/rows
-    // across ticks. Without dedup, each spurious resize re-emits Claude's
-    // Ink-rendered UI (banner + input bar) into xterm scrollback — so
-    // scrolling back looks like the same chunk repeated between every turn.
+    // Two-part guard against Windows-ConPTY reflow duplication: every PTY
+    // resize causes ConPTY to re-emit its visible buffer contents, which
+    // xterm then scrolls into scrollback. Each spurious resize leaves
+    // behind a duplicate copy of Claude's current Ink UI (banner, input
+    // bar, recent output) in history.
+    //   (1) Dedup — skip the IPC if proposed cols/rows match last sent.
+    //       Covers ResizeObserver ticks from font load, sibling resize,
+    //       1-pixel container jitter where fit() returns the same grid.
+    //   (2) Debounce — when cols/rows genuinely change, coalesce rapid
+    //       updates (window-drag, maximize animation) into a single
+    //       trailing IPC call 120ms after things settle. xterm still
+    //       fit()s immediately so the visible display tracks the drag;
+    //       only the PTY resize is delayed.
     let lastCols = 0;
     let lastRows = 0;
+    let pendingCols = 0;
+    let pendingRows = 0;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushResize = () => {
+      debounceTimer = null;
+      if (pendingCols === lastCols && pendingRows === lastRows) return;
+      lastCols = pendingCols;
+      lastRows = pendingRows;
+      window.claude.session.resize(sessionId, pendingCols, pendingRows);
+    };
     const fitAndSync = () => {
       try {
         const el = containerRef.current;
@@ -159,10 +175,18 @@ export default function TerminalView({ sessionId, visible }: Props) {
         fitAddon.fit();
         const dims = fitAddon.proposeDimensions();
         if (!dims || !dims.cols || !dims.rows) return;
-        if (dims.cols === lastCols && dims.rows === lastRows) return;
-        lastCols = dims.cols;
-        lastRows = dims.rows;
-        window.claude.session.resize(sessionId, dims.cols, dims.rows);
+        // Dedup target: if a resize is already queued, compare against the
+        // queued value (so re-proposing the same queued size is a no-op).
+        // Otherwise compare against the last value actually sent to the PTY.
+        // Without this, a drag that bounces A→B→A before the debounce fires
+        // would skip the A update and let the stale B get flushed.
+        const targetCols = debounceTimer !== null ? pendingCols : lastCols;
+        const targetRows = debounceTimer !== null ? pendingRows : lastRows;
+        if (dims.cols === targetCols && dims.rows === targetRows) return;
+        pendingCols = dims.cols;
+        pendingRows = dims.rows;
+        if (debounceTimer !== null) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(flushResize, 120);
       } catch {
         // Ignore fit errors during teardown
       }
@@ -198,6 +222,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
 
     return () => {
       clearTimeout(timer);
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
       if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
       window.removeEventListener('resize', fitAndSync);
       resizeObserver.disconnect();
