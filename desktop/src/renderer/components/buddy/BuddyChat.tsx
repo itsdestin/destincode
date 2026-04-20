@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AttentionSummary } from '../../../shared/types';
 import InputBar from '../InputBar';
 import { SessionPill } from './SessionPill';
 import { BubbleFeed } from './BubbleFeed';
 import { AttentionStrip } from './AttentionStrip';
+import { BuddyWelcome } from './BuddyWelcome';
 
 /**
  * Compact chat surface rendered inside the buddy chat BrowserWindow.
@@ -88,6 +89,15 @@ export function BuddyChat() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Handle session creation from the welcome screen. Mirrors the subscribe +
+  // view-set flow that SessionPill.selectSession does — BuddyWelcome only
+  // knows about the created session id, not the subscription handoff.
+  const handleSessionCreated = useCallback(async (sid: string) => {
+    await window.claude.buddy.setSession(sid);
+    await window.claude.buddy.subscribe(sid);
+    setViewedSession(sid);
+  }, []);
+
   return (
     <div
       style={{
@@ -98,13 +108,22 @@ export function BuddyChat() {
         gap: 10,
       }}
     >
-      <SessionPill
-        viewedSessionId={viewedSession}
-        onChange={setViewedSession}
-        attentionSummary={attentionSummary}
-      />
+      {/* Hide the session pill in the empty state — the welcome screen owns
+          the full viewport to match main app's "No Active Session" screen.
+          Pill reappears as soon as a session is chosen or created. */}
+      {viewedSession ? (
+        <SessionPill
+          viewedSessionId={viewedSession}
+          onChange={setViewedSession}
+          attentionSummary={attentionSummary}
+        />
+      ) : null}
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        <BubbleFeed sessionId={viewedSession} />
+        {viewedSession ? (
+          <BubbleFeed sessionId={viewedSession} />
+        ) : (
+          <BuddyWelcome onSessionCreated={handleSessionCreated} />
+        )}
       </div>
       {viewedSession ? (
         <InputBar sessionId={viewedSession} compact />
