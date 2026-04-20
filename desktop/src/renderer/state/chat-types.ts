@@ -1,4 +1,7 @@
 import { ChatMessage, ToolCallState, ToolGroupState } from '../../shared/types';
+// Re-export so test files and future consumers can import ToolCallState from
+// chat-types directly, without reaching into the shared/types boundary.
+export type { ToolCallState };
 
 export interface InteractivePrompt {
   promptId: string;
