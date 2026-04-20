@@ -55,6 +55,11 @@ let ghPath = 'gh';
 try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
 let mainWindow: BrowserWindow | null = null;
+// Module-level ref so createAppWindow's 'closed' handler can reach the
+// BuddyWindowManager (defined later inside the ready-handler closure).
+// Assigned once during setup; `createAppWindow` uses it to hide the buddy
+// when the last main window closes (spec §7.6).
+let buddyManagerRef: BuddyWindowManager | null = null;
 let cleanupIpcHandlers: (() => void) | null = null;
 const sessionManager = new SessionManager();
 
@@ -449,6 +454,25 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     attentionReports.delete(wid);
     debouncedBroadcastAttention();
     windowRegistry.unregisterWindow(wid);
+    // Spec §7.6: "Buddy closes with main." If this was the last main window
+    // (i.e., all remaining open windows are buddy windows), tear down the
+    // buddy so Electron's window-all-closed handler can fire and the app
+    // can quit cleanly on Win/Linux. Without this, closing the main window
+    // leaves a floating mascot orphaned with no settings UI to reach — the
+    // user has to force-quit via Task Manager, which the user just hit.
+    if (!opts?.buddy && buddyManagerRef) {
+      const mgr = buddyManagerRef;
+      const remainingMain = BrowserWindow.getAllWindows().some((w) => {
+        if (w === win) return false; // the one closing right now
+        if (w.isDestroyed()) return false;
+        // Our buddy windows are the two BuddyWindowManager owns. Anything
+        // else is a main/peer window.
+        return !mgr.isBuddyWindow(w);
+      });
+      if (!remainingMain) {
+        mgr.hide();
+      }
+    }
   });
 
   // Confirm-on-close if this window still owns active sessions. Without the
@@ -1076,6 +1100,8 @@ app.whenReady().then(async () => {
     registry: windowRegistry,
     mainWindow: () => mainWindow,
   });
+  // Publish to module scope so createAppWindow's 'closed' handler can see it.
+  buddyManagerRef = buddyManager;
 
   ipcMain.handle(IPC.BUDDY_SHOW, () => buddyManager.show());
   ipcMain.handle(IPC.BUDDY_HIDE, () => buddyManager.hide());

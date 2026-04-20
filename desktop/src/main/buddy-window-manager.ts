@@ -136,6 +136,13 @@ export class BuddyWindowManager {
     return this.viewedSessionId;
   }
 
+  /** True iff `win` is one of the two buddy windows this manager owns.
+   *  main.ts uses this to decide when to tear the buddy down — spec §7.6
+   *  says buddy closes with the last main window. */
+  isBuddyWindow(win: BrowserWindow): boolean {
+    return win === this.mascot || win === this.chat;
+  }
+
   /**
    * Move the mascot window by a pointer-drag delta, clamped to the visible
    * workArea of whichever display the window ends up on. Replaces CSS
