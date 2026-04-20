@@ -763,6 +763,25 @@ export function registerIpcHandlers(
     return skillProvider.setFavorite(id, favorited);
   });
 
+  // Theme favorites — parallel to skills:set-favorite. Drives the Appearance
+  // panel's favorites-only list and the "My favorite themes" Library section.
+  ipcMain.handle('appearance:get-favorite-themes', async () => {
+    return skillProvider.configStore.getThemeFavorites();
+  });
+
+  ipcMain.handle('appearance:favorite-theme', async (_event, slug: string, favorited: boolean) => {
+    skillProvider.configStore.setThemeFavorite(slug, favorited);
+    // Broadcast to peer windows so ThemeContext re-reads without requiring a
+    // polled IPC fetch. Reuses the existing appearance broadcast pipe.
+    try {
+      const prefs = { themeFavoritesChanged: Date.now() };
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('appearance:sync', prefs);
+      }
+    } catch { /* best-effort broadcast */ }
+    return skillProvider.configStore.getThemeFavorites();
+  });
+
   ipcMain.handle(IPC.SKILLS_GET_CHIPS, async () => {
     return skillProvider.getChips();
   });

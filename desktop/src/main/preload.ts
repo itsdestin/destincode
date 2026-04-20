@@ -416,6 +416,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.APPEARANCE_SYNC, h);
       return () => ipcRenderer.removeListener(IPC.APPEARANCE_SYNC, h);
     },
+    favoriteTheme: (slug: string, favorited: boolean): Promise<string[]> =>
+      ipcRenderer.invoke('appearance:favorite-theme', slug, favorited),
+    getFavoriteThemes: (): Promise<string[]> =>
+      ipcRenderer.invoke('appearance:get-favorite-themes'),
   },
   defaults: {
     get: (): Promise<{ skipPermissions: boolean; model: string; projectFolder: string }> =>
