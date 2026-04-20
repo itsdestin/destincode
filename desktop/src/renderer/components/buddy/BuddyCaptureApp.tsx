@@ -46,14 +46,30 @@ function BuddyCaptureButton() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        // Same floating drop shadow as the chat bubble so the icon reads
-        // as part of the same surface cluster.
-        boxShadow:
-          'inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 6px 18px rgba(0, 0, 0, 0.22)',
+        // Inset highlight only — no outer drop shadow. The parent
+        // BrowserWindow is exactly 44×44 (matches the button), so any
+        // outer shadow has nowhere to fade out and gets clipped at the
+        // window edges. The result reads as a square halo around the
+        // round icon. If we ever want a real drop shadow here, grow the
+        // capture window to ~56×56 in main.ts first so the blur has
+        // room to breathe.
+        boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.18)',
         transition: 'transform 120ms ease, opacity 120ms ease',
         transform: capturing ? 'scale(0.92)' : 'scale(1)',
         opacity: capturing ? 0.7 : 1,
+        // Kill Chromium's default button chrome: -webkit-appearance would
+        // paint a subtle native border, and :focus shows a rectangular
+        // outline even on a 50%-rounded button (that's the "weird square"
+        // around the icon). We suppress both. The button sits inside a
+        // frameless 44×44 always-on-top window with no keyboard nav, so
+        // a visible focus ring would never be useful here anyway.
+        outline: 'none',
+        WebkitAppearance: 'none',
       }}
+      // Blur on click so we don't keep a :focus state that some Chromium
+      // themes still decorate even with outline:none (e.g. slight inner
+      // border highlight).
+      onMouseDown={(e) => e.preventDefault()}
     >
       {/* Simple camera glyph — viewBox 24×24 scaled to 20 px. Pure stroke
           so it tints with currentColor = var(--fg), matching the mascot

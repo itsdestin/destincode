@@ -413,16 +413,35 @@ export type AttentionState =
   | 'stuck'           // Spinner frame stale ≥ 10s OR unknown silence > 60s
   | 'session-died';   // Process exited mid-turn
 
+// Red | green | blue | gray — mirrors SessionStatusColor in renderer.
+// Duplicated as a string literal type here (not imported) so main-process
+// code in Node can consume this interface without dragging renderer
+// imports across the main/renderer boundary.
+export type SessionStatusDotColor = 'green' | 'red' | 'blue' | 'gray';
+
 export interface AttentionSummary {
   anyNeedsAttention: boolean;
-  perSession: Record<string, { attentionState: AttentionState; awaitingApproval: boolean }>;
+  perSession: Record<string, {
+    attentionState: AttentionState;
+    awaitingApproval: boolean;
+    // Derived dot color from the main window's reducer (matches what the
+    // main session switcher renders). Pushed to buddy surfaces so the
+    // SessionPill's dot is visually identical to the same session's dot
+    // in the main window. Absent for sessions that haven't reported yet.
+    status?: SessionStatusDotColor;
+  }>;
 }
 
 // Payload sent by renderer → main via the attention:report IPC channel.
 // Main aggregates these across all windows and broadcasts an AttentionSummary.
 // The 'clear' variant fires when a session is removed from the renderer.
 export type AttentionReport =
-  | { sessionId: string; attentionState: AttentionState; awaitingApproval: boolean }
+  | {
+      sessionId: string;
+      attentionState: AttentionState;
+      awaitingApproval: boolean;
+      status?: SessionStatusDotColor;
+    }
   | { sessionId: string; clear: true };
 
 export interface AttentionApi {

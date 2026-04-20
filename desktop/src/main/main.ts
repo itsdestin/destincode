@@ -23,6 +23,7 @@ import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
+import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
@@ -299,10 +300,18 @@ function registerFirstRunIpc(
 // Each renderer pushes updates via attention:report whenever the chat reducer's
 // ATTENTION_STATE_CHANGED fires. Main aggregates and broadcasts
 // session:attention-summary to all windows so buddy mascot can react.
-const attentionReports = new Map<number, Map<string, { attentionState: AttentionState; awaitingApproval: boolean }>>();
+type PerSessionAttention = {
+  attentionState: AttentionState;
+  awaitingApproval: boolean;
+  // Derived dot color computed by the reporting renderer's sessionStatuses
+  // useMemo. We just forward it — the main window owns the derivation so
+  // the buddy's dot matches the main switcher's dot exactly.
+  status?: import('../shared/types').SessionStatusDotColor;
+};
+const attentionReports = new Map<number, Map<string, PerSessionAttention>>();
 
 function recomputeAndBroadcastAttention(): void {
-  const perSession: Record<string, { attentionState: AttentionState; awaitingApproval: boolean }> = {};
+  const perSession: Record<string, PerSessionAttention> = {};
   let anyNeedsAttention = false;
   for (const byWin of attentionReports.values()) {
     for (const [sid, state] of byWin) {
@@ -424,6 +433,13 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
   // BrowserWindowConstructorOptions only supports boolean here.
   if (opts?.buddy) {
     win.setAlwaysOnTop(true, 'screen-saver');
+    // Exclude buddy windows from OS-level screen capture. Lets the
+    // capture-icon action screenshot the desktop underneath without a
+    // hide-and-snap flicker, AND keeps the personal floater out of
+    // screen shares / Zoom demos / OBS recordings. No-op on platforms
+    // without native exclusion support (old Win10 builds, Linux) — the
+    // capture handler falls back to opacity dimming in that case.
+    excludeFromCapture(win);
   }
 
 
@@ -1174,16 +1190,26 @@ app.whenReady().then(async () => {
   });
 
   // Desktop-capture action: screenshot the display the mascot sits on,
-  // excluding the buddy windows themselves. We use the portable
-  // hide-and-snap strategy because the alternatives don't hold up:
-  //   - Electron's setContentProtection paints the window as solid black
-  //     on Windows (WDA_MONITOR), which would leave three visible rects
-  //     in the shot instead of excluding them.
-  //   - The newer WDA_EXCLUDEFROMCAPTURE flag (Win 10 v2004+) isn't
-  //     wired through Electron.
-  //   - Cropping-around-the-buddies would miss the pixels underneath.
-  // The brief flicker of hide→capture→show is the cost of a clean
-  // underlying-desktop capture. Total wall time ≈ 100–200 ms.
+  // excluding the buddy windows themselves.
+  //
+  // Two exclusion strategies, picked at runtime:
+  //
+  // 1. NATIVE EXCLUSION (preferred). excludeFromCapture() applied to
+  //    each buddy window at creation time (Windows 10 build 19041+ via
+  //    WDA_EXCLUDEFROMCAPTURE; macOS via NSWindowSharingNone). Buddy
+  //    stays fully visible to the user but invisible to every screen-
+  //    capture API, including our own desktopCapturer. Zero flicker.
+  //
+  // 2. OPACITY-DIM FALLBACK. On older Win10, Linux, or if the koffi
+  //    binding failed to load, we dip the buddy windows to opacity 0
+  //    for ~60 ms, capture, and restore. One-frame flicker but still a
+  //    clean desktop shot. We chose opacity over hide/show because on
+  //    frameless+transparent+alwaysOnTop windows the hide path can
+  //    strand them invisible until the app restarts.
+  //
+  // Why NOT setContentProtection(true) on Windows: it maps to
+  // WDA_MONITOR which paints the window solid black during capture —
+  // three black rectangles in the screenshot.
   ipcMain.handle(IPC.BUDDY_CAPTURE_DESKTOP, async (): Promise<string | null> => {
     const { desktopCapturer } = require('electron') as typeof import('electron');
     const mascotWin = buddyManager.getMascotWindow();
@@ -1196,23 +1222,22 @@ app.whenReady().then(async () => {
       ? screen.getDisplayMatching(mascotWin.getBounds())
       : screen.getPrimaryDisplay();
 
-    // Snapshot which buddy windows are currently visible so we can
-    // restore exactly the same visibility state after the capture —
-    // don't force-show a chat that was hidden.
-    const wasMascotVisible = !!(mascotWin && !mascotWin.isDestroyed() && mascotWin.isVisible());
-    const wasChatVisible = !!(chatWin && !chatWin.isDestroyed() && chatWin.isVisible());
-    const wasCaptureVisible = !!(captureWin && !captureWin.isDestroyed() && captureWin.isVisible());
+    // If the platform supports native capture exclusion (set at window
+    // creation in createAppWindow), the buddies are already invisible to
+    // desktopCapturer and we skip the opacity dip entirely.
+    const needsOpacityFallback = !nativeCaptureExclusionAvailable();
+    const buddyWindows = needsOpacityFallback
+      ? [mascotWin, chatWin, captureWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
+      : [];
 
     try {
-      // Hide buddy surfaces. On Windows/macOS .hide() is synchronous from
-      // the API side, but the compositor still needs a frame or two to
-      // actually repaint without them. We give it ~120 ms — long enough
-      // that 60 Hz compositors on both platforms have flushed, short
-      // enough that the flicker is barely perceptible.
-      if (wasMascotVisible) mascotWin!.hide();
-      if (wasChatVisible) chatWin!.hide();
-      if (wasCaptureVisible) captureWin!.hide();
-      await new Promise<void>((r) => setTimeout(r, 120));
+      if (needsOpacityFallback) {
+        // One compositor frame (~16 ms) suffices; 60 ms cushions slower
+        // machines. The buddy is visually invisible during this window —
+        // reads as a single-frame flicker, NOT a vanishing event.
+        for (const w of buddyWindows) w.setOpacity(0);
+        await new Promise<void>((r) => setTimeout(r, 60));
+      }
 
       // Request thumbnails at physical pixel resolution so the saved
       // PNG is full-res, not a 150×150 thumbnail. display.size is in
@@ -1253,12 +1278,12 @@ app.whenReady().then(async () => {
       log('ERROR', 'Buddy', 'capture-desktop failed', { error: String(err) });
       return null;
     } finally {
-      // Always restore the pre-capture visibility — even on error, we
-      // don't want the buddy to vanish because of a screen-recording
-      // permission denial.
-      if (wasMascotVisible && mascotWin && !mascotWin.isDestroyed()) mascotWin.showInactive();
-      if (wasChatVisible && chatWin && !chatWin.isDestroyed()) chatWin.show();
-      if (wasCaptureVisible && captureWin && !captureWin.isDestroyed()) captureWin.showInactive();
+      // Always restore opacity — even on error — so a failed capture
+      // (e.g. macOS screen-recording permission denial) can't leave the
+      // buddy invisible. No-op when we didn't dip in the first place.
+      for (const w of buddyWindows) {
+        if (!w.isDestroyed()) w.setOpacity(1);
+      }
     }
   });
 
@@ -1275,6 +1300,7 @@ app.whenReady().then(async () => {
       byWin.set(payload.sessionId, {
         attentionState: payload.attentionState,
         awaitingApproval: payload.awaitingApproval,
+        status: payload.status,
       });
     }
     debouncedBroadcastAttention();
