@@ -57,26 +57,36 @@ export function registerIpcHandlers(
     }
   };
 
-  // Route a session-scoped emit to the window that owns the session. Falls
-  // back to the primary `mainWindow` if ownership is unknown (remote-created
-  // sessions during Phase 1; remote clients still get their copy via the
-  // parallel remoteServer.broadcast() calls). This is the single seam that
-  // makes per-session IPC multi-window-aware — adding a new session-scoped
-  // event type should use sendForSession, not send.
+  // Route a session-scoped emit to the owner AND any buddy subscribers.
+  // Ownership and subscription are independent (a buddy window observes a
+  // session without claiming ownership), so events must reach both. Falls
+  // back to the primary mainWindow when neither owner nor subscribers
+  // exist (preserves the existing pre-buddy fallback behavior for
+  // remote-created sessions during Phase 1).
   const sendForSession = (sessionId: string, channel: string, ...args: any[]) => {
-    const wid = windowRegistry?.getOwner(sessionId);
-    if (wid != null) {
-      // wid is a webContents.id, NOT a BrowserWindow.id — use webContents.fromId
-      // (different ID space; BrowserWindow.fromId silently returns null and we
-      // fall through to mainWindow, which made every peer-window event land in
-      // window 1).
-      const wc = webContents.fromId(wid);
-      if (wc && !wc.isDestroyed()) {
-        wc.send(channel, ...args);
-        return;
-      }
+    const ids = new Set<number>();
+    const ownerId = windowRegistry?.getOwner(sessionId);
+    if (ownerId != null) ids.add(ownerId);
+    if (windowRegistry) {
+      for (const subId of windowRegistry.getSubscribers(sessionId)) ids.add(subId);
     }
-    // Fallback: no known owner (e.g., remote-created session pre-assignment).
+    if (ids.size > 0) {
+      for (const wid of ids) {
+        // wid is a webContents.id, NOT a BrowserWindow.id — different ID
+        // spaces. BrowserWindow.fromId silently returns null for a
+        // webContents.id, so previously every peer-window event fell through
+        // to the mainWindow fallback (window 1). webContents.fromId does the
+        // correct lookup.
+        const wc = webContents.fromId(wid);
+        if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
+      }
+      return;
+    }
+    // Fallback: no known owner and no subscribers (e.g., remote-created
+    // session pre-assignment). Send to mainWindow so these orphaned events
+    // still reach a renderer. Note: if `ids` was non-empty but every target
+    // webContents was destroyed, the event is silently dropped — the fallback
+    // is only taken when no recipients were identified at all.
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   };
 
@@ -302,8 +312,19 @@ export function registerIpcHandlers(
     const info = sessionManager.createSession(opts);
     // Assign the new session to the calling window so per-session events (transcript,
     // pty output, permission prompts) route here once Task 1.4 migrates the emits.
+    //
+    // Exception: if the sender is a buddy window (the floater's compact chat),
+    // assign to the leader main window instead. Buddies don't appear in the
+    // switcher directory and shouldn't own sessions — otherwise the session
+    // would be invisible to every main window's session list. The buddy still
+    // sees the session via its subscribe() call in SessionPill.selectSession.
     if (windowRegistry) {
-      try { windowRegistry.assignSession(info.id, event.sender.id); }
+      let targetId = event.sender.id;
+      if (windowRegistry.getKind(event.sender.id) === 'buddy') {
+        const leader = windowRegistry.getLeaderId();
+        if (leader != null) targetId = leader;
+      }
+      try { windowRegistry.assignSession(info.id, targetId); }
       catch (e) { log('WARN', 'IPC', 'assignSession failed', { error: String(e) }); }
     }
     return info;
@@ -1415,6 +1436,15 @@ export function registerIpcHandlers(
     if (session) session.name = name;
     remoteServer?.broadcast({ type: 'session:renamed', payload: { sessionId: desktopId, name } });
     remoteServer?.setLastTopic(desktopId, name);
+    // Fan out a directory refresh so any renderer that reads session names
+    // from WINDOW_DIRECTORY_UPDATED (buddy SessionPill, main SessionStrip)
+    // picks up the new name. sendForSession(SESSION_RENAMED) only reaches
+    // the session's owner + subscribers — the buddy only subscribes to its
+    // ONE viewed session, so without this its dropdown shows stale names
+    // for every OTHER session. getDirectory() is the lazy snapshot; emit
+    // 'changed' triggers broadcastWindowState() in main.ts which rebuilds
+    // and pushes it.
+    windowRegistry?.emit('changed');
   }
 
   function readTopicFile(claudeSessionId: string): string | null {

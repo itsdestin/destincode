@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 import type { AuthStartResponse, AuthPollResponse, PostRatingInput } from '../renderer/state/marketplace-api-client';
 import type { MarketplaceUser } from './marketplace-auth-store';
 import type { ApiResult } from './marketplace-api-handlers';
+import type { AttentionSummary, AttentionReport } from '../shared/types';
 
 // IPC channel names inlined here because Electron's sandboxed preload
 // cannot resolve relative imports to other modules
@@ -188,6 +189,17 @@ const IPC = {
   CHAT_EXPORT_SNAPSHOT: 'chat:export-snapshot',
   CHAT_SNAPSHOT_RESPONSE: 'chat:snapshot-response',
   REMOTE_ATTENTION_CHANGED: 'remote:attention-changed',
+  // Buddy floater (desktop-only MVP)
+  BUDDY_SHOW: 'buddy:show',
+  BUDDY_HIDE: 'buddy:hide',
+  BUDDY_TOGGLE_CHAT: 'buddy:toggle-chat',
+  BUDDY_SET_SESSION: 'buddy:set-session',
+  BUDDY_SUBSCRIBE: 'buddy:subscribe',
+  BUDDY_UNSUBSCRIBE: 'buddy:unsubscribe',
+  BUDDY_GET_VIEWED_SESSION: 'buddy:get-viewed-session',
+  BUDDY_MOVE_MASCOT: 'buddy:move-mascot',
+  SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
+  ATTENTION_REPORT: 'attention:report',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -648,5 +660,28 @@ contextBridge.exposeInMainWorld('claude', {
     zoomOut: (): Promise<number> => ipcRenderer.invoke(IPC.ZOOM_OUT),
     reset: (): Promise<number> => ipcRenderer.invoke(IPC.ZOOM_RESET),
     get: (): Promise<number> => ipcRenderer.invoke(IPC.ZOOM_GET),
+  },
+  buddy: {
+    show: () => ipcRenderer.invoke(IPC.BUDDY_SHOW),
+    hide: () => ipcRenderer.invoke(IPC.BUDDY_HIDE),
+    toggleChat: () => ipcRenderer.invoke(IPC.BUDDY_TOGGLE_CHAT),
+    setSession: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_SET_SESSION, sessionId),
+    subscribe: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_SUBSCRIBE, sessionId),
+    unsubscribe: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_UNSUBSCRIBE, sessionId),
+    getViewedSession: () => ipcRenderer.invoke(IPC.BUDDY_GET_VIEWED_SESSION),
+    // Fire-and-forget: pointer drag fires ~60 events/sec; invoke() round-trips
+    // would starve the renderer. Main clamps to visible workArea.
+    moveMascot: (delta: { dx: number; dy: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, delta),
+    onAttentionSummary: (cb: (summary: AttentionSummary) => void) => {
+      const listener = (_: unknown, summary: AttentionSummary) => cb(summary);
+      ipcRenderer.on(IPC.SESSION_ATTENTION_SUMMARY, listener);
+      return () => ipcRenderer.removeListener(IPC.SESSION_ATTENTION_SUMMARY, listener);
+    },
+  },
+  // Renderer pushes per-session attention state to main whenever the chat
+  // reducer's ATTENTION_STATE_CHANGED fires. Main aggregates across all windows
+  // and broadcasts a global AttentionSummary to buddy subscribers.
+  attention: {
+    report: (payload: AttentionReport) => ipcRenderer.send(IPC.ATTENTION_REPORT, payload),
   },
 });

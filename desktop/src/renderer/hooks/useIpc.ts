@@ -117,6 +117,21 @@ declare global {
           reason?: string;
         }): Promise<ApiResult<void>>;
       };
+      buddy: import('../../shared/types').BuddyApi;
+      attention: import('../../shared/types').AttentionApi;
+      // Multi-window detach / window directory APIs.
+      // Shape mirrors preload.ts detach block; typed loosely here so the buddy
+      // components can call them without importing from main across the boundary.
+      detach: {
+        getDirectory: () => Promise<import('../../shared/types').WindowDirectory>;
+        onDirectoryUpdated: (cb: (dir: import('../../shared/types').WindowDirectory) => void) => () => void;
+        requestTranscriptReplay: (sessionId: string) => void;
+      };
+      // App-level defaults (skipPermissions, model, projectFolder).
+      defaults: {
+        get: () => Promise<{ skipPermissions: boolean; model: string; projectFolder: string }>;
+        set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>) => Promise<any>;
+      };
     };
   }
 }

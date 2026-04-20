@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./buddy.css";
 
 @source "../../";
 
@@ -338,7 +339,12 @@ html, body, #root {
    shows through. On desktop, xterm draws on top of these layers, so they
    stay visible in both modes. */
 html[data-platform="android"][data-view-mode="terminal"] #theme-bg,
-html[data-platform="android"][data-view-mode="terminal"] #theme-pattern {
+html[data-platform="android"][data-view-mode="terminal"] #theme-pattern,
+/* Buddy windows (mascot + chat) should not render the theme background
+   layer — they are transparent floating windows, not the main canvas.
+   body background handled by buddy.css. */
+body[data-mode="buddy-mascot"] #theme-bg,
+body[data-mode="buddy-chat"] #theme-bg {
   display: none;
 }
 

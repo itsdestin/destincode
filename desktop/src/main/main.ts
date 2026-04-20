@@ -11,7 +11,7 @@ import { registerIpcHandlers } from './ipc-handlers';
 import { RemoteServer } from './remote-server';
 import { RemoteConfig } from './remote-config';
 import { LocalSkillProvider } from './skill-provider';
-import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT } from '../shared/types';
+import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT, type AttentionState, type AttentionSummary, type AttentionReport } from '../shared/types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
@@ -22,6 +22,7 @@ import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
+import { BuddyWindowManager } from './buddy-window-manager';
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
@@ -55,6 +56,11 @@ let ghPath = 'gh';
 try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
 let mainWindow: BrowserWindow | null = null;
+// Module-level ref so createAppWindow's 'closed' handler can reach the
+// BuddyWindowManager (defined later inside the ready-handler closure).
+// Assigned once during setup; `createAppWindow` uses it to hide the buddy
+// when the last main window closes (spec §7.6).
+let buddyManagerRef: BuddyWindowManager | null = null;
 let cleanupIpcHandlers: (() => void) | null = null;
 const sessionManager = new SessionManager();
 
@@ -283,26 +289,121 @@ function registerFirstRunIpc(
   });
 }
 
+// Module-scope attention aggregator. Declared here (not inside app.whenReady)
+// so both createAppWindow's 'closed' handler and the ipcMain.on handler inside
+// app.whenReady can close over the same references.
+//
+// Key: webContents.id of the reporting window.
+// Value: Map from sessionId → { attentionState, awaitingApproval }.
+//
+// Each renderer pushes updates via attention:report whenever the chat reducer's
+// ATTENTION_STATE_CHANGED fires. Main aggregates and broadcasts
+// session:attention-summary to all windows so buddy mascot can react.
+const attentionReports = new Map<number, Map<string, { attentionState: AttentionState; awaitingApproval: boolean }>>();
+
+function recomputeAndBroadcastAttention(): void {
+  const perSession: Record<string, { attentionState: AttentionState; awaitingApproval: boolean }> = {};
+  let anyNeedsAttention = false;
+  for (const byWin of attentionReports.values()) {
+    for (const [sid, state] of byWin) {
+      perSession[sid] = state;
+      // 'ok' and 'session-died' are passive states — only non-ok, non-died
+      // states (stuck, awaiting-input, shell-idle, error) plus active
+      // awaiting-approval tools count as needing attention.
+      if (state.awaitingApproval || (state.attentionState !== 'ok' && state.attentionState !== 'session-died')) {
+        anyNeedsAttention = true;
+      }
+    }
+  }
+  const summary: AttentionSummary = { anyNeedsAttention, perSession };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.SESSION_ATTENTION_SUMMARY, summary);
+  }
+}
+
+// 100ms debounce — coalesces bursts of classifier transitions so buddy
+// doesn't get flooded when multiple sessions update in quick succession.
+const debouncedBroadcastAttention = (() => {
+  let t: NodeJS.Timeout | null = null;
+  return () => {
+    if (t) clearTimeout(t);
+    t = setTimeout(recomputeAndBroadcastAttention, 100);
+  };
+})();
+
 // Shared BrowserWindow factory — used for the primary window AND for peer
 // windows spawned by the detach subsystem. Keeps webPreferences, security
 // hardening, and fullscreen relay consistent across every window so renderers
 // don't have to guess which features are available.
-function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean }): BrowserWindow {
+function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const isMac = process.platform === 'darwin';
 
+  // Buddy windows use a pure-transparent Electron surface — the "glass"
+  // effect is produced entirely in CSS (see buddy.css). We explored native
+  // OS glass (Win 11 backgroundMaterial:'acrylic', macOS vibrancy) but
+  // every path had deal-breakers:
+  //   - Electron 41 frameless bug #38466/#39959: backgroundMaterial silently
+  //     fails when applied at construction on frameless windows
+  //   - OS-level fallback: Windows "Transparency effects" OFF or Energy
+  //     Saver ON silently drops acrylic to a solid dark fallback, and we
+  //     can't depend on user OS settings
+  //   - Corner-sliver mismatch: OS ~8px radius vs CSS 18px radius leaves
+  //     visible acrylic strips in the 4 corners
+  // Instead, glass is faked in CSS via theme-driven panel tint + gradient
+  // overlay + inner-edge highlight + drop shadow. Modern design systems
+  // (Fluent, Material, Apple HIG) do this too — the "glass" readability
+  // comes from surface tonality, not from crisp real-blur of content behind.
+  // Tradeoff: the ~10% of the user's desktop visible through the bubble is
+  // unblurred. Acceptable; nothing else is OS-independent.
+  //
+  // These flags together kill every OS paint source that could show as a
+  // faint rectangle around transparent web content:
+  //  - transparent:true + backgroundColor:'#00000000' = RGBA (0,0,0,0)
+  //    native surface (Electron on some Win builds paints an opaque default
+  //    behind web content without this)
+  //  - thickFrame:false drops WS_THICKFRAME, which otherwise leaves a DWM
+  //    shadow + window-animation chrome visible as a faint rectangle
+  //  - roundedCorners:false: Windows 11 rounds frameless windows by default;
+  //    on the 80×80 mascot that reads as a visible 8px radius border
+  const buddyExtras: Electron.BrowserWindowConstructorOptions = opts?.buddy
+    ? {
+        transparent: true,
+        frame: false,
+        resizable: false,
+        alwaysOnTop: true,
+        hasShadow: false,
+        skipTaskbar: true,
+        backgroundColor: '#00000000',
+        thickFrame: false,
+        roundedCorners: false,
+        autoHideMenuBar: true,
+        // Exclude buddy windows from macOS Dock + Mission Control
+        ...(isMac ? { type: 'panel' as const } : {}),
+      }
+    : {};
+
+  // Buddy window dimensions: mascot = 80×80; chat = 320×480
+  const buddyDimensions: { width?: number; height?: number } = opts?.buddy === 'mascot'
+    ? { width: 80, height: 80 }
+    : opts?.buddy === 'chat'
+    ? { width: 320, height: 480 }
+    : {};
+
   const win = new BrowserWindow({
-    width: opts?.width ?? 1200,
-    height: opts?.height ?? 800,
+    width: buddyDimensions.width ?? opts?.width ?? 1200,
+    height: buddyDimensions.height ?? opts?.height ?? 800,
     x: opts?.x,
     y: opts?.y,
     icon,
-    titleBarStyle: isMac ? 'hiddenInset' as const : 'hidden' as const,
+    titleBarStyle: opts?.buddy ? undefined : (isMac ? 'hiddenInset' as const : 'hidden' as const),
     // Live tear-off spawns this window mid-drag and needs the source window to
     // keep keyboard/pointer focus. show: false + showInactive() below prevents
     // the OS from focusing the new window on creation.
-    show: !opts?.inactive,
+    // Buddy windows start hidden — BuddyWindowManager will show them explicitly.
+    show: !opts?.inactive && !opts?.buddy,
+    ...buddyExtras,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -310,6 +411,15 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
       sandbox: true,
     },
   });
+
+  // Lift alwaysOnTop to 'screen-saver' level for buddy windows after construction.
+  // 'screen-saver' is the highest reliable always-on-top level; floats over
+  // minimized apps on Win/Mac/Linux. Applied after construction because
+  // BrowserWindowConstructorOptions only supports boolean here.
+  if (opts?.buddy) {
+    win.setAlwaysOnTop(true, 'screen-saver');
+  }
+
 
   if (opts?.inactive) {
     win.webContents.once('did-finish-load', () => {
@@ -337,8 +447,16 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
 
   if (opts?.maximize) win.maximize();
 
-  if (!app.isPackaged) win.loadURL(DEV_SERVER_URL);
-  else win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  // Append mode query param for buddy windows so React can branch on the mode
+  const modeQuery = opts?.buddy ? `?mode=buddy-${opts.buddy}` : '';
+  if (!app.isPackaged) {
+    win.loadURL(`${DEV_SERVER_URL}${modeQuery}`);
+  } else {
+    win.loadFile(path.join(__dirname, '../renderer/index.html'), {
+      // loadFile expects search string WITHOUT the leading '?'
+      search: modeQuery ? modeQuery.slice(1) : undefined,
+    });
+  }
 
   // Auto-open DevTools in dev — the app's menu is nulled so F12/Ctrl+Shift+I
   // don't work by default. Opens detached so it doesn't steal window width.
@@ -359,11 +477,38 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
   });
 
   // Register with the ownership registry so per-session events can route here
-  // and the switcher in other windows sees this window in its directory.
+  // and (main windows only) the switcher in other windows sees this window in
+  // its directory. Buddy windows register as kind 'buddy' so they stay out of
+  // the switcher's "Sessions in other windows" group — the floater is not
+  // "another window" from the user's point of view — but subscriptions still
+  // work (subscribe() rejects unknown ids).
   const wid = win.webContents.id;
-  windowRegistry.registerWindow(wid, Date.now());
+  windowRegistry.registerWindow(wid, Date.now(), opts?.buddy ? 'buddy' : 'main');
   win.on('closed', () => {
+    // Drop attention reports contributed by this window so stale session
+    // states from a closed window don't persist in the aggregated summary.
+    attentionReports.delete(wid);
+    debouncedBroadcastAttention();
     windowRegistry.unregisterWindow(wid);
+    // Spec §7.6: "Buddy closes with main." If this was the last main window
+    // (i.e., all remaining open windows are buddy windows), tear down the
+    // buddy so Electron's window-all-closed handler can fire and the app
+    // can quit cleanly on Win/Linux. Without this, closing the main window
+    // leaves a floating mascot orphaned with no settings UI to reach — the
+    // user has to force-quit via Task Manager, which the user just hit.
+    if (!opts?.buddy && buddyManagerRef) {
+      const mgr = buddyManagerRef;
+      const remainingMain = BrowserWindow.getAllWindows().some((w) => {
+        if (w === win) return false; // the one closing right now
+        if (w.isDestroyed()) return false;
+        // Our buddy windows are the two BuddyWindowManager owns. Anything
+        // else is a main/peer window.
+        return !mgr.isBuddyWindow(w);
+      });
+      if (!remainingMain) {
+        mgr.hide();
+      }
+    }
   });
 
   // Confirm-on-close if this window still owns active sessions. Without the
@@ -372,6 +517,10 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
   // prompt from re-firing after the user confirms.
   let confirmedClose = false;
   win.on('close', async (ev) => {
+    // Buddy windows never own sessions (they only subscribe). Skip the
+    // close-confirmation entirely so a floating widget never gets blocked
+    // by a "kill sessions?" dialog that wouldn't make sense in that UI.
+    if (opts?.buddy) return;
     if (confirmedClose) return;
     const ownedSessions = windowRegistry.sessionsForWindow(wid);
     if (ownedSessions.length === 0) return; // no sessions — close freely
@@ -964,6 +1113,77 @@ app.whenReady().then(async () => {
 
   createWindow(isFirstRun ? firstRunManager : undefined);
   registerDetachIpc();
+
+  // Buddy window position persistence — JSON file in userData so restarts
+  // restore the mascot and chat to where the user left them. Keyed by
+  // 'mascot' / 'chat'.
+  const BUDDY_POS_FILE = path.join(app.getPath('userData'), 'buddy-positions.json');
+  function loadBuddyPositions(): Record<string, { x: number; y: number } | undefined> {
+    try { return JSON.parse(fs.readFileSync(BUDDY_POS_FILE, 'utf8')); } catch { return {}; }
+  }
+  function saveBuddyPositions(obj: Record<string, { x: number; y: number } | undefined>): void {
+    try { fs.writeFileSync(BUDDY_POS_FILE, JSON.stringify(obj)); } catch {}
+  }
+  const buddyPositions = loadBuddyPositions();
+
+  const buddyManager = new BuddyWindowManager({
+    createBuddyWindow: (variant, { x, y }) => createAppWindow({ x, y, buddy: variant }),
+    getPersistedPosition: (key) => buddyPositions[key] ?? null,
+    setPersistedPosition: (key, pos) => {
+      buddyPositions[key] = pos;
+      saveBuddyPositions(buddyPositions);
+    },
+    registry: windowRegistry,
+    mainWindow: () => mainWindow,
+  });
+  // Publish to module scope so createAppWindow's 'closed' handler can see it.
+  buddyManagerRef = buddyManager;
+
+  ipcMain.handle(IPC.BUDDY_SHOW, () => buddyManager.show());
+  ipcMain.handle(IPC.BUDDY_HIDE, () => buddyManager.hide());
+  ipcMain.handle(IPC.BUDDY_TOGGLE_CHAT, () => buddyManager.toggleChat());
+  ipcMain.handle(IPC.BUDDY_SET_SESSION, (_evt, sessionId: string) => {
+    buddyManager.setViewedSession(sessionId);
+  });
+  ipcMain.handle(IPC.BUDDY_SUBSCRIBE, (evt, sessionId: string) => {
+    windowRegistry.subscribe(sessionId, evt.sender.id);
+    // No replay kick is needed here — the renderer calls
+    // window.claude.detach.requestTranscriptReplay(sessionId) right after
+    // subscribe resolves, which sends IPC.TRANSCRIPT_REPLAY; history
+    // streams back via the normal TRANSCRIPT_EVENT channel, which reaches
+    // owner ∪ subscribers (including this new subscription) thanks to A2.
+  });
+  ipcMain.handle(IPC.BUDDY_UNSUBSCRIBE, (evt, sessionId: string) => {
+    windowRegistry.unsubscribe(sessionId, evt.sender.id);
+  });
+  ipcMain.handle(IPC.BUDDY_GET_VIEWED_SESSION, () => buddyManager.getViewedSession());
+  // Fire-and-forget drag handler. High-frequency (one event per pointermove);
+  // using ipcMain.on rather than ipcMain.handle avoids the async round-trip.
+  // CSS -webkit-app-region: drag was removed from BuddyMascot because on
+  // Windows Electron implements it via WM_NCHITTEST → HTCAPTION, which makes
+  // the OS consume all pointer events for window dragging — the renderer
+  // never gets pointerup, so click-to-toggle-chat never fires.
+  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, delta: { dx: number; dy: number }) => {
+    buddyManager.moveMascot(delta.dx, delta.dy);
+  });
+
+  // Wire the attention:report IPC channel. Renderers push per-session states
+  // here; module-scope attentionReports + debouncedBroadcastAttention aggregate
+  // and fan out the summary. The Map and debouncer are module-scope so the
+  // 'closed' handler in createAppWindow can also clean up on window removal.
+  ipcMain.on(IPC.ATTENTION_REPORT, (evt, payload: AttentionReport) => {
+    let byWin = attentionReports.get(evt.sender.id);
+    if (!byWin) { byWin = new Map(); attentionReports.set(evt.sender.id, byWin); }
+    if ('clear' in payload) {
+      byWin.delete(payload.sessionId);
+    } else {
+      byWin.set(payload.sessionId, {
+        attentionState: payload.attentionState,
+        awaitingApproval: payload.awaitingApproval,
+      });
+    }
+    debouncedBroadcastAttention();
+  });
 
   // Start native sync service — owns push/pull lifecycle, background timer,
   // session-end sync. Replaces bash hook sync when app is running.

@@ -401,6 +401,48 @@ export interface IntegrationState {
   error?: string;
 }
 
+// AttentionState drives the UI decision between ThinkingIndicator (ok) and
+// the AttentionBanner (everything else). A classifier reads the PTY buffer
+// and maps its conclusions onto these states; process-exit events also
+// transition to 'session-died' directly. See docs/chat-reducer.md.
+export type AttentionState =
+  | 'ok'              // Default — indicator renders if isThinking
+  | 'awaiting-input'  // PTY shows a non-hook prompt (CLI-level confirm, etc.)
+  | 'shell-idle'      // PTY shows bash/shell prompt; session not actively running
+  | 'error'           // PTY tail matches error pattern
+  | 'stuck'           // Spinner frame stale ≥ 10s OR unknown silence > 60s
+  | 'session-died';   // Process exited mid-turn
+
+export interface AttentionSummary {
+  anyNeedsAttention: boolean;
+  perSession: Record<string, { attentionState: AttentionState; awaitingApproval: boolean }>;
+}
+
+// Payload sent by renderer → main via the attention:report IPC channel.
+// Main aggregates these across all windows and broadcasts an AttentionSummary.
+// The 'clear' variant fires when a session is removed from the renderer.
+export type AttentionReport =
+  | { sessionId: string; attentionState: AttentionState; awaitingApproval: boolean }
+  | { sessionId: string; clear: true };
+
+export interface AttentionApi {
+  report(payload: AttentionReport): void;
+}
+
+export interface BuddyApi {
+  show(): Promise<void>;
+  hide(): Promise<void>;
+  toggleChat(): Promise<void>;
+  setSession(sessionId: string): Promise<void>;
+  subscribe(sessionId: string): Promise<void>;
+  unsubscribe(sessionId: string): Promise<void>;
+  getViewedSession(): Promise<string | null>;
+  // Fire-and-forget. Called by BuddyMascot during pointer drag; main
+  // moves the window by the supplied delta (clamped to visible workArea).
+  moveMascot(delta: { dx: number; dy: number }): void;
+  onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
+}
+
 // Marketplace redesign Phase 1 — per-entry component inventory for the
 // "What's inside" peek on cards and detail overlays. Extracted at sync time
 // by scripts/extract-components.js; `null` on the entry signals extraction
@@ -656,6 +698,20 @@ export const IPC = {
   SYNC_RESTORE_DELETE_SNAPSHOT: 'sync:restore:delete-snapshot',
   SYNC_RESTORE_PROBE: 'sync:restore:probe',
   SYNC_RESTORE_BROWSE_URL: 'sync:restore:browse-url',
+  // Buddy floater (desktop-only MVP)
+  BUDDY_SHOW: 'buddy:show',
+  BUDDY_HIDE: 'buddy:hide',
+  BUDDY_TOGGLE_CHAT: 'buddy:toggle-chat',
+  BUDDY_SET_SESSION: 'buddy:set-session',
+  BUDDY_SUBSCRIBE: 'buddy:subscribe',
+  BUDDY_UNSUBSCRIBE: 'buddy:unsubscribe',
+  BUDDY_GET_VIEWED_SESSION: 'buddy:get-viewed-session',
+  // Renderer → main drag events. Fire-and-forget because drag generates
+  // ~60 events/sec while the pointer moves; invoke() round-trips would
+  // starve the renderer's event loop. Main clamps and calls setPosition.
+  BUDDY_MOVE_MASCOT: 'buddy:move-mascot',
+  SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
+  ATTENTION_REPORT: 'attention:report',
 } as const;
 
 // --- Window registry / detach types ---

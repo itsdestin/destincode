@@ -42,7 +42,7 @@ import ThemeShareSheet from './components/ThemeShareSheet';
 import SkillEditor from './components/SkillEditor';
 import ShareSheet from './components/ShareSheet';
 
-import type { SkillEntry, PermissionMode } from '../shared/types';
+import type { SkillEntry, PermissionMode, AttentionState } from '../shared/types';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -54,8 +54,15 @@ import { WorkerHealthProvider, useWorkerHealth } from './state/worker-health-con
 import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
+import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
+import { BuddyChatApp } from './components/buddy/BuddyChatApp';
 
 type ViewMode = 'chat' | 'terminal';
+
+// Detect buddy mode from URL query param — computed at module scope, before component render
+const buddyMode = new URLSearchParams(
+  typeof window !== 'undefined' ? window.location.search : ''
+).get('mode');
 
 // --- Sound notifications (shared engine) ---
 import { playSound } from './utils/sounds';
@@ -286,6 +293,42 @@ function AppInner() {
       }
     }
   }, [chatStateMap, dispatch]);
+
+  // Attention reporter: push per-session attention state to main whenever
+  // chatStateMap changes. Main aggregates across all windows and broadcasts
+  // session:attention-summary so the buddy mascot can react in real time.
+  //
+  // A ref-based diff ensures we only report when state actually changes —
+  // chatStateMap is a new Map reference on every dispatch, so we compare
+  // the derived {attentionState, awaitingApproval} pair before sending.
+  // Session removal sends { clear: true } so main drops stale entries.
+  const lastAttentionReportedRef = useRef<Map<string, { attentionState: AttentionState; awaitingApproval: boolean }>>(new Map());
+  useEffect(() => {
+    const prev = lastAttentionReportedRef.current;
+    const currentIds = new Set<string>();
+    for (const [sessionId, state] of chatStateMap) {
+      currentIds.add(sessionId);
+      let awaitingApproval = false;
+      for (const id of state.activeTurnToolIds) {
+        const t = state.toolCalls.get(id);
+        if (t?.status === 'awaiting-approval') { awaitingApproval = true; break; }
+      }
+      const next = { attentionState: state.attentionState, awaitingApproval };
+      const last = prev.get(sessionId);
+      if (!last || last.attentionState !== next.attentionState || last.awaitingApproval !== next.awaitingApproval) {
+        window.claude.attention.report({ sessionId, ...next });
+        prev.set(sessionId, next);
+      }
+    }
+    // Session removal — send clear so main drops the stale entry
+    for (const sid of prev.keys()) {
+      if (!currentIds.has(sid)) {
+        window.claude.attention.report({ sessionId: sid, clear: true });
+        prev.delete(sid);
+      }
+    }
+  }, [chatStateMap]);
+
   const gameState = useGameState();
   const gameDispatch = useGameDispatch();
   // Gate on isLeader so only the first-launched window opens the lobby
@@ -1967,6 +2010,22 @@ function StatsWithHealthBridge({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Auto-show buddy on launch if the user previously enabled it. The effect
+  // is called unconditionally (React rules-of-hooks) but no-ops inside
+  // buddy windows themselves — only the main window should re-open the
+  // buddy. Optional chaining guards against preload not being ready.
+  useEffect(() => {
+    if (buddyMode) return;
+    if (localStorage.getItem('youcoded-buddy-enabled') === '1') {
+      window.claude.buddy?.show?.();
+    }
+  }, []);
+
+  // Buddy windows render as isolated placeholders without main-app providers
+  if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
+  if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
+
+  // Main app wrapped in providers
   return (
     // Root boundary catches provider-level crashes that sub-tree boundaries can't.
     // Uses inline styles only — no theme tokens, no context — so it renders even

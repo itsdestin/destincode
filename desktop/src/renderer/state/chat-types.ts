@@ -1,7 +1,7 @@
-import { ChatMessage, ToolCallState, ToolGroupState } from '../../shared/types';
-// Re-export so test files and future consumers can import ToolCallState from
+import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState } from '../../shared/types';
+// Re-export so test files and future consumers can import these types from
 // chat-types directly, without reaching into the shared/types boundary.
-export type { ToolCallState };
+export type { ToolCallState, AttentionState };
 
 export interface InteractivePrompt {
   promptId: string;
@@ -101,18 +101,6 @@ export type TimelineEntry =
   | { kind: 'compacting'; id: string; startedAt: number }
   // /copy picker when the target turn has multiple copyable blocks
   | { kind: 'copy-picker'; id: string; options: CopyPickerOption[] };
-
-// AttentionState drives the UI decision between ThinkingIndicator (ok) and
-// the AttentionBanner (everything else). A classifier reads the PTY buffer
-// and maps its conclusions onto these states; process-exit events also
-// transition to 'session-died' directly. See docs/chat-reducer.md.
-export type AttentionState =
-  | 'ok'              // Default — indicator renders if isThinking
-  | 'awaiting-input'  // PTY shows a non-hook prompt (CLI-level confirm, etc.)
-  | 'shell-idle'      // PTY shows bash/shell prompt; session not actively running
-  | 'error'           // PTY tail matches error pattern
-  | 'stuck'           // Spinner frame stale ≥ 10s OR unknown silence > 60s
-  | 'session-died';   // Process exited mid-turn
 
 export interface SessionChatState {
   timeline: TimelineEntry[];

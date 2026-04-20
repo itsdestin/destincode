@@ -883,6 +883,7 @@ export function installShim(): void {
     // without runtime errors. dropResolve resolves to null (no hit) so the
     // source's pointerUp falls through to the local reorder path.
     detach: {
+      getDirectory: () => Promise.resolve({ leaderWindowId: -1, windows: [] }),
       onDirectoryUpdated: (_cb: (dir: any) => void) => () => {},
       onLeaderChanged: (_cb: (id: number) => void) => () => {},
       onOwnershipAcquired: (_cb: (p: any) => void) => () => {},
@@ -896,6 +897,28 @@ export function installShim(): void {
       openDetached: (_p: any) => {},
       requestTranscriptReplay: (_sid: string) => {},
       dropResolve: () => Promise.resolve({ targetWindowId: null as number | null }),
+    },
+    // Buddy floater is desktop-Electron only (MVP). Browser/Android get
+    // error-throwing stubs except onAttentionSummary which returns a no-op unsubscribe.
+    buddy: {
+      show: () => { throw new Error('Buddy is desktop-only in this version'); },
+      hide: () => { throw new Error('Buddy is desktop-only in this version'); },
+      toggleChat: () => { throw new Error('Buddy is desktop-only in this version'); },
+      setSession: () => { throw new Error('Buddy is desktop-only in this version'); },
+      subscribe: () => { throw new Error('Buddy is desktop-only in this version'); },
+      unsubscribe: () => { throw new Error('Buddy is desktop-only in this version'); },
+      getViewedSession: () => { throw new Error('Buddy is desktop-only in this version'); },
+      // No-op (not throw): drag handlers fire constantly while the user moves
+      // the pointer; throwing would spam the console on any platform where
+      // the buddy mascot window somehow loaded remote-shim (shouldn't happen,
+      // but the cost of being defensive is one line).
+      moveMascot: (_d: { dx: number; dy: number }) => { /* desktop-only */ },
+      onAttentionSummary: () => () => { /* no-op unsubscribe */ },
+    },
+    // Remote clients do not participate in buddy attention aggregation —
+    // main-process aggregation is desktop-Electron only.
+    attention: {
+      report: () => { /* no-op: buddy attention summary is desktop-only */ },
     },
   };
 }
