@@ -290,6 +290,43 @@ class SkillConfigStore(private val homeDir: File) {
         save()
     }
 
+    // ── Theme Favorites ───────────────────────────────────────────
+
+    /** Seed matches Node desktop's DEFAULT_THEME_FAVORITES in skill-config-store.ts. */
+    private val defaultThemeFavorites = listOf("light", "dark", "midnight", "creme")
+
+    /**
+     * Returns the current theme favorites list. Seeds with defaults only when
+     * the `themeFavorites` key is absent from the config — an explicitly empty
+     * array is preserved as-is (user cleared all favorites intentionally).
+     */
+    fun getThemeFavorites(): List<String> {
+        if (!config.has("themeFavorites")) {
+            // Key missing — seed with defaults (matches Node desktop cold-start behavior)
+            config.put("themeFavorites", JSONArray(defaultThemeFavorites))
+            save()
+        }
+        val arr = config.optJSONArray("themeFavorites") ?: return defaultThemeFavorites
+        return (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }
+    }
+
+    /**
+     * Adds or removes a theme slug from the favorites list. Empty slug is a
+     * no-op. Returns the updated list so the caller can respond immediately
+     * without a second read.
+     */
+    fun setThemeFavorite(slug: String, favorited: Boolean) {
+        if (slug.isEmpty()) return
+        val current = getThemeFavorites().toMutableList()
+        if (favorited && slug !in current) {
+            current.add(slug)
+        } else if (!favorited) {
+            current.remove(slug)
+        }
+        config.put("themeFavorites", JSONArray(current))
+        save()
+    }
+
     // ── Chips ──────────────────────────────────────────────────────
 
     fun getChips(): JSONArray = config.optJSONArray("chips") ?: defaultChipsJson()

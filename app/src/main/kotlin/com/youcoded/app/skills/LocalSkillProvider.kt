@@ -424,6 +424,8 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
     fun invalidateCache() { installedCache = null }
     fun getFavorites(): JSONArray = configStore.getFavorites()
     fun setFavorite(id: String, favorited: Boolean) = configStore.setFavorite(id, favorited)
+    fun getThemeFavorites(): JSONArray = JSONArray(configStore.getThemeFavorites())
+    fun setThemeFavorite(slug: String, favorited: Boolean) = configStore.setThemeFavorite(slug, favorited)
     fun getChips(): JSONArray = configStore.getChips()
     fun setChips(chips: JSONArray) = configStore.setChips(chips)
     fun getOverride(id: String): Any = configStore.getOverride(id) ?: JSONObject.NULL
