@@ -75,6 +75,9 @@ interface MarketplaceState {
   // Installed content (merged from all sources)
   installedSkills: SkillEntry[];
   favorites: string[];
+  themeFavorites: string[];
+  installingIds: Set<string>;
+  installError: Map<string, { message: string; at: number }>;
   // Loading/error state
   loading: boolean;
   error: string | null;
@@ -90,6 +93,7 @@ interface MarketplaceActions {
   update: (id: string, type: 'skill' | 'theme') => Promise<any>;
   // Favorites
   setFavorite: (id: string, favorited: boolean) => Promise<void>;
+  favoriteTheme: (slug: string, favorited: boolean) => Promise<void>;
   // Refresh data
   refresh: () => Promise<void>;
   // Phase 4a: publish a user-created skill to the community marketplace via PR
@@ -117,6 +121,9 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   const [packages, setPackages] = useState<Record<string, PackageInfo>>({});
   const [installedSkills, setInstalledSkills] = useState<SkillEntry[]>([]);
   const [favorites, setFavoritesState] = useState<string[]>([]);
+  const [themeFavorites, setThemeFavoritesState] = useState<string[]>([]);
+  const [installingIds, setInstallingIds] = useState<Set<string>>(() => new Set());
+  const [installError, setInstallError] = useState<Map<string, { message: string; at: number }>>(() => new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Guard against stale fetchAll responses when rapid install/uninstall triggers concurrent fetches
@@ -141,6 +148,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
         themes,
         installed,
         favs,
+        themeFavs,
         pkgs,
         feat,
       ] = await Promise.all([
@@ -148,6 +156,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
         claude().theme.marketplace.list().catch(() => []),
         window.claude.skills.list(),
         window.claude.skills.getFavorites(),
+        claude().appearance.getFavoriteThemes().catch(() => []),
         marketplaceApi?.getPackages?.().catch(() => ({})) ?? Promise.resolve({}),
         featuredCall,
       ]);
@@ -168,6 +177,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       setThemeEntries(themes || []);
       setInstalledSkills(installed || []);
       setFavoritesState(favs || []);
+      setThemeFavoritesState(themeFavs || []);
       setPackages((pkgs as Record<string, PackageInfo>) || {});
       setFeatured((feat && typeof feat === 'object') ? feat : { hero: [], rails: [] });
     } catch (err: any) {
@@ -182,61 +192,136 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
+  // Renderer-only install-tracking. Keys: `skill:<id>` | `theme:<slug>`.
+  // Cleared in `finally` AFTER `fetchAll()` resolves — clearing before would
+  // briefly flash Install → Installed because installed-state derivation
+  // hasn't caught up.
+  const markInstalling = useCallback((key: string) => {
+    setInstallingIds(prev => { const n = new Set(prev); n.add(key); return n; });
+  }, []);
+  const clearInstalling = useCallback((key: string) => {
+    setInstallingIds(prev => { const n = new Set(prev); n.delete(key); return n; });
+  }, []);
+  const recordInstallError = useCallback((key: string, message: string) => {
+    setInstallError(prev => { const n = new Map(prev); n.set(key, { message, at: Date.now() }); return n; });
+    // Auto-clear after 6s
+    setTimeout(() => {
+      setInstallError(prev => {
+        const entry = prev.get(key);
+        if (!entry || Date.now() - entry.at < 6000) return prev;
+        const n = new Map(prev); n.delete(key); return n;
+      });
+    }, 6500);
+  }, []);
+
   const installSkill = useCallback(async (id: string) => {
-    await window.claude.skills.install(id);
-    // Fire install telemetry after successful local install. Non-blocking — we
-    // never fail a local install because the Worker is down. Skip silently when
-    // signed out (anonymous installs = no telemetry).
-    // Cast via claude() (any) because marketplaceApi + marketplaceAuth are exposed
-    // in preload/remote-shim but not yet reflected in window.claude's TS type.
+    const key = `skill:${id}`;
+    markInstalling(key);
     try {
-      const signedIn = await claude().marketplaceAuth.signedIn();
-      if (signedIn) {
-        const res = await claude().marketplaceApi.install(id);
-        if (!res.ok) {
-          console.warn("[marketplace] install telemetry failed:", res.status, res.message);
+      await window.claude.skills.install(id);
+      // Fire install telemetry after successful local install. Non-blocking — we
+      // never fail a local install because the Worker is down. Skip silently when
+      // signed out (anonymous installs = no telemetry).
+      // Cast via claude() (any) because marketplaceApi + marketplaceAuth are exposed
+      // in preload/remote-shim but not yet reflected in window.claude's TS type.
+      try {
+        const signedIn = await claude().marketplaceAuth.signedIn();
+        if (signedIn) {
+          const res = await claude().marketplaceApi.install(id);
+          if (!res.ok) console.warn("[marketplace] install telemetry failed:", res.status, res.message);
         }
+      } catch (err) {
+        console.warn("[marketplace] install telemetry threw (non-fatal):", err);
       }
-    } catch (err) {
-      console.warn("[marketplace] install telemetry threw (non-fatal):", err);
+      // Auto-favorite on install so newly-added skills appear at the top of
+      // the Command Drawer immediately. User can unstar at any time.
+      try { await window.claude.skills.setFavorite(id, true); } catch {}
+      await fetchAll();  // Refresh state BEFORE clearing installing flag
+    } catch (err: any) {
+      recordInstallError(key, err?.message || 'Install failed');
+      throw err;
+    } finally {
+      clearInstalling(key);
     }
-    await fetchAll(); // Refresh all state after install
-  }, [fetchAll]);
+  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
 
   const uninstallSkill = useCallback(async (id: string) => {
-    await window.claude.skills.uninstall(id);
-    await fetchAll();
-  }, [fetchAll]);
+    const key = `skill:${id}`;
+    markInstalling(key);
+    try {
+      await window.claude.skills.uninstall(id);
+      await fetchAll();
+    } catch (err: any) {
+      recordInstallError(key, err?.message || 'Uninstall failed');
+      throw err;
+    } finally {
+      clearInstalling(key);
+    }
+  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
 
   const installTheme = useCallback(async (slug: string) => {
-    await claude().theme.marketplace.install(slug);
-    await fetchAll();
-  }, [fetchAll]);
+    const key = `theme:${slug}`;
+    markInstalling(key);
+    try {
+      await claude().theme.marketplace.install(slug);
+      // Auto-favorite on install (mirrors skills)
+      try { await claude().appearance.favoriteTheme(slug, true); } catch {}
+      await fetchAll();
+    } catch (err: any) {
+      recordInstallError(key, err?.message || 'Install failed');
+      throw err;
+    } finally {
+      clearInstalling(key);
+    }
+  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
 
   const uninstallTheme = useCallback(async (slug: string) => {
-    await claude().theme.marketplace.uninstall(slug);
-    await fetchAll();
-  }, [fetchAll]);
+    const key = `theme:${slug}`;
+    markInstalling(key);
+    try {
+      await claude().theme.marketplace.uninstall(slug);
+      await fetchAll();
+    } catch (err: any) {
+      recordInstallError(key, err?.message || 'Uninstall failed');
+      throw err;
+    } finally {
+      clearInstalling(key);
+    }
+  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
 
   // Phase 3b: update an installed package (skill plugin or theme) by re-downloading
   // from source and overwriting files at the same install path. Config in
   // ~/.claude/youcoded-config/<id>.json is untouched.
   const update = useCallback(async (id: string, type: 'skill' | 'theme') => {
-    let result: any;
-    if (type === 'theme') {
-      result = await claude().theme.marketplace.update(id);
-    } else {
-      result = await (window as any).claude.skills.update(id);
+    const key = `${type}:${id}`;
+    markInstalling(key);
+    try {
+      const result = type === 'theme'
+        ? await claude().theme.marketplace.update(id)
+        : await (window as any).claude.skills.update(id);
+      await fetchAll();
+      return result;
+    } catch (err: any) {
+      recordInstallError(key, err?.message || 'Update failed');
+      throw err;
+    } finally {
+      clearInstalling(key);
     }
-    await fetchAll();
-    return result;
-  }, [fetchAll]);
+  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
 
   const setFavorite = useCallback(async (id: string, favorited: boolean) => {
     await window.claude.skills.setFavorite(id, favorited);
     // Optimistic update
     setFavoritesState(prev =>
       favorited ? [...prev, id] : prev.filter(f => f !== id)
+    );
+  }, []);
+
+  const favoriteTheme = useCallback(async (slug: string, favorited: boolean) => {
+    await claude().appearance.favoriteTheme(slug, favorited);
+    // Optimistic update — broadcast from main will reconcile any drift.
+    setThemeFavoritesState(prev =>
+      favorited ? [...new Set([...prev, slug])] : prev.filter(s => s !== slug)
     );
   }, []);
 
@@ -280,6 +365,9 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     updateAvailable,
     installedSkills,
     favorites,
+    themeFavorites,
+    installingIds,
+    installError,
     loading,
     error,
     installSkill,
@@ -288,13 +376,14 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     uninstallTheme,
     update,
     setFavorite,
+    favoriteTheme,
     refresh: fetchAll,
     publishSkill,
   }), [
     skillEntries, themeEntries, featured, packages, updateAvailable, installedSkills,
-    favorites, loading, error,
+    favorites, themeFavorites, installingIds, installError, loading, error,
     installSkill, uninstallSkill, installTheme, uninstallTheme, update,
-    setFavorite, fetchAll, publishSkill,
+    setFavorite, favoriteTheme, fetchAll, publishSkill,
   ]);
 
   return (
