@@ -7,6 +7,23 @@ body[data-mode="buddy-mascot"] {
   --canvas: transparent;
 }
 
+/* Force html + #root transparent too. When the active theme sets
+   color-scheme: dark (Midnight, Dark) the browser's initial viewport canvas
+   paints a dark default, which bleeds through Electron's transparent:true
+   window and shows up as a dark rectangle behind the mascot. Setting
+   background:transparent on body alone is insufficient — the canvas layer
+   is above the body's own paint. Overriding color-scheme to `normal`
+   restores the true transparent canvas on both buddy windows. */
+html:has(body[data-mode="buddy-mascot"]),
+html:has(body[data-mode="buddy-chat"]) {
+  background: transparent !important;
+  color-scheme: normal !important;
+}
+body[data-mode="buddy-mascot"] #root,
+body[data-mode="buddy-chat"] #root {
+  background: transparent !important;
+}
+
 body[data-mode="buddy-chat"] {
   font-size: 13px;
   overflow: hidden;

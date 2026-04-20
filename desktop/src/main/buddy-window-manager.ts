@@ -79,40 +79,45 @@ export class BuddyWindowManager {
   toggleChat(): void {
     if (!this.chat || this.chat.isDestroyed()) {
       this.createChat();
-      // On first-open only: dock the mascot to the chat's bottom-left so the
-      // chat window doesn't cover the mascot (spec §7.5 anchors chat above the
-      // mascot, but workArea clamping near the right edge pulls chat left,
-      // causing overlap — which then blocks click-to-toggle-off). Subsequent
-      // show/hide does NOT reposition, so a user's drag preference persists.
-      this.dockMascotToChatBottomLeft();
       return;
     }
-    if (this.chat.isVisible()) this.chat.hide();
-    else this.chat.show();
+    if (this.chat.isVisible()) {
+      this.chat.hide();
+    } else {
+      // Re-anchor to current mascot position before showing — the user may
+      // have dragged the mascot while the chat was hidden, and the chat
+      // should open "wherever the icon is" rather than at its stale last
+      // position.
+      const pos = this.computeChatAnchoredPosition();
+      this.chat.setPosition(Math.round(pos.x), Math.round(pos.y));
+      this.chat.show();
+    }
   }
 
-  private dockMascotToChatBottomLeft(): void {
-    if (!this.mascot || this.mascot.isDestroyed()) return;
-    if (!this.chat || this.chat.isDestroyed()) return;
-    const cb = this.chat.getBounds();
-    // Sit the mascot just outside the chat's bottom-left corner, aligned with
-    // the chat's bottom edge. 8px gap so they visually associate without
-    // touching. Fallback to chat's bottom-right if there's no room on the left.
-    const leftRaw = { x: cb.x - MASCOT_SIZE.width - 8, y: cb.y + cb.height - MASCOT_SIZE.height };
-    const display = screen.getDisplayMatching({ ...leftRaw, ...MASCOT_SIZE }) ?? screen.getPrimaryDisplay();
-    const leftClamped = clampToWorkArea(leftRaw, MASCOT_SIZE, display.workArea);
-    // If clamping moved the mascot INTO the chat horizontally (i.e., not
-    // enough workArea to the left), try the right side instead.
-    const overlapsX = leftClamped.x + MASCOT_SIZE.width > cb.x && leftClamped.x < cb.x + cb.width;
-    const target = overlapsX
-      ? clampToWorkArea({ x: cb.x + cb.width + 8, y: cb.y + cb.height - MASCOT_SIZE.height }, MASCOT_SIZE, display.workArea)
-      : leftClamped;
-    // Round: setPosition requires integer args (see moveMascot for details).
-    // Chat bounds are integers but arithmetic could introduce fractions.
-    const rounded = { x: Math.round(target.x), y: Math.round(target.y) };
-    this.mascot.setPosition(rounded.x, rounded.y);
-    // Persist so next launch respects the docked position.
-    this.deps.setPersistedPosition('mascot', rounded);
+  /**
+   * Choose the chat window's position relative to the current mascot.
+   * Prefer right-of-mascot; fall back to left-of-mascot if the right side
+   * would clip the workArea. Always clamps to visible workArea as a safety.
+   * Center chat vertically on the mascot so the pill lines up with the
+   * mascot's head instead of hovering 200px above it.
+   */
+  private computeChatAnchoredPosition(): Point {
+    if (!this.mascot || this.mascot.isDestroyed()) {
+      const primary = screen.getPrimaryDisplay().workArea;
+      return { x: primary.x + primary.width - CHAT_SIZE.width - 24, y: primary.y + primary.height - CHAT_SIZE.height - 24 };
+    }
+    const mb = this.mascot.getBounds();
+    const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
+    const wa = display.workArea;
+    // Align chat's bottom with mascot's bottom so the chat rises above the
+    // mascot rather than floating next to its middle. 12 px gap.
+    const y = mb.y + mb.height - CHAT_SIZE.height;
+    const rightX = mb.x + mb.width + 12;
+    const rightFits = rightX + CHAT_SIZE.width <= wa.x + wa.width;
+    const raw = rightFits
+      ? { x: rightX, y }
+      : { x: mb.x - CHAT_SIZE.width - 12, y };
+    return clampToWorkArea(raw, CHAT_SIZE, wa);
   }
 
   /** Move the chat's subscription from the previous session to the new one. */
@@ -139,34 +144,38 @@ export class BuddyWindowManager {
    */
   moveMascot(dx: number, dy: number): void {
     if (!this.mascot || this.mascot.isDestroyed()) return;
-    const [x, y] = this.mascot.getPosition();
-    const raw = { x: x + dx, y: y + dy };
+    const [oldX, oldY] = this.mascot.getPosition();
+    const raw = { x: oldX + dx, y: oldY + dy };
     const display = screen.getDisplayMatching({ ...raw, ...MASCOT_SIZE }) ?? screen.getPrimaryDisplay();
     const clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
     // setPosition requires integer args. Pointer screenX/Y on HiDPI displays
     // can be fractional, so dx/dy (and therefore clamped.x/y) may be floats —
     // passing a float throws "Error processing argument at index 1, conversion
     // failure" from Electron's native bridge.
-    this.mascot.setPosition(Math.round(clamped.x), Math.round(clamped.y));
+    const newX = Math.round(clamped.x);
+    const newY = Math.round(clamped.y);
+    this.mascot.setPosition(newX, newY);
+    // Move the chat by the SAME delta the mascot actually moved (not the
+    // requested delta, which may have been clamped). This keeps the chat
+    // anchored to the mascot when the user drags — whether chat is visible
+    // or hidden. Hidden chat will pop back at the correct relative position
+    // on next show. Destroyed chat is a no-op.
+    const actualDx = newX - oldX;
+    const actualDy = newY - oldY;
+    if ((actualDx !== 0 || actualDy !== 0) && this.chat && !this.chat.isDestroyed()) {
+      const cb = this.chat.getBounds();
+      this.chat.setPosition(cb.x + actualDx, cb.y + actualDy);
+    }
   }
 
   private createChat(): void {
-    const saved = this.deps.getPersistedPosition('chat');
-    let raw: Point;
-    if (saved) {
-      raw = saved;
-    } else if (this.mascot && !this.mascot.isDestroyed()) {
-      // First-ever chat: anchor to the right of the mascot so it reads as
-      // "summoned by" the mascot. Subsequent shows use the saved position.
-      const mb = this.mascot.getBounds();
-      raw = { x: mb.x + 92, y: mb.y - 200 };
-    } else {
-      const primary = screen.getPrimaryDisplay().workArea;
-      raw = { x: primary.x + primary.width - 344, y: primary.y + primary.height - 580 };
-    }
-    const display = screen.getDisplayMatching({ ...raw, ...CHAT_SIZE }) ?? screen.getPrimaryDisplay();
-    const clamped = clampToWorkArea(raw, CHAT_SIZE, display.workArea);
-    this.chat = this.deps.createBuddyWindow('chat', clamped);
+    // Chat is always anchored to the mascot — saved chat position was
+    // intentionally dropped. User's mental model: "chat opens where my
+    // buddy is." Drag the mascot, chat follows; open the chat, it's next
+    // to the mascot.
+    const pos = this.computeChatAnchoredPosition();
+    const rounded = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    this.chat = this.deps.createBuddyWindow('chat', rounded);
     this.wireChatLifecycle(this.chat);
     // If a session was already chosen (via setViewedSession) before the
     // chat window was ever opened, subscribe now. Without this, the first
