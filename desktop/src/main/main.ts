@@ -328,6 +328,18 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
         // visible rectangle around the mascot even after all CSS
         // transparency is applied. `#00000000` = RGBA (0,0,0,0).
         backgroundColor: '#00000000',
+        // Windows-only: thickFrame defaults to TRUE and adds the WS_THICKFRAME
+        // style to frameless windows — which keeps a subtle DWM shadow +
+        // window animations visible as a faint rectangle around the content.
+        // DevTools-confirmed via `getComputedStyle` audit: every DOM element
+        // is rgba(0,0,0,0) with no filter/shadow, yet the user still saw a
+        // "slightly transparent square." The only remaining paint source was
+        // DWM's thick-frame chrome. thickFrame: false removes it.
+        // Also disable rounded corners — Windows 11 rounds frameless windows
+        // by default, which reads as a visible 8 px radius border on
+        // transparent 80×80 content.
+        thickFrame: false,
+        roundedCorners: false,
         // Frameless windows still render a menu bar on Win/Linux if the app
         // has a default menu — hide it so buddy stays minimal.
         autoHideMenuBar: true,
