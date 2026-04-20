@@ -11,6 +11,20 @@ import App from './App';
 const storedTheme = localStorage.getItem('youcoded-theme') || 'midnight';
 document.documentElement.setAttribute('data-theme', storedTheme);
 
+// Mark buddy windows on <html> SYNCHRONOUSLY (before first paint) so the
+// buddy.css transparency overrides (color-scheme: normal, bg transparent)
+// take effect immediately. If we waited for BuddyMascotApp's useEffect to
+// set data-mode on body, the browser would paint the first frame using the
+// theme's color-scheme: dark (Midnight/Dark) and a dark rectangle would
+// flash — and on Electron's transparent:true window that dark canvas
+// persists as a visible dark square around the mascot until the effect runs.
+// Setting on <html> also means the selector doesn't need :has(), which has
+// had subtle ordering bugs with color-scheme in some Chromium versions.
+const __buddyMode = new URLSearchParams(location.search).get('mode');
+if (__buddyMode === 'buddy-mascot' || __buddyMode === 'buddy-chat') {
+  document.documentElement.setAttribute('data-mode', __buddyMode);
+}
+
 // macOS traffic lights need left padding on the header bar.
 // In fullscreen the traffic lights disappear, so we remove the inset.
 if (navigator.platform === 'MacIntel' || navigator.platform === 'MacPPC') {

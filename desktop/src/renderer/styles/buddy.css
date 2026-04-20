@@ -8,19 +8,28 @@ body[data-mode="buddy-mascot"] {
 }
 
 /* Force html + #root transparent too. When the active theme sets
-   color-scheme: dark (Midnight, Dark) the browser's initial viewport canvas
+   color-scheme: dark (Midnight, Dark), the browser's initial viewport canvas
    paints a dark default, which bleeds through Electron's transparent:true
    window and shows up as a dark rectangle behind the mascot. Setting
-   background:transparent on body alone is insufficient — the canvas layer
-   is above the body's own paint. Overriding color-scheme to `normal`
-   restores the true transparent canvas on both buddy windows. */
-html:has(body[data-mode="buddy-mascot"]),
-html:has(body[data-mode="buddy-chat"]) {
+   background:transparent on body alone is insufficient — the viewport
+   canvas layer is above the body's own paint. Overriding color-scheme to
+   `normal` restores the true transparent canvas on both buddy windows.
+
+   index.tsx sets data-mode="buddy-mascot|buddy-chat" on <html> before
+   React mounts so these rules apply on the very first paint — avoids
+   a dark-square flash that would otherwise persist on the transparent
+   Electron window. */
+html[data-mode="buddy-mascot"],
+html[data-mode="buddy-chat"] {
   background: transparent !important;
   color-scheme: normal !important;
 }
-body[data-mode="buddy-mascot"] #root,
-body[data-mode="buddy-chat"] #root {
+html[data-mode="buddy-mascot"] body,
+html[data-mode="buddy-chat"] body {
+  background: transparent !important;
+}
+html[data-mode="buddy-mascot"] #root,
+html[data-mode="buddy-chat"] #root {
   background: transparent !important;
 }
 
