@@ -263,6 +263,10 @@ export interface PackageInfo {
 export interface UserSkillConfig {
   version: 1 | 2;
   favorites: string[];
+  /** Slugs of themes the user has pinned as favorites. Drives the Appearance
+   *  panel (favorites-only) and the "My favorite themes" section in Library.
+   *  Seeded with the four built-ins on first run; see SkillConfigStore.load(). */
+  themeFavorites?: string[];
   chips: ChipConfig[];
   overrides: Record<string, MetadataOverride>;
   privateSkills: SkillEntry[];
