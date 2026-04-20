@@ -24,7 +24,7 @@ export function SubagentTimeline({ segments }: { segments: SubagentSegment[] }) 
   if (!segments || segments.length === 0) return null;
   const groups = groupSegments(segments);
   return (
-    <div className="subagent-timeline border-l border-edge-dim pl-3 ml-1 mt-1 space-y-2 text-xs">
+    <div className="subagent-timeline space-y-2 text-xs">
       {groups.map(g =>
         g.kind === 'text'
           ? <SubagentText key={g.id} content={g.content} />
