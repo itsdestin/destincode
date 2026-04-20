@@ -335,7 +335,7 @@ const debouncedBroadcastAttention = (() => {
 // windows spawned by the detach subsystem. Keeps webPreferences, security
 // hardening, and fullscreen relay consistent across every window so renderers
 // don't have to guess which features are available.
-function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' }): BrowserWindow {
+function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'capture' }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const isMac = process.platform === 'darwin';
@@ -384,11 +384,17 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
       }
     : {};
 
-  // Buddy window dimensions: mascot = 80×80; chat = 320×480
+  // Buddy window dimensions: mascot = 80×80; chat = 320×480; capture = 44×44
+  // (Fluent-ish action-button size — big enough for a 20 px camera glyph
+  // with a generous click target without dominating the mascot it sits
+  // below.) Adjust both constants here AND the stack-offsets in
+  // BuddyWindowManager.computeCapturePosition if you change them.
   const buddyDimensions: { width?: number; height?: number } = opts?.buddy === 'mascot'
     ? { width: 80, height: 80 }
     : opts?.buddy === 'chat'
     ? { width: 320, height: 480 }
+    : opts?.buddy === 'capture'
+    ? { width: 44, height: 44 }
     : {};
 
   const win = new BrowserWindow({
@@ -1165,6 +1171,95 @@ app.whenReady().then(async () => {
   // never gets pointerup, so click-to-toggle-chat never fires.
   ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, delta: { dx: number; dy: number }) => {
     buddyManager.moveMascot(delta.dx, delta.dy);
+  });
+
+  // Desktop-capture action: screenshot the display the mascot sits on,
+  // excluding the buddy windows themselves. We use the portable
+  // hide-and-snap strategy because the alternatives don't hold up:
+  //   - Electron's setContentProtection paints the window as solid black
+  //     on Windows (WDA_MONITOR), which would leave three visible rects
+  //     in the shot instead of excluding them.
+  //   - The newer WDA_EXCLUDEFROMCAPTURE flag (Win 10 v2004+) isn't
+  //     wired through Electron.
+  //   - Cropping-around-the-buddies would miss the pixels underneath.
+  // The brief flicker of hide→capture→show is the cost of a clean
+  // underlying-desktop capture. Total wall time ≈ 100–200 ms.
+  ipcMain.handle(IPC.BUDDY_CAPTURE_DESKTOP, async (): Promise<string | null> => {
+    const { desktopCapturer } = require('electron') as typeof import('electron');
+    const mascotWin = buddyManager.getMascotWindow();
+    const chatWin = buddyManager.getChatWindow();
+    const captureWin = buddyManager.getCaptureWindow();
+    // Pick the display the mascot lives on — multi-monitor users expect
+    // "screenshot my desktop" to mean the one their buddy is sitting on,
+    // not every monitor merged into one long strip.
+    const targetDisplay = mascotWin && !mascotWin.isDestroyed()
+      ? screen.getDisplayMatching(mascotWin.getBounds())
+      : screen.getPrimaryDisplay();
+
+    // Snapshot which buddy windows are currently visible so we can
+    // restore exactly the same visibility state after the capture —
+    // don't force-show a chat that was hidden.
+    const wasMascotVisible = !!(mascotWin && !mascotWin.isDestroyed() && mascotWin.isVisible());
+    const wasChatVisible = !!(chatWin && !chatWin.isDestroyed() && chatWin.isVisible());
+    const wasCaptureVisible = !!(captureWin && !captureWin.isDestroyed() && captureWin.isVisible());
+
+    try {
+      // Hide buddy surfaces. On Windows/macOS .hide() is synchronous from
+      // the API side, but the compositor still needs a frame or two to
+      // actually repaint without them. We give it ~120 ms — long enough
+      // that 60 Hz compositors on both platforms have flushed, short
+      // enough that the flicker is barely perceptible.
+      if (wasMascotVisible) mascotWin!.hide();
+      if (wasChatVisible) chatWin!.hide();
+      if (wasCaptureVisible) captureWin!.hide();
+      await new Promise<void>((r) => setTimeout(r, 120));
+
+      // Request thumbnails at physical pixel resolution so the saved
+      // PNG is full-res, not a 150×150 thumbnail. display.size is in
+      // DIPs — multiply by scaleFactor for HiDPI screens.
+      const sf = targetDisplay.scaleFactor || 1;
+      const thumbnailSize = {
+        width: Math.round(targetDisplay.size.width * sf),
+        height: Math.round(targetDisplay.size.height * sf),
+      };
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
+      // Match by display_id. On Electron, display_id is a stringified
+      // number equal to Electron's display.id — but on some Linux setups
+      // it comes back empty, so we fall back to the first screen source
+      // if an exact match isn't found.
+      const targetId = String(targetDisplay.id);
+      const src = sources.find((s) => s.display_id === targetId) ?? sources[0];
+      if (!src) return null;
+      const pngBuffer = src.thumbnail.toPNG();
+
+      // Write to a timestamped temp file. InputBar renders the preview
+      // with <img src={`file://${path}`}> and sends the path as input to
+      // the PTY, so a stable on-disk path is exactly what it wants.
+      const tmpName = `youcoded-buddy-capture-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+      const tmpPath = path.join(os.tmpdir(), tmpName);
+      await fs.promises.writeFile(tmpPath, pngBuffer);
+
+      // Push to the chat renderer specifically — it's the only window
+      // whose InputBar should auto-attach this capture. We resolve via
+      // buddyManager instead of broadcasting because other windows
+      // (main, detached peers) shouldn't auto-attach a screenshot the
+      // user took from the floater's capture button.
+      const liveChat = buddyManager.getChatWindow();
+      if (liveChat && !liveChat.isDestroyed()) {
+        liveChat.webContents.send(IPC.BUDDY_ATTACH_FILE, tmpPath);
+      }
+      return tmpPath;
+    } catch (err) {
+      log('ERROR', 'Buddy', 'capture-desktop failed', { error: String(err) });
+      return null;
+    } finally {
+      // Always restore the pre-capture visibility — even on error, we
+      // don't want the buddy to vanish because of a screen-recording
+      // permission denial.
+      if (wasMascotVisible && mascotWin && !mascotWin.isDestroyed()) mascotWin.showInactive();
+      if (wasChatVisible && chatWin && !chatWin.isDestroyed()) chatWin.show();
+      if (wasCaptureVisible && captureWin && !captureWin.isDestroyed()) captureWin.showInactive();
+    }
   });
 
   // Wire the attention:report IPC channel. Renderers push per-session states

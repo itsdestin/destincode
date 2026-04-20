@@ -710,6 +710,14 @@ export const IPC = {
   // ~60 events/sec while the pointer moves; invoke() round-trips would
   // starve the renderer's event loop. Main clamps and calls setPosition.
   BUDDY_MOVE_MASCOT: 'buddy:move-mascot',
+  // Capture the desktop with buddy windows excluded, write to a temp PNG,
+  // and push the file path to the chat renderer on BUDDY_ATTACH_FILE.
+  // Invoked from the capture-icon renderer; main does the hide/capture/
+  // restore sequence because the renderer can't hide Electron windows.
+  BUDDY_CAPTURE_DESKTOP: 'buddy:capture-desktop',
+  // Main → chat-renderer push. Chat renderer's InputBar listens and adds
+  // the file as an attachment (same pipeline as clipboard-image paste).
+  BUDDY_ATTACH_FILE: 'buddy:attach-file',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
 } as const;

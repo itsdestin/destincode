@@ -56,6 +56,7 @@ import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
+import { BuddyCaptureApp } from './components/buddy/BuddyCaptureApp';
 
 type ViewMode = 'chat' | 'terminal';
 
@@ -2024,6 +2025,7 @@ export default function App() {
   // Buddy windows render as isolated placeholders without main-app providers
   if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
   if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
+  if (buddyMode === 'buddy-capture') return <BuddyCaptureApp />;
 
   // Main app wrapped in providers
   return (
