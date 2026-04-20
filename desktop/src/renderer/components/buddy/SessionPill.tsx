@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { AttentionSummary, SessionInfo } from '../../../shared/types';
+import { BuddyNewSessionForm } from './BuddyNewSessionForm';
 
 interface Props {
   viewedSessionId: string | null;
@@ -10,6 +11,12 @@ interface Props {
 export function SessionPill({ viewedSessionId, onChange, attentionSummary }: Props) {
   const [open, setOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  // Dropdown has two modes: session list (default) or inline new-session
+  // form. The form mirrors the main window's SessionStrip new-session form
+  // (folder picker with known projects, model selector, skip permissions)
+  // so there's no stray silent-fail path when no default project folder
+  // is configured. Shared with BuddyWelcome via BuddyNewSessionForm.
+  const [formOpen, setFormOpen] = useState(false);
 
   // Load sessions from the window directory and stay updated as it changes.
   useEffect(() => {
@@ -47,20 +54,12 @@ export function SessionPill({ viewedSessionId, onChange, attentionSummary }: Pro
     setOpen(false);
   }, [onChange]);
 
-  // Create a new session using the user's default project folder as cwd.
-  // If no project folder is configured, bail out silently — we don't want to
-  // create a session with an empty cwd.
-  const createSession = useCallback(async () => {
-    const defaults = await window.claude.defaults?.get?.();
-    const cwd = defaults?.projectFolder ?? '';
-    if (!cwd) return;
-    const info = await window.claude.session.create({
-      name: basename(cwd),
-      cwd,
-      skipPermissions: defaults?.skipPermissions ?? false,
-    });
-    // session.create returns SessionInfo — pull the id directly.
-    if (info?.id) await selectSession(info.id);
+  // Session created via the inline form — subscribe + select + close.
+  // Mirrors the welcome-screen path (BuddyChat.handleSessionCreated) so the
+  // two entry points are interchangeable.
+  const handleFormCreated = useCallback(async (sid: string) => {
+    setFormOpen(false);
+    await selectSession(sid);
   }, [selectSession]);
 
   const viewed = sessions.find((s) => s.id === viewedSessionId) ?? null;
@@ -96,10 +95,12 @@ export function SessionPill({ viewedSessionId, onChange, attentionSummary }: Pro
 
       {open && (
         <>
-          {/* Click-away backdrop — closes the dropdown without capturing the click */}
+          {/* Click-away backdrop — closes the dropdown without capturing the click.
+              Also resets the inline form so reopening the pill always lands on
+              the session list, not mid-form. */}
           <div
             style={{ position: 'fixed', inset: 0, zIndex: 99 }}
-            onClick={() => setOpen(false)}
+            onClick={() => { setOpen(false); setFormOpen(false); }}
           />
           <div
             className="layer-surface"
@@ -109,22 +110,75 @@ export function SessionPill({ viewedSessionId, onChange, attentionSummary }: Pro
               left: '50%',
               transform: 'translateX(-50%)',
               marginTop: 6,
-              width: 240,
-              padding: 6,
+              // Widen when the form is open so FolderSwitcher + model pills
+              // aren't cramped. 240px is too tight for three model buttons.
+              width: formOpen ? 280 : 240,
+              padding: formOpen ? 10 : 6,
               borderRadius: 16,
               zIndex: 100,
             }}
           >
-            {sessions.map((s) => {
-              const attn = attentionSummary?.perSession?.[s.id];
-              // Build a short tag for sessions that need attention.
-              const tag = attn?.awaitingApproval ? 'awaiting'
-                : (attn?.attentionState && attn.attentionState !== 'ok') ? attn.attentionState
-                : null;
-              return (
+            {formOpen ? (
+              <BuddyNewSessionForm
+                onCreated={handleFormCreated}
+                onCancel={() => setFormOpen(false)}
+              />
+            ) : (
+              <>
+                {sessions.map((s) => {
+                  const attn = attentionSummary?.perSession?.[s.id];
+                  // Build a short tag for sessions that need attention.
+                  const tag = attn?.awaitingApproval ? 'awaiting'
+                    : (attn?.attentionState && attn.attentionState !== 'ok') ? attn.attentionState
+                    : null;
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => selectSession(s.id)}
+                      style={{
+                        display: 'flex',
+                        width: '100%',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '6px 10px',
+                        fontSize: 12,
+                        // Highlight the currently-viewed session with inset background.
+                        background: s.id === viewedSessionId ? 'var(--inset)' : 'transparent',
+                        border: 'none',
+                        borderRadius: 10,
+                        cursor: 'pointer',
+                        color: 'var(--fg)',
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: attentionColorFromSummary(s.id, attentionSummary),
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {s.name || basename(s.cwd)}
+                      </span>
+                      {tag && (
+                        <span style={{ fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0 }}>
+                          {tag}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                {/* Divider */}
+                <div style={{ height: 1, background: 'var(--edge-dim)', margin: '4px 0' }} />
+
+                {/* New session entry — expands the inline form (not a silent
+                    create). The form mirrors the main window's session strip
+                    form so buddy and main stay interchangeable. */}
                 <button
-                  key={s.id}
-                  onClick={() => selectSession(s.id)}
+                  onClick={() => setFormOpen(true)}
                   style={{
                     display: 'flex',
                     width: '100%',
@@ -132,58 +186,18 @@ export function SessionPill({ viewedSessionId, onChange, attentionSummary }: Pro
                     gap: 8,
                     padding: '6px 10px',
                     fontSize: 12,
-                    // Highlight the currently-viewed session with inset background.
-                    background: s.id === viewedSessionId ? 'var(--inset)' : 'transparent',
+                    background: 'transparent',
                     border: 'none',
                     borderRadius: 10,
                     cursor: 'pointer',
                     color: 'var(--fg)',
                   }}
                 >
-                  <span
-                    style={{
-                      width: 7,
-                      height: 7,
-                      borderRadius: '50%',
-                      background: attentionColorFromSummary(s.id, attentionSummary),
-                      flexShrink: 0,
-                    }}
-                  />
-                  <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {s.name || basename(s.cwd)}
-                  </span>
-                  {tag && (
-                    <span style={{ fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0 }}>
-                      {tag}
-                    </span>
-                  )}
+                  <span style={{ width: 12, textAlign: 'center', flexShrink: 0 }}>+</span>
+                  <span>New session…</span>
                 </button>
-              );
-            })}
-
-            {/* Divider */}
-            <div style={{ height: 1, background: 'var(--edge-dim)', margin: '4px 0' }} />
-
-            {/* New session entry */}
-            <button
-              onClick={createSession}
-              style={{
-                display: 'flex',
-                width: '100%',
-                alignItems: 'center',
-                gap: 8,
-                padding: '6px 10px',
-                fontSize: 12,
-                background: 'transparent',
-                border: 'none',
-                borderRadius: 10,
-                cursor: 'pointer',
-                color: 'var(--fg)',
-              }}
-            >
-              <span style={{ width: 12, textAlign: 'center', flexShrink: 0 }}>+</span>
-              <span>New session…</span>
-            </button>
+              </>
+            )}
           </div>
         </>
       )}
