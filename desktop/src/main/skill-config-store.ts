@@ -257,9 +257,10 @@ export class SkillConfigStore {
     config.favorites = config.favorites.filter(f => f !== id);
     config.chips = config.chips.filter(c => c.skillId !== id);
     delete config.overrides[id];
-    // Theme packages use the "theme:<slug>" key. When uninstalled, also remove
-    // the slug from themeFavorites so the Appearance panel doesn't keep a
-    // reference to a gone theme.
+    // Built-in theme slugs (light/dark/midnight/creme) cannot be uninstalled via
+    // marketplace, so no package key like `theme:light` will ever arrive here.
+    // If that invariant changes (e.g., built-ins become uninstallable), revisit
+    // whether we want to strip seeded defaults from favorites on uninstall.
     if (id.startsWith('theme:') && config.themeFavorites) {
       const slug = id.slice('theme:'.length);
       config.themeFavorites = config.themeFavorites.filter(s => s !== slug);

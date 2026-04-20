@@ -5,11 +5,13 @@ import os from 'os';
 
 // Isolate the store's config path per test via a temp HOME override.
 let originalHome: string | undefined;
+let originalUserProfile: string | undefined;
 let tmpHome: string;
 
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-skill-config-'));
   originalHome = process.env.HOME;
+  originalUserProfile = process.env.USERPROFILE;
   process.env.HOME = tmpHome;
   process.env.USERPROFILE = tmpHome;  // Windows homedir backing
   vi.resetModules();  // Ensure CONFIG_PATH is re-evaluated under the new HOME
@@ -17,6 +19,8 @@ beforeEach(() => {
 
 afterEach(() => {
   if (originalHome) process.env.HOME = originalHome;
+  if (originalUserProfile) process.env.USERPROFILE = originalUserProfile;
+  else delete process.env.USERPROFILE;
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
@@ -48,5 +52,18 @@ describe('SkillConfigStore theme favorites', () => {
     store.setThemeFavorite('dark', true);
     const favs = store.getThemeFavorites();
     expect(favs.filter(s => s === 'dark')).toHaveLength(1);
+  });
+
+  it('setThemeFavorite cold-start seeds defaults before applying the mutation', async () => {
+    const { SkillConfigStore } = await import('../src/main/skill-config-store');
+    const store = new SkillConfigStore();
+    // Call set without ever calling get first
+    store.setThemeFavorite('light', false);
+    const favs = store.getThemeFavorites();
+    // dark/midnight/creme should survive even though getThemeFavorites was never called first
+    expect(favs).toContain('dark');
+    expect(favs).toContain('midnight');
+    expect(favs).toContain('creme');
+    expect(favs).not.toContain('light');
   });
 });
