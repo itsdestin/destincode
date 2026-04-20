@@ -127,10 +127,13 @@ class SubagentWatcherTest {
         appendToolUse("abc", "u1", "toolu_X", "Read")
         writeMeta("def", "Other", "Plan")
         appendToolUse("def", "u2", "toolu_Y", "Grep")
-        index.recordParentAgentToolUse("toolu_P1", "Find bug", "Explore")
-        index.recordParentAgentToolUse("toolu_P2", "Other", "Plan")
+        // Use a fresh replayIndex (not the live `index`) to mirror TranscriptWatcher's
+        // replay path — avoids consuming unmatchedParents from the shared live index.
+        val replayIndex = SubagentIndex()
+        replayIndex.recordParentAgentToolUse("toolu_P1", "Find bug", "Explore")
+        replayIndex.recordParentAgentToolUse("toolu_P2", "Other", "Plan")
 
-        val events = watcher.getHistory()
+        val events = watcher.getHistory(replayIndex)
         assertEquals(2, events.size)
     }
 }

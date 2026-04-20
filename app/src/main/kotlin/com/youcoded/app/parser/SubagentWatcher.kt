@@ -100,20 +100,24 @@ class SubagentWatcher(
     /**
      * Full-history replay. Intended for detach/re-dock or remote-access replay.
      *
-     * CAUTION: This consumes `unmatchedParents` from the shared SubagentIndex.
-     * Call on a freshly constructed watcher instance paired with a fresh index,
-     * NOT alongside an actively-running start() — otherwise live tracking will
-     * miss parent bindings the replay already popped. Task 12's TranscriptWatcher
-     * wiring must construct a replay-only index for this path.
+     * CAUTION: The caller must supply a FRESH [replayIndex] — one that has been
+     * populated from the parent-session JSONL replay but is NOT shared with the
+     * live [index] used by [start]. Using the live index here would consume
+     * unmatchedParents entries and corrupt live correlation.
+     *
+     * TranscriptWatcher constructs a fresh SubagentIndex locally, replays the
+     * parent JSONL through it to register all Agent tool_uses, then passes it here.
      */
-    fun getHistory(): List<TranscriptEvent> {
+    fun getHistory(replayIndex: SubagentIndex): List<TranscriptEvent> {
         if (!subagentsDir.exists()) return emptyList()
         val out = mutableListOf<TranscriptEvent>()
         for (name in subagentsDir.list().orEmpty().sorted()) {
             if (!name.endsWith(".jsonl") || !name.startsWith("agent-")) continue
             val agentId = name.substring("agent-".length, name.length - ".jsonl".length)
             val meta = readMeta(agentId) ?: continue
-            val parentToolUseId = index.bindSubagent(agentId, meta.first, meta.second) ?: continue
+            // Use the caller-supplied replay index, NOT this.index, to avoid
+            // corrupting live parent-binding state.
+            val parentToolUseId = replayIndex.bindSubagent(agentId, meta.first, meta.second) ?: continue
             val jsonlFile = File(subagentsDir, name)
             if (!jsonlFile.exists()) continue
             for (line in jsonlFile.readLines()) {
