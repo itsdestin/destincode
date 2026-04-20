@@ -72,7 +72,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
 
-    // Termux terminal emulator (PTY session management) + terminal view (native rendering)
+    // Termux terminal emulator (PTY session management) + terminal view (native rendering).
+    // LICENSE NOTE: Both are GPLv3. Linking them into the Android APK is why the Android
+    // application is distributed under GPLv3 (see app/LICENSE). The desktop Electron app
+    // has no such dependency and remains MIT-licensed. Swapping in a permissively-licensed
+    // terminal library is the only way to relicense the Android app.
     implementation("com.github.termux.termux-app:terminal-emulator:v0.118.1")
     implementation("com.github.termux.termux-app:terminal-view:v0.118.1")
 
