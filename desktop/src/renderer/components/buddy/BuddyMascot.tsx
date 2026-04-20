@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import type { MascotVariant } from '../../themes/theme-types';
 import { useThemeMascot } from '../../hooks/useThemeMascot';
 import { useAnyAttentionNeeded } from '../../hooks/useAnyAttentionNeeded';
+import { WelcomeAppIcon } from '../Icons';
 
 const DRAG_THRESHOLD_PX = 4;
 
@@ -18,10 +19,15 @@ interface DragState {
 export function BuddyMascot() {
   const attention = useAnyAttentionNeeded();
   // When attention is needed, use the theme's 'shocked' variant. When idle,
-  // use the standard 'idle' variant. Theme authors provide mascot assets via
-  // mascot-shocked.svg, or fallback to emoji.
+  // use the standard 'idle' variant. If the active theme only ships a
+  // 'welcome' mascot (very common — main's launch screen uses it) fall
+  // through to that so every theme gets a themed mascot instead of a cat
+  // emoji. Themes that ship neither fall through to the YouCoded-branded
+  // <WelcomeAppIcon/> SVG, which picks up the theme's text-fg-dim color.
   const variant: MascotVariant = attention ? 'shocked' : 'idle';
-  const customMascot = useThemeMascot(variant);
+  const variantMascot = useThemeMascot(variant);
+  const welcomeMascot = useThemeMascot('welcome');
+  const customMascot = variantMascot ?? welcomeMascot;
 
   const dragRef = useRef<DragState | null>(null);
 
@@ -93,35 +99,17 @@ export function BuddyMascot() {
           draggable={false}
         />
       ) : (
-        <DefaultMascot variant={attention ? 'shocked' : 'idle'} />
+        // Final fallback: the YouCoded-branded glyph. `text-fg-dim` picks up
+        // the active theme's dimmed foreground color, so the icon tints to
+        // whatever theme is active — no cat emoji. Pointer-events none so
+        // clicks reach the parent drag-handler div.
+        // For the attention/shocked state, wrap in a soft pulse so the
+        // fallback still signals "something needs you" without shipping
+        // per-theme artwork.
+        <WelcomeAppIcon
+          className={`w-full h-full text-fg-dim${attention ? ' animate-pulse' : ''}`}
+        />
       )}
-    </div>
-  );
-}
-
-/**
- * Fallback when the active theme has no mascot override for the current
- * variant. Uses emoji to keep the MVP simple; themes that want branded
- * mascots provide their own idle/welcome assets via useThemeMascot.
- */
-function DefaultMascot({ variant }: { variant: 'idle' | 'shocked' }) {
-  return (
-    <div
-      style={{
-        width: '100%',
-        height: '100%',
-        fontSize: 48,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        userSelect: 'none',
-        // pointer-events:none so clicks still reach the parent drag-handler
-        // div. Without this, clicks on the emoji land on this child and the
-        // parent's pointerdown never fires.
-        pointerEvents: 'none',
-      }}
-    >
-      {variant === 'shocked' ? '😲' : '🐱'}
     </div>
   );
 }
