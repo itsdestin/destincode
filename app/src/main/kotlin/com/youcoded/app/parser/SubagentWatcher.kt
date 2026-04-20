@@ -17,6 +17,10 @@ import java.io.RandomAccessFile
  * Uses FileObserver on the directory (when a Looper is available) plus a
  * polling coroutine. Tests drive scanDirectoryForTest() / readNewLinesForTest()
  * directly so they don't depend on FileObserver delivery.
+ *
+ * TODO(Task 12): `perFile` is accessed from both the poll coroutine (Dispatchers.IO)
+ * and callers of flushAllPending() / getHistory(). Replace with ConcurrentHashMap
+ * or guard with a Mutex when wiring into TranscriptWatcher's coroutine scope.
  */
 class SubagentWatcher(
     private val sessionId: String,
@@ -30,9 +34,9 @@ class SubagentWatcher(
     private data class PerFileState(
         val agentId: String,
         val jsonlFile: File,
+        val meta: Pair<String, String>,          // cached at construction time; avoids disk re-read in deliver()
         var offset: Long = 0L,
         val seenUuids: MutableSet<String> = mutableSetOf(),
-        var bound: Boolean = false,
     )
 
     private val perFile = mutableMapOf<String, PerFileState>()
@@ -90,10 +94,18 @@ class SubagentWatcher(
         for (agentId in perFile.keys.toList()) {
             val res = index.tryFlushPending(agentId) ?: continue
             for (ev in res.events) if (ev is TranscriptEvent) emit(stamp(ev, res.parentToolUseId, agentId))
-            perFile[agentId]?.bound = true
         }
     }
 
+    /**
+     * Full-history replay. Intended for detach/re-dock or remote-access replay.
+     *
+     * CAUTION: This consumes `unmatchedParents` from the shared SubagentIndex.
+     * Call on a freshly constructed watcher instance paired with a fresh index,
+     * NOT alongside an actively-running start() — otherwise live tracking will
+     * miss parent bindings the replay already popped. Task 12's TranscriptWatcher
+     * wiring must construct a replay-only index for this path.
+     */
     fun getHistory(): List<TranscriptEvent> {
         if (!subagentsDir.exists()) return emptyList()
         val out = mutableListOf<TranscriptEvent>()
@@ -129,10 +141,14 @@ class SubagentWatcher(
         if (perFile.containsKey(agentId)) return
         val meta = readMeta(agentId) ?: return
         val jsonlFile = File(subagentsDir, "agent-$agentId.jsonl")
-        val state = PerFileState(agentId = agentId, jsonlFile = jsonlFile)
+        val state = PerFileState(
+            agentId = agentId,
+            jsonlFile = jsonlFile,
+            meta = meta,
+        )
         perFile[agentId] = state
-        val parentToolUseId = index.bindSubagent(agentId, meta.first, meta.second)
-        state.bound = parentToolUseId != null
+        // Try immediate bind; if no parent yet, reads will buffer until flushAllPending() is called.
+        index.bindSubagent(agentId, meta.first, meta.second)
         readNewLines(state)
     }
 
@@ -140,6 +156,8 @@ class SubagentWatcher(
         val file = state.jsonlFile
         if (!file.exists()) return
         val fileLength = file.length()
+        // /clear or /compact can truncate the JSONL — if the file shrank below
+        // our offset, reset to 0 so subsequent writes are read correctly.
         if (fileLength < state.offset) { state.offset = 0L }
         if (fileLength <= state.offset) return
         try {
@@ -156,6 +174,10 @@ class SubagentWatcher(
                     val ev = parseLine(line) ?: continue
                     if (state.seenUuids.contains(ev.uuid)) continue
                     state.seenUuids.add(ev.uuid)
+                    // 500-uuid sliding window: prevents unbounded memory growth
+                    // on long-running subagents (some emit hundreds of tool calls).
+                    // Worst-case cost is re-emitting a very old uuid if it somehow
+                    // re-appears — acceptable since Claude Code never replays lines.
                     if (state.seenUuids.size > 500) {
                         val trimmed = state.seenUuids.toList().takeLast(500)
                         state.seenUuids.clear(); state.seenUuids.addAll(trimmed)
@@ -169,12 +191,13 @@ class SubagentWatcher(
     }
 
     private fun deliver(state: PerFileState, ev: TranscriptEvent) {
-        if (state.bound) {
-            val parentToolUseId = index.lookup(state.agentId)
-            if (parentToolUseId != null) { emit(stamp(ev, parentToolUseId, state.agentId)); return }
+        val parentToolUseId = index.lookup(state.agentId)
+        if (parentToolUseId != null) {
+            emit(stamp(ev, parentToolUseId, state.agentId))
+            return
         }
-        val meta = readMeta(state.agentId) ?: return
-        index.bufferPendingEvent(state.agentId, meta.first, meta.second, ev)
+        // Not bound yet — buffer for eventual flush.
+        index.bufferPendingEvent(state.agentId, state.meta.first, state.meta.second, ev)
     }
 
     private fun stamp(ev: TranscriptEvent, parentToolUseId: String, agentId: String): TranscriptEvent = when (ev) {
