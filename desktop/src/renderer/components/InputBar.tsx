@@ -206,21 +206,20 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
 
       // Sending strategy:
       //
-      // Claude Code's input handler auto-resolves file paths into attachments
-      // — but if multiple paths arrive in one PTY write, each new detection
-      // REPLACES the staged attachment instead of appending. Result: only
-      // the last image survives (verified via transcript JSONL — content
-      // array had only [Image #4] when 4 were attached).
+      // Claude Code's input handler auto-resolves file paths into attachments,
+      // but if multiple paths arrive within Ink's 500ms PASTE_TIMEOUT, they
+      // coalesce into a single paste event and each new path-detection REPLACES
+      // the staged attachment instead of appending (verified via transcript
+      // JSONL: a 4-image send showed only the last image in the content array).
       //
-      // Fix: send each path as its own PTY write with a gap between so
-      // Claude processes each as a discrete attachment and they accumulate.
-      // Then send the user's text (if any), wait 700ms for Ink's 500ms
-      // PASTE_TIMEOUT to clear, then \r to submit.
+      // Fix: send each path 600ms apart (> 500ms PASTE_TIMEOUT) so each path
+      // is a discrete paste event and Claude's autocomplete accumulates them.
+      // Then send the user's text + \r as one write — the pty-worker splits it
+      // into "text" + 600ms gap + "\r" so Enter arrives after the paste commits
+      // (previously this was two scattered setTimeouts in the renderer).
       //
-      // Newlines in user text are replaced with spaces so they don't act
-      // as early Enters.
-      const FILE_GAP_MS = 350; // time for Claude to ingest each attachment
-      const PASTE_SETTLE_MS = 700; // > Ink's 500ms PASTE_TIMEOUT
+      // Newlines in user text are replaced with spaces so they don't submit early.
+      const FILE_GAP_MS = 600; // > Ink's 500ms PASTE_TIMEOUT — breaks paste buffer between paths
       const sanitizedText = userText.replace(/[\r\n]+/g, ' ');
 
       files.forEach((f, idx) => {
@@ -229,16 +228,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         }, idx * FILE_GAP_MS);
       });
 
-      const textStart = files.length * FILE_GAP_MS;
-      if (sanitizedText) {
-        setTimeout(() => {
-          window.claude.session.sendInput(sessionId, sanitizedText);
-        }, textStart);
-      }
-
+      // After all files, send text+\r as one write. pty-worker auto-splits
+      // on trailing \r with a 600ms gap so Enter isn't swallowed by paste mode.
+      // Attachments-only case: send just "\r" (single char, no split applied).
+      const submitStart = files.length * FILE_GAP_MS;
       setTimeout(() => {
-        window.claude.session.sendInput(sessionId, '\r');
-      }, textStart + PASTE_SETTLE_MS);
+        window.claude.session.sendInput(sessionId, sanitizedText + '\r');
+      }, submitStart);
     },
     [sessionId, disabled, dispatch, view, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker],
   );
@@ -287,9 +283,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     e.preventDefault();
     if (minimal && sessionId) {
       const val = inputRef.current?.value ?? text;
-      // Split text and Enter into separate PTY writes (see sendMessage comment)
-      window.claude.session.sendInput(sessionId, val);
-      setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 50);
+      // pty-worker auto-splits text+\r with a 600ms gap so Enter isn't
+      // swallowed by Ink's paste buffer. No renderer-side setTimeout needed.
+      window.claude.session.sendInput(sessionId, val + '\r');
       setText('');
       if (inputRef.current) {
         inputRef.current.value = '';
@@ -468,10 +464,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 e.preventDefault();
                 if (minimal && sessionId) {
                   // Terminal mode: send text + Enter directly to PTY.
-                  // Split into two writes so Ink processes them in separate reads.
+                  // pty-worker auto-splits text+\r with a 600ms gap so Ink
+                  // sees Enter as a distinct keystroke after paste commits.
                   const val = inputRef.current?.value ?? text;
-                  window.claude.session.sendInput(sessionId, val);
-                  setTimeout(() => window.claude.session.sendInput(sessionId, '\r'), 50);
+                  window.claude.session.sendInput(sessionId, val + '\r');
                   setText('');
                   if (inputRef.current) {
                     inputRef.current.value = '';

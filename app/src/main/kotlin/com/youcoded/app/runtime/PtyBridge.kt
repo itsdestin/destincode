@@ -162,15 +162,21 @@ class PtyBridge(
     }
 
     fun writeInput(text: String) {
-        // If input combines an escape sequence with Enter, split them so the
-        // PTY doesn't deliver ESC as a standalone byte (which Ink interprets
-        // as the Escape key, cancelling the menu).
-        if (text.length > 2 && text.contains("\u001b[") && text.endsWith("\r")) {
-            val nav = text.dropLast(1)
-            session?.write(nav)
+        // Atomic-write-then-Enter bug: Claude Code's Ink framework has a 500ms
+        // PASTE_TIMEOUT that treats bulk writes as paste events, which can
+        // swallow a trailing \r. Split any write of "content + trailing \r"
+        // into two writes with a 600ms gap so the preamble commits as paste
+        // first, then \r arrives as a distinct keystroke that submits.
+        // Matches pty-worker.js on desktop so both platforms behave identically.
+        //
+        // Single-char writes (\r alone, one letter), escape sequences without
+        // trailing \r, and raw terminal keystrokes all pass through untouched.
+        if (text.length > 1 && text.endsWith("\r")) {
+            val preamble = text.dropLast(1)
+            session?.write(preamble)
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 session?.write("\r")
-            }, 80)
+            }, 600)
         } else {
             session?.write(text)
         }

@@ -46,7 +46,7 @@ The Chat View timeline is built from four event sources:
 
 - **Never use `process.env`** in renderer code — it doesn't exist in the browser. Use `import.meta.env` with `VITE_` prefixed vars if you need build-time env injection, but note the tsconfig uses `module: "commonjs"` so `import.meta` will fail `tsc`. Prefer constants or IPC for config the renderer needs.
 - **Never use `require()`** in renderer code — use ES `import` only.
-- **`node-pty`** cannot load in Electron's main process (ABI mismatch). It runs in a separate `node` child process via `pty-worker.js`.
+- **`node-pty`** cannot load in Electron's main process (ABI mismatch). It runs in a separate `node` child process via `pty-worker.js`. The worker's `case 'input'` handler also implements two Windows-ConPTY workarounds — 600ms Enter-split and 64-byte/50ms chunking — without which paste >~600 chars silently loses bytes. See `docs/PITFALLS.md` → "PTY Writes" before changing how input is written.
 - **Preload** is sandboxed — no `require()`, no relative imports, no `process.env`. IPC channel names are inlined as string literals.
 
 ## Dev Commands
