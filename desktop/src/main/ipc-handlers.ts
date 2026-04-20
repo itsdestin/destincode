@@ -765,11 +765,11 @@ export function registerIpcHandlers(
 
   // Theme favorites — parallel to skills:set-favorite. Drives the Appearance
   // panel's favorites-only list and the "My favorite themes" Library section.
-  ipcMain.handle('appearance:get-favorite-themes', async () => {
+  ipcMain.handle(IPC.APPEARANCE_GET_FAVORITE_THEMES, async () => {
     return skillProvider.configStore.getThemeFavorites();
   });
 
-  ipcMain.handle('appearance:favorite-theme', async (_event, slug: string, favorited: boolean) => {
+  ipcMain.handle(IPC.APPEARANCE_FAVORITE_THEME, async (_event, slug: string, favorited: boolean) => {
     skillProvider.configStore.setThemeFavorite(slug, favorited);
     // Broadcast to peer windows so ThemeContext re-reads without requiring a
     // polled IPC fetch. Reuses the existing appearance broadcast pipe.

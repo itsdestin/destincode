@@ -616,6 +616,8 @@ export const IPC = {
   // in window 2 propagate to window 1 without a reload.
   APPEARANCE_BROADCAST: 'appearance:broadcast',
   APPEARANCE_SYNC: 'appearance:sync',
+  APPEARANCE_GET_FAVORITE_THEMES: 'appearance:get-favorite-themes',
+  APPEARANCE_FAVORITE_THEME: 'appearance:favorite-theme',
   // Restore from backup — directional, user-initiated pull (separate from sync's merge semantics)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
   SYNC_RESTORE_PREVIEW: 'sync:restore:preview',
