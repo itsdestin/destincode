@@ -60,24 +60,40 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
     return () => window.removeEventListener('keydown', handler);
   }, [open, onClose]);
 
-  // Search mode: flat list matching the query (preserves original behavior)
-  const searchFiltered = useMemo(() => {
-    if (!isSearching) return drawerSkills;
+  // Search mode returns a MIXED list: individual skills AND whole plugins.
+  // A query that hits a plugin's displayName/description surfaces the plugin
+  // as its own result; skill hits surface as individual cards. Plugins are
+  // ranked before skills so a plugin-name query outranks its nested skills.
+  type SearchResult =
+    | { kind: 'skill'; skill: SkillEntry }
+    | { kind: 'plugin'; group: InstalledPluginGroup };
+
+  const searchResults = useMemo<SearchResult[]>(() => {
+    if (!isSearching) return [];
     const q = effectiveQuery.toLowerCase();
-    return drawerSkills.filter(
-      (s) =>
+    const skillHits: SearchResult[] = drawerSkills
+      .filter(s =>
         s.displayName.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
         s.category.toLowerCase().includes(q),
-    );
-  }, [drawerSkills, effectiveQuery, isSearching]);
+      )
+      .map(s => ({ kind: 'skill' as const, skill: s }));
+    const pluginHits: SearchResult[] = installedPlugins
+      .filter(g =>
+        g.displayName.toLowerCase().includes(q) ||
+        g.description.toLowerCase().includes(q),
+      )
+      .map(g => ({ kind: 'plugin' as const, group: g }));
+    // Plugins first so a direct plugin-name match outranks its skills.
+    return [...pluginHits, ...skillHits];
+  }, [drawerSkills, installedPlugins, effectiveQuery, isSearching]);
 
-  // Browse mode: apply category chip filter to the plugin-grouped list.
+  // Plugin-grouped list for browse mode. Search mode reads installedPlugins
+  // directly via searchResults, so this memo is only consumed when !isSearching.
   const pluginCategoryFiltered = useMemo(() => {
-    if (isSearching) return installedPlugins;
     if (!categoryFilter) return installedPlugins;
     return installedPlugins.filter(g => (g.category ?? 'other') === categoryFilter);
-  }, [installedPlugins, categoryFilter, isSearching]);
+  }, [installedPlugins, categoryFilter]);
 
   const pluginFavs = useMemo(() =>
     pluginCategoryFiltered
@@ -245,7 +261,9 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
           {isSearching ? (
             // Search mode: flat filtered list, no chip row (preserves original behavior)
             <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {searchFiltered.map(renderSkillCard)}
+              {searchResults.map((r) =>
+                r.kind === 'plugin' ? renderPluginCard(r.group) : renderSkillCard(r.skill),
+              )}
               <AddSkillsCard onClick={() => { onClose(); onOpenMarketplace(); }} />
             </div>
           ) : (
