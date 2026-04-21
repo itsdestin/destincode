@@ -35,13 +35,19 @@ export function mergeCommandSources(
 // Stateful provider. Caches the merged list for the session lifetime,
 // invalidated via `invalidateCache()` when plugin install/uninstall changes
 // the filesystem. Mirrors the LocalSkillProvider caching pattern.
+//
+// getCommands() is async because LocalSkillProvider.getInstalled() is async
+// (even though its body is synchronous — the declaration is `async`, so it
+// always returns a Promise). Awaiting the skills list is load-bearing: the
+// skill-name dedup step in mergeCommandSources requires a real SkillEntry[]
+// array, not a Promise.
 export class CommandProvider {
   private cache: CommandEntry[] | null = null;
-  private getSkills: () => SkillEntry[];
+  private getSkills: () => Promise<SkillEntry[]>;
   private getProjectCwd: () => string | null;
 
   constructor(
-    getSkills: () => SkillEntry[],
+    getSkills: () => Promise<SkillEntry[]>,
     getProjectCwd: () => string | null,
   ) {
     this.getSkills = getSkills;
@@ -52,7 +58,7 @@ export class CommandProvider {
     this.cache = null;
   }
 
-  getCommands(): CommandEntry[] {
+  async getCommands(): Promise<CommandEntry[]> {
     if (this.cache) return this.cache;
 
     const home = os.homedir();
@@ -67,7 +73,7 @@ export class CommandProvider {
     const plugin = scanAllPluginCommandDirs(claudeDir);
     const filesystem = [...user, ...project, ...plugin];
 
-    const skills = this.getSkills();
+    const skills = await this.getSkills();
     this.cache = mergeCommandSources(youcoded, filesystem, CC_BUILTIN_COMMANDS, skills);
     return this.cache;
   }

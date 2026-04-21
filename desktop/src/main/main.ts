@@ -125,7 +125,7 @@ skillProvider.ensureMigrated();
 // for dedup. getProjectCwd returns the most recently active session's cwd,
 // or null if no sessions exist yet.
 const commandProvider = new CommandProvider(
-  () => skillProvider.getInstalled() as any,
+  () => skillProvider.getInstalled(),
   () => {
     const sessions = sessionManager.listSessions();
     return sessions[0]?.cwd ?? null;
