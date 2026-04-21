@@ -2,6 +2,22 @@
 
 All notable changes to YouCoded are documented in this file.
 
+## [1.1.1] — 2026-04-20
+
+**Claude Code CLI baseline:** v2.1.116
+
+Patch release. Fixes the Windows CI test failure that blocked v1.1.0's desktop installer upload (Mac + Linux built fine, Windows test failed so the whole upload step was skipped and v1.1.0 shipped Android-only). Also ships the About popup and Android tier-picker styling polish.
+
+### Added
+- **About popup** — Replaces the inline collapsible About blocks in Desktop and Android settings with a shared `AboutPopup` rendered via `<Scrim>` + `<OverlayPanel>` at layer 2 with Escape-to-close and platform-specific privacy/licenses content. Matches the rest of the settings-menu popups (centered, glassmorphism from theme tokens, scrim-to-dismiss).
+- **Android tier picker styling** — First-run `TierPickerScreen` Compose content wrapped in a dim-scrim + centered themed Surface so the package selector matches the popup aesthetic. Tier list scrolls inside the card; Continue stays pinned to the bottom.
+
+### Fixed
+- **Windows desktop installer CI** — `tests/ipc-handlers.test.ts` electron mock now includes `setAppUserModelId` (no-op). The AUMID hot-swap added in v1.1.0 calls this at `main.ts:159` on Windows during module load; desktop-ci runs Linux-only so the gap was invisible until v1.1.0's release matrix hit the Windows leg and skipped the installer upload. The test mock covers the call so Windows CI can complete the build → upload cycle.
+
+### Notes
+- v1.1.0's GitHub release has Android artifacts (APK + AAB) only. Users who want desktop installers should grab v1.1.1. The v1.1.0 → v1.1.1 upgrade is otherwise purely additive (UI polish + CI infra).
+
 ## [1.1.0] — 2026-04-20
 
 **Claude Code CLI baseline:** v2.1.116
