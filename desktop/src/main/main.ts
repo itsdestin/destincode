@@ -1039,6 +1039,23 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to start hook relay', { error: String(e) });
   }
 
+  // Legacy cleanup: youcoded-core was deprecated 2026-04. Users who
+  // upgraded from a prior version still have the legacy clone at
+  // ~/.claude/plugins/youcoded-core/ with stale settings.json entries
+  // pointing into it. Delete the directory; the reconcileHooks() call
+  // below prunes the orphaned entries via pruneDeadPluginHooks().
+  try {
+    const { cleanupLegacyYoucodedCore } = require('./legacy-cleanup');
+    const legacyResult = cleanupLegacyYoucodedCore();
+    if (legacyResult.removed) {
+      log('INFO', 'Main', 'Legacy youcoded-core clone removed', { path: legacyResult.path });
+    } else if (legacyResult.error) {
+      log('WARN', 'Main', 'Legacy youcoded-core cleanup failed', { path: legacyResult.path, error: legacyResult.error });
+    }
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to run legacy cleanup', { error: String(e) });
+  }
+
   // Decomposition v3 §9.2: reconcile plugin hooks-manifest.json into
   // ~/.claude/settings.json. Adds missing required hooks, updates stale paths
   // (e.g., flattened core/hooks/ → hooks/), enforces MAX timeout, and prunes
