@@ -1016,6 +1016,51 @@ class Bootstrap(internal val context: Context) {
             hooksObj.put("PostToolUse", postToolUseArray)
         }
 
+        // Write-guard hook: PreToolUse on Write|Edit. Absorbed from
+        // youcoded-core as part of toolkit deprecation (2026-04).
+        val writeGuardHook = File(mobileDir, "hooks/write-guard.sh")
+        val writeGuardPreamble = File(mobileDir, "hooks/lib/hook-preamble.sh")
+        writeGuardHook.parentFile?.mkdirs()
+        writeGuardPreamble.parentFile?.mkdirs()
+        context.assets.open("write-guard.sh").use { input ->
+            writeGuardHook.outputStream().use { output -> input.copyTo(output) }
+        }
+        context.assets.open("lib/hook-preamble.sh").use { input ->
+            writeGuardPreamble.outputStream().use { output -> input.copyTo(output) }
+        }
+        writeGuardHook.setExecutable(true)
+        writeGuardPreamble.setExecutable(true)
+
+        val writeGuardCommand = "$bashPath ${writeGuardHook.absolutePath}"
+        val preToolUseArray = hooksObj.optJSONArray("PreToolUse") ?: org.json.JSONArray()
+        var writeGuardRegistered = false
+        for (i in 0 until preToolUseArray.length()) {
+            val entry = preToolUseArray.optJSONObject(i)
+            val hooks = entry?.optJSONArray("hooks")
+            if (hooks != null) {
+                for (j in 0 until hooks.length()) {
+                    val h = hooks.optJSONObject(j)
+                    if (h?.optString("command")?.contains("write-guard.sh") == true) {
+                        writeGuardRegistered = true; break
+                    }
+                }
+            }
+            if (writeGuardRegistered) break
+        }
+        if (!writeGuardRegistered) {
+            val hookEntry = org.json.JSONObject()
+            hookEntry.put("matcher", "Write|Edit")
+            val hooksList = org.json.JSONArray()
+            val hookDef = org.json.JSONObject()
+            hookDef.put("type", "command")
+            hookDef.put("command", writeGuardCommand)
+            hookDef.put("timeout", 10)
+            hooksList.put(hookDef)
+            hookEntry.put("hooks", hooksList)
+            preToolUseArray.put(hookEntry)
+            hooksObj.put("PreToolUse", preToolUseArray)
+        }
+
         // Deploy CLAUDE.md instruction
         deployAutoTitleInstruction()
 
