@@ -1,5 +1,7 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../state/theme-context';
+import { useMarketplace } from '../state/marketplace-context';
+import FavoriteStar from './marketplace/FavoriteStar';
 import { computeOnAccent } from '../themes/theme-validator';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import type { LoadedTheme } from '../themes/theme-types';
@@ -65,6 +67,20 @@ const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
 
 export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, onPublishTheme }: Props) {
   const { allThemes, activeTheme, theme: activeSlug, setTheme, reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps, setGlassOverride } = useTheme();
+  // MarketplaceContext supplies favorites and the toggle action.
+  const mp = useMarketplace();
+  const themeFavSet = useMemo(() => new Set(mp.themeFavorites), [mp.themeFavorites]);
+
+  // Appearance panel shows favorites only, plus the active theme as a fallback
+  // so there's always at least one card even when the user has unstarred their
+  // current theme. "Browse all themes" is the escape hatch for the full list.
+  const gridThemes = useMemo(() => {
+    const favs = allThemes.filter(t => themeFavSet.has(t.slug));
+    if (favs.some(t => t.slug === activeSlug)) return favs;
+    const active = allThemes.find(t => t.slug === activeSlug);
+    return active ? [...favs, active] : favs;
+  }, [allThemes, themeFavSet, activeSlug]);
+
   // Flips the popup body to the plain-language explainer view via the (i) icon.
   const [showInfo, setShowInfo] = useState(false);
   // Slug of the theme currently being edited (pencil opened). Null = main list.
@@ -129,35 +145,62 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         <div>
           <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Your Themes</p>
           <div className="grid grid-cols-2 gap-2">
-            {allThemes.map(t => {
+            {gridThemes.map(t => {
               const isActive = t.slug === activeSlug;
+              const isFav = themeFavSet.has(t.slug);
               return (
-                <button
+                // Fix: outer element is div+role=button (not <button>) so the
+                // nested pencil and star buttons are valid HTML (no button-in-button).
+                <div
                   key={t.slug}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setTheme(t.slug)}
-                  className={`relative rounded-lg overflow-hidden border text-left transition-colors ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTheme(t.slug); } }}
+                  className={`relative rounded-lg overflow-hidden border text-left transition-colors cursor-pointer ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
                 >
                   <div style={{ height: 6, background: `linear-gradient(90deg, ${t.tokens.canvas}, ${t.tokens.accent})` }} />
                   <div className="px-2 py-1.5" style={{ background: t.tokens.canvas }}>
-                    <p className="text-[10px] font-medium truncate" style={{ color: t.tokens.fg }}>{t.name}</p>
+                    {/* Leave room on right for the pencil and star icons */}
+                    <p className="text-[10px] font-medium truncate pr-8" style={{ color: t.tokens.fg }}>{t.name}</p>
                     {isActive && <span className="text-[8px]" style={{ color: t.tokens.accent }}>active</span>}
                   </div>
-                  {/* Pencil — opens the per-theme edit menu. Color tracks theme fg
-                      so it stays legible on both light and dark card backgrounds. */}
+                  {/* Pencil — opens the per-theme edit menu. Positioned bottom-right
+                      to avoid overlap with the star which occupies top-right. */}
                   <button
+                    type="button"
                     onClick={e => { e.stopPropagation(); openEditor(t.slug); }}
-                    className="absolute top-1 right-1 w-5 h-5 rounded-sm flex items-center justify-center hover:bg-black/20 transition-colors"
+                    className="absolute bottom-1 right-1 w-5 h-5 rounded-sm flex items-center justify-center hover:bg-black/20 transition-colors"
                     style={{ color: t.tokens.fg }}
                     title="Edit theme"
                     aria-label={`Edit ${t.name}`}
                   >
                     <PencilIcon />
                   </button>
-                </button>
+                  {/* Star — toggles this theme in/out of the Appearance panel favorites. */}
+                  <FavoriteStar
+                    filled={isFav}
+                    onToggle={() => mp.favoriteTheme(t.slug, !isFav).catch(() => {})}
+                    size="sm"
+                    corner
+                  />
+                </div>
               );
             })}
           </div>
         </div>
+
+        {/* Browse all themes — dispatches a global event that App.tsx listens
+            for to open the Library on the themes tab and close this popup. */}
+        <button
+          type="button"
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('youcoded:open-library', { detail: { tab: 'themes' } }));
+          }}
+          className="layer-surface w-full mt-1 px-4 py-3 text-fg-2 hover:text-fg text-sm flex items-center justify-center gap-2"
+        >
+          Browse all themes →
+        </button>
 
         {/* Build with Claude — surfaced directly below the grid so users see
             the "make a new one" affordance before the ancillary toggles.

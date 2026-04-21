@@ -19,13 +19,17 @@ interface Props {
   // Threaded through to the detail overlay so users can share/QR from Library.
   onOpenShareSheet?(skillId: string): void;
   onOpenThemeShare?(themeSlug: string): void;
+  // Context-aware default tab — set by youcoded:open-library event (Task 5.1).
+  initialTab?: 'skills' | 'themes' | 'updates';
 }
 
 export default function LibraryScreen({
-  onExit, onOpenMarketplace, onOpenShareSheet, onOpenThemeShare,
+  onExit, onOpenMarketplace, onOpenShareSheet, onOpenThemeShare, initialTab,
 }: Props) {
   const mp = useMarketplace();
   const [detail, setDetail] = useState<DetailTarget | null>(null);
+  // Tab state — defaults to 'skills' if no initialTab provided.
+  const [tab, setTab] = useState<'skills' | 'themes' | 'updates'>(initialTab ?? 'skills');
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -38,20 +42,69 @@ export default function LibraryScreen({
   }, [detail, onExit]);
 
   const favSet = useMemo(() => new Set(mp.favorites), [mp.favorites]);
-  const installedById = useMemo(() => {
-    const m = new Map<string, SkillEntry>();
-    for (const s of mp.installedSkills) m.set(s.id, s);
-    return m;
-  }, [mp.installedSkills]);
+  const themeFavSet = useMemo(() => new Set(mp.themeFavorites), [mp.themeFavorites]);
 
-  const favorites = mp.installedSkills.filter((s) => favSet.has(s.id));
-  const installedOnly = mp.installedSkills.filter((s) => !favSet.has(s.id));
-  const installedThemes = mp.themeEntries.filter((t) => t.installed);
-  const updatesAvailable = [
-    ...mp.installedSkills.filter((s) => !!mp.updateAvailable[s.id]),
-    // Themes with updates — merged by slug key in updateAvailable map.
-    ...installedThemes.filter((t) => !!mp.updateAvailable[t.slug]),
-  ];
+  // Count items that have updates available (skills + themes combined).
+  const updateCount = useMemo(
+    () => Object.values(mp.updateAvailable).filter(Boolean).length,
+    [mp.updateAvailable],
+  );
+
+  // If the user is on the updates tab and updates drop to zero, fall back to skills.
+  useEffect(() => {
+    if (tab === 'updates' && updateCount === 0) setTab('skills');
+  }, [tab, updateCount]);
+
+  // ── per-item render helpers ────────────────────────────────────────────────
+
+  function renderSkillCard(s: SkillEntry) {
+    return (
+      <MarketplaceCard
+        key={s.id}
+        item={{ kind: "skill", entry: s }}
+        installed
+        updateAvailable={!!mp.updateAvailable[s.id]}
+        onOpen={() => setDetail({ kind: "skill", id: s.id })}
+      />
+    );
+  }
+
+  function renderThemeCard(t: (typeof mp.themeEntries)[number]) {
+    return (
+      <MarketplaceCard
+        key={`theme:${t.slug}`}
+        item={{ kind: "theme", entry: t }}
+        installed
+        updateAvailable={!!mp.updateAvailable[t.slug]}
+        onOpen={() => setDetail({ kind: "theme", slug: t.slug })}
+      />
+    );
+  }
+
+  // Unified card for the Updates tab — handles both skills and themes.
+  function renderMixedCard(item: SkillEntry | (typeof mp.themeEntries)[number]) {
+    const isTheme = "slug" in item && !("id" in item);
+    const kind = isTheme ? "theme" : "skill";
+    return (
+      <MarketplaceCard
+        key={kind === "theme" ? `theme:${(item as any).slug}` : (item as SkillEntry).id}
+        item={
+          kind === "theme"
+            ? { kind: "theme", entry: item as any }
+            : { kind: "skill", entry: item as SkillEntry }
+        }
+        installed
+        updateAvailable
+        onOpen={() =>
+          setDetail(
+            kind === "theme"
+              ? { kind: "theme", slug: (item as any).slug }
+              : { kind: "skill", id: (item as SkillEntry).id },
+          )
+        }
+      />
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-40 overflow-y-auto flex flex-col">
@@ -79,81 +132,92 @@ export default function LibraryScreen({
         </div>
       </div>
 
-      <div className="px-4 flex flex-col gap-8 pb-12">
-        <Section title="Updates available" empty="Nothing to update.">
-          {updatesAvailable.length > 0 && (
-            <MarketplaceGrid>
-              {updatesAvailable.map((item) => {
-                const isTheme = "slug" in item && !("id" in item);
-                const kind = isTheme ? "theme" : "skill";
-                return (
-                  <MarketplaceCard
-                    key={kind === "theme" ? `theme:${(item as any).slug}` : (item as SkillEntry).id}
-                    item={
-                      kind === "theme"
-                        ? { kind: "theme", entry: item as any }
-                        : { kind: "skill", entry: item as SkillEntry }
-                    }
-                    installed
-                    updateAvailable
-                    onOpen={() =>
-                      setDetail(
-                        kind === "theme"
-                          ? { kind: "theme", slug: (item as any).slug }
-                          : { kind: "skill", id: (item as SkillEntry).id },
-                      )
-                    }
-                  />
-                );
-              })}
-            </MarketplaceGrid>
-          )}
-        </Section>
+      {/* Tab chip row — sticky so it stays visible while scrolling content. */}
+      <div className="sticky top-0 z-10 bg-canvas px-4 py-2 border-b border-edge-dim flex gap-2">
+        {(['skills', 'themes'] as const).map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={`px-3 py-1.5 rounded-md text-sm ${
+              tab === t ? 'bg-accent text-on-accent' : 'bg-inset text-fg-2 hover:text-fg'
+            }`}
+          >
+            {t === 'skills' ? 'Skills' : 'Themes'}
+          </button>
+        ))}
+        {/* Updates tab only shown when there are updates to act on. */}
+        {updateCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setTab('updates')}
+            className={`px-3 py-1.5 rounded-md text-sm ${
+              tab === 'updates' ? 'bg-accent text-on-accent' : 'bg-inset text-fg-2 hover:text-fg'
+            }`}
+          >
+            Updates · {updateCount}
+          </button>
+        )}
+      </div>
 
-        <Section title="Favorites" empty="No favorites yet — tap the star on any installed skill.">
-          {favorites.length > 0 && (
-            <MarketplaceGrid>
-              {favorites.map((s) => (
-                <MarketplaceCard
-                  key={s.id}
-                  item={{ kind: "skill", entry: s }}
-                  installed
-                  onOpen={() => setDetail({ kind: "skill", id: s.id })}
-                />
-              ))}
-            </MarketplaceGrid>
-          )}
-        </Section>
+      <div className="px-4 flex flex-col gap-8 pb-12 pt-4">
 
-        <Section title="Installed skills" empty="Install something from the marketplace to see it here.">
-          {installedOnly.length > 0 && (
-            <MarketplaceGrid>
-              {installedOnly.map((s) => (
-                <MarketplaceCard
-                  key={s.id}
-                  item={{ kind: "skill", entry: s }}
-                  installed
-                  onOpen={() => setDetail({ kind: "skill", id: s.id })}
-                />
-              ))}
-            </MarketplaceGrid>
-          )}
-        </Section>
+        {/* Skills tab — starred favorites first, then the rest. */}
+        {tab === 'skills' && (
+          <>
+            <Section title="Favorites" empty="No favorites yet — tap the star on any installed skill.">
+              {mp.installedSkills.filter(s => favSet.has(s.id)).length > 0 && (
+                <MarketplaceGrid>
+                  {mp.installedSkills.filter(s => favSet.has(s.id)).map(renderSkillCard)}
+                </MarketplaceGrid>
+              )}
+            </Section>
+            <Section title="Installed" empty="Install something from the marketplace to see it here.">
+              {mp.installedSkills.filter(s => !favSet.has(s.id)).length > 0 && (
+                <MarketplaceGrid>
+                  {mp.installedSkills.filter(s => !favSet.has(s.id)).map(renderSkillCard)}
+                </MarketplaceGrid>
+              )}
+            </Section>
+          </>
+        )}
 
-        <Section title="Installed themes" empty="No themes installed.">
-          {installedThemes.length > 0 && (
-            <MarketplaceGrid>
-              {installedThemes.map((t) => (
-                <MarketplaceCard
-                  key={`theme:${t.slug}`}
-                  item={{ kind: "theme", entry: t }}
-                  installed
-                  onOpen={() => setDetail({ kind: "theme", slug: t.slug })}
-                />
-              ))}
-            </MarketplaceGrid>
-          )}
-        </Section>
+        {/* Themes tab — starred theme favorites first, then the rest. */}
+        {tab === 'themes' && (
+          <>
+            <Section title="Favorite themes" empty="No favorite themes yet — tap the star on any installed theme.">
+              {mp.themeEntries.filter(t => t.installed && themeFavSet.has(t.slug)).length > 0 && (
+                <MarketplaceGrid>
+                  {mp.themeEntries.filter(t => t.installed && themeFavSet.has(t.slug)).map(renderThemeCard)}
+                </MarketplaceGrid>
+              )}
+            </Section>
+            <Section title="Installed themes" empty="No themes installed.">
+              {mp.themeEntries.filter(t => t.installed && !themeFavSet.has(t.slug)).length > 0 && (
+                <MarketplaceGrid>
+                  {mp.themeEntries.filter(t => t.installed && !themeFavSet.has(t.slug)).map(renderThemeCard)}
+                </MarketplaceGrid>
+              )}
+            </Section>
+          </>
+        )}
+
+        {/* Updates tab — all update-available items (skills + themes) in one list. */}
+        {tab === 'updates' && (
+          <Section title="Updates available" empty="Nothing to update.">
+            {[
+              ...mp.installedSkills.filter(s => !!mp.updateAvailable[s.id]),
+              ...mp.themeEntries.filter(t => !!mp.updateAvailable[t.slug]),
+            ].length > 0 && (
+              <MarketplaceGrid>
+                {[
+                  ...mp.installedSkills.filter(s => !!mp.updateAvailable[s.id]),
+                  ...mp.themeEntries.filter(t => !!mp.updateAvailable[t.slug]),
+                ].map(renderMixedCard)}
+              </MarketplaceGrid>
+            )}
+          </Section>
+        )}
       </div>
 
       {detail && (

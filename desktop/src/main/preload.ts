@@ -174,6 +174,8 @@ const IPC = {
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
   APPEARANCE_BROADCAST: 'appearance:broadcast',
   APPEARANCE_SYNC: 'appearance:sync',
+  APPEARANCE_GET_FAVORITE_THEMES: 'appearance:get-favorite-themes',
+  APPEARANCE_FAVORITE_THEME: 'appearance:favorite-theme',
   // Marketplace auth + write APIs (Task 4 — byte-identical to marketplace-api-handlers.ts CHANNELS)
   MARKETPLACE_AUTH_START: 'marketplace:auth:start',
   MARKETPLACE_AUTH_POLL: 'marketplace:auth:poll',
@@ -451,6 +453,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.APPEARANCE_SYNC, h);
       return () => ipcRenderer.removeListener(IPC.APPEARANCE_SYNC, h);
     },
+    favoriteTheme: (slug: string, favorited: boolean): Promise<string[]> =>
+      ipcRenderer.invoke(IPC.APPEARANCE_FAVORITE_THEME, slug, favorited),
+    getFavoriteThemes: (): Promise<string[]> =>
+      ipcRenderer.invoke(IPC.APPEARANCE_GET_FAVORITE_THEMES),
   },
   defaults: {
     get: (): Promise<{ skipPermissions: boolean; model: string; projectFolder: string }> =>

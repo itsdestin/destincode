@@ -160,6 +160,9 @@ function AppInner() {
   // Preferred type chip when the marketplace is opened from a legacy entry
   // point (e.g. SettingsPanel theme picker). Cleared after the screen reads it.
   const [marketplaceInitialType, setMarketplaceInitialType] = useState<'skill' | 'theme' | undefined>(undefined);
+  // Tab to show when Library opens — consumed by LibraryScreen (Task 5.2 wires
+  // the prop; this state is lifted here so the event listener below can set it).
+  const [libraryInitialTab, setLibraryInitialTab] = useState<'skills' | 'themes' | 'updates' | undefined>(undefined);
 
   // Open the marketplace destination; `installed` routes to the Library
   // sibling. Omit `tab` (or pass undefined) to land on the discovery page
@@ -174,6 +177,23 @@ function AppInner() {
     else if (tab === 'themes') setMarketplaceInitialType('theme');
     else setMarketplaceInitialType(undefined);
     setActiveView('marketplace');
+  }, []);
+
+  // Listen for the global "open library" event dispatched by ThemeScreen's
+  // "Browse all themes" button. Opens Library to the requested tab and closes
+  // the Appearance popup (the popup is inside SettingsPanel which the user can
+  // close separately; we just navigate away by switching the active view).
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const tab = detail?.tab as 'skills' | 'themes' | 'updates' | undefined;
+      setLibraryInitialTab(tab);
+      setActiveView('library');
+      // Close settings panel so the Library fills the screen unobstructed.
+      setSettingsOpen(false);
+    };
+    window.addEventListener('youcoded:open-library', onOpen);
+    return () => window.removeEventListener('youcoded:open-library', onOpen);
   }, []);
   const [publishThemeSlug, setPublishThemeSlug] = useState<string | null>(null);
   const [editorSkillId, setEditorSkillId] = useState<string | null>(null);
@@ -1963,28 +1983,29 @@ function AppInner() {
           window.claude.session.sendInput(sessionId, `/model ${m}\r`);
         }}
       />
-      {/* Full-screen glass marketplace + library destinations. Shares a
-          single MarketplaceProvider across both screens so install/uninstall
-          mutations reflect in both without forked state. */}
+      {/* Full-screen glass marketplace + library destinations. MarketplaceProvider
+          is now app-wide (root provider tree) so ThemeScreen can also consume it.
+          libraryInitialTab is lifted state set by the youcoded:open-library event
+          (dispatched by ThemeScreen's "Browse all themes" button); Task 5.2 wires
+          it to LibraryScreen's initialTab prop. */}
       {(activeView === 'marketplace' || activeView === 'library') && (
-        <MarketplaceProvider>
-          {activeView === 'marketplace' ? (
-            <MarketplaceScreen
-              onExit={() => { setActiveView('chat'); setMarketplaceInitialType(undefined); }}
-              onOpenLibrary={() => { setActiveView('library'); setMarketplaceInitialType(undefined); }}
-              onOpenShareSheet={(id) => setShareSkillId(id)}
-              onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
-              initialTypeChip={marketplaceInitialType}
-            />
-          ) : (
-            <LibraryScreen
-              onExit={() => setActiveView('chat')}
-              onOpenMarketplace={() => setActiveView('marketplace')}
-              onOpenShareSheet={(id) => setShareSkillId(id)}
-              onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
-            />
-          )}
-        </MarketplaceProvider>
+        activeView === 'marketplace' ? (
+          <MarketplaceScreen
+            onExit={() => { setActiveView('chat'); setMarketplaceInitialType(undefined); }}
+            onOpenLibrary={() => { setActiveView('library'); setMarketplaceInitialType(undefined); }}
+            onOpenShareSheet={(id) => setShareSkillId(id)}
+            onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
+            initialTypeChip={marketplaceInitialType}
+          />
+        ) : (
+          <LibraryScreen
+            onExit={() => { setActiveView('chat'); setLibraryInitialTab(undefined); }}
+            onOpenMarketplace={() => setActiveView('marketplace')}
+            onOpenShareSheet={(id) => setShareSkillId(id)}
+            onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
+            initialTab={libraryInitialTab}
+          />
+        )
       )}
       {publishThemeSlug && (
         <ThemeShareSheet themeSlug={publishThemeSlug} onClose={() => setPublishThemeSlug(null)} />
@@ -2083,7 +2104,12 @@ export default function App() {
               <SkillProvider>
                 <GameProvider>
                   <ChatProvider>
-                    <AppInner />
+                    {/* MarketplaceProvider lifted to app root so ThemeScreen in
+                        SettingsPanel (outside the library/marketplace view) can
+                        consume useMarketplace() for the favorites star + filter. */}
+                    <MarketplaceProvider>
+                      <AppInner />
+                    </MarketplaceProvider>
                   </ChatProvider>
                 </GameProvider>
               </SkillProvider>

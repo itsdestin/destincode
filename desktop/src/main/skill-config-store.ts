@@ -5,6 +5,11 @@ import type { UserSkillConfig, ChipConfig, MetadataOverride, SkillEntry, Package
 
 const CONFIG_PATH = path.join(os.homedir(), '.claude', 'youcoded-skills.json');
 
+// Four built-in theme slugs, seeded as favorites on first-read so a new user
+// sees a populated Appearance panel. Mirrors the skill-favorites seeding in
+// createDefaultConfig. Must stay in sync with BUILTIN_THEMES in theme-context.tsx.
+const DEFAULT_THEME_FAVORITES = ['light', 'dark', 'midnight', 'creme'];
+
 const DEFAULT_CHIPS: ChipConfig[] = [
   { skillId: 'journaling-assistant', label: 'Journal', prompt: "let's journal" },
   { skillId: 'claudes-inbox', label: 'Inbox', prompt: 'check my inbox' },
@@ -122,6 +127,28 @@ export class SkillConfigStore {
     this.save();
   }
 
+  getThemeFavorites(): string[] {
+    const config = this.load();
+    // Lazy seed on first access. Config written back in the same call so the
+    // seed survives even if the caller never mutates. We only seed when the
+    // key is missing — an empty array is a legitimate user state (they
+    // unstarred everything) and must be preserved.
+    if (config.themeFavorites === undefined) {
+      config.themeFavorites = [...DEFAULT_THEME_FAVORITES];
+      this.save();
+    }
+    return config.themeFavorites;
+  }
+
+  setThemeFavorite(slug: string, favorited: boolean): void {
+    const config = this.load();
+    const current = config.themeFavorites ?? [...DEFAULT_THEME_FAVORITES];
+    const set = new Set(current);
+    if (favorited) set.add(slug); else set.delete(slug);
+    config.themeFavorites = [...set];
+    this.save();
+  }
+
   getChips(): ChipConfig[] {
     return this.load().chips;
   }
@@ -230,6 +257,14 @@ export class SkillConfigStore {
     config.favorites = config.favorites.filter(f => f !== id);
     config.chips = config.chips.filter(c => c.skillId !== id);
     delete config.overrides[id];
+    // Built-in theme slugs (light/dark/midnight/creme) cannot be uninstalled via
+    // marketplace, so no package key like `theme:light` will ever arrive here.
+    // If that invariant changes (e.g., built-ins become uninstallable), revisit
+    // whether we want to strip seeded defaults from favorites on uninstall.
+    if (id.startsWith('theme:') && config.themeFavorites) {
+      const slug = id.slice('theme:'.length);
+      config.themeFavorites = config.themeFavorites.filter(s => s !== slug);
+    }
     this.save();
   }
 

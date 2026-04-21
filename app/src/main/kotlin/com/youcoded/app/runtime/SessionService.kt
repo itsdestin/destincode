@@ -736,6 +736,21 @@ class SessionService : Service() {
                 skillProvider?.setFavorite(id, favorited)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
             }
+            // Theme favorites — parity with desktop appearance:get-favorite-themes /
+            // appearance:favorite-theme IPC. Reads/writes themeFavorites in
+            // ~/.claude/youcoded-skills.json via the same SkillConfigStore used
+            // by skill favorites above.
+            "appearance:get-favorite-themes" -> {
+                val favorites = skillProvider?.getThemeFavorites() ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, favorites) }
+            }
+            "appearance:favorite-theme" -> {
+                val slug = msg.payload.optString("slug")
+                val favorited = msg.payload.optBoolean("favorited")
+                skillProvider?.setThemeFavorite(slug, favorited)
+                val updated = skillProvider?.getThemeFavorites() ?: org.json.JSONArray()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, updated) }
+            }
             "skills:get-chips" -> {
                 val result = skillProvider?.getChips() ?: org.json.JSONArray()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }

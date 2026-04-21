@@ -297,6 +297,10 @@ export interface PackageInfo {
 export interface UserSkillConfig {
   version: 1 | 2;
   favorites: string[];
+  /** Slugs of themes the user has pinned as favorites. Drives the Appearance
+   *  panel (favorites-only) and the "My favorite themes" section in Library.
+   *  Seeded with the four built-ins on first read; see SkillConfigStore.getThemeFavorites(). */
+  themeFavorites?: string[];
   chips: ChipConfig[];
   overrides: Record<string, MetadataOverride>;
   privateSkills: SkillEntry[];
@@ -707,6 +711,8 @@ export const IPC = {
   // in window 2 propagate to window 1 without a reload.
   APPEARANCE_BROADCAST: 'appearance:broadcast',
   APPEARANCE_SYNC: 'appearance:sync',
+  APPEARANCE_GET_FAVORITE_THEMES: 'appearance:get-favorite-themes',
+  APPEARANCE_FAVORITE_THEME: 'appearance:favorite-theme',
   // Restore from backup — directional, user-initiated pull (separate from sync's merge semantics)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
   SYNC_RESTORE_PREVIEW: 'sync:restore:preview',
