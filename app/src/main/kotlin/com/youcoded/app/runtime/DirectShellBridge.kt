@@ -66,6 +66,12 @@ class DirectShellBridge(private val bootstrap: Bootstrap) {
     }
 
     fun writeInput(text: String) {
+        // Intentional: no 600ms Enter-split here (unlike PtyBridge.writeInput).
+        // DirectShellBridge talks to raw bash, which has no paste-mode timing
+        // quirk. PtyBridge's split exists to work around Ink's 500ms
+        // PASTE_TIMEOUT in Claude Code's TUI (see docs/PITFALLS.md → PTY
+        // Writes). Bash doesn't have that, so writes go through whole.
+        // Do not "parity fix" this without a concrete reason.
         session?.write(text)
     }
 
