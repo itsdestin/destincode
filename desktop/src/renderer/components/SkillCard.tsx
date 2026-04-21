@@ -2,16 +2,32 @@ import React from 'react';
 import type { SkillEntry } from '../../shared/types';
 import { useMarketplaceStats } from '../state/marketplace-stats-context';
 import StarRating from './marketplace/StarRating';
+import FavoriteStar from './marketplace/FavoriteStar';
+
+interface FavoriteProps {
+  filled: boolean;
+  onToggle: () => void;
+}
+
+interface ChipSkill {
+  id: string;
+  displayName: string;
+}
 
 interface Props {
   skill: SkillEntry;
   onClick: (skill: SkillEntry) => void;
   variant?: 'drawer' | 'marketplace';
   installed?: boolean;
-  // Phase 3b: show an amber badge when a newer version is available
   updateAvailable?: boolean;
   onInstall?: (skill: SkillEntry) => void;
   installing?: boolean;
+  /** When provided, a corner favorite star overlays the card. */
+  favorite?: FavoriteProps;
+  /** When provided, a row of bundled-skill chips renders beneath the blurb.
+   *  Clicking a chip invokes the callback with the chip id; card click still fires. */
+  chipSkills?: ChipSkill[];
+  onChipClick?: (chipId: string) => void;
 }
 
 const sourceBadgeStyles: Record<string, string> = {
@@ -31,21 +47,47 @@ const typeLabels: Record<string, string> = {
   plugin: 'Plugin',
 };
 
-export default function SkillCard({ skill, onClick, variant = 'drawer', installed, updateAvailable, onInstall, installing }: Props) {
-  // Task 9: pull live install count + rating from the marketplace stats context.
-  // Falls back gracefully when stats are loading or unavailable for this skill id.
+export default function SkillCard({
+  skill, onClick, variant = 'drawer', installed, updateAvailable,
+  onInstall, installing, favorite, chipSkills, onChipClick,
+}: Props) {
   const { plugins } = useMarketplaceStats();
   const liveStats = plugins[skill.id];
   const liveInstalls = liveStats?.installs ?? skill.installs ?? null;
   const liveRating = liveStats?.rating ?? null;
   const liveReviewCount = liveStats?.review_count ?? 0;
 
+  // Chip row — renders for multi-skill plugin cards. stopPropagation on each
+  // chip so a chip click doesn't also fire the card's onClick.
+  const chipRow = chipSkills && chipSkills.length > 0 && (
+    <div className="flex flex-wrap gap-1 mt-2">
+      {chipSkills.map(c => (
+        <button
+          key={c.id}
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onChipClick?.(c.id); }}
+          className="text-[10px] px-1.5 py-0.5 rounded-sm bg-inset/60 text-fg-dim border border-edge/25 hover:bg-inset hover:text-fg transition-colors"
+        >
+          {c.displayName}
+        </button>
+      ))}
+    </div>
+  );
+
   if (variant === 'marketplace') {
     return (
+      // Root is a div role=button so FavoriteStar (itself a button) can nest
+      // without invalid HTML. Matches the pattern used in MarketplaceCard.
       <div
+        role="button"
+        tabIndex={0}
         onClick={() => onClick(skill)}
-        className="bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer"
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(skill); } }}
+        className="relative bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer"
       >
+        {favorite && (
+          <FavoriteStar corner size="sm" filled={favorite.filled} onToggle={favorite.onToggle} />
+        )}
         <div className="flex justify-between items-start">
           <span className="text-sm font-medium text-fg leading-tight">{skill.displayName}</span>
           <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 ml-1 ${
@@ -58,7 +100,7 @@ export default function SkillCard({ skill, onClick, variant = 'drawer', installe
         <span className="text-[11px] text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">
           {skill.description}
         </span>
-        {/* Task 9: live star rating — only shown when the API has returned at least 1 review */}
+        {chipRow}
         {liveRating != null && (
           <div className="mt-1">
             <StarRating value={liveRating} count={liveReviewCount} size="sm" />
@@ -67,8 +109,7 @@ export default function SkillCard({ skill, onClick, variant = 'drawer', installe
         <div className="flex justify-between items-center mt-1">
           <span className="text-[9px] text-fg-faint">
             {skill.author ? `${skill.author}` : ''}
-            {/* Task 9: use live install count from /stats API, fall back to static field */}
-            {liveInstalls != null ? ` \u00B7 ${liveInstalls >= 1000 ? `${(liveInstalls / 1000).toFixed(1)}k` : liveInstalls} \u2193` : ''}
+            {liveInstalls != null ? ` · ${liveInstalls >= 1000 ? `${(liveInstalls / 1000).toFixed(1)}k` : liveInstalls} ↓` : ''}
           </span>
         </div>
         {installed ? (
@@ -103,20 +144,29 @@ export default function SkillCard({ skill, onClick, variant = 'drawer', installe
     );
   }
 
-  // Drawer variant (existing look)
+  // Drawer variant — Fix: root is now `<div role="button">` with `relative`
+  // so the FavoriteStar can sit inside the card without an outer wrapper
+  // distorting the drawer grid's flex sizing.
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onClick(skill)}
-      className="bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col"
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(skill); } }}
+      className="relative bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer"
     >
+      {favorite && (
+        <FavoriteStar corner size="sm" filled={favorite.filled} onToggle={favorite.onToggle} />
+      )}
       <span className="text-sm font-medium text-fg leading-tight">{skill.displayName}</span>
       <span className="text-[11px] text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">{skill.description}</span>
+      {chipRow}
       <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm mt-2 self-start ${
         skill.source === 'youcoded-core' ? sourceBadgeStyles['youcoded-core'] :
         typeBadgeStyles[skill.type] || sourceBadgeStyles.plugin
       }`}>
         {skill.source === 'youcoded-core' ? 'YC' : typeLabels[skill.type] || 'Plugin'}
       </span>
-    </button>
+    </div>
   );
 }
