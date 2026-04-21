@@ -4,7 +4,12 @@
  * Two sound categories, each with selectable presets (shared stock list)
  * plus optional custom sound files:
  * - attention: played when a session turns red (awaiting approval)
- * - ready:     played when a session turns blue (response ready, unseen)
+ * - ready:     played when any session finishes thinking (response complete)
+ *
+ * Custom sound format support: Chromium's decodeAudioData handles mp3, wav,
+ * ogg, opus, flac, aac, m4a, webm natively. AIFF is NOT in Chromium's codec
+ * set, so parseAiffToAudioBuffer() below decodes it in pure JS — this is what
+ * makes Apple's /System/Library/Sounds/*.aiff files work on macOS.
  */
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -39,7 +44,12 @@ function synth(recipe: (ctx: AudioContext, gain: GainNode) => void, volume: numb
     gain.gain.setValueAtTime(volume, ctx.currentTime);
     recipe(ctx, gain);
     setTimeout(() => ctx.close(), 1500);
-  } catch { /* audio not available */ }
+  } catch (e) {
+    // Log instead of silently swallowing — previously any AudioContext construction
+    // failure (autoplay policy, per-page AudioContext cap, sandbox restriction) was
+    // invisible and made remote debugging of "sound not playing" impossible.
+    console.warn('[sound] synth failed', e);
+  }
 }
 
 /** Two-tone ascending chime */
@@ -146,22 +156,153 @@ export const CUSTOM_SOUND_ID = '__custom__';
 /** Cache of decoded audio buffers keyed by file path, avoids re-fetching */
 const audioBufferCache = new Map<string, AudioBuffer>();
 
+/** Is this path an AIFF file? Chromium can't decode AIFF; we parse it in JS. */
+function isAiffPath(filePath: string): boolean {
+  return /\.(aiff|aif|aifc)$/i.test(filePath);
+}
+
+/**
+ * Build a file:// URL from an absolute path, URL-encoding path segments so
+ * macOS paths with spaces (e.g. /Users/First Last/Music/foo.aiff) or unicode
+ * characters don't produce a malformed URL that fetch rejects. Windows
+ * backslashes are normalized to forward slashes first.
+ */
+function fileUrlFromPath(filePath: string): string {
+  if (filePath.startsWith('file://')) return filePath;
+  const normalized = filePath.replace(/\\/g, '/');
+  // encodeURI preserves / and : but encodes spaces/unicode/etc.
+  const encoded = encodeURI(normalized);
+  return encoded.startsWith('/') ? `file://${encoded}` : `file:///${encoded}`;
+}
+
+/**
+ * Parse 80-bit IEEE 754 extended precision float (big-endian) used by AIFF for
+ * sample rate. AIFF stores sample rate this way because it predates IEEE 754
+ * doubles — real-world files almost always use integer rates (44100, 48000).
+ */
+function readIeee80(view: DataView, offset: number): number {
+  const sign = (view.getUint8(offset) & 0x80) ? -1 : 1;
+  const exponent = ((view.getUint8(offset) & 0x7f) << 8) | view.getUint8(offset + 1);
+  let mantissa = 0;
+  for (let i = 0; i < 8; i++) {
+    mantissa = mantissa * 256 + view.getUint8(offset + 2 + i);
+  }
+  if (exponent === 0 && mantissa === 0) return 0;
+  // Bias for 80-bit extended is 16383; mantissa is 64 bits with explicit leading 1
+  return sign * mantissa * Math.pow(2, exponent - 16383 - 63);
+}
+
+/**
+ * Decode an AIFF/AIFC file into an AudioBuffer. Handles uncompressed big-endian
+ * PCM (8/16/24/32-bit). AIFC with compression (e.g. μ-law, IMA4) is not supported —
+ * the COMM compressionType will be something other than 'NONE'/'sowt', and we
+ * throw so the caller can log and the user can pick a different sound.
+ */
+function parseAiffToAudioBuffer(ctx: AudioContext, arrayBuffer: ArrayBuffer): AudioBuffer {
+  const view = new DataView(arrayBuffer);
+  const readAscii = (off: number, len: number) => {
+    let s = '';
+    for (let i = 0; i < len; i++) s += String.fromCharCode(view.getUint8(off + i));
+    return s;
+  };
+
+  if (readAscii(0, 4) !== 'FORM') throw new Error('Not an AIFF file (missing FORM)');
+  const formType = readAscii(8, 4); // 'AIFF' or 'AIFC'
+  if (formType !== 'AIFF' && formType !== 'AIFC') {
+    throw new Error(`Unsupported FORM type: ${formType}`);
+  }
+
+  let channels = 0;
+  let numFrames = 0;
+  let bitDepth = 0;
+  let sampleRate = 0;
+  let compression: 'NONE' | 'sowt' = 'NONE'; // 'sowt' = little-endian PCM (rare but valid)
+  let ssndOffset = 0;
+  let ssndSize = 0;
+
+  let cursor = 12; // skip 'FORM' + size + 'AIFF'/'AIFC'
+  while (cursor < view.byteLength - 8) {
+    const chunkId = readAscii(cursor, 4);
+    const chunkSize = view.getUint32(cursor + 4, false);
+    const dataStart = cursor + 8;
+
+    if (chunkId === 'COMM') {
+      channels = view.getUint16(dataStart, false);
+      numFrames = view.getUint32(dataStart + 2, false);
+      bitDepth = view.getUint16(dataStart + 6, false);
+      sampleRate = readIeee80(view, dataStart + 8);
+      if (formType === 'AIFC' && chunkSize >= 22) {
+        const comp = readAscii(dataStart + 18, 4);
+        if (comp !== 'NONE' && comp !== 'sowt') {
+          throw new Error(`Unsupported AIFC compression: ${comp}`);
+        }
+        compression = comp as 'NONE' | 'sowt';
+      }
+    } else if (chunkId === 'SSND') {
+      const ssndDataOffset = view.getUint32(dataStart, false); // usually 0
+      ssndOffset = dataStart + 8 + ssndDataOffset;
+      ssndSize = chunkSize - 8 - ssndDataOffset;
+    }
+
+    // Chunks are padded to even size
+    cursor = dataStart + chunkSize + (chunkSize % 2);
+  }
+
+  if (!channels || !numFrames || !bitDepth || !sampleRate || !ssndSize) {
+    throw new Error('AIFF missing required COMM/SSND fields');
+  }
+
+  const bytesPerSample = bitDepth / 8;
+  const buffer = ctx.createBuffer(channels, numFrames, sampleRate);
+  const bigEndian = compression !== 'sowt'; // sowt = little-endian
+
+  for (let ch = 0; ch < channels; ch++) {
+    const channelData = buffer.getChannelData(ch);
+    for (let frame = 0; frame < numFrames; frame++) {
+      const sampleOffset = ssndOffset + (frame * channels + ch) * bytesPerSample;
+      let sample = 0;
+      if (bitDepth === 16) {
+        sample = view.getInt16(sampleOffset, !bigEndian) / 0x8000;
+      } else if (bitDepth === 24) {
+        // 24-bit signed PCM — DataView has no int24, assemble manually
+        const b0 = view.getUint8(sampleOffset);
+        const b1 = view.getUint8(sampleOffset + 1);
+        const b2 = view.getUint8(sampleOffset + 2);
+        let s = bigEndian ? ((b0 << 16) | (b1 << 8) | b2) : ((b2 << 16) | (b1 << 8) | b0);
+        if (s & 0x800000) s -= 0x1000000; // sign extend
+        sample = s / 0x800000;
+      } else if (bitDepth === 32) {
+        sample = view.getInt32(sampleOffset, !bigEndian) / 0x80000000;
+      } else if (bitDepth === 8) {
+        // 8-bit AIFF is signed (unlike WAV which is unsigned)
+        sample = view.getInt8(sampleOffset) / 0x80;
+      }
+      channelData[frame] = sample;
+    }
+  }
+
+  return buffer;
+}
+
 /**
  * Play a custom audio file at the given volume.
- * Uses fetch + Web Audio API decodeAudioData for broad format support.
- * Falls back to HTMLAudioElement for formats AudioContext can't decode.
+ * Uses fetch + decodeAudioData for formats Chromium supports; routes AIFF
+ * through the JS parser above. Falls back to HTMLAudioElement for anything
+ * decodeAudioData rejects.
  */
 async function playCustomFile(filePath: string, volume: number) {
+  const fileUrl = fileUrlFromPath(filePath);
   try {
-    // Build a file:// URL from the path
-    const fileUrl = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
     const ctx = new AudioContext();
 
     let buffer = audioBufferCache.get(filePath);
     if (!buffer) {
       const response = await fetch(fileUrl);
+      if (!response.ok) throw new Error(`fetch failed: ${response.status}`);
       const arrayBuffer = await response.arrayBuffer();
-      buffer = await ctx.decodeAudioData(arrayBuffer);
+      buffer = isAiffPath(filePath)
+        ? parseAiffToAudioBuffer(ctx, arrayBuffer)
+        : await ctx.decodeAudioData(arrayBuffer);
       audioBufferCache.set(filePath, buffer);
     }
 
@@ -172,15 +313,16 @@ async function playCustomFile(filePath: string, volume: number) {
     source.connect(gain);
     gain.connect(ctx.destination);
     source.start();
-    // Clean up after playback finishes
     source.onended = () => ctx.close();
-  } catch {
-    // Fallback: use HTMLAudioElement (handles more formats on some platforms)
+  } catch (e) {
+    console.warn('[sound] custom file playback failed, trying HTMLAudioElement fallback', filePath, e);
     try {
-      const audio = new Audio(filePath.startsWith('file://') ? filePath : `file://${filePath}`);
+      const audio = new Audio(fileUrl);
       audio.volume = volume;
       await audio.play();
-    } catch { /* audio not available or file missing */ }
+    } catch (e2) {
+      console.warn('[sound] HTMLAudioElement fallback also failed', filePath, e2);
+    }
   }
 }
 

@@ -392,7 +392,9 @@ export function registerIpcHandlers(
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
       filters: [
-        { name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac', 'webm'] },
+        // AIFF/AIF/AIFC covers Apple system sounds in /System/Library/Sounds/.
+        // Chromium can't decode AIFF natively; sounds.ts has a JS AIFF parser for it.
+        { name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'opus', 'aac', 'm4a', 'flac', 'webm', 'aiff', 'aif', 'aifc'] },
         { name: 'All Files', extensions: ['*'] },
       ],
     });

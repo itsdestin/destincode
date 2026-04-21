@@ -368,8 +368,8 @@ function AppInner() {
     return newStatuses;
   }, [sessions, chatStateMap, viewedSessions, sessionId]);
 
-  // Play sounds when session status transitions to red (attention) or blue (ready).
-  // Uses a separate ref so we only fire once per transition, not on every render.
+  // Play the 'attention' sound when any session transitions to red (awaiting
+  // approval). Red is a visible state, so color-driven dedup is correct here.
   const prevStatusSoundRef = useRef<Map<string, SessionStatusColor>>(new Map());
   // Remote attention diffing: tracks the last-seen attentionMap from status:data
   // so we only dispatch ATTENTION_STATE_CHANGED when a session's state actually flips.
@@ -381,12 +381,31 @@ function AppInner() {
     const prev = prevStatusSoundRef.current;
     for (const [id, color] of sessionStatuses) {
       const was = prev.get(id);
-      if (was === color) continue; // no change
+      if (was === color) continue;
       if (color === 'red' && was !== 'red') playSound('attention');
-      if (color === 'blue' && was !== 'blue') playSound('ready');
     }
     prevStatusSoundRef.current = new Map(sessionStatuses);
   }, [sessionStatuses]);
+
+  // Play the 'ready' sound when any session's isThinking transitions true → false.
+  // Replaces the prior blue-color-transition trigger, which never fired for the
+  // currently-viewed session (blue requires "unseen, not active"). Thinking-false
+  // is the actual "response finished" signal and fires regardless of visibility.
+  const prevThinkingRef = useRef<Map<string, boolean>>(new Map());
+  useEffect(() => {
+    const prev = prevThinkingRef.current;
+    const next = new Map<string, boolean>();
+    for (const [id, state] of chatStateMap) {
+      const was = prev.get(id);
+      const isThinking = !!state.isThinking;
+      next.set(id, isThinking);
+      // Only fire when we actually observed a true → false transition. Skip if
+      // the session just appeared (was === undefined) to avoid a spurious chime
+      // on reducer init or remote hydrate when isThinking arrives already false.
+      if (was === true && !isThinking) playSound('ready');
+    }
+    prevThinkingRef.current = next;
+  }, [chatStateMap]);
 
   // Attention reporter effect: pushes per-session attention state + the
   // derived dot color to main whenever chatStateMap or sessionStatuses
