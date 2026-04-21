@@ -63,11 +63,27 @@ sealed class TranscriptEvent {
         val agentId: String? = null,
     ) : TranscriptEvent()
 
-    /** Assistant turn completed (stop_reason == "end_turn") */
+    /** Per-turn usage counts, mirrors desktop's TurnUsage (shared/types.ts). */
+    data class TurnUsage(
+        val inputTokens: Int,
+        val outputTokens: Int,
+        val cacheReadTokens: Int,
+        val cacheCreationTokens: Int,
+    )
+
+    /** Assistant turn completed (stop_reason != "tool_use").
+     *  The four metadata fields mirror desktop's turn-complete payload
+     *  (transcript-watcher.ts:198-221). Remote clients depend on them
+     *  for the per-turn metadata strip, StopReasonFooter, AttentionBanner's
+     *  Request ID readout, and the sessionModels reconciliation useEffect. */
     data class TurnComplete(
         override val sessionId: String,
         override val uuid: String,
         override val timestamp: Long,
+        val stopReason: String? = null,
+        val model: String? = null,
+        val usage: TurnUsage? = null,
+        val anthropicRequestId: String? = null,
     ) : TranscriptEvent()
 
     /** Streaming assistant text from progress events */

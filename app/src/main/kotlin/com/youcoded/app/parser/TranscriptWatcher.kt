@@ -316,6 +316,17 @@ class TranscriptWatcher(
         val content = message.optJSONArray("content") ?: return
         val stopReason = message.optString("stop_reason", "")
         val model = message.optString("model", null)
+        // `requestId` lives on the top-level JSONL line, not inside message.
+        // Matches desktop's parsed.requestId at transcript-watcher.ts:217.
+        val anthropicRequestId = obj.optString("requestId", "").takeIf { it.isNotEmpty() }
+        val usage = message.optJSONObject("usage")?.let {
+            TranscriptEvent.TurnUsage(
+                inputTokens = it.optInt("input_tokens", 0),
+                outputTokens = it.optInt("output_tokens", 0),
+                cacheReadTokens = it.optInt("cache_read_input_tokens", 0),
+                cacheCreationTokens = it.optInt("cache_creation_input_tokens", 0),
+            )
+        }
 
         // Process each content block in the message
         for (i in 0 until content.length()) {
@@ -357,9 +368,19 @@ class TranscriptWatcher(
         }
 
         // Emit turn-complete for any definitive stop reason except tool_use
-        // (tool_use means Claude is waiting for tool results, not actually done)
+        // (tool_use means Claude is waiting for tool results, not actually done).
+        // Enrich with stopReason + model + usage + anthropicRequestId so remote
+        // clients get the same per-turn metadata desktop populates. Required for
+        // the per-turn metadata strip, StopReasonFooter, AttentionBanner's
+        // Request ID readout, and sessionModels reconciliation.
         if (stopReason.isNotEmpty() && stopReason != "tool_use") {
-            _events.tryEmit(TranscriptEvent.TurnComplete(sessionId, uuid, timestamp))
+            _events.tryEmit(TranscriptEvent.TurnComplete(
+                sessionId, uuid, timestamp,
+                stopReason = stopReason,
+                model = model,
+                usage = usage,
+                anthropicRequestId = anthropicRequestId,
+            ))
         }
     }
 

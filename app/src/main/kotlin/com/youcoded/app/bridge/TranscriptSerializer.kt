@@ -78,8 +78,29 @@ object TranscriptSerializer {
         })
     }
 
-    fun turnComplete(sessionId: String, uuid: String, timestamp: Long): JSONObject {
-        return build("turn-complete", sessionId, uuid, timestamp, JSONObject())
+    fun turnComplete(
+        sessionId: String,
+        uuid: String,
+        timestamp: Long,
+        // Per-turn metadata — shape mirrors desktop transcript-watcher.ts:202-219.
+        // Remote clients (including desktop-remote hitting an Android session)
+        // attach these to the completing AssistantTurn for UI surfacing.
+        stopReason: String? = null,
+        model: String? = null,
+        usage: com.youcoded.app.parser.TranscriptEvent.TurnUsage? = null,
+        anthropicRequestId: String? = null,
+    ): JSONObject {
+        return build("turn-complete", sessionId, uuid, timestamp, JSONObject().apply {
+            if (stopReason != null) put("stopReason", stopReason)
+            if (model != null) put("model", model)
+            if (anthropicRequestId != null) put("anthropicRequestId", anthropicRequestId)
+            if (usage != null) put("usage", JSONObject().apply {
+                put("inputTokens", usage.inputTokens)
+                put("outputTokens", usage.outputTokens)
+                put("cacheReadTokens", usage.cacheReadTokens)
+                put("cacheCreationTokens", usage.cacheCreationTokens)
+            })
+        })
     }
 
     fun compactSummary(sessionId: String, uuid: String, timestamp: Long): JSONObject {

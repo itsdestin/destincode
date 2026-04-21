@@ -186,10 +186,52 @@ class TranscriptSerializerTest {
     }
 
     @Test
-    fun `turnComplete data is empty object`() {
+    fun `turnComplete data is empty object when no metadata provided`() {
         val result = TranscriptSerializer.turnComplete("s", "u", 0L)
         val data = result.getJSONObject("data")
         assertEquals(0, data.length())
+    }
+
+    @Test
+    fun `turnComplete emits stopReason, model, anthropicRequestId, usage when present`() {
+        val usage = com.youcoded.app.parser.TranscriptEvent.TurnUsage(
+            inputTokens = 1234,
+            outputTokens = 567,
+            cacheReadTokens = 89,
+            cacheCreationTokens = 10,
+        )
+        val result = TranscriptSerializer.turnComplete(
+            "s", "u", 0L,
+            stopReason = "max_tokens",
+            model = "claude-opus-4-7",
+            usage = usage,
+            anthropicRequestId = "req_abc123",
+        )
+        val data = result.getJSONObject("data")
+        assertEquals("max_tokens", data.getString("stopReason"))
+        assertEquals("claude-opus-4-7", data.getString("model"))
+        assertEquals("req_abc123", data.getString("anthropicRequestId"))
+        val u = data.getJSONObject("usage")
+        assertEquals(1234, u.getInt("inputTokens"))
+        assertEquals(567, u.getInt("outputTokens"))
+        assertEquals(89, u.getInt("cacheReadTokens"))
+        assertEquals(10, u.getInt("cacheCreationTokens"))
+    }
+
+    @Test
+    fun `turnComplete omits metadata keys when args are null`() {
+        val result = TranscriptSerializer.turnComplete(
+            "s", "u", 0L,
+            stopReason = null,
+            model = "claude-opus-4-7",
+            usage = null,
+            anthropicRequestId = null,
+        )
+        val data = result.getJSONObject("data")
+        assertFalse(data.has("stopReason"))
+        assertFalse(data.has("usage"))
+        assertFalse(data.has("anthropicRequestId"))
+        assertEquals("claude-opus-4-7", data.getString("model"))
     }
 
     // ── streamingText ────────────────────────────────────────────────────────
