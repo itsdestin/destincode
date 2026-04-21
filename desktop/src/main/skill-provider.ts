@@ -157,11 +157,24 @@ export class LocalSkillProvider implements SkillProvider {
       // installed_plugins.json entries. Plugins installed via the YouCoded
       // marketplace are tracked in configStore packages — merge them so the UI
       // marks them as "Installed" and fetchAll() sees them right after install.
+      //
+      // Skip plugin-level placeholders for plugins whose individual skills
+      // are already in `scanned` — otherwise the drawer shows both the real
+      // skills AND a duplicate plugin-level card (e.g. a generic
+      // "Youcoded Encyclopedia" placeholder alongside its 5 bundled skills).
+      // Match on pluginName emitted by skill-scanner, which carries the
+      // plugin id for each scanned skill.
       const installedPackages = this.configStore.getInstalledPlugins();
-      const alreadyFound = new Set([...scanned.map(s => s.id), ...privateSkills.map(s => s.id)]);
+      const alreadyFoundIds = new Set([...scanned.map(s => s.id), ...privateSkills.map(s => s.id)]);
+      const pluginsWithScannedSkills = new Set(
+        scanned
+          .map(s => s.pluginName)
+          .filter((n): n is string => typeof n === 'string'),
+      );
       const packageSkills: SkillEntry[] = [];
       for (const [id, pkg] of Object.entries(installedPackages) as Array<[string, any]>) {
-        if (alreadyFound.has(id)) continue;
+        if (alreadyFoundIds.has(id)) continue;
+        if (pluginsWithScannedSkills.has(id)) continue;
         packageSkills.push({
           id,
           displayName: id.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
