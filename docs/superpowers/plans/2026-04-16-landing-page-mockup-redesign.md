@@ -18,18 +18,24 @@
 
 Per workspace rules (`youcoded-dev/CLAUDE.md`), any non-trivial work must happen in a separate git worktree so concurrent Claude sessions don't collide on the main repo.
 
+> **Paths below use two variables you set once at the top of your session:**
+> ```bash
+> export YOUCODED_ROOT="$HOME/youcoded-dev/youcoded"            # or wherever your main youcoded checkout lives
+> export WORKTREE_ROOT="$HOME/worktrees/landing-mockup-redesign" # any path outside the main repo works
+> ```
+
 - [ ] **Step 1: From `youcoded-dev/youcoded`, create a worktree branched off master**
 
 ```bash
-cd /c/Users/desti/youcoded-dev/youcoded
+cd "$YOUCODED_ROOT"
 git fetch origin
-git worktree add ../../worktrees/landing-mockup-redesign -b landing-mockup-redesign origin/master
+git worktree add "$WORKTREE_ROOT" -b landing-mockup-redesign origin/master
 ```
 
 - [ ] **Step 2: Verify the worktree was created and switch into it**
 
 ```bash
-cd /c/Users/desti/worktrees/landing-mockup-redesign
+cd "$WORKTREE_ROOT"
 git status
 ```
 
@@ -427,7 +433,7 @@ Per `youcoded-dev/CLAUDE.md`: "'Merge' means merge AND push." And: clean up work
 - [ ] **Step 1: From the worktree, stage only the mockup changes**
 
 ```bash
-cd /c/Users/desti/worktrees/landing-mockup-redesign
+cd "$WORKTREE_ROOT"
 git status
 git add docs/index.html
 ```
@@ -466,7 +472,7 @@ Expected: branch pushed to `origin/landing-mockup-redesign`.
 - [ ] **Step 4: Merge into master with a no-ff merge and push**
 
 ```bash
-cd /c/Users/desti/youcoded-dev/youcoded
+cd "$YOUCODED_ROOT"
 git fetch origin
 git checkout master
 git pull origin master
@@ -487,7 +493,7 @@ Expected output: listing includes `master`. If it doesn't, STOP — do not remov
 - [ ] **Step 6: Clean up worktree and branch**
 
 ```bash
-git worktree remove /c/Users/desti/worktrees/landing-mockup-redesign
+git worktree remove "$WORKTREE_ROOT"
 git branch -D landing-mockup-redesign
 git push origin --delete landing-mockup-redesign
 ```
