@@ -15,6 +15,7 @@ import MarketplaceRail from "./MarketplaceRail";
 import MarketplaceCard from "./MarketplaceCard";
 import MarketplaceGrid from "./MarketplaceGrid";
 import MarketplaceDetailOverlay, { type DetailTarget } from "./MarketplaceDetailOverlay";
+import InstallingFooterStrip from "./InstallingFooterStrip";
 import IntegrationCard, { type IntegrationCardItem } from "./IntegrationCard";
 import type { SkillEntry } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
@@ -352,6 +353,10 @@ export default function MarketplaceScreen({
           onOpenThemeShare={onOpenThemeShare}
         />
       )}
+
+      {/* Docked footer — outside the scroll container so it stays fixed at the
+          bottom of the viewport regardless of scroll position. */}
+      <InstallingFooterStrip />
     </div>
   );
 }
