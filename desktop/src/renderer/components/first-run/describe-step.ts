@@ -5,7 +5,6 @@ const PREREQ_COPY: Record<string, string> = {
   node: 'Installing Node.js — this runs the AI engine under the hood.',
   git: 'Installing Git — used to keep YouCoded and your skills up to date.',
   claude: 'Installing Claude Code — the AI that powers YouCoded.',
-  toolkit: 'Installing the YouCoded toolkit — skills, themes, and sync.',
 };
 
 function activePrerequisite(prereqs: PrerequisiteState[]): PrerequisiteState | undefined {
@@ -27,8 +26,7 @@ export function describeStep(state: FirstRunState): string {
     case 'DETECT_PREREQUISITES':
       return "Checking what's already installed on this machine.";
 
-    case 'INSTALL_PREREQUISITES':
-    case 'CLONE_TOOLKIT': {
+    case 'INSTALL_PREREQUISITES': {
       const active = activePrerequisite(state.prerequisites);
       if (active && PREREQ_COPY[active.name]) {
         return PREREQ_COPY[active.name];
