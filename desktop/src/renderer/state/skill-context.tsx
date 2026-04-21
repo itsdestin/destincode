@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
-import type { SkillEntry, ChipConfig, MetadataOverride, SkillFilters, SkillDetailView } from '../../shared/types';
+import type { SkillEntry, ChipConfig, MetadataOverride, SkillFilters, SkillDetailView, CommandEntry } from '../../shared/types';
 
 interface SkillState {
   installed: SkillEntry[];
@@ -30,6 +30,8 @@ interface SkillContextValue extends SkillState, SkillActions {
   /** Skills filtered for the CommandDrawer: user favorites only. Curated defaults
    *  seed the favorites list on first encounter (see SEEDED_KEY below), not at read time. */
   drawerSkills: SkillEntry[];
+  /** Slash commands for the CommandDrawer — shown only in search mode. */
+  drawerCommands: CommandEntry[];
 }
 
 // localStorage key tracking which curated-default skill ids have already been
@@ -45,7 +47,21 @@ export function SkillProvider({ children }: { children: ReactNode }) {
   const [favorites, setFavorites] = useState<string[]>([]);
   const [chips, setChipsState] = useState<ChipConfig[]>([]);
   const [curatedDefaults, setCuratedDefaults] = useState<string[]>([]);
+  const [drawerCommands, setDrawerCommands] = useState<CommandEntry[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Fetch slash commands separately from skills — the remote-shim exposes
+  // window.claude.commands only when the server supports it, so guard the
+  // call and tolerate fetch failures (drawer falls back to skills only).
+  useEffect(() => {
+    let cancelled = false;
+    const api = (window as any).claude?.commands;
+    if (!api?.list) return;
+    api.list()
+      .then((list: CommandEntry[]) => { if (!cancelled) setDrawerCommands(list ?? []); })
+      .catch(() => { /* non-fatal — drawer works without commands */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Load initial state
   useEffect(() => {
@@ -144,12 +160,12 @@ export function SkillProvider({ children }: { children: ReactNode }) {
   const publish = useCallback((id: string) => window.claude.skills.publish(id), []);
 
   const value = useMemo<SkillContextValue>(() => ({
-    installed, favorites, chips, curatedDefaults, loading, drawerSkills,
+    installed, favorites, chips, curatedDefaults, loading, drawerSkills, drawerCommands,
     refreshInstalled, setFavorite: setFavoriteAction, setChips: setChipsAction,
     setOverride: setOverrideAction, createPrompt: createPromptAction,
     deletePrompt: deletePromptAction, install: installAction, uninstall: uninstallAction,
     listMarketplace, getDetail, search, getShareLink, importFromLink, publish,
-  }), [installed, favorites, chips, curatedDefaults, loading, drawerSkills,
+  }), [installed, favorites, chips, curatedDefaults, loading, drawerSkills, drawerCommands,
        refreshInstalled, setFavoriteAction, setChipsAction, setOverrideAction,
        createPromptAction, deletePromptAction, installAction, uninstallAction,
        listMarketplace, getDetail, search, getShareLink, importFromLink, publish]);
