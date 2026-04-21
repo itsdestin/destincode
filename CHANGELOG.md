@@ -2,6 +2,63 @@
 
 All notable changes to YouCoded are documented in this file.
 
+## [1.1.0] — 2026-04-20
+
+**Claude Code CLI baseline:** v2.1.116
+
+Headline: Buddy floater mascot companion, nested subagent timelines, typed sync warnings with fix-actions, per-turn transcript metadata, and three cross-cutting Windows PTY fixes.
+
+### Added
+- **Buddy floater** — A companion mascot window that floats above your desktop, reflects session attention state (idle vs. shocked), and opens an inline chat bubble on click. Session pill in the bubble lets you switch sessions or spawn a new one from the welcome screen. Multi-window session subscriptions + attention aggregation under the hood. Windows-only capture exclusion (via koffi + `SetWindowDisplayAffinity`, Win10 19041+) keeps the mascot out of screenshares. Toggleable in Settings.
+- **Subagent threading** — When Claude invokes the `Agent` tool, its nested work (text, tool calls, results) now renders as a chat-style grouped timeline inside the parent tool card. Correlation by `parentAgentToolUseId` on both the desktop TranscriptWatcher and Android parity, with a directory-level SubagentWatcher tailing sub-session transcripts.
+- **Typed sync warnings** — Replaces the old string-code sync warnings with a typed `SyncWarning[]` store (`~/.claude/.sync-warnings.json`). SyncPanel renders fix-action buttons per-warning; StatusBar chips stay in sync; a red dot appears on the Settings gear when danger-severity warnings exist. Health-check and per-backend push failures own non-overlapping codes.
+- **Per-turn transcript metadata** — Every completing turn now carries `stopReason`, `model`, `usage` (input/output/cache-read/cache-creation tokens), and `anthropicRequestId`. Drives an opt-in per-turn metadata strip under assistant bubbles, an inline footer explaining non-`end_turn` stop reasons, and a session-pill model reconciliation effect that picks up `/model X` from the terminal, rate-limit downshifts, or resume drift. AttentionBanner now surfaces the Anthropic request ID on `session-died` / `error` so you can reference it when reporting issues.
+- **Remote chat hydration** — New remote clients receive a full chat state snapshot via `chat:hydrate` immediately on connect, so they see full timelines without waiting for transcript replay. Replaces the old `transcriptBuffers` side channel.
+- **Android IPC parity (4 new handlers)** — `marketplace:read-component`, `model:read-last`, `theme:list`, `theme:read-file`, `theme:write-file`. Android now handles the same read/write paths desktop does for marketplace and theme flows. `github:auth` upgraded from stub to real `/system/bin/linker64`-routed `gh` invocation.
+- **Usage-limit prompt parser** — Recognizes Claude Code's usage-limit prompt as a titled Ink menu so the renderer can anchor its popover correctly and forward Arrow/Enter.
+- **`docs/cc-dependencies.md`** — Spine doc mapping every YouCoded touchpoint that depends on Claude Code CLI behavior. Feeds the `review-cc-changes` release agent.
+- **Dev profile isolation** — `scripts/run-dev.sh` now supports concurrent dev profiles via `YOUCODED_PROFILE` + `YOUCODED_PORT_OFFSET`, with hardened hook-path safety so the dev instance can't clobber the built app's `~/.claude/`.
+- **Landing page redesign** — Word-cycling hero headline, theme crossfade, halftone animation, combined features/integrations flow, demo mockups rebuilt, gallery populated with screenshots, mobile-responsive scaling for mockup chrome + content, `#demo` anchor and "Installing now..." popup with platform-gated launch tips. Hosted at `itsdestin.github.io/youcoded`.
+- **Root `CLAUDE.md` + `.claude/rules/android-runtime.md`** — Contributors opening Claude Code directly in this repo now get orientation + path-gated Android runtime rules.
+
+### Changed
+- **Dedup: `pending` flag, not content match** — User timeline entries carry a `pending` flag; `USER_PROMPT` always appends with `pending: true`, and `TRANSCRIPT_USER_MESSAGE` finds the oldest matching pending entry and clears the flag. Replaces the prior last-10-entries content match, which silently dropped legitimate rapid-fire duplicates (e.g. "yes" sent twice within five turns).
+- **Opus label: 4.6 → 4.7** — Model selector display and chat header pill reflect the current model ID.
+- **Integration install** — Now plugin-backed with icons and `postInstallCommand` support. `IntegrationReconciler` removed; install/sync flows simplified.
+- **Multi-session lag** — Reducer, IPC, and transcript-watcher perf fixes for sessions in double digits. Measurable improvements in session-switch latency and chat-view scroll.
+- **Model selector scoped to active session** — Changing model no longer affects other sessions; `SessionInfo` now includes the model.
+- **Subagent view styling** — Chat-style grouped timeline with compact rows, card-styled sections, real ToolCard icons, and drop nested left border (parent card frames it).
+- **Licensing clarified** — Desktop code = MIT, Android APK = GPLv3 (due to Termux). Root `LICENSE`, `desktop/LICENSE`, `app/LICENSE`, and README License section all state the split and invoke GPLv3 § 5 aggregation for the shared React UI.
+- **Windows AUMID alignment** — Packaged taskbar icon now hot-swaps with theme.
+
+### Fixed
+- **PTY: long-text paste on Windows ConPTY + Ink** — `pty-worker.js` now splits `content + trailing \r` into two writes with a 600 ms gap to work around Ink's 500 ms `PASTE_TIMEOUT`, and chunks writes >64 bytes into 64-byte pieces with 50 ms gaps to work around ConPTY's silent byte drop on large writes. Paste of 2500+ chars now lands reliably.
+- **PTY: resize dedup + debounce** — `TerminalView.fitAndSync` dedupes on unchanged cols/rows and debounces real resize IPCs to coalesce drag jitter. Previously, ConPTY re-emitted the Ink-rendered UI into xterm scrollback on every spurious resize.
+- **Android marketplace / theme install** — Skill marketplace discovery, theme list/install/apply, and quick-chip defaults all unbroken after recent changes.
+- **Android: pin Claude Code to 2.1.112** — Restores cli.js launch. Bootstrap now gates `isFullySetup` on cli.js existence, not just the install directory.
+- **Android: TurnComplete metadata parity** — `TranscriptEvent.TurnComplete` + `TranscriptSerializer.turnComplete` now emit `stopReason` / `model` / `usage` / `anthropicRequestId`, so remote clients connecting to an Android session see the same per-turn metadata, StopReasonFooter, request-ID in AttentionBanner, and sessionModels reconciliation as desktop.
+- **Sync: conversation tags survive reinstall/sync** (#52).
+- **Chat: rare message loss from dedup + emit-throw races** — `readNewLines` isolates each emit in try/catch so a throwing listener can't strand subsequent chunks in the batch.
+- **Chat: `stopReason` footer only on non-`end_turn`** — Normal completions no longer render the explainer.
+- **Input bar cursor drift + text selection** on narrow/Android and long text.
+- **Theme inline-code color derived from tokens** — No longer hardcoded; adapts to the active theme.
+- **Desktop file picker defaults to all file types** — Was defaulting to a filtered subset.
+- **Session strip overflow** — `+N` badge for sessions that don't fit.
+- **Reconnect copy** — Sync setup wizard reconnect flow steers the user to the same Google account.
+- **Status: preserve last-known session chip values across poll misses** — Transient read failures no longer blank context / git-branch / session stats.
+- **Header: set `__PLATFORM__` synchronously** so module-level `isAndroid()` works correctly; Android chat/terminal toggle stays on the right side.
+- **Icon: desktop app icon rebranded DC → YC.**
+
+### Removed
+- **Dead transcript-buffer replay** in the remote server — superseded by `chat:hydrate`.
+- **`IntegrationReconciler` + `integration-context.md` generation** — Integration install is plugin-backed now.
+
+### Protocol notes (for custom remote clients / automation)
+- `chat:hydrate` is a new WebSocket message sent once per authenticated remote connection, carrying a serialized `ChatState`. Old `transcript-buffer` replay is gone.
+- `remote:attention-changed` (renderer → main) and `attentionMap` in `status:data` (main → remote) keep remote browsers in sync with desktop's `AttentionState`.
+- `transcript:event` `turn-complete` events now carry `{stopReason, model, usage, anthropicRequestId}` in their `data` field on both desktop and Android. Consumers that previously treated this as an empty object should now read the new fields.
+- Subagent-tagged events (`assistant-text`, `tool-use`, `tool-result`) carry optional `parentAgentToolUseId` + `agentId`.
+
 ## [1.0.1] — 2026-04-15
 
 ### Fixed
