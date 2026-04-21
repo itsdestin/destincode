@@ -27,7 +27,26 @@ interface Props {
   /** Integrations handle install/connect through their own flow (handleIntegration
    *  routed via onOpen) — hide the corner download/favorite affordance in that case. */
   suppressCorner?: boolean;
+  /** Override the default Installed/Update/Installing badge with an explicit
+   *  status pill. Used by integrations whose state ("Coming soon", "Needs
+   *  auth", "Connected", "Error", "Deprecated", "Not installed") doesn't
+   *  fit the generic plugin state vocabulary. */
+  statusBadge?: {
+    text: string;
+    tone: 'ok' | 'warn' | 'err' | 'neutral';
+  };
 }
+
+// Tone-class map copied from the retired IntegrationCard.tsx so integrations
+// keep their status-pill colors after the IntegrationCard → MarketplaceCard
+// consolidation. Status colors are intentionally hardcoded (not theme tokens)
+// since green/amber/red carry semantic meaning independent of the active theme.
+const STATUS_TONE_CLASS: Record<'ok' | 'warn' | 'err' | 'neutral', string> = {
+  ok: 'bg-green-500/15 text-green-400 border border-green-500/30',
+  warn: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+  err: 'bg-red-500/15 text-red-400 border border-red-500/30',
+  neutral: 'bg-inset text-fg-2 border border-edge',
+};
 
 function componentSummary(c: SkillComponents | null | undefined): string | null {
   if (!c) return null;
@@ -40,7 +59,7 @@ function componentSummary(c: SkillComponents | null | undefined): string | null 
   return parts.join(" · ") || null;
 }
 
-export default function MarketplaceCard({ item, onOpen, installed, updateAvailable, iconUrl, accentColor, suppressCorner }: Props) {
+export default function MarketplaceCard({ item, onOpen, installed, updateAvailable, iconUrl, accentColor, suppressCorner, statusBadge }: Props) {
   const stats = useMarketplaceStats();
   const mp = useMarketplace();
   const kind = item.kind;
@@ -151,15 +170,22 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
         </div>
         {/* Status badge — z-10 keeps it above the corner star overlay so
             Installed/Update reads fully rather than being clipped by the
-            corner affordance. */}
-        {(isInstalling || updateAvailable || isInstalled) && (
+            corner affordance. When the caller supplies an explicit
+            statusBadge (integrations), it overrides the generic plugin-state
+            vocabulary so labels like "Connected" / "Needs auth" / "Coming
+            soon" can surface instead of just "Installed". */}
+        {statusBadge ? (
+          <span
+            className={`relative z-10 text-[10px] uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[statusBadge.tone]}`}
+          >
+            {statusBadge.text}
+          </span>
+        ) : (isInstalling || updateAvailable || isInstalled) && (
           <span
             className={`relative z-10 text-[10px] uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${
               isInstalling
                 ? 'text-accent border border-accent/50 bg-accent/10 animate-pulse'
-                : updateAvailable
-                  ? 'text-fg-dim'
-                  : 'text-fg-dim'
+                : 'text-fg-dim'
             }`}
           >
             {isInstalling ? 'Installing…' : updateAvailable ? 'Update' : 'Installed'}

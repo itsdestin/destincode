@@ -24,6 +24,12 @@ import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketp
 // component was retired in favor of rendering through MarketplaceCard.
 type IntegrationCardItem = IntegrationEntry & { state: IntegrationState };
 
+// Integration icons live in the marketplace repo at integrations/icons/,
+// referenced via raw.githubusercontent.com. Pre-built once at module scope
+// rather than per-render inside the map callback.
+const INTEGRATION_MARKETPLACE_BRANCH = 'master';
+const INTEGRATION_ICON_BASE = `https://raw.githubusercontent.com/itsdestin/wecoded-marketplace/${INTEGRATION_MARKETPLACE_BRANCH}/integrations`;
+
 interface Props {
   onExit(): void;
   // Phase 2 redesign — jump to Your Library without round-tripping through
@@ -62,6 +68,20 @@ export default function MarketplaceScreen({
       const items = await (window as any).claude.integrations.list();
       setIntegrations(items || []);
     } catch { /* ignore */ }
+  };
+
+  // Compute the status-pill text/tone for an integration. Mirrors the
+  // semantics the retired IntegrationCard.statusLabel() helper had — without
+  // it, integrations would fall back to MarketplaceCard's generic "Installed"
+  // badge and lose the connected/needs-auth/error/deprecated nuance.
+  const integrationStatusBadge = (item: IntegrationCardItem): { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' } => {
+    if (item.status === 'planned') return { text: 'Coming soon', tone: 'neutral' };
+    if (item.status === 'deprecated') return { text: 'Deprecated', tone: 'neutral' };
+    const s = item.state;
+    if (s.error) return { text: 'Error', tone: 'err' };
+    if (s.connected) return { text: 'Connected', tone: 'ok' };
+    if (s.installed) return { text: 'Needs auth', tone: 'warn' };
+    return { text: 'Not installed', tone: 'neutral' };
   };
 
   const handleIntegration = async (item: IntegrationCardItem) => {
@@ -250,13 +270,11 @@ export default function MarketplaceScreen({
             {integrations.length > 0 && (
               <MarketplaceRail title="Connect your stuff" description="Bring your data in.">
                 {integrations.map((item) => {
-                  // Integration icons live in the marketplace repo at
-                  // integrations/icons/, referenced via raw.githubusercontent.com.
-                  // Previously IntegrationCard resolved this path internally; now
-                  // we pass a fully-resolved URL to MarketplaceCard's iconUrl prop.
-                  const MARKETPLACE_BRANCH = "master";
-                  const ICON_BASE = `https://raw.githubusercontent.com/itsdestin/wecoded-marketplace/${MARKETPLACE_BRANCH}/integrations`;
-                  const resolvedIcon = item.iconUrl ? `${ICON_BASE}/${item.iconUrl}` : undefined;
+                  // Previously IntegrationCard resolved the icon path internally;
+                  // now we pass a fully-resolved URL to MarketplaceCard's iconUrl
+                  // prop. The base URL is hoisted to module scope (see
+                  // INTEGRATION_ICON_BASE above) so it's not rebuilt per render.
+                  const resolvedIcon = item.iconUrl ? `${INTEGRATION_ICON_BASE}/${item.iconUrl}` : undefined;
 
                   // Shape a SkillEntry-compatible value so MarketplaceCard's
                   // discriminated union is satisfied. Integrations go through
@@ -295,6 +313,7 @@ export default function MarketplaceScreen({
                         iconUrl={resolvedIcon}
                         accentColor={item.accentColor}
                         suppressCorner
+                        statusBadge={integrationStatusBadge(item)}
                         onOpen={() => handleIntegration(item)}
                       />
                     </div>
