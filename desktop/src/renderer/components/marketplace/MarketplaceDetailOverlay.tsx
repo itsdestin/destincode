@@ -8,6 +8,7 @@ import { Scrim, OverlayPanel } from "../overlays/Overlay";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
 import { useMarketplaceAuth } from "../../state/marketplace-auth-context";
+import { useTheme } from "../../state/theme-context";
 import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
 import StarRating from "./StarRating";
@@ -34,6 +35,8 @@ export default function MarketplaceDetailOverlay({
   target, onClose, onOpenShareSheet, onOpenThemeShare,
 }: Props) {
   const mp = useMarketplace();
+  // Needed for Apply action and isActive check in ThemeBody
+  const { theme: activeThemeSlug, setTheme } = useTheme();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -57,11 +60,15 @@ export default function MarketplaceDetailOverlay({
     } else {
       const installed = mp.installedSkills.some((e) => e.id === target.id);
       const favorited = mp.favorites.includes(target.id);
+      const installing = mp.installingIds.has(`skill:${target.id}`);
+      const errEntry = mp.installError.get(`skill:${target.id}`);
       content = (
         <SkillBody
           entry={entry}
           installed={installed}
           favorited={favorited}
+          isInstalling={installing}
+          installError={errEntry?.message ?? null}
           onInstall={() => mp.installSkill(entry.id).catch(() => undefined)}
           onUninstall={() => mp.uninstallSkill(entry.id).catch(() => undefined)}
           onToggleFavorite={() => mp.setFavorite(entry.id, !favorited).catch(() => undefined)}
@@ -74,11 +81,21 @@ export default function MarketplaceDetailOverlay({
     if (!entry) {
       content = <NotFound label="Theme" onClose={onClose} />;
     } else {
+      const installing = mp.installingIds.has(`theme:${target.slug}`);
+      const errEntry = mp.installError.get(`theme:${target.slug}`);
+      const favorited = mp.themeFavorites.includes(target.slug);
+      const isActive = activeThemeSlug === target.slug;
       content = (
         <ThemeBody
           entry={entry}
+          isInstalling={installing}
+          installError={errEntry?.message ?? null}
+          isActive={isActive}
+          favorited={favorited}
           onInstall={() => mp.installTheme(entry.slug).catch(() => undefined)}
           onUninstall={() => mp.uninstallTheme(entry.slug).catch(() => undefined)}
+          onApply={() => setTheme(entry.slug)}
+          onToggleFavorite={() => mp.favoriteTheme(entry.slug, !favorited).catch(() => undefined)}
           onShare={onOpenThemeShare ? () => onOpenThemeShare(entry.slug) : undefined}
         />
       );
@@ -173,11 +190,14 @@ function ShareIcon() {
 // ── Skill body ──────────────────────────────────────────────────────────────
 
 function SkillBody({
-  entry, installed, favorited, onInstall, onUninstall, onToggleFavorite, onShare,
+  entry, installed, favorited, isInstalling, installError,
+  onInstall, onUninstall, onToggleFavorite, onShare,
 }: {
   entry: SkillEntry;
   installed: boolean;
   favorited: boolean;
+  isInstalling: boolean;
+  installError: string | null;
   onInstall(): void;
   onUninstall(): void;
   onToggleFavorite(): void;
@@ -225,7 +245,16 @@ function SkillBody({
           >
             <ShareIcon />
           </IconButton>
-          {installed ? (
+          {isInstalling ? (
+            <button
+              type="button"
+              disabled
+              className="px-4 py-2 rounded-md bg-accent/70 text-on-accent cursor-wait flex items-center gap-2"
+            >
+              <span className="inline-block w-3 h-3 border-2 border-on-accent border-t-transparent rounded-full animate-spin" />
+              Installing…
+            </button>
+          ) : installed ? (
             <button type="button" onClick={onUninstall} className="px-4 py-2 rounded-md bg-inset text-fg border border-edge hover:border-edge-dim">
               Uninstall
             </button>
@@ -233,9 +262,10 @@ function SkillBody({
             <button
               type="button"
               onClick={onInstall}
-              className="px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90"
+              className={`px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90 ${installError ? 'ring-2 ring-red-500' : ''}`}
+              title={installError || undefined}
             >
-              Install
+              {installError ? 'Retry Install' : 'Install'}
             </button>
           )}
         </div>
@@ -414,17 +444,24 @@ function ComponentsPeek({
 // ── Theme body ──────────────────────────────────────────────────────────────
 
 function ThemeBody({
-  entry, onInstall, onUninstall, onShare,
+  entry, isInstalling, installError, isActive, favorited,
+  onInstall, onUninstall, onApply, onToggleFavorite, onShare,
 }: {
   entry: ThemeRegistryEntryWithStatus;
+  isInstalling: boolean;
+  installError: string | null;
+  isActive: boolean;
+  favorited: boolean;
   onInstall(): void;
   onUninstall(): void;
+  onApply(): void;
+  onToggleFavorite(): void;
   onShare?(): void;
 }) {
   const stats = useMarketplaceStats();
   const themeStats = stats.themes[entry.slug];
   const likes = themeStats?.likes ?? 0;
-  const installed = entry.installed;
+  const installed = !!entry.installed;
   return (
     <article className="flex flex-col gap-4 max-w-3xl mx-auto">
       <header className="flex items-start justify-between gap-4">
@@ -436,20 +473,58 @@ function ThemeBody({
         <div className="shrink-0 flex items-center gap-2">
           {/* Theme "favorite" = public like on the Worker. No local-only state. */}
           <LikeButton themeId={entry.slug} initialCount={likes} />
+          {/* Local favorite (drives Appearance panel). Distinct from LikeButton
+              which is a public count. Gated to installed. */}
+          <IconButton
+            title={!installed ? "Install to favorite" : favorited ? "Unfavorite" : "Favorite"}
+            active={favorited}
+            ariaPressed={favorited}
+            onClick={installed ? onToggleFavorite : undefined}
+          >
+            <StarIcon filled={favorited} />
+          </IconButton>
           <IconButton
             title="Share link · QR"
             onClick={onShare}
           >
             <ShareIcon />
           </IconButton>
-          {installed ? (
-            <button type="button" onClick={onUninstall} className="px-4 py-2 rounded-md bg-inset text-fg border border-edge hover:border-edge-dim">
-              Uninstall
+          {isInstalling ? (
+            <button
+              type="button"
+              disabled
+              className="px-4 py-2 rounded-md bg-accent/70 text-on-accent cursor-wait flex items-center gap-2"
+            >
+              <span className="inline-block w-3 h-3 border-2 border-on-accent border-t-transparent rounded-full animate-spin" />
+              Installing…
             </button>
+          ) : !installed ? (
+            <button
+              type="button"
+              onClick={onInstall}
+              className={`px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90 ${installError ? 'ring-2 ring-red-500' : ''}`}
+              title={installError || undefined}
+            >
+              {installError ? 'Retry Install' : 'Install'}
+            </button>
+          ) : isActive ? (
+            <>
+              <button type="button" disabled className="px-4 py-2 rounded-md bg-inset text-fg-dim border border-edge cursor-default">
+                Active
+              </button>
+              <button type="button" onClick={onUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
+                Uninstall
+              </button>
+            </>
           ) : (
-            <button type="button" onClick={onInstall} className="px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90">
-              Install
-            </button>
+            <>
+              <button type="button" onClick={onApply} className="px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90">
+                Apply theme
+              </button>
+              <button type="button" onClick={onUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
+                Uninstall
+              </button>
+            </>
           )}
         </div>
       </header>
