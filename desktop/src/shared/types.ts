@@ -257,6 +257,19 @@ export interface SkillDetailView extends SkillEntry {
   sourceRegistry?: string;
 }
 
+// Slash commands surfaced in the CommandDrawer (filesystem-scanned or
+// native YouCoded commands). Restored after the feat/command-drawer-commands
+// merge dropped the type definition while leaving the import in
+// src/main/youcoded-commands.ts intact.
+export type CommandEntry = {
+  name: string;                   // '/compact', '/superpowers:brainstorm'
+  description: string;
+  source: 'youcoded' | 'filesystem' | 'cc-builtin';
+  clickable: boolean;
+  disabledReason?: string;        // populated when clickable=false
+  aliases?: string[];             // e.g. /clear → ['/reset', '/new']
+};
+
 export interface SkillFilters {
   type?: 'prompt' | 'plugin';
   category?: SkillEntry['category'];
