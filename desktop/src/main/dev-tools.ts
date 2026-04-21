@@ -22,3 +22,60 @@ export function redactLog(text: string, homeDir: string): string {
   out = out.replace(ANTHROPIC_KEY_RE, '[REDACTED-ANTHROPIC-KEY]');
   return out;
 }
+
+import type { DevIssueKind } from '../shared/types';
+
+export interface BuildIssueBodyArgs {
+  kind: DevIssueKind;
+  summary: string;
+  description: string;
+  log: string;
+  version: string;
+  platform: 'desktop' | 'android';
+  os: string;
+}
+
+/**
+ * Assemble the markdown body that ships in the GitHub issue.
+ * Bugs include a collapsible log block; features do not.
+ * Whatever the caller passes for `log` is what ships — the renderer is
+ * responsible for showing the user a preview and letting them edit.
+ */
+export function buildIssueBody(args: BuildIssueBodyArgs): string {
+  const header = [
+    args.summary.trim(),
+    '',
+    '---',
+    '**User description:**',
+    args.description.trim(),
+    '',
+    `**Environment:** YouCoded v${args.version} · ${args.platform} · ${args.os}`,
+  ].join('\n');
+
+  if (args.kind === 'feature') return header;
+
+  return [
+    header,
+    '',
+    '**Logs (last N lines):**',
+    '<details><summary>desktop.log</summary>',
+    '',
+    '```',
+    args.log,
+    '```',
+    '',
+    '</details>',
+  ].join('\n');
+}
+
+/**
+ * Truncate a log to the last N lines, prepending an omission marker.
+ * Used in the URL-prefill fallback path where the full log can't fit
+ * under the ~8KB GitHub URL cap.
+ */
+export function smartTruncateLog(text: string, keepLines: number): string {
+  const lines = text.split('\n');
+  if (lines.length <= keepLines) return text;
+  const omitted = lines.length - keepLines;
+  return `… (${omitted} earlier lines omitted)\n${lines.slice(-keepLines).join('\n')}`;
+}
