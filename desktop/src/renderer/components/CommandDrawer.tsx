@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import type { SkillEntry, InstalledPluginGroup } from '../../shared/types';
+import type { SkillEntry } from '../../shared/types';
 import SkillCard from './SkillCard';
 import { useSkills } from '../state/skill-context';
 import { useMarketplace } from '../state/marketplace-context';
@@ -16,15 +16,17 @@ interface Props {
   // Marketplace redesign Phase 2 — optional Library entry; only rendered
   // when provided so pre-redesign code paths stay unchanged.
   onOpenLibrary?: () => void;
+  // Jumps to the marketplace with a specific plugin's detail overlay
+  // already open. Wired from the plugin-name badge on each SkillCard.
+  onOpenMarketplaceDetail?: (pluginId: string) => void;
 }
 
 const categoryChips = ['personal', 'work', 'development', 'admin', 'other'] as const;
 type CategoryChip = typeof categoryChips[number];
 
-export default function CommandDrawer({ open, searchMode, externalFilter, onSelect, onClose, onOpenManager, onOpenMarketplace, onOpenLibrary }: Props) {
+export default function CommandDrawer({ open, searchMode, externalFilter, onSelect, onClose, onOpenManager, onOpenMarketplace, onOpenLibrary, onOpenMarketplaceDetail }: Props) {
   const { drawerSkills, favorites, setFavorite } = useSkills();
   const mp = useMarketplace();
-  const installedPlugins = mp.installedPlugins;
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CategoryChip | null>(null);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
@@ -33,6 +35,18 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
 
   // Derive favorite id set for O(1) lookups
   const skillFavSet = useMemo(() => new Set(favorites), [favorites]);
+
+  // Marketplace plugin lookup: maps pluginId → displayName for the plugin-
+  // name badge on each skill card. Built from mp.skillEntries (which is the
+  // plugin-granular marketplace registry). A skill whose pluginName isn't
+  // in the registry gets no badge and falls back to the source tag.
+  const pluginDisplayNames = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const entry of mp.skillEntries) {
+      m.set(entry.id, entry.displayName);
+    }
+    return m;
+  }, [mp.skillEntries]);
 
   // Effective query: in search mode (slash-triggered), the InputBar drives
   // the filter via externalFilter; in browse mode, the drawer's own input does
@@ -60,119 +74,67 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
     return () => window.removeEventListener('keydown', handler);
   }, [open, onClose]);
 
-  // Search mode returns a MIXED list: individual skills AND whole plugins.
-  // A query that hits a plugin's displayName/description surfaces the plugin
-  // as its own result; skill hits surface as individual cards. Plugins are
-  // ranked before skills so a plugin-name query outranks its nested skills.
-  type SearchResult =
-    | { kind: 'skill'; skill: SkillEntry }
-    | { kind: 'plugin'; group: InstalledPluginGroup };
-
-  const searchResults = useMemo<SearchResult[]>(() => {
-    if (!isSearching) return [];
+  // Search mode: flat list matching the query (preserves original behavior).
+  const searchFiltered = useMemo(() => {
+    if (!isSearching) return drawerSkills;
     const q = effectiveQuery.toLowerCase();
-    const skillHits: SearchResult[] = drawerSkills
-      .filter(s =>
+    return drawerSkills.filter(
+      (s) =>
         s.displayName.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
         s.category.toLowerCase().includes(q),
-      )
-      .map(s => ({ kind: 'skill' as const, skill: s }));
-    const pluginHits: SearchResult[] = installedPlugins
-      .filter(g =>
-        g.displayName.toLowerCase().includes(q) ||
-        g.description.toLowerCase().includes(q),
-      )
-      .map(g => ({ kind: 'plugin' as const, group: g }));
-    // Plugins first so a direct plugin-name match outranks its skills.
-    return [...pluginHits, ...skillHits];
-  }, [drawerSkills, installedPlugins, effectiveQuery, isSearching]);
-
-  // Plugin-grouped list for browse mode. Search mode reads installedPlugins
-  // directly via searchResults, so this memo is only consumed when !isSearching.
-  const pluginCategoryFiltered = useMemo(() => {
-    if (!categoryFilter) return installedPlugins;
-    return installedPlugins.filter(g => (g.category ?? 'other') === categoryFilter);
-  }, [installedPlugins, categoryFilter]);
-
-  const pluginFavs = useMemo(() =>
-    pluginCategoryFiltered
-      .filter(g => skillFavSet.has(g.id))
-      .sort((a, b) => a.displayName.localeCompare(b.displayName)),
-    [pluginCategoryFiltered, skillFavSet],
-  );
-
-  const pluginOthers = useMemo(() =>
-    pluginCategoryFiltered
-      .filter(g => !skillFavSet.has(g.id))
-      .sort((a, b) => a.displayName.localeCompare(b.displayName)),
-    [pluginCategoryFiltered, skillFavSet],
-  );
-
-  // Browse mode: one card per plugin. Multi-skill plugins render their skills
-  // as clickable chips; clicking a chip invokes that specific skill. Clicking
-  // the card itself invokes the plugin's top-level prompt when one is defined,
-  // falls through to the single skill for single-skill plugins, or routes to
-  // the marketplace detail page when a multi-skill plugin has no plugin-level
-  // prompt. The favorite star lives INSIDE SkillCard via the favorite prop.
-  const renderPluginCard = (group: InstalledPluginGroup) => {
-    const isFav = skillFavSet.has(group.id);
-    const favoriteProps = {
-      filled: isFav,
-      onToggle: () => setFavorite(group.id, !isFav),
-    };
-
-    const chipSkills = group.skills.length > 1
-      ? group.skills.map(s => ({ id: s.id, displayName: s.displayName }))
-      : undefined;
-
-    const skillById = new Map(group.skills.map(s => [s.id, s]));
-
-    const handleCardClick = () => {
-      // Single-skill plugin → invoke that skill.
-      if (group.skills.length === 1) {
-        onSelect(group.skills[0]);
-        return;
-      }
-      // Multi-skill plugin with a plugin-level prompt → invoke it.
-      if (group.prompt) {
-        onSelect(group as SkillEntry);
-        return;
-      }
-      // Multi-skill, no top-level prompt → route to marketplace detail.
-      onClose();
-      onOpenMarketplace();
-    };
-
-    const handleChipClick = (chipId: string) => {
-      const skill = skillById.get(chipId);
-      if (skill) onSelect(skill);
-    };
-
-    return (
-      <SkillCard
-        key={group.id}
-        skill={group as SkillEntry}
-        onClick={handleCardClick}
-        favorite={favoriteProps}
-        chipSkills={chipSkills}
-        onChipClick={handleChipClick}
-      />
     );
-  };
+  }, [drawerSkills, effectiveQuery, isSearching]);
 
-  // Search mode keeps skill-level cards. Task 7 extends search to return a
-  // mixed list of plugins + individual skills; for now the search helper just
-  // handles the skill case.
+  // Browse mode: apply category chip filter, then split into favorites / others.
+  const categoryFiltered = useMemo(() => {
+    if (!categoryFilter) return drawerSkills;
+    return drawerSkills.filter((s) => (s.category ?? 'other') === categoryFilter);
+  }, [drawerSkills, categoryFilter]);
+
+  const favsSorted = useMemo(() =>
+    categoryFiltered
+      .filter((s) => skillFavSet.has(s.id) || (s.pluginName != null && skillFavSet.has(s.pluginName)))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    [categoryFiltered, skillFavSet],
+  );
+
+  const othersSorted = useMemo(() =>
+    categoryFiltered
+      .filter((s) => !skillFavSet.has(s.id) && !(s.pluginName != null && skillFavSet.has(s.pluginName)))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    [categoryFiltered, skillFavSet],
+  );
+
+  // Render a single skill card with favorite star + plugin-name badge.
+  // The badge replaces the generic source tag (YC/Plugin/Prompt) with the
+  // real marketplace displayName when the skill's pluginName resolves to a
+  // registry entry; clicking the badge navigates to that plugin's detail
+  // page in the marketplace. Skills whose plugin isn't in the registry
+  // (user-authored, youcoded-core non-plugin skills) keep the source tag.
   const renderSkillCard = (skill: SkillEntry) => {
     const isFav = skillFavSet.has(skill.id) || (skill.pluginName != null && skillFavSet.has(skill.pluginName));
     const favId = skill.pluginName && skillFavSet.has(skill.pluginName) ? skill.pluginName : skill.id;
+
+    const pluginId = skill.pluginName;
+    const pluginName = pluginId ? pluginDisplayNames.get(pluginId) : undefined;
+    const pluginBadge = pluginId && pluginName && onOpenMarketplaceDetail
+      ? {
+          name: pluginName,
+          onClick: () => {
+            onClose();
+            onOpenMarketplaceDetail(pluginId);
+          },
+        }
+      : undefined;
+
     return (
       <SkillCard
         key={skill.id}
         skill={skill}
         onClick={onSelect}
         favorite={{ filled: isFav, onToggle: () => setFavorite(favId, !isFav) }}
+        pluginBadge={pluginBadge}
       />
     );
   };
@@ -261,9 +223,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
           {isSearching ? (
             // Search mode: flat filtered list, no chip row (preserves original behavior)
             <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {searchResults.map((r) =>
-                r.kind === 'plugin' ? renderPluginCard(r.group) : renderSkillCard(r.skill),
-              )}
+              {searchFiltered.map(renderSkillCard)}
               <AddSkillsCard onClick={() => { onClose(); onOpenMarketplace(); }} />
             </div>
           ) : (
@@ -299,21 +259,21 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               </div>
 
               {/* Favorites section */}
-              {pluginFavs.length > 0 && (
+              {favsSorted.length > 0 && (
                 <section className="px-2 pt-2">
                   <h3 className="text-[10px] uppercase tracking-wide text-fg-dim mb-1 px-1">Favorites</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                    {pluginFavs.map(renderPluginCard)}
+                    {favsSorted.map(renderSkillCard)}
                   </div>
                 </section>
               )}
 
               {/* All installed (non-favorites) — hidden when favoritesOnly toggle is on */}
-              {!favoritesOnly && pluginOthers.length > 0 && (
+              {!favoritesOnly && othersSorted.length > 0 && (
                 <section className="px-2 pt-3">
                   <h3 className="text-[10px] uppercase tracking-wide text-fg-dim mb-1 px-1">All installed</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                    {pluginOthers.map(renderPluginCard)}
+                    {othersSorted.map(renderSkillCard)}
                   </div>
                 </section>
               )}

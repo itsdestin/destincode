@@ -9,9 +9,9 @@ interface FavoriteProps {
   onToggle: () => void;
 }
 
-interface ChipSkill {
-  id: string;
-  displayName: string;
+interface PluginBadgeProps {
+  name: string;
+  onClick: () => void;
 }
 
 interface Props {
@@ -24,10 +24,11 @@ interface Props {
   installing?: boolean;
   /** When provided, a corner favorite star overlays the card. */
   favorite?: FavoriteProps;
-  /** When provided, a row of bundled-skill chips renders beneath the blurb.
-   *  Clicking a chip invokes the callback with the chip id; card click still fires. */
-  chipSkills?: ChipSkill[];
-  onChipClick?: (chipId: string) => void;
+  /** When provided, replaces the generic YC/Plugin/Prompt source tag with
+   *  a clickable pill showing the parent plugin's marketplace displayName.
+   *  Clicking routes the user to that plugin's detail page. Skills with
+   *  no matching marketplace plugin fall back to the source tag. */
+  pluginBadge?: PluginBadgeProps;
 }
 
 const sourceBadgeStyles: Record<string, string> = {
@@ -47,9 +48,41 @@ const typeLabels: Record<string, string> = {
   plugin: 'Plugin',
 };
 
+// Clickable plugin-name pill. Shared between drawer + marketplace variants so
+// the click-to-plugin-detail affordance looks identical everywhere. stops
+// propagation so the card's own onClick doesn't also fire.
+function PluginBadge({ name, onClick }: PluginBadgeProps) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={`Open ${name}`}
+      className="text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors truncate max-w-[120px]"
+    >
+      {name}
+    </button>
+  );
+}
+
+// Fallback tag used when a skill has no marketplace plugin parent (self-
+// authored skills, youcoded-core bare skills).
+function SourceTag({ skill }: { skill: SkillEntry }) {
+  const cls = skill.source === 'youcoded-core'
+    ? sourceBadgeStyles['youcoded-core']
+    : (typeBadgeStyles[skill.type] ?? sourceBadgeStyles.plugin);
+  const label = skill.source === 'youcoded-core'
+    ? 'YC'
+    : (typeLabels[skill.type] ?? 'Plugin');
+  return (
+    <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
 export default function SkillCard({
   skill, onClick, variant = 'drawer', installed, updateAvailable,
-  onInstall, installing, favorite, chipSkills, onChipClick,
+  onInstall, installing, favorite, pluginBadge,
 }: Props) {
   const { plugins } = useMarketplaceStats();
   const liveStats = plugins[skill.id];
@@ -57,30 +90,12 @@ export default function SkillCard({
   const liveRating = liveStats?.rating ?? null;
   const liveReviewCount = liveStats?.review_count ?? 0;
 
-  // Chip row — renders for multi-skill plugin cards. Height-clipped to one
-  // row so cards stay uniform in the grid; chips beyond the visible line are
-  // simply hidden (users can open the plugin's detail overlay to see all of
-  // them). stopPropagation on each chip prevents chip clicks from firing the
-  // card's onClick.
-  const chipRow = chipSkills && chipSkills.length > 0 && (
-    <div className="flex flex-nowrap gap-1 mt-2 overflow-hidden shrink-0">
-      {chipSkills.map(c => (
-        <button
-          key={c.id}
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onChipClick?.(c.id); }}
-          className="text-[10px] px-1.5 py-0.5 rounded-sm bg-inset/60 text-fg-dim border border-edge/25 hover:bg-inset hover:text-fg transition-colors shrink-0 truncate max-w-[80px]"
-        >
-          {c.displayName}
-        </button>
-      ))}
-    </div>
-  );
+  const badge = pluginBadge ? <PluginBadge {...pluginBadge} /> : <SourceTag skill={skill} />;
 
   if (variant === 'marketplace') {
     return (
-      // Root is a div role=button so FavoriteStar (itself a button) can nest
-      // without invalid HTML. Matches the pattern used in MarketplaceCard.
+      // Root is a div role=button so the nested FavoriteStar (itself a <button>)
+      // is valid HTML. Matches the pattern MarketplaceCard uses.
       <div
         role="button"
         tabIndex={0}
@@ -91,19 +106,13 @@ export default function SkillCard({
         {favorite && (
           <FavoriteStar corner size="sm" filled={favorite.filled} onToggle={favorite.onToggle} />
         )}
-        <div className="flex justify-between items-start">
+        <div className="flex justify-between items-start gap-1">
           <span className="text-sm font-medium text-fg leading-tight">{skill.displayName}</span>
-          <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 ml-1 ${
-            skill.source === 'youcoded-core' ? sourceBadgeStyles['youcoded-core'] :
-            typeBadgeStyles[skill.type] || sourceBadgeStyles.plugin
-          }`}>
-            {skill.source === 'youcoded-core' ? 'YC' : typeLabels[skill.type] || 'Plugin'}
-          </span>
+          {badge}
         </div>
         <span className="text-[11px] text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">
           {skill.description}
         </span>
-        {chipRow}
         {liveRating != null && (
           <div className="mt-1">
             <StarRating value={liveRating} count={liveReviewCount} size="sm" />
@@ -147,32 +156,25 @@ export default function SkillCard({
     );
   }
 
-  // Drawer variant — Fix: root is `<div role="button">` with `relative` so
-  // the FavoriteStar overlays inside the card. Fixed height (`h-28`) +
-  // `overflow-hidden` keep every tile the same shape/size in the grid
-  // regardless of description length or whether the plugin has a chip row;
-  // content that would exceed the height is clipped cleanly rather than
-  // pushing the row taller than its neighbors.
+  // Drawer variant — root is a <div role="button"> with `relative` so the
+  // FavoriteStar can sit inside without an outer wrapper distorting the
+  // drawer grid's flex sizing. Content is uniform (displayName + description
+  // + badge), so no fixed height is needed — every tile is naturally the
+  // same shape.
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={() => onClick(skill)}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(skill); } }}
-      className="relative bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer h-32 overflow-hidden"
+      className="relative bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer"
     >
       {favorite && (
         <FavoriteStar corner size="sm" filled={favorite.filled} onToggle={favorite.onToggle} />
       )}
       <span className="text-sm font-medium text-fg leading-tight">{skill.displayName}</span>
       <span className="text-[11px] text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">{skill.description}</span>
-      {chipRow}
-      <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm mt-2 self-start ${
-        skill.source === 'youcoded-core' ? sourceBadgeStyles['youcoded-core'] :
-        typeBadgeStyles[skill.type] || sourceBadgeStyles.plugin
-      }`}>
-        {skill.source === 'youcoded-core' ? 'YC' : typeLabels[skill.type] || 'Plugin'}
-      </span>
+      <div className="mt-2 self-start">{badge}</div>
     </div>
   );
 }

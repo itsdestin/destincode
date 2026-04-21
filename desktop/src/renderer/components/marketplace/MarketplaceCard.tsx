@@ -35,6 +35,14 @@ interface Props {
     text: string;
     tone: 'ok' | 'warn' | 'err' | 'neutral';
   };
+  /** When provided, renders a clickable pill showing the parent plugin's
+   *  marketplace displayName. Clicking jumps to that plugin's detail page.
+   *  Used by the CommandDrawer + Library skill cards so users can identify
+   *  which plugin a skill belongs to and navigate to it. */
+  pluginBadge?: {
+    name: string;
+    onClick: () => void;
+  };
 }
 
 // Tone-class map copied from the retired IntegrationCard.tsx so integrations
@@ -59,7 +67,7 @@ function componentSummary(c: SkillComponents | null | undefined): string | null 
   return parts.join(" · ") || null;
 }
 
-export default function MarketplaceCard({ item, onOpen, installed, updateAvailable, iconUrl, accentColor, suppressCorner, statusBadge }: Props) {
+export default function MarketplaceCard({ item, onOpen, installed, updateAvailable, iconUrl, accentColor, suppressCorner, statusBadge, pluginBadge }: Props) {
   const stats = useMarketplaceStats();
   const mp = useMarketplace();
   const kind = item.kind;
@@ -193,6 +201,19 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
         )}
       </div>
       {blurb && <p className="text-sm text-fg-2 line-clamp-2">{blurb}</p>}
+      {/* Plugin-name badge — jumps to the parent plugin's detail page.
+          Only rendered for skills that belong to a marketplace plugin;
+          stopPropagation prevents the card's own onClick from firing. */}
+      {pluginBadge && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); pluginBadge.onClick(); }}
+          title={`Open ${pluginBadge.name}`}
+          className="self-start text-[10px] font-medium px-2 py-0.5 rounded-full shrink-0 bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors truncate max-w-full"
+        >
+          {pluginBadge.name}
+        </button>
+      )}
       <div className="mt-auto flex items-center gap-3 text-xs text-fg-dim pt-1">
         {rating != null && ratingCount > 0 && (
           <StarRating value={rating} count={ratingCount} size="sm" />

@@ -235,20 +235,6 @@ export interface SkillEntry {
   sourceSubdir?: string;
 }
 
-/**
- * One installed plugin with its bundled skills grouped under it.
- * Shape-compatible with SkillEntry so the plugin card can flow through
- * MarketplaceCard and SkillCard without a new card component.
- */
-export interface InstalledPluginGroup extends SkillEntry {
-  /** The bundled skills that make up this plugin. Always length >= 1. */
-  skills: SkillEntry[];
-  /** Optional custom icon (only set on integrations today). */
-  iconUrl?: string;
-  /** Optional accent color (only set on integrations today). */
-  accentColor?: string;
-}
-
 export interface SkillDetailView extends SkillEntry {
   fullDescription?: string;
   tags?: string[];
