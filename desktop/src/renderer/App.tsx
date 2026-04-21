@@ -616,6 +616,11 @@ function AppInner() {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Forward the subagent stamp so the reducer can tell "briefing
+            // written into a subagent's JSONL" apart from a real user prompt
+            // and drop the former (it's already shown on the Agent card).
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
           });
           break;
         case 'assistant-text':

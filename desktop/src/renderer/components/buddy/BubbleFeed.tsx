@@ -97,6 +97,10 @@ export function BubbleFeed({ sessionId }: Props) {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Forward the subagent stamp so the reducer can drop subagent
+            // briefings (they're already shown on the parent Agent card).
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
           });
           break;
         case 'assistant-text':

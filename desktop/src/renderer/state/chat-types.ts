@@ -239,6 +239,12 @@ export type ChatAction =
       uuid: string;
       text: string;
       timestamp: number;
+      // Present when this event came from a subagent's JSONL (the briefing
+      // Claude Code writes as the subagent's first user-role line). Reducer
+      // uses these to drop it from the main chat timeline — the briefing is
+      // already shown inside the parent Agent card's Briefing section.
+      parentAgentToolUseId?: string;
+      agentId?: string;
     }
   | {
       type: 'TRANSCRIPT_ASSISTANT_TEXT';

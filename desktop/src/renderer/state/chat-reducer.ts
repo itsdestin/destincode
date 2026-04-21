@@ -384,6 +384,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     // --- Transcript watcher actions ---
 
     case 'TRANSCRIPT_USER_MESSAGE': {
+      // Subagent briefing: Claude Code writes the parent's Task prompt as the
+      // first user-role line of the subagent's JSONL. The SubagentWatcher
+      // stamps those events with parentAgentToolUseId. Drop them here — the
+      // briefing is already visible in the parent Agent card's Briefing
+      // section, so appending it to the main timeline created a duplicate
+      // "message sent by the user" bubble. Mirrors the guard that
+      // TRANSCRIPT_ASSISTANT_TEXT / TOOL_USE / TOOL_RESULT already have.
+      if (action.parentAgentToolUseId) return state;
       const session = next.get(action.sessionId);
       if (!session) return state;
 
