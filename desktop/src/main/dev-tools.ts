@@ -116,3 +116,19 @@ export function buildPrefillUrl(args: BuildPrefillUrlArgs): string {
   }
   return url;
 }
+
+/**
+ * Decide whether an existing directory at the target path is the
+ * youcoded-dev workspace, a different git repo we shouldn't touch, or
+ * not a git repo at all. Caller already ran `git -C <path> remote
+ * get-url origin` and passes the trimmed stdout (or '' on error).
+ */
+export function classifyExistingWorkspace(
+  remoteUrl: string,
+): 'workspace' | 'wrong-remote' | 'not-git' {
+  if (!remoteUrl.trim()) return 'not-git';
+  // Match itsdestin/youcoded-dev across https/git@/with-or-without .git/trailing-slash.
+  return /[/:]itsdestin\/youcoded-dev(\.git)?\/?$/.test(remoteUrl.trim())
+    ? 'workspace'
+    : 'wrong-remote';
+}
