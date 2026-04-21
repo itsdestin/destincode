@@ -244,9 +244,6 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       } catch (err) {
         console.warn("[marketplace] install telemetry threw (non-fatal):", err);
       }
-      // Auto-favorite on install so newly-added skills appear at the top of
-      // the Command Drawer immediately. User can unstar at any time.
-      try { await window.claude.skills.setFavorite(id, true); } catch {}
       await fetchAll();  // Refresh state BEFORE clearing installing flag
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Install failed');
