@@ -6,8 +6,7 @@ import type { DevIssueKind } from '../shared/types';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execFile } from 'child_process';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 
 const GH_TOKEN_RE = /gh[opsu]_[A-Za-z0-9]{20,}/g;
 const ANTHROPIC_KEY_RE = /sk-ant-[A-Za-z0-9_-]{20,}/g;
@@ -195,22 +194,31 @@ export interface SummaryResult {
 
 /**
  * Ask claude -p to produce a structured summary of the user's bug
- * report or feature request. We pass the prompt as the final positional
- * argument and instruct the CLI to emit JSON only. On any failure
- * (CLI missing, not authenticated, JSON parse error) we degrade
- * gracefully to a fallback envelope built from the user's description
- * — submission still works.
+ * report or feature request. The prompt is piped via stdin rather than
+ * passed as a positional CLI arg — this avoids Windows shell-escaping
+ * hazards and the ~32KB arg-length cap when the user's description or
+ * log excerpt is large. On any failure (CLI missing, not authenticated,
+ * JSON parse error) we degrade gracefully to a fallback envelope built
+ * from the user's description — submission still works.
  */
 export async function summarizeIssue(args: SummarizeArgs): Promise<SummaryResult> {
   const prompt = buildSummarizerPrompt(args);
   try {
     const stdout: string = await new Promise((resolve, reject) => {
-      execFile(
-        'claude',
-        ['-p', prompt],
-        { timeout: 30_000, maxBuffer: 1024 * 1024 },
-        (err, out) => (err ? reject(err) : resolve(String(out || ''))),
-      );
+      const child = spawn('claude', ['-p'], { timeout: 30_000 });
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
+      child.stderr.on('data', (b: Buffer) => { err += b.toString(); });
+      child.on('error', reject);
+      child.on('close', (code: number | null) => {
+        if (code === 0) resolve(out);
+        else reject(new Error(`claude -p exited with code ${code}: ${err.slice(0, 500)}`));
+      });
+      // Write prompt to stdin; stdin.end() signals EOF so claude -p
+      // starts processing once stdin closes.
+      child.stdin.write(prompt);
+      child.stdin.end();
     });
     return parseSummary(stdout, args.description);
   } catch {
@@ -307,7 +315,7 @@ export async function submitIssue(args: SubmitArgs): Promise<SubmitResult> {
           '--label', args.label,
           '--label', 'youcoded-app:reported',
         ],
-        { timeout: 30_000 },
+        { timeout: 30_000, maxBuffer: 1024 * 1024 },
         (err, out) => (err ? reject(err) : resolve(String(out || ''))),
       );
     });
@@ -347,6 +355,9 @@ let installInFlight = false;
 
 /** Test helper — DO NOT call from production code. */
 export function _resetInstallGuard(): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('_resetInstallGuard is a test-only helper');
+  }
   installInFlight = false;
 }
 
@@ -426,7 +437,9 @@ function runStreamed(
     proc.stdout?.on('data', (b) => splitLines(b.toString()).forEach(onProgress));
     proc.stderr?.on('data', (b) => splitLines(b.toString()).forEach(onProgress));
     proc.on('error', reject);
-    proc.on('exit', (code) => {
+    // 'close' fires after stdio is fully drained; 'exit' can fire while
+    // buffers still have data, silently dropping the last lines of progress.
+    proc.on('close', (code) => {
       if (code === 0) resolve();
       else reject(new Error(`${cmd} ${args.join(' ')} exited with code ${code}`));
     });

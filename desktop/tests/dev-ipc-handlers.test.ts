@@ -17,11 +17,12 @@ vi.mock('os', () => ({
 }));
 vi.mock('child_process', () => ({
   execFile: vi.fn(),
-  // spawn mock returns an EventEmitter-like object with stdout/stderr stubs.
-  // Individual tests override execFile; spawn is only used by installWorkspace.
+  // spawn mock default: stub with no-op streams. Tests that exercise spawn
+  // (summarizeIssue, installWorkspace) override with mockImplementationOnce.
   spawn: vi.fn(() => ({
     stdout: { on: vi.fn() },
     stderr: { on: vi.fn() },
+    stdin: { write: vi.fn(), end: vi.fn() },
     on: vi.fn(),
   })),
 }));
@@ -58,20 +59,49 @@ describe('readLogTail', () => {
   });
 });
 
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { summarizeIssue } from '../src/main/dev-tools';
+
+// Helper: build a fake spawned process for summarizeIssue tests.
+// After stdin.end() fires, emits the configured stdout data and close event.
+function makeFakeSpawn(opts: { stdoutData?: string; exitCode?: number; error?: Error }) {
+  const handlers: Record<string, Array<(...args: any[]) => void>> = {};
+  const stdout = { on: (event: string, cb: any) => { (handlers[`stdout:${event}`] ||= []).push(cb); } };
+  const stderr = { on: (event: string, cb: any) => { (handlers[`stderr:${event}`] ||= []).push(cb); } };
+  let stdinBuffer = '';
+  const stdin = {
+    write: (chunk: string) => { stdinBuffer += chunk; },
+    end: () => {
+      // After stdin closes, fire simulated stdout + close on next tick.
+      setImmediate(() => {
+        if (opts.error) {
+          (handlers['proc:error'] || []).forEach((cb) => cb(opts.error));
+          return;
+        }
+        if (opts.stdoutData) {
+          (handlers['stdout:data'] || []).forEach((cb) => cb(Buffer.from(opts.stdoutData!)));
+        }
+        (handlers['proc:close'] || []).forEach((cb) => cb(opts.exitCode ?? 0));
+      });
+    },
+    get capturedInput() { return stdinBuffer; },
+  };
+  const proc: any = {
+    stdout, stderr, stdin,
+    on: (event: string, cb: any) => { (handlers[`proc:${event}`] ||= []).push(cb); },
+  };
+  return proc;
+}
 
 describe('summarizeIssue', () => {
   it('parses the JSON envelope returned by claude -p', async () => {
-    vi.mocked(execFile).mockImplementation(((_cmd: string, _args: string[], _opts: any, cb: any) => {
-      const json = JSON.stringify({
-        title: 'App crashes on startup',
-        summary: 'Clicking the icon does nothing.',
-        flagged_strings: ['/Users/alice/secret-project'],
-      });
-      cb(null, json, '');
-      return {} as any;
-    }) as any);
+    const json = JSON.stringify({
+      title: 'App crashes on startup',
+      summary: 'Clicking the icon does nothing.',
+      flagged_strings: ['/Users/alice/secret-project'],
+    });
+    const fakeProc = makeFakeSpawn({ stdoutData: json });
+    vi.mocked(spawn).mockImplementationOnce((..._args: any[]) => fakeProc);
     const out = await summarizeIssue({
       kind: 'bug',
       description: 'I clicked the icon and nothing happened.',
@@ -80,13 +110,14 @@ describe('summarizeIssue', () => {
     expect(out.title).toBe('App crashes on startup');
     expect(out.summary).toContain('Clicking the icon');
     expect(out.flagged_strings).toEqual(['/Users/alice/secret-project']);
+    // Verify the prompt was piped via stdin, not passed as a CLI arg.
+    expect(fakeProc.stdin.capturedInput).toContain('I clicked the icon');
   });
 
   it('returns a fallback envelope when claude -p errors', async () => {
-    vi.mocked(execFile).mockImplementation(((_c: string, _a: string[], _o: any, cb: any) => {
-      cb(new Error('not authenticated'), '', '');
-      return {} as any;
-    }) as any);
+    vi.mocked(spawn).mockImplementationOnce((..._args: any[]) =>
+      makeFakeSpawn({ error: new Error('not authenticated') }),
+    );
     const out = await summarizeIssue({
       kind: 'bug',
       description: 'something',
@@ -97,20 +128,18 @@ describe('summarizeIssue', () => {
   });
 
   it('omits the log block from the prompt when kind is feature', async () => {
-    let capturedArgs: string[] = [];
-    vi.mocked(execFile).mockImplementation(((_c: string, args: string[], _o: any, cb: any) => {
-      capturedArgs = args;
-      cb(null, JSON.stringify({ title: 't', summary: 's', flagged_strings: [] }), '');
-      return {} as any;
-    }) as any);
+    const fakeProc = makeFakeSpawn({
+      stdoutData: JSON.stringify({ title: 't', summary: 's', flagged_strings: [] }),
+    });
+    vi.mocked(spawn).mockImplementationOnce((..._args: any[]) => fakeProc);
     await summarizeIssue({
       kind: 'feature',
       description: 'I want X',
       log: 'should not appear in prompt',
     });
-    const promptArg = capturedArgs.find((a) => a.includes('I want X'));
-    expect(promptArg).toBeDefined();
-    expect(promptArg).not.toContain('should not appear in prompt');
+    // Prompt should reference the description but never the log.
+    expect(fakeProc.stdin.capturedInput).toContain('I want X');
+    expect(fakeProc.stdin.capturedInput).not.toContain('should not appear in prompt');
   });
 });
 
