@@ -3,6 +3,11 @@
 // See docs/superpowers/specs/2026-04-21-development-settings-design.md.
 
 import type { DevIssueKind } from '../shared/types';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 
 const GH_TOKEN_RE = /gh[opsu]_[A-Za-z0-9]{20,}/g;
 const ANTHROPIC_KEY_RE = /sk-ant-[A-Za-z0-9_-]{20,}/g;
@@ -147,4 +152,27 @@ export function classifyExistingWorkspace(
   return /[/:]itsdestin\/youcoded-dev(\.git)?\/?$/.test(remoteUrl.trim())
     ? 'workspace'
     : 'wrong-remote';
+}
+
+// ---------------------------------------------------------------------------
+// T6: readLogTail
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the last N lines of ~/.claude/desktop.log, with redaction
+ * applied. Returns '' if the log doesn't exist yet (fresh install).
+ */
+export async function readLogTail(maxLines: number): Promise<string> {
+  const home = os.homedir();
+  const logPath = path.join(home, '.claude', 'desktop.log');
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(logPath, 'utf8') as string;
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return '';
+    throw err;
+  }
+  const lines = raw.split('\n');
+  const tail = lines.slice(-maxLines).join('\n');
+  return redactLog(tail, home);
 }

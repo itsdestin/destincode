@@ -759,6 +759,13 @@ export const IPC = {
   BUDDY_ATTACH_FILE: 'buddy:attach-file',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
+  // Settings → Development feature (bug report, contribute, known issues)
+  DEV_LOG_TAIL: 'dev:log-tail',
+  DEV_SUMMARIZE_ISSUE: 'dev:summarize-issue',
+  DEV_SUBMIT_ISSUE: 'dev:submit-issue',
+  DEV_INSTALL_WORKSPACE: 'dev:install-workspace',
+  DEV_INSTALL_PROGRESS: 'dev:install-progress',
+  DEV_OPEN_SESSION_IN: 'dev:open-session-in',
 } as const;
 
 // --- Window registry / detach types ---
