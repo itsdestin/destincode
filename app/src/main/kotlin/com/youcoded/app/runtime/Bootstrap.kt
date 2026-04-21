@@ -872,9 +872,9 @@ class Bootstrap(internal val context: Context) {
         if (!legacyDir.exists()) return
         try {
             legacyDir.deleteRecursively()
-            android.util.Log.i("Bootstrap", "Removed legacy youcoded-core clone at ${legacyDir.absolutePath}")
+            Log.i("Bootstrap", "Removed legacy youcoded-core clone at ${legacyDir.absolutePath}")
         } catch (e: Exception) {
-            android.util.Log.w("Bootstrap", "Failed to remove legacy youcoded-core clone: ${e.message}")
+            Log.w("Bootstrap", "Failed to remove legacy youcoded-core clone at ${legacyDir.absolutePath}: ${e.message}")
         }
     }
 
