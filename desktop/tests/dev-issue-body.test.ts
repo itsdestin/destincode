@@ -18,6 +18,8 @@ describe('buildIssueBody', () => {
     expect(out).toContain('YouCoded v2.3.2 · desktop · win32 10.0');
     expect(out).toContain('<details><summary>desktop.log</summary>');
     expect(out).toContain('line A\nline B');
+    expect(out).not.toContain('last N lines');
+    expect(out).toContain('**Logs:**');
   });
 
   it('builds a feature body without the log block', () => {

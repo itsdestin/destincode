@@ -35,4 +35,11 @@ describe('buildPrefillUrl', () => {
     // The body should have been truncated with a marker.
     expect(decodeURIComponent(new URL(url).searchParams.get('body') || '')).toContain('[truncated]');
   });
+
+  it('respects the URL cap even when the title is huge', () => {
+    const hugeTitle = 'x'.repeat(10_000);
+    const url = buildPrefillUrl({ title: hugeTitle, body: 'short body', label: 'bug' });
+    expect(url.length).toBeLessThan(8000);
+    expect(decodeURIComponent(new URL(url).searchParams.get('title') || '')).toMatch(/^x{200}…$/);
+  });
 });

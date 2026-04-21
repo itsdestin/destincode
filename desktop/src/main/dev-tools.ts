@@ -2,6 +2,8 @@
 // Pure logic + IPC handler bodies for the Settings → Development feature.
 // See docs/superpowers/specs/2026-04-21-development-settings-design.md.
 
+import type { DevIssueKind } from '../shared/types';
+
 const GH_TOKEN_RE = /gh[opsu]_[A-Za-z0-9]{20,}/g;
 const ANTHROPIC_KEY_RE = /sk-ant-[A-Za-z0-9_-]{20,}/g;
 
@@ -22,8 +24,6 @@ export function redactLog(text: string, homeDir: string): string {
   out = out.replace(ANTHROPIC_KEY_RE, '[REDACTED-ANTHROPIC-KEY]');
   return out;
 }
-
-import type { DevIssueKind } from '../shared/types';
 
 export interface BuildIssueBodyArgs {
   kind: DevIssueKind;
@@ -57,7 +57,7 @@ export function buildIssueBody(args: BuildIssueBodyArgs): string {
   return [
     header,
     '',
-    '**Logs (last N lines):**',
+    '**Logs:**',
     '<details><summary>desktop.log</summary>',
     '',
     '```',
@@ -114,6 +114,22 @@ export function buildPrefillUrl(args: BuildPrefillUrlArgs): string {
     body = body.slice(0, Math.floor(body.length * 0.8));
     url = build(`${body}\n\n[truncated]`);
   }
+
+  // Title can be the dominant contributor when very long. After body
+  // shrink, do one more pass that hard-caps the title length so the
+  // returned URL always respects URL_CAP_BYTES.
+  if (url.length > URL_CAP_BYTES) {
+    const safeTitle = args.title.length > 200
+      ? `${args.title.slice(0, 200)}…`
+      : args.title;
+    const params = new URLSearchParams({
+      title: safeTitle,
+      body: '[body omitted — title was too long to fit URL cap]\n\n[truncated]',
+      labels: args.label,
+    });
+    url = `${REPO_ISSUES_BASE}?${params.toString()}`;
+  }
+
   return url;
 }
 
