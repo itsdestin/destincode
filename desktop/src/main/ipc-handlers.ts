@@ -27,7 +27,7 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 import { getRestoreService } from './restore-service';
 import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
-import { readLogTail, summarizeIssue } from './dev-tools';
+import { readLogTail, summarizeIssue, submitIssue } from './dev-tools';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -1759,6 +1759,11 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.DEV_SUMMARIZE_ISSUE, async (_event, args) => {
     // Shell out to claude -p to produce a structured summary; falls back gracefully.
     return summarizeIssue(args);
+  });
+
+  ipcMain.handle(IPC.DEV_SUBMIT_ISSUE, async (_event, args) => {
+    // Use gh CLI when authed; otherwise return a prefilled GitHub URL for browser fallback.
+    return submitIssue(args);
   });
 
   // Return cleanup function for use during app shutdown

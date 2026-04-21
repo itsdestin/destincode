@@ -113,3 +113,46 @@ describe('summarizeIssue', () => {
     expect(promptArg).not.toContain('should not appear in prompt');
   });
 });
+
+import { submitIssue } from '../src/main/dev-tools';
+
+describe('submitIssue', () => {
+  it('returns the issue URL when gh is authed and create succeeds', async () => {
+    vi.mocked(execFile).mockImplementation(((cmd: string, args: string[], _o: any, cb: any) => {
+      // First call: gh auth status — exit 0
+      if (args[0] === 'auth' && args[1] === 'status') {
+        cb(null, 'Logged in', '');
+      } else if (args[0] === 'issue' && args[1] === 'create') {
+        cb(null, 'https://github.com/itsdestin/youcoded/issues/42\n', '');
+      }
+      return {} as any;
+    }) as any);
+    const out = await submitIssue({ title: 't', body: 'b', label: 'bug' });
+    expect(out.ok).toBe(true);
+    expect((out as any).url).toBe('https://github.com/itsdestin/youcoded/issues/42');
+  });
+
+  it('returns a fallback URL when gh auth status fails', async () => {
+    vi.mocked(execFile).mockImplementation(((_c: string, args: string[], _o: any, cb: any) => {
+      if (args[0] === 'auth' && args[1] === 'status') {
+        cb(new Error('not authenticated'), '', 'You are not logged in');
+      }
+      return {} as any;
+    }) as any);
+    const out = await submitIssue({ title: 't', body: 'b', label: 'bug' });
+    expect(out.ok).toBe(false);
+    expect((out as any).fallbackUrl).toContain('https://github.com/itsdestin/youcoded/issues/new');
+    expect((out as any).fallbackUrl).toContain('labels=bug');
+  });
+
+  it('returns a fallback URL when gh issue create fails after auth check', async () => {
+    vi.mocked(execFile).mockImplementation(((_c: string, args: string[], _o: any, cb: any) => {
+      if (args[0] === 'auth') cb(null, 'Logged in', '');
+      else cb(new Error('rate limited'), '', '');
+      return {} as any;
+    }) as any);
+    const out = await submitIssue({ title: 't', body: 'b', label: 'enhancement' });
+    expect(out.ok).toBe(false);
+    expect((out as any).fallbackUrl).toContain('labels=enhancement');
+  });
+});

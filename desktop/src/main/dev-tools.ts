@@ -263,3 +263,71 @@ function fallbackSummary(description: string): SummaryResult {
     flagged_strings: [],
   };
 }
+
+// ---------------------------------------------------------------------------
+// T8: submitIssue (gh primary, URL fallback)
+// ---------------------------------------------------------------------------
+
+export interface SubmitArgs {
+  title: string;
+  body: string;
+  label: 'bug' | 'enhancement';
+}
+
+export type SubmitResult =
+  | { ok: true; url: string }
+  | { ok: false; fallbackUrl: string };
+
+/**
+ * Submit a GitHub issue via the `gh` CLI when authenticated, otherwise
+ * fall back to a prefilled browser URL. The fallback path lets the user
+ * review and submit in their browser themselves.
+ */
+export async function submitIssue(args: SubmitArgs): Promise<SubmitResult> {
+  const ghAuthed = await isGhAuthenticated();
+  if (!ghAuthed) {
+    return { ok: false, fallbackUrl: buildPrefillUrl(args) };
+  }
+
+  const tmpFile = path.join(
+    os.tmpdir(),
+    `youcoded-issue-${Date.now()}-${process.pid}.md`,
+  );
+  await fs.promises.writeFile(tmpFile, args.body, 'utf8');
+
+  try {
+    const stdout: string = await new Promise((resolve, reject) => {
+      execFile(
+        'gh',
+        [
+          'issue', 'create',
+          '--repo', 'itsdestin/youcoded',
+          '--title', args.title,
+          '--body-file', tmpFile,
+          '--label', args.label,
+          '--label', 'youcoded-app:reported',
+        ],
+        { timeout: 30_000 },
+        (err, out) => (err ? reject(err) : resolve(String(out || ''))),
+      );
+    });
+    const url = (stdout.match(/https:\/\/github\.com\/[^\s]+/) || [''])[0].trim();
+    if (!url) {
+      // gh succeeded but didn't print a URL we can parse — treat as opaque success.
+      return { ok: true, url: 'https://github.com/itsdestin/youcoded/issues' };
+    }
+    return { ok: true, url };
+  } catch {
+    return { ok: false, fallbackUrl: buildPrefillUrl(args) };
+  } finally {
+    fs.promises.unlink(tmpFile).catch(() => undefined);
+  }
+}
+
+async function isGhAuthenticated(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile('gh', ['auth', 'status'], { timeout: 5_000 }, (err) => {
+      resolve(!err);
+    });
+  });
+}
