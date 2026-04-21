@@ -106,10 +106,15 @@ export function usePartyLobby(isLeader: boolean = true) {
           onMessage: (data) => {
             switch (data.type) {
               case 'presence':
-              case 'pong':
-                // Both carry a full user list — 'presence' on first connect,
-                // 'pong' every 30s so clients self-correct missed events
+                // Full presence list on first connect (and on every reconnect,
+                // which is the resync-on-drift mechanism now that pong is bare).
                 dispatch({ type: 'PRESENCE_UPDATE', online: data.users });
+                break;
+              case 'pong':
+                // Liveness only. Server used to include the full user list
+                // here every 30s as a belt-and-suspenders resync, but that
+                // was O(N²) bandwidth (every client pings → N-entry reply).
+                // Drift now self-heals on reconnect instead.
                 break;
               case 'user-joined':
                 dispatch({ type: 'USER_JOINED', username: data.username, status: data.status });

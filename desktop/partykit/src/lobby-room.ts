@@ -76,12 +76,13 @@ export default class LobbyRoom implements Party.Server {
 
     switch (data.type) {
       case "ping":
-        // Heartbeat — respond with full presence list so clients self-correct
-        // any missed user-joined/user-left events (fixes asymmetric visibility)
-        sender.send(JSON.stringify({
-          type: "pong",
-          users: this.getUserList(),
-        }));
+        // Heartbeat only — no presence payload. Including the full user list
+        // here was O(N²) bandwidth (every client pings every 30s, server
+        // broadcasts N-entry list back to each). Presence is kept in sync by
+        // user-joined/user-left/user-status broadcasts, and every reconnect
+        // resyncs via the "presence" message in onConnect. Perf fix: scales
+        // lobby from ~200 to ~5k concurrent users on the current free tier.
+        sender.send(JSON.stringify({ type: "pong" }));
         break;
 
       case "status": {
