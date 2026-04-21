@@ -1,17 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Remote access (paired desktop) transmits cleartext ws:// to whatever host the
+  user paired. Android's default NSC (API 28+) blocks cleartext to arbitrary
+  hosts, which produced "Connection closed before auth" because the QR/pairing
+  URL encodes a raw Tailscale CGNAT IP (e.g. 100.64.1.2) or a LAN IP — neither
+  is a .ts.net MagicDNS domain, so the prior allowlist blocked every real
+  pairing target.
+
+  We permit cleartext broadly here. The app's threat model (documented in
+  desktop/CLAUDE.md) assumes: (1) Tailscale users get WireGuard encryption
+  end-to-end under the cleartext WS, (2) LAN users accept the same cleartext
+  exposure the desktop-to-browser remote path already has, and (3) every
+  connection is still gated by a bcrypt-verified password handshake at the
+  WebSocket layer. User intent is explicit — they pair a device before
+  connecting. If we ever ship WSS, tighten this back up.
+-->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
-    <!--
-      Tailscale MagicDNS: remote desktop connects over Tailscale's WireGuard tunnel.
-      Although cleartextTrafficPermitted=true, the transport is WireGuard-encrypted
-      end-to-end by Tailscale — HTTP here rides inside the encrypted tunnel.
-      Scoped to *.ts.net only (Tailscale MagicDNS domains).
-    -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">ts.net</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

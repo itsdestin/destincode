@@ -218,6 +218,13 @@ export function connect(passwordOrToken: string, isToken = false): Promise<strin
     setConnectionState('connecting');
     ws = new WebSocket(getWsUrl());
 
+    // Track whether the socket ever got to OPEN. Lets onclose tell the difference
+    // between "couldn't reach host" (TCP refused, Android cleartext block,
+    // firewall) and "reached server but it closed without a proper auth reply"
+    // (rate limit 4029, server auth timeout 4000) — the previous generic
+    // "Connection closed before auth" error hid both cases.
+    let didOpen = false;
+
     // Timeout if WebSocket stays in CONNECTING state (network unreachable, etc.)
     const connectTimeout = setTimeout(() => {
       if (ws && ws.readyState === WebSocket.CONNECTING) {
@@ -230,6 +237,7 @@ export function connect(passwordOrToken: string, isToken = false): Promise<strin
     }, 15_000);
 
     ws.onopen = () => {
+      didOpen = true;
       clearTimeout(connectTimeout);
       setConnectionState('authenticating');
       // Security: when connecting to the local Android bridge (file:// protocol),
@@ -283,12 +291,29 @@ export function connect(passwordOrToken: string, isToken = false): Promise<strin
       handleMessage(event.data as string);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       clearTimeout(connectTimeout);
       if (!authResolved) {
-        console.error('[remote-shim] ws closed before auth, url=', getWsUrl());
+        const url = getWsUrl();
+        const code = event.code;
+        const reason = event.reason;
+        console.error('[remote-shim] ws closed before auth', { url, code, reason, didOpen });
         setConnectionState('disconnected');
-        reject(new Error('Connection closed before auth'));
+        // Translate WS close scenarios into messages the paired-device UI can
+        // actually act on. didOpen=false almost always means the socket never
+        // completed the TCP/HTTP-upgrade handshake — on Android that's usually
+        // the cleartext-traffic policy or a wrong host/port/firewall.
+        let message: string;
+        if (!didOpen) {
+          message = `Cannot reach host at ${url}. Check the host, port, and network (VPN/firewall).`;
+        } else if (code === 4029) {
+          message = 'Too many failed attempts. Wait a minute and try again.';
+        } else if (code === 4000) {
+          message = reason || 'Server closed the connection during auth.';
+        } else {
+          message = `Connection closed before auth (code ${code}${reason ? `: ${reason}` : ''}).`;
+        }
+        reject(new Error(message));
         return;
       }
 
