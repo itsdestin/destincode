@@ -1835,6 +1835,7 @@ function AppInner() {
             onOpenMarketplace={() => setActiveView('marketplace')}
             onOpenShareSheet={(id) => setShareSkillId(id)}
             onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
+            initialTab={libraryInitialTab}
           />
         )
       )}
