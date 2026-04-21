@@ -156,3 +156,23 @@ describe('submitIssue', () => {
     expect((out as any).fallbackUrl).toContain('labels=enhancement');
   });
 });
+
+import { installWorkspace, _resetInstallGuard } from '../src/main/dev-tools';
+
+describe('installWorkspace concurrency', () => {
+  beforeEach(() => _resetInstallGuard());
+
+  it('rejects a second concurrent call', async () => {
+    // First call: leave a long-running clone unresolved.
+    vi.mocked(execFile).mockImplementation(((..._args: any[]) => {
+      // Never call cb — simulates an in-flight install.
+      return {} as any;
+    }) as any);
+
+    const first = installWorkspace(() => undefined);
+    const second = installWorkspace(() => undefined);
+    await expect(second).rejects.toThrow(/already in progress/i);
+    // first stays pending; we don't await it
+    void first;
+  });
+});

@@ -27,7 +27,7 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 import { getRestoreService } from './restore-service';
 import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
-import { readLogTail, summarizeIssue, submitIssue } from './dev-tools';
+import { readLogTail, summarizeIssue, submitIssue, installWorkspace } from './dev-tools';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -1764,6 +1764,37 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.DEV_SUBMIT_ISSUE, async (_event, args) => {
     // Use gh CLI when authed; otherwise return a prefilled GitHub URL for browser fallback.
     return submitIssue(args);
+  });
+
+  ipcMain.handle(IPC.DEV_INSTALL_WORKSPACE, async (event) => {
+    // Clone (or update) ~/youcoded-dev, stream progress lines back to the renderer,
+    // and register the path as a project folder on success.
+    const send = (line: string) => {
+      event.sender.send(IPC.DEV_INSTALL_PROGRESS, line);
+    };
+    try {
+      const result = await installWorkspace(send);
+      // Register the workspace as a known project folder.
+      // readFolders / writeFolders / SavedFolder are already in scope above.
+      try {
+        const normalized = path.resolve(result.path);
+        const folders = readFolders();
+        if (!folders.some((f) => path.resolve(f.path) === normalized)) {
+          const entry: SavedFolder = {
+            path: normalized,
+            nickname: path.basename(normalized),
+            addedAt: Date.now(),
+          };
+          folders.unshift(entry);
+          writeFolders(folders);
+        }
+      } catch (e) {
+        log('WARN', 'dev', 'folders.add post-install failed', { error: String(e) });
+      }
+      return result;
+    } catch (e: any) {
+      return { error: String(e?.message || e) };
+    }
   });
 
   // Return cleanup function for use during app shutdown

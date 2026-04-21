@@ -331,3 +331,108 @@ async function isGhAuthenticated(): Promise<boolean> {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// T9: installWorkspace (clone/update + progress streaming)
+// ---------------------------------------------------------------------------
+
+const WORKSPACE_REPO = 'https://github.com/itsdestin/youcoded-dev';
+
+export interface InstallResult {
+  path: string;
+  alreadyInstalled: boolean;
+}
+
+let installInFlight = false;
+
+/** Test helper — DO NOT call from production code. */
+export function _resetInstallGuard(): void {
+  installInFlight = false;
+}
+
+/**
+ * Clone-or-update the youcoded-dev workspace at ~/youcoded-dev, then
+ * run setup.sh to fetch all sub-repos. Streams progress lines through
+ * the supplied callback (which the IPC layer forwards as
+ * `dev:install-progress` events to the renderer).
+ *
+ * Throws if a clone is already in flight (concurrency guard).
+ * Throws with a stable message if the target dir exists with a wrong
+ * remote — caller maps the message to UI text.
+ */
+export async function installWorkspace(
+  onProgress: (line: string) => void,
+): Promise<InstallResult> {
+  if (installInFlight) {
+    throw new Error('Install already in progress');
+  }
+  installInFlight = true;
+  try {
+    const targetPath = path.join(os.homedir(), 'youcoded-dev');
+    const exists = fs.existsSync(targetPath);
+
+    let alreadyInstalled = false;
+
+    if (exists) {
+      const remote = await getGitRemote(targetPath).catch(() => '');
+      const status = classifyExistingWorkspace(remote);
+      if (status === 'wrong-remote' || status === 'not-git') {
+        throw new Error(
+          `${targetPath} already exists but isn't the YouCoded dev workspace. ` +
+            `Move or rename it and try again.`,
+        );
+      }
+      // status === 'workspace' — update path
+      alreadyInstalled = true;
+      onProgress('Found existing workspace, pulling latest…');
+      await runStreamed('git', ['-C', targetPath, 'pull', '--ff-only'], onProgress);
+    } else {
+      onProgress('Cloning workspace…');
+      await runStreamed(
+        'git',
+        ['clone', '--depth', '50', WORKSPACE_REPO, targetPath],
+        onProgress,
+      );
+    }
+
+    onProgress('Cloning sub-repos (this may take a minute)…');
+    await runStreamed('bash', ['setup.sh'], onProgress, { cwd: targetPath });
+
+    return { path: targetPath, alreadyInstalled };
+  } finally {
+    installInFlight = false;
+  }
+}
+
+async function getGitRemote(repoPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      ['-C', repoPath, 'remote', 'get-url', 'origin'],
+      { timeout: 5_000 },
+      (err, out) => (err ? reject(err) : resolve(String(out || '').trim())),
+    );
+  });
+}
+
+function runStreamed(
+  cmd: string,
+  args: string[],
+  onProgress: (line: string) => void,
+  opts: { cwd?: string } = {},
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(cmd, args, { cwd: opts.cwd, env: process.env });
+    proc.stdout?.on('data', (b) => splitLines(b.toString()).forEach(onProgress));
+    proc.stderr?.on('data', (b) => splitLines(b.toString()).forEach(onProgress));
+    proc.on('error', reject);
+    proc.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${cmd} ${args.join(' ')} exited with code ${code}`));
+    });
+  });
+}
+
+function splitLines(s: string): string[] {
+  return s.split(/\r?\n/).filter((l) => l.length > 0);
+}
