@@ -57,13 +57,31 @@ export default function LibraryScreen({
 
   // ── per-item render helpers ────────────────────────────────────────────────
 
+  // Plugin-name lookup for the skill-card badge. Skills whose pluginName
+  // resolves to a marketplace entry get a clickable pill that jumps to
+  // that plugin's detail overlay. Skills without a matching registry
+  // entry fall back to MarketplaceCard's generic source tag.
+  const pluginDisplayNames = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const entry of mp.skillEntries) {
+      m.set(entry.id, entry.displayName);
+    }
+    return m;
+  }, [mp.skillEntries]);
+
   function renderSkillCard(s: SkillEntry) {
+    const pluginId = s.pluginName;
+    const pluginName = pluginId ? pluginDisplayNames.get(pluginId) : undefined;
+    const pluginBadge = pluginId && pluginName
+      ? { name: pluginName, onClick: () => setDetail({ kind: "skill", id: pluginId }) }
+      : undefined;
     return (
       <MarketplaceCard
         key={s.id}
         item={{ kind: "skill", entry: s }}
         installed
         updateAvailable={!!mp.updateAvailable[s.id]}
+        pluginBadge={pluginBadge}
         onOpen={() => setDetail({ kind: "skill", id: s.id })}
       />
     );
@@ -162,7 +180,9 @@ export default function LibraryScreen({
 
       <div className="px-4 flex flex-col gap-8 pb-12 pt-4">
 
-        {/* Skills tab — starred favorites first, then the rest. */}
+        {/* Skills tab — starred favorites first, then the rest. Each skill
+             card carries a plugin-name badge that jumps to the parent
+             plugin's marketplace detail overlay. */}
         {tab === 'skills' && (
           <>
             <Section title="Favorites" empty="No favorites yet — tap the star on any installed skill.">

@@ -162,11 +162,24 @@ export class LocalSkillProvider implements SkillProvider {
       // installed_plugins.json entries. Plugins installed via the YouCoded
       // marketplace are tracked in configStore packages — merge them so the UI
       // marks them as "Installed" and fetchAll() sees them right after install.
+      //
+      // Skip plugin-level placeholders for plugins whose individual skills
+      // are already in `scanned` — otherwise the drawer shows both the real
+      // skills AND a duplicate plugin-level card (e.g. a generic
+      // "Youcoded Encyclopedia" placeholder alongside its 5 bundled skills).
+      // Match on pluginName emitted by skill-scanner, which carries the
+      // plugin id for each scanned skill.
       const installedPackages = this.configStore.getInstalledPlugins();
-      const alreadyFound = new Set([...scanned.map(s => s.id), ...privateSkills.map(s => s.id)]);
+      const alreadyFoundIds = new Set([...scanned.map(s => s.id), ...privateSkills.map(s => s.id)]);
+      const pluginsWithScannedSkills = new Set(
+        scanned
+          .map(s => s.pluginName)
+          .filter((n): n is string => typeof n === 'string'),
+      );
       const packageSkills: SkillEntry[] = [];
       for (const [id, pkg] of Object.entries(installedPackages) as Array<[string, any]>) {
-        if (alreadyFound.has(id)) continue;
+        if (alreadyFoundIds.has(id)) continue;
+        if (pluginsWithScannedSkills.has(id)) continue;
         packageSkills.push({
           id,
           displayName: id.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
@@ -341,20 +354,39 @@ export class LocalSkillProvider implements SkillProvider {
   }
 
   async uninstall(id: string): Promise<{ type: 'plugin' | 'prompt' }> {
-    // Check if this is a marketplace-installed plugin
     const installed = this.configStore.getInstalledPlugins();
+
+    // Direct plugin-id match (e.g. marketplace card calling uninstall with
+    // the plugin id).
     if (installed[id]) {
       await uninstallPlugin(id);
       this.configStore.removePluginInstall(id);
       this.installedCache = null;
       this.onCacheInvalidated?.();
       return { type: 'plugin' };
-    } else {
-      this.configStore.deletePromptSkill(id);
+    }
+
+    // Skill-granular ids like `destinclaude-encyclopedia:encyclopedia-compile`
+    // come from Library skill cards. Resolve them to the parent plugin id by
+    // looking up the skill in the installed cache (which carries pluginName)
+    // and then uninstall that plugin. This matches the user's expectation
+    // that "Uninstall" on a skill card removes the plugin shipping the skill.
+    const scanned = await this.getInstalled();
+    const skill = scanned.find(s => s.id === id);
+    const parentPluginId = skill?.pluginName;
+    if (parentPluginId && installed[parentPluginId]) {
+      await uninstallPlugin(parentPluginId);
+      this.configStore.removePluginInstall(parentPluginId);
       this.installedCache = null;
       this.onCacheInvalidated?.();
-      return { type: 'prompt' };
+      return { type: 'plugin' };
     }
+
+    // Fallback: treat as a user-authored prompt skill.
+    this.configStore.deletePromptSkill(id);
+    this.installedCache = null;
+    this.onCacheInvalidated?.();
+    return { type: 'prompt' };
   }
 
   async setFavorite(id: string, favorited: boolean): Promise<void> {

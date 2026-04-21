@@ -160,6 +160,11 @@ function AppInner() {
   // Preferred type chip when the marketplace is opened from a legacy entry
   // point (e.g. SettingsPanel theme picker). Cleared after the screen reads it.
   const [marketplaceInitialType, setMarketplaceInitialType] = useState<'skill' | 'theme' | undefined>(undefined);
+  // When the CommandDrawer's plugin-name badge is clicked, we navigate to
+  // the marketplace AND immediately open that plugin's detail overlay.
+  // MarketplaceScreen reads this, opens the overlay on mount, then calls
+  // the passed clearing callback so subsequent manual navigations start fresh.
+  const [marketplaceInitialDetailId, setMarketplaceInitialDetailId] = useState<string | undefined>(undefined);
   // Tab to show when Library opens — consumed by LibraryScreen (Task 5.2 wires
   // the prop; this state is lifted here so the event listener below can set it).
   const [libraryInitialTab, setLibraryInitialTab] = useState<'skills' | 'themes' | 'updates' | undefined>(undefined);
@@ -178,6 +183,23 @@ function AppInner() {
     else setMarketplaceInitialType(undefined);
     setActiveView('marketplace');
   }, []);
+
+  // Navigate to the marketplace AND open a specific plugin's detail
+  // overlay. Called from the plugin-name badge on skill cards.
+  const openMarketplaceDetail = useCallback((pluginId: string) => {
+    setMarketplaceInitialType(undefined);
+    setMarketplaceInitialDetailId(pluginId);
+    setActiveView('marketplace');
+  }, []);
+
+  // Stable callback so MarketplaceScreen's useEffect doesn't re-fire every
+  // render. Prior inline lambda recreated every parent render → the child's
+  // effect saw a new dep identity → re-ran → caused a setState-during-render
+  // React warning.
+  const clearMarketplaceInitialDetail = useCallback(
+    () => setMarketplaceInitialDetailId(undefined),
+    [],
+  );
 
   // Listen for the global "open library" event dispatched by ThemeScreen's
   // "Browse all themes" button. Opens Library to the requested tab and closes
@@ -1818,6 +1840,7 @@ function AppInner() {
                   onOpenManager={() => openMarketplace('installed')}
                   onOpenMarketplace={() => openMarketplace()}
                   onOpenLibrary={() => setActiveView('library')}
+                  onOpenMarketplaceDetail={openMarketplaceDetail}
                 />
               )}
               {isTerminalTouch && sessionId && (
@@ -2038,11 +2061,13 @@ function AppInner() {
       {(activeView === 'marketplace' || activeView === 'library') && (
         activeView === 'marketplace' ? (
           <MarketplaceScreen
-            onExit={() => { setActiveView('chat'); setMarketplaceInitialType(undefined); }}
-            onOpenLibrary={() => { setActiveView('library'); setMarketplaceInitialType(undefined); }}
+            onExit={() => { setActiveView('chat'); setMarketplaceInitialType(undefined); setMarketplaceInitialDetailId(undefined); }}
+            onOpenLibrary={() => { setActiveView('library'); setMarketplaceInitialType(undefined); setMarketplaceInitialDetailId(undefined); }}
             onOpenShareSheet={(id) => setShareSkillId(id)}
             onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
             initialTypeChip={marketplaceInitialType}
+            initialDetailId={marketplaceInitialDetailId}
+            onDetailConsumed={clearMarketplaceInitialDetail}
           />
         ) : (
           <LibraryScreen

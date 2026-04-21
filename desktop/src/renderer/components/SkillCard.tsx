@@ -2,16 +2,33 @@ import React from 'react';
 import type { SkillEntry } from '../../shared/types';
 import { useMarketplaceStats } from '../state/marketplace-stats-context';
 import StarRating from './marketplace/StarRating';
+import FavoriteStar from './marketplace/FavoriteStar';
+
+interface FavoriteProps {
+  filled: boolean;
+  onToggle: () => void;
+}
+
+interface PluginBadgeProps {
+  name: string;
+  onClick: () => void;
+}
 
 interface Props {
   skill: SkillEntry;
   onClick: (skill: SkillEntry) => void;
   variant?: 'drawer' | 'marketplace';
   installed?: boolean;
-  // Phase 3b: show an amber badge when a newer version is available
   updateAvailable?: boolean;
   onInstall?: (skill: SkillEntry) => void;
   installing?: boolean;
+  /** When provided, a corner favorite star overlays the card. */
+  favorite?: FavoriteProps;
+  /** When provided, replaces the generic YC/Plugin/Prompt source tag with
+   *  a clickable pill showing the parent plugin's marketplace displayName.
+   *  Clicking routes the user to that plugin's detail page. Skills with
+   *  no matching marketplace plugin fall back to the source tag. */
+  pluginBadge?: PluginBadgeProps;
 }
 
 const sourceBadgeStyles: Record<string, string> = {
@@ -31,34 +48,71 @@ const typeLabels: Record<string, string> = {
   plugin: 'Plugin',
 };
 
-export default function SkillCard({ skill, onClick, variant = 'drawer', installed, updateAvailable, onInstall, installing }: Props) {
-  // Task 9: pull live install count + rating from the marketplace stats context.
-  // Falls back gracefully when stats are loading or unavailable for this skill id.
+// Clickable plugin-name pill. Shared between drawer + marketplace variants so
+// the click-to-plugin-detail affordance looks identical everywhere. stops
+// propagation so the card's own onClick doesn't also fire.
+function PluginBadge({ name, onClick }: PluginBadgeProps) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={`Open ${name}`}
+      className="text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors truncate max-w-[120px]"
+    >
+      {name}
+    </button>
+  );
+}
+
+// Fallback tag used when a skill has no marketplace plugin parent (self-
+// authored skills, youcoded-core bare skills).
+function SourceTag({ skill }: { skill: SkillEntry }) {
+  const cls = skill.source === 'youcoded-core'
+    ? sourceBadgeStyles['youcoded-core']
+    : (typeBadgeStyles[skill.type] ?? sourceBadgeStyles.plugin);
+  const label = skill.source === 'youcoded-core'
+    ? 'YC'
+    : (typeLabels[skill.type] ?? 'Plugin');
+  return (
+    <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
+export default function SkillCard({
+  skill, onClick, variant = 'drawer', installed, updateAvailable,
+  onInstall, installing, favorite, pluginBadge,
+}: Props) {
   const { plugins } = useMarketplaceStats();
   const liveStats = plugins[skill.id];
   const liveInstalls = liveStats?.installs ?? skill.installs ?? null;
   const liveRating = liveStats?.rating ?? null;
   const liveReviewCount = liveStats?.review_count ?? 0;
 
+  const badge = pluginBadge ? <PluginBadge {...pluginBadge} /> : <SourceTag skill={skill} />;
+
   if (variant === 'marketplace') {
     return (
+      // Root is a div role=button so the nested FavoriteStar (itself a <button>)
+      // is valid HTML. Matches the pattern MarketplaceCard uses.
       <div
+        role="button"
+        tabIndex={0}
         onClick={() => onClick(skill)}
-        className="bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer"
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(skill); } }}
+        className="relative bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer"
       >
-        <div className="flex justify-between items-start">
+        {favorite && (
+          <FavoriteStar corner size="sm" filled={favorite.filled} onToggle={favorite.onToggle} />
+        )}
+        <div className="flex justify-between items-start gap-1">
           <span className="text-sm font-medium text-fg leading-tight">{skill.displayName}</span>
-          <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm shrink-0 ml-1 ${
-            skill.source === 'youcoded-core' ? sourceBadgeStyles['youcoded-core'] :
-            typeBadgeStyles[skill.type] || sourceBadgeStyles.plugin
-          }`}>
-            {skill.source === 'youcoded-core' ? 'YC' : typeLabels[skill.type] || 'Plugin'}
-          </span>
+          {badge}
         </div>
         <span className="text-[11px] text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">
           {skill.description}
         </span>
-        {/* Task 9: live star rating — only shown when the API has returned at least 1 review */}
         {liveRating != null && (
           <div className="mt-1">
             <StarRating value={liveRating} count={liveReviewCount} size="sm" />
@@ -67,8 +121,7 @@ export default function SkillCard({ skill, onClick, variant = 'drawer', installe
         <div className="flex justify-between items-center mt-1">
           <span className="text-[9px] text-fg-faint">
             {skill.author ? `${skill.author}` : ''}
-            {/* Task 9: use live install count from /stats API, fall back to static field */}
-            {liveInstalls != null ? ` \u00B7 ${liveInstalls >= 1000 ? `${(liveInstalls / 1000).toFixed(1)}k` : liveInstalls} \u2193` : ''}
+            {liveInstalls != null ? ` · ${liveInstalls >= 1000 ? `${(liveInstalls / 1000).toFixed(1)}k` : liveInstalls} ↓` : ''}
           </span>
         </div>
         {installed ? (
@@ -103,20 +156,25 @@ export default function SkillCard({ skill, onClick, variant = 'drawer', installe
     );
   }
 
-  // Drawer variant (existing look)
+  // Drawer variant — root is a <div role="button"> with `relative` so the
+  // FavoriteStar can sit inside without an outer wrapper distorting the
+  // drawer grid's flex sizing. Content is uniform (displayName + description
+  // + badge), so no fixed height is needed — every tile is naturally the
+  // same shape.
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onClick(skill)}
-      className="bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col"
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(skill); } }}
+      className="relative bg-panel border border-edge-dim rounded-lg p-3 text-left hover:bg-inset hover:border-edge transition-colors flex flex-col cursor-pointer"
     >
+      {favorite && (
+        <FavoriteStar corner size="sm" filled={favorite.filled} onToggle={favorite.onToggle} />
+      )}
       <span className="text-sm font-medium text-fg leading-tight">{skill.displayName}</span>
       <span className="text-[11px] text-fg-muted mt-1 leading-snug line-clamp-2 flex-1">{skill.description}</span>
-      <span className={`text-[9px] font-medium px-1 py-0.5 rounded-sm mt-2 self-start ${
-        skill.source === 'youcoded-core' ? sourceBadgeStyles['youcoded-core'] :
-        typeBadgeStyles[skill.type] || sourceBadgeStyles.plugin
-      }`}>
-        {skill.source === 'youcoded-core' ? 'YC' : typeLabels[skill.type] || 'Plugin'}
-      </span>
-    </button>
+      <div className="mt-2 self-start">{badge}</div>
+    </div>
   );
 }

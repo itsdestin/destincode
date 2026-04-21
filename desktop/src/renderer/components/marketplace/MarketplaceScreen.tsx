@@ -16,9 +16,20 @@ import MarketplaceCard from "./MarketplaceCard";
 import MarketplaceGrid from "./MarketplaceGrid";
 import MarketplaceDetailOverlay, { type DetailTarget } from "./MarketplaceDetailOverlay";
 import InstallingFooterStrip from "./InstallingFooterStrip";
-import IntegrationCard, { type IntegrationCardItem } from "./IntegrationCard";
-import type { SkillEntry } from "../../../shared/types";
+import { Scrim, OverlayPanel } from "../overlays/Overlay";
+import type { SkillEntry, IntegrationEntry, IntegrationState } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
+
+// Integrations carry their catalog metadata plus live installed/connected state.
+// Previously lived in IntegrationCard.tsx; moved inline when the dedicated
+// component was retired in favor of rendering through MarketplaceCard.
+type IntegrationCardItem = IntegrationEntry & { state: IntegrationState };
+
+// Integration icons live in the marketplace repo at integrations/icons/,
+// referenced via raw.githubusercontent.com. Pre-built once at module scope
+// rather than per-render inside the map callback.
+const INTEGRATION_MARKETPLACE_BRANCH = 'master';
+const INTEGRATION_ICON_BASE = `https://raw.githubusercontent.com/itsdestin/wecoded-marketplace/${INTEGRATION_MARKETPLACE_BRANCH}/integrations`;
 
 interface Props {
   onExit(): void;
@@ -30,10 +41,15 @@ interface Props {
   onOpenShareSheet?(skillId: string): void;
   onOpenThemeShare?(themeSlug: string): void;
   initialTypeChip?: "skill" | "theme";
+  // When set, open the given plugin's detail overlay on mount. Set by
+  // App.tsx's openMarketplaceDetail; cleared via onDetailConsumed after
+  // consumption so re-entering the marketplace doesn't re-trigger the overlay.
+  initialDetailId?: string;
+  onDetailConsumed?: () => void;
 }
 
 export default function MarketplaceScreen({
-  onExit, onOpenLibrary, onOpenShareSheet, onOpenThemeShare, initialTypeChip,
+  onExit, onOpenLibrary, onOpenShareSheet, onOpenThemeShare, initialTypeChip, initialDetailId, onDetailConsumed,
 }: Props) {
   const mp = useMarketplace();
   const [filter, setFilter] = useState<FilterState>(() => {
@@ -43,7 +59,21 @@ export default function MarketplaceScreen({
   });
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [integrations, setIntegrations] = useState<IntegrationCardItem[]>([]);
-  const [integrationBusy, setIntegrationBusy] = useState<string | null>(null);
+  // Integration click-to-expand — mirrors the plugin detail-overlay pattern
+  // but renders IntegrationDetailOverlay (below) because integrations aren't
+  // in mp.skillEntries and need their own action wiring via handleIntegration.
+  const [integrationDetail, setIntegrationDetail] = useState<IntegrationCardItem | null>(null);
+
+  // Open a specific plugin's detail overlay when App.tsx navigates here via
+  // openMarketplaceDetail (e.g. from a CommandDrawer plugin-name badge click).
+  // Fires once, then signals back to clear the parent's state so re-entering
+  // the marketplace manually doesn't re-open the overlay.
+  useEffect(() => {
+    if (initialDetailId) {
+      setDetail({ kind: "skill", id: initialDetailId });
+      onDetailConsumed?.();
+    }
+  }, [initialDetailId, onDetailConsumed]);
 
   // Fetch integrations on mount. Non-blocking — if the namespace is missing
   // (older app version) the catch keeps the rail empty without warning.
@@ -61,44 +91,53 @@ export default function MarketplaceScreen({
     } catch { /* ignore */ }
   };
 
+  // Compute the status-pill text/tone for an integration. Mirrors the
+  // semantics the retired IntegrationCard.statusLabel() helper had — without
+  // it, integrations would fall back to MarketplaceCard's generic "Installed"
+  // badge and lose the connected/needs-auth/error/deprecated nuance.
+  const integrationStatusBadge = (item: IntegrationCardItem): { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' } => {
+    if (item.status === 'planned') return { text: 'Coming soon', tone: 'neutral' };
+    if (item.status === 'deprecated') return { text: 'Deprecated', tone: 'neutral' };
+    const s = item.state;
+    if (s.error) return { text: 'Error', tone: 'err' };
+    if (s.connected) return { text: 'Connected', tone: 'ok' };
+    if (s.installed) return { text: 'Needs auth', tone: 'warn' };
+    return { text: 'Not installed', tone: 'neutral' };
+  };
+
   const handleIntegration = async (item: IntegrationCardItem) => {
     if (item.status !== "available") return;
-    setIntegrationBusy(item.slug);
-    try {
-      if (item.state.installed) {
-        // Phase 3 scaffold — no real settings panel yet; uninstall as the
-        // safe placeholder so users can recover from a stuck state.
-        await (window as any).claude.integrations.uninstall(item.slug);
-      } else {
-        const result = await (window as any).claude.integrations.install(item.slug);
-        // setup.type === 'plugin' entries can carry a post-install slash
-        // command (e.g. /google-services-setup). Run it in a fresh Sonnet
-        // session so the user's active chat isn't hijacked by a multi-step
-        // OAuth walkthrough.
-        if (result?.postInstallCommand) {
-          const info = await (window as any).claude.session.create({
-            name: `Set up ${item.displayName}`,
-            cwd: "", // main falls back to home dir when blank
-            skipPermissions: false,
-            model: "claude-sonnet-4-6",
-          });
-          if (info?.id) {
-            // Pragmatic fixed delay — the CLI takes ~1–2s to reach the
-            // prompt. Claude Code buffers stdin until ready, so an early
-            // send is tolerated; a late send is the common case.
-            setTimeout(() => {
-              try {
-                (window as any).claude.session.sendInput(info.id, result.postInstallCommand + "\r");
-              } catch { /* user can type the command themselves */ }
-            }, 3000);
-            onExit(); // land on the new session
-          }
+    if (item.state.installed) {
+      // Phase 3 scaffold — no real settings panel yet; uninstall as the
+      // safe placeholder so users can recover from a stuck state.
+      await (window as any).claude.integrations.uninstall(item.slug);
+    } else {
+      const result = await (window as any).claude.integrations.install(item.slug);
+      // setup.type === 'plugin' entries can carry a post-install slash
+      // command (e.g. /google-services-setup). Run it in a fresh Sonnet
+      // session so the user's active chat isn't hijacked by a multi-step
+      // OAuth walkthrough.
+      if (result?.postInstallCommand) {
+        const info = await (window as any).claude.session.create({
+          name: `Set up ${item.displayName}`,
+          cwd: "", // main falls back to home dir when blank
+          skipPermissions: false,
+          model: "claude-sonnet-4-6",
+        });
+        if (info?.id) {
+          // Pragmatic fixed delay — the CLI takes ~1–2s to reach the
+          // prompt. Claude Code buffers stdin until ready, so an early
+          // send is tolerated; a late send is the common case.
+          setTimeout(() => {
+            try {
+              (window as any).claude.session.sendInput(info.id, result.postInstallCommand + "\r");
+            } catch { /* user can type the command themselves */ }
+          }, 3000);
+          onExit(); // land on the new session
         }
       }
-      await refreshIntegrations();
-    } finally {
-      setIntegrationBusy(null);
     }
+    await refreshIntegrations();
   };
 
   // Esc: close detail first, then exit screen. Matches App.tsx state-transition rules.
@@ -251,21 +290,56 @@ export default function MarketplaceScreen({
                 when the catalog hasn't loaded. */}
             {integrations.length > 0 && (
               <MarketplaceRail title="Connect your stuff" description="Bring your data in.">
-                {integrations.map((item) => (
+                {integrations.map((item) => {
+                  // Previously IntegrationCard resolved the icon path internally;
+                  // now we pass a fully-resolved URL to MarketplaceCard's iconUrl
+                  // prop. The base URL is hoisted to module scope (see
+                  // INTEGRATION_ICON_BASE above) so it's not rebuilt per render.
+                  const resolvedIcon = item.iconUrl ? `${INTEGRATION_ICON_BASE}/${item.iconUrl}` : undefined;
+
+                  // Shape a SkillEntry-compatible value so MarketplaceCard's
+                  // discriminated union is satisfied. Integrations go through
+                  // handleIntegration (via onOpen) for install/connect — the
+                  // corner affordance is suppressed. handleIntegration still
+                  // receives the raw `item` (with state/status/setup fields),
+                  // never this synthetic shape.
+                  // `category` is typed as a narrow union that doesn't include
+                  // 'integrations' — the double cast through `unknown` is the
+                  // documented escape hatch for this discriminated-union adapter.
+                  // MarketplaceCard only reads displayName/description/id from
+                  // this entry for display, so the fake category never reaches
+                  // any category-sensitive code path.
+                  const skillLike = {
+                    id: item.slug,
+                    displayName: item.displayName,
+                    description: item.tagline || '',
+                    category: 'integrations',
+                    prompt: `/${item.slug}`,
+                    source: 'marketplace',
+                    type: 'plugin',
+                    visibility: 'published',
+                  } as unknown as SkillEntry;
+
                   // Width caps at 360px on desktop but shrinks to 90vw on
                   // narrow screens (splitscreen / mobile) so a single card
                   // doesn't overflow the viewport. `!` needed because the
                   // rail's `[&>*]:w-[...]` child selector outranks a plain
                   // w- class by specificity — integration cards are wider
                   // than plugin/theme cards by design.
-                  <div key={item.slug} className="shrink-0 !w-[min(360px,90vw)]">
-                    <IntegrationCard
-                      item={item}
-                      busy={integrationBusy === item.slug}
-                      onPrimary={() => handleIntegration(item)}
-                    />
-                  </div>
-                ))}
+                  return (
+                    <div key={item.slug} className="shrink-0 !w-[min(360px,90vw)]">
+                      <MarketplaceCard
+                        item={{ kind: "skill", entry: skillLike }}
+                        installed={!!item.state.installed}
+                        iconUrl={resolvedIcon}
+                        accentColor={item.accentColor}
+                        suppressCorner
+                        statusBadge={integrationStatusBadge(item)}
+                        onOpen={() => setIntegrationDetail(item)}
+                      />
+                    </div>
+                  );
+                })}
               </MarketplaceRail>
             )}
 
@@ -354,9 +428,124 @@ export default function MarketplaceScreen({
         />
       )}
 
+      {integrationDetail && (
+        <IntegrationDetailOverlay
+          item={integrationDetail}
+          onClose={() => setIntegrationDetail(null)}
+          onPrimary={async () => {
+            await handleIntegration(integrationDetail);
+            setIntegrationDetail(null);
+          }}
+          statusBadge={integrationStatusBadge(integrationDetail)}
+          iconUrl={integrationDetail.iconUrl ? `${INTEGRATION_ICON_BASE}/${integrationDetail.iconUrl}` : undefined}
+        />
+      )}
+
       {/* Docked footer — outside the scroll container so it stays fixed at the
           bottom of the viewport regardless of scroll position. */}
       <InstallingFooterStrip />
     </div>
+  );
+}
+
+// Lightweight detail overlay for integrations. Mirrors MarketplaceDetailOverlay's
+// layer-2 pattern (scrim + panel) but stays self-contained because integrations
+// aren't in mp.skillEntries and their Install button routes through
+// handleIntegration, not the generic installSkill flow.
+function IntegrationDetailOverlay({
+  item, onClose, onPrimary, statusBadge, iconUrl,
+}: {
+  item: IntegrationCardItem;
+  onClose(): void;
+  onPrimary(): void | Promise<void>;
+  statusBadge: { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' };
+  iconUrl?: string;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const toneClass: Record<string, string> = {
+    ok: 'bg-green-500/15 text-green-400 border-green-500/30',
+    warn: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+    err: 'bg-red-500/15 text-red-400 border-red-500/30',
+    neutral: 'bg-inset text-fg-2 border-edge',
+  };
+
+  const planned = item.status === 'planned';
+  const deprecated = item.status === 'deprecated';
+  const actionLabel = planned
+    ? 'Coming soon'
+    : deprecated
+      ? 'Deprecated'
+      : item.state.installed
+        ? 'Open settings'
+        : 'Install';
+  const actionDisabled = planned || deprecated || item.status !== 'available';
+
+  return (
+    <>
+      <Scrim layer={2} onClick={onClose} />
+      <OverlayPanel
+        layer={2}
+        className="fixed inset-8 md:inset-16 flex flex-col overflow-hidden"
+        style={item.accentColor ? { borderColor: item.accentColor } : undefined}
+      >
+        <header className="flex items-center justify-between p-4 border-b border-edge-dim">
+          <h2 className="text-lg font-semibold text-fg">Integration</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-fg-dim hover:text-fg text-sm px-2 py-1"
+            aria-label="Close"
+          >
+            Esc · Close
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto p-6">
+          <article className="flex flex-col gap-4 max-w-3xl mx-auto">
+            <header className="flex items-start gap-4">
+              {/* Custom integration icon, falls back to the displayName letter. */}
+              <div
+                className="w-16 h-16 rounded-lg shrink-0 overflow-hidden bg-inset flex items-center justify-center text-on-accent text-2xl font-semibold"
+                style={iconUrl ? undefined : { background: item.accentColor || 'var(--accent)' }}
+              >
+                {iconUrl ? (
+                  <img src={iconUrl} alt="" className="w-full h-full object-contain" />
+                ) : (
+                  item.displayName.slice(0, 1)
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h1 className="text-2xl font-semibold text-fg">{item.displayName}</h1>
+                {item.tagline && <p className="mt-1 text-fg-2">{item.tagline}</p>}
+                <div className="mt-3 flex items-center gap-2">
+                  <span className={`text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 border ${toneClass[statusBadge.tone]}`}>
+                    {statusBadge.text}
+                  </span>
+                  {item.state.error && (
+                    <span className="text-xs text-red-400 truncate" title={item.state.error}>{item.state.error}</span>
+                  )}
+                </div>
+              </div>
+            </header>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => { void onPrimary(); }}
+                disabled={actionDisabled}
+                className="px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {actionLabel}
+              </button>
+            </div>
+          </article>
+        </div>
+      </OverlayPanel>
+    </>
   );
 }
