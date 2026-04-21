@@ -192,6 +192,15 @@ function AppInner() {
     setActiveView('marketplace');
   }, []);
 
+  // Stable callback so MarketplaceScreen's useEffect doesn't re-fire every
+  // render. Prior inline lambda recreated every parent render → the child's
+  // effect saw a new dep identity → re-ran → caused a setState-during-render
+  // React warning.
+  const clearMarketplaceInitialDetail = useCallback(
+    () => setMarketplaceInitialDetailId(undefined),
+    [],
+  );
+
   // Listen for the global "open library" event dispatched by ThemeScreen's
   // "Browse all themes" button. Opens Library to the requested tab and closes
   // the Appearance popup (the popup is inside SettingsPanel which the user can
@@ -2012,7 +2021,7 @@ function AppInner() {
             onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
             initialTypeChip={marketplaceInitialType}
             initialDetailId={marketplaceInitialDetailId}
-            onDetailConsumed={() => setMarketplaceInitialDetailId(undefined)}
+            onDetailConsumed={clearMarketplaceInitialDetail}
           />
         ) : (
           <LibraryScreen
