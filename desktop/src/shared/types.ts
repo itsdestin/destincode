@@ -243,10 +243,10 @@ export interface SkillDetailView extends SkillEntry {
   sourceRegistry?: string;
 }
 
-// Slash commands surfaced in the CommandDrawer (filesystem-scanned or
-// native YouCoded commands). Restored after the feat/command-drawer-commands
-// merge dropped the type definition while leaving the import in
-// src/main/youcoded-commands.ts intact.
+// Command drawer entry — represents a slash command that can appear
+// in the CommandDrawer's search results. Distinct from SkillEntry
+// because commands may be unclickable (e.g. CC built-ins without a
+// native UI in YouCoded).
 export type CommandEntry = {
   name: string;                   // '/compact', '/superpowers:brainstorm'
   description: string;
@@ -565,6 +565,7 @@ export const IPC = {
   SESSION_LIST: 'session:list',
   SESSION_SWITCH: 'session:switch',
   SKILLS_LIST: 'skills:list',
+  COMMANDS_LIST: 'commands:list',
   SKILLS_LIST_MARKETPLACE: 'skills:list-marketplace',
   SKILLS_GET_DETAIL: 'skills:get-detail',
   SKILLS_SEARCH: 'skills:search',

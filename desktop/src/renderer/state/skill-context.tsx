@@ -1,12 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
-import type { SkillEntry, ChipConfig, MetadataOverride, SkillFilters, SkillDetailView } from '../../shared/types';
+import type { SkillEntry, ChipConfig, MetadataOverride, CommandEntry } from '../../shared/types';
 
 interface SkillState {
   installed: SkillEntry[];
   favorites: string[];
   chips: ChipConfig[];
-  curatedDefaults: string[];
-  loading: boolean;
 }
 
 interface SkillActions {
@@ -14,15 +12,7 @@ interface SkillActions {
   setFavorite: (id: string, favorited: boolean) => Promise<void>;
   setChips: (chips: ChipConfig[]) => Promise<void>;
   setOverride: (id: string, override: MetadataOverride) => Promise<void>;
-  createPrompt: (skill: Omit<SkillEntry, 'id'>) => Promise<SkillEntry>;
-  deletePrompt: (id: string) => Promise<void>;
-  install: (id: string) => Promise<void>;
-  uninstall: (id: string) => Promise<void>;
-  listMarketplace: (filters?: SkillFilters) => Promise<SkillEntry[]>;
-  getDetail: (id: string) => Promise<SkillDetailView>;
-  search: (query: string) => Promise<SkillEntry[]>;
   getShareLink: (id: string) => Promise<string>;
-  importFromLink: (encoded: string) => Promise<SkillEntry>;
   publish: (id: string) => Promise<{ prUrl: string }>;
 }
 
@@ -30,6 +20,8 @@ interface SkillContextValue extends SkillState, SkillActions {
   /** Skills filtered for the CommandDrawer: user favorites only. Curated defaults
    *  seed the favorites list on first encounter (see SEEDED_KEY below), not at read time. */
   drawerSkills: SkillEntry[];
+  /** Slash commands for the CommandDrawer — shown only in search mode. */
+  drawerCommands: CommandEntry[];
 }
 
 // localStorage key tracking which curated-default skill ids have already been
@@ -44,8 +36,20 @@ export function SkillProvider({ children }: { children: ReactNode }) {
   const [installed, setInstalled] = useState<SkillEntry[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [chips, setChipsState] = useState<ChipConfig[]>([]);
-  const [curatedDefaults, setCuratedDefaults] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [drawerCommands, setDrawerCommands] = useState<CommandEntry[]>([]);
+
+  // Fetch slash commands separately from skills — the remote-shim exposes
+  // window.claude.commands only when the server supports it, so guard the
+  // call and tolerate fetch failures (drawer falls back to skills only).
+  useEffect(() => {
+    let cancelled = false;
+    const api = (window as any).claude?.commands;
+    if (!api?.list) return;
+    api.list()
+      .then((list: CommandEntry[]) => { if (!cancelled) setDrawerCommands(list ?? []); })
+      .catch(() => { /* non-fatal — drawer works without commands */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Load initial state
   useEffect(() => {
@@ -57,7 +61,6 @@ export function SkillProvider({ children }: { children: ReactNode }) {
     ]).then(async ([inst, favs, ch, defaults]) => {
       setInstalled(inst ?? []);
       setChipsState(ch ?? []);
-      setCuratedDefaults(defaults ?? []); // Guard: IPC may return undefined if registry key mismatches
 
       // First-run seeding: for each curated default we haven't seeded before,
       // persist it as a favorite so the drawer is non-empty out of the box.
@@ -79,10 +82,8 @@ export function SkillProvider({ children }: { children: ReactNode }) {
       } else {
         setFavorites(currentFavs);
       }
-      setLoading(false);
     }).catch((err) => {
       console.error('[SkillContext] Failed to load:', err);
-      setLoading(false);
     });
   }, []);
 
@@ -106,29 +107,6 @@ export function SkillProvider({ children }: { children: ReactNode }) {
     await refreshInstalled();
   }, [refreshInstalled]);
 
-  const createPromptAction = useCallback(async (skill: Omit<SkillEntry, 'id'>) => {
-    const entry = await window.claude.skills.createPrompt(skill);
-    await refreshInstalled();
-    return entry;
-  }, [refreshInstalled]);
-
-  const deletePromptAction = useCallback(async (id: string) => {
-    await window.claude.skills.deletePrompt(id);
-    setFavorites(prev => prev.filter(f => f !== id));
-    setChipsState(prev => prev.filter(c => c.skillId !== id));
-    await refreshInstalled();
-  }, [refreshInstalled]);
-
-  const installAction = useCallback(async (id: string) => {
-    await window.claude.skills.install(id);
-    await refreshInstalled();
-  }, [refreshInstalled]);
-
-  const uninstallAction = useCallback(async (id: string) => {
-    await window.claude.skills.uninstall(id);
-    await refreshInstalled();
-  }, [refreshInstalled]);
-
   // Drawer shows ALL installed skills. Sorting (favorites first) happens in
   // CommandDrawer itself so callers can apply category/search filters first.
   // The seed-favorites first-run logic still runs — it pre-populates the
@@ -136,23 +114,16 @@ export function SkillProvider({ children }: { children: ReactNode }) {
   const drawerSkills = useMemo(() => installed, [installed]);
 
   // Stable references for pass-through IPC methods (no state dependencies)
-  const listMarketplace = useCallback((filters?: SkillFilters) => window.claude.skills.listMarketplace(filters), []);
-  const getDetail = useCallback((id: string) => window.claude.skills.getDetail(id), []);
-  const search = useCallback((query: string) => window.claude.skills.search(query), []);
   const getShareLink = useCallback((id: string) => window.claude.skills.getShareLink(id), []);
-  const importFromLink = useCallback((encoded: string) => window.claude.skills.importFromLink(encoded), []);
   const publish = useCallback((id: string) => window.claude.skills.publish(id), []);
 
   const value = useMemo<SkillContextValue>(() => ({
-    installed, favorites, chips, curatedDefaults, loading, drawerSkills,
+    installed, favorites, chips, drawerSkills, drawerCommands,
     refreshInstalled, setFavorite: setFavoriteAction, setChips: setChipsAction,
-    setOverride: setOverrideAction, createPrompt: createPromptAction,
-    deletePrompt: deletePromptAction, install: installAction, uninstall: uninstallAction,
-    listMarketplace, getDetail, search, getShareLink, importFromLink, publish,
-  }), [installed, favorites, chips, curatedDefaults, loading, drawerSkills,
+    setOverride: setOverrideAction, getShareLink, publish,
+  }), [installed, favorites, chips, drawerSkills, drawerCommands,
        refreshInstalled, setFavoriteAction, setChipsAction, setOverrideAction,
-       createPromptAction, deletePromptAction, installAction, uninstallAction,
-       listMarketplace, getDetail, search, getShareLink, importFromLink, publish]);
+       getShareLink, publish]);
 
   return <SkillContext.Provider value={value}>{children}</SkillContext.Provider>;
 }

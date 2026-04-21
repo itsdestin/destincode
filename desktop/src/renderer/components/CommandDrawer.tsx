@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import type { SkillEntry } from '../../shared/types';
+import type { SkillEntry, CommandEntry } from '../../shared/types';
 import SkillCard from './SkillCard';
 import { useSkills } from '../state/skill-context';
 import { useMarketplace } from '../state/marketplace-context';
@@ -10,6 +10,7 @@ interface Props {
   searchMode: boolean;
   externalFilter?: string; // Filter driven by InputBar when slash-triggered
   onSelect: (skill: SkillEntry) => void;
+  onSelectCommand: (entry: CommandEntry) => void;
   onClose: () => void;
   onOpenManager: () => void;
   onOpenMarketplace: () => void;
@@ -24,8 +25,8 @@ interface Props {
 const categoryChips = ['personal', 'work', 'development', 'admin', 'other'] as const;
 type CategoryChip = typeof categoryChips[number];
 
-export default function CommandDrawer({ open, searchMode, externalFilter, onSelect, onClose, onOpenManager, onOpenMarketplace, onOpenLibrary, onOpenMarketplaceDetail }: Props) {
-  const { drawerSkills, favorites, setFavorite } = useSkills();
+export default function CommandDrawer({ open, searchMode, externalFilter, onSelect, onSelectCommand, onClose, onOpenManager, onOpenMarketplace, onOpenLibrary, onOpenMarketplaceDetail }: Props) {
+  const { drawerSkills, drawerCommands, favorites, setFavorite } = useSkills();
   const mp = useMarketplace();
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CategoryChip | null>(null);
@@ -86,6 +87,16 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
     );
   }, [drawerSkills, effectiveQuery, isSearching]);
 
+  // Search mode: slash-command matches (native YC commands + filesystem-
+  // scanned commands + CC built-ins). Rendered alongside skill matches.
+  const commandSearchFiltered = useMemo(() => {
+    if (!isSearching) return [] as CommandEntry[];
+    const q = effectiveQuery.toLowerCase();
+    return drawerCommands
+      .filter((c) => c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [drawerCommands, effectiveQuery, isSearching]);
+
   // Browse mode: apply category chip filter, then split into favorites / others.
   const categoryFiltered = useMemo(() => {
     if (!categoryFilter) return drawerSkills;
@@ -105,6 +116,31 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
       .sort((a, b) => a.displayName.localeCompare(b.displayName)),
     [categoryFiltered, skillFavSet],
   );
+
+  // Render a slash-command card in search results. Unclickable CC built-ins
+  // show greyed-out with a "run in terminal view" style disabledReason.
+  const renderCommandCard = (entry: CommandEntry) => {
+    const clickable = entry.clickable;
+    return (
+      <button
+        key={`cmd:${entry.name}`}
+        type="button"
+        onClick={clickable ? () => onSelectCommand(entry) : undefined}
+        disabled={!clickable}
+        title={!clickable ? entry.disabledReason : undefined}
+        className={`rounded-lg p-3 text-left border border-edge-dim flex flex-col ${
+          clickable
+            ? 'bg-panel/80 hover:bg-inset hover:border-edge transition-colors cursor-pointer'
+            : 'bg-panel/40 opacity-50 cursor-not-allowed'
+        }`}
+      >
+        <span className="font-mono text-sm text-fg">{entry.name}</span>
+        <span className="text-xs text-fg-muted mt-1 line-clamp-2">
+          {entry.description || (clickable ? '' : entry.disabledReason)}
+        </span>
+      </button>
+    );
+  };
 
   // Render a single skill card with favorite star + plugin-name badge.
   // The badge replaces the generic source tag (YC/Plugin/Prompt) with the
@@ -221,9 +257,10 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
              alone as the empty-state affordance. */}
         <div ref={scrollRef} className="scroll-fade pb-4" style={{ maxHeight: 'calc(45vh - 80px)' }}>
           {isSearching ? (
-            // Search mode: flat filtered list, no chip row (preserves original behavior)
+            // Search mode: flat filtered list of skills + commands, no chip row
             <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
               {searchFiltered.map(renderSkillCard)}
+              {commandSearchFiltered.map(renderCommandCard)}
               <AddSkillsCard onClick={() => { onClose(); onOpenMarketplace(); }} />
             </div>
           ) : (
