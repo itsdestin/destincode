@@ -349,6 +349,9 @@ contextBridge.exposeInMainWorld('claude', {
     // Phase 3b: update an already-installed plugin
     update: (id: string): Promise<any> => ipcRenderer.invoke(IPC.SKILLS_UPDATE, id),
   },
+  commands: {
+    list: (): Promise<any[]> => ipcRenderer.invoke(IPC.COMMANDS_LIST),
+  },
   // Phase 3: unified marketplace APIs (packages map, per-entry config)
   marketplace: {
     getPackages: (): Promise<Record<string, any>> => ipcRenderer.invoke(IPC.MARKETPLACE_GET_PACKAGES),
