@@ -855,7 +855,27 @@ class Bootstrap(internal val context: Context) {
             File(mobileDir, "linker64-env.sh").absolutePath
         )
 
+        cleanupLegacyYoucodedCore()
         installHooks()
+    }
+
+    /**
+     * Legacy cleanup: youcoded-core toolkit was deprecated 2026-04.
+     * Users who upgraded from a prior version may have the legacy clone
+     * at ~/.claude/plugins/youcoded-core/ with stale settings.json entries
+     * pointing into it. Delete the directory and let installHooks() write
+     * the replacement write-guard entry that supersedes the stale one.
+     * Non-fatal on error.
+     */
+    private fun cleanupLegacyYoucodedCore() {
+        val legacyDir = File(homeDir, ".claude/plugins/youcoded-core")
+        if (!legacyDir.exists()) return
+        try {
+            legacyDir.deleteRecursively()
+            android.util.Log.i("Bootstrap", "Removed legacy youcoded-core clone at ${legacyDir.absolutePath}")
+        } catch (e: Exception) {
+            android.util.Log.w("Bootstrap", "Failed to remove legacy youcoded-core clone: ${e.message}")
+        }
     }
 
     /**
@@ -902,6 +922,34 @@ class Bootstrap(internal val context: Context) {
         }
 
         val hooksObj = existingJson.optJSONObject("hooks") ?: org.json.JSONObject()
+
+        // Prune any stale settings.json entries pointing into the deleted
+        // legacy youcoded-core clone. Mirrors desktop's pruneDeadPluginHooks().
+        val legacyPrefix = File(homeDir, ".claude/plugins/youcoded-core").absolutePath
+        val eventKeys = hooksObj.keys().asSequence().toList()
+        for (eventKey in eventKeys) {
+            val eventArray = hooksObj.optJSONArray(eventKey) ?: continue
+            val kept = org.json.JSONArray()
+            for (i in 0 until eventArray.length()) {
+                val entry = eventArray.optJSONObject(i) ?: continue
+                val hooks = entry.optJSONArray("hooks") ?: continue
+                val keptHooks = org.json.JSONArray()
+                for (j in 0 until hooks.length()) {
+                    val h = hooks.optJSONObject(j) ?: continue
+                    val cmd = h.optString("command", "")
+                    if (!cmd.contains(legacyPrefix)) {
+                        keptHooks.put(h)
+                    }
+                }
+                if (keptHooks.length() > 0) {
+                    val keptEntry = org.json.JSONObject()
+                    keptEntry.put("matcher", entry.optString("matcher", ""))
+                    keptEntry.put("hooks", keptHooks)
+                    kept.put(keptEntry)
+                }
+            }
+            hooksObj.put(eventKey, kept)
+        }
 
         for (event in hookEvents) {
             val eventArray = hooksObj.optJSONArray(event) ?: org.json.JSONArray()
