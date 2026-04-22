@@ -41,8 +41,14 @@ jobs:
       # Health check: `partykit deploy` returns success as soon as the
       # upload is accepted, even if the deployed code throws on the first
       # request. Probe the actual lobby room over HTTPS and fail the job
-      # on 5xx so a broken deploy can't silently slip into production
-      # (this is how v2.4.2 ended up with the lobby 500-ing).
+      # on a real 500 so a broken deploy can't silently slip into
+      # production (this is how v2.4.2 ended up with the lobby 500-ing).
+      #
+      # PartyKit subtlety: a room that handles only WebSocket connections
+      # (no `onRequest` handler) returns HTTP 500 with body "No onRequest
+      # handler" for plain GETs. That's healthy — WebSocket upgrades
+      # still work. We treat that specific body as alive; any other 500
+      # (e.g. a thrown exception in the room constructor) is real.
       - name: Verify lobby room responds
         shell: bash
         run: |
@@ -52,16 +58,28 @@ jobs:
           echo "Probing $URL ..."
           # Give the edge a moment to pick up the new deployment before probing.
           sleep 5
+          BODY_FILE=$(mktemp)
           for attempt in 1 2 3 4 5; do
-            CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$URL" || echo "000")
+            CODE=$(curl -sS -o "$BODY_FILE" -w "%{http_code}" --max-time 10 "$URL" || echo "000")
             echo "attempt $attempt: HTTP $CODE"
-            # Any non-5xx answer means the room constructed + responded —
-            # PartyKit returns 400/426 for non-WS GETs, which is fine here.
             if [ "$CODE" != "000" ] && [ "$CODE" -lt 500 ]; then
-              echo "Lobby room is healthy."
+              # Any non-5xx (e.g. 400/426 from a different PartyKit version)
+              # means the room constructed and responded. Healthy.
+              echo "Lobby room is healthy (non-5xx response)."
+              rm -f "$BODY_FILE"
               exit 0
             fi
+            if [ "$CODE" = "500" ] && grep -q "No onRequest handler" "$BODY_FILE"; then
+              # WebSocket-only room with no HTTP handler — alive, just
+              # doesn't speak plain HTTP. Healthy.
+              echo "Lobby room is healthy (WebSocket-only room — no HTTP handler)."
+              rm -f "$BODY_FILE"
+              exit 0
+            fi
+            echo "  body: $(head -c 200 "$BODY_FILE")"
             sleep 5
           done
-          echo "::error::Lobby room returned 5xx after deploy — last code: $CODE"
+          echo "::error::Lobby room returned a real 5xx after deploy — last code: $CODE"
+          echo "::error::body: $(head -c 500 "$BODY_FILE")"
+          rm -f "$BODY_FILE"
           exit 1
