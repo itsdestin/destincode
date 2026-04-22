@@ -68,6 +68,18 @@ describe('parseChangelog', () => {
     const entries = parseChangelog('## [2.0.0] - 2026-05-01\nbody\n');
     expect(entries[0].date).toBe('2026-05-01');
   });
+
+  it('parses 4-part versions without silent drop', () => {
+    const entries = parseChangelog('## [1.2.3.4] — 2026-05-01\nbody\n');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].version).toBe('1.2.3.4');
+  });
+
+  it('parses headers without a date', () => {
+    const entries = parseChangelog('## [1.2.3]\nbody\n');
+    expect(entries[0].version).toBe('1.2.3');
+    expect(entries[0].body).toBe('body');
+  });
 });
 
 describe('filterEntriesSinceVersion', () => {
@@ -96,5 +108,11 @@ describe('compareSemver', () => {
     expect(compareSemver('1.0.0', '1.0.1')).toBe(-1);
     expect(compareSemver('2.0.0', '1.9.9')).toBe(1);
     expect(compareSemver('1.10.0', '1.9.0')).toBe(1);
+  });
+
+  it('treats non-numeric components as 0 (never returns arbitrary result)', () => {
+    // Garbage input should not produce arbitrary ordering.
+    expect(compareSemver('garbage', '0.0.0')).toBe(0);
+    expect(compareSemver('garbage', '1.0.0')).toBe(-1);
   });
 });

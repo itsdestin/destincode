@@ -7,7 +7,11 @@ export interface ChangelogEntry {
   body: string;          // markdown body between this header and the next
 }
 
-const HEADER_RE = /^##\s+\[(\d+\.\d+\.\d+)\](?:\s*[—–-]\s*(\S+))?/;
+// Accept 2-4 numeric components so headers like `## [1.2]` or `## [1.2.3.4]`
+// parse cleanly instead of being silently dropped as preamble. compareSemver
+// defaults missing components to 0 and truncates beyond the third — consistent
+// with how the rest of the codebase treats versions.
+const HEADER_RE = /^##\s+\[(\d+(?:\.\d+){1,3})\](?:\s*[—–-]\s*(\S+))?/;
 
 export function parseChangelog(markdown: string): ChangelogEntry[] {
   if (!markdown) return [];
@@ -41,9 +45,12 @@ export function filterEntriesSinceVersion(entries: ChangelogEntry[], currentVers
 export function compareSemver(a: string, b: string): number {
   const pa = a.split('.').map(n => parseInt(n, 10));
   const pb = b.split('.').map(n => parseInt(n, 10));
+  // Guard with Number.isFinite: parseInt('abc', 10) is NaN, and NaN comparisons
+  // return arbitrary results (NaN !== 1 is true but NaN > 1 is false), so
+  // garbage input would otherwise produce nondeterministic ordering.
   for (let i = 0; i < 3; i++) {
-    const da = pa[i] ?? 0;
-    const db = pb[i] ?? 0;
+    const da = Number.isFinite(pa[i]) ? pa[i] : 0;
+    const db = Number.isFinite(pb[i]) ? pb[i] : 0;
     if (da !== db) return da > db ? 1 : -1;
   }
   return 0;
