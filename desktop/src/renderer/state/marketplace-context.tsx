@@ -12,6 +12,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { SkillEntry, PackageInfo, FeaturedData } from '../../shared/types';
 import type { ThemeRegistryEntryWithStatus } from '../../shared/theme-marketplace-types';
+import { useTheme } from './theme-context';
 
 // window.claude is typed for skills but not for theme.marketplace — cast via any
 const claude = () => (window as any).claude;
@@ -128,6 +129,15 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   const [error, setError] = useState<string | null>(null);
   // Guard against stale fetchAll responses when rapid install/uninstall triggers concurrent fetches
   const fetchGeneration = useRef(0);
+
+  // Fix: theme install writes files to disk, but ThemeProvider's userThemes
+  // list only updates via the chokidar watcher's debounced theme:reload event
+  // (~200ms after files settle). Without an explicit reload, the user can
+  // click "Apply theme" before the theme is in userThemes — the active-theme
+  // fallback effect then misses the slug and reverts to the default theme,
+  // producing a "briefly applies then unapplies" flicker. Force a reload
+  // synchronously after install/uninstall/update so the lookup always succeeds.
+  const { reloadUserThemes } = useTheme();
 
   // Fetch all marketplace data in parallel on mount
   const fetchAll = useCallback(async () => {
@@ -263,6 +273,11 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       await claude().theme.marketplace.install(slug);
       // Auto-favorite on install (mirrors skills)
       try { await claude().appearance.favoriteTheme(slug, true); } catch {}
+      // Fix: reload ThemeProvider's userThemes BEFORE fetchAll flips the
+      // "Apply theme" button on. Otherwise the user can click Apply before
+      // chokidar's debounced theme:reload event fires (~200ms), and the
+      // active-theme fallback effect reverts to the default theme.
+      await reloadUserThemes();
       await fetchAll();
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Install failed');
@@ -270,13 +285,17 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, reloadUserThemes, markInstalling, clearInstalling, recordInstallError]);
 
   const uninstallTheme = useCallback(async (slug: string) => {
     const key = `theme:${slug}`;
     markInstalling(key);
     try {
       await claude().theme.marketplace.uninstall(slug);
+      // Fix: same reasoning as installTheme — keep userThemes in sync with
+      // disk so the active-theme fallback can correctly detect the removed
+      // slug and revert to the default theme.
+      await reloadUserThemes();
       await fetchAll();
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Uninstall failed');
@@ -284,7 +303,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, reloadUserThemes, markInstalling, clearInstalling, recordInstallError]);
 
   // Phase 3b: update an installed package (skill plugin or theme) by re-downloading
   // from source and overwriting files at the same install path. Config in
@@ -296,6 +315,9 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       const result = type === 'theme'
         ? await claude().theme.marketplace.update(id)
         : await (window as any).claude.skills.update(id);
+      // Fix: theme update overwrites manifest + assets on disk; reload so
+      // the in-memory theme picks up the new tokens/assets immediately.
+      if (type === 'theme') await reloadUserThemes();
       await fetchAll();
       return result;
     } catch (err: any) {
@@ -304,7 +326,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, reloadUserThemes, markInstalling, clearInstalling, recordInstallError]);
 
   const setFavorite = useCallback(async (id: string, favorited: boolean) => {
     await window.claude.skills.setFavorite(id, favorited);
