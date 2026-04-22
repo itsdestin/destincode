@@ -4,6 +4,14 @@ import type { MarketplaceUser } from './marketplace-auth-store';
 import type { ApiResult } from './marketplace-api-handlers';
 import type { AttentionSummary, AttentionReport } from '../shared/types';
 
+// Mirrored type — must match ChangelogResult in src/main/changelog-service.ts.
+interface ChangelogIpcResult {
+  markdown: string | null;
+  entries: Array<{ version: string; date?: string; body: string }>;
+  fromCache: boolean;
+  error?: boolean;
+}
+
 // IPC channel names inlined here because Electron's sandboxed preload
 // cannot resolve relative imports to other modules
 const IPC = {
@@ -55,6 +63,7 @@ const IPC = {
   SKILLS_INSTALL_MANY: 'skills:install-many',
   SKILLS_APPLY_OUTPUT_STYLE: 'skills:apply-output-style',
   OPEN_CHANGELOG: 'shell:open-changelog',
+  UPDATE_CHANGELOG: 'update:changelog',
   OPEN_EXTERNAL: 'shell:open-external',
   TERMINAL_READY: 'session:terminal-ready',
   PERMISSION_RESPOND: 'permission:respond',
@@ -429,6 +438,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.OPEN_CHANGELOG),
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.OPEN_EXTERNAL, url),
+  },
+  update: {
+    changelog: (opts: { forceRefresh: boolean }): Promise<ChangelogIpcResult> =>
+      ipcRenderer.invoke(IPC.UPDATE_CHANGELOG, opts),
   },
   remote: {
     getConfig: () => ipcRenderer.invoke(IPC.REMOTE_GET_CONFIG),

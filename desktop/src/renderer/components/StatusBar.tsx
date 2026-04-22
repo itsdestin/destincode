@@ -8,6 +8,7 @@ import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
+import UpdatePanel from './UpdatePanel';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -582,6 +583,8 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
   const { activeTheme, cycleTheme } = useTheme();
   const { visible, toggle } = useWidgetVisibility();
   const [popupOpen, setPopupOpen] = useState(false);
+  // Version pill now opens the in-app UpdatePanel (changelog + update action) instead of firing external URLs.
+  const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
 
   const show = (id: WidgetId) => visible.has(id);
   const ss = sessionStats; // shorthand
@@ -870,16 +873,11 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </span>
       )}
 
-      {/* Version pill — shows YouCoded app version, glows yellow when update available */}
+      {/* Version pill — shows YouCoded app version, glows yellow when update available.
+         Click opens the in-app UpdatePanel (changelog + Update Now) — no more raw URL jumps. */}
       {show('version') && updateStatus && (
         <button
-          onClick={() => {
-            if (updateStatus.update_available && updateStatus.download_url) {
-              window.claude.shell.openExternal(updateStatus.download_url);
-            } else {
-              window.claude.shell.openChangelog();
-            }
-          }}
+          onClick={() => setUpdatePanelOpen(true)}
           className={`px-1.5 py-0.5 rounded-sm border cursor-pointer transition-colors hidden sm:inline-flex ${
             updateStatus.update_available
               ? 'bg-[rgba(234,179,8,0.12)] border-[rgba(234,179,8,0.5)] hover:bg-[rgba(234,179,8,0.22)] animate-[version-glow_2s_ease-in-out_infinite]'
@@ -913,6 +911,16 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         visible={visible}
         toggle={toggle}
       />
+
+      {/* Update panel — opened from the version pill. Guard on updateStatus
+         since the pill is only rendered when it exists, but the mount lives outside that gate. */}
+      {updateStatus && (
+        <UpdatePanel
+          open={updatePanelOpen}
+          onClose={() => setUpdatePanelOpen(false)}
+          updateStatus={updateStatus}
+        />
+      )}
     </div>
   );
 }

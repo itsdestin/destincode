@@ -747,6 +747,10 @@ export function installShim(): void {
       },
       openExternal: async (url: string) => { window.open(url, '_blank'); },
     },
+    update: {
+      changelog: async (opts: { forceRefresh: boolean }) =>
+        invoke('update:changelog', opts),
+    },
     remote: {
       getConfig: () => invoke('remote:get-config'),
       setPassword: (password: string) => invoke('remote:set-password', password),

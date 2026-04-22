@@ -28,6 +28,7 @@ import { getRestoreService } from './restore-service';
 import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
 import { readLogTail, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
+import { getChangelog } from './changelog-service';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -452,6 +453,12 @@ export function registerIpcHandlers(
   // Open the YouCoded CHANGELOG on GitHub in the default browser
   ipcMain.handle(IPC.OPEN_CHANGELOG, async () => {
     await shell.openExternal('https://github.com/itsdestin/youcoded/blob/master/CHANGELOG.md');
+  });
+
+  // Update panel fetches CHANGELOG.md via this handler. Cached in main;
+  // forceRefresh is true only when the popup opens in the update-available path.
+  ipcMain.handle(IPC.UPDATE_CHANGELOG, async (_event, opts: { forceRefresh?: boolean } = { forceRefresh: false }) => {
+    return getChangelog({ forceRefresh: !!opts.forceRefresh });
   });
 
   // Open any URL in the default browser (allowlisted to https only)
@@ -1243,7 +1250,30 @@ export function registerIpcHandlers(
     if (Date.now() - lastReleaseCheck > RELEASE_CHECK_INTERVAL) {
       fetchLatestRelease().catch(() => {});
     }
-    return cachedUpdateStatus || { current: app.getVersion(), latest: app.getVersion(), update_available: false, download_url: null };
+    const status = cachedUpdateStatus || { current: app.getVersion(), latest: app.getVersion(), update_available: false, download_url: null };
+
+    // Dev-only: force update_available=true for manual UpdatePanel verification without waiting for a real release.
+    // Set YOUCODED_DEV_FAKE_UPDATE=1 to simulate a new release one patch ahead of the current version.
+    // Note: the download_url points at the real GitHub releases page, so clicking Update Now opens the browser
+    // to the actual latest release — not the fake +1 version. That's fine for UI verification; no real installer
+    // exists for the fake version. No-op unless the env var is exactly '1'.
+    // `!app.isPackaged` gate: belt-and-suspenders so a stray env var in a user's
+    // shell can't flip the update pill on in a packaged build. Dev-only by design.
+    if (!app.isPackaged && process.env.YOUCODED_DEV_FAKE_UPDATE === '1') {
+      const currentVersion = app.getVersion();
+      const parts = currentVersion.split('.').map(n => parseInt(n, 10));
+      const maj = parts[0] || 0;
+      const min = parts[1] || 0;
+      const patch = parts[2] || 0;
+      return {
+        current: currentVersion,
+        latest: `${maj}.${min}.${patch + 1}`,
+        update_available: true,
+        download_url: 'https://github.com/itsdestin/youcoded/releases/latest',
+      };
+    }
+
+    return status;
   }
 
   // Initial fetch on startup
