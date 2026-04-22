@@ -65,7 +65,11 @@ export function ContributePopup({ open, onClose }: Props) {
   return createPortal(
     <>
       <Scrim layer={2} onClick={onClose} />
-      <OverlayPanel layer={2} className="p-4 w-[400px] max-w-[92vw] mx-4">
+      <OverlayPanel
+        layer={2}
+        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-4 w-[400px] max-w-[calc(100%-2rem)] max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
         {!installing && !done && !error && (
           <>
             <h3 className="text-sm font-medium text-fg mb-2">Contribute to YouCoded</h3>

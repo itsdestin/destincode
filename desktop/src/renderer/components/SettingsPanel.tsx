@@ -1985,12 +1985,14 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
               className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
             >
               <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-                <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3-3a1 1 0 000-1.4l-1.6-1.6a1 1 0 00-1.4 0l-3 3z" />
-                  <path d="M5 20l9-9" />
-                  <path d="M14.5 13.5L18 17" />
-                  <path d="M8.5 6.5L5 3" />
-                  <path d="M3 5l2.5 2.5" />
+                {/* {YC} — curly braces with YC monogram in Cascadia Mono (matches the */}
+                {/* "Development" label's font size). Wider viewBox/icon (32×24 → 24×16) */}
+                {/* than the other Other-section icons because monospace YC at the */}
+                {/* requested size won't fit alongside brackets in a 16×16 box. */}
+                <svg className="w-6 h-4 text-fg-muted" viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 4 C 3 4 3 7 3 9 C 3 11 2 12 1 12 C 2 12 3 13 3 15 C 3 17 3 20 5 20" />
+                  <path d="M27 4 C 29 4 29 7 29 9 C 29 11 30 12 31 12 C 30 12 29 13 29 15 C 29 17 29 20 27 20" />
+                  <text x="16" y="17" textAnchor="middle" fontFamily="'Cascadia Code', 'Cascadia Mono', Consolas, monospace" fontSize="16" fontWeight="500" fill="currentColor" stroke="none">YC</text>
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
@@ -2310,12 +2312,14 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
               className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
             >
               <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-                <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3-3a1 1 0 000-1.4l-1.6-1.6a1 1 0 00-1.4 0l-3 3z" />
-                  <path d="M5 20l9-9" />
-                  <path d="M14.5 13.5L18 17" />
-                  <path d="M8.5 6.5L5 3" />
-                  <path d="M3 5l2.5 2.5" />
+                {/* {YC} — curly braces with YC monogram in Cascadia Mono (matches the */}
+                {/* "Development" label's font size). Wider viewBox/icon (32×24 → 24×16) */}
+                {/* than the other Other-section icons because monospace YC at the */}
+                {/* requested size won't fit alongside brackets in a 16×16 box. */}
+                <svg className="w-6 h-4 text-fg-muted" viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 4 C 3 4 3 7 3 9 C 3 11 2 12 1 12 C 2 12 3 13 3 15 C 3 17 3 20 5 20" />
+                  <path d="M27 4 C 29 4 29 7 29 9 C 29 11 30 12 31 12 C 30 12 29 13 29 15 C 29 17 29 20 27 20" />
+                  <text x="16" y="17" textAnchor="middle" fontFamily="'Cascadia Code', 'Cascadia Mono', Consolas, monospace" fontSize="16" fontWeight="500" fill="currentColor" stroke="none">YC</text>
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
