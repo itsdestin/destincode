@@ -28,6 +28,8 @@ import { getRestoreService } from './restore-service';
 import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
 import { readLogTail, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
+import { createUpdateInstaller, findCachedDownload, makeLaunchInstaller, UpdateInstallError } from './update-installer';
+import type { UpdateProgressEvent } from '../shared/update-install-types';
 import { getChangelog } from './changelog-service';
 
 // Max age for clipboard paste images (1 hour)
@@ -1275,6 +1277,59 @@ export function registerIpcHandlers(
 
     return status;
   }
+
+  // -------------------------------------------------------------------------
+  // In-app update installer — download + launch the platform installer.
+  // Spec: docs/superpowers/specs/2026-04-22-in-app-update-installer-design.md
+  // -------------------------------------------------------------------------
+  const updateCacheDir = path.join(app.getPath('userData'), 'update-cache');
+
+  const installer = createUpdateInstaller({
+    cacheDir: updateCacheDir,
+    onProgress: (ev: UpdateProgressEvent) => {
+      // Broadcast to every live renderer. Renderers filter by jobId (single-job
+      // invariant in the engine means only one is in flight, but filtering keeps
+      // UI state correct if a prior job's final tick arrives after the popup closed).
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('update:progress', ev);
+      }
+    },
+  });
+
+  const launchInstaller = makeLaunchInstaller({
+    shellOpenExternal: (url: string) => shell.openExternal(url),
+    appRelaunch: () => app.relaunch(),
+    fallbackDownloadUrl: () => cachedUpdateStatus?.download_url ?? '',
+    // production reads process.env.APPIMAGE (Linux only); tests pass an override.
+  });
+
+  ipcMain.handle('update:download', async () => {
+    // Renderer never passes a URL — we resolve main-side from the trusted cache
+    // populated by the GitHub Releases check. Prevents renderer from spoofing
+    // the download target.
+    const status = getUpdateStatus();
+    const url = status?.download_url;
+    if (!url) throw new UpdateInstallError('url-rejected', 'no download URL available');
+    return await installer.startDownload(url);
+  });
+
+  ipcMain.handle('update:cancel', async (_event, payload: { jobId: string }) => {
+    installer.cancelDownload(payload.jobId);
+    return { success: true };
+  });
+
+  ipcMain.handle('update:launch', async (_event, payload: { jobId: string; filePath: string }) => {
+    const result = await launchInstaller({ jobId: payload.jobId, filePath: payload.filePath });
+    if (result.success && result.quitPending) {
+      // 500ms grace so the child installer process has detached cleanly before we exit.
+      setTimeout(() => app.quit(), 500);
+    }
+    return result;
+  });
+
+  ipcMain.handle('update:get-cached-download', async (_event, payload: { version: string }) => {
+    return findCachedDownload(updateCacheDir, payload.version, process.platform);
+  });
 
   // Initial fetch on startup
   fetchLatestRelease().catch(() => {});
