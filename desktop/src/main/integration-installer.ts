@@ -15,6 +15,7 @@ import path from "path";
 import os from "os";
 import type { IntegrationEntry, IntegrationIndex, IntegrationState, SkillEntry } from "../shared/types";
 import { installPlugin, uninstallPlugin } from "./plugin-installer";
+import { platformListDisplay } from "../shared/platform-display";
 
 const REGISTRY_BASE = `https://raw.githubusercontent.com/itsdestin/wecoded-marketplace/${process.env.YOUCODED_MARKETPLACE_BRANCH || "master"}`;
 
@@ -111,10 +112,12 @@ export class IntegrationInstaller {
     }
 
     // Platform gate — honour entry.platforms if present.
+    // Error copy uses display names (macOS / Windows / Linux) since this
+    // message can surface in the UI if the renderer gate is bypassed.
     if (entry.platforms && entry.platforms.length > 0) {
       const cur = currentPlatform();
       if (cur === "unknown" || !entry.platforms.includes(cur as any)) {
-        return this.recordFailure(slug, `Not supported on this platform (needs ${entry.platforms.join("/")})`);
+        return this.recordFailure(slug, `Not supported on this platform — needs ${platformListDisplay(entry.platforms)}`);
       }
     }
 
@@ -125,7 +128,7 @@ export class IntegrationInstaller {
     // Non-plugin setup types — still stubs. Keep the manifest in sync with
     // the UI so the user sees a clear error rather than a success that silently
     // does nothing.
-    return this.recordFailure(slug, `setup.type "${entry.setup.type}" not yet implemented`);
+    return this.recordFailure(slug, `This integration's setup method isn't supported in this version.`);
   }
 
   private async installPluginBacked(entry: IntegrationEntry): Promise<IntegrationInstallResult> {
@@ -186,6 +189,41 @@ export class IntegrationInstaller {
     delete manifest[slug];
     this.writeManifest(manifest);
     return { slug, installed: false, connected: false };
+  }
+
+  // Re-run the post-install setup command for an already-installed integration.
+  // Used by the "Connect" button on the detail overlay when state is
+  // installed-but-not-connected (e.g. OAuth expired or user skipped the
+  // initial setup flow). Does NOT re-install the plugin — just returns the
+  // command so the renderer can spawn it in a fresh Sonnet session, same
+  // path that install() uses.
+  async connect(slug: string): Promise<IntegrationInstallResult> {
+    const manifest = this.readManifest();
+    const current = manifest[slug];
+    if (!current?.installed) {
+      return { slug, installed: false, connected: false, error: `${slug} is not installed` };
+    }
+
+    const catalog = await this.listCatalog();
+    const entry = (catalog.integrations || []).find((e) => e.slug === slug);
+    if (!entry) {
+      return { ...current, error: `Integration not found: ${slug}` };
+    }
+
+    const cmd = entry.setup.postInstallCommand;
+    if (!cmd) {
+      return { ...current, error: `${slug} has no connect flow` };
+    }
+
+    // Clear any prior error so the UI flips out of the "Error" badge when
+    // the user kicks off a retry. State stays installed=true/connected=false
+    // until the post-install command actually succeeds (which is outside the
+    // installer's visibility — the user's Claude session runs it).
+    const next: IntegrationState = { ...current, error: undefined };
+    manifest[slug] = next;
+    this.writeManifest(manifest);
+
+    return { ...next, postInstallCommand: cmd };
   }
 
   async configure(slug: string, _settings: Record<string, unknown>): Promise<IntegrationState> {

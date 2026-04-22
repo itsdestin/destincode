@@ -415,6 +415,9 @@ export interface IntegrationEntry {
   // Relative path under integrations/icons/ in the marketplace repo; the UI
   // resolves this against the raw.githubusercontent.com base URL.
   iconUrl?: string;
+  // Human tags for search and the detail-page chip row. Freeform strings;
+  // the detail overlay renders each as a "#tag" pill.
+  tags?: string[];
   // Platforms where this integration can run. When present and the current
   // platform isn't listed, the card shows a "<platform>-only" affordance.
   platforms?: Array<'darwin' | 'linux' | 'win32'>;
@@ -609,6 +612,14 @@ export const IPC = {
   INTEGRATIONS_UNINSTALL: 'integrations:uninstall',
   INTEGRATIONS_STATUS: 'integrations:status',
   INTEGRATIONS_CONFIGURE: 'integrations:configure',
+  // Re-runs postInstallCommand for an already-installed integration; used
+  // by the detail overlay's Connect button when state is installed-but-not-
+  // connected (e.g. OAuth expired).
+  INTEGRATIONS_CONNECT: 'integrations:connect',
+  // Static-per-session lookup — returns 'darwin' | 'win32' | 'linux' | 'android'.
+  // Used by the integration cards to gate UI by platform before the user
+  // clicks (backend integration-installer.ts also re-checks).
+  PLATFORM_GET: 'platform:get',
   // Decomposition v3 §9.9: used by SkillDetail to render integration badges
   SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
   // Decomposition v3 §9.10: onboarding bulk install + output-style apply
