@@ -41,22 +41,31 @@ function readCache(): CacheFile | null {
 }
 
 function writeCache(data: CacheFile): void {
+  // Atomic write: dump to a .tmp sibling then rename so a crash mid-write can't
+  // leave a half-written JSON file that readCache would fail to parse.
   try {
-    const dir = path.dirname(cachePath());
+    const finalPath = cachePath();
+    const dir = path.dirname(finalPath);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(cachePath(), JSON.stringify(data, null, 2), 'utf8');
-  } catch {
-    // Best-effort — a failed cache write shouldn't fail the whole operation.
+    const tmp = finalPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+    fs.renameSync(tmp, finalPath);
+  } catch (err) {
+    // Best-effort — a failed cache write shouldn't fail the whole operation,
+    // but surface a diagnostic so silent disk failures are debuggable.
+    console.warn('[changelog-service] cache write failed:', err);
   }
 }
 
-function fetchRemote(url: string): Promise<string> {
+// Bounded redirect depth: protects against redirect loops. 5 hops is well above any real-world chain.
+function fetchRemote(url: string, redirectsLeft = 5): Promise<string> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { 'User-Agent': 'YouCoded' }, timeout: FETCH_TIMEOUT_MS }, (res: any) => {
       if (res.statusCode === 301 || res.statusCode === 302) {
+        if (redirectsLeft <= 0) { reject(new Error('Too many redirects')); return; }
         const redirect = res.headers?.location;
         if (!redirect) { reject(new Error('Redirect without location')); return; }
-        fetchRemote(redirect).then(resolve, reject);
+        fetchRemote(redirect, redirectsLeft - 1).then(resolve, reject);
         return;
       }
       if (res.statusCode && res.statusCode >= 400) {

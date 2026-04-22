@@ -11,7 +11,7 @@ import * as os from 'os';
 const state = vi.hoisted(() => ({
   appVersion: '0.0.0',
   tmpHome: '',
-  httpsMode: 'ok' as 'ok' | 'fail',
+  httpsMode: 'ok' as 'ok' | 'fail' | 'timeout',
   httpsBody: '',
 }));
 
@@ -28,6 +28,18 @@ vi.mock('https', () => ({
       const req: any = {
         on: (ev: string, fn: Function) => {
           if (ev === 'error') queueMicrotask(() => fn(new Error('ENETUNREACH')));
+          return req;
+        },
+        destroy: () => {},
+      };
+      return req;
+    }
+    if (state.httpsMode === 'timeout') {
+      // Simulates the req.on('timeout') path — fetchRemote destroys the socket
+      // and rejects with Error('Timeout'). Most likely real-world failure mode.
+      const req: any = {
+        on: (ev: string, fn: Function) => {
+          if (ev === 'timeout') queueMicrotask(() => fn());
           return req;
         },
         destroy: () => {},
@@ -76,6 +88,10 @@ function mockHttpsOk(body: string) {
 
 function mockHttpsFail() {
   state.httpsMode = 'fail';
+}
+
+function mockHttpsTimeout() {
+  state.httpsMode = 'timeout';
 }
 
 beforeEach(async () => {
@@ -154,6 +170,21 @@ describe('getChangelog', () => {
       fetched_at: '2026-04-01T00:00:00Z', app_version_at_fetch: '1.1.1',
     }));
     mockHttpsFail();
+    serviceModule = await import('../changelog-service');
+    const result = await serviceModule.getChangelog({ forceRefresh: true });
+    expect(result.fromCache).toBe(true);
+    expect(result.error).toBeFalsy();
+    expect(result.entries[0].body).toBe('cached');
+  });
+
+  it('returns stale cache on fetch timeout', async () => {
+    mockElectronApp('1.1.2');
+    fs.mkdirSync(path.join(state.tmpHome, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(state.tmpHome, '.claude', '.changelog-cache.json'), JSON.stringify({
+      markdown: SAMPLE, entries: [{ version: '1.1.2', date: '2026-04-21', body: 'cached' }],
+      fetched_at: '2026-04-01T00:00:00Z', app_version_at_fetch: '1.1.2',
+    }));
+    mockHttpsTimeout();
     serviceModule = await import('../changelog-service');
     const result = await serviceModule.getChangelog({ forceRefresh: true });
     expect(result.fromCache).toBe(true);
