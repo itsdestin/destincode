@@ -2592,6 +2592,19 @@ class SessionService : Service() {
                 }
             }
 
+            "update:changelog" -> {
+                // Desktop-only feature. Android never renders the version pill, so this
+                // handler should be unreachable — but IPC-parity invariant (docs/PITFALLS.md
+                // "Cross-Platform") requires the type string to exist in all three files.
+                msg.id?.let {
+                    bridgeServer.respond(ws, msg.type, it, JSONObject()
+                        .put("markdown", JSONObject.NULL)
+                        .put("entries", org.json.JSONArray())
+                        .put("fromCache", false)
+                        .put("error", true))
+                }
+            }
+
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }

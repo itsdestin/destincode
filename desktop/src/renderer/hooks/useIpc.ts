@@ -68,6 +68,14 @@ declare global {
         openChangelog: () => Promise<void>;
         openExternal: (url: string) => Promise<void>;
       };
+      update: {
+        changelog: (opts: { forceRefresh: boolean }) => Promise<{
+          markdown: string | null;
+          entries: Array<{ version: string; date?: string; body: string }>;
+          fromCache: boolean;
+          error?: boolean;
+        }>;
+      };
       remote: {
         getConfig: () => Promise<any>;
         setPassword: (pw: string) => Promise<void>;

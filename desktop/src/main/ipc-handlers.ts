@@ -28,6 +28,7 @@ import { getRestoreService } from './restore-service';
 import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
 import { readLogTail, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
+import { getChangelog } from './changelog-service';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -452,6 +453,12 @@ export function registerIpcHandlers(
   // Open the YouCoded CHANGELOG on GitHub in the default browser
   ipcMain.handle(IPC.OPEN_CHANGELOG, async () => {
     await shell.openExternal('https://github.com/itsdestin/youcoded/blob/master/CHANGELOG.md');
+  });
+
+  // Update panel fetches CHANGELOG.md via this handler. Cached in main;
+  // forceRefresh is true only when the popup opens in the update-available path.
+  ipcMain.handle(IPC.UPDATE_CHANGELOG, async (_event, opts: { forceRefresh?: boolean } = { forceRefresh: false }) => {
+    return getChangelog({ forceRefresh: !!opts.forceRefresh });
   });
 
   // Open any URL in the default browser (allowlisted to https only)
