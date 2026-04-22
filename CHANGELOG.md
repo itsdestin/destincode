@@ -2,6 +2,182 @@
 
 All notable changes to YouCoded are documented in this file.
 
+## [1.1.2] — 2026-04-21
+
+**Claude Code CLI baseline:** v2.1.117
+
+Bundled default plugins, command-drawer commands subsystem, announcement system rebuild,
+marketplace polish, and several stability fixes. Notable: a platform-detection bug was
+silently mis-tagging packaged Windows installs as Android — fixed.
+
+### Added
+- **Settings → Development panel** — New row under Settings → Other opens a
+  three-flow popup: (1) **Report a bug or feature** — three-screen wizard
+  that pulls the last ~200 PTY lines from the active session, runs
+  `claude -p` over stdin to summarize them into a structured issue body,
+  redacts paths/tokens, then submits via `gh issue create` if `gh` is
+  authenticated (auto-falls back to a browser URL-prefill if not). Labels
+  the issue with `bug` or `enhancement` plus `youcoded-app:reported` on
+  `itsdestin/youcoded`. (2) **Contribute to YouCoded** — clones
+  `youcoded-dev` into a user-chosen folder (with progress streaming +
+  idempotent re-install), registers it as a project folder in YouCoded's
+  saved-folders list, and opens a fresh session in it with a prefilled
+  prompt that orients new contributors. (3) **View known issues** —
+  opens the GitHub issues list for `itsdestin/youcoded`. Cross-platform
+  parity: desktop main implementation in `desktop/src/main/dev-tools.ts`,
+  Android implementation in `app/.../runtime/DevTools.kt` and
+  `SessionService.kt` `dev:*` IPC cases, mirrored in `remote-shim.ts` so
+  remote browsers can use the panel too. New `dev:open-session-in`,
+  `dev:install-workspace`, `dev:submit-issue`, `dev:summarize-issue`,
+  `dev:log-tail` IPC channels.
+- **Bundled default plugins** — `wecoded-themes-plugin` (Theme Builder) and
+  `wecoded-marketplace-publisher` are now auto-installed on every desktop and Android
+  launch. Uninstall is blocked at the UI layer (SkillCard / MarketplaceDetailOverlay)
+  AND the IPC layer (`skills:uninstall` defense in both desktop main and Android
+  `SessionService`). Single hardcoded list lives in `desktop/src/shared/bundled-plugins.ts`
+  and `app/.../skills/BundledPlugins.kt` — both must stay in sync.
+- **Commands in the CommandDrawer** — Slash commands now appear alongside skills in the
+  drawer's search and a new dedicated browse mode. Three sources: YouCoded-handled
+  (clickable, dispatched in-app — 9 entries), filesystem-scanned (user `~/.claude/commands`,
+  project `.claude/commands`, plugin `commands/`), and Claude Code built-ins (visible
+  reference list, marked "Run in Terminal View"). New IPC `commands:list` wired across
+  desktop preload + ipc-handlers and Android SessionService + new `CommandProvider.kt`.
+- **Announcement system rebuild** — Source of truth `announcements.txt` moved from
+  `youcoded-core` to this repo (`itsdestin/youcoded/master/announcements.txt`). Single
+  fetcher per platform: desktop `announcement-service.ts` (Electron main, 1h cadence) +
+  Android `AnnouncementService.kt`. Shared `isExpired()` helper at
+  `desktop/src/shared/announcement.ts` gates the StatusBar pill at render time so
+  expired entries disappear at local midnight without waiting for the next fetch.
+  Cleared announcements propagate as explicit `{message: null}` cache writes.
+- **Marketplace install-state corner** — `InstallFavoriteCorner` primitive cycles
+  download → braille spinner → unfavorited FavoriteStar on install complete.
+  `IntegrationCard` retired; integrations now render through `MarketplaceCard` with
+  `iconUrl`, `accentColor`, `statusBadge`, `suppressCorner` props. New
+  `IntegrationDetailOverlay` for click-to-expand on integration tiles.
+- **Plugin-name badge on skill cards** — Each skill card shows a clickable pill with
+  the parent plugin's display name; clicking jumps to the plugin's marketplace
+  detail overlay. Replaces an earlier (reverted) plugin-grouping experiment that
+  showed one card per plugin.
+- **Fix-action buttons in SyncPanel** — Sync warnings now carry actionable next-step
+  buttons specific to each warning code.
+
+### Changed
+- **Sync timeouts bumped** — `RCLONE_TIMEOUT` 60s → 10 min, `GIT_TIMEOUT` 60s → 5 min,
+  plugin-installer `GIT_TIMEOUT` 2 min → 5 min. The 60s rclone timeout was silently
+  SIGTERM'ing mid-upload on large conversation slugs (one user has a 156 MB slug
+  with a 25 MB single .jsonl) and the killed-by-Node case left `e.stderr` empty so
+  the classifier fell through to UNKNOWN with no actionable message.
+- **Sync error classifier expanded** — New `extractStderr()` helper detects
+  `e.killed && e.signal` and injects a `TIMEOUT_SENTINEL` so the classifier can
+  surface a real TIMEOUT diagnosis. Added `UNIVERSAL_PATTERNS` (TIMEOUT,
+  LOCAL_DISK_FULL) that apply to any backend, drive-side
+  RATE_LIMITED / PERMISSION_DENIED, and a full GitHub pattern set
+  (AUTH, REPO_NOT_FOUND, LARGE_FILE, PUSH_REJECTED, NETWORK).
+  11 new classifier tests (28/28 pass).
+- **Sync pull failures surface immediately** — `pullDrive` and `pullGithub` now route
+  through `recordBackendFailure` so first-run pull failures (CONFIG_MISSING,
+  AUTH_EXPIRED) appear in the UI right away instead of waiting up to 15 min for
+  the next push cycle. Pull success does NOT clear warnings — pull working doesn't
+  prove push works.
+- **Multiplayer lobby pong is liveness-only** — `LobbyRoom` no longer broadcasts the
+  full presence list back on every 30s heartbeat. Drift self-heals on reconnect via
+  the existing `presence` message in `onConnect`. Raises the practical lobby
+  ceiling from ~200 to ~5k concurrent users (was O(N²) bandwidth per heartbeat).
+- **Skill-id Uninstalls resolve to parent plugin** — `skill-provider.uninstall(id)`
+  now looks up the skill's `pluginName` from `scanSkills` if the id doesn't match a
+  plugin directly, then uninstalls that plugin. Fixes Library "Uninstall" buttons
+  on bundled skills of legacy-marketplace plugins that were silently no-ops.
+- **No more auto-favoriting on install** — The install-affordance corner now ends in
+  an unfavorited star so the user sees a deliberate favorite click as a separate
+  action.
+
+### Fixed
+- **Packaged desktop mis-tagged as Android** — `platform-bootstrap.ts` was checking
+  `location.protocol === 'file:'` before `window.claude`, so packaged Electron on
+  Windows (which loads via `win.loadFile()` and presents `file:` protocol) got
+  `__PLATFORM__ = 'android'`. SettingsPanel rendered `<AndroidSettings>`, the tier
+  picker appeared, session-switcher was limited to one session, and
+  `html[data-platform="android"]` CSS hid theme backgrounds under the terminal.
+  Now checks `window.claude` first (Electron preload populates it synchronously
+  before any renderer JS runs); Android still falls through to the `file:` branch.
+  Added `platform-bootstrap.test.ts` covering all four scenarios.
+- **Android: remote pairing unblocked** — `network_security_config.xml` was only
+  permitting cleartext WS to localhost and `*.ts.net`, but the desktop pairing URL
+  encodes raw CGNAT IPs (e.g. 100.64.x.x) or LAN IPs. Android's NSC blocked the
+  WebSocket at the OS level before any auth handshake, surfacing as the generic
+  "Connection closed before auth". NSC now permits cleartext broadly per the
+  documented threat model (Tailscale WireGuard underlay, LAN exposure parity with
+  desktop, bcrypt-verified WS handshake regardless). `remote-shim`'s `onclose`
+  also now differentiates reachability failures from post-open closes for a
+  more actionable error message.
+- **Subagent briefings no longer pollute the main chat** — Claude Code writes the
+  parent Task prompt as the first user-role line of the subagent JSONL.
+  `TRANSCRIPT_USER_MESSAGE` was missing the `parentAgentToolUseId` guard at all
+  three layers (action type, dispatchers, reducer), so subagent briefings fell
+  through and got appended to the main timeline as if the user had typed them.
+  Stamped events are now dropped in the reducer; the briefing is already shown
+  in the parent Agent card's Briefing section. Already-polluted sessions need
+  `/clear` to recover.
+- **Buddy floater fixes** — (1) Closing the viewed session in the main window left
+  the floater stuck reading "no session" while the feed froze; BuddyChat now
+  listens for `session:destroyed` and auto-switches. (2) Subagent activity was
+  appearing inline in the main-line buddy feed; BubbleFeed now forwards
+  `parentAgentToolUseId` / `agentId` / `model` so the reducer's subagent router
+  kicks in. (3) Long URLs and unbreakable tokens overflowed the ~220px bubble
+  width; added `overflow-wrap: anywhere` + `word-break: break-all` on anchors,
+  scoped to buddy only.
+- **Duplicate plugin-level placeholder cards in CommandDrawer** —
+  `getInstalled()` was synthesizing a plugin-level `SkillEntry` from `configStore`
+  even when `scanSkills` had already emitted individual skill entries; the dedup
+  only compared skill ids, not pluginName. Now also skips synthesis when any
+  scanned skill's `pluginName` matches the plugin id.
+- **CommandProvider async fix** — `LocalSkillProvider.getInstalled()` is async, so
+  the CommandProvider callback was silently passing a Promise to
+  `mergeCommandSources`. Made `getCommands()` async.
+- **CommandDrawer tile sizing** — Drawer SkillCards uniform-sized again with
+  fixed h-32 + overflow-hidden. Chip rows switched to flex-nowrap; individual
+  chips capped to max-w-[80px].
+- **Marketplace overlay onDetailConsumed callback stabilized** — Memoized with
+  `useCallback` to stop a setState-during-render warning that fired when the
+  parent App re-rendered.
+- **Per-turn metadata reaches buddy turns** — `BubbleFeed`'s
+  `TRANSCRIPT_TURN_COMPLETE` dispatch now forwards `stopReason` / `model` /
+  `anthropicRequestId` / `usage` to match `App.tsx`. (Release-review fix.)
+- **Status badges restored on integration tiles** — Coming soon / Needs auth /
+  Connected / Error / Deprecated labels were lost when `IntegrationCard` was
+  retired. Generic `statusBadge` prop on `MarketplaceCard`.
+- **CommandEntry type restored after merge** — Accidentally dropped during the
+  feat/command-drawer-commands merge resolve.
+- **Android: serviceScope cancelled on shutdown** — Three `serviceScope.launch`
+  sites (bridge dispatcher, end-of-session sync push, bundled-plugin install)
+  weren't cancelled in `onDestroy()`. Hygiene + tidies the bundled-install path
+  on graceful service teardown.
+
+### Removed
+- **Dead UI components** — `ThemeDetail.tsx`, `ThemeCard.tsx`, `SignInButton.tsx`,
+  `RestoreFromBackupButton.tsx`, `sign-in-button.test.tsx`, `IntegrationCard.tsx`,
+  `SkillDetail.tsx`. All zero-import after the marketplace redesign / bundled-
+  plugins consolidation.
+- **`scripts/verify-deps.sh`** — Standalone Android ELF dep checker not invoked by
+  any CI workflow, package.json script, or hook.
+- **Legacy `desktop/hook-scripts/announcement-fetch.js`** + its 6h `setInterval`
+  spawner in `ipc-handlers.ts` — superseded by the new TS announcement-service.
+- **Undeployed glibc-on-Android research artifacts** — `native/execve-interceptor.c`,
+  `native/glibc-loader.c`, `native/hello-glibc.c`, `native/libexec-intercept.so`.
+  The 2026-03 spike concluded the approach was not the right path; the actual
+  exec-routing solution shipped via termux-exec linker variant +
+  linker64-env.sh wrappers.
+- **Retired plan and design docs** — `docs/plans/` Phase 2 era plans + status spec,
+  shipped/superseded plans for model selector, plugin marketplace, skill marketplace,
+  generic menu parser, etc. Canonical specs in `docs/specs/` remain as reference.
+
+### Protocol notes (for custom remote clients / automation)
+- New WebSocket message type: `commands:list` (request) → `commands:list:response`.
+  Returns the merged YouCoded + filesystem + CC-builtin slash command list.
+- `transcript:event` `user-message` events now carry optional
+  `parentAgentToolUseId` + `agentId` for subagent-routed events. Existing
+  consumers can ignore these fields safely.
+
 ## [1.1.1] — 2026-04-20
 
 **Claude Code CLI baseline:** v2.1.116
