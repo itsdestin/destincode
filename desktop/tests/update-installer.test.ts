@@ -307,4 +307,21 @@ describe('findCachedDownload', () => {
     fs.writeFileSync(path.join(tmpDir, 'YouCoded-Setup-1.2.2.exe'), 'x');
     expect(findCachedDownload(tmpDir, '1.2.3', 'win32')).toBeNull();
   });
+
+  it('does NOT match "1.2.3" against YouCoded-Setup-1.2.30.exe (version substring false-positive guard)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'YouCoded-Setup-1.2.30.exe'), 'x');
+    expect(findCachedDownload(tmpDir, '1.2.3', 'win32')).toBeNull();
+  });
+
+  it('does NOT match "2.0" against YouCoded-Setup-1.2.0.exe (version embedded in another)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'YouCoded-Setup-1.2.0.exe'), 'x');
+    expect(findCachedDownload(tmpDir, '2.0', 'win32')).toBeNull();
+  });
+
+  it('finds underscore-delimited .deb by version', () => {
+    const filePath = path.join(tmpDir, 'youcoded_1.2.3_amd64.deb');
+    fs.writeFileSync(filePath, 'x');
+    const hit = findCachedDownload(tmpDir, '1.2.3', 'linux');
+    expect(hit).toEqual({ filePath, version: '1.2.3' });
+  });
 });

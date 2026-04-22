@@ -352,9 +352,24 @@ export function cleanupStaleDownloads(cacheDir: string): void {
  * download completed — skips the re-download.
  *
  * Heuristic: the downloaded filename (set by electron-builder release naming)
- * always contains the version string; we require both a platform-valid
- * extension AND the version substring to match.
+ * always contains the version string, flanked by `-` or `_` separators.
+ * We require the version to appear as a BOUNDED token (not a raw substring),
+ * so `1.2.3` does not accidentally match `YouCoded-Setup-1.2.30.exe`, and `2.0`
+ * does not match `1.2.0.exe`.
+ *
+ * Covers electron-builder patterns:
+ *   Windows: YouCoded-Setup-{version}.exe
+ *   macOS:   YouCoded-{version}[-arm64].dmg
+ *   Linux:   YouCoded-{version}.AppImage | youcoded_{version}_amd64.deb
  */
+function buildVersionRegex(expectedVersion: string): RegExp {
+  const escaped = expectedVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Must be preceded by `-` or `_` (or string start) and followed by `.`, `-`,
+  // `_`, or end-of-string. Prevents `1.2.3` matching `1.2.30` or `2.0` matching
+  // `1.2.0`.
+  return new RegExp(`(?:^|[_-])${escaped}(?=[_.\\-]|$)`);
+}
+
 export function findCachedDownload(
   cacheDir: string,
   expectedVersion: string,
@@ -362,10 +377,11 @@ export function findCachedDownload(
 ): import('../shared/update-install-types').UpdateCachedDownload | null {
   if (!fs.existsSync(cacheDir)) return null;
   const allowed = ALLOWED_EXTENSIONS_BY_PLATFORM[platform] ?? [];
+  const versionRe = buildVersionRegex(expectedVersion);
   for (const entry of fs.readdirSync(cacheDir)) {
     if (entry.endsWith('.partial')) continue;
     if (!allowed.some(ext => entry.endsWith(ext))) continue;
-    if (!entry.includes(expectedVersion)) continue;
+    if (!versionRe.test(entry)) continue;
     const filePath = path.join(cacheDir, entry);
     try {
       if (fs.statSync(filePath).isFile()) return { filePath, version: expectedVersion };
