@@ -1197,9 +1197,16 @@ export function registerIpcHandlers(
         const exe = assets.find(a => a.name.endsWith('.exe'));
         downloadUrl = exe?.browser_download_url || null;
       } else if (platform === 'darwin') {
-        // Prefer .dmg
-        const dmg = assets.find(a => a.name.endsWith('.dmg'));
-        downloadUrl = dmg?.browser_download_url || null;
+        // Prefer .dmg matching the current arch. electron-builder produces both
+        // `YouCoded-<ver>-arm64.dmg` and `YouCoded-<ver>.dmg` (x64, no suffix),
+        // and GitHub returns them in non-deterministic order — so a plain
+        // `.endsWith('.dmg')` would hand Intel Macs the arm64 DMG (or vice
+        // versa), which Gatekeeper refuses to mount. Match by arch first, then
+        // fall back to any .dmg if a matching one isn't in the release.
+        const wantArm = process.arch === 'arm64';
+        const archDmg = assets.find(a => a.name.endsWith('.dmg') && a.name.includes('arm64') === wantArm);
+        const anyDmg = assets.find(a => a.name.endsWith('.dmg'));
+        downloadUrl = archDmg?.browser_download_url || anyDmg?.browser_download_url || null;
       } else {
         // Linux — prefer .AppImage, fallback to .deb
         const appImage = assets.find(a => a.name.endsWith('.AppImage'));
