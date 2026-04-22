@@ -96,7 +96,7 @@ export default function MarketplaceScreen({
   // semantics the retired IntegrationCard.statusLabel() helper had — without
   // it, integrations would fall back to MarketplaceCard's generic "Installed"
   // badge and lose the connected/needs-auth/error/deprecated nuance.
-  const integrationStatusBadge = (item: IntegrationCardItem): { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' } => {
+  const integrationStatusBadge = (item: IntegrationCardItem): { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' | 'locked' } => {
     if (item.status === 'planned') return { text: 'Coming soon', tone: 'neutral' };
     if (item.status === 'deprecated') return { text: 'Deprecated', tone: 'neutral' };
     const s = item.state;
@@ -453,7 +453,7 @@ function IntegrationDetailOverlay({
   item: IntegrationCardItem;
   onClose(): void;
   onPrimary(): void | Promise<void>;
-  statusBadge: { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' };
+  statusBadge: { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' | 'locked' };
   iconUrl?: string;
 }) {
   useEscClose(true, onClose);
@@ -463,6 +463,7 @@ function IntegrationDetailOverlay({
     warn: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
     err: 'bg-red-500/15 text-red-400 border-red-500/30',
     neutral: 'bg-inset text-fg-2 border-edge',
+    locked: 'bg-slate-500/10 text-fg-dim border-slate-500/30',
   };
 
   const planned = item.status === 'planned';
