@@ -415,6 +415,9 @@ export interface IntegrationEntry {
   // Relative path under integrations/icons/ in the marketplace repo; the UI
   // resolves this against the raw.githubusercontent.com base URL.
   iconUrl?: string;
+  // Human tags for search and the detail-page chip row. Freeform strings;
+  // the detail overlay renders each as a "#tag" pill.
+  tags?: string[];
   // Platforms where this integration can run. When present and the current
   // platform isn't listed, the card shows a "<platform>-only" affordance.
   platforms?: Array<'darwin' | 'linux' | 'win32'>;
