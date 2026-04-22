@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { DevelopmentPopup } from '../src/renderer/components/development/DevelopmentPopup';
+import { BugReportPopup } from '../src/renderer/components/development/BugReportPopup';
 
 // WHY: createPortal renders into document.body — cleanup after each test prevents
 // DOM accumulation that causes "multiple elements found" errors in subsequent tests.
@@ -32,5 +33,56 @@ describe('DevelopmentPopup', () => {
     render(<DevelopmentPopup open={true} onClose={() => undefined} onOpenBug={onOpenBug} onOpenContribute={() => undefined} />);
     fireEvent.click(screen.getByText(/Report a Bug or Request a Feature/i));
     expect(onOpenBug).toHaveBeenCalled();
+  });
+});
+
+describe('BugReportPopup', () => {
+  beforeEach(() => {
+    (window as any).claude = {
+      dev: {
+        logTail: vi.fn().mockResolvedValue(''),
+        summarizeIssue: vi.fn().mockResolvedValue({ title: 'T', summary: 'S', flagged_strings: [] }),
+        submitIssue: vi.fn().mockResolvedValue({ ok: true, url: 'https://github.com/itsdestin/youcoded/issues/1' }),
+        installWorkspace: vi.fn().mockResolvedValue({ path: '/h/youcoded-dev', alreadyInstalled: false }),
+        onInstallProgress: vi.fn(() => () => undefined),
+        openSessionIn: vi.fn().mockResolvedValue({ id: 's1' }),
+      },
+    };
+  });
+
+  it('disables Continue until description is at least 10 chars', () => {
+    render(<BugReportPopup open={true} onClose={() => undefined} />);
+    const cont = screen.getByText(/^Continue$/) as HTMLButtonElement;
+    expect(cont).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText(/What's happening/i), { target: { value: 'short' } });
+    expect(cont).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText(/What's happening/i), { target: { value: 'this is long enough' } });
+    expect(cont).not.toBeDisabled();
+  });
+
+  it('passes the bug label when submitting from Bug toggle', async () => {
+    render(<BugReportPopup open={true} onClose={() => undefined} />);
+    fireEvent.change(screen.getByPlaceholderText(/What's happening/i), { target: { value: 'a real bug description' } });
+    fireEvent.click(screen.getByText(/^Continue$/));
+    // Wait for summarize to resolve and Submit button to render.
+    await screen.findByText(/Submit as GitHub Issue/i);
+    fireEvent.click(screen.getByText(/Submit as GitHub Issue/i));
+    await screen.findByText(/Issue created/i);
+    expect((window as any).claude.dev.submitIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'bug' }),
+    );
+  });
+
+  it('passes the enhancement label when Feature toggle is selected', async () => {
+    render(<BugReportPopup open={true} onClose={() => undefined} />);
+    fireEvent.click(screen.getByText(/^Feature$/));
+    fireEvent.change(screen.getByPlaceholderText(/What's happening/i), { target: { value: 'a real feature description' } });
+    fireEvent.click(screen.getByText(/^Continue$/));
+    await screen.findByText(/Submit as GitHub Issue/i);
+    fireEvent.click(screen.getByText(/Submit as GitHub Issue/i));
+    await screen.findByText(/Issue created/i);
+    expect((window as any).claude.dev.submitIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'enhancement' }),
+    );
   });
 });
