@@ -120,6 +120,13 @@ function dotColorForState(state: SyncDisplayState): string {
     case 'attention':    return 'bg-green-500';
     case 'synced':       return 'bg-green-500';
     case 'stale':        return 'bg-yellow-500';
+    // Exhaustiveness: if a new SyncDisplayState kind is added, this assignment
+    // fails at compile time — forces us to handle it here instead of silently
+    // returning undefined at runtime.
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
   }
 }
 
@@ -132,6 +139,12 @@ function primaryLabelForState(state: SyncDisplayState, loading: boolean): string
     case 'attention':    return state.lastSyncEpoch ? `Last synced ${timeAgo(state.lastSyncEpoch)}` : 'Never synced';
     case 'synced':       return `Last synced ${timeAgo(state.lastSyncEpoch)}`;
     case 'stale':        return state.lastSyncEpoch ? `Last synced ${timeAgo(state.lastSyncEpoch)}` : 'Never synced';
+    // Exhaustiveness: same guarantee as dotColorForState — adding a new
+    // SyncDisplayState kind without updating this switch is a TS error.
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
   }
 }
 
@@ -150,7 +163,20 @@ function badgeForState(state: SyncDisplayState): React.ReactNode {
       </span>
     );
   }
-  return null;
+  // Every other current kind has no badge — enumerate them explicitly so a
+  // new variant can't silently fall through to "no badge" without review.
+  if (
+    state.kind === 'unconfigured' ||
+    state.kind === 'syncing' ||
+    state.kind === 'synced' ||
+    state.kind === 'stale'
+  ) {
+    return null;
+  }
+  // Exhaustiveness: if we reach here, SyncDisplayState grew a kind we forgot.
+  // The `never` assignment fails at compile time — forces an update above.
+  const _exhaustive: never = state;
+  return _exhaustive;
 }
 
 const BACKEND_LABELS: Record<string, string> = {
@@ -272,7 +298,11 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
     warnings: status?.warnings ?? [],
   });
 
-  const dotColor = dotColorForState(display);
+  // Gate dot color on `loading` to keep it in sync with the "Loading..." label.
+  // Without this gate, once `status` arrived the dot could flip to a real
+  // color during the brief render window before `setLoading(false)` fires,
+  // while `primaryLabelForState` was still returning "Loading...".
+  const dotColor = loading ? 'bg-fg-muted/40' : dotColorForState(display);
   const primaryLabel = primaryLabelForState(display, loading);
   const badge = badgeForState(display);
 
