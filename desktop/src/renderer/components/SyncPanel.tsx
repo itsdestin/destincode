@@ -859,21 +859,22 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               </div>
             )}
 
-            {/* 4. Synced Data Categories */}
+            {/* 4. Synced Data Categories — read-only inline list.
+                Tiles used to look like buttons (border + cursor-help) but did nothing.
+                Now passive text with per-item hover tooltips on the default cursor. */}
             {status && status.syncedCategories.length > 0 && (
               <div>
-                <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Synced Data</h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {status.syncedCategories.map(cat => (
-                    <span
-                      key={cat}
-                      title={CATEGORY_DESCRIPTIONS[cat] || ''}
-                      className="px-2 py-1 rounded-md bg-inset/60 border border-edge-dim text-[10px] text-fg-dim cursor-help"
-                    >
-                      {CATEGORY_LABELS[cat] || cat}
-                    </span>
-                  ))}
-                </div>
+                <span className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Includes </span>
+                <span className="text-[11px] text-fg-dim">
+                  {status.syncedCategories.flatMap((cat, i) => {
+                    const label = (
+                      <span key={cat} title={CATEGORY_DESCRIPTIONS[cat] || ''}>
+                        {CATEGORY_LABELS[cat] || cat}
+                      </span>
+                    );
+                    return i === 0 ? [label] : [<span key={`sep-${cat}`}> {'·'} </span>, label];
+                  })}
+                </span>
               </div>
             )}
 
