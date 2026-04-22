@@ -64,7 +64,7 @@ const EscStoreContext = createContext<EscStore | null>(null);
 
 let nextId = 1;
 
-export function EscCloseProvider({ children }: { children: React.ReactNode }): JSX.Element {
+export function EscCloseProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   const storeRef = useRef<EscStore | null>(null);
   if (storeRef.current === null) storeRef.current = new EscStore();
   const store = storeRef.current;
