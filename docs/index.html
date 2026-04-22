@@ -21,6 +21,15 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,700;1,800;1,900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Preload theme backdrops so the intro's theme crossfades never stall
+     waiting on a decode. The strawberry wallpaper and each pattern tile are
+     only referenced from CSS selectors that match post-theme-swap, so the
+     browser wouldn't request them until ~4s into the intro without this. -->
+<link rel="preload" as="image" href="assets/strawberry-kitty-wallpaper.webp" type="image/webp">
+<link rel="preload" as="image" href="assets/halftone-pattern.svg" type="image/svg+xml">
+<link rel="preload" as="image" href="assets/strawberry-kitty-pattern.svg" type="image/svg+xml">
+<link rel="preload" as="image" href="assets/golden-sunbreak-wallpaper.jpg">
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   * { -webkit-tap-highlight-color: transparent; }
@@ -459,8 +468,8 @@
     align-items: center;
     justify-content: center;
     min-height: 0;
-    transition: min-height 0.9s cubic-bezier(0.22, 1, 0.36, 1),
-                padding 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: min-height 0.75s cubic-bezier(0.22, 1, 0.36, 1),
+                padding 0.75s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   /* Intro mode: page opens with the hero headline locked to the viewport.
@@ -585,7 +594,7 @@
     line-height: inherit;
     opacity: 0;
     transform: translateY(110%);
-    animation-duration: 2s;
+    animation-duration: 1.7s;
     animation-fill-mode: forwards;
     animation-iteration-count: 1;
     animation-timing-function: linear;
@@ -600,9 +609,9 @@
   .cycler-word-1,
   .cycler-word-2,
   .cycler-word-3 { animation-name: bump-through; }
-  .cycler-word-1 { animation-delay: 1.3s;  color: color-mix(in srgb, var(--title-highlight) 100%, #fff 0%); }
-  .cycler-word-2 { animation-delay: 3.1s;  color: color-mix(in srgb, var(--title-highlight) 80%, #fff 20%); }
-  .cycler-word-3 { animation-delay: 4.9s;  color: color-mix(in srgb, var(--title-highlight) 75%, #000 25%); }
+  .cycler-word-1 { animation-delay: 1.1s;  color: color-mix(in srgb, var(--title-highlight) 100%, #fff 0%); }
+  .cycler-word-2 { animation-delay: 2.65s; color: color-mix(in srgb, var(--title-highlight) 80%, #fff 20%); }
+  .cycler-word-3 { animation-delay: 4.2s;  color: color-mix(in srgb, var(--title-highlight) 75%, #000 25%); }
   /* Final word: enters at the same pace as the others, then stays pinned
      (fill-mode: forwards on bump-final holds the final keyframe forever).
      The text-stroke adds extra optical weight on top of font-weight 900 —
@@ -610,7 +619,7 @@
      "display headline" territory so "Yours." lands with real impact. */
   .cycler-word-4 {
     animation-name: bump-final;
-    animation-delay: 6.7s;
+    animation-delay: 5.75s;
     font-style: italic;
     font-weight: 900;
     letter-spacing: -0.02em;
@@ -3524,14 +3533,14 @@
     // word settles. Word entry + theme shift feel like one motion: the
     // word carries the new color/theme in with it.
     //
-    // Word delays (CSS):  1.3s / 3.1s / 4.9s / 6.7s  (1.8s spacing)
-    // Swap fires (-0.1s): 1.2s / 3.0s / 4.8s / 6.6s
-    // Word settles + theme completes (both):  1.7s / 3.5s / 5.3s / 7.1s
+    // Word delays (CSS):  1.1s / 2.65s / 4.2s / 5.75s  (1.55s spacing)
+    // Swap fires (-0.1s): 1.0s / 2.55s / 4.1s / 5.65s
+    // Word settles + theme completes (both):  1.44s / 2.99s / 4.54s / 6.09s
     var HERO_THEME_SEQUENCE = [
-      { theme: 'midnight',         at: 1200 },
-      { theme: 'halftone',         at: 3000 },
-      { theme: 'strawberry-kitty', at: 4800 },
-      { theme: 'creme',            at: 6600 }
+      { theme: 'midnight',         at: 1000 },
+      { theme: 'halftone',         at: 2550 },
+      { theme: 'strawberry-kitty', at: 4100 },
+      { theme: 'creme',            at: 5650 }
     ];
     var heroSyncCancelled = false;
     var heroSyncTimers = [];
@@ -3611,12 +3620,12 @@
       });
 
       // Release intro-mode shortly after the final "Yours." + creme theme
-      // settle together at 7100ms. 200ms buffer lets the eye register the
+      // settle together at ~6090ms. 210ms buffer lets the eye register the
       // settled frame before the rest of the page starts fading in.
       var exitId = setTimeout(function() {
         if (heroSyncCancelled) return;
         exitIntroMode();
-      }, 7300);
+      }, 6300);
       heroSyncTimers.push(exitId);
     }
 
@@ -3633,12 +3642,59 @@
     // warm creme background for ~1s before cycling begins. Instant apply
     // (applyThemeRaw) so we don't fire a crossfade before the first frame.
     applyThemeRaw('creme');
-    runHeroThemeSync();
+
+    // Gate the intro on fonts being ready so DM Sans/JetBrains Mono don't swap
+    // in mid-animation (which would reflow the cycler words and cause visible
+    // jitter). Cap the wait at 400ms so a slow font fetch can't noticeably
+    // defer the intro — the first word doesn't appear until 1.1s anyway.
+    (function startIntroWhenReady() {
+      var started = false;
+      function start() {
+        if (started) return;
+        started = true;
+        runHeroThemeSync();
+      }
+      if (document.fonts && document.fonts.ready && document.fonts.ready.then) {
+        var fallback = setTimeout(start, 400);
+        document.fonts.ready.then(function() { clearTimeout(fallback); start(); });
+      } else {
+        start();
+      }
+    })();
 
     // Bind both toggle buttons
     document.getElementById('theme-toggle').addEventListener('click', cycleTheme);
     var mobileToggle = document.getElementById('theme-toggle-mobile');
     if (mobileToggle) mobileToggle.addEventListener('click', cycleTheme);
+
+    // Nav/CTA anchor clicks during the intro must not leave users staring at
+    // opacity:0 content with body.overflow:hidden blocking their scroll.
+    // Intercept the click, fast-forward the intro to its rest state (creme
+    // theme, hero collapsed), then smooth-scroll to the target after the hero
+    // finishes its min-height transition so destination offsets are stable.
+    function interceptIntroNavClick(e) {
+      if (!document.body.classList.contains('intro-mode')) return;
+      var href = this.getAttribute('href');
+      e.preventDefault();
+      cancelHeroSync();
+      applyTheme('creme');
+      localStorage.setItem('dc-theme', 'creme');
+      // 0.75s hero collapse + small settle buffer. Scrolling earlier makes the
+      // destination drift upward underneath the smooth-scroll animation.
+      setTimeout(function() {
+        if (!href || href === '#' || href === '#top') {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          var target = document.querySelector(href);
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 800);
+    }
+    document.querySelectorAll(
+      '.nav a[href^="#"], .floating-cta[href^="#"], .footer-logo[href^="#"]'
+    ).forEach(function(a) {
+      a.addEventListener('click', interceptIntroNavClick);
+    });
 
     // --- Demo app mockup animation ---
     function runDemo() {
