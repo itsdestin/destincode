@@ -67,6 +67,12 @@ export default function MarketplaceScreen({
   // but renders IntegrationDetailOverlay (below) because integrations aren't
   // in mp.skillEntries and need their own action wiring via handleIntegration.
   const [integrationDetail, setIntegrationDetail] = useState<IntegrationCardItem | null>(null);
+  // After an install/connect that returns a postInstallCommand, we show an
+  // inline "run this command to finish setup" banner in the detail overlay
+  // rather than auto-typing into a new session. Auto-typing raced the CLI's
+  // boot time and often landed before Claude was ready, leaving a blank
+  // setup session. Manual copy-and-paste is boring but always works.
+  const [setupHint, setSetupHint] = useState<{ slug: string; displayName: string; command: string } | null>(null);
 
   // Open a specific plugin's detail overlay when App.tsx navigates here via
   // openMarketplaceDetail (e.g. from a CommandDrawer plugin-name badge click).
@@ -115,47 +121,42 @@ export default function MarketplaceScreen({
     return { text: 'Not installed', tone: 'neutral' };
   };
 
-  // Spawn a new Sonnet session and pipe the post-install setup command into
-  // it. Shared by both install and connect flows. The fixed 3s delay matches
-  // the legacy implementation — Claude Code buffers stdin, so the value isn't
-  // load-bearing, just pragmatic.
-  const runPostInstallCommand = async (displayName: string, command: string) => {
+  // Create an empty Sonnet session named "Set up X" and land on it. User then
+  // runs the setup command themselves. Intentionally NOT auto-typing the
+  // command — that path was timing-fragile and frequently no-op'd against a
+  // still-booting CLI.
+  const openSetupSession = async (displayName: string) => {
     const info = await (window as any).claude.session.create({
       name: `Set up ${displayName}`,
       cwd: "",
       skipPermissions: false,
       model: "claude-sonnet-4-6",
     });
-    if (info?.id) {
-      setTimeout(() => {
-        try {
-          (window as any).claude.session.sendInput(info.id, command + "\r");
-        } catch { /* user can type the command themselves */ }
-      }, 3000);
-      onExit();
-    }
+    if (info?.id) onExit();
   };
 
   const installIntegration = async (item: IntegrationCardItem) => {
     if (item.status !== "available") return;
     const result = await (window as any).claude.integrations.install(item.slug);
-    if (result?.postInstallCommand) {
-      await runPostInstallCommand(item.displayName, result.postInstallCommand);
-    }
     await refreshIntegrations();
+    if (result?.postInstallCommand) {
+      setSetupHint({ slug: item.slug, displayName: item.displayName, command: result.postInstallCommand });
+    }
   };
 
   const connectIntegration = async (item: IntegrationCardItem) => {
     const result = await (window as any).claude.integrations.connect(item.slug);
-    if (result?.postInstallCommand) {
-      await runPostInstallCommand(item.displayName, result.postInstallCommand);
-    }
     await refreshIntegrations();
+    if (result?.postInstallCommand) {
+      setSetupHint({ slug: item.slug, displayName: item.displayName, command: result.postInstallCommand });
+    }
   };
 
   const uninstallIntegration = async (item: IntegrationCardItem) => {
     await (window as any).claude.integrations.uninstall(item.slug);
     await refreshIntegrations();
+    // Clear any setup hint for this slug — the command's moot now.
+    setSetupHint((prev) => (prev?.slug === item.slug ? null : prev));
   };
 
   // Esc: close detail first, then exit screen. Matches App.tsx state-transition rules.
@@ -449,14 +450,15 @@ export default function MarketplaceScreen({
         return (
           <IntegrationDetailOverlay
             item={integrationDetail}
-            onClose={() => setIntegrationDetail(null)}
+            onClose={() => { setSetupHint(null); setIntegrationDetail(null); }}
             onInstall={async () => {
               await installIntegration(integrationDetail);
-              setIntegrationDetail(null);
+              // Keep the overlay open so the setup-hint banner (set inside
+              // installIntegration when postInstallCommand is present) can
+              // surface the "run this command" instructions to the user.
             }}
             onConnect={async () => {
               await connectIntegration(integrationDetail);
-              setIntegrationDetail(null);
             }}
             onUninstall={async () => {
               await uninstallIntegration(integrationDetail);
@@ -466,6 +468,13 @@ export default function MarketplaceScreen({
             iconUrl={integrationDetail.iconUrl ? `${INTEGRATION_ICON_BASE}/${integrationDetail.iconUrl}` : undefined}
             platformBlocked={blocked}
             platformBlockedName={blockedName}
+            setupHint={setupHint?.slug === integrationDetail.slug ? setupHint : null}
+            onDismissSetupHint={() => setSetupHint(null)}
+            onOpenSetupSession={() => {
+              setSetupHint(null);
+              setIntegrationDetail(null);
+              void openSetupSession(integrationDetail.displayName);
+            }}
           />
         );
       })()}
@@ -484,6 +493,7 @@ export default function MarketplaceScreen({
 function IntegrationDetailOverlay({
   item, onClose, onInstall, onConnect, onUninstall,
   statusBadge, iconUrl, platformBlocked, platformBlockedName,
+  setupHint, onDismissSetupHint, onOpenSetupSession,
 }: {
   item: IntegrationCardItem;
   onClose(): void;
@@ -494,6 +504,11 @@ function IntegrationDetailOverlay({
   iconUrl?: string;
   platformBlocked: boolean;
   platformBlockedName: string | null;  // e.g. "macOS" when blocked, else null
+  // Shown as a banner after install/connect when the integration has a
+  // postInstallCommand. Replaces the old auto-type-into-new-session flow.
+  setupHint: { displayName: string; command: string } | null;
+  onDismissSetupHint(): void;
+  onOpenSetupSession(): void;
 }) {
   useEscClose(true, onClose);
 
@@ -590,6 +605,14 @@ function IntegrationDetailOverlay({
                 />
               </div>
             </header>
+
+            {setupHint && (
+              <SetupHintBanner
+                command={setupHint.command}
+                onDismiss={onDismissSetupHint}
+                onOpenSetupSession={onOpenSetupSession}
+              />
+            )}
 
             <IntegrationMetadataChips entry={item} />
 
@@ -708,6 +731,70 @@ function IntegrationMetadataChips({ entry }: { entry: IntegrationCardItem }) {
         </span>
       ))}
     </div>
+  );
+}
+
+// Post-install / post-connect banner. Shows the slash command the user must
+// run to finish setup, with a Copy button and a shortcut that creates a
+// dedicated empty "Set up <X>" session (user still runs the command there
+// themselves — we stopped auto-typing it because the timing against CLI
+// boot was unreliable).
+function SetupHintBanner({
+  command, onDismiss, onOpenSetupSession,
+}: {
+  command: string;
+  onDismiss(): void;
+  onOpenSetupSession(): void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    // navigator.clipboard exists in Electron renderer; fall through silently
+    // if the API is missing so the user can still read + retype the command.
+    try {
+      if (navigator?.clipboard?.writeText) {
+        void navigator.clipboard.writeText(command).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }
+    } catch { /* ignore — user can still read the command */ }
+  };
+
+  return (
+    <section className="rounded-md border border-accent/40 bg-accent/5 p-3 flex flex-col gap-2">
+      <div className="text-sm text-fg">
+        <span className="font-medium">Installed.</span> To finish setup, run this
+        command in any chat:
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <code className="flex-1 min-w-0 truncate px-2 py-1.5 rounded bg-inset text-fg text-sm font-mono border border-edge-dim">
+          {command}
+        </code>
+        <button
+          type="button"
+          onClick={copy}
+          className="shrink-0 text-sm px-3 py-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-2 hover:text-fg"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenSetupSession}
+          className="shrink-0 text-sm px-3 py-1.5 rounded-md bg-accent text-on-accent hover:opacity-90"
+        >
+          Open new setup session
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="shrink-0 text-sm px-2 py-1.5 text-fg-dim hover:text-fg"
+          aria-label="Dismiss"
+        >
+          Dismiss
+        </button>
+      </div>
+    </section>
   );
 }
 
