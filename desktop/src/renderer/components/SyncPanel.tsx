@@ -11,6 +11,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { SyncWarning } from '../../main/sync-state';
+import { deriveSyncState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import SyncSetupWizard from './SyncSetupWizard';
@@ -105,6 +106,51 @@ function timeAgo(epoch: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+// Map the derived sync display state to a status-dot tailwind class.
+// All three helpers keep the dot, label, and badge in lock-step — the old
+// time-only derivation could read "Synced 3m ago" while the popup showed
+// red warnings; routing everything through deriveSyncState prevents that.
+function dotColorForState(state: SyncDisplayState): string {
+  switch (state.kind) {
+    case 'unconfigured': return 'bg-fg-muted/40';
+    case 'syncing':      return 'bg-blue-400 animate-pulse';
+    case 'failing':      return 'bg-red-500';
+    case 'attention':    return 'bg-green-500';
+    case 'synced':       return 'bg-green-500';
+    case 'stale':        return 'bg-yellow-500';
+  }
+}
+
+function primaryLabelForState(state: SyncDisplayState, loading: boolean): string {
+  if (loading) return 'Loading...';
+  switch (state.kind) {
+    case 'unconfigured': return 'Not configured';
+    case 'syncing':      return 'Syncing...';
+    case 'failing':      return 'Sync Failing';
+    case 'attention':    return state.lastSyncEpoch ? `Last synced ${timeAgo(state.lastSyncEpoch)}` : 'Never synced';
+    case 'synced':       return `Last synced ${timeAgo(state.lastSyncEpoch)}`;
+    case 'stale':        return state.lastSyncEpoch ? `Last synced ${timeAgo(state.lastSyncEpoch)}` : 'Never synced';
+  }
+}
+
+function badgeForState(state: SyncDisplayState): React.ReactNode {
+  if (state.kind === 'failing') {
+    return (
+      <span className="px-1.5 py-0.5 rounded-full bg-[#DD4444]/15 text-[#DD4444] text-[9px] font-medium shrink-0">
+        {state.warningCount}
+      </span>
+    );
+  }
+  if (state.kind === 'attention') {
+    return (
+      <span className="px-1.5 py-0.5 rounded-full bg-[#FF9800]/15 text-[#FF9800] text-[9px] font-medium shrink-0">
+        {state.warningCount}
+      </span>
+    );
+  }
+  return null;
 }
 
 const BACKEND_LABELS: Record<string, string> = {
@@ -211,26 +257,24 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
     }
   }, [autoOpen, open, onAutoOpenHandled]);
 
-  // Derive summary for compact row.
-  // Defensive: the outer `status?` only guards status being null/undefined —
-  // if a malformed payload has status without `backends`/`warnings`, the
-  // inner .filter/.length crashes to RootErrorBoundary. Use ?. on the inner
-  // fields too so a partial status degrades to zero counts instead of a
-  // render crash.
+  // Backend counts kept for the secondary "X synced / Y paused" caption.
+  // Defensive ?. on inner fields: a malformed status payload without
+  // `backends`/`warnings` must degrade to zero counts, not crash the panel.
   const syncCount = status?.backends?.filter(b => b.syncEnabled).length ?? 0;
   const storageCount = status?.backends?.filter(b => !b.syncEnabled).length ?? 0;
-  const warningCount = status?.warnings?.length ?? 0;
-  const lastSyncText = status?.lastSyncEpoch ? timeAgo(status.lastSyncEpoch) : 'Never';
 
-  // Status dot: only considers sync-enabled backends
-  const syncBackends = status?.backends?.filter(b => b.syncEnabled) ?? [];
-  const dotColor = !status || syncBackends.length === 0
-    ? 'bg-fg-muted/40'
-    : status.syncInProgress
-      ? 'bg-blue-400 animate-pulse'
-      : status.lastSyncEpoch && (Date.now() / 1000 - status.lastSyncEpoch) < 86400
-        ? 'bg-green-500'
-        : 'bg-yellow-500';
+  // Single derivation: compact row dot + label + badge all flow from this state.
+  // Severity-aware so the row can never read "Synced" while warnings are active.
+  const display: SyncDisplayState = deriveSyncState({
+    hasBackends: (status?.backends?.length ?? 0) > 0,
+    syncInProgress: status?.syncInProgress ?? false,
+    lastSyncEpoch: status?.lastSyncEpoch ?? null,
+    warnings: status?.warnings ?? [],
+  });
+
+  const dotColor = dotColorForState(display);
+  const primaryLabel = primaryLabelForState(display, loading);
+  const badge = badgeForState(display);
 
   return (
     <section>
@@ -244,13 +288,8 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
           <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
         </div>
         <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">
-            {loading ? 'Loading...' :
-             (syncCount + storageCount) === 0 ? 'Not configured' :
-             status?.syncInProgress ? 'Syncing...' :
-             `Last synced ${lastSyncText}`}
-          </span>
-          {(syncCount + storageCount) > 0 && (
+          <span className="text-xs text-fg font-medium">{primaryLabel}</span>
+          {(syncCount + storageCount) > 0 && display.kind !== 'failing' && (
             <span className="text-[10px] text-fg-muted ml-2">
               {syncCount > 0 ? `${syncCount} synced` : ''}
               {syncCount > 0 && storageCount > 0 ? ' \u00B7 ' : ''}
@@ -258,11 +297,7 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
             </span>
           )}
         </div>
-        {warningCount > 0 && (
-          <span className="px-1.5 py-0.5 rounded-full bg-[#DD4444]/15 text-[#DD4444] text-[9px] font-medium shrink-0">
-            {warningCount}
-          </span>
-        )}
+        {badge}
         <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
         </svg>
