@@ -5,7 +5,7 @@ import { useTheme } from '../state/theme-context';
 import type { PermissionMode } from '../../shared/types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
-import { deriveSyncState } from '../state/sync-display-state';
+import { deriveWarningSeverity } from '../state/sync-display-state';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 
@@ -821,14 +821,9 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
           nothing when synced. Click opens the panel where the descriptive copy lives. */}
       {show('sync-warnings') && (() => {
         const handler = onOpenSync || onRunSync;
-        const display = deriveSyncState({
-          hasBackends: (syncWarnings ?? []).length > 0, // any warning at all implies a backend exists
-          syncInProgress: false,
-          lastSyncEpoch: null,
-          warnings: syncWarnings ?? [],
-        });
-        if (display.kind !== 'failing' && display.kind !== 'attention') return null;
-        const isFailing = display.kind === 'failing';
+        const severity = deriveWarningSeverity(syncWarnings ?? []);
+        if (severity === null) return null;
+        const isFailing = severity === 'failing';
         const label = isFailing ? 'Sync Failing' : 'Sync Warning';
         const styleClass = isFailing ? warnStyles.danger : warnStyles.warn;
         return (

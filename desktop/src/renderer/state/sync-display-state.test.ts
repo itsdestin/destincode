@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveSyncState } from './sync-display-state';
+import { deriveSyncState, deriveWarningSeverity } from './sync-display-state';
 import type { SyncWarning } from '../../main/sync-state';
 
 const NOW_EPOCH = Math.floor(Date.now() / 1000);
@@ -128,5 +128,42 @@ describe('deriveSyncState', () => {
       });
       expect(result.kind).toBe('synced');
     });
+  });
+});
+
+describe('deriveWarningSeverity', () => {
+  it('returns null when warnings is empty', () => {
+    expect(deriveWarningSeverity([])).toBeNull();
+  });
+
+  it('returns failing when any danger-level warning exists', () => {
+    expect(deriveWarningSeverity([
+      warn({ level: 'warn' }),
+      warn({ level: 'danger' }),
+    ])).toBe('failing');
+  });
+
+  it('returns attention when only warn-level warnings exist', () => {
+    expect(deriveWarningSeverity([
+      warn({ level: 'warn' }),
+      warn({ level: 'warn' }),
+    ])).toBe('attention');
+  });
+
+  it('returns null when scoped to a backendId with no matching warnings', () => {
+    expect(deriveWarningSeverity(
+      [warn({ level: 'danger', backendId: 'drive-1' })],
+      { backendId: 'github-1' },
+    )).toBeNull();
+  });
+
+  it('returns failing when scoped to a backendId with a matching danger warning', () => {
+    expect(deriveWarningSeverity(
+      [
+        warn({ level: 'danger', backendId: 'drive-1' }),
+        warn({ level: 'warn', backendId: 'github-1' }),
+      ],
+      { backendId: 'drive-1' },
+    )).toBe('failing');
   });
 });

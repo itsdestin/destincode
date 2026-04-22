@@ -48,3 +48,26 @@ export function deriveSyncState(input: DeriveSyncStateInput): SyncDisplayState {
 
   return { kind: 'stale', lastSyncEpoch };
 }
+
+/**
+ * Severity classification for surfaces that only see warnings (not full sync state).
+ * Used by the StatusBar pill, where backend list and last-sync timestamp aren't available.
+ *
+ * Returns:
+ *  - 'failing'   if any warning is danger-level
+ *  - 'attention' if there are only warn-level warnings
+ *  - null        if there are no warnings
+ *
+ * Optional `scope` filters by backendId, mirroring `deriveSyncState`.
+ */
+export function deriveWarningSeverity(
+  warnings: SyncWarning[],
+  scope?: { backendId: string },
+): 'failing' | 'attention' | null {
+  const relevant = scope
+    ? warnings.filter(w => w.backendId === scope.backendId)
+    : warnings;
+  if (relevant.length === 0) return null;
+  if (relevant.some(w => w.level === 'danger')) return 'failing';
+  return 'attention';
+}
