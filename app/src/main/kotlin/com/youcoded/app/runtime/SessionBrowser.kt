@@ -178,19 +178,61 @@ object SessionBrowser {
     /**
      * Convert project slug back to a display path.
      * Desktop format: C--Users-desti → C:/Users/desti
-     * Android format: data-data-com.youcoded.app-files-home → /data/data/com.youcoded.app/files/home
+     * Android format: -data-data-com.youcoded.app-files-home-youcoded-dev
+     *                  → /data/data/com.youcoded.app/files/home/youcoded-dev
+     *
+     * Fix: the naive "replace all dashes with /" broke when directory names
+     * themselves contain hyphens (e.g. "youcoded-dev" collapsed to "youcoded/dev",
+     * so the Resume Browser showed project "dev" and resume() fell back to $HOME
+     * because the bogus path didn't exist). Mirrors desktop's
+     * resolveSlugToPath/walkSlugParts in session-browser.ts: greedy-match each
+     * segment against the real filesystem, extending with hyphens when a single
+     * part doesn't resolve to a real directory.
      */
     fun slugToPath(slug: String): String {
         // Check for Windows-style slugs (start with drive letter and double dash)
         val windowsDriveMatch = Regex("^([A-Z])--(.*)")
             .matchEntire(slug)
+        val root: String
+        val parts: List<String>
         if (windowsDriveMatch != null) {
-            val drive = windowsDriveMatch.groupValues[1]
-            val rest = windowsDriveMatch.groupValues[2].replace('-', '/')
-            return "$drive:/$rest"
+            // Windows: C--Users-desti-project → root=C:\, parts=[Users, desti, project]
+            root = "${windowsDriveMatch.groupValues[1]}:\\"
+            parts = windowsDriveMatch.groupValues[2].split('-').filter { it.isNotEmpty() }
+        } else {
+            // Unix: -home-user-project → root=/, parts=[home, user, project]
+            root = "/"
+            parts = slug.removePrefix("-").split('-').filter { it.isNotEmpty() }
         }
-        // Unix-style: leading dash is root /, all dashes are path separators
-        return slug.replace('-', '/')
+        if (parts.isEmpty()) return root
+        return walkSlugParts(root, parts)
+    }
+
+    /**
+     * Recursively resolve slug dash-segments against the filesystem. For each
+     * position try the shortest group first (1 part); if it doesn't exist on
+     * disk as a directory, extend by joining the next dash-part, up to the
+     * whole remainder. Longest-matching real directory wins; naive join is
+     * the fallback when nothing exists.
+     */
+    private fun walkSlugParts(base: String, parts: List<String>): String {
+        for (len in 1..parts.size) {
+            val segment = parts.subList(0, len).joinToString("-")
+            val candidate = File(base, segment)
+            if (len == parts.size) {
+                // Last possible grouping — accept whether or not it exists on disk
+                return candidate.path
+            }
+            try {
+                if (candidate.isDirectory) {
+                    return walkSlugParts(candidate.path, parts.subList(len, parts.size))
+                }
+            } catch (_: Exception) {
+                // Keep trying longer groupings
+            }
+        }
+        // Unreachable (len == parts.size branch always returns) but keep as a safety net
+        return File(base, parts.joinToString("-")).path
     }
 
     /** Convert project slug to a File, falling back to homeDir if path doesn't exist. */
