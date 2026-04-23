@@ -8,7 +8,7 @@ import com.youcoded.app.parser.HookEvent
 import com.youcoded.app.parser.InkSelectParser
 import com.youcoded.app.parser.PromptButton
 import com.youcoded.app.parser.TranscriptEvent
-import com.youcoded.app.parser.TranscriptWatcher
+import com.youcoded.app.parser.TranscriptSource
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,8 +73,10 @@ class ManagedSession(
     val ptyBridge: PtyBridge? = null,
     val directShellBridge: DirectShellBridge? = null,
     val shellMode: Boolean = false,
-    /** Transcript watcher for this session — set externally by SessionRegistry. */
-    var transcriptWatcher: TranscriptWatcher? = null,
+    /** Transcript source for this session — set externally by SessionRegistry.
+     *  Either Kotlin [TranscriptWatcher] (default) or [TranscriptWatcherProcess]
+     *  (Node CLI, enabled via transcriptWatcher.useNodeProcess config flag). */
+    var transcriptWatcher: TranscriptSource? = null,
     val createdAt: Long = System.currentTimeMillis(),
     private val titleFile: File,
     private val scope: CoroutineScope,
@@ -293,7 +295,9 @@ class ManagedSession(
                 bridgeServer?.let { server ->
                     val serialized = when (event) {
                         is TranscriptEvent.UserMessage -> TranscriptSerializer.userMessage(event.sessionId, event.uuid, event.timestamp, event.text)
+                        is TranscriptEvent.UserInterrupt -> TranscriptSerializer.userInterrupt(event.sessionId, event.uuid, event.timestamp, event.kind)
                         is TranscriptEvent.AssistantText -> TranscriptSerializer.assistantText(event.sessionId, event.uuid, event.timestamp, event.text, event.model, event.parentAgentToolUseId, event.agentId)
+                        is TranscriptEvent.AssistantThinking -> TranscriptSerializer.assistantThinking(event.sessionId, event.uuid, event.timestamp)
                         is TranscriptEvent.ToolUse -> TranscriptSerializer.toolUse(event.sessionId, event.uuid, event.timestamp, event.toolUseId, event.toolName, event.toolInput, event.parentAgentToolUseId, event.agentId)
                         is TranscriptEvent.ToolResult -> TranscriptSerializer.toolResult(event.sessionId, event.uuid, event.timestamp, event.toolUseId, event.result, event.isError, event.parentAgentToolUseId, event.agentId)
                         is TranscriptEvent.TurnComplete -> TranscriptSerializer.turnComplete(
@@ -643,7 +647,10 @@ class ManagedSession(
         val transcriptPath = ptyBridge?.getEventBridge()?.getTranscriptPath(id)
         if (transcriptPath.isNullOrBlank()) return
         transcriptWatcherStarted = true
-        transcriptWatcher?.startWatching(id, transcriptPath)
+        // The 4-arg interface accepts every field either implementation
+        // needs: Kotlin watcher uses transcriptPath; Node-subprocess uses
+        // claudeSessionId+cwd to re-derive the same path the way desktop does.
+        transcriptWatcher?.startWatching(id, claudeSessionId, cwd.absolutePath, transcriptPath)
     }
 
     fun startTitleObserver() {

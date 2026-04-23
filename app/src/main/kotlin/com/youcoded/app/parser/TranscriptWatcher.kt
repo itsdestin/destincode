@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap
 class TranscriptWatcher(
     private val projectsDir: File, // e.g., $HOME/.claude/projects/
     private val scope: CoroutineScope,
-) {
+) : TranscriptSource {
     companion object {
         private const val TAG = "TranscriptWatcher"
         private const val POLL_INTERVAL_MS = 500L
@@ -64,7 +64,19 @@ class TranscriptWatcher(
     }
 
     private val _events = MutableSharedFlow<TranscriptEvent>(extraBufferCapacity = 1000)
-    val events: SharedFlow<TranscriptEvent> = _events
+    override val events: SharedFlow<TranscriptEvent> = _events
+
+    /** TranscriptSource — delegates to the path-based startWatching below.
+     *  Kotlin watcher uses [transcriptPath] only; the other params are
+     *  consumed by [TranscriptWatcherProcess]. */
+    override fun startWatching(
+        mobileSessionId: String,
+        claudeSessionId: String,
+        cwd: String,
+        transcriptPath: String,
+    ) {
+        startWatching(mobileSessionId, transcriptPath)
+    }
 
     /** Active watchers keyed by mobile session ID */
     private val watchers = ConcurrentHashMap<String, WatcherState>()
@@ -407,7 +419,7 @@ class TranscriptWatcher(
         }
     }
 
-    fun stopWatching(mobileSessionId: String) {
+    override fun stopWatching(mobileSessionId: String) {
         val state = watchers.remove(mobileSessionId) ?: return
         state.fileObserver?.stopWatching()
         state.job?.cancel()

@@ -856,6 +856,40 @@ class Bootstrap(internal val context: Context) {
         )
 
         installHooks()
+        deployTranscriptWatcherCli()
+    }
+
+    /**
+     * Deploy the bundled Node CLI that parses Claude Code's JSONL transcripts.
+     * Single source of truth for transcript parsing — same TS code that runs
+     * in-process on Electron. Bundled by `desktop/scripts/build-transcript-
+     * watcher-cli.js` (esbuild) into a self-contained CommonJS file.
+     *
+     * Always redeploy at session start so APK updates pick up the latest
+     * bundle, mirroring claude-wrapper.js. Asset path is set up by
+     * `scripts/build-web-ui.sh` during the Android release build.
+     *
+     * The Kotlin TranscriptWatcher remains as a fallback; TranscriptWatcher-
+     * Process spawns this script when the transcriptWatcher.useNodeProcess
+     * config flag is enabled. See docs/PITFALLS.md → Transcript Watcher.
+     */
+    fun deployTranscriptWatcherCli() {
+        val mobileDir = File(homeDir, ".claude-mobile")
+        mobileDir.mkdirs()
+        val cliFile = File(mobileDir, "transcript-watcher-cli.js")
+        try {
+            context.assets.open("transcript-watcher-cli.js").use { input ->
+                cliFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            // Make executable so a future direct-exec path works; today we
+            // invoke as `node <path>` so the bit is informational.
+            cliFile.setReadable(true, false)
+            cliFile.setExecutable(true, false)
+        } catch (e: Exception) {
+            // Asset missing means an older APK that didn't bundle the CLI;
+            // SessionRegistry will fall back to the Kotlin watcher.
+            Log.w("Bootstrap", "transcript-watcher-cli.js not in assets: ${e.message}")
+        }
     }
 
     /**

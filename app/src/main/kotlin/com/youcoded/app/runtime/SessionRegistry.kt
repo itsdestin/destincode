@@ -1,7 +1,10 @@
 package com.youcoded.app.runtime
 
+import android.util.Log
 import com.youcoded.app.bridge.LocalBridgeServer
+import com.youcoded.app.parser.TranscriptSource
 import com.youcoded.app.parser.TranscriptWatcher
+import com.youcoded.app.parser.TranscriptWatcherProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -10,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import java.io.File
+import org.json.JSONObject
 
 class SessionRegistry {
     var bridgeServer: LocalBridgeServer? = null
@@ -52,7 +56,7 @@ class SessionRegistry {
         )
 
         val projectsDir = File(bootstrap.homeDir, ".claude/projects")
-        val transcriptWatcher = TranscriptWatcher(projectsDir, scope)
+        val transcriptWatcher: TranscriptSource = pickTranscriptSource(bootstrap, projectsDir, scope)
 
         val session = ManagedSession(
             id = sessionId,
@@ -83,6 +87,56 @@ class SessionRegistry {
         _currentSessionId.value = sessionId
 
         return session
+    }
+
+    /**
+     * Pick the transcript source implementation per session. Returns
+     * [TranscriptWatcherProcess] when the user has opted in via the
+     * `transcriptWatcher.useNodeProcess` flag in `~/.claude-mobile/config.json`
+     * AND the bundled CLI script is deployed; otherwise returns the legacy
+     * Kotlin [TranscriptWatcher].
+     *
+     * Why opt-in default-off: the Node-CLI path is the long-term plan (single
+     * source of truth with desktop, prevents the parser drift that produced
+     * Bug 2 in docs/plans/2026-04-23-android-desktop-parity.md), but it
+     * spawns a Node subprocess per session and has had no production runtime
+     * yet. Default-off lets the user flip the flag for one session to test
+     * before we commit to it as default-on in a future release.
+     */
+    private fun pickTranscriptSource(
+        bootstrap: Bootstrap,
+        projectsDir: File,
+        scope: CoroutineScope,
+    ): TranscriptSource {
+        val useNodeProcess = readUseNodeProcessFlag(bootstrap)
+        val cliFile = File(bootstrap.homeDir, ".claude-mobile/transcript-watcher-cli.js")
+        if (useNodeProcess && cliFile.exists()) {
+            Log.i("SessionRegistry", "Using TranscriptWatcherProcess (Node CLI) for transcript parsing")
+            return TranscriptWatcherProcess(bootstrap, scope)
+        }
+        if (useNodeProcess) {
+            Log.w("SessionRegistry", "useNodeProcess set but CLI bundle missing at ${cliFile.absolutePath} — falling back to Kotlin watcher")
+        }
+        return TranscriptWatcher(projectsDir, scope)
+    }
+
+    /**
+     * Read the boolean flag from `~/.claude-mobile/config.json` at key
+     * `transcriptWatcher.useNodeProcess`. Tolerates missing file / malformed
+     * JSON / missing key by returning false. Re-read every session create so
+     * the user can toggle the flag without an app restart (next new session
+     * picks up the change).
+     */
+    private fun readUseNodeProcessFlag(bootstrap: Bootstrap): Boolean {
+        val configFile = File(bootstrap.homeDir, ".claude-mobile/config.json")
+        if (!configFile.exists()) return false
+        return try {
+            val obj = JSONObject(configFile.readText())
+            val tw = obj.optJSONObject("transcriptWatcher") ?: return false
+            tw.optBoolean("useNodeProcess", false)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun switchTo(sessionId: String) {

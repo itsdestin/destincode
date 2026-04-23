@@ -20,6 +20,16 @@ object TranscriptSerializer {
         })
     }
 
+    fun userInterrupt(sessionId: String, uuid: String, timestamp: Long, kind: String): JSONObject {
+        return build("user-interrupt", sessionId, uuid, timestamp, JSONObject().apply {
+            put("kind", kind)
+        })
+    }
+
+    fun assistantThinking(sessionId: String, uuid: String, timestamp: Long): JSONObject {
+        return build("assistant-thinking", sessionId, uuid, timestamp, JSONObject())
+    }
+
     fun assistantText(
         sessionId: String,
         uuid: String,

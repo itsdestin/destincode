@@ -25,6 +25,27 @@ sealed class TranscriptEvent {
         val text: String,
     ) : TranscriptEvent()
 
+    /** ESC interrupt — Claude Code writes `[Request interrupted by user]` or
+     *  `[Request interrupted by user for tool use]` as a user message. The
+     *  reducer ends the in-flight turn with stopReason='interrupted' instead
+     *  of rendering a user bubble. Mirrors desktop transcript-watcher.ts. */
+    data class UserInterrupt(
+        override val sessionId: String,
+        override val uuid: String,
+        override val timestamp: Long,
+        val kind: String, // "plain" | "tool-use"
+    ) : TranscriptEvent()
+
+    /** Lightweight heartbeat for extended-thinking blocks. Lets the renderer's
+     *  attention classifier know Claude is still working during a multi-minute
+     *  reasoning pause so it doesn't flag the session as 'stuck'. Mirrors
+     *  desktop transcript-watcher.ts. */
+    data class AssistantThinking(
+        override val sessionId: String,
+        override val uuid: String,
+        override val timestamp: Long,
+    ) : TranscriptEvent()
+
     /** Assistant produced text output */
     data class AssistantText(
         override val sessionId: String,
