@@ -1248,6 +1248,10 @@ class SessionService : Service() {
                         put("name", s.name)
                         put("lastModified", s.lastModified)
                         put("projectPath", s.projectPath)
+                        // Fix: React's formatSize(undefined) rendered as "NaNMB".
+                        // The size field exists on PastSession but was never
+                        // copied into the JSON response before.
+                        put("size", s.size)
                         // flags: { complete: true, priority: true, ... } — only set flags included
                         val entryFlags = flagMap[s.sessionId]
                         if (entryFlags != null && entryFlags.isNotEmpty()) {
