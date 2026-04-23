@@ -317,11 +317,15 @@ function SkillBody({
           <button
             type="button"
             onClick={() => setRatingOpen(true)}
-            disabled={!installed || !auth.signedIn}
+            // Fix: only gate on `installed` here. Previously also disabled when
+            // signed-out, which made the existing in-modal "Sign in with GitHub"
+            // CTA unreachable — users had no way to discover they could sign in
+            // because the button that opens the modal was greyed out.
+            disabled={!installed}
             className="text-sm px-3 py-1 rounded-md border border-edge-dim hover:border-edge text-fg-2 hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed"
             title={
               !installed ? "Install to review"
-                : !auth.signedIn ? "Sign in to review"
+                : !auth.signedIn ? "Sign in to write a review"
                 : "Write a review"
             }
           >
