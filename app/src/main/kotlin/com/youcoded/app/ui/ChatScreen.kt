@@ -48,16 +48,34 @@ fun ChatScreen(service: SessionService) {
         }
     }
 
-    // Layout insets from React UI (header and bottom bar heights in px)
+    // Layout insets + hotspots + modal-block flag from React UI. Hotspots and
+    // blocked drive the WebView's touch pass-through; header/bottom drive the
+    // terminal's physical padding AND the middle-zone definition in the
+    // PassThroughWebView.
     var headerHeightPx by remember { mutableIntStateOf(0) }
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
+    var hotspots by remember { mutableStateOf<List<SessionService.HotspotRect>>(emptyList()) }
+    var blocked by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         service.layoutInsets.collect { insets ->
             headerHeightPx = insets.headerPx
             bottomBarHeightPx = insets.bottomPx
+            hotspots = insets.hotspots
+            blocked = insets.blocked
         }
     }
+
+    // Theme canvas color reported from React — paints the backdrop so
+    // translucent themes don't reveal a hardcoded dark-gray layer that looks
+    // like terminal bleed.
+    val canvasArgb by service.themeCanvas.collectAsState()
+
+    // Reference to the currently-mounted TerminalView. The PassThroughWebView
+    // forwards middle-zone gestures to it when in terminal mode. Nulled when
+    // the terminal block unmounts (chat mode) so stale refs don't receive
+    // touches after their view is detached.
+    val terminalViewRef = remember { mutableStateOf<TerminalView?>(null) }
 
     val density = LocalDensity.current
     val headerHeightDp = with(density) { headerHeightPx.toDp() }
@@ -66,7 +84,7 @@ fun ChatScreen(service: SessionService) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF111111))
+            .background(Color(canvasArgb))
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
@@ -95,6 +113,9 @@ fun ChatScreen(service: SessionService) {
                                     attachSession(it)
                                     attachedSession = it
                                 }
+                                // Publish the reference so the sibling WebView can
+                                // forward pass-through touches to this view.
+                                terminalViewRef.value = this
                             }
                         },
                         update = { view ->
@@ -124,6 +145,12 @@ fun ChatScreen(service: SessionService) {
                         },
                         modifier = Modifier.fillMaxSize(),
                     )
+                    // Clear the published reference when the terminal block
+                    // leaves composition (user switched back to chat). Without
+                    // this, the WebView could forward touches to a detached view.
+                    DisposableEffect(Unit) {
+                        onDispose { terminalViewRef.value = null }
+                    }
                 }
             } // key(currentSessionId)
         }
@@ -132,7 +159,13 @@ fun ChatScreen(service: SessionService) {
         // Security: pass bridge auth token so WebView can authenticate with LocalBridgeServer
         WebViewHost(
             modifier = Modifier.fillMaxSize(),
-            bridgeAuthToken = service.bridgeServer.authToken
+            bridgeAuthToken = service.bridgeServer.authToken,
+            passThroughActive = screenMode == ScreenMode.Terminal,
+            terminalView = terminalViewRef.value,
+            headerPx = headerHeightPx,
+            bottomPx = bottomBarHeightPx,
+            hotspots = hotspots,
+            blocked = blocked,
         )
     }
 }

@@ -87,10 +87,34 @@ class SessionService : Service() {
         _viewModeRequest.tryEmit(mode)
     }
 
-    /** Layout insets reported by React UI (header and bottom bar pixel heights). */
-    data class LayoutInsets(val headerPx: Int, val bottomPx: Int)
+    /**
+     * Layout insets reported by React UI.
+     *  - headerPx/bottomPx: chrome strip heights so the native TerminalView
+     *    knows what region the React chrome occupies.
+     *  - hotspots: rects of React elements that must keep receiving touches
+     *    even when the WebView pass-through is active (e.g. floating
+     *    TerminalScrollButtons). Each rect is in WebView/viewport pixel space.
+     *  - blocked: true when a modal scrim is covering the terminal — pass-through
+     *    is disabled while true so modal buttons stay tappable.
+     */
+    data class HotspotRect(val x: Int, val y: Int, val w: Int, val h: Int)
+    data class LayoutInsets(
+        val headerPx: Int,
+        val bottomPx: Int,
+        val hotspots: List<HotspotRect> = emptyList(),
+        val blocked: Boolean = false,
+    )
     private val _layoutInsets = kotlinx.coroutines.flow.MutableSharedFlow<LayoutInsets>(replay = 1)
     val layoutInsets: kotlinx.coroutines.flow.SharedFlow<LayoutInsets> = _layoutInsets
+
+    /**
+     * Theme canvas color (ARGB int) reported by React whenever the active theme
+     * changes. Applied as the Compose backdrop behind the transparent WebView
+     * so translucent themes don't reveal a hardcoded dark-gray layer that looks
+     * like terminal bleed.
+     */
+    private val _themeCanvas = kotlinx.coroutines.flow.MutableStateFlow(0xFF111111.toInt())
+    val themeCanvas: kotlinx.coroutines.flow.StateFlow<Int> = _themeCanvas
 
     /** File picker bridge: Service sets the deferred, Activity completes it with paths. */
     var pendingFilePicker: CompletableDeferred<List<String>>? = null
@@ -1362,7 +1386,39 @@ class SessionService : Service() {
                     "layout-update" -> {
                         val headerPx = msg.payload.optInt("headerHeight", 0)
                         val bottomPx = msg.payload.optInt("bottomHeight", 0)
-                        _layoutInsets.tryEmit(LayoutInsets(headerPx, bottomPx))
+                        // Extended payload (added with terminal pass-through):
+                        // hotspots and blocked may be absent in older React bundles;
+                        // default to empty/false so existing flows stay unaffected.
+                        val hotspotsArr = msg.payload.optJSONArray("hotspots")
+                        val hotspots = if (hotspotsArr != null) {
+                            val list = ArrayList<HotspotRect>(hotspotsArr.length())
+                            for (i in 0 until hotspotsArr.length()) {
+                                val r = hotspotsArr.optJSONObject(i) ?: continue
+                                list.add(HotspotRect(
+                                    x = r.optInt("x", 0),
+                                    y = r.optInt("y", 0),
+                                    w = r.optInt("w", 0),
+                                    h = r.optInt("h", 0),
+                                ))
+                            }
+                            list
+                        } else emptyList()
+                        val blocked = msg.payload.optBoolean("blocked", false)
+                        _layoutInsets.tryEmit(LayoutInsets(headerPx, bottomPx, hotspots, blocked))
+                    }
+                    "theme-update" -> {
+                        // React reports the resolved --canvas color as a CSS color string.
+                        // Parse via Android's Color.parseColor which understands #RGB/#RRGGBB/#AARRGGBB
+                        // and named colors. On parse failure keep the previous value so a
+                        // bad theme token doesn't blank the backdrop.
+                        val canvas = msg.payload.optString("canvas", "")
+                        if (canvas.isNotEmpty()) {
+                            try {
+                                _themeCanvas.value = android.graphics.Color.parseColor(canvas)
+                            } catch (_: IllegalArgumentException) {
+                                // Unparseable color — keep previous backdrop.
+                            }
+                        }
                     }
                 }
             }

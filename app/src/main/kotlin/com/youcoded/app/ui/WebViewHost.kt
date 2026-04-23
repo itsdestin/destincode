@@ -2,12 +2,15 @@ package com.youcoded.app.ui
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.graphics.Rect
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.youcoded.app.BuildConfig
+import com.youcoded.app.runtime.SessionService
 import java.io.File
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -19,9 +22,19 @@ fun WebViewHost(
     // Per-build bridge port. Release uses 9901; debug uses 9951 so the dev APK
     // can run side-by-side with the released app without colliding on the same
     // localhost socket. React reads this from `location.search` in remote-shim.ts.
-    bridgePort: Int = BuildConfig.BRIDGE_PORT
+    bridgePort: Int = BuildConfig.BRIDGE_PORT,
+    // Terminal pass-through wiring. When [passThroughActive] is true and the
+    // user touches the middle zone outside any hotspot, the WebView forwards
+    // the gesture to [terminalView] so native Termux touch-scroll works. See
+    // PassThroughWebView.kt for the full routing rules.
+    passThroughActive: Boolean = false,
+    terminalView: View? = null,
+    headerPx: Int = 0,
+    bottomPx: Int = 0,
+    hotspots: List<SessionService.HotspotRect> = emptyList(),
+    blocked: Boolean = false,
 ) {
-    var webView by remember { mutableStateOf<WebView?>(null) }
+    var webView by remember { mutableStateOf<PassThroughWebView?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -35,7 +48,7 @@ fun WebViewHost(
     AndroidView(
         modifier = modifier,
         factory = { context ->
-            WebView(context).apply {
+            PassThroughWebView(context).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -172,6 +185,17 @@ fun WebViewHost(
 
                 webView = this
             }
+        },
+        update = { view ->
+            // Push pass-through parameters on every recomposition so the WebView
+            // sees the latest screenMode, chrome heights, overlay rects, and
+            // modal-block flag before the next touch arrives.
+            view.passThroughActive = passThroughActive
+            view.terminalView = terminalView
+            view.headerPx = headerPx
+            view.bottomPx = bottomPx
+            view.blocked = blocked
+            view.hotspots = hotspots.map { Rect(it.x, it.y, it.x + it.w, it.y + it.h) }
         }
     )
 }

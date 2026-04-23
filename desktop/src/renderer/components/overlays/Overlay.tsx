@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTerminalOverlayBlock } from '../../state/terminal-overlay-context';
 
 // Phase 3 overlay primitives. Wrap .layer-scrim and .layer-surface from
 // globals.css so components get consistent scrim color, blur, rounding,
@@ -24,6 +25,10 @@ type ScrimProps = {
 };
 
 export function Scrim({ layer, onClick, className = '', style, children }: ScrimProps) {
+  // Tell the Android PassThroughWebView to stop passing touches through to the
+  // native terminal while this scrim is mounted — otherwise a tap on a modal
+  // button over the terminal would fall through to the terminal below.
+  useTerminalOverlayBlock();
   return (
     <div
       className={`layer-scrim ${className}`.trim()}

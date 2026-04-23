@@ -48,6 +48,7 @@ import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
 import { ThemeProvider, useTheme } from './state/theme-context';
+import { TerminalOverlayProvider, useTerminalOverlayBlocked } from './state/terminal-overlay-context';
 import { SkillProvider } from './state/skill-context';
 import { MarketplaceAuthProvider } from './state/marketplace-auth-context';
 import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
@@ -1766,7 +1767,17 @@ function AppInner() {
     };
   }, [sessionId, currentViewMode]);
 
-  // Report header/bottom bar heights to native Android side for terminal overlay sizing.
+  // Android-only: whether a modal scrim is covering the terminal. Drives the
+  // passThroughBlocked flag in the layout-update IPC payload — when true, the
+  // native PassThroughWebView stops forwarding middle-zone touches to the
+  // terminal so modal buttons stay tappable.
+  const terminalOverlayBlocked = useTerminalOverlayBlocked();
+
+  // Report header/bottom bar heights, hotspot rects (elements tagged with
+  // data-terminal-overlay — e.g. floating TerminalScrollButtons that must stay
+  // tappable in terminal mode), and the overlay-blocked flag to native Android.
+  // The PassThroughWebView consumes this to decide whether to forward a touch
+  // to the native TerminalView underneath.
   // Must be before early returns to maintain consistent hook ordering across renders.
   useEffect(() => {
     if (getPlatform() !== 'android') return;
@@ -1777,20 +1788,36 @@ function AppInner() {
     const report = () => {
       const headerH = header?.getBoundingClientRect().height || 0;
       const bottomH = bottom?.getBoundingClientRect().height || 0;
+      const hotspotEls = document.querySelectorAll<HTMLElement>('[data-terminal-overlay]');
+      const hotspots = Array.from(hotspotEls).map(el => {
+        const r = el.getBoundingClientRect();
+        return {
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        };
+      });
       (window as any).claude?.remote?.broadcastAction?.({
         action: 'layout-update',
         headerHeight: Math.round(headerH),
         bottomHeight: Math.round(bottomH),
+        hotspots,
+        blocked: terminalOverlayBlocked,
       });
     };
 
     const observer = new ResizeObserver(report);
     if (header) observer.observe(header);
     if (bottom) observer.observe(bottom);
+    // Observe each currently-tagged hotspot so its rect stays fresh if it moves.
+    document.querySelectorAll<HTMLElement>('[data-terminal-overlay]').forEach(el => {
+      observer.observe(el);
+    });
     // Report immediately on mount
     report();
     return () => observer.disconnect();
-  }, [sessionId, currentViewMode]);
+  }, [sessionId, currentViewMode, terminalOverlayBlocked]);
 
   // Still loading first-run check
   if (isFirstRun === null) {
@@ -2268,7 +2295,13 @@ export default function App() {
                         SettingsPanel (outside the library/marketplace view) can
                         consume useMarketplace() for the favorites star + filter. */}
                     <MarketplaceProvider>
-                      <AppInner />
+                      {/* TerminalOverlayProvider tracks whether any modal-style
+                          scrim is covering the native Android terminal so the
+                          layout-update IPC reporter can flip pass-through off
+                          while a modal is open. No-op on desktop/remote. */}
+                      <TerminalOverlayProvider>
+                        <AppInner />
+                      </TerminalOverlayProvider>
                     </MarketplaceProvider>
                   </ChatProvider>
                 </GameProvider>

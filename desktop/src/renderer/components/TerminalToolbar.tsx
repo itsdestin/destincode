@@ -56,7 +56,13 @@ export function TerminalScrollButtons({ sessionId }: TerminalToolbarProps) {
   }, [sessionId]);
 
   return (
-    <div className="absolute bottom-2 right-2 flex flex-col gap-1.5 z-10 pointer-events-auto">
+    // data-terminal-overlay marks this as a hotspot the Android PassThroughWebView
+    // must keep consuming touches for even in terminal pass-through mode, so taps
+    // on these arrows don't fall through to the native terminal.
+    <div
+      data-terminal-overlay
+      className="absolute bottom-2 right-2 flex flex-col gap-1.5 z-10 pointer-events-auto"
+    >
       <ScrollButton label="↑" onClick={() => send('\x1b[A')} />
       <ScrollButton label="↓" onClick={() => send('\x1b[B')} />
     </div>

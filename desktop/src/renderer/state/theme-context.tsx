@@ -364,6 +364,20 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     applyThemeToDom(activeTheme, reducedEffects);
     applyHighlightTheme(activeTheme.dark);
 
+    // Android only: report the resolved --canvas color to native so the
+    // Compose backdrop behind the transparent WebView paints with a matching
+    // color. Prevents the default dark-gray backdrop showing through as
+    // "fake terminal bleed" under translucent themes (e.g. halftone dimension).
+    try {
+      const canvas = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim();
+      if (canvas) {
+        (window as unknown as { claude?: { remote?: { broadcastAction?: (a: unknown) => void } } })
+          .claude?.remote?.broadcastAction?.({ action: 'theme-update', canvas });
+      }
+    } catch {
+      // Ignore: non-Android platforms don't provide broadcastAction.
+    }
+
     // Hot-swap the Electron window + dock icon. Guarded via optional chaining —
     // the Android WebView shim deliberately omits window.* (launcher icons can't
     // be swapped at runtime), so this is a no-op there.
