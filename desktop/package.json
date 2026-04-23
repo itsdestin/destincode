@@ -7,7 +7,8 @@
     "dev": "node scripts/run-dev.js",
     "dev:main": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/main/pty-worker.js','dist/main/pty-worker.js')\" && electron .",
     "dev:renderer": "vite",
-    "build": "tsc && node -e \"require('fs').cpSync('src/main/pty-worker.js','dist/main/pty-worker.js')\" && node -e \"require('fs').mkdirSync('dist/renderer/data',{recursive:true})\" && node -e \"require('fs').cpSync('src/renderer/data/skill-registry.json','dist/renderer/data/skill-registry.json')\" && vite build && electron-builder",
+    "build:cli": "node scripts/build-transcript-watcher-cli.js",
+    "build": "tsc && node -e \"require('fs').cpSync('src/main/pty-worker.js','dist/main/pty-worker.js')\" && node -e \"require('fs').mkdirSync('dist/renderer/data',{recursive:true})\" && node -e \"require('fs').cpSync('src/renderer/data/skill-registry.json','dist/renderer/data/skill-registry.json')\" && npm run build:cli && vite build && electron-builder",
     "test": "vitest",
     "postinstall": "node scripts/patch-node-pty.js"
   },
@@ -48,6 +49,7 @@
     "concurrently": "^9.2.1",
     "electron": "^41.0.3",
     "electron-builder": "^26.8.1",
+    "esbuild": "^0.25.0",
     "jsdom": "^29.0.2",
     "postcss": "^8.5.8",
     "tailwindcss": "^4.2.2",
