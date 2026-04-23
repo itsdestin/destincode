@@ -16,6 +16,7 @@ import MarketplaceCard from "./MarketplaceCard";
 import MarketplaceGrid from "./MarketplaceGrid";
 import MarketplaceDetailOverlay, { type DetailTarget } from "./MarketplaceDetailOverlay";
 import InstallingFooterStrip from "./InstallingFooterStrip";
+import MarketplaceAuthChip from "./MarketplaceAuthChip";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useCurrentPlatform } from "../../state/platform";
@@ -256,7 +257,13 @@ export default function MarketplaceScreen({
     <div className="fixed inset-0 z-40 overflow-y-auto flex flex-col">
       {/* Top bar — stays visible on scroll; holds the Exit hint. */}
       <div className="flex items-center justify-between p-3">
-        <h1 className="text-xl font-semibold text-fg pl-2">Marketplace</h1>
+        {/* Auth chip sits flush-left before the title so the GitHub sign-in
+            entry point is the first thing users see when entering the
+            marketplace — fixes the "no obvious way to sign in" gap. */}
+        <div className="flex items-center gap-2 pl-2">
+          <MarketplaceAuthChip />
+          <h1 className="text-xl font-semibold text-fg">Marketplace</h1>
+        </div>
         <div className="flex items-center gap-2">
           {onOpenLibrary && (
             <button
