@@ -2651,6 +2651,31 @@ class SessionService : Service() {
                 }
             }
 
+            // Privacy analytics opt-in toggle — exposed via window.claude.analytics.
+            // Mirrors desktop's ipc-handlers.ts `analytics:get-opt-in` /
+            // `analytics:set-opt-in`. Both build a fresh AnalyticsService per call
+            // (the service is stateless aside from its JSON file, so reconstruction
+            // is cheap and avoids wiring a long-lived singleton through initBootstrap).
+            "analytics:get-opt-in" -> {
+                val svc = AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                )
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, svc.getOptIn()) }
+            }
+
+            "analytics:set-opt-in" -> {
+                val enabled = msg.payload.optBoolean("enabled", true)
+                val svc = AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                )
+                svc.setOptIn(enabled)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, null) }
+            }
+
             "update:changelog" -> {
                 // Desktop-only feature. Android never renders the version pill, so this
                 // handler should be unreachable — but IPC-parity invariant (docs/PITFALLS.md
