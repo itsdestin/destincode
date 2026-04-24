@@ -115,6 +115,8 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [search, setSearch] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useScrollFade<HTMLDivElement>();
+  // Wraps the filter pill row so outside-click can close the active dropdown.
+  const filterRowRef = useRef<HTMLDivElement>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [resumeModel, setResumeModel] = useState<string>(defaultModel || 'sonnet');
   const [resumeDangerous, setResumeDangerous] = useState(defaultSkipPermissions || false);
@@ -143,6 +145,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [selectedTags, setSelectedTags] = useState<Set<FlagName>>(new Set());
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
+  // Tracks which filter pill's dropdown is currently open. null = both closed.
+  // Single state instead of two booleans so the dropdowns are mutually exclusive.
+  const [openPill, setOpenPill] = useState<'projects' | 'tags' | null>(null);
+
   // Fetch sessions when opened
   useEffect(() => {
     if (open) {
@@ -166,13 +172,30 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   }, [open]);
 
-  // Close on Escape — collapse the expanded row first, then close the browser.
-  // Extracted into a callback so useEscClose sees the layered close behavior.
+  // Layered ESC: close an open filter dropdown first, then collapse the
+  // expanded row, then close the browser. Each ESC press peels one layer.
   const handleEscClose = useCallback(() => {
-    if (expandedId) setExpandedId(null);
+    if (openPill) setOpenPill(null);
+    else if (expandedId) setExpandedId(null);
     else onClose();
-  }, [expandedId, onClose]);
+  }, [openPill, expandedId, onClose]);
   useEscClose(open, handleEscClose);
+
+  // Close the active filter dropdown on outside click. Mirrors FolderSwitcher's
+  // pattern at desktop/src/renderer/components/FolderSwitcher.tsx.
+  useEffect(() => {
+    if (!openPill) return;
+    const handler = (e: Event) => {
+      if (filterRowRef.current?.contains(e.target as Node)) return;
+      setOpenPill(null);
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [openPill]);
 
   const filtered = useMemo(() => {
     // Filter pipeline lives in resume-browser-filters.ts so it can be unit tested.
@@ -199,6 +222,21 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     if (!search.trim()) return filtered;
     return sortSessions(filtered, sortDir);
   }, [filtered, search, sortDir]);
+
+  // Distinct projects with counts — what the Projects pill dropdown displays.
+  // Derived from the unfiltered session list so the dropdown always shows
+  // every known project, even when the user has narrowed the visible list.
+  const availableProjects = useMemo(() => getAvailableProjects(sessions), [sessions]);
+
+  // Trigger label for the Projects pill: 0 selected → "Projects",
+  // 1 → label, 2-3 → comma-joined labels, 4+ → "Projects (N)".
+  const projectsLabel = useMemo(() => {
+    if (selectedProjects.size === 0) return 'Projects';
+    const selectedList = availableProjects.filter((p) => selectedProjects.has(p.path));
+    if (selectedList.length === 1) return selectedList[0].label;
+    if (selectedList.length <= 3) return selectedList.map((p) => p.label).join(', ');
+    return `Projects (${selectedList.length})`;
+  }, [selectedProjects, availableProjects]);
 
   // Optimistically flip a flag in local state, then persist via IPC. On failure
   // we revert. A meta-changed push from other tabs/devices also refreshes the
@@ -437,7 +475,63 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 className="flex-1 bg-transparent text-sm text-fg placeholder-fg-muted outline-none"
               />
             </div>
-            <div className="flex items-center gap-1.5 mt-2">
+            <div ref={filterRowRef} className="flex items-center gap-1.5 mt-2 relative">
+              {/* Projects: multi-select dropdown over distinct projectPaths in the loaded sessions. */}
+              <div className="relative">
+                <FilterPill
+                  active={selectedProjects.size > 0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpenPill((p) => (p === 'projects' ? null : 'projects'));
+                  }}
+                >
+                  <span>{projectsLabel}</span>
+                  <span className="text-fg-faint text-[9px]">▾</span>
+                </FilterPill>
+                {openPill === 'projects' && (
+                  <div
+                    className="layer-surface absolute top-full left-0 mt-1 w-64 overflow-hidden"
+                    style={{ zIndex: 50, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
+                  >
+                    {/* All projects — clear affordance. Visually checked when selectedProjects is empty.
+                        Does NOT set every project's checkbox to checked; the data model treats an
+                        empty Set as "filter inactive". */}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProjects(new Set())}
+                      className="w-full text-left px-2.5 py-1.5 text-xs flex items-center gap-2 hover:bg-inset transition-colors text-fg"
+                    >
+                      <span className={`w-3 h-3 shrink-0 rounded-sm border ${selectedProjects.size === 0 ? 'bg-accent border-accent' : 'border-edge'}`} />
+                      <span>All projects</span>
+                    </button>
+                    <div className="max-h-56 overflow-y-auto border-t border-edge-dim">
+                      {availableProjects.map((p) => {
+                        const checked = selectedProjects.has(p.path);
+                        return (
+                          <button
+                            key={p.path}
+                            type="button"
+                            onClick={() => {
+                              setSelectedProjects((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(p.path)) next.delete(p.path);
+                                else next.add(p.path);
+                                return next;
+                              });
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 text-xs flex items-center gap-2 hover:bg-inset transition-colors text-fg-2"
+                          >
+                            <span className={`w-3 h-3 shrink-0 rounded-sm border ${checked ? 'bg-accent border-accent' : 'border-edge'}`} />
+                            <span className="flex-1 truncate" title={p.path}>{p.label}</span>
+                            <span className="text-[10px] text-fg-faint shrink-0">{p.count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Sort toggle — flips lastModified direction. Priority-pin still wins. */}
               <FilterPill active={sortDir !== 'desc'} onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}>
                 {sortDir === 'desc' ? 'Most recent ↓' : 'Oldest first ↑'}
