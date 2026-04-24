@@ -2,10 +2,22 @@
 // context-popup.test.tsx — tests for the StatusBar context chip popup.
 
 import React from 'react';
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import ContextPopup from '../src/renderer/components/ContextPopup';
+
+// jsdom does not implement ResizeObserver; stub it so SettingsExplainer's
+// useScrollFade hook can mount without throwing.
+beforeAll(() => {
+  if (typeof window.ResizeObserver === 'undefined') {
+    window.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+  }
+});
 
 afterEach(cleanup);
 
@@ -72,5 +84,39 @@ describe('ContextPopup — main view', () => {
     const { onClose } = renderPopup();
     fireEvent.click(screen.getByRole('dialog'));
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContextPopup — info view', () => {
+  it('shows the (i) button in the header of the main view', () => {
+    renderPopup();
+    expect(screen.getByLabelText('What is this?')).toBeInTheDocument();
+  });
+
+  it('swaps to the explainer when (i) is clicked', () => {
+    renderPopup();
+    fireEvent.click(screen.getByLabelText('What is this?'));
+    expect(screen.getByText('About Context')).toBeInTheDocument();
+    // Main-view hint should no longer be visible
+    expect(screen.queryByText(/Plenty of room/i)).toBeNull();
+  });
+
+  it('returns to the main view when Back is clicked', () => {
+    renderPopup();
+    fireEvent.click(screen.getByLabelText('What is this?'));
+    fireEvent.click(screen.getByLabelText('Back to settings'));
+    expect(screen.getByText(/Plenty of room/i)).toBeInTheDocument();
+    expect(screen.queryByText('About Context')).toBeNull();
+  });
+
+  it('closes the whole popup when the explainer Close is clicked', () => {
+    const { onClose } = renderPopup();
+    fireEvent.click(screen.getByLabelText('What is this?'));
+    // Explainer renders its own Close button with aria-label="Close"
+    const closes = screen.getAllByLabelText('Close');
+    // There may be two — one from explainer, one from the main view header
+    // (but main view should be hidden). Pick any — the explainer's.
+    fireEvent.click(closes[0]);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

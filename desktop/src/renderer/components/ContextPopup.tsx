@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
+import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 
 // Hint copy keyed to spec bands: > 60 plenty, 20–60 getting tight, < 20 very low.
 // Thresholds are intentionally coarser than contextColor() — the copy describes
@@ -18,6 +19,38 @@ function contextColor(pct: number): string {
   if (pct < 50) return 'text-[#FF9800]';
   return 'text-[#4CAF50]';
 }
+
+// Explainer content — plain language for non-developer users.
+// Uses curly apostrophes and em-dashes intentionally; do not replace with straight quotes or hyphens.
+const INFO_SECTIONS: ExplainerSection[] = [
+  {
+    heading: 'Why it matters',
+    paragraphs: [
+      "The higher it is, the more Claude remembers — every file you opened, every decision you made together, the full thread of what you’re building. When it gets low, Claude may forget files you discussed earlier, lose track of decisions, or repeat questions it already asked. Running out mid-task usually means worse answers and extra back-and-forth.",
+    ],
+  },
+  {
+    heading: 'What fills it up',
+    bullets: [
+      { term: 'Your messages and Claude’s replies', text: 'Every turn of the conversation stays in memory.' },
+      { term: 'Tool output', text: "When Claude reads files, runs commands, or lists directories, the results go into context too. This is usually the biggest contributor." },
+      { term: 'Attached files and images', text: 'Anything you drag into the input bar.' },
+      { term: 'Loaded skills', text: 'Installed skills contribute their instructions to every turn.' },
+    ],
+    paragraphs: ['Long sessions with lots of file reads fill it up fastest.'],
+  },
+  {
+    heading: 'What to do when it gets low',
+    bullets: [
+      { term: 'Compact', text: 'Claude summarizes the conversation so far and keeps going in the same session. The thread stays alive. Use optional instructions to tell Claude what to prioritize keeping (e.g. code decisions vs. debugging output).' },
+      { term: 'Clear', text: "Wipes the conversation and starts fresh in the same session. No summary is kept. Good when you’re switching to an unrelated task." },
+      { term: 'New session', text: 'Opens a separate conversation from scratch and leaves this one intact. Good when you want to preserve this conversation’s state while working on something else. Use the + button in the session strip at the top of the window.' },
+    ],
+  },
+];
+
+const INFO_INTRO =
+  "Context is Claude’s short-term memory for this conversation. The percentage shows how much room Claude has left before it starts forgetting the earliest messages.";
 
 export interface ContextPopupProps {
   open: boolean;
@@ -41,6 +74,10 @@ export default function ContextPopup({
   // Must be called unconditionally (React hooks rules) — soft-fails without a provider.
   useEscClose(open, onClose);
 
+  // Track whether the user has opened the (i) explainer view.
+  // Reset to false is implicit: the popup unmounts when closed, so state resets naturally.
+  const [showInfo, setShowInfo] = useState(false);
+
   if (!open) return null;
 
   const pct = contextPercent ?? 0;
@@ -56,34 +93,51 @@ export default function ContextPopup({
         className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[320px]"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-          <h3 id="context-popup-title" className="text-sm font-semibold text-fg">Context</h3>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg leading-none w-6 h-6 flex items-center justify-center rounded-sm hover:bg-inset"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Current state */}
-        <div className="px-4 py-4 space-y-3">
-          <div className="text-center">
-            <div className={`text-3xl font-bold ${contextColor(pct)}`}>
-              {contextPercent != null ? `${contextPercent}%` : '--'}
-            </div>
-            {contextTokens != null && (
-              <div className="text-xs text-fg-muted mt-1">
-                {contextTokens.toLocaleString()} tokens remaining
+        {showInfo ? (
+          // Explainer takes over the full panel frame; has its own header with Back + Close.
+          <SettingsExplainer
+            title="Context"
+            intro={INFO_INTRO}
+            sections={INFO_SECTIONS}
+            onBack={() => setShowInfo(false)}
+            onClose={onClose}
+          />
+        ) : (
+          <>
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
+              <h3 id="context-popup-title" className="text-sm font-semibold text-fg">Context</h3>
+              <div className="flex items-center gap-1">
+                {/* (i) button — opens the explainer view explaining what context percentage means */}
+                <InfoIconButton onClick={() => setShowInfo(true)} />
+                <button
+                  onClick={onClose}
+                  aria-label="Close"
+                  className="text-fg-muted hover:text-fg leading-none w-6 h-6 flex items-center justify-center rounded-sm hover:bg-inset"
+                >
+                  ✕
+                </button>
               </div>
-            )}
-            {contextPercent != null && (
-              <p className="text-xs text-fg-2 mt-2">{hintFor(contextPercent)}</p>
-            )}
-          </div>
-        </div>
+            </div>
+
+            {/* Current state */}
+            <div className="px-4 py-4 space-y-3">
+              <div className="text-center">
+                <div className={`text-3xl font-bold ${contextColor(pct)}`}>
+                  {contextPercent != null ? `${contextPercent}%` : '--'}
+                </div>
+                {contextTokens != null && (
+                  <div className="text-xs text-fg-muted mt-1">
+                    {contextTokens.toLocaleString()} tokens remaining
+                  </div>
+                )}
+                {contextPercent != null && (
+                  <p className="text-xs text-fg-2 mt-2">{hintFor(contextPercent)}</p>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </OverlayPanel>
     </>,
     document.body,
