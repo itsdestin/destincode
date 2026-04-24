@@ -9,7 +9,7 @@
 import React from 'react';
 import { ChatProvider } from '../state/chat-context';
 import ToolCard from '../components/ToolCard';
-import { loadFixture } from './fixture-loader';
+import { loadFixture, type FixtureBlock } from './fixture-loader';
 
 // Vite's import.meta.glob eagerly reads every fixture as a raw string at build
 // time. We silence tsc because our tsconfig uses `module: "commonjs"` which
@@ -22,6 +22,18 @@ const fixtures = import.meta.glob('./fixtures/*.jsonl', {
   import: 'default',
   eager: true,
 }) as Record<string, string>;
+
+// Renders a single block — text as prose, tool as a real <ToolCard>.
+function renderBlock(block: FixtureBlock, index: number): React.ReactNode {
+  if (block.kind === 'text') {
+    return (
+      <p key={`text-${index}`} style={{ margin: '8px 0', lineHeight: 1.5, opacity: 0.9 }}>
+        {block.text}
+      </p>
+    );
+  }
+  return <ToolCard key={block.tool.toolUseId} tool={block.tool} />;
+}
 
 export function ToolSandbox() {
   const entries = Object.entries(fixtures)
@@ -40,25 +52,38 @@ export function ToolSandbox() {
           tool_use/tool_result pair. Edit ToolBody.tsx and save to see changes
           via HMR.
         </p>
-        {entries.map(({ name, result }) => (
-          <section key={name} style={{ marginBottom: 32 }}>
-            <h2 style={{ fontSize: 14, opacity: 0.6, marginBottom: 8 }}>{name}</h2>
-            {result.error ? (
-              <div style={{ color: 'tomato', fontFamily: 'monospace' }}>
-                {result.error}
-              </div>
-            ) : (
-              // Minimal shim — B.2 replaces this with grouped block rendering.
-              result.blocks
-                .filter((b) => b.kind === 'tool')
-                .map((b) =>
-                  b.kind === 'tool' ? (
-                    <ToolCard key={b.tool.toolUseId} tool={b.tool} />
-                  ) : null
-                )
-            )}
-          </section>
-        ))}
+        {entries.map(({ name, result }) => {
+          // Multi-block fixtures (or any fixture with text) get a bubble frame
+          // so the grouping reads as "one assistant turn". Single-tool fixtures
+          // render bare — matches the original sandbox look.
+          const hasText = result.blocks.some((b) => b.kind === 'text');
+          const wrap = result.blocks.length > 1 || hasText;
+          return (
+            <section key={name} style={{ marginBottom: 32 }}>
+              <h2 style={{ fontSize: 14, opacity: 0.6, marginBottom: 8 }}>{name}</h2>
+              {result.error ? (
+                <div style={{ color: 'tomato', fontFamily: 'monospace' }}>
+                  {result.error}
+                </div>
+              ) : wrap ? (
+                // Light outline + padding so the grouping reads visually.
+                // Intentionally minimal; the point is "this is all one turn", not theming.
+                <div
+                  style={{
+                    border: '1px solid var(--edge-dim, #333)',
+                    borderRadius: 8,
+                    padding: 16,
+                    margin: '8px 0',
+                  }}
+                >
+                  {result.blocks.map(renderBlock)}
+                </div>
+              ) : (
+                result.blocks.map(renderBlock)
+              )}
+            </section>
+          );
+        })}
       </div>
     </ChatProvider>
   );
