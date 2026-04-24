@@ -9,6 +9,8 @@ import { deriveWarningSeverity } from '../state/sync-display-state';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
+import OpenTasksChip from './OpenTasksChip';
+import { useSessionTasks } from '../hooks/useSessionTasks';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -131,6 +133,10 @@ interface Props {
   fast?: boolean;
   effort?: string;
   onOpenModelPicker?: () => void;
+  /** Current session id — needed for OpenTasksChip to read the session's task state. */
+  sessionId?: string;
+  /** Fired when the user clicks the Open Tasks chip. */
+  onOpenOpenTasks?: () => void;
 }
 
 
@@ -587,7 +593,11 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
 // --- Main StatusBar component ---
 
-export default function StatusBar({ statusData, onRunSync, onOpenSync, model, onCycleModel, permissionMode, onCyclePermission, fast, effort, onOpenModelPicker }: Props) {
+export default function StatusBar({
+  statusData, onRunSync, onOpenSync, model, onCycleModel,
+  permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
+  sessionId, onOpenOpenTasks,
+}: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
   const { activeTheme, cycleTheme } = useTheme();
   const { visible, toggle } = useWidgetVisibility();
@@ -647,6 +657,9 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
           <span className="hidden sm:inline">{PERMISSION_DISPLAY[permissionMode].label}</span>
         </button>
       )}
+
+      {/* Open Tasks chip — hidden when 0 open; opens the OpenTasksPopup. */}
+      {sessionId && onOpenOpenTasks && <OpenTasksChipMount sessionId={sessionId} onOpen={onOpenOpenTasks} />}
 
       {/* Rate limits */}
       {show('usage-5h') && usage?.five_hour != null && (
@@ -932,6 +945,14 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
       )}
     </div>
   );
+}
+
+// Small wrapper to conditionally call the useSessionTasks hook only when a
+// sessionId is available. Hooks can't be called conditionally at the top level
+// of StatusBar, so this sub-component does it safely.
+function OpenTasksChipMount({ sessionId, onOpen }: { sessionId: string; onOpen: () => void }) {
+  const { counts } = useSessionTasks(sessionId);
+  return <OpenTasksChip running={counts.running} pending={counts.pending} onOpen={onOpen} />;
 }
 
 export { MODELS, type ModelAlias };

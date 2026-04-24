@@ -37,6 +37,8 @@ import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
 import ModelPickerPopup from './components/ModelPickerPopup';
+import OpenTasksPopup from './components/OpenTasksPopup';
+import { useSessionTasks } from './hooks/useSessionTasks';
 import MarketplaceScreen from './components/marketplace/MarketplaceScreen';
 import LibraryScreen from './components/library/LibraryScreen';
 import { MarketplaceProvider } from './state/marketplace-context';
@@ -148,6 +150,8 @@ function AppInner() {
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   // Model/effort/fast picker — opened by bare /model, /fast, /effort (and future status-bar chip clicks)
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // Open Tasks popup — opened by the OpenTasksChip in the StatusBar
+  const [openTasksPopupOpen, setOpenTasksPopupOpen] = useState(false);
   // Fast + effort state — surfaced via status bar chips. Persisted to ~/.claude/youcoded-model-modes.json.
   const [fastMode, setFastMode] = useState(false);
   const [effortLevel, setEffortLevel] = useState<string>('auto');
@@ -1970,6 +1974,8 @@ function AppInner() {
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}
+                  sessionId={sessionId ?? undefined}
+                  onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
                 />
               </div>
           </>
@@ -2141,6 +2147,14 @@ function AppInner() {
           window.claude.session.sendInput(sessionId, `/model ${m}\r`);
         }}
       />
+      {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context. */}
+      {sessionId && (
+        <OpenTasksPopupMount
+          sessionId={sessionId}
+          open={openTasksPopupOpen}
+          onClose={() => setOpenTasksPopupOpen(false)}
+        />
+      )}
       {/* Full-screen glass marketplace + library destinations. MarketplaceProvider
           is now app-wide (root provider tree) so ThemeScreen can also consume it.
           libraryInitialTab is lifted state set by the youcoded:open-library event
@@ -2203,6 +2217,22 @@ const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?
     return <InputBar ref={ref} sessionId={sessionId} view={view} onOpenDrawer={onOpenDrawer} onCloseDrawer={onCloseDrawer} onDrawerSearch={onDrawerSearch} disabled={disabled} minimal={minimal} onResumeCommand={onResumeCommand} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={onOpenPreferences} onToast={onToast} getSessionState={getSessionState} onOpenModelPicker={onOpenModelPicker} initialInput={initialInput} />;
   },
 );
+
+// Wrapper that owns the useSessionTasks hook call for the Open Tasks popup.
+// Lives outside AppInner so the hook only mounts when a sessionId is present
+// (guarded by the {sessionId && ...} block at the AppInner render site).
+function OpenTasksPopupMount({ sessionId, open, onClose }: { sessionId: string; open: boolean; onClose: () => void }) {
+  const { tasks, markInactive, unhide } = useSessionTasks(sessionId);
+  return (
+    <OpenTasksPopup
+      open={open}
+      tasks={tasks}
+      onClose={onClose}
+      onMarkInactive={markInactive}
+      onUnhide={unhide}
+    />
+  );
+}
 
 function ThemeBg() {
   const { bgStyle, patternStyle } = useTheme();

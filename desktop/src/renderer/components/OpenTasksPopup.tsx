@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { useEscClose } from '../hooks/use-esc-close';
 import type { TaskState } from '../state/task-state';
 
 // L2 popup opened by OpenTasksChip in the StatusBar. Groups tasks by status:
@@ -94,6 +95,9 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
 }
 
 export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, onUnhide }: Props) {
+  // ESC routing through the central LIFO stack — same pattern as other L2 popups (AboutPopup, etc.)
+  useEscClose(open, onClose);
+
   // Compute initial open states from the first render's tasks, then let the user
   // fully control. Avoids fighting user intent when the completed count crosses 5
   // mid-popup.
