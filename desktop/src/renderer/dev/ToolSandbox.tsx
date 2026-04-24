@@ -48,9 +48,14 @@ export function ToolSandbox() {
                 {result.error}
               </div>
             ) : (
-              result.tools.map((tool) => (
-                <ToolCard key={tool.toolUseId} tool={tool} />
-              ))
+              // Minimal shim — B.2 replaces this with grouped block rendering.
+              result.blocks
+                .filter((b) => b.kind === 'tool')
+                .map((b) =>
+                  b.kind === 'tool' ? (
+                    <ToolCard key={b.tool.toolUseId} tool={b.tool} />
+                  ) : null
+                )
             )}
           </section>
         ))}
