@@ -1,7 +1,7 @@
 ---
 paths:
   - "app/**"
-last_verified: 2026-04-20
+last_verified: 2026-04-23
 ---
 
 # Android Runtime Rules
@@ -32,7 +32,7 @@ Runtime fixes must work in both `PtyBridge` (PTY session) and `DirectShellBridge
 ## Canonical sources
 
 - `claude-wrapper.js` at `app/src/main/assets/claude-wrapper.js` — edit this file, not any deployed copy
-- Deployed to `~/.claude-mobile/claude-wrapper.js` by `Bootstrap.deployWrapperJs()` at every launch
+- Deployed inline in `PtyBridge.start()` (`PtyBridge.kt:119-123`) to `~/.claude-mobile/claude-wrapper.js` at every launch. There is no separate `Bootstrap.deployWrapperJs()` method.
 
 ## Per-turn transcript metadata (Android parity)
 
