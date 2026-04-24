@@ -87,8 +87,8 @@ describe('cwdToProjectSlug', () => {
   // watcher must do the same or it reads from a non-existent directory and
   // chat view stays empty for the whole session.
   it('encodes spaces as dashes to match CC (Windows)', () => {
-    expect(cwdToProjectSlug('C:\\Users\\desti\\PAF 540 Final Data Project')).toBe(
-      'C--Users-desti-PAF-540-Final-Data-Project',
+    expect(cwdToProjectSlug('C:\\Users\\alice\\PAF 540 Final Data Project')).toBe(
+      'C--Users-alice-PAF-540-Final-Data-Project',
     );
   });
 

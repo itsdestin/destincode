@@ -523,7 +523,7 @@ export interface PastSession {
   sessionId: string;
   /** Human-readable name from topic file, or 'Untitled' */
   name: string;
-  /** Project directory slug (e.g. 'C--Users-desti') */
+  /** Project directory slug (e.g. 'C--Users-alice') */
   projectSlug: string;
   /** Display-friendly project path derived from slug */
   projectPath: string;

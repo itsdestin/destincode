@@ -31,8 +31,8 @@ class CwdToProjectSlugTest {
     @Test
     fun `encodes spaces as dashes to match CC on Windows`() {
         assertEquals(
-            "C--Users-desti-PAF-540-Final-Data-Project",
-            TranscriptWatcher.cwdToProjectSlug("C:\\Users\\desti\\PAF 540 Final Data Project"),
+            "C--Users-alice-PAF-540-Final-Data-Project",
+            TranscriptWatcher.cwdToProjectSlug("C:\\Users\\alice\\PAF 540 Final Data Project"),
         )
     }
 

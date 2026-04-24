@@ -177,7 +177,7 @@ object SessionBrowser {
 
     /**
      * Convert project slug back to a display path.
-     * Desktop format: C--Users-desti → C:/Users/desti
+     * Desktop format: C--Users-alice → C:/Users/alice
      * Android format: -data-data-com.youcoded.app-files-home-youcoded-dev
      *                  → /data/data/com.youcoded.app/files/home/youcoded-dev
      *
@@ -196,7 +196,7 @@ object SessionBrowser {
         val root: String
         val parts: List<String>
         if (windowsDriveMatch != null) {
-            // Windows: C--Users-desti-project → root=C:\, parts=[Users, desti, project]
+            // Windows: C--Users-alice-project → root=C:\, parts=[Users, alice, project]
             root = "${windowsDriveMatch.groupValues[1]}:\\"
             parts = windowsDriveMatch.groupValues[2].split('-').filter { it.isNotEmpty() }
         } else {

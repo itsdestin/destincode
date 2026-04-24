@@ -58,7 +58,7 @@ function resolveSlugToPath(slug: string): string {
   let parts: string[];
 
   if (/^[A-Z]--/.test(slug)) {
-    // Windows: C--Users-desti-project → root=C:\, parts=[Users, desti, project]
+    // Windows: C--Users-alice-project → root=C:\, parts=[Users, alice, project]
     root = slug[0] + ':\\';
     parts = slug.slice(3).split('-').filter(Boolean);
   } else {
