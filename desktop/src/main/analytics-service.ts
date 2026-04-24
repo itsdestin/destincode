@@ -67,7 +67,56 @@ export function setOptIn(value: boolean): void {
   writeState(state);
 }
 
-// Launch-time ping. Implemented in Task 5.3 (TDD: tests in 5.2 first).
+async function postEvent(path: string, body: unknown): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    // DNS fail, offline, TLS — swallow. State is not advanced so next
+    // launch retries, and the app startup is never impacted.
+    return false;
+  }
+}
+
 export async function runAnalyticsOnLaunch(): Promise<void> {
-  // stub — will be replaced
+  const state = readState();
+
+  // Short-circuit: user opted out. No network, no state mutation.
+  if (!state.optIn) return;
+
+  // First launch: generate install_id. installReported stays false until the
+  // install POST actually succeeds, so a failed-network first launch retries.
+  if (!state.installId) {
+    state.installId = randomUUID();
+    state.installReported = false;
+    writeState(state);
+  }
+
+  const payload = {
+    installId: state.installId,
+    appVersion: app.getVersion(),
+    platform: "desktop" as const,
+    os: mapOs(process.platform),
+  };
+
+  if (!state.installReported) {
+    const ok = await postEvent("/app/install", payload);
+    if (ok) {
+      state.installReported = true;
+      writeState(state);
+    }
+  }
+
+  const today = todayUtc();
+  if (state.lastPingedDate !== today) {
+    const ok = await postEvent("/app/heartbeat", payload);
+    if (ok) {
+      state.lastPingedDate = today;
+      writeState(state);
+    }
+  }
 }
