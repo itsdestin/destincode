@@ -1996,6 +1996,31 @@ function AppInner() {
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}
+                  sessionId={sessionId}
+                  onDispatch={(input: string) => {
+                    if (!sessionId) return;
+                    const timeline = chatStateMapRef.current.get(sessionId)?.timeline ?? [];
+                    const result = dispatchSlashCommand({
+                      raw: input,
+                      sessionId,
+                      view: currentViewMode,
+                      files: [],
+                      dispatch,
+                      timeline,
+                      callbacks: {
+                        onResumeCommand: () => setResumeRequested(true),
+                        getUsageSnapshot,
+                        onOpenPreferences: () => setPreferencesOpen(true),
+                        onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); },
+                        getSessionState: (sid: string) => chatStateMapRef.current.get(sid),
+                        onOpenModelPicker: () => setModelPickerOpen(true),
+                      },
+                    });
+                    // Mirror the InputBar path: if handled with alsoSendToPty, forward to the session.
+                    if (result.handled && result.alsoSendToPty) {
+                      window.claude.session.sendInput(sessionId, result.alsoSendToPty);
+                    }
+                  }}
                 />
               </div>
           </>
