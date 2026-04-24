@@ -39,8 +39,11 @@ function formatSize(bytes: number): string {
 }
 
 // Shared trigger-button shape for the filter row beneath the search bar.
-// Inactive pills look like the search input frame; active pills tint with
-// the accent so it's obvious a filter is narrowing the list.
+// Inactive pills look like the search input frame; active pills tint with the
+// accent so the user can see at a glance which pills have departed from
+// default state — narrowing filters (Projects, Tags) AND a non-default sort
+// direction (Sort). Don't "tighten" the predicate to only narrowing — Sort
+// would lose its visual cue.
 function FilterPill({
   active,
   onClick,
@@ -56,6 +59,8 @@ function FilterPill({
   children: React.ReactNode;
   // Optional: when the pill opens a dropdown, callers pass these so screen
   // readers announce both "active filter" (aria-pressed) AND dropdown state.
+  // expanded is only read when hasPopup is true; React strips both attrs
+  // entirely when hasPopup is falsy (Sort pill).
   hasPopup?: boolean;
   expanded?: boolean;
 }) {
@@ -95,6 +100,11 @@ const FLAG_BADGE: Record<FlagName, string> = {
   helpful: '●',
   complete: '✓',
 };
+// Tags filter exposes only Priority + Helpful — Complete is owned by the
+// Show Complete header toggle. Tags pill dropdown + label both iterate this
+// constant; adding a custom tag in the future is a list extension here, not
+// a UI rewrite.
+const TAG_FILTER_OPTIONS: ReadonlyArray<Exclude<FlagName, 'complete'>> = ['priority', 'helpful'] as const;
 
 interface PastSession {
   sessionId: string;
@@ -247,13 +257,14 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   }, [selectedProjects, availableProjects]);
 
   // Trigger label for the Tags pill: 0 → "Tags"; 1 → flag label; 2 → "A + B".
-  // Architected so future custom-tags work is a list extension.
+  // Iterates TAG_FILTER_OPTIONS so adding a custom tag is a list extension
+  // there rather than a memo edit here.
   const tagsLabel = useMemo(() => {
     if (selectedTags.size === 0) return 'Tags';
-    const labels: string[] = [];
-    if (selectedTags.has('priority')) labels.push('Priority');
-    if (selectedTags.has('helpful')) labels.push('Helpful');
-    return labels.join(' + ');
+    return TAG_FILTER_OPTIONS
+      .filter((tag) => selectedTags.has(tag))
+      .map((tag) => FLAG_LABEL[tag])
+      .join(' + ');
   }, [selectedTags]);
 
   // Optimistically flip a flag in local state, then persist via IPC. On failure
@@ -572,7 +583,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                     className="layer-surface absolute top-full left-0 mt-1 w-44 overflow-hidden"
                     style={{ zIndex: 50, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
                   >
-                    {(['priority', 'helpful'] as const).map((tag) => {
+                    {TAG_FILTER_OPTIONS.map((tag) => {
                       const checked = selectedTags.has(tag);
                       return (
                         <button
@@ -589,7 +600,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                           className="w-full text-left px-2.5 py-1.5 text-xs flex items-center gap-2 hover:bg-inset transition-colors text-fg-2"
                         >
                           <span className={`w-3 h-3 shrink-0 rounded-sm border ${checked ? 'bg-accent border-accent' : 'border-edge'}`} />
-                          <span className="flex-1 capitalize">{tag}</span>
+                          <span className="flex-1">{FLAG_LABEL[tag]}</span>
                         </button>
                       );
                     })}
