@@ -13,21 +13,27 @@ android {
         minSdk = 28
         consumerProguardFiles("consumer-rules.pro")
 
-        // TODO(Task 2): uncomment once src/main/jni/CMakeLists.txt is vendored in.
-        // externalNativeBuild {
-        //     cmake {
-        //         cppFlags("")
-        //     }
-        // }
+        // Deviation from plan: upstream uses ndkBuild (Android.mk), not cmake.
+        // cFlags match the upstream terminal-emulator/build.gradle exactly so
+        // the resulting .so has identical compile options to the JitPack artifact.
+        externalNativeBuild {
+            ndkBuild {
+                cFlags("-std=c11", "-Wall", "-Wextra", "-Werror", "-Os", "-fno-stack-protector", "-Wl,--gc-sections")
+            }
+        }
+
+        ndk {
+            abiFilters += listOf("x86", "x86_64", "armeabi-v7a", "arm64-v8a")
+        }
     }
 
-    // TODO(Task 2): uncomment once src/main/jni/CMakeLists.txt is vendored in.
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/jni/CMakeLists.txt")
-    //         version = "3.22.1"
-    //     }
-    // }
+    // Deviation from plan: upstream uses Android.mk (ndkBuild), not CMakeLists.txt (cmake).
+    // Path matches the vendored file at src/main/jni/Android.mk.
+    externalNativeBuild {
+        ndkBuild {
+            path = file("src/main/jni/Android.mk")
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
