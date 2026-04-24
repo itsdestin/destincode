@@ -78,6 +78,11 @@ export default function ContextPopup({
   // Reset to false is implicit: the popup unmounts when closed, so state resets naturally.
   const [showInfo, setShowInfo] = useState(false);
 
+  // customizing / instructions — not consumed until Task 6 where the chevron opens
+  // an inline editor for custom compact instructions. Declared here to minimize churn.
+  const [customizing, setCustomizing] = useState(false);
+  const [instructions, setInstructions] = useState('');
+
   if (!open) return null;
 
   const pct = contextPercent ?? 0;
@@ -138,8 +143,36 @@ export default function ContextPopup({
               </div>
             </div>
 
-            {/* Actions — primary compact lands in Task 5; Clear is the secondary. */}
+            {/* Actions — primary compact (focused editor lands in Task 6), then Clear secondary. */}
             <div className="px-4 pb-4 pt-2 space-y-3 border-t border-edge">
+              {/* Split-button: main = /compact, chevron = open inline editor (Task 6). */}
+              <div>
+                <div className="flex w-full rounded-sm overflow-hidden border border-accent">
+                  <button
+                    onClick={() => {
+                      onDispatch('/compact');
+                      onClose();
+                    }}
+                    disabled={!sessionId}
+                    className="flex-1 py-2 px-3 text-sm font-medium bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Compact conversation
+                  </button>
+                  <button
+                    onClick={() => setCustomizing(true)}
+                    disabled={!sessionId}
+                    aria-label="Customize compact instructions"
+                    className="px-2 bg-accent text-on-accent border-l border-on-accent/30 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                  >
+                    {/* Chevron down */}
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              {/* Clear secondary — existing block from Task 4. */}
               <div>
                 <button
                   onClick={() => {

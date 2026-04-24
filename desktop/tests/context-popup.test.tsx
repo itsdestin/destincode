@@ -137,4 +137,23 @@ describe('ContextPopup — actions', () => {
     const btn = screen.getByRole('button', { name: /Clear and start over/i });
     expect(btn).toBeDisabled();
   });
+
+  it('renders the Compact split-button', () => {
+    renderPopup();
+    expect(screen.getByRole('button', { name: /^Compact conversation$/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Customize compact instructions/i)).toBeInTheDocument();
+  });
+
+  it('dispatches /compact and closes when the main Compact button is clicked', () => {
+    const { onDispatch, onClose } = renderPopup();
+    fireEvent.click(screen.getByRole('button', { name: /^Compact conversation$/i }));
+    expect(onDispatch).toHaveBeenCalledWith('/compact');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables both Compact controls when sessionId is null', () => {
+    renderPopup({ sessionId: null });
+    expect(screen.getByRole('button', { name: /^Compact conversation$/i })).toBeDisabled();
+    expect(screen.getByLabelText(/Customize compact instructions/i)).toBeDisabled();
+  });
 });
