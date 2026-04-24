@@ -85,11 +85,10 @@ function Row({ t, group, onMarkInactive, onUnhide }: {
   );
 }
 
-function SectionHeader({ label, count }: { label: string; count: number }) {
+function SectionHeader({ label }: { label: string }) {
   return (
-    <div className="text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline">
-      <span>{label}</span>
-      <span>{count}</span>
+    <div className="text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1">
+      {label}
     </div>
   );
 }
@@ -117,16 +116,17 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
   return (
     <>
       <Scrim layer={2} onClick={onClose} />
+      {/* Centered in viewport — matches ModelPickerPopup/PreferencesPopup positioning. */}
       <OverlayPanel
         layer={2}
-        className="fixed right-3 bottom-8 w-[420px] max-w-[calc(100vw-1.5rem)] max-h-[70vh] overflow-auto rounded-md"
+        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[420px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-auto rounded-md"
         role="dialog"
         aria-label="Open tasks"
       >
-        {/* Header row */}
-        <div className="flex justify-between items-baseline px-3 pt-2 pb-1 border-b border-edge-dim">
+        {/* Header row — just the title. Counts live inline with each section
+            (and in the StatusBar chip), so repeating "N open" here was noise. */}
+        <div className="px-3 pt-2 pb-1 border-b border-edge-dim">
           <span className="text-sm font-medium text-fg">Open Tasks</span>
-          <span className="text-[10px] uppercase tracking-wider text-fg-muted">{openCount} open</span>
         </div>
 
         {/* Empty state: nothing at all */}
@@ -139,27 +139,28 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
           <div className="px-3 py-3 text-xs text-fg-muted italic">No open tasks.</div>
         )}
 
-        {/* In Progress section */}
+        {/* In Progress section — no count suffix, the rows are visible right below. */}
         {running.length > 0 && (
           <>
-            <SectionHeader label="In Progress" count={running.length} />
+            <SectionHeader label="In Progress" />
             {running.map(t => (
               <Row key={t.id} t={t} group="in_progress" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
             ))}
           </>
         )}
 
-        {/* Pending section */}
+        {/* Pending section — no count suffix, the rows are visible right below. */}
         {pending.length > 0 && (
           <>
-            <SectionHeader label="Pending" count={pending.length} />
+            <SectionHeader label="Pending" />
             {pending.map(t => (
               <Row key={t.id} t={t} group="pending" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
             ))}
           </>
         )}
 
-        {/* Completed section — collapsible toggle */}
+        {/* Completed section — collapsible. Keep the count on the toggle itself
+            so a collapsed section signals "there are N items hidden here." */}
         {completed.length > 0 && (
           <>
             <button
@@ -176,7 +177,7 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
           </>
         )}
 
-        {/* Marked Inactive section — collapsed by default */}
+        {/* Marked Inactive section — same collapsed-toggle-with-count pattern. */}
         {inactive.length > 0 && (
           <>
             <button

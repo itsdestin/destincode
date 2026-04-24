@@ -151,7 +151,8 @@ type WidgetId =
   | 'usage-5h' | 'usage-7d' | 'context' | 'git-branch' | 'sync-warnings' | 'theme' | 'version'
   | 'session-cost' | 'tokens-in' | 'tokens-out' | 'cache-stats' | 'code-changes' | 'session-time'
   | 'cache-hit-rate' | 'active-ratio' | 'output-speed'
-  | 'announcement';
+  | 'announcement'
+  | 'open-tasks';
 
 // Widget categories and definitions with info tooltips
 // defaultVisible: true = shown for new installs, false = opt-in only
@@ -277,6 +278,18 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
         defaultVisible: true,
         description: 'The current git repository and branch for your working directory.',
         bestFor: 'Developers working across multiple branches or repos.',
+      },
+    ],
+  },
+  {
+    name: 'Tasks',
+    widgets: [
+      {
+        id: 'open-tasks',
+        label: 'Open Tasks',
+        defaultVisible: true,
+        description: 'Chip showing tasks Claude is tracking in the current session (running + pending counts). Hides when there are no open tasks. Click to see the full list.',
+        bestFor: 'Everyone who uses sessions where Claude juggles multiple tasks. Lets you see what\'s in flight without scrolling the chat.',
       },
     ],
   },
@@ -658,11 +671,11 @@ export default function StatusBar({
         </button>
       )}
 
-      {/* Open Tasks chip — hidden when 0 open; opens the OpenTasksPopup. Counts
-          are derived at App root to share one useSessionTasks instance with the
-          popup; two instances would have separate inactiveMap state that don't
-          sync within the same page. */}
-      {openTasksCounts && onOpenOpenTasks && (
+      {/* Open Tasks chip — hidden when 0 open OR when widget is toggled off.
+          Counts are derived at App root to share one useSessionTasks instance
+          with the popup; two instances would have separate inactiveMap state
+          that don't sync within the same page. */}
+      {show('open-tasks') && openTasksCounts && onOpenOpenTasks && (
         <OpenTasksChip
           running={openTasksCounts.running}
           pending={openTasksCounts.pending}
