@@ -252,8 +252,10 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
 }
 
 // ─── Toggle component (shared) ──────────────────────────────────────────────
+// Exported so AboutPopup's analytics opt-out toggle can reuse the same pill
+// styling — matches the skip-permissions / approve-all toggles in this file.
 
-function Toggle({ enabled, onToggle, color = 'green' }: { enabled: boolean; onToggle: () => void; color?: 'green' | 'red' }) {
+export function Toggle({ enabled, onToggle, color = 'green' }: { enabled: boolean; onToggle: () => void; color?: 'green' | 'red' }) {
   const bg = enabled
     ? color === 'red' ? 'bg-red-600' : 'bg-green-600'
     : 'bg-inset';
