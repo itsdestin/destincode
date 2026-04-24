@@ -52,4 +52,25 @@ describe('ContextPopup — main view', () => {
     const { container } = renderPopup({ open: false });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
+
+  it('calls onClose when the X button is clicked', () => {
+    const { onClose } = renderPopup();
+    fireEvent.click(screen.getByLabelText('Close'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onClose when the scrim is clicked', () => {
+    const { onClose } = renderPopup();
+    // Scrim is the backdrop rendered alongside the dialog. Find by its layer-scrim class.
+    const scrim = document.querySelector('.layer-scrim');
+    expect(scrim).not.toBeNull();
+    fireEvent.click(scrim!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not bubble clicks from inside the panel to the scrim', () => {
+    const { onClose } = renderPopup();
+    fireEvent.click(screen.getByRole('dialog'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

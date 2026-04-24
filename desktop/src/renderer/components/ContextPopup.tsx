@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { useEscClose } from '../hooks/use-esc-close';
 
 // Hint copy keyed to spec bands: > 60 plenty, 20–60 getting tight, < 20 very low.
 // Thresholds are intentionally coarser than contextColor() — the copy describes
@@ -36,6 +37,10 @@ export default function ContextPopup({
   contextTokens,
   onDispatch,
 }: ContextPopupProps) {
+  // Wire ESC key dismissal through the shared LIFO stack (EscCloseProvider).
+  // Must be called unconditionally (React hooks rules) — soft-fails without a provider.
+  useEscClose(open, onClose);
+
   if (!open) return null;
 
   const pct = contextPercent ?? 0;
@@ -47,12 +52,13 @@ export default function ContextPopup({
         layer={2}
         role="dialog"
         aria-modal={true}
+        aria-labelledby="context-popup-title"
         className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[320px]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-          <h3 className="text-sm font-semibold text-fg">Context</h3>
+          <h3 id="context-popup-title" className="text-sm font-semibold text-fg">Context</h3>
           <button
             onClick={onClose}
             aria-label="Close"
