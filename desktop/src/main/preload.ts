@@ -228,6 +228,10 @@ const IPC = {
   DEV_INSTALL_WORKSPACE: 'dev:install-workspace',
   DEV_INSTALL_PROGRESS: 'dev:install-progress',
   DEV_OPEN_SESSION_IN: 'dev:open-session-in',
+  // Anonymous analytics opt-out — read/write the boolean gate that
+  // analytics-service consults on launch (Phase 6).
+  ANALYTICS_GET_OPT_IN: 'analytics:get-opt-in',
+  ANALYTICS_SET_OPT_IN: 'analytics:set-opt-in',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -508,6 +512,13 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.DEFAULTS_GET),
     set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>): Promise<any> =>
       ipcRenderer.invoke(IPC.DEFAULTS_SET, updates),
+  },
+  // Anonymous analytics opt-out — read/write the gate that analytics-service
+  // checks on launch. Default state is ON; users flip from About → Privacy.
+  analytics: {
+    getOptIn: (): Promise<boolean> => ipcRenderer.invoke(IPC.ANALYTICS_GET_OPT_IN),
+    setOptIn: (enabled: boolean): Promise<void> =>
+      ipcRenderer.invoke(IPC.ANALYTICS_SET_OPT_IN, enabled),
   },
   // Claude Code settings.json — used by Preferences panel (/config intercept).
   // Field names follow Claude Code's schema; dot-paths supported (e.g. 'permissions.defaultMode').
