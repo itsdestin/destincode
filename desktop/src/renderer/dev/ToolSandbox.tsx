@@ -45,6 +45,10 @@ export function ToolSandbox() {
 
   return (
     <ChatProvider>
+      {/* App root CSS pins html/body to 100vh + overflow:hidden so chat/terminal
+          panes can manage their own scroll. Sandbox is a normal document, so
+          we opt the scroll back in on this outer container. */}
+      <div style={{ height: '100vh', overflowY: 'auto' }}>
       <div style={{ padding: 24, maxWidth: 960, margin: '0 auto' }}>
         <h1 style={{ fontSize: 20, marginBottom: 16 }}>ToolCard Sandbox</h1>
         <p style={{ opacity: 0.7, marginBottom: 24, fontSize: 13 }}>
@@ -84,6 +88,7 @@ export function ToolSandbox() {
             </section>
           );
         })}
+      </div>
       </div>
     </ChatProvider>
   );
