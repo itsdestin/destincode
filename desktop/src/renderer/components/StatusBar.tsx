@@ -9,6 +9,7 @@ import { deriveWarningSeverity } from '../state/sync-display-state';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
+import OpenTasksChip from './OpenTasksChip';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -131,6 +132,11 @@ interface Props {
   fast?: boolean;
   effort?: string;
   onOpenModelPicker?: () => void;
+  /** Open-tasks counts for the chip — derived at App root from a single
+   *  useSessionTasks instance so the chip and popup share inactiveMap state. */
+  openTasksCounts?: { running: number; pending: number };
+  /** Fired when the user clicks the Open Tasks chip. */
+  onOpenOpenTasks?: () => void;
 }
 
 
@@ -145,7 +151,8 @@ type WidgetId =
   | 'usage-5h' | 'usage-7d' | 'context' | 'git-branch' | 'sync-warnings' | 'theme' | 'version'
   | 'session-cost' | 'tokens-in' | 'tokens-out' | 'cache-stats' | 'code-changes' | 'session-time'
   | 'cache-hit-rate' | 'active-ratio' | 'output-speed'
-  | 'announcement';
+  | 'announcement'
+  | 'open-tasks';
 
 // Widget categories and definitions with info tooltips
 // defaultVisible: true = shown for new installs, false = opt-in only
@@ -271,6 +278,18 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
         defaultVisible: true,
         description: 'The current git repository and branch for your working directory.',
         bestFor: 'Developers working across multiple branches or repos.',
+      },
+    ],
+  },
+  {
+    name: 'Tasks',
+    widgets: [
+      {
+        id: 'open-tasks',
+        label: 'Open Tasks',
+        defaultVisible: true,
+        description: 'Chip showing tasks Claude is tracking in the current session (running + pending counts). Hides when there are no open tasks. Click to see the full list.',
+        bestFor: 'Everyone who uses sessions where Claude juggles multiple tasks. Lets you see what\'s in flight without scrolling the chat.',
       },
     ],
   },
@@ -587,7 +606,11 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
 // --- Main StatusBar component ---
 
-export default function StatusBar({ statusData, onRunSync, onOpenSync, model, onCycleModel, permissionMode, onCyclePermission, fast, effort, onOpenModelPicker }: Props) {
+export default function StatusBar({
+  statusData, onRunSync, onOpenSync, model, onCycleModel,
+  permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
+  openTasksCounts, onOpenOpenTasks,
+}: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
   const { activeTheme, cycleTheme } = useTheme();
   const { visible, toggle } = useWidgetVisibility();
@@ -646,6 +669,18 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
           <span className="sm:hidden">{PERMISSION_DISPLAY[permissionMode].shortLabel}</span>
           <span className="hidden sm:inline">{PERMISSION_DISPLAY[permissionMode].label}</span>
         </button>
+      )}
+
+      {/* Open Tasks chip — hidden when 0 open OR when widget is toggled off.
+          Counts are derived at App root to share one useSessionTasks instance
+          with the popup; two instances would have separate inactiveMap state
+          that don't sync within the same page. */}
+      {show('open-tasks') && openTasksCounts && onOpenOpenTasks && (
+        <OpenTasksChip
+          running={openTasksCounts.running}
+          pending={openTasksCounts.pending}
+          onOpen={onOpenOpenTasks}
+        />
       )}
 
       {/* Rate limits */}
