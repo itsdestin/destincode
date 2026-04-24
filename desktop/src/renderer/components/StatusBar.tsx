@@ -686,9 +686,8 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         <button
           onClick={() => setContextPopupOpen(true)}
           aria-haspopup="dialog"
-          aria-expanded={contextPopupOpen}
           aria-label={`Context: ${contextPercent}% remaining. Click to manage context.`}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim hover:border-edge hover:bg-inset transition-colors"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
         >
           <span>Context:</span>
           <span className={contextColor(contextPercent)}>{contextPercent}%</span>
