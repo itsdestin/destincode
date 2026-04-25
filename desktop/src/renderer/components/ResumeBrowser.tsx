@@ -524,16 +524,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                     className="layer-surface absolute top-full left-0 mt-1 w-64 overflow-hidden"
                     style={{ zIndex: 50, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
                   >
-                    {/* All projects — clear affordance. Visually checked when selectedProjects is empty.
-                        Does NOT set every project's checkbox to checked; the data model treats an
-                        empty Set as "filter inactive". */}
+                    {/* "Show all" — text-only clear affordance. No checkbox visual so users don't
+                        misread this as a master "select every project" toggle (it isn't — empty
+                        selectedProjects is "filter inactive"). Muted style separates it from the
+                        checkbox rows below. Always visible; clicks no-op when already cleared. */}
                     <button
                       type="button"
                       onClick={() => setSelectedProjects(new Set())}
-                      className="w-full text-left px-2.5 py-1.5 text-xs flex items-center gap-2 hover:bg-inset transition-colors text-fg"
+                      className="w-full text-left px-2.5 py-1.5 text-[11px] uppercase tracking-wider text-fg-muted hover:text-fg hover:bg-inset transition-colors"
                     >
-                      <span className={`w-3 h-3 shrink-0 rounded-sm border ${selectedProjects.size === 0 ? 'bg-accent border-accent' : 'border-edge'}`} />
-                      <span>All projects</span>
+                      Show all
                     </button>
                     <div className="max-h-56 overflow-y-auto border-t border-edge-dim">
                       {availableProjects.map((p) => {
