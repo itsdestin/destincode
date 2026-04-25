@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { useChatDispatch } from '../state/chat-context';
-import { getScreenText } from './terminal-registry';
 import {
   classifyBuffer,
   BufferClass,
@@ -104,9 +103,14 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
     let pendingState: AttentionState = 'ok';
     let pendingStreak = 0;
 
-    const tick = () => {
-      const raw = getScreenText(sessionId);
-      if (raw === null) return;
+    // Async: the facade (window.claude.terminal.getScreenText) resolves via IPC
+    // on desktop and via WebSocket on Android — same classifyBuffer call either
+    // way. The original terminal-registry.getScreenText was synchronous and
+    // returned string | null; the facade always resolves to string (empty string
+    // when no terminal is registered, matching null-guard behavior since an empty
+    // buffer produces 'unknown' → 'ok', which is harmless to dispatch).
+    const tick = async () => {
+      const raw = await window.claude.terminal.getScreenText(sessionId);
       const lines = raw.split('\n');
       const tail = lines.slice(-40);
 
