@@ -1999,6 +1999,8 @@ function AppInner() {
                   sessionId={sessionId}
                   onDispatch={(input: string) => {
                     if (!sessionId) return;
+                    // Pass live timeline (drawer paths pass []) so future popup-dispatched commands
+                    // that inspect history can read it without rewiring this wrapper.
                     const timeline = chatStateMapRef.current.get(sessionId)?.timeline ?? [];
                     const result = dispatchSlashCommand({
                       raw: input,
@@ -2016,7 +2018,10 @@ function AppInner() {
                         onOpenModelPicker: () => setModelPickerOpen(true),
                       },
                     });
-                    // Mirror the InputBar path: if handled with alsoSendToPty, forward to the session.
+                    // Forward alsoSendToPty so Claude Code itself runs the command. We deliberately skip the
+                    // USER_PROMPT optimistic bubble that InputBar dispatches — for /compact and /clear, the
+                    // COMPACTION_PENDING / CLEAR_TIMELINE reducer actions already update the timeline, so a
+                    // USER_PROMPT bubble would render redundantly alongside them.
                     if (result.handled && result.alsoSendToPty) {
                       window.claude.session.sendInput(sessionId, result.alsoSendToPty);
                     }
