@@ -104,7 +104,7 @@ export default function ContextPopup({
         aria-modal={true}
         aria-labelledby={showInfo ? undefined : 'context-popup-title'}
         aria-label={showInfo ? 'About Context' : undefined}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[320px] max-h-[85vh] flex flex-col overflow-hidden"
+        className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[320px] flex flex-col overflow-hidden ${showInfo ? 'h-[85vh]' : 'max-h-[85vh]'}`}
         onClick={(e) => e.stopPropagation()}
       >
         {showInfo ? (
