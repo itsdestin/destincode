@@ -110,7 +110,15 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
     // when no terminal is registered, matching null-guard behavior since an empty
     // buffer produces 'unknown' → 'ok', which is harmless to dispatch).
     const tick = async () => {
-      const raw = await window.claude.terminal.getScreenText(sessionId);
+      let raw: string;
+      try {
+        raw = await window.claude.terminal.getScreenText(sessionId);
+      } catch {
+        // Network/IPC failure (Android WebSocket disconnect, etc.) — treat as
+        // empty buffer rather than crashing the tick. Mirrors the desktop IPC
+        // handler's try/catch defaulting to ''.
+        raw = '';
+      }
       const lines = raw.split('\n');
       const tail = lines.slice(-40);
 
