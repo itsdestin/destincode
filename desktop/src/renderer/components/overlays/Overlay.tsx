@@ -46,6 +46,7 @@ type OverlayPanelProps = {
   role?: string;
   'aria-modal'?: boolean;
   'aria-labelledby'?: string;
+  'aria-label'?: string;
 };
 
 // Single-element .layer-surface. An earlier split added an inner

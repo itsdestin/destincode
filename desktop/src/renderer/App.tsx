@@ -37,6 +37,8 @@ import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
 import ModelPickerPopup from './components/ModelPickerPopup';
+import OpenTasksPopup from './components/OpenTasksPopup';
+import { useSessionTasks } from './hooks/useSessionTasks';
 import MarketplaceScreen from './components/marketplace/MarketplaceScreen';
 import LibraryScreen from './components/library/LibraryScreen';
 import { MarketplaceProvider } from './state/marketplace-context';
@@ -174,6 +176,15 @@ function AppInner() {
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   // Model/effort/fast picker — opened by bare /model, /fast, /effort (and future status-bar chip clicks)
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // Open Tasks popup — opened by the OpenTasksChip in the StatusBar
+  const [openTasksPopupOpen, setOpenTasksPopupOpen] = useState(false);
+  // SINGLE useSessionTasks instance for the whole page. The chip (in StatusBar)
+  // and the popup both read from this one derivation so their inactiveMap state
+  // stays in sync — two independent useSessionTasks calls would each keep their
+  // own localStorage-backed state, and the `storage` event doesn't fire within
+  // the same page (only across tabs). Fallback '' when there's no session gives
+  // an empty task list via useChatState's singleton EMPTY_SESSION_STATE.
+  const openTasks = useSessionTasks(sessionId ?? '');
   // Fast + effort state — surfaced via status bar chips. Persisted to ~/.claude/youcoded-model-modes.json.
   const [fastMode, setFastMode] = useState(false);
   const [effortLevel, setEffortLevel] = useState<string>('auto');
@@ -2026,6 +2037,8 @@ function AppInner() {
                       window.claude.session.sendInput(sessionId, result.alsoSendToPty);
                     }
                   }}
+                  openTasksCounts={sessionId ? { running: openTasks.counts.running, pending: openTasks.counts.pending } : undefined}
+                  onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
                 />
               </div>
           </>
@@ -2197,6 +2210,17 @@ function AppInner() {
           window.claude.session.sendInput(sessionId, `/model ${m}\r`);
         }}
       />
+      {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
+          Reads from the single `openTasks` useSessionTasks instance declared in AppInner. */}
+      {sessionId && (
+        <OpenTasksPopup
+          open={openTasksPopupOpen}
+          tasks={openTasks.tasks}
+          onClose={() => setOpenTasksPopupOpen(false)}
+          onMarkInactive={openTasks.markInactive}
+          onUnhide={openTasks.unhide}
+        />
+      )}
       {/* Full-screen glass marketplace + library destinations. MarketplaceProvider
           is now app-wide (root provider tree) so ThemeScreen can also consume it.
           libraryInitialTab is lifted state set by the youcoded:open-library event

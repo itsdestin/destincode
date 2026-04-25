@@ -823,6 +823,14 @@ export function installShim(): void {
       get: () => invoke('defaults:get'),
       set: (updates: Record<string, any>) => invoke('defaults:set', updates),
     },
+    // Anonymous analytics opt-out — mirror of preload.ts. Android handlers
+    // land in Phase 7; until then the remote-shim path resolves via the
+    // WebSocket once the Kotlin side dispatches these types.
+    analytics: {
+      getOptIn: (): Promise<boolean> => invoke('analytics:get-opt-in'),
+      setOptIn: (enabled: boolean): Promise<void> =>
+        invoke('analytics:set-opt-in', { enabled }),
+    },
     // Parity with preload.ts — Preferences panel uses this over remote too
     settings: {
       get: (field: string) => invoke('settings:get', { field }),

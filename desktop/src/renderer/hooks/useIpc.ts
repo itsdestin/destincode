@@ -153,6 +153,12 @@ declare global {
         get: () => Promise<{ skipPermissions: boolean; model: string; projectFolder: string }>;
         set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>) => Promise<any>;
       };
+      // Anonymous analytics opt-out — read/write the gate the analytics-service
+      // checks on launch. Shape mirrors preload.ts + remote-shim.ts (Phase 6).
+      analytics: {
+        getOptIn: () => Promise<boolean>;
+        setOptIn: (enabled: boolean) => Promise<void>;
+      };
       // Settings → Development feature (bug report, contribute, known issues).
       // Shape mirrors preload.ts dev namespace and remote-shim.ts dev namespace.
       dev: {
