@@ -154,3 +154,39 @@ describe('update:changelog channel parity', () => {
     for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
   });
 });
+
+// Regression net for the analytics:* IPC channels introduced by the
+// privacy-analytics plan (anonymous install + DAU/MAU telemetry opt-out).
+// All three platforms must carry identical type strings. The Android
+// assertion is intentionally expected to fail until Phase 7 (SessionService.kt
+// analytics:* handlers) lands. Not a regression — the desktop IPC landing
+// ahead of Android is the planned integration order.
+describe('analytics:* channel parity', () => {
+  const NEW_TYPES = [
+    'analytics:get-opt-in',
+    'analytics:set-opt-in',
+  ];
+
+  it('both analytics:* types are declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  it('both analytics:* types are referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  // WHY: This assertion is intentionally failing until Phase 7 adds the
+  // SessionService.kt analytics:* handlers. It acts as the regression net —
+  // when Phase 7 lands, this turns green and confirms Android parity is
+  // complete.
+  it('both analytics:* types are handled by SessionService.kt (Android)', () => {
+    const ktPath = path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    );
+    const src = fs.readFileSync(ktPath, 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
+  });
+});

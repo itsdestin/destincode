@@ -9,6 +9,8 @@ import { deriveWarningSeverity } from '../state/sync-display-state';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
+import ContextPopup from './ContextPopup';
+import OpenTasksChip from './OpenTasksChip';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -131,6 +133,14 @@ interface Props {
   fast?: boolean;
   effort?: string;
   onOpenModelPicker?: () => void;
+  // Context popup: session and a dispatcher wrapper threaded from App.tsx.
+  sessionId?: string | null;
+  onDispatch?: (input: string) => void;
+  /** Open-tasks counts for the chip — derived at App root from a single
+   *  useSessionTasks instance so the chip and popup share inactiveMap state. */
+  openTasksCounts?: { running: number; pending: number };
+  /** Fired when the user clicks the Open Tasks chip. */
+  onOpenOpenTasks?: () => void;
 }
 
 
@@ -145,7 +155,8 @@ type WidgetId =
   | 'usage-5h' | 'usage-7d' | 'context' | 'git-branch' | 'sync-warnings' | 'theme' | 'version'
   | 'session-cost' | 'tokens-in' | 'tokens-out' | 'cache-stats' | 'code-changes' | 'session-time'
   | 'cache-hit-rate' | 'active-ratio' | 'output-speed'
-  | 'announcement';
+  | 'announcement'
+  | 'open-tasks';
 
 // Widget categories and definitions with info tooltips
 // defaultVisible: true = shown for new installs, false = opt-in only
@@ -271,6 +282,18 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
         defaultVisible: true,
         description: 'The current git repository and branch for your working directory.',
         bestFor: 'Developers working across multiple branches or repos.',
+      },
+    ],
+  },
+  {
+    name: 'Tasks',
+    widgets: [
+      {
+        id: 'open-tasks',
+        label: 'Open Tasks',
+        defaultVisible: true,
+        description: 'Chip showing tasks Claude is tracking in the current session (running + pending counts). Hides when there are no open tasks. Click to see the full list.',
+        bestFor: 'Everyone who uses sessions where Claude juggles multiple tasks. Lets you see what\'s in flight without scrolling the chat.',
       },
     ],
   },
@@ -587,13 +610,19 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
 // --- Main StatusBar component ---
 
-export default function StatusBar({ statusData, onRunSync, onOpenSync, model, onCycleModel, permissionMode, onCyclePermission, fast, effort, onOpenModelPicker }: Props) {
+export default function StatusBar({
+  statusData, onRunSync, onOpenSync, model, onCycleModel,
+  permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
+  sessionId, onDispatch,
+  openTasksCounts, onOpenOpenTasks,
+}: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
   const { activeTheme, cycleTheme } = useTheme();
   const { visible, toggle } = useWidgetVisibility();
   const [popupOpen, setPopupOpen] = useState(false);
   // Version pill now opens the in-app UpdatePanel (changelog + update action) instead of firing external URLs.
   const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
+  const [contextPopupOpen, setContextPopupOpen] = useState(false);
 
   const show = (id: WidgetId) => visible.has(id);
   const ss = sessionStats; // shorthand
@@ -648,6 +677,18 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </button>
       )}
 
+      {/* Open Tasks chip — hidden when 0 open OR when widget is toggled off.
+          Counts are derived at App root to share one useSessionTasks instance
+          with the popup; two instances would have separate inactiveMap state
+          that don't sync within the same page. */}
+      {show('open-tasks') && openTasksCounts && onOpenOpenTasks && (
+        <OpenTasksChip
+          running={openTasksCounts.running}
+          pending={openTasksCounts.pending}
+          onOpen={onOpenOpenTasks}
+        />
+      )}
+
       {/* Rate limits */}
       {show('usage-5h') && usage?.five_hour != null && (
         <button
@@ -676,15 +717,18 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </button>
       )}
 
-      {/* Context remaining */}
+      {/* Context remaining — clickable opens ContextPopup (compact/clear actions + explainer). */}
       {show('context') && contextPercent != null && (
-        <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim">
+        <button
+          onClick={() => setContextPopupOpen(true)}
+          aria-haspopup="dialog"
+          aria-label={`Context: ${contextPercent}% remaining. Click to manage context.`}
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
+        >
           <span>Context:</span>
-          <span className={contextColor(contextPercent)}>
-            {contextPercent}%
-          </span>
+          <span className={contextColor(contextPercent)}>{contextPercent}%</span>
           <span>Remaining</span>
-        </span>
+        </button>
       )}
 
       {/* Session cost — estimated USD cost for this session */}
@@ -930,6 +974,16 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
           updateStatus={updateStatus}
         />
       )}
+
+      {/* Context popup — portal-rendered; position in tree is cosmetic. */}
+      <ContextPopup
+        open={contextPopupOpen}
+        onClose={() => setContextPopupOpen(false)}
+        sessionId={sessionId ?? null}
+        contextPercent={contextPercent}
+        contextTokens={sessionStats?.contextTokens ?? null}
+        onDispatch={onDispatch ?? (() => {})}
+      />
     </div>
   );
 }

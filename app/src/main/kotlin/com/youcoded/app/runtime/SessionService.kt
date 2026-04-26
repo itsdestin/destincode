@@ -13,7 +13,9 @@ import android.os.Binder
 import android.os.FileObserver
 import android.os.IBinder
 import android.os.PowerManager
+import com.youcoded.app.BuildConfig
 import com.youcoded.app.MainActivity
+import com.youcoded.app.analytics.AnalyticsService
 import com.youcoded.app.bridge.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -175,6 +177,26 @@ class SessionService : Service() {
                 }
             }
         }
+
+        // Privacy analytics: fire install + daily-heartbeat ping to the marketplace
+        // Worker. Fire-and-forget: no await, no logging. Respects opt-out internally
+        // (AnalyticsService.runOnLaunch returns early if state.optIn is false).
+        // Runs on a raw thread so service startup is never blocked by network I/O.
+        // Mirror of desktop/src/main/main.ts's analytics wire-in.
+        Thread {
+            try {
+                AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    // $HOME is set by Bootstrap to the Termux home dir, but onCreate
+                    // runs BEFORE initBootstrap, so fall back to filesDir.parent
+                    // (Android internal files root) or filesDir itself.
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                ).runOnLaunch()
+            } catch (_: Exception) {
+                // Swallow — analytics must never impact app startup.
+            }
+        }.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -2627,6 +2649,31 @@ class SessionService : Service() {
                         })
                     })
                 }
+            }
+
+            // Privacy analytics opt-in toggle — exposed via window.claude.analytics.
+            // Mirrors desktop's ipc-handlers.ts `analytics:get-opt-in` /
+            // `analytics:set-opt-in`. Both build a fresh AnalyticsService per call
+            // (the service is stateless aside from its JSON file, so reconstruction
+            // is cheap and avoids wiring a long-lived singleton through initBootstrap).
+            "analytics:get-opt-in" -> {
+                val svc = AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                )
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, svc.getOptIn()) }
+            }
+
+            "analytics:set-opt-in" -> {
+                val enabled = msg.payload.optBoolean("enabled", true)
+                val svc = AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                )
+                svc.setOptIn(enabled)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, null) }
             }
 
             "update:changelog" -> {
