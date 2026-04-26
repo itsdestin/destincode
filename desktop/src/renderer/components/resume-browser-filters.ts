@@ -105,23 +105,37 @@ export function groupSessions<T extends PastSessionLike>(
   return out;
 }
 
-// Distinct projectPaths with display labels and counts, alphabetical by label.
-// Display label is the last path segment (matches the existing group header
-// convention in ResumeBrowser.tsx).
+// Distinct projectPaths with display labels and counts, sorted by the most-
+// recent session's lastModified per project (descending). Matches the user's
+// intent of "find what I was just working on" — the project with the freshest
+// conversation surfaces at the top of the Projects filter dropdown. Display
+// label is the last path segment (matches the group header convention in
+// ResumeBrowser.tsx).
 export function getAvailableProjects<T extends PastSessionLike>(
   sessions: T[],
 ): Array<{ path: string; label: string; count: number }> {
-  const counts = new Map<string, number>();
-  for (const s of sessions) counts.set(s.projectPath, (counts.get(s.projectPath) ?? 0) + 1);
-  const result = [...counts.entries()].map(([path, count]) => ({
+  // Track per-project: count + max(lastModified). Max-anchor matches the
+  // between-group ordering used by groupSessions in 'desc' mode.
+  const stats = new Map<string, { count: number; recent: number }>();
+  for (const s of sessions) {
+    const prior = stats.get(s.projectPath);
+    if (prior) {
+      prior.count += 1;
+      if (s.lastModified > prior.recent) prior.recent = s.lastModified;
+    } else {
+      stats.set(s.projectPath, { count: 1, recent: s.lastModified });
+    }
+  }
+  const result = [...stats.entries()].map(([path, { count, recent }]) => ({
     path,
     label: lastSegment(path),
     count,
+    recent,
   }));
-  // Case-insensitive so 'YouCoded' and 'apps' interleave alphabetically rather
-  // than capitalized-first. Affects the Projects dropdown rendering order.
-  result.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
-  return result;
+  // Most-recent-first.
+  result.sort((a, b) => b.recent - a.recent);
+  // Strip the internal 'recent' field so the public shape stays { path, label, count }.
+  return result.map(({ path, label, count }) => ({ path, label, count }));
 }
 
 function lastSegment(path: string): string {

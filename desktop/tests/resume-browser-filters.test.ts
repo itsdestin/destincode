@@ -175,18 +175,30 @@ describe('groupSessions', () => {
 });
 
 describe('getAvailableProjects', () => {
-  it('returns distinct projectPaths with counts and last-segment labels, alphabetical', () => {
+  it('returns distinct projectPaths with counts and last-segment labels, sorted by recency', () => {
     const list = [
-      session({ projectPath: '/home/dev/youcoded' }),
-      session({ projectPath: '/home/dev/youcoded' }),
-      session({ projectPath: '/home/dev/core' }),
-      session({ projectPath: '/home/dev/youcoded' }),
+      session({ projectPath: '/home/dev/youcoded', lastModified: 100 }),
+      session({ projectPath: '/home/dev/youcoded', lastModified: 200 }),
+      session({ projectPath: '/home/dev/core',     lastModified: 500 }),
+      session({ projectPath: '/home/dev/youcoded', lastModified: 50 }),
     ];
     const out = getAvailableProjects(list);
+    // 'core' wins (most recent session at t=500); 'youcoded' anchored at t=200.
     expect(out).toEqual([
       { path: '/home/dev/core', label: 'core', count: 1 },
       { path: '/home/dev/youcoded', label: 'youcoded', count: 3 },
     ]);
+  });
+
+  it('uses the most recent session per project as the sort anchor', () => {
+    const list = [
+      session({ projectPath: '/p1', lastModified: 1000 }),
+      session({ projectPath: '/p1', lastModified: 1 }),
+      session({ projectPath: '/p2', lastModified: 500 }),
+      session({ projectPath: '/p3', lastModified: 9999 }),
+    ];
+    const out = getAvailableProjects(list);
+    expect(out.map((p) => p.path)).toEqual(['/p3', '/p1', '/p2']);
   });
 
   it('uses the last path segment for the label, normalizing backslashes', () => {
@@ -199,13 +211,9 @@ describe('getAvailableProjects', () => {
     expect(out).toEqual([{ path: 'singletoken', label: 'singletoken', count: 1 }]);
   });
 
-  it('sorts case-insensitively so capitalized labels interleave with lowercase ones', () => {
-    const list = [
-      session({ projectPath: '/x/ZebraProject' }),
-      session({ projectPath: '/x/apps' }),
-      session({ projectPath: '/x/Banana' }),
-    ];
-    const out = getAvailableProjects(list);
-    expect(out.map((p) => p.label)).toEqual(['apps', 'Banana', 'ZebraProject']);
+  it('does not include the internal recency anchor in the returned shape', () => {
+    const out = getAvailableProjects([session({ projectPath: '/p', lastModified: 42 })]);
+    // Strict shape: only { path, label, count }, no 'recent' / 'lastModified' leak.
+    expect(Object.keys(out[0]).sort()).toEqual(['count', 'label', 'path']);
   });
 });
