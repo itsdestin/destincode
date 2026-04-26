@@ -1,9 +1,18 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
+import {
+  applyFilters,
+  sortSessions,
+  groupSessions,
+  getAvailableProjects,
+  type FilterState,
+  type FlagName,
+} from './resume-browser-filters';
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
@@ -30,11 +39,109 @@ function formatSize(bytes: number): string {
   return `${(kb / 1024).toFixed(1)}MB`;
 }
 
-// Keep in sync with SESSION_FLAG_NAMES in shared/types.ts. The renderer imports
-// from shared/types would be ideal, but that module is CommonJS — we use a
-// literal list here to avoid the compile coupling and keep the flag order
-// stable in the UI (Priority first, Helpful, then Complete).
-type FlagName = 'priority' | 'helpful' | 'complete';
+// Shared trigger-button shape for the filter row beneath the search bar.
+// Inactive pills look like the search input frame; active pills tint with the
+// accent so the user can see at a glance which pills have departed from
+// default state — narrowing filters (Projects, Tags) AND a non-default sort
+// direction (Sort). Don't "tighten" the predicate to only narrowing — Sort
+// would lose its visual cue.
+function FilterPill({
+  active,
+  onClick,
+  children,
+  hasPopup,
+  expanded,
+  buttonRef,
+}: {
+  active: boolean;
+  // Receives the MouseEvent so dropdown-owning callers can stopPropagation()
+  // — the Projects + Tags pills (Tasks 4 + 5) rely on this to keep their
+  // outside-click handler from immediately re-closing the dropdown.
+  onClick: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+  // Optional: when the pill opens a dropdown, callers pass these so screen
+  // readers announce both "active filter" (aria-pressed) AND dropdown state.
+  // expanded is only read when hasPopup is true; React strips both attrs
+  // entirely when hasPopup is falsy (Sort pill).
+  hasPopup?: boolean;
+  expanded?: boolean;
+  // Optional: dropdown-owning callers pass a ref so they can measure the
+  // trigger's bounding rect for portal positioning. Sort doesn't need it.
+  buttonRef?: React.Ref<HTMLButtonElement>;
+}) {
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      onClick={onClick}
+      // aria-pressed conveys the toggle state to assistive tech. Mirrors the
+      // Show Complete toggle's pattern further down in this file.
+      aria-pressed={active}
+      aria-haspopup={hasPopup ? 'listbox' : undefined}
+      aria-expanded={hasPopup ? !!expanded : undefined}
+      className={`px-2.5 py-1 rounded-full text-[11px] flex items-center gap-1.5 transition-colors duration-75 ${
+        active
+          ? 'bg-accent/10 border border-accent/40 text-fg'
+          : 'bg-inset border border-edge-dim text-fg-muted hover:text-fg'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Compute fixed-position coords for a portaled dropdown anchored just below a
+// trigger button. Clamps the left coordinate so a wide dropdown near the right
+// edge of the viewport shifts left rather than overflowing off-screen. Pure;
+// callers invoke it synchronously inside the click handler so the dropdown can
+// render in the same React commit as `openPill` flipping (no two-render lag).
+function measureDropdown(
+  triggerRef: React.RefObject<HTMLButtonElement | null>,
+  dropdownWidthPx: number,
+): { top: number; left: number } | null {
+  const el = triggerRef.current;
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  // Clamp so the dropdown's right edge stays at least 8px inside the viewport.
+  // If the trigger sits too far right, the dropdown shifts left.
+  const maxLeft = Math.max(8, window.innerWidth - dropdownWidthPx - 8);
+  return {
+    top: rect.bottom + 4,
+    left: Math.min(rect.left, maxLeft),
+  };
+}
+
+// While a dropdown is open, re-measure the trigger on window resize / scroll
+// so the dropdown stays anchored as the viewport changes. The initial position
+// is captured synchronously in the pill's click handler — this hook only
+// handles updates after open, not the open itself.
+function useDropdownReposition(
+  isOpen: boolean,
+  triggerRef: React.RefObject<HTMLButtonElement | null>,
+  dropdownWidthPx: number,
+  setPosition: React.Dispatch<React.SetStateAction<{ top: number; left: number } | null>>,
+): void {
+  useEffect(() => {
+    if (!isOpen) return;
+    const remeasure = () => {
+      const next = measureDropdown(triggerRef, dropdownWidthPx);
+      if (next) setPosition(next);
+    };
+    window.addEventListener('resize', remeasure);
+    // Capture-phase scroll listener catches scroll on any ancestor, not just
+    // window — needed if a scrollable parent moves the trigger.
+    window.addEventListener('scroll', remeasure, true);
+    return () => {
+      window.removeEventListener('resize', remeasure);
+      window.removeEventListener('scroll', remeasure, true);
+    };
+  }, [isOpen, triggerRef, dropdownWidthPx, setPosition]);
+}
+
+// FlagName is imported from resume-browser-filters.ts (single source of truth).
+// Kept in sync with SESSION_FLAG_NAMES in shared/types.ts; that module is
+// CommonJS so we don't import it directly. FLAG_ORDER fixes the pill / badge
+// ordering in the UI (Priority first, Helpful, then Complete).
 const FLAG_ORDER: FlagName[] = ['priority', 'helpful', 'complete'];
 const FLAG_LABEL: Record<FlagName, string> = {
   priority: 'Priority',
@@ -47,6 +154,11 @@ const FLAG_BADGE: Record<FlagName, string> = {
   helpful: '●',
   complete: '✓',
 };
+// Tags filter exposes only Priority + Helpful — Complete is owned by the
+// Show Complete header toggle. Tags pill dropdown + label both iterate this
+// constant; adding a custom tag in the future is a list extension here, not
+// a UI rewrite.
+const TAG_FILTER_OPTIONS: ReadonlyArray<Exclude<FlagName, 'complete'>> = ['priority', 'helpful'] as const;
 
 interface PastSession {
   sessionId: string;
@@ -75,6 +187,15 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [search, setSearch] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useScrollFade<HTMLDivElement>();
+  // Wraps the filter pill row so outside-click can close the active dropdown.
+  const filterRowRef = useRef<HTMLDivElement>(null);
+  // Trigger refs for portal positioning + dropdown refs so the outside-click
+  // handler can recognize clicks inside the portaled dropdown body (which is
+  // no longer a child of filterRowRef).
+  const projectsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const tagsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const projectsDropdownRef = useRef<HTMLDivElement | null>(null);
+  const tagsDropdownRef = useRef<HTMLDivElement | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [resumeModel, setResumeModel] = useState<string>(defaultModel || 'sonnet');
   const [resumeDangerous, setResumeDangerous] = useState(defaultSkipPermissions || false);
@@ -96,6 +217,17 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // mid-interaction when Show Complete is off. Reset on every open.
   const [stickyComplete, setStickyComplete] = useState<Set<string>>(new Set());
 
+  // New filter state — all reset on each open (no localStorage). Default values
+  // (empty Sets, sortDir='desc') produce identical behaviour to the prior
+  // hard-coded filter pipeline.
+  const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
+  const [selectedTags, setSelectedTags] = useState<Set<FlagName>>(new Set());
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  // Tracks which filter pill's dropdown is currently open. null = both closed.
+  // Single state instead of two booleans so the dropdowns are mutually exclusive.
+  const [openPill, setOpenPill] = useState<'projects' | 'tags' | null>(null);
+
   // Fetch sessions when opened
   useEffect(() => {
     if (open) {
@@ -105,6 +237,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setResumeDangerous(defaultSkipPermissions || false);
       // Reset the sticky-visible set each open — previously kept rows drop out.
       setStickyComplete(new Set());
+      // Reset filter pills each open — current spec: no persistence.
+      setSelectedProjects(new Set());
+      setSelectedTags(new Set());
+      setSortDir('desc');
       setLoading(true);
       (window as any).claude.session.browse()
         .then((list: PastSession[]) => setSessions(list))
@@ -115,63 +251,110 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   }, [open]);
 
-  // Close on Escape — collapse the expanded row first, then close the browser.
-  // Extracted into a callback so useEscClose sees the layered close behavior.
+  // Layered ESC: close an open filter dropdown first, then collapse the
+  // expanded row, then close the browser. Each ESC press peels one layer.
   const handleEscClose = useCallback(() => {
-    if (expandedId) setExpandedId(null);
+    if (openPill) setOpenPill(null);
+    else if (expandedId) setExpandedId(null);
     else onClose();
-  }, [expandedId, onClose]);
+  }, [openPill, expandedId, onClose]);
   useEscClose(open, handleEscClose);
 
-  const filtered = useMemo(() => {
-    // Hide complete sessions by default; Show Complete toggle reveals them.
-    // Priority does NOT override hiding — a complete+priority session stays hidden.
-    // Exception: sessions just flagged Complete during this open stay visible
-    // (stickyComplete) so the row doesn't disappear mid-interaction.
-    const base = showComplete
-      ? sessions
-      : sessions.filter((s) => !s.flags?.complete || stickyComplete.has(s.sessionId));
-    if (!search.trim()) return base;
-    const q = search.toLowerCase();
-    return base.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) ||
-        s.projectPath.toLowerCase().includes(q),
-    );
-  }, [sessions, search, showComplete, stickyComplete]);
+  // Close the active filter dropdown on outside click. Recognizes clicks
+  // inside the trigger row AND the portaled dropdowns (which live in
+  // document.body, outside filterRowRef).
+  useEffect(() => {
+    if (!openPill) return;
+    const handler = (e: Event) => {
+      const target = e.target as Node;
+      if (filterRowRef.current?.contains(target)) return;
+      if (projectsDropdownRef.current?.contains(target)) return;
+      if (tagsDropdownRef.current?.contains(target)) return;
+      setOpenPill(null);
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [openPill]);
 
-  // Group by project path AND sort priority sessions to the top of each group.
-  // Secondary sort is lastModified desc (preserves the existing default).
+  const filtered = useMemo(() => {
+    // Filter pipeline lives in resume-browser-filters.ts so it can be unit tested.
+    // Order: Show Complete + sticky → project → tag → search.
+    const state: FilterState = {
+      search,
+      showComplete,
+      stickyComplete,
+      selectedProjects,
+      selectedTags,
+    };
+    return applyFilters(sessions, state);
+  }, [sessions, search, showComplete, stickyComplete, selectedProjects, selectedTags]);
+
+  // Group by project path; within-group sort priority-pinned + lastModified by sortDir.
+  // Between-group order also follows sortDir (newest-first when desc, oldest-first when asc).
   const grouped = useMemo(() => {
     if (search.trim()) return null;
-    const groups = new Map<string, PastSession[]>();
-    for (const s of filtered) {
-      const list = groups.get(s.projectPath) || [];
-      list.push(s);
-      groups.set(s.projectPath, list);
-    }
-    for (const [k, arr] of groups) {
-      arr.sort((a, b) => {
-        const ap = a.flags?.priority ? 0 : 1;
-        const bp = b.flags?.priority ? 0 : 1;
-        if (ap !== bp) return ap - bp;
-        return b.lastModified - a.lastModified;
-      });
-      groups.set(k, arr);
-    }
-    return groups;
-  }, [filtered, search]);
+    return groupSessions(filtered, sortDir);
+  }, [filtered, search, sortDir]);
 
-  // Flat list (search mode) — still pin priority to the top.
+  // Flat list (search mode) — priority-pinned, lastModified by sortDir.
   const flatSorted = useMemo(() => {
     if (!search.trim()) return filtered;
-    return [...filtered].sort((a, b) => {
-      const ap = a.flags?.priority ? 0 : 1;
-      const bp = b.flags?.priority ? 0 : 1;
-      if (ap !== bp) return ap - bp;
-      return b.lastModified - a.lastModified;
-    });
-  }, [filtered, search]);
+    return sortSessions(filtered, sortDir);
+  }, [filtered, search, sortDir]);
+
+  // Distinct projects with counts — what the Projects pill dropdown displays.
+  // Derived from the unfiltered session list so the dropdown always shows
+  // every known project, even when the user has narrowed the visible list.
+  const availableProjects = useMemo(() => getAvailableProjects(sessions), [sessions]);
+
+  // Trigger label for the Projects pill: 0 selected → "Projects",
+  // 1 → label, 2-3 → comma-joined labels, 4+ → "Projects (N)".
+  const projectsLabel = useMemo(() => {
+    if (selectedProjects.size === 0) return 'Projects';
+    const selectedList = availableProjects.filter((p) => selectedProjects.has(p.path));
+    if (selectedList.length === 1) return selectedList[0].label;
+    if (selectedList.length <= 3) return selectedList.map((p) => p.label).join(', ');
+    return `Projects (${selectedList.length})`;
+  }, [selectedProjects, availableProjects]);
+
+  // Trigger label for the Tags pill: 0 → "Tags"; 1 → flag label; 2 → "A + B".
+  // Iterates TAG_FILTER_OPTIONS so adding a custom tag is a list extension
+  // there rather than a memo edit here.
+  const tagsLabel = useMemo(() => {
+    if (selectedTags.size === 0) return 'Tags';
+    return TAG_FILTER_OPTIONS
+      .filter((tag) => selectedTags.has(tag))
+      .map((tag) => FLAG_LABEL[tag])
+      .join(' + ');
+  }, [selectedTags]);
+
+  // Portal-anchored dropdown positions. Dropdown widths match the className
+  // (Projects: w-64 = 256px, Tags: w-44 = 176px). Keep these in sync if the
+  // className width changes.
+  // The position is captured synchronously inside each pill's onClick handler
+  // (not via useLayoutEffect) so the dropdown can render in the same React
+  // commit as `openPill` flipping — eliminates the two-render lag the prior
+  // implementation had between pill click and dropdown appearing.
+  const [projectsDropdownPos, setProjectsDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  const [tagsDropdownPos, setTagsDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  // Reposition while open (resize / scroll updates only — not the initial
+  // measurement, which is sync in the click handler).
+  useDropdownReposition(openPill === 'projects', projectsTriggerRef, 256, setProjectsDropdownPos);
+  useDropdownReposition(openPill === 'tags', tagsTriggerRef, 176, setTagsDropdownPos);
+
+  // Clear stale position state when the dropdown closes via outside-click or
+  // ESC (the click handlers do this themselves, but those external paths
+  // don't). Saves a tiny amount of memory and prevents a stale position from
+  // briefly flashing if the same pill reopens before useDropdownReposition
+  // has a chance to update.
+  useEffect(() => {
+    if (openPill !== 'projects' && projectsDropdownPos !== null) setProjectsDropdownPos(null);
+    if (openPill !== 'tags' && tagsDropdownPos !== null) setTagsDropdownPos(null);
+  }, [openPill, projectsDropdownPos, tagsDropdownPos]);
 
   // Optimistically flip a flag in local state, then persist via IPC. On failure
   // we revert. A meta-changed push from other tabs/devices also refreshes the
@@ -409,6 +592,146 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 placeholder="Search sessions..."
                 className="flex-1 bg-transparent text-sm text-fg placeholder-fg-muted outline-none"
               />
+            </div>
+            <div ref={filterRowRef} className="flex items-center gap-1.5 mt-2 relative">
+              {/* Projects: multi-select dropdown over distinct projectPaths in the loaded sessions.
+                  Dropdown is portaled to document.body so it escapes the OverlayPanel's
+                  overflow:hidden clipping (lets it overlap the panel edge). */}
+              <FilterPill
+                buttonRef={projectsTriggerRef}
+                active={selectedProjects.size > 0}
+                hasPopup
+                expanded={openPill === 'projects'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Measure synchronously so the dropdown renders with its final
+                  // position in the same commit as openPill flipping. Avoids the
+                  // two-render lag the prior useLayoutEffect approach had.
+                  if (openPill === 'projects') {
+                    setOpenPill(null);
+                    setProjectsDropdownPos(null);
+                  } else {
+                    setProjectsDropdownPos(measureDropdown(projectsTriggerRef, 256));
+                    setOpenPill('projects');
+                  }
+                }}
+              >
+                <span>{projectsLabel}</span>
+                <span className="text-fg-faint text-[9px]">▾</span>
+              </FilterPill>
+              {openPill === 'projects' && projectsDropdownPos && createPortal(
+                <div
+                  ref={projectsDropdownRef}
+                  className="layer-surface w-64 max-w-[calc(100vw-1rem)] overflow-hidden"
+                  style={{
+                    position: 'fixed',
+                    top: projectsDropdownPos.top,
+                    left: projectsDropdownPos.left,
+                    zIndex: 60,
+                  }}
+                >
+                  {/* "Clear" — text-only affordance that empties selectedProjects (which the data
+                      model treats as "filter inactive"). No checkbox visual so it doesn't read as
+                      a master "select every project" toggle. Muted small-caps style separates it
+                      from the checkbox rows below. Always visible; clicks no-op when already cleared. */}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedProjects(new Set())}
+                    className="w-full text-left px-2.5 py-1.5 text-[11px] uppercase tracking-wider text-fg-muted hover:text-fg hover:bg-inset transition-colors"
+                  >
+                    Clear
+                  </button>
+                  <div className="max-h-56 overflow-y-auto border-t border-edge-dim">
+                    {availableProjects.map((p) => {
+                      const checked = selectedProjects.has(p.path);
+                      return (
+                        <button
+                          key={p.path}
+                          type="button"
+                          onClick={() => {
+                            setSelectedProjects((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(p.path)) next.delete(p.path);
+                              else next.add(p.path);
+                              return next;
+                            });
+                          }}
+                          className="w-full text-left px-2.5 py-1.5 text-xs flex items-center gap-2 hover:bg-inset transition-colors text-fg-2"
+                        >
+                          <span className={`w-3 h-3 shrink-0 rounded-sm border ${checked ? 'bg-accent border-accent' : 'border-edge'}`} />
+                          <span className="flex-1 truncate" title={p.path}>{p.label}</span>
+                          <span className="text-[10px] text-fg-faint shrink-0">{p.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>,
+                document.body,
+              )}
+
+              {/* Tags: multi-select dropdown over the per-session flag set. Priority + Helpful only;
+                  Complete stays owned by the Show Complete toggle in the header. Dropdown is
+                  portaled to escape the OverlayPanel's overflow:hidden clipping. */}
+              <FilterPill
+                buttonRef={tagsTriggerRef}
+                active={selectedTags.size > 0}
+                hasPopup
+                expanded={openPill === 'tags'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Measure synchronously — see Projects onClick comment.
+                  if (openPill === 'tags') {
+                    setOpenPill(null);
+                    setTagsDropdownPos(null);
+                  } else {
+                    setTagsDropdownPos(measureDropdown(tagsTriggerRef, 176));
+                    setOpenPill('tags');
+                  }
+                }}
+              >
+                <span>{tagsLabel}</span>
+                <span className="text-fg-faint text-[9px]">▾</span>
+              </FilterPill>
+              {openPill === 'tags' && tagsDropdownPos && createPortal(
+                <div
+                  ref={tagsDropdownRef}
+                  className="layer-surface w-44 max-w-[calc(100vw-1rem)] overflow-hidden"
+                  style={{
+                    position: 'fixed',
+                    top: tagsDropdownPos.top,
+                    left: tagsDropdownPos.left,
+                    zIndex: 60,
+                  }}
+                >
+                  {TAG_FILTER_OPTIONS.map((tag) => {
+                    const checked = selectedTags.has(tag);
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => {
+                          setSelectedTags((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(tag)) next.delete(tag);
+                            else next.add(tag);
+                            return next;
+                          });
+                        }}
+                        className="w-full text-left px-2.5 py-1.5 text-xs flex items-center gap-2 hover:bg-inset transition-colors text-fg-2"
+                      >
+                        <span className={`w-3 h-3 shrink-0 rounded-sm border ${checked ? 'bg-accent border-accent' : 'border-edge'}`} />
+                        <span className="flex-1">{FLAG_LABEL[tag]}</span>
+                      </button>
+                    );
+                  })}
+                </div>,
+                document.body,
+              )}
+
+              {/* Sort toggle — flips lastModified direction. Priority-pin still wins. */}
+              <FilterPill active={sortDir !== 'desc'} onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}>
+                {sortDir === 'desc' ? 'Most recent ↓' : 'Oldest first ↑'}
+              </FilterPill>
             </div>
           </div>
 
