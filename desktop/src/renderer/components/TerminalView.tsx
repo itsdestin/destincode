@@ -5,8 +5,10 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { usePtyOutput } from '../hooks/useIpc';
+import { usePtyRawBytes } from '../hooks/usePtyRawBytes';
 import { registerTerminal, unregisterTerminal, notifyBufferReady } from '../hooks/terminal-registry';
 import { useTheme } from '../state/theme-context';
+import { isTouchDevice } from '../platform';
 
 /** Terminal always uses Cascadia Code — user font selection applies to the
  *  chat UI only. Proportional or display fonts break xterm's character grid. */
@@ -80,6 +82,12 @@ export default function TerminalView({ sessionId, visible }: Props) {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    // Touch platforms (Android, remote browser) render xterm display-only:
+    // typing flows through the InputBar minimal-mode <textarea> instead of
+    // xterm's hidden textarea (which would summon the soft keyboard and
+    // expose the historical xterm.js mobile IME issues). disableStdin
+    // suppresses xterm's input handling entirely.
+    const touch = isTouchDevice();
     const terminal = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
@@ -87,9 +95,10 @@ export default function TerminalView({ sessionId, visible }: Props) {
       // constantly move the cursor; without this, it visibly bounces around
       // when the user is in chat view (terminal unfocused but still rendering).
       cursorInactiveStyle: 'none',
-      fontSize: 14,
+      fontSize: touch ? 12 : 14,
       fontFamily: TERMINAL_FONT,
       theme: getXtermTheme(false),
+      disableStdin: touch,
     });
 
     const fitAddon = new FitAddon();
@@ -244,10 +253,18 @@ export default function TerminalView({ sessionId, visible }: Props) {
     // into the chat InputBar can also trigger xterm's bracketed paste handler,
     // sending the raw multi-line text (wrapped in ESC[200~/ESC[201~) to the
     // PTY alongside the chat InputBar's sanitized single-line send.
-    terminal.onData((data) => {
-      if (!visibleRef.current) return;
-      window.claude.session.sendInput(sessionId, data);
-    });
+    //
+    // Skipped on touch platforms — disableStdin already silences xterm's
+    // keyboard input, but the paste listener is registered separately, so we
+    // also skip onData wiring to make sure no path can deliver text from
+    // xterm's hidden textarea to the PTY (the InputBar minimal-mode textarea
+    // is the canonical input on touch).
+    if (!touch) {
+      terminal.onData((data) => {
+        if (!visibleRef.current) return;
+        window.claude.session.sendInput(sessionId, data);
+      });
+    }
 
     // Resize handler
     window.addEventListener('resize', fitAndSync);
@@ -294,8 +311,18 @@ export default function TerminalView({ sessionId, visible }: Props) {
     }
   }, [visible, sessionId]);
 
-  // Write PTY output to terminal; notify registry when buffer is updated
-  usePtyOutput(sessionId, (data) => {
+  // Write PTY output to terminal; notify registry when buffer is updated.
+  // Touch platforms (Android, remote browser) consume pty:raw-bytes (Uint8Array)
+  // from the WebSocket bridge — Tier 2 of android-terminal-data-parity. Desktop
+  // continues to consume pty:output (string) from node-pty's UTF-8-decoded stream.
+  // isTouchDevice() is a stable platform constant, so calling different hooks
+  // based on it does not violate React's rules-of-hooks (the hook order is
+  // stable for the lifetime of the renderer).
+  const useRawBytes = isTouchDevice();
+  usePtyOutput(useRawBytes ? null : sessionId, (data) => {
+    terminalRef.current?.write(data, () => notifyBufferReady(sessionId));
+  });
+  usePtyRawBytes(useRawBytes ? sessionId : null, (data) => {
     terminalRef.current?.write(data, () => notifyBufferReady(sessionId));
   });
 
