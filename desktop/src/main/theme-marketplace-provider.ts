@@ -9,7 +9,8 @@ import type {
   ThemeMarketplaceFilters,
   ThemeRegistryEntryWithStatus,
 } from '../shared/theme-marketplace-types';
-import { THEMES_DIR } from './theme-watcher';
+import { THEMES_DIR, listUserThemes, userThemeManifest } from './theme-watcher';
+import { synthesizeLocalThemeEntries, type LocalThemeRecord } from './local-theme-synthesizer';
 import { generateThemePreview } from './theme-preview-generator';
 import { SkillConfigStore } from './skill-config-store';
 
@@ -118,10 +119,35 @@ export class ThemeMarketplaceProvider {
     }
 
     // Annotate with install status
-    return themes.map(t => ({
+    const marketplaceEntries = themes.map(t => ({
       ...t,
       installed: this.isInstalled(t.slug),
     }));
+
+    // Merge in local user themes (built via /theme-builder, never published).
+    // Any on-disk theme not in the marketplace list becomes a synthesized local entry.
+    // listUserThemes() returns slug strings only — we read each manifest here.
+    const localRecords: LocalThemeRecord[] = [];
+    try {
+      for (const slug of listUserThemes()) {
+        try {
+          const manifestPath = userThemeManifest(slug);
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          const previewPath = path.join(THEMES_DIR, slug, 'preview.png');
+          localRecords.push({
+            slug,
+            manifest,
+            hasPreview: fs.existsSync(previewPath),
+          });
+        } catch (err) {
+          console.warn(`[ThemeMarketplace] Skipping local theme ${slug}: failed to read manifest:`, err);
+        }
+      }
+    } catch (err) {
+      console.warn('[ThemeMarketplace] Failed to enumerate local themes:', err);
+    }
+
+    return synthesizeLocalThemeEntries(marketplaceEntries, localRecords);
   }
 
   /** Get a single theme's detail from the registry. */
