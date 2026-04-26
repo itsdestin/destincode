@@ -392,6 +392,20 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     return () => { try { unsub?.(); } catch {} };
   }, []);
 
+  // Local user themes are surfaced in themeEntries via on-the-fly synthesis
+  // in the main-process listThemes(). When the theme-watcher fires a reload
+  // (chokidar detected a change in ~/.claude/wecoded-themes/), the merged
+  // list may have changed — refetch so the Library reflects new/deleted/
+  // edited user themes immediately rather than at next mount.
+  useEffect(() => {
+    const onReload = (window as any).claude?.theme?.onReload;
+    if (typeof onReload !== 'function') return;
+    const unsub = onReload(() => {
+      fetchAll();
+    });
+    return () => { try { unsub?.(); } catch {} };
+  }, [fetchAll]);
+
   // ── Memoized value ───────────────────────────────────────────────────────
 
   const value = useMemo<MarketplaceContextValue>(() => ({
