@@ -38,7 +38,10 @@ export function usePerformanceConfig(): UsePerformanceConfigResult {
 
   const setPreferPowerSaving = useCallback(async (value: boolean) => {
     // Optimistic update: flip saved synchronously so the toggle responds
-    // immediately. If the IPC fails, revert.
+    // immediately. If the IPC fails, revert AND re-throw — the re-throw is
+    // load-bearing. Without it, an awaiting consumer in PerformanceSection
+    // sees a clean resolution even when persistence failed, so error UX
+    // (toast, rollback indicator) never fires. Don't "simplify" by swallowing.
     setSnapshot((prev) => ({ ...prev, preferPowerSaving: value }));
     try {
       await window.claude.performance.set(value);
