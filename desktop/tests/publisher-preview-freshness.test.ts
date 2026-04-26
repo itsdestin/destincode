@@ -30,4 +30,13 @@ describe('isPreviewFresh', () => {
     fs.writeFileSync(manifestPath, '{}');
     expect(isPreviewFresh(tmp)).toBe(false);
   });
+
+  it('returns true when preview.png mtime equals manifest.json mtime', () => {
+    fs.writeFileSync(manifestPath, '{}');
+    fs.writeFileSync(previewPath, 'png');
+    const t = new Date(Date.now() - 60_000);
+    fs.utimesSync(manifestPath, t, t);
+    fs.utimesSync(previewPath, t, t);
+    expect(isPreviewFresh(tmp)).toBe(true);
+  });
 });
