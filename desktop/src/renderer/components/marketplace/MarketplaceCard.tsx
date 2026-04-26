@@ -3,7 +3,7 @@
 // InstallFavoriteCorner; integrations render through the same component via
 // optional iconUrl + accentColor props (no separate IntegrationCard).
 
-import React, { useState } from "react";
+import React, { useId, useState } from "react";
 import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
@@ -84,6 +84,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const isInstalled = !!installed;
   // Derived: true only when this card represents a locally-built theme (not in marketplace).
   const isLocalTheme = item.kind === 'theme' && !!item.entry.isLocal;
+  const localTooltipId = useId();
   const [iconFailed, setIconFailed] = useState(false);
 
   const toggleFavorite = () => {
@@ -191,6 +192,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
                   onKeyDown={(e) => e.stopPropagation()}
                   className="text-fg-muted hover:text-fg-2 leading-none focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-full"
                   aria-label="What does Local mean?"
+                  aria-describedby={localTooltipId}
                 >
                   <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                     <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.5" />
@@ -200,6 +202,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
                 {/* Tooltip — only shown on hover/focus of the (i). The group-hover on the
                      parent inline-flex handles both badge hover and the icon button. */}
                 <div
+                  id={localTooltipId}
                   role="tooltip"
                   className="pointer-events-none absolute top-full left-0 mt-1 w-64 z-20 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity layer-surface p-3 text-xs text-fg-2 leading-relaxed"
                 >
