@@ -97,8 +97,17 @@ class PluginInstaller(
             }
 
             // Guard: already installed via YouCoded
+            // Fix: accept the manifest at either ".claude-plugin/plugin.json" OR root
+            // "plugin.json". Some plugins (incl. our bundled wecoded-themes-plugin and
+            // wecoded-marketplace-publisher) ship the manifest at the root, and
+            // ensurePluginJson() does NOT normalize when a root manifest exists ("Claude
+            // Code will find it at root"). Without this dual-path check, every launch
+            // missed the guard, re-ran installFromLocal, returned Success, fired
+            // onPluginsChanged, and typed /reload-plugins into the active session.
             val targetDir = File(pluginsDir, id)
-            if (targetDir.exists() && File(targetDir, ".claude-plugin/plugin.json").exists()) {
+            val hasManifest = File(targetDir, ".claude-plugin/plugin.json").exists() ||
+                File(targetDir, "plugin.json").exists()
+            if (targetDir.exists() && hasManifest) {
                 return@withContext InstallResult.AlreadyInstalled("YouCoded")
             }
 
