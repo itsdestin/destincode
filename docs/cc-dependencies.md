@@ -163,3 +163,14 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
   - `desktop/tests/attention-classifier-parity.test.ts` + `shared-fixtures/attention-classifier/` (regression coverage)
 - **Why coupled:** Patterns must match Claude Code's CLI output. Visual changes to the Ink UI (spinner glyph, prompt copy, error banner color) can break classification silently.
 - **Review trigger:** Any Claude Code CHANGELOG entry mentioning TUI / Ink / prompt / spinner / progress updates.
+
+### Terminal rendering surface (Tier 2)
+
+- **What:** xterm.js (in the React WebView) is the sole terminal renderer on both platforms. Bytes flow desktop pty:output (string) → xterm; Android pty:raw-bytes (base64 → Uint8Array) → xterm. The `TerminalView` component is shared — touch platforms run with `disableStdin: true` and consume `pty:raw-bytes` via `usePtyRawBytes`; desktop runs unchanged.
+- **CC-coupled files:**
+  - `desktop/src/renderer/components/TerminalView.tsx` (renderer)
+  - `desktop/src/renderer/hooks/usePtyRawBytes.ts` (Android byte consumer)
+  - `app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt` (`launchRawByteBroadcast`)
+  - `terminal-emulator-vendored/` (Termux v0.118.1 + RawByteListener patch)
+- **Why coupled:** xterm renders Claude Code's TUI byte stream verbatim. Any CC change that re-ANSI-encodes the TUI differently (e.g. switches Ink to alternate-screen mode `\e[?1049h`, changes how it clears screen / scrolls regions, or starts using sequences xterm doesn't support) affects what users see — including the known-issue scrollback duplication when CC redraws the full TUI. CC switching to alt-screen would actually FIX the scrollback duplication, but would break our `terminal:get-screen-text` IPC if we relied on the main-screen buffer.
+- **Review trigger:** CC CHANGELOG entries mentioning terminal rendering, alt-screen, scroll regions, ANSI escape sequence usage, or TUI redraw strategy.

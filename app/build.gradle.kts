@@ -103,22 +103,18 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
 
-    // Termux terminal emulator (PTY session management) + terminal view (native rendering).
-    // LICENSE NOTE: Both are GPLv3. Linking them into the Android APK is why the Android
-    // application is distributed under GPLv3 (see app/LICENSE). The desktop Electron app
-    // has no such dependency and remains MIT-licensed. Swapping in a permissively-licensed
-    // terminal library is the only way to relicense the Android app.
-    // Vendored terminal-emulator module with RawByteListener patch. Don't
-    // add back the Maven dep — that pulls unpatched classes and creates
-    // duplicate-class errors.
+    // Termux terminal emulator (vendored) — runs the PTY session and emits
+    // raw bytes via the patched RawByteListener. Tier 2 (xterm-in-WebView)
+    // moved rendering to xterm.js in the React WebView; the native Termux
+    // terminal-view library is no longer referenced. Vendored module stays
+    // because it owns the PTY fork + JNI waitpid loop + RawByteListener.
+    //
+    // LICENSE NOTE: terminal-emulator-vendored is GPLv3 (Termux's original
+    // license is preserved in the vendor drop). Linking it into the Android
+    // APK is why the Android application is distributed under GPLv3 (see
+    // app/LICENSE). The desktop Electron app has no such dependency and
+    // remains MIT-licensed.
     implementation(project(":terminal-emulator-vendored"))
-
-    // terminal-view stays on Maven — we don't patch the View layer.
-    // Exclude terminal-emulator from its transitive deps so Gradle uses
-    // our vendored version exclusively.
-    implementation("com.github.termux.termux-app:terminal-view:v0.118.1") {
-        exclude(group = "com.github.termux.termux-app", module = "terminal-emulator")
-    }
 
     // Apache Commons Compress for extracting .deb packages (ar + tar + xz + zstd)
     implementation("org.apache.commons:commons-compress:1.27.1")
