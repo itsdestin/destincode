@@ -1920,8 +1920,17 @@ function AppInner() {
             </div>
             <div
               className="flex-1 overflow-hidden relative"
-              style={getPlatform() === 'android' && currentViewMode === 'terminal' ? { backgroundColor: 'transparent', pointerEvents: 'none' } : undefined}
             >
+              {/* Tier 2 of android-terminal-data-parity: xterm.js is the sole
+                  terminal renderer on every platform. The Android-only style
+                  (backgroundColor transparent + pointerEvents none) and the
+                  `getPlatform() !== 'android'` gate around <TerminalView /> are
+                  gone — they existed so touches/visibility passed through the
+                  WebView to the native Termux TerminalView underneath. xterm
+                  now lives in the WebView, so the WebView itself is the
+                  terminal surface. The native Compose TerminalView is still
+                  rendering during this intermediate task; xterm's opaque
+                  background covers it. Task 5 deletes the native renderer. */}
               {sessions.map((s) => (
                 <React.Fragment key={s.id}>
                   <ErrorBoundary name="Chat">
@@ -1931,15 +1940,12 @@ function AppInner() {
                       resumeInfo={resumeInfo}
                     />
                   </ErrorBoundary>
-                  {/* On Android, native Termux handles terminal — don't mount xterm.js */}
-                  {getPlatform() !== 'android' && (
-                    <ErrorBoundary name="Terminal">
-                      <TerminalView
-                        sessionId={s.id}
-                        visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'terminal'}
-                      />
-                    </ErrorBoundary>
-                  )}
+                  <ErrorBoundary name="Terminal">
+                    <TerminalView
+                      sessionId={s.id}
+                      visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'terminal'}
+                    />
+                  </ErrorBoundary>
                 </React.Fragment>
               ))}
               {/* Initializing overlay — shown before Claude is ready, but only in chat view.
