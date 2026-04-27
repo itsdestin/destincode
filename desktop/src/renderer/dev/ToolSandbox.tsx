@@ -10,6 +10,7 @@ import React from 'react';
 import { ChatProvider } from '../state/chat-context';
 import ToolCard from '../components/ToolCard';
 import { loadFixture, type FixtureBlock } from './fixture-loader';
+import type { ToolCallState } from '../../shared/types';
 
 // Vite's import.meta.glob eagerly reads every fixture as a raw string at build
 // time. We silence tsc because our tsconfig uses `module: "commonjs"` which
@@ -23,16 +24,70 @@ const fixtures = import.meta.glob('./fixtures/*.jsonl', {
   eager: true,
 }) as Record<string, string>;
 
-// Renders a single block — text as prose, tool as a real <ToolCard>.
-function renderBlock(block: FixtureBlock, index: number): React.ReactNode {
-  if (block.kind === 'text') {
-    return (
-      <p key={`text-${index}`} style={{ margin: '8px 0', lineHeight: 1.5, opacity: 0.9 }}>
-        {block.text}
-      </p>
-    );
+// Skills float to the end of the turn in real chat (see AssistantTurnBubble
+// extraction in Task 3); mirror that here so the sandbox shows the real
+// layout outcome when we prototype the compact Skill variant.
+function orderedBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
+  const skillBlocks: FixtureBlock[] = [];
+  const otherBlocks: FixtureBlock[] = [];
+  for (const b of blocks) {
+    if (b.kind === 'tool' && b.tool.toolName === 'Skill') {
+      skillBlocks.push(b);
+    } else {
+      otherBlocks.push(b);
+    }
   }
-  return <ToolCard key={block.tool.toolUseId} tool={block.tool} />;
+  return [...otherBlocks, ...skillBlocks];
+}
+
+// Walks the (already Skill-reordered) blocks. Consecutive non-Skill tools
+// get wrapped in a shared bordered container with inGroup={true} on each
+// card so they read visually as one tool group (mirrors the production
+// CollapsedToolGroup styling without importing it — the import path
+// caused a runtime crash, so we reproduce the visual outcome locally).
+// Skill tools always render standalone — they extract from groups in
+// production (Task 3) and we mirror that here.
+function renderBlocks(blocks: FixtureBlock[]): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let toolBuffer: ToolCallState[] = [];
+
+  function flushToolBuffer(key: string) {
+    if (toolBuffer.length === 0) return;
+    if (toolBuffer.length === 1) {
+      const t = toolBuffer[0];
+      out.push(<ToolCard key={t.toolUseId} tool={t} />);
+    } else {
+      out.push(
+        <div key={key} className="border border-edge rounded-lg overflow-hidden my-1">
+          <div className="px-2 py-1.5 space-y-0.5">
+            {toolBuffer.map((t) => (
+              <ToolCard key={t.toolUseId} tool={t} inGroup />
+            ))}
+          </div>
+        </div>
+      );
+    }
+    toolBuffer = [];
+  }
+
+  blocks.forEach((block, i) => {
+    if (block.kind === 'text') {
+      flushToolBuffer(`group-${i}`);
+      out.push(
+        <p key={`text-${i}`} style={{ margin: '8px 0', lineHeight: 1.5, opacity: 0.9 }}>
+          {block.text}
+        </p>
+      );
+    } else if (block.tool.toolName === 'Skill') {
+      flushToolBuffer(`group-${i}`);
+      out.push(<ToolCard key={block.tool.toolUseId} tool={block.tool} />);
+    } else {
+      toolBuffer.push(block.tool);
+    }
+  });
+  flushToolBuffer('group-final');
+
+  return out;
 }
 
 // Derive the group heading for a fixture: multi-block fixtures go under
@@ -123,10 +178,10 @@ export function ToolSandbox() {
                         margin: '8px 0',
                       }}
                     >
-                      {result.blocks.map(renderBlock)}
+                      {renderBlocks(orderedBlocks(result.blocks))}
                     </div>
                   ) : (
-                    result.blocks.map(renderBlock)
+                    renderBlocks(orderedBlocks(result.blocks))
                   )}
                 </div>
               );

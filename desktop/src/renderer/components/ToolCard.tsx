@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
-import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon } from './Icons';
+import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
@@ -145,8 +145,13 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     case 'Skill': {
       const skill = input.skill as string | undefined;
       const args = input.args as string | undefined;
+      // Strip the plugin namespace ("superpowers:brainstorming" -> "brainstorming")
+      // so the label reads as English, not as a technical id. Past tense matches
+      // the post-launch state — by the time the card renders, the skill has
+      // already been invoked.
+      const bareName = skill?.includes(':') ? skill.split(':').slice(-1)[0] : skill;
       return {
-        label: skill ? `Running /${skill}` : 'Running Skill',
+        label: bareName ? `Invoked skill: ${bareName}` : 'Invoked skill',
         detail: args ? `↳ ${args}` : '',
       };
     }
@@ -585,34 +590,63 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   const dispatch = useChatDispatch();
   const display = friendlyToolDisplay(tool);
+  // Skill tool calls always return "Launching skill: X" with success — the body
+  // is pure ceremony. Render header only, no chevron, non-interactive, with a
+  // lighter dashed border so it reads as an annotation, not an expandable card.
+  const isCompactSkill = tool.toolName === 'Skill';
+
+  const cardBorder = isCompactSkill
+    ? 'border border-dashed border-edge-dim/60'
+    : 'border border-edge';
+  const headerClass = isCompactSkill
+    ? 'w-full flex items-center gap-1.5 px-3 py-1.5 text-left'
+    : 'w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors';
+  const headerContent = (
+    <>
+      {/* Status indicator */}
+      {tool.status === 'running' && (
+        <BrailleSpinner size="sm" />
+      )}
+      {tool.status === 'awaiting-approval' && (
+        <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+      )}
+      {tool.status === 'complete' && (
+        // Skills get the note glyph on success — visually distinct from
+        // the generic check used by every other tool, since "skill ran"
+        // carries different meaning ("Claude consulted instructions/notes")
+        // than "command finished." Failed skills still use the FailIcon.
+        isCompactSkill ? (
+          <NoteIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        ) : (
+          <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        )
+      )}
+      {tool.status === 'failed' && (
+        <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+      )}
+      <span className="text-fg-faint text-xs select-none">|</span>
+      <span className="text-xs font-medium text-fg-2">{display.label}</span>
+      {display.detail && (
+        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{display.detail}</span>
+      )}
+      {!isCompactSkill && (
+        <span data-testid="tool-card-chevron" className="shrink-0 inline-flex">
+          <ChevronIcon className="w-3.5 h-3.5 text-fg-muted" expanded={expanded} />
+        </span>
+      )}
+    </>
+  );
 
   return (
-    <div className={`border border-edge rounded-lg overflow-hidden ${inGroup ? 'bg-inset' : ''}`}>
+    <div className={`${cardBorder} rounded-lg overflow-hidden ${inGroup ? 'bg-inset' : ''}`}>
       {/* Header */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
-      >
-        {/* Status indicator */}
-        {tool.status === 'running' && (
-          <BrailleSpinner size="sm" />
-        )}
-        {tool.status === 'awaiting-approval' && (
-          <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
-        )}
-        {tool.status === 'complete' && (
-          <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
-        )}
-        {tool.status === 'failed' && (
-          <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
-        )}
-        <span className="text-fg-faint text-xs select-none">|</span>
-        <span className="text-xs font-medium text-fg-2">{display.label}</span>
-        {display.detail && (
-          <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{display.detail}</span>
-        )}
-        <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={expanded} />
-      </button>
+      {isCompactSkill ? (
+        <div className={headerClass}>{headerContent}</div>
+      ) : (
+        <button onClick={() => setExpanded(!expanded)} className={headerClass}>
+          {headerContent}
+        </button>
+      )}
 
 
       {/* Permission / AskUserQuestion / ExitPlanMode UI */}
@@ -659,8 +693,14 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         );
       })()}
 
-      {/* Expanded details — per-tool parsed views, raw fallback otherwise */}
-      {expanded && <ToolBody tool={tool} sessionId={sessionId} />}
+      {/* Expanded details — per-tool parsed views, raw fallback otherwise.
+          Skill cards never render a body (the only response is the redundant
+          "Launching skill: X" line). */}
+      {!isCompactSkill && expanded && (
+        <div data-testid="tool-card-body">
+          <ToolBody tool={tool} sessionId={sessionId} />
+        </div>
+      )}
     </div>
   );
 })
