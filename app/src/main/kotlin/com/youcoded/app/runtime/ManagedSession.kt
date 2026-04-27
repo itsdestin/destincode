@@ -89,8 +89,12 @@ class ManagedSession(
     var bridgeServer: LocalBridgeServer? = null
 
     /** Current Claude Code permission mode, detected from terminal status bar.
-     *  Values match React's PermissionMode type: "normal" | "auto-accept" | "plan" | "bypass". */
-    var permissionMode: String = "normal"
+     *  Values match React's PermissionMode type: "normal" | "auto-accept" | "plan" | "bypass".
+     *  Fix: initialize to "bypass" when dangerousMode (parity with desktop session-manager.ts:93).
+     *  Without this, SessionStrip's danger indicator never lit up because it reads
+     *  permissionMode === "bypass", not the dangerousMode flag. The user can still cycle
+     *  modes with Shift+Tab during the session — the cycle handler updates this field. */
+    var permissionMode: String = if (dangerousMode) "bypass" else "normal"
 
     /** Draft text in the input bar — shared across Chat/Terminal/Shell modes */
     var inputDraft by mutableStateOf(TextFieldValue())

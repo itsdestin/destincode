@@ -108,7 +108,14 @@ class SyncService(
                 val stalePid = appSyncMarkerPath.readText().trim().toIntOrNull() ?: 0
                 val myPid = android.os.Process.myPid()
                 if (stalePid > 0 && stalePid != myPid && !isPidAlive(stalePid)) {
-                    logBackup("WARN", "Cleaned stale .app-sync-active marker (PID $stalePid is dead — previous crash?)", "sync.lifecycle")
+                    // Fix: log at INFO (was WARN). The cleanup is a benign self-heal —
+                    // the foreground service's PID dies any time the system reclaims it
+                    // for memory (frequent on aggressive vendors), so this fires on most
+                    // restarts. The SyncPanel's log viewer renders the last 30 backup.log
+                    // lines and styles WARN entries prominently, making routine recovery
+                    // look like a persistent error. INFO keeps the diagnostic trail without
+                    // crying wolf. Mirror in desktop/src/main/sync-service.ts.
+                    logBackup("INFO", "Cleaned stale .app-sync-active marker (PID $stalePid is dead — previous crash?)", "sync.lifecycle")
                 }
             }
         } catch (_: Exception) {}

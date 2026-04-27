@@ -22,10 +22,18 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
+        <!-- configChanges: keep this list maximal. Without it, every soft-keyboard
+             show/hide, rotation, dark-mode toggle, or multi-window resize destroys
+             MainActivity, which destroys the WebView (wiping React chat state and
+             active-session tracking) and re-runs initBootstrap (which re-installs
+             bundled plugins → /reload-plugins gets typed into the live session).
+             Process death from memory reclaim still recreates the Activity and is
+             handled separately by a state-rehydration path. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:windowSoftInputMode="adjustNothing">
+            android:windowSoftInputMode="adjustNothing"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|locale|fontScale|density">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

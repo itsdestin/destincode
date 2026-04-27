@@ -181,7 +181,10 @@ export class SyncService extends EventEmitter {
       if (this.fileExists(this.appSyncMarkerPath)) {
         const stalePid = parseInt(fs.readFileSync(this.appSyncMarkerPath, 'utf8').trim(), 10);
         if (stalePid > 0 && stalePid !== process.pid && !this.isPidAlive(stalePid)) {
-          this.logBackup('WARN', `Cleaned stale .app-sync-active marker (PID ${stalePid} is dead — previous crash?)`, 'sync.lifecycle');
+          // Fix: log at INFO (was WARN). Mirrors Android — see app/.../SyncService.kt.
+          // The SyncPanel log viewer renders WARN entries prominently, making this
+          // benign self-heal look like a persistent error after any system kill.
+          this.logBackup('INFO', `Cleaned stale .app-sync-active marker (PID ${stalePid} is dead — previous crash?)`, 'sync.lifecycle');
         }
       }
     } catch {}
