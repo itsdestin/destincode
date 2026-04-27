@@ -6,6 +6,40 @@
 const pty = require('node-pty');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+
+// Diagnostic trace — gated on YOUCODED_PTY_TRACE=1. Captures the timing of
+// every input arrival, every chunk write, the trailing-CR write, and every
+// output (PTY → child echo) chunk. Lets us see whether the 600ms gap between
+// body and CR (set by the Ink/ConPTY paste-mode fix) is actually a 600ms gap
+// from the child's perspective, or whether ConPTY backpressure collapses it
+// when Claude Code is busy reading. Writes to ~/.claude/youcoded-pty-trace-<pid>.log
+// (truncated on worker startup). When the flag is unset, all trace calls are
+// no-ops with zero overhead.
+const TRACE_ENABLED = !!process.env.YOUCODED_PTY_TRACE;
+const TRACE_START_NS = process.hrtime.bigint();
+let TRACE_FILE = null;
+function traceMs() {
+  return (Number(process.hrtime.bigint() - TRACE_START_NS) / 1e6).toFixed(3);
+}
+function tracePreview(s, n) {
+  const max = n || 60;
+  const str = typeof s === 'string' ? s : String(s);
+  const trimmed = str.length > max ? str.slice(0, max) + '…' : str;
+  return JSON.stringify(trimmed);
+}
+function trace(event, payload) {
+  if (!TRACE_ENABLED) return;
+  if (TRACE_FILE === null) {
+    TRACE_FILE = path.join(os.homedir(), '.claude', `youcoded-pty-trace-${process.pid}.log`);
+    try {
+      fs.mkdirSync(path.dirname(TRACE_FILE), { recursive: true });
+      fs.writeFileSync(TRACE_FILE, '');
+    } catch { /* logging is best-effort */ }
+  }
+  const line = `[${traceMs()}ms pid=${process.pid}] ${event}${payload ? ' ' + payload : ''}\n`;
+  try { fs.appendFileSync(TRACE_FILE, line); } catch { /* best-effort */ }
+}
 
 // Resolve a command to its absolute path by searching PATH (+ PATHEXT on Windows).
 // Uses only Node builtins — the `which` npm package is unavailable here because it
@@ -30,6 +64,151 @@ function resolveCommand(cmd) {
 
 let ptyProcess = null;
 
+// Strip ANSI control sequences for substring-matching against PTY output.
+// CC's input-bar render uses CSI cursor-positioning + color escapes between
+// the literal echoed characters; stripping makes a "needle in echo" search
+// reliable without parsing the full VT state machine.
+function stripAnsi(s) {
+  return s
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
+    .replace(/\x1b./g, '');
+}
+
+// Serialize input handling so message A's echo wait doesn't confuse with
+// message B's echo bytes. Each 'input' message is enqueued and awaited.
+let inputQueue = Promise.resolve();
+
+// Submit-protocol constants. PASTE_THRESHOLD is the empirically-bisected
+// ceiling for CC v2.1.119 (see test-conpty/snapshots/cc-2.1.119.json) —
+// any single read of ≥PASTE_THRESHOLD bytes ending in `\r` triggers Ink's
+// paste classification and `\r` becomes literal newline. SAFE_ATOMIC_LEN
+// includes 8 bytes of headroom: an atomic body+`\r` write of ≤56 bytes
+// total is well below the threshold, so even worst-case kernel coalescing
+// cannot push it over.
+const PASTE_THRESHOLD = 64;
+const SAFE_ATOMIC_LEN = 56;
+// CHUNK_SIZE is the largest body slice we send in one ptyProcess.write
+// call. ConPTY's input pipe silently truncates writes >~600 bytes; 56
+// stays well under that ceiling AND under the paste threshold (so even
+// if a chunk is read alone, it's treated as keystrokes, not paste).
+const CHUNK_SIZE = 56;
+// CHUNK_DELAY_MS gives ConPTY a tick to drain between chunk writes.
+// Doesn't have to clear the paste-classification window because the
+// final `\r` is gated on echo, not on a timing gap.
+const CHUNK_DELAY_MS = 30;
+// ECHO_TIMEOUT_MS bounds the wait for the body's tail to echo back from
+// CC. Cold-start CC takes 6-7 s for first input render (per snapshot);
+// warm session is typically <500 ms. 12 s leaves comfortable margin.
+const ECHO_TIMEOUT_MS = 12000;
+// ECHO_TAIL_LEN is the suffix of the body we look for in stdout.
+// Long enough to be unambiguous against welcome-screen text and prior
+// echo content; short enough to fit in any body that takes the
+// echo-driven path.
+const ECHO_TAIL_LEN = 16;
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// Write a body in CHUNK_SIZE pieces with small inter-chunk gaps. Returns
+// once all bytes have been handed to ptyProcess.write — does NOT wait for
+// CC to consume them.
+async function writeChunked(body) {
+  if (body.length <= CHUNK_SIZE) {
+    if (!ptyProcess) return;
+    ptyProcess.write(body);
+    trace('CHUNK', `k=1/1 len=${body.length}`);
+    return;
+  }
+  const total = Math.ceil(body.length / CHUNK_SIZE);
+  let offset = 0;
+  let chunkIdx = 0;
+  while (offset < body.length) {
+    if (!ptyProcess) return;
+    const end = Math.min(offset + CHUNK_SIZE, body.length);
+    ptyProcess.write(body.slice(offset, end));
+    chunkIdx++;
+    trace('CHUNK', `k=${chunkIdx}/${total} len=${end - offset}`);
+    offset = end;
+    if (offset < body.length) await sleep(CHUNK_DELAY_MS);
+  }
+}
+
+// Watch ptyProcess stdout for `needle` to appear in ANSI-stripped form.
+// Resolves true on detection, false on timeout. Attaches a fresh listener
+// for the duration of the wait — this coexists with the top-level onData
+// handler that forwards data to main; both fire on each chunk.
+function waitForEcho(needle, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!ptyProcess) { resolve(false); return; }
+    let buf = '';
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { disposable.dispose(); } catch { /* node-pty version w/o dispose */ }
+      resolve(ok);
+    };
+    const disposable = ptyProcess.onData((data) => {
+      buf += stripAnsi(typeof data === 'string' ? data : String(data));
+      // Bound buffer growth — only the recent tail can possibly contain
+      // the needle, since the body is written contiguously.
+      if (buf.length > 50000) buf = buf.slice(-50000);
+      if (buf.includes(needle)) finish(true);
+    });
+    const timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
+async function handleInput(text) {
+  if (!ptyProcess) return;
+  const endsCR = typeof text === 'string' && text.endsWith('\r');
+  const inLen = typeof text === 'string' ? text.length : 0;
+  trace('IN', `len=${inLen} endsCR=${endsCR} head=${tracePreview(text, 40)} tail=${tracePreview(typeof text === 'string' ? text.slice(-20) : '', 60)}`);
+
+  // Path 1: Passthrough — anything not ending in \r (single bytes, raw
+  // escapes, in-progress typing). Pass through unchanged.
+  if (!endsCR) {
+    ptyProcess.write(text);
+    trace('PASSTHROUGH', `len=${inLen}`);
+    return;
+  }
+
+  const body = text.slice(0, -1);
+
+  // Path 2: Atomic submit — body+\r fits below the paste threshold. Single
+  // write; \r unambiguously a keystroke regardless of how the kernel reads
+  // it. This is the common case for short chat messages.
+  if (text.length <= SAFE_ATOMIC_LEN) {
+    ptyProcess.write(text);
+    trace('ATOMIC', `len=${text.length}`);
+    return;
+  }
+
+  // Path 3: Echo-driven submit — body is too long to fit atomically.
+  // Chunk the body, wait for its tail to echo back from CC (proving CC
+  // has drained the body bytes from its pipe), then send `\r` as a single
+  // byte (guaranteed below paste threshold and guaranteed to arrive in a
+  // fresh kernel read). On echo timeout, fall back to sending `\r` anyway
+  // (the renderer-side useSubmitConfirmation retry covers the residual
+  // failure case).
+  const tail = body.slice(Math.max(0, body.length - ECHO_TAIL_LEN));
+  const echoStart = Date.now();
+  trace('ECHO_WAIT', `tail=${tracePreview(tail, ECHO_TAIL_LEN)} timeout=${ECHO_TIMEOUT_MS}ms`);
+  const echoPromise = waitForEcho(tail, ECHO_TIMEOUT_MS);
+  await writeChunked(body);
+  const echoed = await echoPromise;
+  const echoMs = Date.now() - echoStart;
+  if (echoed) {
+    trace('ECHO_OK', `delayMs=${echoMs}`);
+  } else {
+    trace('ECHO_TIMEOUT', `delayMs=${echoMs} — falling back to bare CR`);
+  }
+  if (!ptyProcess) return;
+  ptyProcess.write('\r');
+  trace('CR', echoed ? 'after-echo' : 'fallback');
+}
+
 process.on('message', (msg) => {
   switch (msg.type) {
     case 'spawn': {
@@ -51,72 +230,63 @@ process.on('message', (msg) => {
       });
 
       ptyProcess.onData((data) => {
+        // OUT trace: the child echoing typed input back lands here. The smoking
+        // gun for ConPTY backpressure is OUT events arriving AFTER the CR write
+        // for the same submit (means the child wasn't draining the pipe until
+        // body+CR were both queued).
+        trace('OUT', `len=${typeof data === 'string' ? data.length : 0} head=${tracePreview(data, 60)}`);
         process.send({ type: 'data', data });
       });
 
       ptyProcess.onExit(({ exitCode }) => {
+        trace('EXIT', `code=${exitCode}`);
         process.send({ type: 'exit', exitCode });
         process.exit(0);
       });
 
+      trace('SPAWN', `cmd=${shell} session=${msg.sessionId || ''} cols=${msg.cols || 120} rows=${msg.rows || 30}`);
       process.send({ type: 'spawned', pid: ptyProcess.pid });
       break;
     }
     case 'input': {
-      // Two stacked fixes for Windows ConPTY + Ink paste handling:
+      // Submit strategy for chat → CC, given empirically-pinned facts about
+      // CC v2.1.119 (see test-conpty/snapshots/cc-2.1.119.json):
       //
-      // (A) Atomic-write-then-Enter bug: Claude Code's Ink has a 500ms
-      //     PASTE_TIMEOUT that treats bulk writes as one paste event and
-      //     swallows a trailing \r. Split "content + trailing \r" into two
-      //     writes with ENTER_DELAY_MS > PASTE_TIMEOUT so Enter arrives as
-      //     a distinct keystroke that submits.
+      //   * Ink classifies any single read of ≥64 bytes ending in `\r` as
+      //     paste — `\r` becomes a literal newline in the input bar instead
+      //     of a submit keystroke. Any read <64 bytes ending in `\r` submits
+      //     cleanly. Single-byte writes are always safe.
+      //   * CC echoes typed bytes back through stdout (input-bar re-render).
+      //     Cold-start delay can be 6+ s; warm session typically <500 ms.
+      //   * Bracketed-paste markers (\x1b[200~...\x1b[201~) are mangled by
+      //     Windows ConPTY (verified in test-conpty/harness.mjs Phase 8) —
+      //     not a viable mechanism.
+      //   * Windows ConPTY silently truncates writes >~600 chars; a 56-byte
+      //     chunk cap stays well under that ceiling.
       //
-      // (B) ConPTY input-buffer truncation: Windows ConPTY drops bytes when
-      //     a single write exceeds its buffer (symptom: paste >~600 chars →
-      //     only the tail reaches Claude). Chunk writes >CHUNK_SIZE into
-      //     small pieces with CHUNK_DELAY_MS gaps so ConPTY can drain
-      //     between them. Each gap must stay < 500ms PASTE_TIMEOUT so Ink
-      //     continues treating the stream as one paste. 64-byte / 50ms was
-      //     the smallest/slowest config that reliably delivered 2500+ chars
-      //     end-to-end in manual testing; 128/30ms and 256/10ms both still
-      //     dropped middle sections.
+      // Three paths cover every input shape without timing guesses:
       //
-      // Single-char writes, escape sequences without trailing \r, and
-      // bracketed-paste data (\x1b[200~...\x1b[201~) pass through untouched.
+      //   1. Passthrough — input doesn't end in `\r` (raw escapes, single
+      //      bytes, in-progress typing). Single write, no special handling.
+      //   2. Atomic submit — input ends in `\r` AND total length ≤ 56. The
+      //      whole write is below the paste threshold by design (8-byte
+      //      margin), so `\r` is treated as a fresh keystroke regardless of
+      //      coalescing. Single write, no race possible.
+      //   3. Echo-driven submit — input ends in `\r` AND total length > 56.
+      //      Chunk the body in 56-byte pieces, watch CC's stdout for the
+      //      body's tail to echo back (proving CC has consumed the body
+      //      bytes from its input pipe), then send `\r` as a separate
+      //      single-byte write — guaranteed below the paste threshold and
+      //      guaranteed to arrive in a fresh kernel read because the body
+      //      bytes have already been drained.
+      //
+      // No 600 ms timing guess. No assumption about Ink's render scheduling.
+      // The renderer-side useSubmitConfirmation retry stays as a third-line
+      // defense if echo somehow doesn't arrive within ECHO_TIMEOUT_MS.
       if (!ptyProcess) break;
-      const text = msg.data;
-      const CHUNK_SIZE = 64;
-      const CHUNK_DELAY_MS = 50;
-      const ENTER_DELAY_MS = 600;
-
-      const writeChunked = (body, onDone) => {
-        if (body.length <= CHUNK_SIZE) {
-          ptyProcess.write(body);
-          if (onDone) setTimeout(onDone, 0);
-          return;
-        }
-        let offset = 0;
-        const sendNext = () => {
-          if (!ptyProcess) return;
-          const end = Math.min(offset + CHUNK_SIZE, body.length);
-          ptyProcess.write(body.slice(offset, end));
-          offset = end;
-          if (offset < body.length) setTimeout(sendNext, CHUNK_DELAY_MS);
-          else if (onDone) setTimeout(onDone, 0);
-        };
-        sendNext();
-      };
-
-      if (typeof text === 'string' && text.length > 1 && text.endsWith('\r')) {
-        const preamble = text.slice(0, -1);
-        writeChunked(preamble, () => {
-          setTimeout(() => { if (ptyProcess) ptyProcess.write('\r'); }, ENTER_DELAY_MS);
-        });
-      } else if (typeof text === 'string' && text.length > CHUNK_SIZE) {
-        writeChunked(text);
-      } else {
-        ptyProcess.write(text);
-      }
+      inputQueue = inputQueue.then(() => handleInput(msg.data)).catch((e) => {
+        trace('INPUT_ERROR', e && e.message ? e.message : String(e));
+      });
       break;
     }
     case 'resize': {

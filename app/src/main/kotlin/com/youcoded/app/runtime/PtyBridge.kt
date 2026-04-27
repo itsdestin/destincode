@@ -184,23 +184,45 @@ class PtyBridge(
     }
 
     fun writeInput(text: String) {
-        // Atomic-write-then-Enter bug: Claude Code's Ink framework has a 500ms
-        // PASTE_TIMEOUT that treats bulk writes as paste events, which can
-        // swallow a trailing \r. Split any write of "content + trailing \r"
-        // into two writes with a 600ms gap so the preamble commits as paste
-        // first, then \r arrives as a distinct keystroke that submits.
-        // Matches pty-worker.js on desktop so both platforms behave identically.
+        // Submit strategy mirrors desktop pty-worker.js: paste classification in
+        // CC's Ink framework triggers when a single read is ≥64 bytes ending in
+        // `\r` (empirically bisected for CC v2.1.119 — see
+        // youcoded/desktop/test-conpty/snapshots/cc-2.1.119.json). Above that
+        // threshold `\r` becomes a literal newline; below, `\r` is a fresh
+        // keystroke that submits.
         //
-        // Single-char writes (\r alone, one letter), escape sequences without
-        // trailing \r, and raw terminal keystrokes all pass through untouched.
-        if (text.length > 1 && text.endsWith("\r")) {
-            val preamble = text.dropLast(1)
-            session?.write(preamble)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                session?.write("\r")
-            }, 600)
-        } else {
-            session?.write(text)
+        // Three paths:
+        //
+        //  1. Passthrough — text doesn't end in `\r` (escape sequences, raw
+        //     keystrokes, in-progress typing). Single write, no special
+        //     handling.
+        //  2. Atomic submit — text ends in `\r` AND total length ≤ 56 bytes
+        //     (8-byte margin under the threshold). One write; `\r` is
+        //     unambiguously a keystroke regardless of how the kernel reads it.
+        //     The common case for short chat messages.
+        //  3. Split submit — text ends in `\r` AND total length > 56 bytes.
+        //     Send the body, then `\r` 600 ms later. Linux PTY (Termux) does
+        //     not exhibit the ConPTY gap-collapse issue that affects Windows,
+        //     so the timing gap is reliable here. (Desktop uses echo-driven
+        //     `\r` for the same case to handle ConPTY backpressure; Android
+        //     could mirror that for full robustness — see the TODO below.)
+        //
+        // TODO: Mirror desktop's echo-driven path for >SAFE_ATOMIC_LEN messages.
+        // Would observe the body's tail in `_rawByteFlow` (the PTY echo) before
+        // sending `\r`, eliminating the 600 ms timing assumption entirely. Not
+        // urgent on Android because Linux PTY scheduling is more predictable
+        // than ConPTY, but desirable for parity with desktop's design.
+        val SAFE_ATOMIC_LEN = 56
+        when {
+            !text.endsWith("\r") -> session?.write(text)
+            text.length <= SAFE_ATOMIC_LEN -> session?.write(text)
+            else -> {
+                val preamble = text.dropLast(1)
+                session?.write(preamble)
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    session?.write("\r")
+                }, 600)
+            }
         }
     }
 

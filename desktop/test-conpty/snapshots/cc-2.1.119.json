@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.119",
+  "platform": "win32",
+  "nodeVersion": "v25.8.0",
+  "capturedAt": "2026-04-26T09:04:18.348Z",
+  "probes": {
+    "pasteThreshold": {
+      "minSubmits": 62,
+      "maxFails": 63,
+      "bisectionRange": [
+        62,
+        63
+      ]
+    },
+    "echo": {
+      "echoes": true,
+      "sentinel": "echotest-ifamw9",
+      "delayMs": 6752
+    }
+  }
+}

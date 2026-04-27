@@ -1,0 +1,5 @@
+# Per-run diagnostic captures from the probe harnesses (.mjs scripts).
+# Each run rewrites these — they're not source. Source-of-truth captures
+# go under snapshots/ as pinned JSON instead.
+*.log
+*.txt
