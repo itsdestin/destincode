@@ -240,6 +240,14 @@ html, body, #root {
 
 .xterm-viewport {
   height: 100% !important;
+  /* xterm.css ships background-color:#000 on the viewport, which paints the
+     scrollbar-gutter area AND any few-pixel strip below the last rendered
+     cell row (because xterm sizes cells to whole rows; the viewport is
+     usually 3-12px taller than xterm-screen depending on font metrics). On
+     touch platforms with no native scrollbar, that strip reads as a black
+     bar between xterm and the InputBar. Match the canvas token so any
+     uncovered strip blends with the terminal background. */
+  background-color: var(--canvas) !important;
 }
 
 .xterm-screen {

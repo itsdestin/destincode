@@ -266,6 +266,74 @@ export default function TerminalView({ sessionId, visible }: Props) {
       });
     }
 
+    // Touch platforms: one-finger drag scrolls scrollback, matching the
+    // chat-view scroll feel. xterm.js's default mouse logic interprets
+    // touch-drag as text selection (carried over from desktop where the
+    // mouse wheel is used for scroll); on mobile that means selection works
+    // but scrolling doesn't, which is the inverse of what users expect.
+    // We override at capture phase so xterm never starts a selection.
+    // Selection-on-touch is the trade-off; chat view doesn't have it
+    // either, so the two views feel consistent.
+    let touchScrollCleanup: (() => void) | null = null;
+    if (touch) {
+      const container = containerRef.current;
+      let lastY = 0;
+      let active = false;
+      // Pixels of finger travel per scrolled line. Tuned empirically against
+      // a 12px font (cell height ≈ 16px) so finger-distance ≈ scrolled pixels.
+      const PX_PER_LINE = 16;
+      // Carry remainder pixel-deltas across touchmove events so slow drags
+      // accumulate into eventual single-line scrolls instead of being lost.
+      let remainder = 0;
+
+      const onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length !== 1) {
+          active = false;
+          return;
+        }
+        active = true;
+        lastY = e.touches[0].clientY;
+        remainder = 0;
+      };
+      const onTouchMove = (e: TouchEvent) => {
+        if (!active || e.touches.length !== 1) return;
+        // preventDefault stops xterm's selection AND any browser-level
+        // text selection / pull-to-refresh interference.
+        e.preventDefault();
+        e.stopPropagation();
+        const currentY = e.touches[0].clientY;
+        // delta > 0 → finger moved up → show newer (scroll down: positive)
+        // delta < 0 → finger moved down → show older (scroll up: negative)
+        const deltaPx = lastY - currentY + remainder;
+        const lines = (deltaPx / PX_PER_LINE) | 0; // truncate toward zero
+        if (lines !== 0) {
+          terminal.scrollLines(lines);
+          remainder = deltaPx - lines * PX_PER_LINE;
+        } else {
+          remainder = deltaPx;
+        }
+        lastY = currentY;
+      };
+      const onTouchEnd = () => {
+        active = false;
+        remainder = 0;
+      };
+
+      // Capture phase so we run before xterm's own touch-as-mouse handlers.
+      // passive:false on touchmove because we call preventDefault.
+      container.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+      container.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+      container.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
+      container.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
+
+      touchScrollCleanup = () => {
+        container.removeEventListener('touchstart', onTouchStart, { capture: true } as any);
+        container.removeEventListener('touchmove', onTouchMove, { capture: true } as any);
+        container.removeEventListener('touchend', onTouchEnd, { capture: true } as any);
+        container.removeEventListener('touchcancel', onTouchEnd, { capture: true } as any);
+      };
+    }
+
     // Resize handler
     window.addEventListener('resize', fitAndSync);
 
@@ -286,6 +354,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
       if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
       window.removeEventListener('resize', fitAndSync);
       resizeObserver.disconnect();
+      touchScrollCleanup?.();
       unregisterTerminal(sessionId);
       // Clear the cross-effect helper so the theme effect can't call into
       // the disposed terminal between unmount and remount.
@@ -385,6 +454,15 @@ export default function TerminalView({ sessionId, visible }: Props) {
           position: 'absolute',
           inset: 0,
           opacity: xtermOpacityStyle,
+          // xterm renders cell rows to a canvas; if container height isn't a
+          // whole multiple of cell height (typical — fonts round irregularly),
+          // there's a few-pixel uncovered strip at the bottom that reveals
+          // whatever's behind the WebView. On Android that's the Compose Box's
+          // dark color, producing a visible black bar between xterm and the
+          // input bar. Match the xterm theme background here so the strip is
+          // indistinguishable from a rendered cell. Skip when a visual
+          // background (wallpaper/gradient/glass) is active so we don't cover it.
+          backgroundColor: seeThrough ? undefined : 'var(--canvas)',
         }}
       />
     </div>
