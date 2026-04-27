@@ -171,6 +171,12 @@ function handleMessage(data) {
             dispatchEvent('pty:output', payload.sessionId, payload.data); // global (App.tsx mode detection)
             dispatchEvent(`pty:output:${payload.sessionId}`, payload.data); // per-session (TerminalView)
             break;
+        case 'pty:raw-bytes':
+            // Per-session dispatch only — no global consumer (xterm is per-session).
+            // Payload data is base64-encoded raw PTY bytes from Android's
+            // RawByteListener (Tier 1). usePtyRawBytes decodes to Uint8Array.
+            dispatchEvent(`pty:raw-bytes:${payload.sessionId}`, payload.data);
+            break;
         case 'hook:event':
             dispatchEvent('hook:event', payload);
             break;
@@ -614,6 +620,11 @@ function installShim() {
                 const handler = addListener(channel, cb);
                 return () => removeListener(channel, handler);
             },
+            ptyRawBytesForSession: (sessionId, cb) => {
+                const channel = `pty:raw-bytes:${sessionId}`;
+                const handler = addListener(channel, cb);
+                return () => removeListener(channel, handler);
+            },
             hookEvent: (cb) => addListener('hook:event', cb),
             statusData: (cb) => addListener('status:data', cb),
             sessionRenamed: (cb) => addListener('session:renamed', cb),
@@ -818,6 +829,13 @@ function installShim() {
         defaults: {
             get: () => invoke('defaults:get'),
             set: (updates) => invoke('defaults:set', updates),
+        },
+        // Anonymous analytics opt-out — mirror of preload.ts. Android handlers
+        // land in Phase 7; until then the remote-shim path resolves via the
+        // WebSocket once the Kotlin side dispatches these types.
+        analytics: {
+            getOptIn: () => invoke('analytics:get-opt-in'),
+            setOptIn: (enabled) => invoke('analytics:set-opt-in', { enabled }),
         },
         // Parity with preload.ts — Preferences panel uses this over remote too
         settings: {
@@ -1027,6 +1045,30 @@ function installShim() {
         // main-process aggregation is desktop-Electron only.
         attention: {
             report: () => { },
+        },
+        // WHY: useAttentionClassifier calls window.claude.terminal.getScreenText
+        // every 1s on Electron to read the xterm PTY buffer for attention state
+        // classification. On Android the PTY buffer lives in Kotlin (TerminalView /
+        // ScreenBufferTracker), so we route through the existing WebSocket invoke
+        // helper to the terminal:get-screen-text handler added in SessionService.kt
+        // (Task 7). Response shape is {text: string}; normalize to Promise<string>
+        // with a '' fallback for safety.
+        terminal: {
+            getScreenText: async (sessionId) => {
+                const response = await invoke('terminal:get-screen-text', { sessionId });
+                return response?.text ?? '';
+            },
+        },
+        // GPU / performance preference — mirrors preload.ts performance namespace.
+        // multiGpuDetected: false in the response means the UI section stays hidden.
+        performance: {
+            get: () => invoke('performance:get-config'),
+            set: (preferPowerSaving) => invoke('performance:set-config', { preferPowerSaving }),
+        },
+        // WHY: named 'app:restart' (not 'performance:restart') so any future
+        // restart-required setting can reuse this single generic channel.
+        app: {
+            restart: () => invoke('app:restart'),
         },
     };
 }
