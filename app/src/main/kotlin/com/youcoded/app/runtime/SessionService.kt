@@ -1929,6 +1929,14 @@ class SessionService : Service() {
                             svc.browseCategoryUrl(backendId, cat, versionRef)
                         } catch (_: Exception) { null }
                     }
+                    // Side effect: fire the system browser intent so the
+                    // user lands on the Drive folder. The wizard already
+                    // confirmed intent in a modal — desktop opens via
+                    // shell.openExternal in its own handler; we mirror
+                    // that here so the chip click feels equivalent.
+                    if (url != null) {
+                        try { platformBridge?.openUrl(url) } catch (_: Exception) {}
+                    }
                     msg.id?.let {
                         bridgeServer.respond(ws, msg.type, it,
                             JSONObject().put("url", url ?: JSONObject.NULL))
@@ -1957,7 +1965,14 @@ class SessionService : Service() {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "RestoreService not initialized")) }
                 } else {
                     try {
-                        val opts = RestoreOptions.fromJson(msg.payload)
+                        // React shim wraps the body in {opts: {...}} for
+                        // restore.preview/execute (see remote-shim.ts) but
+                        // older callers pass the body flat. Accept both so
+                        // the Android handler matches desktop's permissive
+                        // shape — fixed in this branch after preview was
+                        // failing with "No backend with id ''".
+                        val optsJson = msg.payload.optJSONObject("opts") ?: msg.payload
+                        val opts = RestoreOptions.fromJson(optsJson)
                         val preview = svc.previewRestore(opts)
                         msg.id?.let { bridgeServer.respond(ws, msg.type, it, preview.toJson()) }
                     } catch (e: Exception) {
@@ -1971,7 +1986,9 @@ class SessionService : Service() {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "RestoreService not initialized")) }
                 } else {
                     try {
-                        val opts = RestoreOptions.fromJson(msg.payload)
+                        // Same {opts: {...}} envelope unwrap as preview above.
+                        val optsJson = msg.payload.optJSONObject("opts") ?: msg.payload
+                        val opts = RestoreOptions.fromJson(optsJson)
                         // Progress events are broadcast (no id) — matches desktop's
                         // sync:restore:progress push-event shape. Wizard UI subscribes
                         // to them across every connected client.
