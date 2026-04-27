@@ -189,14 +189,26 @@ class LocalBridgeServer(
         }
     }
 
-    /** Send a response to a specific request */
+    /** Send a response to a specific request.
+     *
+     *  Wrapped in try/catch (matching broadcast() above) because the
+     *  WebSocket can disconnect between the request arriving and the
+     *  response being computed — most commonly when a handler triggers a
+     *  native intent (e.g. opening a Drive URL backgrounds the WebView and
+     *  drops the WS). Without the catch, ws.send() throws
+     *  WebsocketNotConnectedException on the coroutine dispatcher and
+     *  crashes the whole app. */
     fun respond(ws: WebSocket, type: String, id: String, payload: Any?) {
         val msg = JSONObject().apply {
             put("type", "${type}:response")
             put("id", id)
             put("payload", payload ?: JSONObject.NULL)
         }.toString()
-        ws.send(msg)
+        try {
+            ws.send(msg)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to respond to $type:$id (client disconnected?): ${e.message}")
+        }
     }
 
     val isRunning: Boolean get() = server != null
