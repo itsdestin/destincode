@@ -709,7 +709,12 @@ class SessionService : Service() {
                 val info = MessageRouter.buildSessionInfo(
                     id = session.id, name = session.name.value,
                     cwd = cwd, status = "active",
-                    permissionMode = "normal", skipPermissions = dangerous,
+                    // Fix: derive permissionMode from the dangerous flag (parity with
+                    // desktop session-manager.ts). Hardcoding "normal" here meant the
+                    // initial session:created broadcast told React permissionMode=normal
+                    // even when dangerous=true, so SessionStrip's danger indicator missed
+                    // until the next cycle of session:list. Now correct from message #1.
+                    permissionMode = if (dangerous) "bypass" else "normal", skipPermissions = dangerous,
                     createdAt = session.createdAt,
                     // Pass the resolved model (payload > model-preference.json > "sonnet")
                     // so React's status-bar switcher shows the right alias immediately,
