@@ -478,7 +478,8 @@ export function disconnect(): void {
   // Brief reconnect to the SAME host also loses the queue, but caller-side
   // invoke() 30s timeout still surfaces a clean error, and renderer
   // mount-time fetches re-issue idempotently on retry.
-  // (MAX_RECONNECT_ATTEMPTS fallback in scheduleReconnect clears the queue inline.)
+  // (MAX_RECONNECT_ATTEMPTS fallback in scheduleReconnect AND the
+  //  catch block in connectToHost both clear the queue inline.)
   if (pendingSendQueue.length > 0) {
     console.warn('[remote-shim] discarding', pendingSendQueue.length,
       'queued messages on disconnect');
@@ -541,6 +542,18 @@ export async function connectToHost(host: string, port: number, password: string
     setConnectionMode('remote');
   } catch (err) {
     console.error('[remote-shim] connectToHost failed:', (err as Error)?.message);
+    // Same leak class as scheduleReconnect's MAX_RECONNECT branch:
+    // queue may hold messages bound for the failed remote target. They
+    // were enqueued during the 'authenticating' window after disconnect()
+    // already cleared the queue at the top of connectToHost. ws.onclose's
+    // pre-auth path doesn't call disconnect(), so we must clear here
+    // before falling back to the local bridge — otherwise stale messages
+    // would flush to the local bridge on its auth:ok.
+    if (pendingSendQueue.length > 0) {
+      console.warn('[remote-shim] discarding', pendingSendQueue.length,
+        'queued messages on connectToHost failure fallback');
+      pendingSendQueue = [];
+    }
     // Reset remote state and reconnect to local bridge
     targetUrl = null;
     preservePlatform = false;

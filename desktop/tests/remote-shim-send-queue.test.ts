@@ -70,6 +70,65 @@ describe('remote-shim send queue', () => {
     expect(JSON.parse(ws.sent[0]).type).toBe('auth');
   });
 
+  it('clears the queue on host change so messages do not leak across hosts', async () => {
+    // Cold-start race: messages enqueue while authenticating to a remote.
+    // If that remote auth fails and we fall back to the local bridge, the
+    // queued messages must NOT flush to the local bridge — they were
+    // bound for the failed remote.
+    shim.installShim();
+
+    // Initiate connect to a remote directly. connectToHost calls disconnect()
+    // first (no-op since no prior ws), then sets targetUrl and connects.
+    const remoteConnect = shim.connectToHost('192.168.1.100', 9900, 'remote-pw');
+    // Let the async checkTailscaleIfNeeded + dynamic import('./platform')
+    // microtasks resolve so the new WS instance is created. The dynamic
+    // import() needs more than one microtask to settle on first invocation
+    // — wait until a FakeWebSocket actually gets constructed.
+    while (FakeWebSocket.instances.length === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    // The connectToHost call disconnects (no-op) then opens a new WS to
+    // the remote. Open the WS so ws.onopen sends the auth message and
+    // state transitions to 'authenticating'.
+    const remoteWs = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    remoteWs.open();  // ws.onopen → sends auth message, sets state to 'authenticating'
+    // Now in authenticating state — fire some application sends. These
+    // get queued because send() requires connectionState === 'connected'.
+    // Catch the resulting invoke promises to avoid unhandled rejections
+    // when pending.clear() triggers on the next host switch (or test end).
+    (window as any).claude.skills.list().catch(() => {});
+    (window as any).claude.skills.list().catch(() => {});
+
+    // Remote auth fails — server replies auth:failed. The auth:failed
+    // handler rejects, then calls ws.close() which triggers ws.onclose
+    // (post-auth branch). connectToHost's catch block then fires.
+    const beforeFailCount = FakeWebSocket.instances.length;
+    remoteWs.receive({ type: 'auth:failed', reason: 'bad-password' });
+    await remoteConnect.catch(() => {}); // expected to throw
+    // Wait for the catch block's `connect('android-local')` to construct
+    // its WebSocket (synchronous inside the Promise constructor, but the
+    // catch block itself runs as a microtask after the await rejects).
+    while (FakeWebSocket.instances.length === beforeFailCount) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    // The catch block clears the queue (the fix under test) and falls
+    // back to connect('android-local'). The fallback WS is now the
+    // latest FakeWebSocket instance.
+    const fallbackWs = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    fallbackWs.open();
+    fallbackWs.receive({ type: 'auth:ok', token: 'local-tok', platform: 'browser' });
+    await new Promise(r => setTimeout(r, 0));
+
+    // After auth:ok, flushSendQueue ran. The fallback WS should have ONLY
+    // the auth message — the two pre-fallback application messages must
+    // NOT have been flushed to it (they were bound for the failed remote).
+    const fallbackTypes = fallbackWs.sent.map(s => JSON.parse(s).type);
+    expect(fallbackTypes).toEqual(['auth']);
+    expect(fallbackTypes).not.toContain('skills:list');
+  });
+
   it('drops oldest queued messages once MAX_QUEUE is exceeded (with warning)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     shim.connect('pw', false);
