@@ -289,6 +289,11 @@ export type ChatAction =
       model: string | null;
       anthropicRequestId: string | null;
       usage: TurnUsage | null;
+      // Stamped by SubagentWatcher onto turn-complete events that originate
+      // in a sub-agent JSONL. Reducer must drop these so a sub-agent's
+      // end_turn doesn't pollute parent state — see chat-reducer.ts.
+      parentAgentToolUseId?: string;
+      agentId?: string;
     }
   // Dispatched when the transcript watcher detects Claude Code's
   // user-interrupt markers ("[Request interrupted by user]" / "...for tool
