@@ -329,6 +329,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       // the in-memory theme picks up the new tokens/assets immediately.
       if (type === 'theme') await reloadUserThemes();
       await fetchAll();
+      await refreshDrawerSkills();  // Keep CommandDrawer in sync after update — plugin update can change skill manifest
       return result;
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Update failed');
@@ -336,7 +337,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, reloadUserThemes, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, reloadUserThemes, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const setFavorite = useCallback(async (id: string, favorited: boolean) => {
     await window.claude.skills.setFavorite(id, favorited);
