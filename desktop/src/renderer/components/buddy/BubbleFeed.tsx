@@ -169,6 +169,10 @@ export function BubbleFeed({ sessionId }: Props) {
             model: event.data.model ?? null,
             anthropicRequestId: event.data.anthropicRequestId ?? null,
             usage: event.data.usage ?? null,
+            // Forward the subagent stamp so the reducer can drop a sub-agent's
+            // end_turn instead of polluting parent turn.model — see App.tsx mirror.
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
           });
           break;
         case 'assistant-thinking':

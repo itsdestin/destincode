@@ -755,6 +755,12 @@ function AppInner() {
             model: event.data.model ?? null,
             anthropicRequestId: event.data.anthropicRequestId ?? null,
             usage: event.data.usage ?? null,
+            // Forward the subagent stamp so the reducer can drop a sub-agent's
+            // end_turn instead of overwriting parent turn.model and tearing down
+            // the parent's in-flight state via endTurn(). Mirrors assistant-text /
+            // tool-use / tool-result dispatches above.
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
           });
           break;
         case 'assistant-thinking':

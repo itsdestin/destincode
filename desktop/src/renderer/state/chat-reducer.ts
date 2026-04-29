@@ -657,6 +657,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'TRANSCRIPT_TURN_COMPLETE': {
+      // A sub-agent's end_turn must NOT reach into parent state. Without
+      // this guard the parent turn's `model` gets overwritten with the
+      // sub-agent's model (the status-bar pill silently flips, and the
+      // drift-reconciliation effect in App.tsx persists it via
+      // setPreference), and endTurn() prematurely tears down the parent's
+      // in-flight turn — flagging the still-running Task tool as failed
+      // and tripping the attention banner. Mirrors the same guard on
+      // TRANSCRIPT_ASSISTANT_TEXT / TOOL_USE / TOOL_RESULT above. We don't
+      // delegate to applySubagentEvent here because a sub-agent's end_turn
+      // produces no visible nested segment — the parent's own tool-result
+      // for the Task tool is what completes the agent in the UI.
+      if (action.parentAgentToolUseId) return state;
       const session = next.get(action.sessionId);
       if (!session) return state;
 
