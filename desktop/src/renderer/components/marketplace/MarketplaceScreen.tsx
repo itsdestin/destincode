@@ -168,10 +168,27 @@ export default function MarketplaceScreen({
   useEscClose(true, onExit);
 
   const mode: "discovery" | "search" = isActive(filter) ? "search" : "discovery";
-  const installedIds = useMemo(
-    () => new Set(mp.installedSkills.map((s) => s.id)),
-    [mp.installedSkills],
-  );
+  // Marketplace cards match by the marketplace entry id (always the bare
+  // plugin id, e.g. "wecoded-themes-plugin"). Installed-skills entries
+  // can be either:
+  //   - bare plugin-level placeholders ({id: "wecoded-themes-plugin"})
+  //   - namespaced individual skills ({id: "wecoded-themes-plugin:theme-builder",
+  //     pluginName: "wecoded-themes-plugin"})
+  // The provider's pluginsWithScannedSkills filter (skill-provider.ts +
+  // LocalSkillProvider.kt) intentionally drops the bare placeholder when
+  // any individual skill is scanned, to avoid a duplicate card in the
+  // command drawer. So for ANY plugin that ships at least one skill, the
+  // marketplace card would never see a matching id and would forever show
+  // "Install" even after a successful install. Matching pluginName too
+  // bridges the two id shapes.
+  const installedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const s of mp.installedSkills) {
+      if (s.id) ids.add(s.id);
+      if (s.pluginName) ids.add(s.pluginName);
+    }
+    return ids;
+  }, [mp.installedSkills]);
 
   const skillById = useMemo(() => {
     const m = new Map<string, SkillEntry>();

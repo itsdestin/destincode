@@ -51,7 +51,15 @@ export default function MarketplaceDetailOverlay({
     if (!entry) {
       content = <NotFound label="Skill" onClose={onClose} />;
     } else {
-      const installed = mp.installedSkills.some((e) => e.id === target.id);
+      // Match by either the bare plugin id OR a scanned skill's pluginName.
+      // The provider drops bare plugin-level entries when individual skills
+      // were scanned (anti-duplicate-card guard for the command drawer), so
+      // for any plugin that ships skills, only namespaced ids appear in
+      // installedSkills and the bare id never matches. See MarketplaceScreen
+      // installedIds memo for the same fix at the grid level.
+      const installed = mp.installedSkills.some(
+        (e) => e.id === target.id || e.pluginName === target.id,
+      );
       const favorited = mp.favorites.includes(target.id);
       const installing = mp.installingIds.has(`skill:${target.id}`);
       const errEntry = mp.installError.get(`skill:${target.id}`);
