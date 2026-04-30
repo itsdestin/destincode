@@ -80,7 +80,34 @@ function SourceTag({ skill }: { skill: SkillEntry }) {
   );
 }
 
-export default function SkillCard({
+// Custom memo comparator. Without this, every parent re-render rebuilds the
+// inline `favorite` and `pluginBadge` objects (CommandDrawer.renderSkillCard
+// creates them fresh each render — see CommandDrawer.tsx:165-174), so default
+// shallow-equal would always fail and every card would re-render on every
+// chat-store dispatch. Compare the values that actually drive what the user
+// sees (filled, name) and ignore the closure-identity of onToggle/onClick —
+// React only cares which function fires on click, and the latest one fires
+// either way thanks to React's render-phase capture. Fixes the v1.2.2 drawer
+// flicker (chat dispatches → AppInner re-render → 20 cards re-render → paint
+// glitch on Windows Electron).
+function skillCardPropsEqual(prev: Props, next: Props): boolean {
+  if (prev.skill !== next.skill) return false;
+  if (prev.variant !== next.variant) return false;
+  if (prev.installed !== next.installed) return false;
+  if (prev.updateAvailable !== next.updateAvailable) return false;
+  if (prev.installing !== next.installing) return false;
+  if (prev.onClick !== next.onClick) return false;
+  if (prev.onInstall !== next.onInstall) return false;
+  const pf = prev.favorite, nf = next.favorite;
+  if ((pf == null) !== (nf == null)) return false;
+  if (pf && nf && pf.filled !== nf.filled) return false;
+  const pb = prev.pluginBadge, nb = next.pluginBadge;
+  if ((pb == null) !== (nb == null)) return false;
+  if (pb && nb && pb.name !== nb.name) return false;
+  return true;
+}
+
+function SkillCardImpl({
   skill, onClick, variant = 'drawer', installed, updateAvailable,
   onInstall, installing, favorite, pluginBadge,
 }: Props) {
@@ -178,3 +205,6 @@ export default function SkillCard({
     </div>
   );
 }
+
+const SkillCard = React.memo(SkillCardImpl, skillCardPropsEqual);
+export default SkillCard;
