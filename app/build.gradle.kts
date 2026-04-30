@@ -75,6 +75,32 @@ android {
             resValue("string", "app_name", "YouCoded")
             buildConfigField("int", "BRIDGE_PORT", "9901")
         }
+        // ReleaseTest: same R8 / shrinker / proguard config as `release`, but
+        // signed with the debug keystore and installed as a SEPARATE app
+        // ("YouCoded ReleaseTest") via applicationIdSuffix.
+        //
+        // Why this exists: debug builds skip R8 minification entirely, which
+        // hides any bug whose trigger involves R8 obfuscation, shrinking, or
+        // inlining. The PluginInstaller reflection bug shipped silently from
+        // 2026-03-25 through v1.2.2 because every dev/CI build was debug — no
+        // pre-release verification ever ran the same code path the user would.
+        // assembleReleaseTest reproduces release behavior (R8 effects intact)
+        // without needing the production release keystore, so anyone can run
+        // it locally or in CI before tagging. Side-by-side install also means
+        // the user's real app data is never touched during verification.
+        //
+        // Bridge port shifted to avoid colliding with both the production app
+        // (9901) and the regular debug app (9951). Uninstall + reinstall of
+        // releaseTest is safe at any time.
+        create("releaseTest") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".releasetest"
+            versionNameSuffix = "-releasetest"
+            resValue("string", "app_name", "YouCoded ReleaseTest")
+            signingConfig = signingConfigs.getByName("debug")
+            buildConfigField("int", "BRIDGE_PORT", "9961")
+            matchingFallbacks += listOf("release")
+        }
     }
 
     buildFeatures {
