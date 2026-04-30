@@ -30,3 +30,22 @@
 # Keep our hook event and session classes (used with JSON parsing)
 -keep class com.youcoded.app.parser.HookEvent { *; }
 -keep class com.youcoded.app.parser.HookEvent$* { *; }
+
+# Bootstrap: defense against future reflection regressions.
+#
+# PluginInstaller historically called bootstrap.javaClass.getMethod(
+# "buildRuntimeEnv") via reflection. R8 obfuscated buildRuntimeEnv to a
+# one-letter name, the lookup threw NoSuchMethodException, the silent
+# fallback shipped a stripped env without LD_PRELOAD, and every git
+# clone in the marketplace install path died with "cannot exec
+# 'remote-https': Permission denied". Shipped silently from
+# 2026-03-25 (e18ab861) through every release until 2026-04-30 when
+# a user finally reported it.
+#
+# The reflection has been removed (see PluginInstaller.kt). This keep
+# rule is belt-and-suspenders so that if someone reintroduces reflection
+# against Bootstrap in the future, R8 can't silently break it. The cost
+# is one class's public surface kept un-obfuscated — negligible.
+-keep class com.youcoded.app.runtime.Bootstrap {
+    public *;
+}

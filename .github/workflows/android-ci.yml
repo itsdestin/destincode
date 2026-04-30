@@ -18,6 +18,17 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # Explicit Node setup — bundleWebUi (Gradle preBuild dep) shells out
+      # to `npm` via scripts/build-web-ui.sh. ubuntu-latest happens to
+      # ship a node binary today, but pinning here removes the runner-
+      # image dep so CI doesn't silently drift if the image changes.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -27,9 +38,30 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
-      - name: Upload APK
+      # ReleaseTest: same R8 minification + shrinker + proguard rules as
+      # the production release flavor, but signed with the debug keystore
+      # so it can run without the release-keystore secrets.
+      #
+      # Why this lives in dev CI (not just release): debug builds skip R8
+      # entirely, hiding any bug whose trigger involves R8 obfuscation,
+      # shrinking, or inlining. The PluginInstaller reflection footgun
+      # (912f5ca7) shipped silently from 2026-03-25 through v1.2.2
+      # because every dev/CI build was debug — pre-release verification
+      # never ran the same code path the user would. Building releaseTest
+      # on every push catches that whole bug class at PR time.
+      - name: Build releaseTest APK (R8 minified, debug-signed)
+        run: ./gradlew assembleReleaseTest
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: youcoded-debug
           path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+      - name: Upload releaseTest APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: youcoded-releasetest
+          path: app/build/outputs/apk/releaseTest/*.apk
           retention-days: 14
