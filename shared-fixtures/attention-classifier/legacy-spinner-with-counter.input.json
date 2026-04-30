@@ -5,5 +5,6 @@
     ""
   ],
   "previousSpinnerGlyph": null,
-  "secondsSincePreviousGlyph": 1
+  "secondsSincePreviousGlyph": 1,
+  "previousCounterSeconds": null
 }

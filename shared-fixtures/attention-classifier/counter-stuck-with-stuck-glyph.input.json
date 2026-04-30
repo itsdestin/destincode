@@ -1,0 +1,11 @@
+{
+  "description": "Glyph unchanged for 31s AND the counter is also frozen at 100 (no advancement since prior tick) → thinking-stalled. The counter freeze is what distinguishes a genuine stall from a slow render — when both the glyph and the counter are still, CC really has stopped emitting progress.",
+  "bufferTail": [
+    "Running long task",
+    "✻ Pondering… (1m 40s · ↓ 4.2k tokens)",
+    ""
+  ],
+  "previousSpinnerGlyph": "✻",
+  "secondsSincePreviousGlyph": 31,
+  "previousCounterSeconds": 100
+}

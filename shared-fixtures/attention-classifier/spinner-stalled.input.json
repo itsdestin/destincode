@@ -6,5 +6,6 @@
     ""
   ],
   "previousSpinnerGlyph": "✢",
-  "secondsSincePreviousGlyph": 31
+  "secondsSincePreviousGlyph": 31,
+  "previousCounterSeconds": null
 }

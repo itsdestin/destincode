@@ -7,5 +7,6 @@
     "user@hostname:~/project$"
   ],
   "previousSpinnerGlyph": null,
-  "secondsSincePreviousGlyph": 0
+  "secondsSincePreviousGlyph": 0,
+  "previousCounterSeconds": null
 }

@@ -1,0 +1,10 @@
+{
+  "description": "CC tool-running spinner with a multi-word gerund phrase between glyph and ellipsis. Captured 2026-04-30 from a real Install-And-Verify turn. The pre-2026-04-30 single-word regex `[A-Za-z]+…` failed to match this because of the spaces and `+` between the glyph and `…`, leaving the classifier returning 'unknown' on every tick of the turn until the no-spinner-20s safety net flashed the 'check terminal' banner during a healthy thinking turn. Widened gerund body fixes it. Counter is 1m 52s = 112s.",
+  "bufferTail": [
+    "* Installing + verifying on device… (1m 52s · ↓ 3.0k tokens)",
+    ""
+  ],
+  "previousSpinnerGlyph": null,
+  "secondsSincePreviousGlyph": 0,
+  "previousCounterSeconds": null
+}

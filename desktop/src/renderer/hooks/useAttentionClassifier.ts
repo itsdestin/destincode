@@ -86,12 +86,21 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
     // Per-run spinner tracking — glyph rotation drives active vs. stalled.
     let previousSpinnerGlyph: string | null = null;
     // When the glyph last CHANGED. While the glyph stays the same we measure
-    // age against this timestamp; after ≥10s without rotation the classifier
-    // returns thinking-stalled (mapped to 'stuck').
+    // age against this timestamp; after ≥30s without rotation AND no counter
+    // advancement the classifier returns thinking-stalled (mapped to 'stuck').
     let previousSpinnerGlyphAt: number = Date.now();
-    // When we last saw any spinner glyph in the buffer. Seeded to run-start
-    // so the 20s no-spinner-stuck timer begins counting immediately.
-    let lastSpinnerSeenAt: number = Date.now();
+    // When we last saw a CC liveness signal in the buffer — either a spinner
+    // glyph OR a paren-wrapped seconds counter that advanced since the prior
+    // tick. Seeded to run-start so the 20s no-spinner-stuck timer begins
+    // counting immediately. Broader than the old "lastSpinnerSeenAt" because
+    // a ticking counter alone is enough to prove CC is alive and rendering;
+    // see attention-classifier.ts header for the full rationale.
+    let lastSignalSeenAt: number = Date.now();
+    // Tracks the highest CC seconds-counter value observed in the prior tick
+    // so the classifier can detect counter advancement across ticks. null when
+    // no counter was visible in the prior tick (very first tick or pre-tool
+    // phase of a turn).
+    let previousCounterSeconds: number | null = null;
     // Debounce: count how many consecutive ticks have mapped to the same
     // non-ok state. Only dispatch once it sticks — transitions back to 'ok'
     // fire immediately so the banner clears fast when Claude resumes.
@@ -121,27 +130,44 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
         bufferTail: tail,
         previousSpinnerGlyph,
         secondsSincePreviousGlyph: (Date.now() - previousSpinnerGlyphAt) / 1000,
+        previousCounterSeconds,
       };
       const result = classifyBuffer(ctx);
 
       // Track spinner glyph for the next tick.
       if (result.spinnerGlyph !== null) {
-        lastSpinnerSeenAt = Date.now();
+        lastSignalSeenAt = Date.now();
         if (result.spinnerGlyph !== previousSpinnerGlyph) {
           previousSpinnerGlyph = result.spinnerGlyph;
           previousSpinnerGlyphAt = Date.now();
         }
       }
 
+      // Track counter advancement for the next tick. A counter that ticked up
+      // is itself a CC liveness signal — refresh lastSignalSeenAt so the 20s
+      // no-spinner escalation below doesn't fire while a counter is actively
+      // running. We compare to the value we passed INTO this tick (saved in
+      // a local) before overwriting previousCounterSeconds for the next one.
+      const priorCounterForCompare = previousCounterSeconds;
+      if (
+        result.counterSeconds !== null &&
+        priorCounterForCompare !== null &&
+        result.counterSeconds > priorCounterForCompare
+      ) {
+        lastSignalSeenAt = Date.now();
+      }
+      previousCounterSeconds = result.counterSeconds;
+
       let mapped = bufferClassToAttention(result.class);
 
-      // Escalate sustained spinner-absence to 'stuck'. Gate already rules out
-      // running tools / awaiting approval, so a missing spinner for 20s means
-      // the CLI is genuinely quiet while we thought it was thinking.
+      // Escalate sustained signal-absence to 'stuck'. Gate already rules out
+      // running tools / awaiting approval, so 20s without ANY liveness signal
+      // (no glyph, no advancing counter) means the CLI is genuinely quiet
+      // while we thought it was thinking.
       if (
         mapped === 'ok' &&
         result.class === 'unknown' &&
-        Date.now() - lastSpinnerSeenAt >= NO_SPINNER_STUCK_MS
+        Date.now() - lastSignalSeenAt >= NO_SPINNER_STUCK_MS
       ) {
         mapped = 'stuck';
       }

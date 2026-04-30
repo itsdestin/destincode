@@ -1,0 +1,11 @@
+{
+  "description": "Spinner glyph hasn't rotated for 31s (would normally classify as thinking-stalled), but the paren-wrapped seconds counter advanced from 100 to 105 since the prior tick — meaning CC is still rendering progress, just on a frozen glyph frame. Counter advancement OR-rescues the stalled branch so we stay thinking-active. Defense-in-depth against CC visual changes that pause the glyph rotation but keep the counter live.",
+  "bufferTail": [
+    "Running long task",
+    "✻ Pondering… (1m 45s · ↓ 4.2k tokens)",
+    ""
+  ],
+  "previousSpinnerGlyph": "✻",
+  "secondsSincePreviousGlyph": 31,
+  "previousCounterSeconds": 100
+}

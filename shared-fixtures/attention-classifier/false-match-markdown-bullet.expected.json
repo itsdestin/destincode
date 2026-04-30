@@ -1,4 +1,5 @@
 {
   "class": "unknown",
-  "spinnerGlyph": null
+  "spinnerGlyph": null,
+  "counterSeconds": null
 }

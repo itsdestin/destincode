@@ -9,6 +9,7 @@ function ctx(lines: string[], overrides: Partial<ClassifierContext> = {}): Class
     bufferTail: lines,
     previousSpinnerGlyph: null,
     secondsSincePreviousGlyph: 0,
+    previousCounterSeconds: null,
     ...overrides,
   };
 }
@@ -210,5 +211,140 @@ describe('classifyBuffer', () => {
 
   it("indented tool output '  * Compiling…' → unknown", () => {
     expect(classifyBuffer(ctx(['  * Compiling…'])).class).toBe('unknown');
+  });
+
+  // Multi-word gerund — captured live 2026-04-30 from a real install-and-verify
+  // turn. The pre-2026-04-30 single-word regex `[A-Za-z]+…` couldn't match this
+  // because of the spaces and `+` between glyph and ellipsis, so the classifier
+  // returned 'unknown' on every tick of the turn and the no-spinner-20s safety
+  // net flashed the wrong banner.
+  it("multi-word gerund '* Installing + verifying on device…' → active", () => {
+    const result = classifyBuffer(
+      ctx(['* Installing + verifying on device… (1m 52s · ↓ 3.0k tokens)']),
+    );
+    expect(result.class).toBe('thinking-active');
+    expect(result.spinnerGlyph).toBe('*');
+    expect(result.counterSeconds).toBe(112);
+  });
+
+  it("multi-word gerund without paren suffix '✻ Reading large file…' → active", () => {
+    const result = classifyBuffer(ctx(['✻ Reading large file…']));
+    expect(result.class).toBe('thinking-active');
+    expect(result.spinnerGlyph).toBe('✻');
+  });
+
+  // Counter detection — the OR signal. Independent of the spinner regex so a
+  // future CC visual change that pauses the glyph rotation but keeps the
+  // counter live still classifies as active.
+  describe('counter signal', () => {
+    it('extracts seconds from "(7s · esc to interrupt)"', () => {
+      const result = classifyBuffer(ctx(['✻ Pondering… (7s · esc to interrupt)']));
+      expect(result.counterSeconds).toBe(7);
+    });
+
+    it('extracts total seconds from "(1m 52s · ↓ 3.0k tokens)"', () => {
+      const result = classifyBuffer(
+        ctx(['* Installing + verifying on device… (1m 52s · ↓ 3.0k tokens)']),
+      );
+      expect(result.counterSeconds).toBe(112); // 1*60 + 52
+    });
+
+    it('extracts seconds when prefixed by other paren content "(running stop hook · 3s · …)"', () => {
+      const result = classifyBuffer(
+        ctx(['✶ Channelling… (running stop hook · 3s · ↓ 1 tokens)']),
+      );
+      expect(result.counterSeconds).toBe(3);
+    });
+
+    it('takes the MAX seconds across multiple lines / multiple counters', () => {
+      const result = classifyBuffer(
+        ctx([
+          'Stage 1 (8s · …)',
+          'Stage 2 (45s · …)',
+          'Stage 3 (12s · …)',
+        ]),
+      );
+      expect(result.counterSeconds).toBe(45);
+    });
+
+    it('returns null when no paren-wrapped counter is present', () => {
+      const result = classifyBuffer(ctx(['plain text', 'more plain text']));
+      expect(result.counterSeconds).toBeNull();
+    });
+
+    it('does NOT match a bare "Ns" outside parens (defends Claude prose)', () => {
+      // Claude prose mentioning timing in body text — like "wait 5s" or
+      // "took 30s" — must not light up the counter signal. Anchored to
+      // paren-wrapped form because that's the only shape CC's progress
+      // counter ever takes.
+      const result = classifyBuffer(
+        ctx(['That operation took 30s and the next one will take 5s.']),
+      );
+      expect(result.counterSeconds).toBeNull();
+    });
+  });
+
+  // Counter rescue — the OR with glyph rotation. These are the cases the
+  // 2026-04-30 change explicitly added support for.
+  describe('counter advancement rescues stuck glyph', () => {
+    it('glyph frozen 31s but counter advanced from 100→105 → still active', () => {
+      const result = classifyBuffer(
+        ctx(['✻ Pondering… (1m 45s · ↓ 4.2k tokens)'], {
+          previousSpinnerGlyph: '✻',
+          secondsSincePreviousGlyph: 31,
+          previousCounterSeconds: 100,
+        }),
+      );
+      expect(result.class).toBe('thinking-active');
+      expect(result.counterSeconds).toBe(105);
+    });
+
+    it('glyph frozen 31s AND counter unchanged at 100 → stalled (genuine stall)', () => {
+      const result = classifyBuffer(
+        ctx(['✻ Pondering… (1m 40s · ↓ 4.2k tokens)'], {
+          previousSpinnerGlyph: '✻',
+          secondsSincePreviousGlyph: 31,
+          previousCounterSeconds: 100,
+        }),
+      );
+      expect(result.class).toBe('thinking-stalled');
+      expect(result.counterSeconds).toBe(100);
+    });
+
+    it('no glyph at all but counter advanced 5→6 → active (counter-only path)', () => {
+      const result = classifyBuffer(
+        ctx(['Building project', '  Compiling foo (5/12) (6s · ↑ 0.3k tokens)'], {
+          previousSpinnerGlyph: null,
+          previousCounterSeconds: 5,
+        }),
+      );
+      expect(result.class).toBe('thinking-active');
+      expect(result.spinnerGlyph).toBeNull();
+      expect(result.counterSeconds).toBe(6);
+    });
+
+    it('no glyph and counter unchanged → still unknown (no liveness signal)', () => {
+      const result = classifyBuffer(
+        ctx(['Some output (5s · ↑ 0.3k tokens)'], {
+          previousSpinnerGlyph: null,
+          previousCounterSeconds: 5,
+        }),
+      );
+      expect(result.class).toBe('unknown');
+    });
+
+    it('first tick (previousCounterSeconds null) does NOT count as advancement', () => {
+      // No prior tick to compare against. Counter alone shouldn't fire active
+      // until we have a baseline — otherwise any CC progress line containing
+      // "(5s · …)" would always classify active even when nothing's moving.
+      const result = classifyBuffer(
+        ctx(['Some output (5s · ↑ 0.3k tokens)'], {
+          previousSpinnerGlyph: null,
+          previousCounterSeconds: null,
+        }),
+      );
+      expect(result.class).toBe('unknown');
+      expect(result.counterSeconds).toBe(5);
+    });
   });
 });
