@@ -219,7 +219,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
         const isLastBubble = i === bubbles.length - 1;
         return (
           <div key={bubble.key} className="flex justify-start px-4 py-0.5">
-            <div className={`assistant-bubble max-w-[85%] rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : 'py-3.5'}`}>
+            <div className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : 'py-3.5'}`}>
               {bubble.text && (
                 <MarkdownContent content={bubble.text.content} />
               )}
