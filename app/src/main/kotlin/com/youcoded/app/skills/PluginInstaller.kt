@@ -1,6 +1,7 @@
 package com.youcoded.app.skills
 
 import android.util.Log
+import com.youcoded.app.runtime.Bootstrap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -24,7 +25,7 @@ import java.util.concurrent.TimeUnit
  */
 class PluginInstaller(
     private val homeDir: File,
-    private val bootstrap: Any, // Bootstrap instance — used for buildRuntimeEnv()
+    private val bootstrap: Bootstrap,
     private val configStore: SkillConfigStore,
 ) {
     // Marketplace-installed plugins live at
@@ -413,23 +414,21 @@ class PluginInstaller(
         }
     }
 
-    /** Build environment map for git execution via Bootstrap.buildRuntimeEnv(). */
-    private fun buildEnv(): Map<String, String> {
-        // Use reflection to call bootstrap.buildRuntimeEnv() since we take Any
-        // to avoid a circular dependency on Bootstrap
-        return try {
-            val method = bootstrap.javaClass.getMethod("buildRuntimeEnv")
-            @Suppress("UNCHECKED_CAST")
-            method.invoke(bootstrap) as Map<String, String>
-        } catch (_: Exception) {
-            // Fallback: minimal env. Same layout fix as runGit — usr/ lives at
-            // filesDir/usr, not homeDir/usr (homeDir is filesDir/home).
-            val usrRoot = (homeDir.parentFile ?: homeDir).absolutePath
-            mapOf(
-                "HOME" to homeDir.absolutePath,
-                "PATH" to "$usrRoot/usr/bin:/system/bin",
-                "LD_LIBRARY_PATH" to "$usrRoot/usr/lib",
-            )
-        }
-    }
+    /** Build environment map for git execution via Bootstrap.buildRuntimeEnv().
+     *
+     *  Direct call — NOT reflection. Earlier versions took `bootstrap: Any` and
+     *  used `bootstrap.javaClass.getMethod("buildRuntimeEnv").invoke(...)`,
+     *  motivated by an alleged circular-dep that never actually existed
+     *  (runtime/ does not import skills/). In release builds R8 minification
+     *  obfuscates `buildRuntimeEnv` to a one-letter name, the reflection
+     *  lookup throws NoSuchMethodException, the silent catch falls back to a
+     *  stripped-down env with NO LD_PRELOAD / TERMUX_APP__LEGACY_DATA_DIR /
+     *  GIT_EXEC_PATH, and every git clone — the only marketplace install
+     *  path on Android — fails with `cannot exec 'remote-https': Permission
+     *  denied` because git's HTTPS helper exec isn't routed through linker64.
+     *  The bug shipped silently from 2026-03-25 (e18ab861, R8 enabled) until
+     *  2026-04-30 when a user finally reported "click Install does nothing".
+     *
+     *  Do NOT reintroduce the reflection. */
+    private fun buildEnv(): Map<String, String> = bootstrap.buildRuntimeEnv()
 }
