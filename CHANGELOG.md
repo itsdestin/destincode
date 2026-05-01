@@ -2,6 +2,32 @@
 
 All notable changes to YouCoded are documented in this file.
 
+## [1.2.3] — 2026-05-01
+
+**Claude Code CLI baseline:** v2.1.126
+
+Patch release. The headline fix is the Android marketplace install bug: the
+`PluginInstaller` used string-based reflection against `Bootstrap` that R8
+silently obfuscated in release builds, so every marketplace plugin install
+since 2026-03-25 (v1.2.0 onward) shipped with a stripped runtime env and died
+with `cannot exec 'remote-https': Permission denied` on real users while every
+dev build worked fine. Plus the attention banner now correctly handles
+multi-word gerunds and ticking counters (no more spurious "still waiting" mid-
+turn), the drawer no longer flickers when the desktop chat re-renders, long
+URLs/paths wrap inside chat bubbles, and Android marketplace install state
+matches by `pluginName` instead of bare ID.
+
+### Added
+- **Android `releaseTest` build type + CI parity check** — Same R8 / shrinker / proguard config as production release, debug-signed for side-by-side install (`com.youcoded.app.releasetest`, bridge port 9961). `android-ci.yml` and `android-test-build.yml` run `assembleReleaseTest` on every push so R8-induced regressions surface at PR time, not after tagging. Catches the class of bug that shipped v1.2.0 → v1.2.2 invisibly.
+- **ProGuard `-keep` rule for `com.youcoded.app.runtime.Bootstrap`** — Defensive: protects all of Bootstrap's public surface from R8 obfuscation so any future reflection against it can't silently break. Negligible APK size cost.
+
+### Fixed
+- **Android marketplace plugin install (R8 reflection footgun)** — Replaced `bootstrap.javaClass.getMethod("buildRuntimeEnv")` in `PluginInstaller.kt` with a direct strongly-typed call. R8 minification was renaming the target to a one-letter symbol in release builds, so the reflection threw `NoSuchMethodException` and a silent `try/catch` fallback shipped a stripped env without `LD_PRELOAD`, breaking every plugin install with `cannot exec 'remote-https': Permission denied`. Affected v1.2.0 onward.
+- **Marketplace installed-plugin matching by `pluginName`** — `MarketplaceScreen` and `MarketplaceDetailOverlay` now match installed plugins by their declared `pluginName` instead of just the bare ID, so plugins whose published name differs from their install slug correctly show as installed and trigger the right install/uninstall path.
+- **Attention classifier — multi-word gerunds and ticking counters** — `SPINNER_RE` widened from `[A-Za-z]+…` to `[A-Za-z][A-Za-z +\-]*…` so multi-word gerunds like `Installing + verifying on device…` match. New parallel `COUNTER_RE` matches CC's paren-wrapped `(Nm Ns · …)` seconds counter as an OR liveness signal. Active-vs-stalled now requires both same-glyph-for-30s AND counter-not-advancing — fixes spurious "still waiting on Claude" banners during real long thinking turns where CC pauses glyph rotation but keeps the counter live.
+- **Desktop drawer card-flicker on chat re-renders** — `SkillCard` is now `React.memo`-wrapped with a stable comparator, and `FavoriteStar` lost a redundant `bg-panel/80 backdrop-blur-sm` that compositor-thrashed on every parent re-render. Chat re-rendering during a turn no longer makes drawer cards flash.
+- **Long URLs/paths wrap inside chat bubbles** — `AssistantTurnBubble`, `UserMessage`, and the bubble container apply Tailwind `break-words` so unbroken paths and URLs wrap at character boundaries instead of overflowing the bubble width.
+
 ## [1.2.2] — 2026-04-29
 
 **Claude Code CLI baseline:** v2.1.123
