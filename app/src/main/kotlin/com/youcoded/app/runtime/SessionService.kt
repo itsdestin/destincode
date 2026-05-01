@@ -13,6 +13,7 @@ import android.os.Binder
 import android.os.FileObserver
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import com.youcoded.app.BuildConfig
 import com.youcoded.app.MainActivity
 import com.youcoded.app.analytics.AnalyticsService
@@ -224,6 +225,12 @@ class SessionService : Service() {
                     // (Android internal files root) or filesDir itself.
                     homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
                     appVersion = BuildConfig.VERSION_NAME,
+                    // Settings.Secure.ANDROID_ID is per-(app-signing-key, user, device)
+                    // since Android 8 — stable across reinstalls of THIS app, resets
+                    // only on factory reset. Empty/null falls back to a persisted UUID.
+                    machineIdReader = {
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                    },
                 ).runOnLaunch()
             } catch (_: Exception) {
                 // Swallow — analytics must never impact app startup.
@@ -2749,6 +2756,9 @@ class SessionService : Service() {
                     apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
                     homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
                     appVersion = BuildConfig.VERSION_NAME,
+                    machineIdReader = {
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                    },
                 )
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, svc.getOptIn()) }
             }
@@ -2759,6 +2769,9 @@ class SessionService : Service() {
                     apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
                     homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
                     appVersion = BuildConfig.VERSION_NAME,
+                    machineIdReader = {
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                    },
                 )
                 svc.setOptIn(enabled)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, null) }
