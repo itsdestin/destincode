@@ -119,80 +119,87 @@ export default function OpenTasksPopup({ open, tasks, onClose, onMarkInactive, o
       {/* Centered in viewport — matches ModelPickerPopup/PreferencesPopup positioning. */}
       <OverlayPanel
         layer={2}
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[420px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-auto rounded-md"
+        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[420px] max-w-[calc(100vw-2rem)] max-h-[70vh] rounded-md flex flex-col"
         role="dialog"
         aria-label="Open tasks"
       >
-        {/* Header row — just the title. Counts live inline with each section
-            (and in the StatusBar chip), so repeating "N open" here was noise. */}
-        <div className="px-3 pt-2 pb-1 border-b border-edge-dim">
+        {/* Header row — non-scrolling so the title stays visible. Counts live
+            inline with each section (and in the StatusBar chip), so repeating
+            "N open" here was noise. flex-shrink-0 keeps the title fixed while
+            the body scrolls. */}
+        <div className="px-3 pt-2 pb-1 border-b border-edge-dim flex-shrink-0">
           <span className="text-sm font-medium text-fg">Open Tasks</span>
         </div>
 
-        {/* Empty state: nothing at all */}
-        {openCount === 0 && completed.length === 0 && inactive.length === 0 && (
-          <div className="px-3 py-4 text-xs text-fg-muted text-center">No open tasks.</div>
-        )}
+        {/* Scrollable body. .layer-surface has overflow:hidden by design (clips
+            to rounded border), so the scroll container has to live inside.
+            min-h-0 is required for flex-1 + overflow-auto to actually scroll. */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {/* Empty state: nothing at all */}
+          {openCount === 0 && completed.length === 0 && inactive.length === 0 && (
+            <div className="px-3 py-4 text-xs text-fg-muted text-center">No open tasks.</div>
+          )}
 
-        {/* Empty state: only completed or inactive remain */}
-        {openCount === 0 && (completed.length > 0 || inactive.length > 0) && (
-          <div className="px-3 py-3 text-xs text-fg-muted italic">No open tasks.</div>
-        )}
+          {/* Empty state: only completed or inactive remain */}
+          {openCount === 0 && (completed.length > 0 || inactive.length > 0) && (
+            <div className="px-3 py-3 text-xs text-fg-muted italic">No open tasks.</div>
+          )}
 
-        {/* In Progress section — no count suffix, the rows are visible right below. */}
-        {running.length > 0 && (
-          <>
-            <SectionHeader label="In Progress" />
-            {running.map(t => (
-              <Row key={t.id} t={t} group="in_progress" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
-            ))}
-          </>
-        )}
+          {/* In Progress section — no count suffix, the rows are visible right below. */}
+          {running.length > 0 && (
+            <>
+              <SectionHeader label="In Progress" />
+              {running.map(t => (
+                <Row key={t.id} t={t} group="in_progress" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
+              ))}
+            </>
+          )}
 
-        {/* Pending section — no count suffix, the rows are visible right below. */}
-        {pending.length > 0 && (
-          <>
-            <SectionHeader label="Pending" />
-            {pending.map(t => (
-              <Row key={t.id} t={t} group="pending" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
-            ))}
-          </>
-        )}
+          {/* Pending section — no count suffix, the rows are visible right below. */}
+          {pending.length > 0 && (
+            <>
+              <SectionHeader label="Pending" />
+              {pending.map(t => (
+                <Row key={t.id} t={t} group="pending" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
+              ))}
+            </>
+          )}
 
-        {/* Completed section — collapsible. Keep the count on the toggle itself
-            so a collapsed section signals "there are N items hidden here." */}
-        {completed.length > 0 && (
-          <>
-            <button
-              aria-expanded={completedOpen}
-              className="w-full text-left text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg"
-              onClick={() => setCompletedOpen(v => !v)}
-            >
-              <span>Completed</span>
-              <span>{completed.length} {completedOpen ? '▾' : '▸'}</span>
-            </button>
-            {completedOpen && completed.map(t => (
-              <Row key={t.id} t={t} group="completed" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
-            ))}
-          </>
-        )}
+          {/* Completed section — collapsible. Keep the count on the toggle itself
+              so a collapsed section signals "there are N items hidden here." */}
+          {completed.length > 0 && (
+            <>
+              <button
+                aria-expanded={completedOpen}
+                className="w-full text-left text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg"
+                onClick={() => setCompletedOpen(v => !v)}
+              >
+                <span>Completed</span>
+                <span>{completed.length} {completedOpen ? '▾' : '▸'}</span>
+              </button>
+              {completedOpen && completed.map(t => (
+                <Row key={t.id} t={t} group="completed" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
+              ))}
+            </>
+          )}
 
-        {/* Marked Inactive section — same collapsed-toggle-with-count pattern. */}
-        {inactive.length > 0 && (
-          <>
-            <button
-              aria-expanded={inactiveOpen}
-              className="w-full text-left text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg border-t border-edge-dim mt-1"
-              onClick={() => setInactiveOpen(v => !v)}
-            >
-              <span>Marked Inactive</span>
-              <span>{inactive.length} {inactiveOpen ? '▾' : '▸'}</span>
-            </button>
-            {inactiveOpen && inactive.map(t => (
-              <Row key={t.id} t={t} group="inactive" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
-            ))}
-          </>
-        )}
+          {/* Marked Inactive section — same collapsed-toggle-with-count pattern. */}
+          {inactive.length > 0 && (
+            <>
+              <button
+                aria-expanded={inactiveOpen}
+                className="w-full text-left text-[10px] uppercase tracking-wider text-fg-muted px-2 pt-2 pb-1 flex justify-between items-baseline hover:text-fg border-t border-edge-dim mt-1"
+                onClick={() => setInactiveOpen(v => !v)}
+              >
+                <span>Marked Inactive</span>
+                <span>{inactive.length} {inactiveOpen ? '▾' : '▸'}</span>
+              </button>
+              {inactiveOpen && inactive.map(t => (
+                <Row key={t.id} t={t} group="inactive" onMarkInactive={onMarkInactive} onUnhide={onUnhide} />
+              ))}
+            </>
+          )}
+        </div>
       </OverlayPanel>
     </>
   );
