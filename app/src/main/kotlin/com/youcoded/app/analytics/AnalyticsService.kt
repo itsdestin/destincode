@@ -1,10 +1,10 @@
-// Mirror of desktop/src/main/analytics-service.ts. Fires /app/install once per
-// install_id and /app/heartbeat once per UTC day. Fire-and-forget — network
-// failures do not throw and do not mutate state, so the next launch retries.
+// Mirror of desktop/src/main/analytics-service.ts. Posts /app/heartbeat once
+// per UTC day with a HMAC of (machine_id || platform), computed locally.
+// Fire-and-forget — network failures do not throw and do not mutate state.
 //
-// Privacy: install_id is a random UUID, never tied to a user account or device
-// identifier. Country is NOT sent from the client — the Worker reads it from
-// the CF-IPCountry header.
+// Privacy: the raw machine_id never leaves the device. See the design
+// spec at docs/superpowers/specs/2026-05-01-device-id-analytics-design.md
+// for the threat model.
 package com.youcoded.app.analytics
 
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,12 +17,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.TimeZone
 import java.util.UUID
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 data class AnalyticsState(
-    val installId: String = "",
     val optIn: Boolean = true,
     val lastPingedDate: String = "",
-    val installReported: Boolean = false,
+    val fallbackDeviceId: String? = null,
 )
 
 class AnalyticsService(
@@ -30,6 +31,9 @@ class AnalyticsService(
     private val homeDir: File,
     private val appVersion: String,
     private val http: OkHttpClient = OkHttpClient(),
+    // Default reader fails loudly — production callers MUST inject a real reader
+    // (typically a Settings.Secure.ANDROID_ID lookup; see SessionService.kt).
+    private val machineIdReader: () -> String = ::defaultReaderUnimplemented,
 ) {
     private val stateFile get() = File(homeDir, ".claude/youcoded-analytics.json")
 
@@ -37,54 +41,62 @@ class AnalyticsService(
         var state = readState()
         if (!state.optIn) return
 
-        if (state.installId.isEmpty()) {
-            state = state.copy(installId = UUID.randomUUID().toString(), installReported = false)
-            writeState(state)
-        }
+        val today = todayUtc()
+        if (state.lastPingedDate == today) return
+
+        val (newState, hash) = computeDeviceIdHash(state)
+        state = newState
 
         val payload = JSONObject().apply {
-            put("installId", state.installId)
+            put("deviceIdHash", hash)
             put("appVersion", appVersion)
             put("platform", "android")
             put("os", "")
         }
-
-        if (!state.installReported) {
-            if (postEvent("/app/install", payload)) {
-                state = state.copy(installReported = true)
-                writeState(state)
-            }
-        }
-
-        val today = todayUtc()
-        if (state.lastPingedDate != today) {
-            if (postEvent("/app/heartbeat", payload)) {
-                state = state.copy(lastPingedDate = today)
-                writeState(state)
-            }
+        if (postEvent("/app/heartbeat", payload)) {
+            state = state.copy(lastPingedDate = today)
+            writeState(state)
         }
     }
 
     fun getOptIn(): Boolean = readState().optIn
 
     fun setOptIn(value: Boolean) {
-        var state = readState()
-        if (state.installId.isEmpty()) state = state.copy(installId = UUID.randomUUID().toString())
+        val state = readState()
         writeState(state.copy(optIn = value))
     }
 
     // Internal helper for tests.
     fun debugReadState(): AnalyticsState = readState()
 
+    private fun computeDeviceIdHash(state: AnalyticsState): Pair<AnalyticsState, String> {
+        var current = state
+        var raw = try { machineIdReader() } catch (_: Exception) { "" }
+        if (raw.length < 8) {
+            if (current.fallbackDeviceId == null) {
+                current = current.copy(fallbackDeviceId = UUID.randomUUID().toString())
+                writeState(current)
+            }
+            raw = "fallback:${current.fallbackDeviceId}"
+        }
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(ANALYTICS_SALT.toByteArray(), "HmacSHA256"))
+        val digest = mac.doFinal("$raw|android".toByteArray())
+        val hash = digest.joinToString("") { "%02x".format(it) }
+        return current to hash
+    }
+
     private fun readState(): AnalyticsState {
         if (!stateFile.exists()) return AnalyticsState()
         return try {
             val json = JSONObject(stateFile.readText())
+            // Drop legacy installId / installReported silently; they're meaningless
+            // post-cutover and the file gets rewritten on the next writeState().
             AnalyticsState(
-                installId = json.optString("installId", ""),
                 optIn = json.optBoolean("optIn", true),
                 lastPingedDate = json.optString("lastPingedDate", ""),
-                installReported = json.optBoolean("installReported", false),
+                fallbackDeviceId = if (json.has("fallbackDeviceId") && !json.isNull("fallbackDeviceId"))
+                    json.getString("fallbackDeviceId") else null,
             )
         } catch (_: Exception) {
             AnalyticsState()
@@ -94,10 +106,9 @@ class AnalyticsService(
     private fun writeState(state: AnalyticsState) {
         stateFile.parentFile?.mkdirs()
         val json = JSONObject().apply {
-            put("installId", state.installId)
             put("optIn", state.optIn)
             put("lastPingedDate", state.lastPingedDate)
-            put("installReported", state.installReported)
+            if (state.fallbackDeviceId != null) put("fallbackDeviceId", state.fallbackDeviceId)
         }
         stateFile.writeText(json.toString(2))
     }
@@ -120,4 +131,14 @@ class AnalyticsService(
             return fmt.format(Date())
         }
     }
+}
+
+// Sentinel for the default constructor argument. Production callers MUST
+// inject a real reader at construction time (see SessionService.kt where
+// AnalyticsService is instantiated with a Settings.Secure.ANDROID_ID lambda).
+private fun defaultReaderUnimplemented(): String {
+    throw IllegalStateException(
+        "AnalyticsService.machineIdReader was not injected. " +
+        "Pass a Settings.Secure.ANDROID_ID lambda from your Android Context."
+    )
 }

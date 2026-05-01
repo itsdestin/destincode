@@ -58,7 +58,7 @@ describe("analytics-service.runAnalyticsOnLaunch", () => {
     const svc = await importFresh();
     await svc.runAnalyticsOnLaunch();
     const calls = (globalThis.fetch as any).mock.calls.map((c: any[]) => c[0] as string);
-    expect(calls.some((u) => u.endsWith("/app/install"))).toBe(false);
+    expect(calls.some((u: string) => u.endsWith("/app/install"))).toBe(false);
   });
 
   it("second launch same day: no posts", async () => {

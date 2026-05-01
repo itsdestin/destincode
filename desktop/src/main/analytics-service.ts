@@ -77,7 +77,7 @@ export function setOptIn(value: boolean): void {
 export function deviceIdHash(state: AnalyticsState): string {
   let raw = "";
   try {
-    raw = machineIdSync({ original: true });
+    raw = machineIdSync(true);  // `true` = return raw machine_id rather than the SHA-256 of it
   } catch {
     // swallowed — caught by the length check below
   }
