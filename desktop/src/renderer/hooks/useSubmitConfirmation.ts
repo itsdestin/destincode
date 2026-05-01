@@ -34,6 +34,14 @@ interface TrackedSubmit {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface UseSubmitConfirmationArgs {
+  // Active session id + its view mode. Used to suppress the `\r` retry while
+  // the user is actively in the pending session's terminal view — see the
+  // view-mode gate inside attemptRetry for the rationale.
+  activeSessionId: string | null;
+  activeViewMode: 'chat' | 'terminal';
+}
+
 /**
  * Recovers chat→PTY submits that didn't reach Claude.
  *
@@ -56,12 +64,17 @@ interface TrackedSubmit {
  * double-submits while Claude's own queue is still draining — only retry
  * when Claude is observably available to read input.
  */
-export function useSubmitConfirmation() {
+export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
   const chatState = useChatStateMap();
   // stateRef so the timer callback always reads the latest state, not the
   // snapshot from when the timer was scheduled.
   const stateRef = useRef(chatState);
   stateRef.current = chatState;
+  // Same pattern for the active session/view inputs: timers must observe
+  // current values when they fire, not the values that were live when the
+  // timer was scheduled.
+  const argsRef = useRef(args);
+  argsRef.current = args;
 
   const trackedRef = useRef<Map<string, TrackedSubmit>>(new Map());
 
@@ -81,6 +94,22 @@ export function useSubmitConfirmation() {
     );
     if (!stillPending) {
       tracked.delete(messageId);
+      return;
+    }
+
+    // View-mode gate: don't fire `\r` while the user is actively in this
+    // session's terminal view. On desktop, xterm.onData routes each keystroke
+    // straight to the PTY (TerminalView.tsx), so injecting `\r` would commit
+    // whatever partial line they're typing into Claude's input bar. The
+    // pending bubble stays visible; recovery resumes the moment they switch
+    // back to chat (RECHECK_DELAY_MS reschedule below). Symmetric with the
+    // ESC-passthrough gate in App.tsx — both refuse to write to the PTY when
+    // the user is operating it directly via xterm.
+    if (
+      info.sessionId === argsRef.current.activeSessionId &&
+      argsRef.current.activeViewMode === 'terminal'
+    ) {
+      info.timer = setTimeout(() => attemptRetry(messageId), RECHECK_DELAY_MS);
       return;
     }
 

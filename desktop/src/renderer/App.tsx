@@ -333,8 +333,14 @@ function AppInner() {
 
   usePromptDetector();
   // Recovers chat→PTY submits that get lost on Windows ConPTY when Claude is
-  // busy — see useSubmitConfirmation for the full mechanism.
-  useSubmitConfirmation();
+  // busy — see useSubmitConfirmation for the full mechanism. Pass active
+  // session + its view mode so the hook can suppress the `\r` retry while the
+  // user is actively in terminal view (xterm routes keystrokes straight to
+  // PTY, so an injected `\r` would commit the partial line they're typing).
+  useSubmitConfirmation({
+    activeSessionId: sessionId,
+    activeViewMode: sessionId ? viewModes.get(sessionId) ?? 'chat' : 'chat',
+  });
   // Drives --vvp-offset from window.visualViewport so the input bar stays glued
   // to the top of the soft keyboard on Android / mobile browsers.
   useVisualViewport();
