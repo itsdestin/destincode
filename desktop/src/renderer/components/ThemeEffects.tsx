@@ -160,6 +160,7 @@ export default function ThemeEffects() {
 
     const rainColor = accent + '40';
     let lastFrame = 0;
+    let running = false;
     const draw = (now: number) => {
       animRef.current = requestAnimationFrame(draw);
       // Cap at ~30fps — ambient particles don't need 60fps
@@ -175,10 +176,35 @@ export default function ThemeEffects() {
         drawCustom(ctx, particlesRef.current, w, h, imgRef.current, particleDrift);
       }
     };
-    animRef.current = requestAnimationFrame(draw);
+    const startAnim = () => {
+      if (running) return;
+      running = true;
+      lastFrame = 0; // first frame after resume draws immediately
+      animRef.current = requestAnimationFrame(draw);
+    };
+    const stopAnim = () => {
+      if (!running) return;
+      running = false;
+      cancelAnimationFrame(animRef.current);
+    };
+    // Pause the rAF when the window is hidden (minimized / fully occluded).
+    // Without this, themes that combine particles with chrome glassmorphism
+    // (e.g. halftone-dimension's panels-blur: 20) keep pegging the GPU copy
+    // engine 24/7: every particle frame invalidates the backdrop the chrome's
+    // backdrop-filter samples, forcing a re-blur on header / status bar /
+    // input bar even when no one is looking. visibilityState (not focus) is
+    // the right gate — it stays 'visible' when the app is on a secondary
+    // monitor, so particles still animate when the user can see them.
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') startAnim();
+      else stopAnim();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    if (document.visibilityState === 'visible') startAnim();
 
     return () => {
-      cancelAnimationFrame(animRef.current);
+      document.removeEventListener('visibilitychange', onVisibility);
+      stopAnim();
       if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
       window.removeEventListener('resize', resize);
     };
