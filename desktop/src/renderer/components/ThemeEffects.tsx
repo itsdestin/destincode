@@ -1,16 +1,28 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTheme } from '../state/theme-context';
+import { useChromeGeometry } from '../hooks/useChromeGeometry';
+import {
+  buildChromeClipPath,
+  chromeEdgeFalloff,
+  type ChromeRect,
+} from './theme-effects-mask';
 
 interface Particle {
   x: number; y: number; speed: number; opacity: number; length: number; size: number;
 }
 
-function drawRain(ctx: CanvasRenderingContext2D, particles: Particle[], w: number, h: number, rainColor: string) {
+function drawRain(
+  ctx: CanvasRenderingContext2D,
+  particles: Particle[],
+  w: number, h: number,
+  rainColor: string,
+  getMul: (p: Particle) => number,
+) {
   ctx.clearRect(0, 0, w, h);
   ctx.strokeStyle = rainColor;
   ctx.lineWidth = 1;
   for (const p of particles) {
-    ctx.globalAlpha = p.opacity;
+    ctx.globalAlpha = p.opacity * getMul(p);
     ctx.beginPath();
     ctx.moveTo(p.x, p.y);
     ctx.lineTo(p.x - 1, p.y + p.length);
@@ -21,10 +33,16 @@ function drawRain(ctx: CanvasRenderingContext2D, particles: Particle[], w: numbe
   ctx.globalAlpha = 1;
 }
 
-function drawDust(ctx: CanvasRenderingContext2D, particles: Particle[], w: number, h: number, accent: string) {
+function drawDust(
+  ctx: CanvasRenderingContext2D,
+  particles: Particle[],
+  w: number, h: number,
+  accent: string,
+  getMul: (p: Particle) => number,
+) {
   ctx.clearRect(0, 0, w, h);
   for (const p of particles) {
-    ctx.globalAlpha = p.opacity;
+    ctx.globalAlpha = p.opacity * getMul(p);
     ctx.fillStyle = accent;
     ctx.beginPath();
     ctx.arc(p.x, p.y, 1, 0, Math.PI * 2);
@@ -36,11 +54,17 @@ function drawDust(ctx: CanvasRenderingContext2D, particles: Particle[], w: numbe
   ctx.globalAlpha = 1;
 }
 
-function drawEmber(ctx: CanvasRenderingContext2D, particles: Particle[], w: number, h: number, accent: string) {
+function drawEmber(
+  ctx: CanvasRenderingContext2D,
+  particles: Particle[],
+  w: number, h: number,
+  accent: string,
+  getMul: (p: Particle) => number,
+) {
   ctx.clearRect(0, 0, w, h);
   const t = Date.now() * 0.001;
   for (const p of particles) {
-    ctx.globalAlpha = p.opacity * 0.8;
+    ctx.globalAlpha = p.opacity * 0.8 * getMul(p);
     ctx.fillStyle = accent;
     ctx.beginPath();
     ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
@@ -56,11 +80,17 @@ function drawEmber(ctx: CanvasRenderingContext2D, particles: Particle[], w: numb
   ctx.globalAlpha = 1;
 }
 
-function drawSnow(ctx: CanvasRenderingContext2D, particles: Particle[], w: number, h: number, accent: string) {
+function drawSnow(
+  ctx: CanvasRenderingContext2D,
+  particles: Particle[],
+  w: number, h: number,
+  accent: string,
+  getMul: (p: Particle) => number,
+) {
   ctx.clearRect(0, 0, w, h);
   const t = Date.now() * 0.0005;
   for (const p of particles) {
-    ctx.globalAlpha = p.opacity;
+    ctx.globalAlpha = p.opacity * getMul(p);
     ctx.fillStyle = accent;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.length * 0.15 + 1, 0, Math.PI * 2);
@@ -78,11 +108,12 @@ function drawCustom(
   w: number, h: number,
   img: HTMLImageElement,
   drift: number,
+  getMul: (p: Particle) => number,
 ) {
   ctx.clearRect(0, 0, w, h);
   const t = Date.now() * 0.001;
   for (const p of particles) {
-    ctx.globalAlpha = p.opacity;
+    ctx.globalAlpha = p.opacity * getMul(p);
     ctx.drawImage(img, p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
     p.y -= p.speed * 0.5;
     p.x += Math.sin(t + p.length) * drift;
@@ -102,6 +133,25 @@ export default function ThemeEffects() {
   const animRef = useRef<number>(0);
   const particlesRef = useRef<Particle[]>([]);
   const imgRef = useRef<HTMLImageElement | null>(null);
+
+  const chromeRects = useChromeGeometry();
+  // Mirror the latest rects into a ref so the rAF closure (which is set
+  // up once per [preset, ...] change) can read fresh values without
+  // re-creating the animation loop on every chrome resize.
+  const chromeRectsRef = useRef<ChromeRect[]>([]);
+  useEffect(() => {
+    chromeRectsRef.current = chromeRects;
+  }, [chromeRects]);
+
+  const [viewport, setViewport] = useState(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' ? window.innerHeight : 720,
+  }));
+  useEffect(() => {
+    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const effects = activeTheme?.effects;
   const preset = effects?.particles ?? 'none';
@@ -159,6 +209,7 @@ export default function ThemeEffects() {
     }));
 
     const rainColor = accent + '40';
+    const FADE_DISTANCE = 24; // px — soft falloff band around every chrome rect
     let lastFrame = 0;
     let running = false;
     const draw = (now: number) => {
@@ -168,12 +219,14 @@ export default function ThemeEffects() {
       lastFrame = now;
       const w = canvas.width;
       const h = canvas.height;
-      if (preset === 'rain') drawRain(ctx, particlesRef.current, w, h, rainColor);
-      else if (preset === 'dust') drawDust(ctx, particlesRef.current, w, h, accent);
-      else if (preset === 'ember') drawEmber(ctx, particlesRef.current, w, h, accent);
-      else if (preset === 'snow') drawSnow(ctx, particlesRef.current, w, h, accent);
+      const rects = chromeRectsRef.current;
+      const getMul = (p: Particle) => chromeEdgeFalloff(p.x, p.y, rects, FADE_DISTANCE);
+      if (preset === 'rain') drawRain(ctx, particlesRef.current, w, h, rainColor, getMul);
+      else if (preset === 'dust') drawDust(ctx, particlesRef.current, w, h, accent, getMul);
+      else if (preset === 'ember') drawEmber(ctx, particlesRef.current, w, h, accent, getMul);
+      else if (preset === 'snow') drawSnow(ctx, particlesRef.current, w, h, accent, getMul);
       else if (preset === 'custom' && imgRef.current) {
-        drawCustom(ctx, particlesRef.current, w, h, imgRef.current, particleDrift);
+        drawCustom(ctx, particlesRef.current, w, h, imgRef.current, particleDrift, getMul);
       }
     };
     const startAnim = () => {
@@ -224,6 +277,11 @@ export default function ThemeEffects() {
         zIndex: -1,
         pointerEvents: 'none',
         opacity: 0.6,
+        // Mask out glassmorphism chrome regions so their backdrop-filter
+        // sees a static gradient (cached blur) instead of a per-frame
+        // canvas update (forced re-blur). See theme-effects-mask.ts.
+        clipPath: buildChromeClipPath(viewport, chromeRects),
+        WebkitClipPath: buildChromeClipPath(viewport, chromeRects),
       }}
       aria-hidden="true"
     />
