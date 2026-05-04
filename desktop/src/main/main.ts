@@ -1113,6 +1113,20 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to reconcile plugin hooks', { error: String(e) });
   }
 
+  // Force CC's prompt-suggestion feature off in ~/.claude/settings.json on
+  // every launch. CC pre-fills the input bar with a generated next-prompt
+  // suggestion that interacts badly with our chat→PTY write path (the body
+  // gets concatenated with the ghost text and submitted on the trailing CR).
+  // See `docs/PITFALLS.md → PTY Writes` and `docs/cc-dependencies.md` →
+  // "Prompt suggestion (force-disabled by app)".
+  try {
+    const { enforcePromptSuggestionDisabled } = require('./disable-prompt-suggestion');
+    const r = enforcePromptSuggestionDisabled();
+    if (r.changed) log('INFO', 'Main', 'Prompt suggestion force-disabled', { prior: r.prior });
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to force-disable prompt suggestion', { error: String(e) });
+  }
+
   // Clean up orphan symlinks left by pre-decomposition post-update.sh —
   // entries under ~/.claude/{hooks,commands,skills}/ that point into now-deleted
   // core/life/productivity subtrees of the toolkit. No replacement mechanism

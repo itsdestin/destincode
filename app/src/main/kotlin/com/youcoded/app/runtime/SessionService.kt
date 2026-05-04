@@ -293,6 +293,18 @@ class SessionService : Service() {
             android.util.Log.w("SessionService", "Initial hook reconcile failed", e)
         }
 
+        // Force CC's prompt-suggestion feature off in settings.json on every
+        // launch. CC pre-fills the input bar with a generated next-prompt
+        // suggestion that interacts badly with our chat→PTY write path (the
+        // body gets concatenated with the ghost text and submitted on the
+        // trailing CR). Mirror of desktop's `enforcePromptSuggestionDisabled`.
+        try {
+            val r = PromptSuggestionDisabler(bs.homeDir).enforce()
+            if (r.changed) android.util.Log.i("SessionService", "Prompt suggestion force-disabled: priorWasEnabled=${r.priorWasEnabled}")
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Failed to force-disable prompt suggestion", e)
+        }
+
         // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
         // .claude.json mcpServers. Only auto:true entries; filtered to "linux"/"all".
         val mcpReconciler = com.youcoded.app.skills.McpReconciler(bs.homeDir)

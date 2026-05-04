@@ -139,6 +139,11 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
 - **Depends on:** CC's approval-request shape in transcript or hook-relay, matching the IPC message YouCoded constructs for `PERMISSION_REQUEST`
 - **Break symptom:** Permission prompts don't appear; approvals never propagate back to CC; tool calls hang in `awaiting-approval`.
 
+### Prompt suggestion (force-disabled by app)
+- **Files:** `desktop/src/main/disable-prompt-suggestion.ts`, `app/src/main/kotlin/com/youcoded/app/runtime/PromptSuggestionDisabler.kt`, wired in `desktop/src/main/main.ts` (after `reconcileHooks`) and `app/src/main/.../runtime/SessionService.kt` (after the HookReconciler block).
+- **Depends on:** CC honouring the `promptSuggestionEnabled: false` setting in `~/.claude/settings.json`. CC v2.1.x ships an opt-out next-prompt suggestion (system prompt: `[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.]`) that pre-fills ghost text into the input bar; in terminal view Tab / Right Arrow promotes it to real input. Default is enabled (and GrowthBook-gated for initial enablement). YouCoded force-writes the key to `false` on every launch because the ghost text concatenates with our chat→PTY writes and submits on the trailing CR — see `docs/PITFALLS.md → PTY Writes`. Empirical baseline: CC 2.1.126 (April 2026).
+- **Break symptom:** If CC renames or removes the `promptSuggestionEnabled` key, the launch-time enforcer becomes a no-op (writes a key CC ignores) and the chat→PTY auto-send-of-suggestion bug returns. Detection: a chat send that the user did not type ends up in the user-message timeline. Mitigation when it triggers: re-investigate against the new CC binary (the original binary-string analysis is in the chat history that produced `2026-05-04`'s `chore/disable-prompt-suggestion` commit).
+
 ### JSONL transcript file location
 - **Files:** `desktop/src/main/transcript-watcher.ts`
 - **Depends on:** Transcript files written at `~/.claude/projects/<encoded-cwd-path>/*.jsonl` with CC's path-encoding scheme
