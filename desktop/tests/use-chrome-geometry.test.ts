@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import { useChromeGeometry } from '../src/renderer/hooks/useChromeGeometry';
 
 // Minimal ResizeObserver stub — captures observed elements and exposes a
@@ -78,7 +78,9 @@ describe('useChromeGeometry', () => {
         left: 0, top: 0, width: 1280, height: 60,
         right: 1280, bottom: 60, x: 0, y: 0, toJSON: () => ({}),
       }) as DOMRect;
-    StubResizeObserver.instances[0].trigger();
+    act(() => {
+      StubResizeObserver.instances[0].trigger();
+    });
 
     expect(result.current[0].height).toBe(60);
   });

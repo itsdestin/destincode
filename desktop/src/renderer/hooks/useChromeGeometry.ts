@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ChromeRect } from '../components/theme-effects-mask';
 
 // CSS classes of the always-on glassmorphism chrome panels. These are the
@@ -10,11 +10,7 @@ import type { ChromeRect } from '../components/theme-effects-mask';
 const CHROME_SELECTORS = ['.header-bar', '.status-bar', '.input-bar-container'];
 
 export function useChromeGeometry(): ChromeRect[] {
-  // rectsRef holds the live data; we mutate its items in-place so callers
-  // that hold a reference (e.g. test code reading result.current after a
-  // ResizeObserver trigger without wrapping in act()) always see fresh values.
-  const rectsRef = useRef<ChromeRect[]>([]);
-  const [, setVersion] = useState(0);
+  const [rects, setRects] = useState<ChromeRect[]>([]);
 
   useEffect(() => {
     const elements = CHROME_SELECTORS
@@ -22,27 +18,16 @@ export function useChromeGeometry(): ChromeRect[] {
       .filter((el): el is Element => el !== null);
 
     if (elements.length === 0) {
-      rectsRef.current = [];
+      setRects([]);
       return;
     }
 
     const measure = () => {
-      elements.forEach((el, i) => {
+      const next = elements.map((el) => {
         const r = el.getBoundingClientRect();
-        const next = { left: r.left, top: r.top, width: r.width, height: r.height };
-        if (i < rectsRef.current.length) {
-          // Mutate in-place so any held reference reflects the new value
-          // immediately — even before React flushes the re-render triggered
-          // by setVersion below.
-          Object.assign(rectsRef.current[i], next);
-        } else {
-          rectsRef.current.push(next);
-        }
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
       });
-      // Trim if elements were removed.
-      rectsRef.current.length = elements.length;
-      // Trigger a re-render so React picks up the latest ref values.
-      setVersion((v) => v + 1);
+      setRects(next);
     };
 
     // Synchronous initial measurement avoids a frame where the canvas is
@@ -59,5 +44,5 @@ export function useChromeGeometry(): ChromeRect[] {
     };
   }, []);
 
-  return rectsRef.current;
+  return rects;
 }
