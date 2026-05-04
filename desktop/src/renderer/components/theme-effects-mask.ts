@@ -31,8 +31,8 @@ export function buildChromeClipPath(
 /** Returns an opacity multiplier in [0, 1] for a particle at (x, y) based
  *  on its distance to the nearest chrome rect.
  *  - 1.0 when the particle is at least `fadeDistance` pixels away from every rect
- *  - 0.0 when the particle is strictly inside any rect
- *  - linear ramp in the fade band between
+ *  - 0.0 when the particle is on or inside any rect
+ *  - linear ramp between 0 and 1 inside the fade band
  *  Used to soften the edge of the canvas clip so particles don't pop at
  *  the masked-rect boundary. */
 export function chromeEdgeFalloff(

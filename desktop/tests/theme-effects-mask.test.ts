@@ -44,7 +44,7 @@ describe('chromeEdgeFalloff', () => {
     expect(chromeEdgeFalloff(50, 50, [rect], FADE)).toBe(1);
   });
 
-  it('returns 0 for a particle strictly inside a rect', () => {
+  it('returns 0 for a particle inside or on the boundary of a rect', () => {
     expect(chromeEdgeFalloff(150, 120, [rect], FADE)).toBe(0);
   });
 
