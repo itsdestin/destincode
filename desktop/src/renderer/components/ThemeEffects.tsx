@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useTheme } from '../state/theme-context';
 import { useChromeGeometry } from '../hooks/useChromeGeometry';
 import {
@@ -143,16 +143,6 @@ export default function ThemeEffects() {
     chromeRectsRef.current = chromeRects;
   }, [chromeRects]);
 
-  const [viewport, setViewport] = useState(() => ({
-    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
-    height: typeof window !== 'undefined' ? window.innerHeight : 720,
-  }));
-  useEffect(() => {
-    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
-
   const effects = activeTheme?.effects;
   const preset = effects?.particles ?? 'none';
   const accent = activeTheme?.tokens?.accent ?? '#888888';
@@ -265,6 +255,17 @@ export default function ThemeEffects() {
 
   if (preset === 'none' || reducedEffects) return null;
 
+  // Build the clip-path once per render (mask the chrome panels out of the
+  // canvas). Read window dimensions inline — useChromeGeometry's resize
+  // listener already triggers a re-render whenever chrome geometry changes.
+  const chromeMaskPath = buildChromeClipPath(
+    {
+      width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+      height: typeof window !== 'undefined' ? window.innerHeight : 720,
+    },
+    chromeRects,
+  );
+
   return (
     <canvas
       ref={canvasRef}
@@ -280,8 +281,8 @@ export default function ThemeEffects() {
         // Mask out glassmorphism chrome regions so their backdrop-filter
         // sees a static gradient (cached blur) instead of a per-frame
         // canvas update (forced re-blur). See theme-effects-mask.ts.
-        clipPath: buildChromeClipPath(viewport, chromeRects),
-        WebkitClipPath: buildChromeClipPath(viewport, chromeRects),
+        clipPath: chromeMaskPath,
+        WebkitClipPath: chromeMaskPath,
       }}
       aria-hidden="true"
     />
