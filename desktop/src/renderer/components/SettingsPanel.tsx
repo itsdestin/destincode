@@ -1283,8 +1283,8 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 }
 
 interface DefaultsButtonProps {
-  defaults: { skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled?: boolean; permissionOverrides?: PermissionOverrides };
-  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled: boolean; permissionOverrides: PermissionOverrides }>) => void;
+  defaults: { skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled?: boolean; permissionOverrides?: PermissionOverrides; localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string };
+  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled: boolean; permissionOverrides: PermissionOverrides; localEndpoint: string; localDefaultModel: string; localSystemPrompt: string }>) => void;
 }
 
 function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
@@ -1296,6 +1296,38 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
   const [closePromptDisabled, setClosePromptDisabled] = useState(
     () => localStorage.getItem(CLOSE_PROMPT_SUPPRESS_KEY) === '1',
   );
+
+  // Local Models — model list fetched from the configured Ollama endpoint.
+  const [localModelsForSettings, setLocalModelsForSettings] = useState<Array<{ name: string; sizeBytes: number }>>([]);
+
+  // Refresh model list whenever the endpoint changes (lets the dropdown reflect
+  // what's installed on the user's chosen Ollama instance).
+  useEffect(() => {
+    let cancelled = false;
+    const local = (window as any).claude?.local;
+    if (!local?.supported) return;
+    local.listOllamaModels(defaults.localEndpoint).then((res: any) => {
+      if (!cancelled) setLocalModelsForSettings(res?.models ?? []);
+    }).catch(() => {
+      if (!cancelled) setLocalModelsForSettings([]);
+    });
+    return () => { cancelled = true; };
+  }, [defaults.localEndpoint]);
+
+  // Write OpenCode config when endpoint changes (debounced — each keystroke
+  // would otherwise trigger a JSON read+write to disk).
+  useEffect(() => {
+    if (!defaults.localEndpoint) return;
+    const local = (window as any).claude?.local;
+    if (!local?.supported) return;
+    const handle = setTimeout(() => {
+      local.writeOpenCodeConfig({ ollamaBaseUrl: defaults.localEndpoint }).catch(() => {});
+      // The change takes effect on next OpenCode daemon restart; the daemon
+      // doesn't yet reload config. For MVP this is acceptable — daemon restart
+      // is on next app launch.
+    }, 600);
+    return () => clearTimeout(handle);
+  }, [defaults.localEndpoint]);
 
   useEffect(() => {
     if (!open) return;
@@ -1448,6 +1480,47 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                     </button>
                   </div>
                 </section>
+
+                {/* Local Models — Ollama endpoint + default model + system prompt */}
+                <div className="border-t border-edge pt-3 mt-3 space-y-3">
+                  <div className="text-xs uppercase tracking-wider text-fg-muted">Local Models</div>
+
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">Ollama Endpoint URL</label>
+                    <input
+                      type="text"
+                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
+                      value={defaults.localEndpoint || 'http://localhost:11434'}
+                      onChange={(e) => onDefaultsChange({ localEndpoint: e.target.value })}
+                    />
+                    <div className="text-[10px] text-fg-muted mt-1">
+                      Defaults to Ollama on localhost. Point at LM Studio (typically <code>http://localhost:1234</code>) or any other OpenAI-compatible endpoint.
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">Default Model</label>
+                    <select
+                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
+                      value={defaults.localDefaultModel || ''}
+                      onChange={(e) => onDefaultsChange({ localDefaultModel: e.target.value })}
+                    >
+                      <option value="">(use first installed)</option>
+                      {localModelsForSettings.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">System Prompt</label>
+                    <textarea
+                      rows={3}
+                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm font-mono"
+                      value={defaults.localSystemPrompt || ''}
+                      placeholder="You are a helpful assistant. The user is using YouCoded..."
+                      onChange={(e) => onDefaultsChange({ localSystemPrompt: e.target.value })}
+                    />
+                  </div>
+                </div>
                 </div>
               </div>
             </div>
@@ -1914,7 +1987,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
   const [loading, setLoading] = useState(true);
   const [tier, setTier] = useState('CORE');
   const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
-  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
+  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT }, localEndpoint: 'http://localhost:11434', localDefaultModel: '', localSystemPrompt: '' });
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);
@@ -2156,7 +2229,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showSetupQR, setShowSetupQR] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
+  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT }, localEndpoint: 'http://localhost:11434', localDefaultModel: '', localSystemPrompt: '' });
   const [setupStatus, setSetupStatus] = useState<'idle' | 'confirm' | 'installing' | 'authenticating' | 'done' | 'error'>('idle');
   const [setupError, setSetupError] = useState('');
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);

@@ -305,7 +305,7 @@ function AppInner() {
     }).catch(() => {});
   }, []);
 
-  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false, localEndpoint: 'http://localhost:11434' });
+  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false, localEndpoint: 'http://localhost:11434', localDefaultModel: '', localSystemPrompt: '' });
 
   // Check first-run state with a 3-second safety timeout — never hang the app
   useEffect(() => {
