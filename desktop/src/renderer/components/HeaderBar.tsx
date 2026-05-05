@@ -143,6 +143,8 @@ interface SessionEntry {
   name: string;
   cwd: string;
   permissionMode: string;
+  /** Which runtime backend this session runs — mirrors SessionInfo.provider. */
+  provider?: 'claude' | 'gemini' | 'local';
 }
 
 
@@ -207,6 +209,11 @@ export default function HeaderBar({
 
   const headerRef = useRef<HTMLDivElement>(null);
   const [showToggleLabels, setShowToggleLabels] = useState(true);
+
+  // Active session's provider — drives runtime-aware visibility (e.g. hide chat/terminal
+  // toggle for local sessions which have no PTY).
+  const activeSessionProvider = sessions.find(s => s.id === activeSessionId)?.provider;
+  const showToggle = activeSessionProvider !== 'local';
 
   // Measure whether the header has room for the toggle labels. The labels
   // are the first things to drop; below that threshold, flex still has
@@ -485,7 +492,7 @@ export default function HeaderBar({
             REMOTE
           </span>
         )}
-        {toggleOnLeft && toggleElement}
+        {toggleOnLeft && showToggle && toggleElement}
       </div>
 
       {/* Center — session strip.
@@ -520,7 +527,7 @@ export default function HeaderBar({
         className={`${clusterFlexClass}flex items-center justify-end gap-1 sm:gap-2`}
         style={clusterStyle}
       >
-        {!toggleOnLeft && toggleElement}
+        {!toggleOnLeft && showToggle && toggleElement}
         <div className="bg-inset rounded-md p-0.5 hidden sm:block">
           <button
             onClick={onToggleGamePanel}

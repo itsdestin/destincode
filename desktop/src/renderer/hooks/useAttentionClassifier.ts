@@ -34,6 +34,10 @@ interface HookArgs {
   visible: boolean;
   /** Current reducer attentionState — used for dispatch-suppression. */
   currentAttentionState: AttentionState;
+  /** Which runtime backend this session uses. Classifier reads the xterm PTY
+   *  buffer — only meaningful for sessions that have a PTY (claude, gemini).
+   *  Local sessions delegate to OpenCode over HTTP and have no buffer to classify. */
+  provider?: 'claude' | 'gemini' | 'local';
 }
 
 function bufferClassToAttention(cls: BufferClass): AttentionState {
@@ -65,13 +69,18 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
     hasAwaitingApproval,
     visible,
     currentAttentionState,
+    provider,
   } = args;
 
   // Mutable refs avoid restarting the interval when these change mid-run.
   const currentAttentionStateRef = useRef(currentAttentionState);
   currentAttentionStateRef.current = currentAttentionState;
 
-  const active = isThinking && !hasRunningTools && !hasAwaitingApproval && visible;
+  // Classifier reads the xterm PTY buffer — only meaningful for sessions that
+  // have a PTY (claude, gemini). Local sessions delegate to OpenCode over HTTP
+  // and have no buffer to classify; short-circuit by keeping active=false.
+  const hasBuffer = provider === undefined || provider !== 'local';
+  const active = hasBuffer && isThinking && !hasRunningTools && !hasAwaitingApproval && visible;
 
   useEffect(() => {
     if (!active) {

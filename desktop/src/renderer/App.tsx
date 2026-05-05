@@ -283,9 +283,10 @@ function AppInner() {
   const [welcomeModel, setWelcomeModel] = useState('sonnet');
   const [welcomeDangerous, setWelcomeDangerous] = useState(false);
 
-  // Per-session model state — keyed by sessionId, same pattern as permissionModes
-  const [sessionModels, setSessionModels] = useState<Map<string, ModelAlias>>(new Map());
-  const currentModel: ModelAlias = sessionId ? (sessionModels.get(sessionId) ?? 'sonnet') : 'sonnet';
+  // Per-session model state — keyed by sessionId, same pattern as permissionModes.
+  // Widened to string so local sessions can store Ollama model names (not ModelAlias).
+  const [sessionModels, setSessionModels] = useState<Map<string, string>>(new Map());
+  const currentModel: string = sessionId ? (sessionModels.get(sessionId) ?? 'sonnet') : 'sonnet';
   const [pendingModel, setPendingModel] = useState<ModelAlias | null>(null);
   const consecutiveFailures = useRef(0);
   // Fix: track whether a new user turn has started after the model switch.
@@ -1291,7 +1292,7 @@ function AppInner() {
   const cycleModelRef = useRef<(() => void) | null>(null);
   const cycleModel = useCallback(() => {
     if (!sessionId) return;
-    const idx = MODELS.indexOf(currentModel);
+    const idx = MODELS.indexOf(currentModel as ModelAlias);
     const next = MODELS[(idx + 1) % MODELS.length];
     setSessionModels((prev) => new Map(prev).set(sessionId, next));
     setPendingModel(next);
@@ -1713,6 +1714,8 @@ function AppInner() {
 
   const currentSession = sessions.find((s) => s.id === sessionId);
   const canBypass = currentSession?.skipPermissions ?? false;
+  // Local sessions have no permission system (allow-all in MVP), so hide the badge.
+  const isLocalSession = currentSession?.provider === 'local';
   const currentPermissionMode = sessionId ? (permissionModes.get(sessionId) || 'normal') : 'normal';
 
   // Shift+Tab cycles permission mode in chat view
@@ -2014,6 +2017,7 @@ function AppInner() {
                       sessionId={s.id}
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
                       resumeInfo={resumeInfo}
+                      provider={s.provider}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">
@@ -2087,10 +2091,10 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                     window.claude.session.sendInput(sessionId, '/sync\r');
                   } : undefined}
-                  model={currentModel}
+                  model={currentModel as ModelAlias}
                   onCycleModel={cycleModel}
-                  permissionMode={currentPermissionMode}
-                  onCyclePermission={cyclePermission}
+                  permissionMode={isLocalSession ? undefined : currentPermissionMode}
+                  onCyclePermission={isLocalSession ? undefined : cyclePermission}
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}
@@ -2291,11 +2295,16 @@ function AppInner() {
         onSelectModel={(m) => {
           if (!sessionId) return;
           setSessionModels((prev) => new Map(prev).set(sessionId, m));
-          setPendingModel(m);
-          postSwitchTurnReady.current = false;
-          (window.claude as any).model?.setPreference(m);
-          window.claude.session.sendInput(sessionId, `/model ${m}\r`);
+          // Local sessions use Ollama — no PTY model command or pending verification.
+          if (!isLocalSession) {
+            setPendingModel(m as ModelAlias);
+            postSwitchTurnReady.current = false;
+            (window.claude as any).model?.setPreference(m);
+            window.claude.session.sendInput(sessionId, `/model ${m}\r`);
+          }
         }}
+        provider={currentSession?.provider}
+        endpoint={sessionDefaults.localEndpoint}
       />
       {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
           Reads from the single `openTasks` useSessionTasks instance declared in AppInner. */}

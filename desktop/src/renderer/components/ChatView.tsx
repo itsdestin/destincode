@@ -17,6 +17,9 @@ interface Props {
   sessionId: string;
   visible: boolean;
   resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
+  /** Which runtime backend this session uses — forwarded to useAttentionClassifier
+   *  so the classifier short-circuits for sessions without a PTY (e.g. local). */
+  provider?: 'claude' | 'gemini' | 'local';
 }
 
 function HistoryExpandButton({ sessionId, resumeInfo }: {
@@ -61,7 +64,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
+export default function ChatView({ sessionId, visible, resumeInfo, provider }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -110,6 +113,7 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
     hasAwaitingApproval,
     visible,
     currentAttentionState: state.attentionState,
+    provider,
   });
 
   // Scroll container directly to scrollHeight instead of using

@@ -117,11 +117,15 @@ interface Props {
   open: boolean;
   onClose: () => void;
   sessionId: string | null;
-  currentModel: ModelAlias | null;
-  onSelectModel: (m: ModelAlias) => void;
+  currentModel: string | null;   // widened from ModelAlias — local model names aren't ModelAlias
+  onSelectModel: (m: string) => void;   // widened from ModelAlias to string
+  /** Which runtime backend this session runs — determines which picker variant to show. */
+  provider?: 'claude' | 'gemini' | 'local';
+  /** Base URL for the local Ollama endpoint — used to fetch installed model list. */
+  endpoint?: string;
 }
 
-export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel }: Props) {
+export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider, endpoint }: Props) {
   useEscClose(open, onClose);
   const [fast, setFast] = useState(false);
   const [effort, setEffort] = useState<EffortLevel>('auto');
@@ -149,6 +153,21 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
       setLoaded(true);
     }).catch(() => setLoaded(true));
   }, [open]);
+
+  // Local-mode: fetch Ollama model list when the popup opens.
+  const [localModels, setLocalModels] = useState<Array<{ name: string; sizeBytes: number }>>([]);
+  useEffect(() => {
+    if (!open || provider !== 'local') return;
+    let cancelled = false;
+    (window.claude as any).local?.listOllamaModels?.(endpoint).then((res: any) => {
+      if (cancelled) return;
+      setLocalModels(res?.models ?? []);
+    }).catch(() => {
+      if (cancelled) return;
+      setLocalModels([]);
+    });
+    return () => { cancelled = true; };
+  }, [open, provider, endpoint]);
 
   const handleModelSelect = (m: ModelAlias) => {
     onSelectModel(m);
@@ -190,6 +209,37 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
   if (!open) return null;
 
+  // Local-mode: render a simplified Ollama-models list. No fast/effort modes —
+  // those are Claude-Code-internal concepts that don't apply to OpenCode.
+  if (provider === 'local') {
+    return createPortal(
+      <>
+        <Scrim layer={2} onClick={onClose} />
+        <OverlayPanel
+          layer={2}
+          role="dialog"
+          className="fixed top-12 right-4 w-72 max-h-[60vh] overflow-y-auto"
+        >
+          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 px-2 pt-2">Local Models</div>
+          {localModels.length === 0 ? (
+            <div className="px-2 py-2 text-xs text-fg-muted">No local models installed.</div>
+          ) : localModels.map(m => (
+            <button
+              key={m.name}
+              onClick={() => { onSelectModel(m.name); onClose(); }}
+              className={`w-full text-left px-2 py-1.5 text-sm hover:bg-inset transition-colors ${currentModel === m.name ? 'bg-inset font-medium' : ''}`}
+            >
+              <div>{m.name}</div>
+              <div className="text-fg-muted text-[10px]">{(m.sizeBytes / 1e9).toFixed(1)} GB</div>
+            </button>
+          ))}
+        </OverlayPanel>
+      </>,
+      document.body,
+    );
+  }
+
+  // Claude-mode: existing render below
   // "max" effort is opus-only; disable the button otherwise.
   const maxAllowed = currentModel === 'opus[1m]';
 
