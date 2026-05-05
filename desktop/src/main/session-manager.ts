@@ -7,6 +7,8 @@ import { app } from 'electron';
 import { SessionInfo, SessionProvider } from '../shared/types';
 import { EventEmitter } from 'events';
 import { log } from './logger';
+import { OpenCodeService } from './opencode-service';
+import { OpenCodeSessionAdapter } from './opencode-session-adapter';
 
 // Optional — which may not be installed; fall back to bare command name
 let whichSync: ((cmd: string) => string) | null = null;
@@ -26,19 +28,73 @@ export interface CreateSessionOpts {
   /** Optional text to prefill into the input bar after the session is selected.
    *  Forwarded into SessionInfo so the renderer can pick it up on session-created. */
   initialInput?: string;
+  /** Local-only: system prompt to pass to OpenCode session creation */
+  systemPrompt?: string;
 }
 
 interface ManagedSession {
   info: SessionInfo;
-  worker: ChildProcess;
+  // null for local sessions — they have no PTY worker, they delegate to OpenCodeService.
+  worker: ChildProcess | null;
 }
 
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, ManagedSession>();
   private pipeName: string = '';
 
+  // Set once by ipc-handlers after the OpenCode daemon starts (Task 8 wires this in).
+  private opencodeService: OpenCodeService | null = null;
+
+  // Keyed on desktop session id. One adapter per local session — translates
+  // SSE events from OpenCode into transcript-event re-emissions.
+  private localAdapters = new Map<string, OpenCodeSessionAdapter>();
+
+  // Desktop id -> OpenCode session id. For RESUME these are equal (the user
+  // picked an OC session id from the resume browser). For NEW sessions, the
+  // desktop id is a fresh UUID and the OC id is whatever OpenCode generates
+  // when we call createSession; the renderer holds the desktop id, but
+  // every SDK call needs the OC id, so we translate via this map.
+  private localIdMap = new Map<string, string>();
+
+  // sendInput may arrive after createSession returned synchronously but
+  // before the OC session id resolved. Queue the texts and drain when ready.
+  private localPendingSends = new Map<string, string[]>();
+
   setPipeName(name: string) {
     this.pipeName = name;
+  }
+
+  setOpenCodeService(svc: OpenCodeService) {
+    this.opencodeService = svc;
+    // When OpenCode crashes, every local adapter is bound to a dead SDK.
+    // Tear them all down and emit session-exit with the child's exit code
+    // (non-zero triggers the chat reducer's session-died attentionState
+    // via SESSION_PROCESS_EXITED — the existing AttentionBanner surfaces).
+    svc.on('crashed', ({ exitCode }) => this.handleOpencodeCrash(exitCode ?? 1));
+  }
+
+  private handleOpencodeCrash(exitCode: number): void {
+    for (const [desktopId, session] of this.sessions) {
+      if (session.info.provider !== 'local') continue;
+      this.localAdapters.get(desktopId)?.destroy();
+      this.localAdapters.delete(desktopId);
+      this.localIdMap.delete(desktopId);
+      this.localPendingSends.delete(desktopId);
+      session.info.status = 'destroyed';
+      this.sessions.delete(desktopId);
+      this.emit('session-exit', desktopId, exitCode);
+    }
+  }
+
+  private emitSyntheticUserMessage(desktopId: string, text: string): void {
+    // Tagged with the EXACT text we sent — guarantees content-match dedup
+    // against the optimistic USER_PROMPT bubble's pending entry. Bypasses
+    // any whitespace normalization OpenCode might apply to its echo.
+    this.emit('transcript-event', {
+      type: 'user-message',
+      sessionId: desktopId,
+      data: { text, timestamp: Date.now(), uuid: `local-u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` },
+    });
   }
 
   createSession(opts: CreateSessionOpts): SessionInfo {
@@ -46,6 +102,65 @@ export class SessionManager extends EventEmitter {
     const provider: SessionProvider = opts.provider || 'claude';
     // Resolve CWD: fall back to home directory if empty or nonexistent
     const resolvedCwd = (opts.cwd && fs.existsSync(opts.cwd)) ? opts.cwd : os.homedir();
+
+    // --- LOCAL provider branch ---
+    if (provider === 'local') {
+      if (!this.opencodeService) throw new Error('OpenCode service not wired');
+
+      // Desktop session id assignment:
+      // - RESUME: the renderer hands us the OC session id (it queried
+      //   opencodeService.listSessions to populate the resume browser). Use
+      //   it as the desktop id; the localIdMap entry is identity.
+      // - NEW: the desktop id is a fresh UUID. The OC session id won't be
+      //   known until createSession() resolves — set the localIdMap entry
+      //   in the .then() block. Sends arriving before that get queued.
+      const desktopId = opts.resumeSessionId || id;
+      const isResume = !!opts.resumeSessionId;
+
+      const info: SessionInfo = {
+        id: desktopId, name: opts.name, cwd: resolvedCwd,
+        permissionMode: 'normal', skipPermissions: false,
+        status: 'active', createdAt: Date.now(),
+        provider: 'local', model: opts.model,
+        ...(opts.initialInput !== undefined ? { initialInput: opts.initialInput } : {}),
+      };
+      this.sessions.set(desktopId, { info, worker: null });   // worker unused for local
+      this.emit('session-created', info);
+
+      const ensureOcSession = isResume
+        ? Promise.resolve({ id: opts.resumeSessionId! })
+        : this.opencodeService.createSession({ systemPrompt: opts.systemPrompt });
+
+      ensureOcSession.then((ocSession) => {
+        this.localIdMap.set(desktopId, ocSession.id);
+        const adapter = new OpenCodeSessionAdapter({
+          ocSessionId: ocSession.id,
+          desktopSessionId: desktopId,
+          service: this.opencodeService!,
+          isResume,
+        });
+        adapter.on('transcript-event', (event) => this.emit('transcript-event', event));
+        this.localAdapters.set(desktopId, adapter);
+
+        // Drain any queued sends that arrived during the create race window.
+        const queued = this.localPendingSends.get(desktopId) ?? [];
+        this.localPendingSends.delete(desktopId);
+        for (const text of queued) {
+          this.emitSyntheticUserMessage(desktopId, text);
+          this.opencodeService!.sendMessage(ocSession.id, text).catch((err) => {
+            log('ERROR', 'SessionManager', 'OpenCode sendMessage (queued) failed', { sessionId: desktopId, error: String(err) });
+          });
+        }
+      }).catch((err) => {
+        log('ERROR', 'SessionManager', 'Local session start failed', { sessionId: desktopId, error: String(err) });
+        this.localPendingSends.delete(desktopId);
+        this.emit('session-exit', desktopId, 1);
+        this.sessions.delete(desktopId);
+      });
+
+      return info;
+    }
+    // --- end LOCAL branch ---
 
     // Build CLI args — Gemini CLI has no equivalent for Claude's flags
     const args: string[] = [];
@@ -174,9 +289,18 @@ export class SessionManager extends EventEmitter {
     session.info.status = 'destroyed';
     this.sessions.delete(id);
     this.emit('session-exit', id, 0);
+    if (session.info.provider === 'local') {
+      this.localAdapters.get(id)?.destroy();
+      this.localAdapters.delete(id);
+      const ocId = this.localIdMap.get(id);
+      this.localIdMap.delete(id);
+      this.localPendingSends.delete(id);
+      if (ocId) this.opencodeService?.destroySession(ocId).catch(() => { /* swallow */ });
+      return true;
+    }
     try {
-      session.worker.send({ type: 'kill' });
-      session.worker.disconnect();
+      session.worker!.send({ type: 'kill' });
+      session.worker!.disconnect();
     } catch {
       // Worker IPC already closed (e.g., process crashed or exited)
     }
@@ -186,14 +310,40 @@ export class SessionManager extends EventEmitter {
   sendInput(id: string, text: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
-    try { session.worker.send({ type: 'input', data: text }); } catch { return false; }
+    if (session.info.provider === 'local') {
+      if (!this.opencodeService) return false;
+      const userText = text.endsWith('\r') ? text.slice(0, -1) : text;
+      if (userText === '\x1b') {
+        const ocId = this.localIdMap.get(id);
+        if (ocId) this.opencodeService.cancelSession(ocId).catch(() => { /* swallow */ });
+        // No queued cancel for un-mapped sessions — there's nothing to cancel yet.
+        return true;
+      }
+      if (!userText) return true;
+      const ocId = this.localIdMap.get(id);
+      if (!ocId) {
+        // OC session not yet created — queue the text. The .then() in createSession
+        // drains the queue with the synthetic user-message + sendMessage.
+        const q = this.localPendingSends.get(id) ?? [];
+        q.push(userText);
+        this.localPendingSends.set(id, q);
+        return true;
+      }
+      this.emitSyntheticUserMessage(id, userText);
+      this.opencodeService.sendMessage(ocId, userText).catch((err) => {
+        log('ERROR', 'SessionManager', 'OpenCode sendMessage failed', { sessionId: id, error: String(err) });
+      });
+      return true;
+    }
+    try { session.worker!.send({ type: 'input', data: text }); } catch { return false; }
     return true;
   }
 
   resizeSession(id: string, cols: number, rows: number): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
-    try { session.worker.send({ type: 'resize', cols, rows }); } catch { return false; }
+    if (session.info.provider === 'local') return true;   // no PTY to resize
+    try { session.worker!.send({ type: 'resize', cols, rows }); } catch { return false; }
     return true;
   }
 
