@@ -25,8 +25,9 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
   compoundCdGit: false,
 };
 
-// Which CLI backend powers a session — defaults to 'claude' for backwards compat
-export type SessionProvider = 'claude' | 'gemini';
+// Which CLI/runtime backend powers a session — defaults to 'claude'.
+// 'local' = OpenCode-as-provider for local Ollama / LM Studio models (added 2026-05-04).
+export type SessionProvider = 'claude' | 'gemini' | 'local';
 
 export interface SessionInfo {
   id: string;
@@ -823,6 +824,21 @@ export const IPC = {
   // System namespace — hardware back button bridge (Android only)
   SYSTEM_NOTIFY_STACK_STATE: 'system:notify-stack-state',
   SYSTEM_BACK: 'system:back',
+  // ---- Local provider (OpenCode + Ollama) ----
+  // Ollama probes
+  LOCAL_LIST_OLLAMA_MODELS: 'local:list-ollama-models',
+  LOCAL_IS_OLLAMA_INSTALLED: 'local:is-ollama-installed',
+  LOCAL_INSTALL_OLLAMA: 'local:install-ollama',
+  LOCAL_INSTALL_OLLAMA_PROGRESS: 'local:install-ollama:progress',
+  LOCAL_PULL_MODEL: 'local:pull-model',
+  LOCAL_PULL_MODEL_PROGRESS: 'local:pull-model:progress',
+  // OpenCode setup
+  LOCAL_IS_OPENCODE_INSTALLED: 'local:is-opencode-installed',
+  LOCAL_INSTALL_OPENCODE: 'local:install-opencode',
+  LOCAL_INSTALL_OPENCODE_PROGRESS: 'local:install-opencode:progress',
+  LOCAL_WRITE_OPENCODE_CONFIG: 'local:write-opencode-config',
+  // OpenCode session ops
+  LOCAL_LIST_SESSIONS: 'local:list-sessions',
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.
