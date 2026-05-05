@@ -150,7 +150,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini') => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini' | 'local') => void;
   onCloseSession: (id: string) => void;
   viewMode: 'chat' | 'terminal';
   onToggleView: (mode: 'chat' | 'terminal') => void;
@@ -172,6 +172,8 @@ interface Props {
   defaultSkipPermissions?: boolean;
   defaultProjectFolder?: string;
   geminiEnabled?: boolean;
+  /** Base URL for the local Ollama endpoint, passed through to SessionStrip. */
+  defaultLocalEndpoint?: string;
   windowDirectory?: any;
   myWindowId?: number | null;
 }
@@ -184,7 +186,7 @@ export default function HeaderBar({
   settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses, onResumeSession,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
-  geminiEnabled,
+  geminiEnabled, defaultLocalEndpoint,
   windowDirectory, myWindowId,
 }: Props) {
   // Pill doesn't track live button widths — it pins to the active button's
@@ -505,6 +507,7 @@ export default function HeaderBar({
         defaultSkipPermissions={defaultSkipPermissions}
         defaultProjectFolder={defaultProjectFolder}
         geminiEnabled={geminiEnabled}
+        defaultLocalEndpoint={defaultLocalEndpoint}
         windowDirectory={windowDirectory}
         myWindowId={myWindowId}
       />

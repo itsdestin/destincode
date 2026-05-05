@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { SessionStatusColor } from './StatusDot';
-import { isAndroid } from '../platform';
+import { isAndroid, isRemoteMode } from '../platform';
 import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
 import { ModelInfoTooltip } from './ModelPickerPopup';
@@ -26,7 +26,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini', launchInNewWindow?: boolean) => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini' | 'local', launchInNewWindow?: boolean) => void;
   onCloseSession: (id: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
   onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
@@ -44,6 +44,8 @@ interface Props {
   } | null;
   /** This renderer's own window id — excluded from remote sessions group. */
   myWindowId?: number | null;
+  /** Base URL for the local Ollama endpoint (e.g. http://localhost:11434). Passed through from settings. */
+  defaultLocalEndpoint?: string;
 }
 
 /* ── Status dot color maps ───────────────────────────────── */
@@ -153,6 +155,7 @@ export default function SessionStrip({
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   geminiEnabled,
   windowDirectory, myWindowId,
+  defaultLocalEndpoint,
 }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -162,8 +165,14 @@ export default function SessionStrip({
   const [newCwd, setNewCwd] = useState('');
   const [dangerous, setDangerous] = useState(false);
   const [newModel, setNewModel] = useState<string>('sonnet');
-  // Gemini CLI session toggle — only visible when enabled in settings
-  const [isGemini, setIsGemini] = useState(false);
+  // Three-way runtime selector: Claude (default), Local (Ollama/OpenCode), Gemini
+  type Runtime = 'claude' | 'local' | 'gemini';
+  const [runtime, setRuntime] = useState<Runtime>('claude');
+  const [localModels, setLocalModels] = useState<Array<{ name: string; sizeBytes: number }>>([]);
+  const [localReachable, setLocalReachable] = useState<boolean | null>(null);
+
+  // Local runtime is desktop-only (no Ollama/OpenCode on Android/remote).
+  const localSupported = !isAndroid() && !isRemoteMode() && !!(window as any).claude?.local?.supported;
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -328,20 +337,39 @@ export default function SessionStrip({
   }, []);
 
 
+  // Fetch available Ollama models when the user selects Local runtime.
+  useEffect(() => {
+    if (runtime !== 'local' || !localSupported) return;
+    let cancelled = false;
+    setLocalReachable(null);
+    setLocalModels([]);
+    const endpoint = defaultLocalEndpoint || undefined;
+    (window as any).claude.local.listOllamaModels(endpoint).then((res: any) => {
+      if (cancelled) return;
+      setLocalReachable(!!res?.reachable);
+      setLocalModels(res?.models ?? []);
+    }).catch(() => {
+      if (cancelled) return;
+      setLocalReachable(false);
+      setLocalModels([]);
+    });
+    return () => { cancelled = true; };
+  }, [runtime, localSupported, defaultLocalEndpoint]);
+
   const handleMenuToggle = useCallback(() => {
     setMenuOpen(prev => !prev);
     setShowNewForm(false);
   }, []);
 
   const handleCreate = useCallback(() => {
-    onCreateSession(newCwd, dangerous, newModel, isGemini ? 'gemini' : 'claude', launchInNewWindow);
+    onCreateSession(newCwd, dangerous, newModel, runtime, launchInNewWindow);
     setMenuOpen(false);
     setShowNewForm(false);
     setDangerous(defaultSkipPermissions || false);
     setNewModel(defaultModel || 'sonnet');
-    setIsGemini(false);
+    setRuntime('claude');
     setLaunchInNewWindow(false);
-  }, [newCwd, dangerous, newModel, isGemini, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel]);
+  }, [newCwd, dangerous, newModel, runtime, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
 
@@ -946,28 +974,84 @@ export default function SessionStrip({
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
                 <FolderSwitcher value={newCwd} onChange={setNewCwd} />
               </div>
-              {/* Model selector — grayed out when Gemini is selected */}
-              <div style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
-                <div className="flex gap-1">
-                  {MODELS.map((m) => (
+              {/* Runtime selector — Claude / Local / Gemini (gated by platform/flags) */}
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Runtime</label>
+                <div className="inline-flex rounded border border-edge overflow-hidden">
+                  {([
+                    'claude' as Runtime,
+                    ...(localSupported ? ['local' as Runtime] : []),
+                    ...(geminiEnabled ? ['gemini' as Runtime] : []),
+                  ]).map(r => (
                     <button
-                      key={m}
-                      onClick={() => setNewModel(m)}
-                      className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors flex items-center justify-center ${
-                        newModel === m
-                          ? 'bg-accent text-on-accent font-medium'
-                          : 'bg-inset text-fg-dim hover:bg-edge'
-                      }`}
+                      key={r}
+                      type="button"
+                      onClick={() => {
+                        setRuntime(r);
+                        // Gemini and local don't support skip-permissions in their MVPs
+                        if (r !== 'claude') setDangerous(false);
+                      }}
+                      className={`px-3 py-1 text-xs ${runtime === r ? 'bg-accent text-on-accent' : 'bg-panel text-fg hover:bg-inset'}`}
                     >
-                      {MODEL_LABELS[m] || m}
-                      <ModelInfoTooltip model={m} />
+                      {r === 'claude' ? 'Claude' : r === 'local' ? 'Local' : 'Gemini'}
                     </button>
                   ))}
                 </div>
               </div>
-              {/* Skip Permissions — grayed out when Gemini is selected */}
-              <div className="flex items-center justify-between" style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
+              {/* Model selector — runtime-aware (Claude variants vs Local Ollama vs Gemini auto) */}
+              <div style={{ opacity: runtime === 'gemini' ? 0.4 : 1, pointerEvents: runtime === 'gemini' ? 'none' : 'auto', transition: 'opacity 200ms' }}>
+                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                {runtime === 'claude' && (
+                  <div className="flex gap-1">
+                    {MODELS.map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => setNewModel(m)}
+                        className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors flex items-center justify-center ${
+                          newModel === m
+                            ? 'bg-accent text-on-accent font-medium'
+                            : 'bg-inset text-fg-dim hover:bg-edge'
+                        }`}
+                      >
+                        {MODEL_LABELS[m] || m}
+                        <ModelInfoTooltip model={m} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {runtime === 'local' && (
+                  <>
+                    {localReachable === null && <div className="text-xs text-fg-muted">Checking…</div>}
+                    {(localReachable === false || (localReachable === true && localModels.length === 0)) && (
+                      <button
+                        type="button"
+                        className="text-xs px-2 py-1 rounded bg-accent text-on-accent"
+                        onClick={() => {
+                          setShowNewForm(false);
+                          setMenuOpen(false);
+                          window.dispatchEvent(new CustomEvent('youcoded:open-local-setup'));
+                        }}
+                      >
+                        Set up local models →
+                      </button>
+                    )}
+                    {localReachable === true && localModels.length > 0 && (
+                      <select
+                        className="bg-panel border border-edge rounded text-fg text-xs px-2 py-1 w-full"
+                        value={localModels.some(m => m.name === newModel) ? newModel : localModels[0].name}
+                        onChange={(e) => setNewModel(e.target.value)}
+                      >
+                        {localModels.map(m => (
+                          <option key={m.name} value={m.name}>{m.name} ({(m.sizeBytes / 1e9).toFixed(1)} GB)</option>
+                        ))}
+                      </select>
+                    )}
+                  </>
+                )}
+                {runtime === 'gemini' && <div className="text-xs text-fg-muted">Gemini chooses its own model.</div>}
+              </div>
+              {/* Skip Permissions — grayed out when not using Claude runtime */}
+              <div className="flex items-center justify-between" style={{ opacity: runtime !== 'claude' ? 0.4 : 1, pointerEvents: runtime !== 'claude' ? 'none' : 'auto', transition: 'opacity 200ms' }}>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
                   Skip Permissions
                   <SkipPermissionsInfoTooltip />
@@ -979,7 +1063,7 @@ export default function SessionStrip({
                   <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${dangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
                 </button>
               </div>
-              {dangerous && !isGemini && (
+              {dangerous && runtime === 'claude' && (
                 <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
               )}
               {/* Launch in new window — hidden on platforms without multi-window support */}
@@ -994,36 +1078,24 @@ export default function SessionStrip({
                   </button>
                 </div>
               )}
-              {/* Gemini CLI toggle — only visible when enabled in settings */}
-              {geminiEnabled && (
-                <div className="flex items-center justify-between">
-                  <label className="text-[10px] uppercase tracking-wider text-fg-muted">Gemini CLI</label>
-                  <button
-                    onClick={() => {
-                      const next = !isGemini;
-                      setIsGemini(next);
-                      // Gemini sessions don't support skip-permissions
-                      if (next) setDangerous(false);
-                    }}
-                    className="w-8 h-4.5 rounded-full relative transition-colors"
-                    style={{ backgroundColor: isGemini ? '#4285F4' : 'var(--inset)' }}
-                  >
-                    <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${isGemini ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-                  </button>
-                </div>
-              )}
               <button
                 onClick={handleCreate}
                 className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors ${
-                  isGemini
+                  runtime === 'gemini'
                     ? 'text-white'
-                    : dangerous
-                      ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
-                      : 'bg-accent hover:bg-accent text-on-accent'
+                    : runtime === 'local'
+                      ? 'bg-accent hover:bg-accent text-on-accent'
+                      : dangerous
+                        ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
+                        : 'bg-accent hover:bg-accent text-on-accent'
                 }`}
-                style={isGemini ? { background: 'linear-gradient(135deg, #4285F4, #7B68EE)' } : undefined}
+                style={runtime === 'gemini' ? { background: 'linear-gradient(135deg, #4285F4, #7B68EE)' } : undefined}
               >
-                {isGemini ? 'Create Gemini Session' : dangerous ? 'Create (Dangerous)' : 'Create Session'}
+                {runtime === 'gemini'
+                  ? 'Create Gemini Session'
+                  : runtime === 'local'
+                    ? 'Create Local Session'
+                    : dangerous ? 'Create (Dangerous)' : 'Create Session'}
               </button>
             </div>
           ) : (
@@ -1044,7 +1116,7 @@ export default function SessionStrip({
                   setNewCwd(defaultProjectFolder || '');
                   setDangerous(defaultSkipPermissions || false);
                   setNewModel(defaultModel || 'sonnet');
-                  setIsGemini(false);
+                  setRuntime('claude');
                   setShowNewForm(true);
                 }}
                 className="flex-1 px-3 py-2 text-sm text-fg-dim hover:bg-inset hover:text-fg transition-colors flex items-center justify-center gap-1.5"

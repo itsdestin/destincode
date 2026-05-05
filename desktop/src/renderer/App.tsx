@@ -304,7 +304,7 @@ function AppInner() {
     }).catch(() => {});
   }, []);
 
-  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false });
+  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false, localEndpoint: 'http://localhost:11434' });
 
   // Check first-run state with a 3-second safety timeout — never hang the app
   useEffect(() => {
@@ -1559,11 +1559,13 @@ function AppInner() {
     [sessionId, dispatch, viewModes, getUsageSnapshot],
   );
 
-  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini', launchInNewWindow?: boolean) => {
+  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini' | 'local', launchInNewWindow?: boolean) => {
     // Use the explicitly chosen model; fall back to the current session's model
     const m = sessionModel || currentModel;
     const info = await (window.claude.session.create as any)({
-      name: provider === 'gemini' ? 'Gemini Session' : 'New Session',
+      name: provider === 'gemini' ? 'Gemini Session'
+          : provider === 'local'  ? 'Local Session'
+          : 'New Session',
       cwd,
       skipPermissions: dangerous,
       model: m,
@@ -1987,6 +1989,7 @@ function AppInner() {
                 defaultSkipPermissions={sessionDefaults.skipPermissions}
                 defaultProjectFolder={sessionDefaults.projectFolder}
                 geminiEnabled={sessionDefaults.geminiEnabled}
+                defaultLocalEndpoint={sessionDefaults.localEndpoint}
                 windowDirectory={windowDirectory}
                 myWindowId={myWindowId}
               />
