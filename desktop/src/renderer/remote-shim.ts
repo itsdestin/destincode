@@ -1186,5 +1186,23 @@ export function installShim(): void {
     app: {
       restart: () => invoke('app:restart'),
     },
+    // Local provider (OpenCode + Ollama) — desktop Electron only.
+    // supported: false so the renderer can gate the Local Runtime UI without
+    // platform branching. All methods degrade gracefully rather than throwing.
+    local: {
+      /** Capability flag — false on Android/remote-browser; gates the Local Runtime UI */
+      supported: false,
+      isOllamaInstalled: async () => false,
+      listOllamaModels: async () => ({ reachable: false, models: [] }),
+      installOllama: async () => ({ ok: false, error: 'local mode not supported on this platform' }),
+      onInstallOllamaProgress: () => () => {},
+      pullModel: async () => ({ ok: false, error: 'local mode not supported on this platform' }),
+      onPullModelProgress: () => () => {},
+      isOpenCodeInstalled: async () => false,
+      installOpenCode: async () => ({ ok: false, error: 'local mode not supported on this platform' }),
+      onInstallOpenCodeProgress: () => () => {},
+      writeOpenCodeConfig: async () => ({ ok: false, error: 'local mode not supported on this platform' }),
+      listSessions: async () => [],
+    },
   };
 }

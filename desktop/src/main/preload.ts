@@ -240,6 +240,21 @@ const IPC = {
   SYSTEM_NOTIFY_STACK_STATE: 'system:notify-stack-state',
   SYSTEM_BACK: 'system:back',
   APP_RESTART: 'app:restart',
+  // ---- Local provider (OpenCode + Ollama) ----
+  // Ollama probes
+  LOCAL_LIST_OLLAMA_MODELS: 'local:list-ollama-models',
+  LOCAL_IS_OLLAMA_INSTALLED: 'local:is-ollama-installed',
+  LOCAL_INSTALL_OLLAMA: 'local:install-ollama',
+  LOCAL_INSTALL_OLLAMA_PROGRESS: 'local:install-ollama:progress',
+  LOCAL_PULL_MODEL: 'local:pull-model',
+  LOCAL_PULL_MODEL_PROGRESS: 'local:pull-model:progress',
+  // OpenCode setup
+  LOCAL_IS_OPENCODE_INSTALLED: 'local:is-opencode-installed',
+  LOCAL_INSTALL_OPENCODE: 'local:install-opencode',
+  LOCAL_INSTALL_OPENCODE_PROGRESS: 'local:install-opencode:progress',
+  LOCAL_WRITE_OPENCODE_CONFIG: 'local:write-opencode-config',
+  // OpenCode session ops
+  LOCAL_LIST_SESSIONS: 'local:list-sessions',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -838,5 +853,38 @@ contextBridge.exposeInMainWorld('claude', {
       // can call it unconditionally without platform branching.
       return () => {};
     },
+  },
+  // Local provider (OpenCode + Ollama) — Electron desktop only.
+  // remote-shim.ts exposes a matching shape with supported: false so the
+  // renderer can gate the Local Runtime UI without platform branching.
+  local: {
+    /** Capability flag — true on Electron desktop, false on Android/remote-shim */
+    supported: true,
+    // Ollama
+    isOllamaInstalled: (endpoint?: string) => ipcRenderer.invoke(IPC.LOCAL_IS_OLLAMA_INSTALLED, endpoint),
+    listOllamaModels: (endpoint?: string) => ipcRenderer.invoke(IPC.LOCAL_LIST_OLLAMA_MODELS, endpoint),
+    installOllama: () => ipcRenderer.invoke(IPC.LOCAL_INSTALL_OLLAMA),
+    onInstallOllamaProgress: (cb: (ev: any) => void) => {
+      const handler = (_e: any, ev: any) => cb(ev);
+      ipcRenderer.on(IPC.LOCAL_INSTALL_OLLAMA_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC.LOCAL_INSTALL_OLLAMA_PROGRESS, handler);
+    },
+    pullModel: (name: string, endpoint?: string) => ipcRenderer.invoke(IPC.LOCAL_PULL_MODEL, name, endpoint),
+    onPullModelProgress: (cb: (ev: any) => void) => {
+      const handler = (_e: any, ev: any) => cb(ev);
+      ipcRenderer.on(IPC.LOCAL_PULL_MODEL_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC.LOCAL_PULL_MODEL_PROGRESS, handler);
+    },
+    // OpenCode setup
+    isOpenCodeInstalled: () => ipcRenderer.invoke(IPC.LOCAL_IS_OPENCODE_INSTALLED),
+    installOpenCode: () => ipcRenderer.invoke(IPC.LOCAL_INSTALL_OPENCODE),
+    onInstallOpenCodeProgress: (cb: (ev: any) => void) => {
+      const handler = (_e: any, ev: any) => cb(ev);
+      ipcRenderer.on(IPC.LOCAL_INSTALL_OPENCODE_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC.LOCAL_INSTALL_OPENCODE_PROGRESS, handler);
+    },
+    writeOpenCodeConfig: (opts: { ollamaBaseUrl: string }) => ipcRenderer.invoke(IPC.LOCAL_WRITE_OPENCODE_CONFIG, opts),
+    // Session ops
+    listSessions: () => ipcRenderer.invoke(IPC.LOCAL_LIST_SESSIONS),
   },
 });

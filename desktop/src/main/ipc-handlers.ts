@@ -37,6 +37,9 @@ import { getChangelog } from './changelog-service';
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
+import { OllamaDetector } from './ollama-detector';
+import { OpenCodeConfigWriter } from './opencode-config-writer';
+import { OpenCodeService } from './opencode-service';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -2012,6 +2015,84 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.DEV_OPEN_SESSION_IN, async (_event, args: { cwd: string; initialInput?: string }) => {
     // Delegate to the exported helper so the logic is independently testable.
     return openDevSessionIn(args, { defaultsPrefPath, sessionManager, homedir: os.homedir });
+  });
+
+  // ---- Local provider (OpenCode + Ollama) IPC handlers ----
+  // opencodeService stays null until Task 8's ensureOpenCodeService() starts
+  // the daemon and calls setOpenCodeService(). LIST_SESSIONS returns [] safely
+  // until that wiring lands.
+  let opencodeService: OpenCodeService | null = null;
+
+  function detectorFor(rawEndpoint?: string): OllamaDetector {
+    // Strip any trailing /v1 or slash; OllamaDetector probes Ollama's native /api/* paths.
+    const ep = rawEndpoint || 'http://localhost:11434';
+    const root = ep.replace(/\/v1\/?$/, '').replace(/\/$/, '');
+    return new OllamaDetector(root);
+  }
+
+  ipcMain.handle(IPC.LOCAL_IS_OLLAMA_INSTALLED, async (_e, endpoint?: string) => {
+    return await detectorFor(endpoint).isReachable();
+  });
+
+  ipcMain.handle(IPC.LOCAL_LIST_OLLAMA_MODELS, async (_e, endpoint?: string) => {
+    const d = detectorFor(endpoint);
+    const reachable = await d.isReachable();
+    if (!reachable) return { reachable: false, models: [] };
+    return { reachable: true, models: await d.listModels() };
+  });
+
+  ipcMain.handle(IPC.LOCAL_INSTALL_OLLAMA, async (event) => {
+    // Lazy import: prerequisite-installer is extended in Task 8 to add installOllama.
+    const { installOllama } = await import('./prerequisite-installer') as any;
+    return await installOllama((ev: any) => event.sender.send(IPC.LOCAL_INSTALL_OLLAMA_PROGRESS, ev));
+  });
+
+  ipcMain.handle(IPC.LOCAL_PULL_MODEL, async (event, name: string, endpoint?: string) => {
+    if (typeof name !== 'string' || !name) return { ok: false, error: 'name required' };
+    const d = detectorFor(endpoint);
+    await d.pullModel(name, (ev) => {
+      if (ev.kind === 'progress') {
+        event.sender.send(IPC.LOCAL_PULL_MODEL_PROGRESS, {
+          name, phase: ev.status,
+          pct: ev.totalBytes > 0 ? Math.round((ev.completedBytes / ev.totalBytes) * 100) : undefined,
+        });
+      } else if (ev.kind === 'status') {
+        event.sender.send(IPC.LOCAL_PULL_MODEL_PROGRESS, { name, phase: ev.status });
+      } else if (ev.kind === 'done') {
+        event.sender.send(IPC.LOCAL_PULL_MODEL_PROGRESS, { name, phase: 'done', pct: 100 });
+      } else {
+        event.sender.send(IPC.LOCAL_PULL_MODEL_PROGRESS, { name, phase: 'error', message: (ev as any).message });
+      }
+    });
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.LOCAL_IS_OPENCODE_INSTALLED, async () => {
+    // Lazy import: prerequisite-installer is extended in Task 8 to add isOpenCodeInstalled.
+    const { isOpenCodeInstalled } = await import('./prerequisite-installer') as any;
+    return await isOpenCodeInstalled();
+  });
+
+  ipcMain.handle(IPC.LOCAL_INSTALL_OPENCODE, async (event) => {
+    // Lazy import: prerequisite-installer is extended in Task 8 to add installOpenCode.
+    const { installOpenCode } = await import('./prerequisite-installer') as any;
+    return await installOpenCode((ev: any) => event.sender.send(IPC.LOCAL_INSTALL_OPENCODE_PROGRESS, ev));
+  });
+
+  ipcMain.handle(IPC.LOCAL_WRITE_OPENCODE_CONFIG, async (_e, opts: { ollamaBaseUrl: string }) => {
+    const writer = new OpenCodeConfigWriter(os.homedir());
+    await writer.writeOllamaConfig(opts);
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.LOCAL_LIST_SESSIONS, async () => {
+    // Cast to avoid TypeScript narrowing opencodeService to 'never' inside the
+    // async callback (it sees the declaration-site null and won't see Task 8's
+    // assignment). At runtime this is safe: the guard below catches null before
+    // calling any methods.
+    const svc = opencodeService as OpenCodeService | null;
+    if (!svc || !svc.isRunning()) return [];
+    return await svc.listSessions();
   });
 
   // Return cleanup function for use during app shutdown
