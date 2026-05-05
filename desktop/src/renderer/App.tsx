@@ -50,6 +50,7 @@ import { MarketplaceProvider } from './state/marketplace-context';
 import ThemeShareSheet from './components/ThemeShareSheet';
 import SkillEditor from './components/SkillEditor';
 import ShareSheet from './components/ShareSheet';
+import { LocalSetupModal } from './components/LocalSetupModal';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import FirstRunView from './components/FirstRunView';
@@ -273,6 +274,15 @@ function AppInner() {
   const [publishThemeSlug, setPublishThemeSlug] = useState<string | null>(null);
   const [editorSkillId, setEditorSkillId] = useState<string | null>(null);
   const [shareSkillId, setShareSkillId] = useState<string | null>(null);
+
+  // Local Mode Setup modal — opened by the 'youcoded:open-local-setup' CustomEvent
+  // dispatched by SessionStrip when the user clicks "Set up Local Mode".
+  const [localSetupOpen, setLocalSetupOpen] = useState(false);
+  useEffect(() => {
+    const handler = () => setLocalSetupOpen(true);
+    window.addEventListener('youcoded:open-local-setup', handler);
+    return () => window.removeEventListener('youcoded:open-local-setup', handler);
+  }, []);
 
   const [isFirstRun, setIsFirstRun] = useState<boolean | null>(null); // null = loading
   const handleFirstRunComplete = useCallback(() => setIsFirstRun(false), []);
@@ -2351,6 +2361,16 @@ function AppInner() {
       )}
       {shareSkillId && (
         <ShareSheet skillId={shareSkillId} onClose={() => setShareSkillId(null)} />
+      )}
+      {/* Local Mode Setup modal — walks user through Ollama + model + OpenCode install.
+          Triggered by 'youcoded:open-local-setup' CustomEvent from SessionStrip.
+          Passes localEndpoint so the modal can check Ollama reachability on the
+          user's configured endpoint rather than always defaulting to localhost. */}
+      {localSetupOpen && (
+        <LocalSetupModal
+          endpoint={sessionDefaults.localEndpoint}
+          onClose={() => setLocalSetupOpen(false)}
+        />
       )}
       {toast && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-panel border border-edge text-sm text-fg shadow-lg">
