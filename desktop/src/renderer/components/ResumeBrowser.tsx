@@ -177,11 +177,14 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean) => void;
+  // Optional: called when user picks a Local (OpenCode) session to resume.
+  // Optional so existing callers that don't support local sessions remain type-safe.
+  onResumeLocal?: (sessionId: string) => void;
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
 }
 
-export default function ResumeBrowser({ open, onClose, onResume, defaultModel, defaultSkipPermissions }: Props) {
+export default function ResumeBrowser({ open, onClose, onResume, onResumeLocal, defaultModel, defaultSkipPermissions }: Props) {
   const [sessions, setSessions] = useState<PastSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -216,6 +219,32 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // visible until the menu is closed and reopened, so the row doesn't vanish
   // mid-interaction when Show Complete is off. Reset on every open.
   const [stickyComplete, setStickyComplete] = useState<Set<string>>(new Set());
+
+  // Local tab: which top-level tab is active (Claude sessions vs. OpenCode local sessions).
+  // Only shown when window.claude.local.supported is true (desktop; hidden on Android/remote).
+  type Tab = 'claude' | 'local';
+  const [tab, setTab] = useState<Tab>('claude');
+  const [localSessions, setLocalSessions] = useState<Array<{ id: string; title: string; updatedAt: number }>>([]);
+  const [localReachable, setLocalReachable] = useState<boolean>(true);
+
+  // Capability flag — hide the Local tab on Android/remote where window.claude.local.supported is false.
+  const localTabAvailable = !!(window.claude as any).local?.supported;
+
+  // Fetch local (OpenCode) sessions whenever the Local tab is active or the browser is reopened.
+  useEffect(() => {
+    if (tab !== 'local' || !localTabAvailable) return;
+    let cancelled = false;
+    (window.claude as any).local.listSessions().then((sessions: any[]) => {
+      if (cancelled) return;
+      setLocalSessions(sessions ?? []);
+      setLocalReachable(true);
+    }).catch(() => {
+      if (cancelled) return;
+      setLocalSessions([]);
+      setLocalReachable(false);
+    });
+    return () => { cancelled = true; };
+  }, [tab, localTabAvailable, open]);
 
   // New filter state — all reset on each open (no localStorage). Default values
   // (empty Sets, sortDir='desc') produce identical behaviour to the prior
@@ -733,9 +762,30 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 {sortDir === 'desc' ? 'Most recent ↓' : 'Oldest first ↑'}
               </FilterPill>
             </div>
+            {/* Tab bar — only shown when the Local (OpenCode) provider is available.
+                The Claude tab wraps the existing session browser; Local lists OpenCode
+                sessions fetched from the running daemon via window.claude.local.listSessions(). */}
+            {localTabAvailable && (
+              <div className="flex gap-1 border-b border-edge mt-3 -mx-4 px-4">
+                <button
+                  type="button"
+                  className={`px-3 py-1 text-sm transition-colors ${tab === 'claude' ? 'border-b-2 border-accent text-fg' : 'text-fg-muted hover:text-fg'}`}
+                  onClick={() => setTab('claude')}
+                >
+                  Claude
+                </button>
+                <button
+                  type="button"
+                  className={`px-3 py-1 text-sm transition-colors ${tab === 'local' ? 'border-b-2 border-accent text-fg' : 'text-fg-muted hover:text-fg'}`}
+                  onClick={() => setTab('local')}
+                >
+                  Local
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Session list */}
+          {/* Session list — Claude tab (existing browser) */}
           {/* No flex-1: OverlayPanel only has max-h (indefinite height), which breaks
               flex-grow in Chromium. Using default flex: 0 1 auto lets flex-shrink
               clamp this div when content exceeds max-h so overflow-y: auto engages
@@ -744,32 +794,64 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               no padding. Sticky fade pseudos then sit flush with the scroll-fade's
               outer edge, and the `overflow: hidden` on .layer-surface clips them to
               the OverlayPanel's rounded corners. */}
-          <div ref={listRef} className="scroll-fade">
-            <div className="py-2">
-              {loading ? (
-                <p className="text-sm text-fg-muted text-center py-8">Loading sessions...</p>
-              ) : filtered.length === 0 ? (
-                <p className="text-sm text-fg-muted text-center py-8">
-                  {search.trim() ? 'No matching sessions' : 'No previous sessions found'}
-                </p>
-              ) : grouped ? (
-                // Grouped by project
-                [...grouped.entries()].map(([projectPath, items]) => (
-                  <div key={projectPath} className="mb-2">
-                    <div className="px-4 py-1">
-                      <span className="text-[10px] uppercase tracking-wider text-fg-muted">
-                        {projectPath.replace(/\\/g, '/').split('/').pop() || projectPath}
-                      </span>
+          {tab === 'claude' && (
+            <div ref={listRef} className="scroll-fade">
+              <div className="py-2">
+                {loading ? (
+                  <p className="text-sm text-fg-muted text-center py-8">Loading sessions...</p>
+                ) : filtered.length === 0 ? (
+                  <p className="text-sm text-fg-muted text-center py-8">
+                    {search.trim() ? 'No matching sessions' : 'No previous sessions found'}
+                  </p>
+                ) : grouped ? (
+                  // Grouped by project
+                  [...grouped.entries()].map(([projectPath, items]) => (
+                    <div key={projectPath} className="mb-2">
+                      <div className="px-4 py-1">
+                        <span className="text-[10px] uppercase tracking-wider text-fg-muted">
+                          {projectPath.replace(/\\/g, '/').split('/').pop() || projectPath}
+                        </span>
+                      </div>
+                      {items.map((s) => renderSessionRow(s))}
                     </div>
-                    {items.map((s) => renderSessionRow(s))}
-                  </div>
-                ))
-              ) : (
-                // Flat search results, priority-pinned
-                flatSorted.map((s) => renderSessionRow(s, true))
-              )}
+                  ))
+                ) : (
+                  // Flat search results, priority-pinned
+                  flatSorted.map((s) => renderSessionRow(s, true))
+                )}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Session list — Local tab (OpenCode sessions from the running daemon). */}
+          {tab === 'local' && localTabAvailable && (
+            <div className="py-2 px-4 space-y-1">
+              {!localReachable && (
+                <p className="text-sm text-fg-muted py-3">
+                  OpenCode daemon not running. Start a Local session to launch it, then return here to see your sessions.
+                </p>
+              )}
+              {localReachable && localSessions.length === 0 && (
+                <p className="text-sm text-fg-muted py-3">No local sessions yet.</p>
+              )}
+              {localReachable && localSessions.length > 0 && localSessions.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className="w-full text-left px-2 py-2 rounded hover:bg-inset text-fg-dim hover:text-fg transition-colors"
+                  onClick={() => {
+                    if (onResumeLocal) onResumeLocal(s.id);
+                    onClose();
+                  }}
+                >
+                  <div className="text-sm font-medium truncate">{s.title || s.id}</div>
+                  <div className="text-[10px] text-fg-faint">
+                    {s.updatedAt ? new Date(s.updatedAt).toLocaleString() : ''}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </OverlayPanel>
       </div>
     </>

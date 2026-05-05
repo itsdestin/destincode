@@ -1627,6 +1627,30 @@ function AppInner() {
     }
   }, [dispatch, currentModel]);
 
+  // Resume an OpenCode (Local provider) session. Unlike handleResumeSession for
+  // Claude sessions, local sessions need no history pre-load — the OpenCodeSessionAdapter
+  // fetches messages via client.session.messages() and hydrates chat state through SSE
+  // replay. We just create a local session with resumeSessionId set and let SessionManager
+  // + the adapter handle the rest. setSessionId is wired via the 'session:created' event
+  // listener, so we don't need to set it manually here.
+  const handleResumeLocal = useCallback(async (opencodeSessionId: string) => {
+    try {
+      await (window.claude.session.create as any)({
+        name: 'Local Session',
+        cwd: '',
+        skipPermissions: false,
+        provider: 'local',
+        resumeSessionId: opencodeSessionId,
+        model: sessionDefaults.localDefaultModel || undefined,
+      });
+      // Session ID auto-focused by the 'session:created' event listener above.
+    } catch (e) {
+      // SessionManager logs internally; surface UI feedback is out of MVP scope.
+      // eslint-disable-next-line no-console
+      console.error('[handleResumeLocal] failed:', e);
+    }
+  }, [sessionDefaults.localDefaultModel]);
+
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
 
   // Mirror the active view mode onto <html data-view-mode="..."> so CSS can
@@ -2263,6 +2287,7 @@ function AppInner() {
         open={resumeRequested}
         onClose={() => setResumeRequested(false)}
         onResume={handleResumeSession}
+        onResumeLocal={handleResumeLocal}
         defaultModel={sessionDefaults.model}
         defaultSkipPermissions={sessionDefaults.skipPermissions}
       />
