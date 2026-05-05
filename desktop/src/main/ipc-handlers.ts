@@ -371,6 +371,24 @@ export function registerIpcHandlers(
 
   // Session CRUD
   ipcMain.handle(IPC.SESSION_CREATE, async (event, opts) => {
+    // When creating a local session, ensure the OpenCode daemon is running
+    // before handing off to SessionManager. If the binary isn't installed,
+    // surface a structured error so the renderer can show an install prompt
+    // rather than crashing with an unhandled rejection.
+    if (opts?.provider === 'local') {
+      try {
+        // ensureOpenCodeService() is defined below in the local-provider block.
+        // JavaScript hoists async function declarations to the top of the block,
+        // so this reference is valid even though the declaration appears later
+        // in the source text. The handler is only called at runtime (not at
+        // parse time), so hoisting ensures it is always defined when reached.
+        await ensureOpenCodeService();
+      } catch (e: any) {
+        const errMsg = String(e?.message ?? e);
+        log('WARN', 'IPC', 'ensureOpenCodeService failed on SESSION_CREATE', { error: errMsg });
+        throw new Error(errMsg); // surfaces to renderer via Electron's ipcMain.handle error path
+      }
+    }
     const info = sessionManager.createSession(opts);
     // Assign the new session to the calling window so per-session events (transcript,
     // pty output, permission prompts) route here once Task 1.4 migrates the emits.
@@ -2018,10 +2036,45 @@ export function registerIpcHandlers(
   });
 
   // ---- Local provider (OpenCode + Ollama) IPC handlers ----
-  // opencodeService stays null until Task 8's ensureOpenCodeService() starts
-  // the daemon and calls setOpenCodeService(). LIST_SESSIONS returns [] safely
-  // until that wiring lands.
   let opencodeService: OpenCodeService | null = null;
+
+  /**
+   * Ensure the OpenCode daemon is running, starting it if needed.
+   *
+   * Locates the binary via locateOpenCodeBinary() (managed ~/.local/bin/ first,
+   * then PATH fallback), creates an OpenCodeService, starts it, then wires it
+   * into SessionManager so local sessions can be created. Also bridges the
+   * sessionManager 'transcript-event' re-emit to the renderer + remoteServer,
+   * mirroring the existing transcriptWatcher wire at line ~1644.
+   *
+   * Called from SESSION_CREATE when opts.provider === 'local'. Idempotent —
+   * a second call while the service is already running returns the same instance.
+   */
+  async function ensureOpenCodeService(): Promise<OpenCodeService> {
+    if (opencodeService && opencodeService.isRunning()) return opencodeService;
+    // Lazy import so prerequisite-installer is not loaded on every app start.
+    const { locateOpenCodeBinary } = await import('./prerequisite-installer');
+    const binaryPath = await locateOpenCodeBinary();
+    if (!binaryPath) throw new Error('OpenCode binary not installed — install it via Settings → Local Models first');
+    opencodeService = new OpenCodeService({ binaryPath });
+    await opencodeService.start();
+    sessionManager.setOpenCodeService(opencodeService);
+    // Bridge sessionManager 'transcript-event' → renderer + remoteServer.
+    // Mirrors the transcriptWatcher.on('transcript-event', ...) pattern:
+    //   sendForSession(event.sessionId, IPC.TRANSCRIPT_EVENT, event)
+    //   remoteServer?.broadcast({ type: 'transcript:event', payload: event })
+    // Guard against double-attachment if ensureOpenCodeService() is called again.
+    if (!(sessionManager as any).__openCodeBridgeAttached) {
+      sessionManager.on('transcript-event', (event: any) => {
+        sendForSession(event.sessionId, IPC.TRANSCRIPT_EVENT, event);
+        if (remoteServer) {
+          remoteServer.broadcast({ type: 'transcript:event', payload: event });
+        }
+      });
+      (sessionManager as any).__openCodeBridgeAttached = true;
+    }
+    return opencodeService;
+  }
 
   function detectorFor(rawEndpoint?: string): OllamaDetector {
     // Strip any trailing /v1 or slash; OllamaDetector probes Ollama's native /api/* paths.
@@ -2086,13 +2139,10 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(IPC.LOCAL_LIST_SESSIONS, async () => {
-    // Cast to avoid TypeScript narrowing opencodeService to 'never' inside the
-    // async callback (it sees the declaration-site null and won't see Task 8's
-    // assignment). At runtime this is safe: the guard below catches null before
-    // calling any methods.
-    const svc = opencodeService as OpenCodeService | null;
-    if (!svc || !svc.isRunning()) return [];
-    return await svc.listSessions();
+    // opencodeService is assigned by ensureOpenCodeService() when the first local
+    // session is created. Guard handles the pre-startup case safely.
+    if (!opencodeService || !opencodeService.isRunning()) return [];
+    return await opencodeService.listSessions();
   });
 
   // Return cleanup function for use during app shutdown

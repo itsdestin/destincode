@@ -24,3 +24,14 @@ Format mirrors `cc-dependencies.md`.
 - **Session storage path (SQLite)** — Linux `~/.local/share/opencode/opencode.db`, macOS `~/Library/Application Support/opencode/opencode.db`, Windows `%LOCALAPPDATA%\opencode\opencode.db`. Currently NOT read directly — we use REST. (No active reader.)
 - **Binary distribution** — install bootstrap URL `https://opencode.ai/install` (POSIX bash). Windows installs from a GitHub Releases asset (`opencode-windows-x64.zip` etc. under `sst/opencode`). The SDK strictly requires `opencode` on PATH or a known absolute path — there is no in-process embedded server. (`prerequisite-installer.ts → installOpenCode`)
 - **`OPENCODE_CONFIG_CONTENT` env var** — accepts a JSON-stringified config and bypasses file-based config loading. We do NOT use it for MVP (file-based config is more inspectable and editable), but it's a known alternative if file-write friction arises. (No active reader.)
+
+## Native installer bootstrap script (Local — OpenCode)
+
+**Touchpoint:** `src/main/prerequisite-installer.ts → installOpenCode`
+**Coupling:** Depends on the canonical OpenCode repo (`sst/opencode`) publishing release assets at predictable URLs:
+- POSIX: `https://opencode.ai/install` — bash bootstrap script that resolves to a platform-specific binary download.
+- Windows: `https://github.com/sst/opencode/releases/latest/download/opencode-windows-{x64,arm64}.zip` — ZIP archive containing `opencode.exe`. Extracted with Windows' built-in `tar.exe` (Win10 1803+).
+
+If OpenCode renames assets, splits the bash script into multiple per-platform installers, or moves the GitHub Releases URL pattern, `installOpenCode` breaks.
+
+**Mitigation:** First-run failure surfaces a clear error pointing the user to `~/.local/bin/opencode`; manual install from opencode.ai recovers.

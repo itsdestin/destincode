@@ -191,40 +191,53 @@ export function resolveCommand(cmd: string): string {
 }
 
 /**
- * Download a file via HTTPS, following 301/302 redirects.
+ * Download a file via HTTPS, following 301/302/307/308 redirects.
+ * Optional onProgress callback receives 0-100 percent as bytes arrive.
  * Returns a Promise that resolves when writing is complete.
  */
-export function downloadFile(url: string, dest: string): Promise<void> {
+export function downloadFile(
+  url: string,
+  dest: string,
+  onProgress?: (pct: number) => void,
+  redirectsLeft = 5,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const request = (targetUrl: string) => {
-      https.get(targetUrl, (res) => {
-        // Follow redirects
-        if (
-          (res.statusCode === 301 || res.statusCode === 302) &&
-          res.headers.location
-        ) {
-          request(res.headers.location);
-          return;
-        }
+    https.get(url, (res) => {
+      // Follow redirects (301, 302, 307, 308)
+      if (
+        (res.statusCode === 301 || res.statusCode === 302 ||
+          res.statusCode === 307 || res.statusCode === 308) &&
+        res.headers.location
+      ) {
+        if (redirectsLeft <= 0) return reject(new Error('too many redirects'));
+        // Consume body so the socket is freed before recursing.
+        res.resume();
+        return resolve(downloadFile(res.headers.location, dest, onProgress, redirectsLeft - 1));
+      }
 
-        if (res.statusCode !== 200) {
-          reject(new Error(`HTTP ${res.statusCode} downloading ${targetUrl}`));
-          return;
-        }
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
+        return;
+      }
 
-        const file = fs.createWriteStream(dest);
-        res.pipe(file);
-        file.on('finish', () => {
-          file.close(() => resolve());
-        });
-        file.on('error', (err) => {
-          fs.unlink(dest, () => {}); // best-effort cleanup
-          reject(err);
-        });
-      }).on('error', reject);
-    };
+      const total = parseInt(res.headers['content-length'] ?? '0', 10);
+      let received = 0;
 
-    request(url);
+      const file = fs.createWriteStream(dest);
+      res.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        if (total > 0 && onProgress) onProgress(Math.round((received / total) * 100));
+      });
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close((err) => err ? reject(err) : resolve());
+      });
+      file.on('error', (err) => {
+        fs.unlink(dest, () => {}); // best-effort cleanup
+        reject(err);
+      });
+    }).on('error', reject);
   });
 }
 
@@ -761,5 +774,169 @@ export async function enableWindowsDevMode(): Promise<{ success: boolean; error?
     const msg = String(err);
     log('ERROR', 'prereq', 'Failed to enable Developer Mode', { error: msg });
     return { success: false, error: msg };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ollama installer
+// ---------------------------------------------------------------------------
+
+/**
+ * Install Ollama silently.
+ *
+ * Windows: downloads OllamaSetup.exe and runs with /S (silent).
+ * Linux/macOS: pipes Ollama's install.sh through bash (handles both platforms —
+ * detects Homebrew on macOS, systemd / runit on Linux). No browser-open path.
+ *
+ * After install, polls the Ollama HTTP endpoint for up to 10 s. On macOS the
+ * daemon is NOT auto-started by the install script — surfaces a clear error
+ * asking the user to open the Ollama app from Applications.
+ */
+export async function installOllama(
+  onProgress: (ev: { phase: string; message?: string; pct?: number }) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  onProgress({ phase: 'starting', message: 'Installing Ollama…' });
+  try {
+    if (process.platform === 'win32') {
+      const installerPath = path.join(os.tmpdir(), 'OllamaSetup.exe');
+      onProgress({ phase: 'downloading', message: 'Downloading Ollama (~300 MB)' });
+      await downloadFile(
+        'https://ollama.com/download/OllamaSetup.exe',
+        installerPath,
+        (pct) => {
+          onProgress({ phase: 'downloading', pct, message: 'Downloading Ollama (~300 MB)' });
+        },
+      );
+      onProgress({ phase: 'installing', message: 'Running Ollama installer…' });
+      // /S = silent mode — no user interaction required.
+      await runCommand(installerPath, ['/S'], { timeout: 600000 });
+    } else if (process.platform === 'darwin' || process.platform === 'linux') {
+      onProgress({ phase: 'installing', message: 'Running Ollama install script…' });
+      // Ollama's install.sh handles both Linux (systemd / runit detection)
+      // and macOS (Homebrew detection / direct app install). No browser-open
+      // needed — the script is multi-platform and non-interactive.
+      await runCommand('bash', ['-c', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeout: 600000 });
+    } else {
+      return { ok: false, error: `unsupported platform: ${process.platform}` };
+    }
+
+    onProgress({ phase: 'verifying', message: 'Checking Ollama is reachable…' });
+    const { OllamaDetector } = await import('./ollama-detector');
+    for (let i = 0; i < 10; i++) {
+      await new Promise<void>(r => setTimeout(r, 1000));
+      if (await new OllamaDetector().isReachable()) {
+        onProgress({ phase: 'done', pct: 100, message: 'Ollama is running.' });
+        return { ok: true };
+      }
+    }
+    // macOS installs the GUI app but the daemon is NOT auto-started by the
+    // install script — user must open the Ollama app from Applications first.
+    if (process.platform === 'darwin') {
+      return {
+        ok: false,
+        error: "Ollama installed, but the daemon isn't running yet. Open the Ollama app from Applications, then return here.",
+      };
+    }
+    return { ok: false, error: 'Ollama installed but the daemon did not start within 10 seconds.' };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode installer
+// ---------------------------------------------------------------------------
+
+/** Where we place the managed opencode binary. */
+const OPENCODE_INSTALL_DIR = path.join(os.homedir(), '.local', 'bin');
+/** Binary name is platform-dependent. */
+const OPENCODE_BINARY_NAME = process.platform === 'win32' ? 'opencode.exe' : 'opencode';
+
+/**
+ * Locate the opencode binary, preferring our managed install dir over PATH.
+ *
+ * Returns the absolute path or null if not found. The managed-dir check is
+ * deterministic across Electron PATH-refresh cycles; the PATH fallback catches
+ * user installs via opencode.ai/install or brew.
+ */
+export async function locateOpenCodeBinary(): Promise<string | null> {
+  // Prefer our managed install location — deterministic across Electron PATH refreshes.
+  const managed = path.join(OPENCODE_INSTALL_DIR, OPENCODE_BINARY_NAME);
+  try {
+    await fs.promises.access(managed, fs.constants.X_OK);
+    return managed;
+  } catch { /* not there */ }
+  // Fall back to a system-PATH lookup (e.g., user installed via official script earlier).
+  try {
+    // `which` npm package is already a transitive dep used elsewhere.
+    const which = await import('which');
+    return await which.default('opencode');
+  } catch { /* not on PATH */ }
+  return null;
+}
+
+/** Returns true if the opencode binary exists and is executable. */
+export async function isOpenCodeInstalled(): Promise<boolean> {
+  return (await locateOpenCodeBinary()) !== null;
+}
+
+/**
+ * Install OpenCode.
+ *
+ * Windows: downloads opencode-windows-{arch}.zip from sst/opencode GitHub
+ * Releases (the assets are ZIP archives, NOT bare .exe files), extracts with
+ * Windows' built-in tar.exe (Win10 1803+), places opencode.exe in ~/.local/bin/.
+ *
+ * POSIX: pipes the official opencode.ai/install bash script — it resolves to
+ * the correct platform binary and puts it on PATH.
+ *
+ * Canonical repo: sst/opencode (not anomalyco — stale hedging dropped).
+ */
+export async function installOpenCode(
+  onProgress: (ev: { phase: string; message?: string; pct?: number }) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  onProgress({ phase: 'starting', message: 'Installing OpenCode…' });
+  try {
+    if (process.platform === 'win32') {
+      // GitHub release assets are ZIP archives, NOT bare .exe files.
+      // Pinned canonical repo: sst/opencode (per oc-dependencies.md).
+      const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+      const zipUrl = `https://github.com/sst/opencode/releases/latest/download/opencode-windows-${arch}.zip`;
+      const tmpZip = path.join(os.tmpdir(), `opencode-windows-${arch}.zip`);
+
+      onProgress({ phase: 'downloading', message: 'Downloading OpenCode' });
+      await downloadFile(zipUrl, tmpZip, (pct) => {
+        onProgress({ phase: 'downloading', pct, message: 'Downloading OpenCode' });
+      });
+
+      onProgress({ phase: 'extracting', message: 'Extracting OpenCode binary' });
+      // Ensure the managed install dir exists.
+      await fs.promises.mkdir(OPENCODE_INSTALL_DIR, { recursive: true });
+      // tar.exe ships in Windows 10 build 1803+ (April 2018) and supports zip
+      // extraction natively — no new npm dep needed.
+      await runCommand('tar.exe', ['-xf', tmpZip, '-C', OPENCODE_INSTALL_DIR], { timeout: 60000 });
+      // Best-effort cleanup of the temp zip.
+      try { await fs.promises.unlink(tmpZip); } catch { /* ignore */ }
+    } else {
+      onProgress({ phase: 'installing', message: 'Running OpenCode install script…' });
+      // Official install script resolves to a platform-specific binary and puts
+      // it on PATH. Canonical repo: sst/opencode (script hosted at opencode.ai).
+      await runCommand('bash', ['-c', 'curl -fsSL https://opencode.ai/install | bash'], { timeout: 300000 });
+    }
+
+    onProgress({ phase: 'verifying', message: 'Checking OpenCode binary…' });
+    if (!(await isOpenCodeInstalled())) {
+      return {
+        ok: false,
+        error:
+          'OpenCode binary not found after install. ' +
+          'On Windows it should be at ~/.local/bin/opencode.exe; ' +
+          'on POSIX, run "which opencode" in a terminal to verify.',
+      };
+    }
+    onProgress({ phase: 'done', pct: 100, message: 'OpenCode installed.' });
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) };
   }
 }
