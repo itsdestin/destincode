@@ -14,7 +14,7 @@ export interface InteractivePrompt {
 // --- Assistant turn types ---
 
 export type AssistantTurnSegment =
-  | { type: 'text'; content: string; messageId: string }
+  | { type: 'text'; content: string; messageId: string; partId?: string }
   | { type: 'tool-group'; groupId: string }
   // Plan mode: ExitPlanMode tool's `input.plan` surfaced as its own bubble so
   // users see the full plan markdown in chat, not just the approval buttons.
@@ -258,6 +258,12 @@ export type ChatAction =
       model?: string;
       parentAgentToolUseId?: string;
       agentId?: string;
+      // OpenCode 1.14+ streaming: each token chunk carries the same partId
+      // for a single in-flight text part. Reducer uses this to APPEND chunks
+      // to one growing text segment instead of creating a new bubble per chunk.
+      // Claude's transcript-driven flow doesn't set this — its events already
+      // carry full text blocks so each new event = new segment.
+      partId?: string;
     }
   | {
       type: 'TRANSCRIPT_TOOL_USE';

@@ -4,7 +4,13 @@ import * as net from 'net';
 
 // Verified API Surface: @opencode-ai/sdk@1.14.35 exports createOpencodeClient
 // (factory) and OpencodeClient (class). We use the factory.
-import { createOpencodeClient } from '@opencode-ai/sdk';
+//
+// IMPORTANT: the SDK is ESM-only ("type": "module" with no "require" condition
+// in its exports map). Our project compiles to CommonJS, so a static
+// `import { createOpencodeClient } from '@opencode-ai/sdk'` becomes a
+// `require()` at runtime which Node refuses with ERR_PACKAGE_PATH_NOT_EXPORTED.
+// Use dynamic import inside the async start() method instead — that compiles
+// to a real `await import()` (ESM-friendly) under module: commonjs.
 
 export interface OpenCodeServiceOpts {
   /** Absolute path to the opencode binary, located by ipc-handlers from prerequisite-installer's recorded path. */
@@ -17,6 +23,12 @@ export interface OpenCodeServiceOpts {
   readyDeadlineMs?: number;
   /** Poll interval for the readiness probe. Default 200 ms. */
   readyPollMs?: number;
+  /**
+   * Override for testing — return the SDK module. Production uses the
+   * Function-constructor trick to escape TS's `await import()` -> `require()`
+   * transpilation; tests inject a mock so vitest's `vi.mock` can intercept.
+   */
+  sdkLoader?: () => Promise<any>;
 }
 
 /**
@@ -76,13 +88,35 @@ export class OpenCodeService extends EventEmitter {
     // GET /global/health returns { healthy: true, version: string } and is the
     // documented liveness probe.
     const baseUrl = `http://${this.host}:${port}`;
+    // Lazy-load the SDK. The SDK is ESM-only ("type": "module" with no
+    // "require" condition in its exports map). Under module: commonjs, even
+    // `await import()` gets transpiled by TypeScript into a require() wrapper
+    // (Promise.resolve(require())), which hits the same ERR_PACKAGE_PATH_NOT_EXPORTED.
+    // The Function-constructor trick escapes TypeScript's transformation and
+    // emits a literal native dynamic import() that Node's ESM resolver handles
+    // correctly. Standard workaround for ESM packages in CJS TypeScript projects.
+    // Tests override via opts.sdkLoader so vitest's vi.mock can intercept.
+    const sdkModule = await (this.opts.sdkLoader
+      ? this.opts.sdkLoader()
+      : (new Function('specifier', 'return import(specifier)') as (s: string) => Promise<any>)('@opencode-ai/sdk'));
+    const createOpencodeClient = sdkModule.createOpencodeClient ?? sdkModule.default?.createOpencodeClient;
+    if (typeof createOpencodeClient !== 'function') {
+      child.kill();
+      this.child = null;
+      throw new Error('@opencode-ai/sdk: createOpencodeClient is not exported as expected');
+    }
+
     const deadline = Date.now() + readyDeadlineMs;
     while (Date.now() < deadline && !exitedDuringStartup) {
       try {
         const res = await fetchImpl(`${baseUrl}/global/health`, { method: 'GET' });
         if (res.ok) {
           this.port = port;
-          this.client = createOpencodeClient({ baseURL: baseUrl });
+          // Stainless Config field is `baseUrl` (lowercase 'u'). NOT `baseURL`.
+          // Passing `baseURL` would be silently ignored and the SDK falls back
+          // to its bundled default (54321/etc.), so all calls go to a port
+          // where nothing's listening and hang indefinitely.
+          this.client = createOpencodeClient({ baseUrl: baseUrl });
           // Swap startup exit listener for the long-lived crash handler.
           child.off('exit', startupExitListener);
           child.on('exit', (code) => {
@@ -123,25 +157,54 @@ export class OpenCodeService extends EventEmitter {
     this.client = null;
   }
 
-  // Session-level convenience wrappers — SDK names per Verified API Surface.
-  async createSession(opts: { systemPrompt?: string }): Promise<{ id: string }> {
-    return await this.client.session.create(opts);
+  // Session-level convenience wrappers.
+  // The SDK is Stainless-generated: every method takes a single options object
+  // with shape { body?, path?, query? }, NOT positional arguments. Each SDK
+  // call returns { data, error } (request/response envelope), not bare data.
+  // Throw on `error`; return `data`.
+  async createSession(_opts?: { systemPrompt?: string }): Promise<{ id: string }> {
+    // Note: SessionCreateData.body is { parentID?, title? } only — no systemPrompt.
+    // System prompts go on the prompt body's `system` field instead (see sendMessage).
+    const res = await this.client.session.create({ body: {} });
+    if (res.error) throw new Error(`OpenCode session.create failed: ${JSON.stringify(res.error)}`);
+    return res.data;
   }
-  /** Streaming send — events arrive via SSE. Use this for chat (we render incrementally). */
-  async sendMessage(sessionId: string, text: string, model?: { providerID: string; modelID: string }): Promise<void> {
-    await this.client.session.promptAsync(sessionId, {
-      parts: [{ type: 'text', text }],
-      ...(model ? { model } : {}),
+  /** Streaming send — events arrive via SSE. Use this for chat (we render incrementally).
+   *  `system` overrides the agent's built-in system prompt for this turn. */
+  async sendMessage(
+    sessionId: string,
+    text: string,
+    model?: { providerID: string; modelID: string },
+    system?: string,
+  ): Promise<void> {
+    const res = await this.client.session.promptAsync({
+      path: { id: sessionId },
+      body: {
+        parts: [{ type: 'text', text }],
+        ...(model ? { model } : {}),
+        ...(system ? { system } : {}),
+      },
     });
+    if (res.error) throw new Error(`OpenCode session.promptAsync failed: ${JSON.stringify(res.error)}`);
   }
   async cancelSession(sessionId: string): Promise<void> {
-    await this.client.session.abort(sessionId);
+    const res = await this.client.session.abort({ path: { id: sessionId } });
+    if (res.error) throw new Error(`OpenCode session.abort failed: ${JSON.stringify(res.error)}`);
   }
   async destroySession(sessionId: string): Promise<void> {
-    await this.client.session.delete(sessionId);
+    const res = await this.client.session.delete({ path: { id: sessionId } });
+    if (res.error) throw new Error(`OpenCode session.delete failed: ${JSON.stringify(res.error)}`);
   }
-  async listSessions(): Promise<Array<{ id: string; title: string; updatedAt: number }>> {
-    return await this.client.session.list();
+  async listSessions(): Promise<Array<{ id: string; title: string; time?: { updated: number } }>> {
+    const res = await this.client.session.list();
+    if (res.error) throw new Error(`OpenCode session.list failed: ${JSON.stringify(res.error)}`);
+    return res.data ?? [];
+  }
+  /** Fetch message history for a session (used for resume hydration). */
+  async listMessages(sessionId: string): Promise<Array<{ info: any; parts: any[] }>> {
+    const res = await this.client.session.messages({ path: { id: sessionId } });
+    if (res.error) throw new Error(`OpenCode session.messages failed: ${JSON.stringify(res.error)}`);
+    return res.data ?? [];
   }
 
   private async allocatePort(): Promise<number> {

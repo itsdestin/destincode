@@ -119,6 +119,43 @@ describe('TRANSCRIPT_TURN_COMPLETE metadata', () => {
 
   // Defensive path: turn-complete can arrive with no in-flight turn (edge case
   // where the reducer hasn't seen any assistant text yet). Must not throw.
+  it('streams: consecutive assistant-text events with same partId merge into one segment', () => {
+    // OpenCode 1.14+ streams a single text part as many small `message.part.delta`
+    // events. Each one becomes a TRANSCRIPT_ASSISTANT_TEXT with the same partId.
+    // The reducer must append text to the existing segment, not create a new
+    // bubble per chunk. Without this, "Hello world" arrives as ["H","e","l","l","o", ...]
+    // each in its own bubble.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'd1', text: 'Hello', timestamp: 1, partId: 'prt_1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'd2', text: ' world', timestamp: 2, partId: 'prt_1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'd3', text: '!', timestamp: 3, partId: 'prt_1' });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(1);
+    expect(turn.segments[0]).toMatchObject({ type: 'text', content: 'Hello world!', partId: 'prt_1' });
+  });
+
+  it('streams: a new partId starts a fresh segment (transition between text parts)', () => {
+    // OpenCode can emit multiple text parts in one turn (e.g. text → tool → text).
+    // The second text part has a different partId, so it must NOT merge with the first.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'd1', text: 'first', timestamp: 1, partId: 'prt_1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'd2', text: 'second', timestamp: 2, partId: 'prt_2' });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(2);
+    expect(turn.segments[0]).toMatchObject({ content: 'first', partId: 'prt_1' });
+    expect(turn.segments[1]).toMatchObject({ content: 'second', partId: 'prt_2' });
+  });
+
+  it('Claude path: events without partId always create new segments (preserves existing behavior)', () => {
+    // Claude's transcript watcher emits one event per complete text block, each
+    // intended to render as its own segment. None carry partId. Must NOT merge.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'd1', text: 'block1', timestamp: 1 });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'd2', text: 'block2', timestamp: 2 });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(2);
+  });
+
   it('gracefully handles turn-complete with no in-flight turn (no crash)', () => {
     expect(state.get(SESSION)!.currentTurnId).toBeNull();
 

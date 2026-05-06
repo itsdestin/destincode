@@ -809,20 +809,35 @@ export async function installOllama(
       );
       onProgress({ phase: 'installing', message: 'Running Ollama installer…' });
       // /S = silent mode — no user interaction required.
-      await runCommand(installerPath, ['/S'], { timeout: 600000 });
+      // We swallow any non-zero exit — Ollama's NSIS installer can return
+      // non-zero codes even on a successful install (observed empirically
+      // with v0.23.0). Reachability of the HTTP endpoint is the authoritative
+      // success signal; the verify-loop below is the gate.
+      try {
+        await runCommand(installerPath, ['/S'], { timeout: 600000 });
+      } catch (installErr) {
+        log('WARN', 'prereq', 'Ollama installer returned non-zero — verifying via HTTP probe instead', { error: String(installErr) });
+      }
     } else if (process.platform === 'darwin' || process.platform === 'linux') {
       onProgress({ phase: 'installing', message: 'Running Ollama install script…' });
       // Ollama's install.sh handles both Linux (systemd / runit detection)
       // and macOS (Homebrew detection / direct app install). No browser-open
       // needed — the script is multi-platform and non-interactive.
-      await runCommand('bash', ['-c', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeout: 600000 });
+      try {
+        await runCommand('bash', ['-c', 'curl -fsSL https://ollama.com/install.sh | sh'], { timeout: 600000 });
+      } catch (installErr) {
+        log('WARN', 'prereq', 'Ollama install script returned non-zero — verifying via HTTP probe instead', { error: String(installErr) });
+      }
     } else {
       return { ok: false, error: `unsupported platform: ${process.platform}` };
     }
 
     onProgress({ phase: 'verifying', message: 'Checking Ollama is reachable…' });
     const { OllamaDetector } = await import('./ollama-detector');
-    for (let i = 0; i < 10; i++) {
+    // 30s window: installer file extraction + daemon boot can be slow on
+    // first install, especially on Windows where the installer registers
+    // a service before the binary starts listening. Was 10s — too tight.
+    for (let i = 0; i < 30; i++) {
       await new Promise<void>(r => setTimeout(r, 1000));
       if (await new OllamaDetector().isReachable()) {
         onProgress({ phase: 'done', pct: 100, message: 'Ollama is running.' });
@@ -837,7 +852,7 @@ export async function installOllama(
         error: "Ollama installed, but the daemon isn't running yet. Open the Ollama app from Applications, then return here.",
       };
     }
-    return { ok: false, error: 'Ollama installed but the daemon did not start within 10 seconds.' };
+    return { ok: false, error: 'Ollama installed but the daemon did not start within 30 seconds. Try opening Ollama from the Start menu, then re-run setup.' };
   } catch (e: any) {
     return { ok: false, error: String(e?.message ?? e) };
   }
@@ -912,9 +927,14 @@ export async function installOpenCode(
       onProgress({ phase: 'extracting', message: 'Extracting OpenCode binary' });
       // Ensure the managed install dir exists.
       await fs.promises.mkdir(OPENCODE_INSTALL_DIR, { recursive: true });
-      // tar.exe ships in Windows 10 build 1803+ (April 2018) and supports zip
-      // extraction natively — no new npm dep needed.
-      await runCommand('tar.exe', ['-xf', tmpZip, '-C', OPENCODE_INSTALL_DIR], { timeout: 60000 });
+      // Use Windows' built-in BSD tar by ABSOLUTE PATH. If we just invoked
+      // 'tar.exe', PATH might find Git Bash's GNU tar first — which interprets
+      // 'C:\path' as rsync 'host:path' syntax and fails with
+      // "tar: Cannot connect to C: resolve failed". Windows BSD tar (in
+      // System32, ships in Win10 1803+) handles drive-letter paths correctly.
+      const windir = process.env.WINDIR || process.env.SystemRoot || 'C:\\Windows';
+      const winTar = path.join(windir, 'System32', 'tar.exe');
+      await runCommand(winTar, ['-xf', tmpZip, '-C', OPENCODE_INSTALL_DIR], { timeout: 60000 });
       // Best-effort cleanup of the temp zip.
       try { await fs.promises.unlink(tmpZip); } catch { /* ignore */ }
     } else {

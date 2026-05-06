@@ -62,4 +62,40 @@ describe('OpenCodeConfigWriter', () => {
     const cfg = JSON.parse(await fs.readFile(path.join(tmpHome, '.config', 'opencode', 'opencode.json'), 'utf8'));
     expect(cfg.permission).toBe('allow');
   });
+
+  it('writeOllamaConfig() populates the models map from the installed-models list', async () => {
+    // Empirically confirmed (OpenCode 1.14.39 daemon log): without this map,
+    // `prompt_async` fails with ProviderModelNotFoundError even though the
+    // provider adapter loaded. The OpenAI-compat adapter is config-driven,
+    // not /api/tags-discovery-driven.
+    await writer.writeOllamaConfig({
+      ollamaBaseUrl: 'http://localhost:11434',
+      models: ['qwen3:8b', 'llama3.1:70b'],
+    });
+    const cfg = JSON.parse(await fs.readFile(path.join(tmpHome, '.config', 'opencode', 'opencode.json'), 'utf8'));
+    expect(cfg.provider.ollama.models).toBeDefined();
+    expect(cfg.provider.ollama.models['qwen3:8b'].name).toBe('Qwen3 8B');
+    expect(cfg.provider.ollama.models['llama3.1:70b'].name).toBe('Llama3.1 70B');
+  });
+
+  it('writeOllamaConfig() writes an empty models map when no models are passed', async () => {
+    // Better than a missing key — keeps the schema consistent and signals
+    // "the writer ran but no models were available" (e.g. Ollama unreachable).
+    await writer.writeOllamaConfig({ ollamaBaseUrl: 'http://localhost:11434' });
+    const cfg = JSON.parse(await fs.readFile(path.join(tmpHome, '.config', 'opencode', 'opencode.json'), 'utf8'));
+    expect(cfg.provider.ollama.models).toEqual({});
+  });
+
+  it('writeOllamaConfig() defaults reasoningEffort to "none" on every model', async () => {
+    // Required for thinking models (qwen3, deepseek-r1, etc.). Without "none",
+    // they emit all tokens into the `reasoning` field, leaving `content` empty,
+    // and OpenCode hangs forever waiting for content. Verified end-to-end
+    // against qwen3:8b. Non-thinking models simply ignore the option.
+    await writer.writeOllamaConfig({
+      ollamaBaseUrl: 'http://localhost:11434',
+      models: ['qwen3:8b'],
+    });
+    const cfg = JSON.parse(await fs.readFile(path.join(tmpHome, '.config', 'opencode', 'opencode.json'), 'utf8'));
+    expect(cfg.provider.ollama.models['qwen3:8b'].options).toEqual({ reasoningEffort: 'none' });
+  });
 });

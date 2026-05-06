@@ -14,7 +14,15 @@ function makeFakeService() {
     },
     sdk: () => ({
       event: {
-        subscribe: (handler: (ev: any) => void) => {
+        // The adapter probes both SDK shapes: first the real Stainless SDK
+        // (no-arg call returning Promise<{stream}>), then the legacy callback
+        // shape. If we accept a no-arg call here, we'd register a broken
+        // listener (handler=undefined) that throws when events fire. Reject
+        // the no-arg call so the adapter falls through to the callback path.
+        subscribe: (handler?: (ev: any) => void) => {
+          if (typeof handler !== 'function') {
+            throw new Error('test fixture: legacy callback shape requires a handler');
+          }
           const fn = (ev: any) => handler(ev);
           eventBus.on('event', fn);
           return () => eventBus.off('event', fn);
@@ -172,6 +180,46 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
+  it('translates "message.part.delta" with field=text into "assistant-text" (OpenCode 1.14+ protocol)', () => {
+    // Empirically captured from a live OpenCode 1.14.39 SSE stream — streaming
+    // chunks now arrive as message.part.delta events, not message.part.updated.
+    // Without this branch the chat UI shows nothing while OpenCode is generating.
+    svc.eventBus.emit('event', {
+      type: 'message.part.delta',
+      properties: {
+        sessionID: 'OC1',
+        messageID: 'M1',
+        partID: 'P1',
+        field: 'text',
+        delta: 'Hello',
+      },
+    });
+    svc.eventBus.emit('event', {
+      type: 'message.part.delta',
+      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P1', field: 'text', delta: ' world' },
+    });
+    expect(emitted.map(e => e.type)).toEqual(['assistant-text', 'assistant-text']);
+    expect(emitted.map(e => e.data.text)).toEqual(['Hello', ' world']);
+    expect(emitted[0].sessionId).toBe('DESK1');   // tagged with desktop id, not OC id
+  });
+
+  it('translates "message.part.delta" with field=reasoning into "assistant-thinking"', () => {
+    svc.eventBus.emit('event', {
+      type: 'message.part.delta',
+      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P1', field: 'reasoning', delta: 'Hmm…' },
+    });
+    expect(emitted[0]).toMatchObject({ type: 'assistant-thinking', sessionId: 'DESK1' });
+    expect(emitted[0].data.text).toBe('Hmm…');
+  });
+
+  it('IGNORES "message.part.delta" for unknown fields (forward-compat for new field types)', () => {
+    svc.eventBus.emit('event', {
+      type: 'message.part.delta',
+      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P1', field: 'image', delta: 'data:base64...' },
+    });
+    expect(emitted).toEqual([]);
+  });
+
   it('translates session.idle into "turn-complete"', () => {
     // Verified: session.idle is the cleanest turn-complete signal.
     svc.eventBus.emit('event', {
@@ -190,6 +238,53 @@ describe('OpenCodeSessionAdapter', () => {
       properties: {
         part: { type: 'text', id: 'P', sessionID: 'OC_OTHER', messageID: 'M', text: 'not ours' },
         delta: 'not ours',
+      },
+    });
+    expect(emitted).toEqual([]);
+  });
+
+  it('translates session.error into a visible error bubble + turn-complete', () => {
+    // Empirically confirmed: when OpenCode raises ProviderModelNotFoundError,
+    // it publishes session.error followed by session.idle. Without this branch,
+    // the user sees the thinking spinner indefinitely with no explanation of
+    // what went wrong (the SDK call returns 200; the failure only flows through SSE).
+    svc.eventBus.emit('event', {
+      type: 'session.error',
+      properties: {
+        sessionID: 'OC1',
+        error: {
+          name: 'ProviderModelNotFoundError',
+          data: { providerID: 'ollama', modelID: 'qwen3:8b', suggestions: [] },
+        },
+      },
+    });
+    expect(emitted.map(e => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect(emitted[0].data.text).toMatch(/ProviderModelNotFoundError/);
+    expect(emitted[0].data.text).toMatch(/qwen3:8b/);
+    expect(emitted[1]).toMatchObject({ type: 'turn-complete', sessionId: 'DESK1' });
+  });
+
+  it('treats session.error with no sessionID as ours (errors must not be silently dropped)', () => {
+    // SDK types mark sessionID as optional on EventSessionError. If we filtered
+    // strictly, an unnamed error would hang the spinner forever. Surfacing is
+    // strictly better than silently dropping — the worst case is a spurious
+    // error bubble in another tab, which is recoverable; an indefinite spinner is not.
+    svc.eventBus.emit('event', {
+      type: 'session.error',
+      properties: {
+        error: { name: 'UnknownError', data: { message: 'something broke' } },
+      },
+    });
+    expect(emitted.map(e => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect(emitted[0].data.text).toMatch(/UnknownError/);
+  });
+
+  it('IGNORES session.error for a different session', () => {
+    svc.eventBus.emit('event', {
+      type: 'session.error',
+      properties: {
+        sessionID: 'OC_OTHER',
+        error: { name: 'UnknownError', data: { message: 'not ours' } },
       },
     });
     expect(emitted).toEqual([]);

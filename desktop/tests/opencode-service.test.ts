@@ -10,11 +10,12 @@ vi.mock('child_process', async (orig) => ({
 }));
 
 const mockSdkConstructor = vi.fn();
-vi.mock('@opencode-ai/sdk', () => ({
-  // Verified: @opencode-ai/sdk@1.14.35 exports both createOpencodeClient (factory)
-  // and OpencodeClient (class). Either works; we use the factory.
+// Production resolves @opencode-ai/sdk via a Function-constructor trick that
+// bypasses vitest's `vi.mock` mocker. We inject the SDK module via the
+// `sdkLoader` option in OpenCodeServiceOpts instead.
+const mockSdkLoader = () => Promise.resolve({
   createOpencodeClient: (opts: any) => mockSdkConstructor(opts),
-}));
+});
 
 function makeFakeChild(): ChildProcess {
   const ee = new EventEmitter() as any;
@@ -55,7 +56,7 @@ describe('OpenCodeService', () => {
     mockSpawn.mockReturnValueOnce(fakeChild);
     const fetchMock = makeReachableAfter(50);
 
-    svc = new OpenCodeService({ binaryPath: '/usr/local/bin/opencode', fetchImpl: fetchMock as any });
+    svc = new OpenCodeService({ binaryPath: '/usr/local/bin/opencode', fetchImpl: fetchMock as any, sdkLoader: mockSdkLoader });
     await svc.start();
 
     expect(svc.isRunning()).toBe(true);
@@ -76,6 +77,7 @@ describe('OpenCodeService', () => {
       binaryPath: '/usr/local/bin/opencode',
       fetchImpl: fetchMock as any,
       readyDeadlineMs: 200,   // short for tests
+      sdkLoader: mockSdkLoader,
     });
 
     await expect(svc.start()).rejects.toThrow(/did not become reachable/);
@@ -92,6 +94,7 @@ describe('OpenCodeService', () => {
       binaryPath: '/usr/local/bin/opencode',
       fetchImpl: fetchMock as any,
       readyDeadlineMs: 5000,
+      sdkLoader: mockSdkLoader,
     });
     const startP = svc.start();
     setImmediate(() => fakeChild.emit('exit', 1));
@@ -105,7 +108,7 @@ describe('OpenCodeService', () => {
     mockSpawn.mockReturnValueOnce(fakeChild);
     const fetchMock = makeReachableAfter(20);
 
-    svc = new OpenCodeService({ binaryPath: '/usr/local/bin/opencode', fetchImpl: fetchMock as any });
+    svc = new OpenCodeService({ binaryPath: '/usr/local/bin/opencode', fetchImpl: fetchMock as any, sdkLoader: mockSdkLoader });
     await svc.start();
     await svc.stop();
     expect(fakeChild.kill).toHaveBeenCalled();
@@ -117,7 +120,7 @@ describe('OpenCodeService', () => {
     mockSpawn.mockReturnValueOnce(fakeChild);
     const fetchMock = makeReachableAfter(20);
 
-    svc = new OpenCodeService({ binaryPath: '/usr/local/bin/opencode', fetchImpl: fetchMock as any });
+    svc = new OpenCodeService({ binaryPath: '/usr/local/bin/opencode', fetchImpl: fetchMock as any, sdkLoader: mockSdkLoader });
     await svc.start();
 
     const crashSpy = vi.fn();

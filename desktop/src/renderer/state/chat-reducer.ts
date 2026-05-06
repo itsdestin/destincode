@@ -476,16 +476,36 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const turn = assistantTurns.get(currentTurnId)!;
+      // Streaming continuation: if the action carries a partId AND the last
+      // segment is a text segment with the same partId, APPEND to that segment
+      // instead of creating a new bubble. Used by OpenCode 1.14+ which streams
+      // each token as a separate `message.part.delta` event — without this the
+      // chat shows one bubble per token. Claude's transcript flow doesn't set
+      // partId, so each text event creates a fresh segment as before.
+      let segments = turn.segments;
+      const lastIdx = segments.length - 1;
+      const last = lastIdx >= 0 ? segments[lastIdx] : null;
+      if (
+        action.partId
+        && last
+        && last.type === 'text'
+        && last.partId === action.partId
+      ) {
+        const merged = { ...last, content: last.content + action.text };
+        segments = [...segments.slice(0, lastIdx), merged];
+      } else {
+        segments = [
+          ...segments,
+          { type: 'text', content: action.text, messageId: nextMessageId(), partId: action.partId },
+        ];
+      }
       // Task 2.4: Capture model on first text of the turn so the model pill is
       // visible while the turn is in-flight. `?? turn.model` preserves the
       // existing value when a later text chunk arrives without a model, so we
       // never clobber a previously-captured model with null.
       assistantTurns.set(currentTurnId, {
         ...turn,
-        segments: [
-          ...turn.segments,
-          { type: 'text', content: action.text, messageId: nextMessageId() },
-        ],
+        segments,
         model: action.model ?? turn.model,
       });
 

@@ -46,7 +46,10 @@ describe('SessionManager local branch', () => {
     await new Promise((r) => setImmediate(r));
     // Send AFTER mapping is established → routes via the OC id, not the desktop id
     sm.sendInput(info.id, 'hello\r');
-    expect(svc.sendMessage).toHaveBeenCalledWith('oc-NEW', 'hello');
+    // The third arg is the model spec — info.model='qwen3:8b' produces a
+    // {providerID:'ollama', modelID:'qwen3:8b'} object that OpenCode needs
+    // to route the prompt to the right provider/model.
+    expect(svc.sendMessage).toHaveBeenCalledWith('oc-NEW', 'hello', { providerID: 'ollama', modelID: 'qwen3:8b' });
   });
 
   it('createSession with resumeSessionId uses the OC id as desktopId AND skips fresh OC creation', () => {
@@ -72,9 +75,11 @@ describe('SessionManager local branch', () => {
     // Now resolve the create
     svc.resolveCreate('oc-LATE');
     await new Promise((r) => setImmediate(r));
-    // Both queued sends should have flushed
-    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'first');
-    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'second');
+    // Both queued sends should have flushed. info.model is unset in this
+    // test, so the third arg is `undefined` — vitest's toHaveBeenCalledWith
+    // is strict about argument count, so we pass undefined explicitly.
+    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'first', undefined);
+    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'second', undefined);
   });
 
   it('sendInput emits a synthetic user-message transcript-event before sendMessage (for dedup)', async () => {

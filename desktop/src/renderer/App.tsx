@@ -613,8 +613,11 @@ function AppInner() {
         setSessionId(info.id);
         return [...prev, info];
       });
-      // Gemini sessions are terminal-only (no transcript watcher), so default to terminal view
-      const defaultView = (info.provider && info.provider !== 'claude') ? 'terminal' : 'chat';
+      // Gemini sessions are terminal-only (no transcript watcher) → terminal view.
+      // Local sessions (OpenCode) have NO PTY at all → must be chat view; xterm
+      // would render an empty buffer with a blinking cursor and the toggle is
+      // hidden (Task 10), trapping the user in a dead view.
+      const defaultView = info.provider === 'gemini' ? 'terminal' : 'chat';
       setViewModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, defaultView));
       setPermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, info.permissionMode || 'normal'));
       setSessionModels((prev) => {
@@ -756,6 +759,9 @@ function AppInner() {
             model: event.data.model,
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
+            // OpenCode 1.14+ streaming: groups consecutive token chunks into
+            // one bubble. Claude's transcript flow leaves it undefined.
+            partId: event.data.partId,
           });
           break;
         case 'tool-use':
@@ -1122,7 +1128,9 @@ function AppInner() {
         return [...prev, sessionInfo];
       });
       dispatch({ type: 'SESSION_INIT', sessionId: sid });
-      const defaultView = (sessionInfo.provider && sessionInfo.provider !== 'claude') ? 'terminal' : 'chat';
+      // Same rule as session-created: only Gemini gets terminal default.
+      // Local sessions have no PTY; force chat view.
+      const defaultView = sessionInfo.provider === 'gemini' ? 'terminal' : 'chat';
       setViewModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, defaultView));
       setPermissionModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, sessionInfo.permissionMode || 'normal'));
       // Transferred sessions were already initialized on the source — skip the
@@ -2125,7 +2133,7 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                     window.claude.session.sendInput(sessionId, '/sync\r');
                   } : undefined}
-                  model={currentModel as ModelAlias}
+                  model={isLocalSession ? undefined : (currentModel as ModelAlias)}
                   onCycleModel={cycleModel}
                   permissionMode={isLocalSession ? undefined : currentPermissionMode}
                   onCyclePermission={isLocalSession ? undefined : cyclePermission}

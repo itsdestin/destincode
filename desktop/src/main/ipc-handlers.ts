@@ -2133,9 +2133,21 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(IPC.LOCAL_WRITE_OPENCODE_CONFIG, async (_e, opts: { ollamaBaseUrl: string }) => {
+    // Fetch the installed Ollama models so we can populate opencode.json's
+    // `provider.ollama.models` map. Without that map, OpenCode rejects every
+    // prompt with ProviderModelNotFoundError because the OpenAI-compat adapter
+    // is not auto-discovery-driven. If Ollama is unreachable, we still write
+    // the rest of the config — the user can re-run setup once Ollama is up.
+    const detector = detectorFor(opts.ollamaBaseUrl);
+    let models: string[] = [];
+    try {
+      if (await detector.isReachable()) {
+        models = (await detector.listModels()).map(m => m.name);
+      }
+    } catch { /* fall through with empty models list */ }
     const writer = new OpenCodeConfigWriter(os.homedir());
-    await writer.writeOllamaConfig(opts);
-    return { ok: true };
+    await writer.writeOllamaConfig({ ollamaBaseUrl: opts.ollamaBaseUrl, models });
+    return { ok: true, models };
   });
 
   ipcMain.handle(IPC.LOCAL_LIST_SESSIONS, async () => {

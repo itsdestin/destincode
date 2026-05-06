@@ -356,6 +356,19 @@ export default function SessionStrip({
     return () => { cancelled = true; };
   }, [runtime, localSupported, defaultLocalEndpoint]);
 
+  // When local models load (or runtime becomes local), force `newModel` to a
+  // valid Ollama model name. Otherwise the user's previous Claude default
+  // (e.g. 'opus[1m]') leaks into the create payload — OpenCode then routes
+  // `{providerID:'ollama', modelID:'opus[1m]'}` to Ollama, which has no such
+  // model, and the request silently fails (no assistant response). Bug seen
+  // first run: three "hi" prompts in a row, zero responses, ollama ps empty.
+  useEffect(() => {
+    if (runtime !== 'local' || localModels.length === 0) return;
+    if (!localModels.some(m => m.name === newModel)) {
+      setNewModel(localModels[0].name);
+    }
+  }, [runtime, localModels, newModel]);
+
   const handleMenuToggle = useCallback(() => {
     setMenuOpen(prev => !prev);
     setShowNewForm(false);

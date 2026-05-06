@@ -120,6 +120,9 @@ export function BubbleFeed({ sessionId }: Props) {
             // appear inline as if the main Claude instance produced them.
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
+            // OpenCode 1.14+ streaming: groups consecutive token chunks
+            // into one bubble. Claude's flow leaves it undefined.
+            partId: event.data.partId,
           });
           break;
         case 'tool-use':

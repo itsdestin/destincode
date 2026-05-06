@@ -90,10 +90,18 @@ export class SessionManager extends EventEmitter {
     // Tagged with the EXACT text we sent — guarantees content-match dedup
     // against the optimistic USER_PROMPT bubble's pending entry. Bypasses
     // any whitespace normalization OpenCode might apply to its echo.
+    // Renderer reads `uuid` and `timestamp` at the TOP level of the event,
+    // NOT inside `data` — the dispatch in App.tsx::transcriptHandler does
+    // `event.uuid` / `event.timestamp`. If they're under `event.data` the
+    // reducer dedup drops the action silently and bubbles never render.
+    const ts = Date.now();
+    const uuid = `local-u-${ts}-${Math.random().toString(36).slice(2, 8)}`;
     this.emit('transcript-event', {
       type: 'user-message',
       sessionId: desktopId,
-      data: { text, timestamp: Date.now(), uuid: `local-u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` },
+      uuid,
+      timestamp: ts,
+      data: { text },
     });
   }
 
@@ -143,11 +151,19 @@ export class SessionManager extends EventEmitter {
         this.localAdapters.set(desktopId, adapter);
 
         // Drain any queued sends that arrived during the create race window.
+        // Resolve the model spec ONCE here; SDK's promptAsync needs both
+        // providerID and modelID. For MVP we hardcode providerID='ollama'
+        // (matches the key in opencode.json's `provider.ollama`); modelID
+        // comes from the session info (e.g. 'qwen3:8b'). When we add LM Studio
+        // or other compat providers, this needs to flow through opts.
+        const modelSpec = info.model
+          ? { providerID: 'ollama', modelID: info.model }
+          : undefined;
         const queued = this.localPendingSends.get(desktopId) ?? [];
         this.localPendingSends.delete(desktopId);
         for (const text of queued) {
           this.emitSyntheticUserMessage(desktopId, text);
-          this.opencodeService!.sendMessage(ocSession.id, text).catch((err) => {
+          this.opencodeService!.sendMessage(ocSession.id, text, modelSpec).catch((err) => {
             log('ERROR', 'SessionManager', 'OpenCode sendMessage (queued) failed', { sessionId: desktopId, error: String(err) });
           });
         }
@@ -330,7 +346,12 @@ export class SessionManager extends EventEmitter {
         return true;
       }
       this.emitSyntheticUserMessage(id, userText);
-      this.opencodeService.sendMessage(ocId, userText).catch((err) => {
+      // Pass the resolved model spec so OpenCode picks Ollama (not its hosted
+      // OpenCode Zen default). providerID 'ollama' matches the config key.
+      const modelSpec = session.info.model
+        ? { providerID: 'ollama', modelID: session.info.model }
+        : undefined;
+      this.opencodeService.sendMessage(ocId, userText, modelSpec).catch((err) => {
         log('ERROR', 'SessionManager', 'OpenCode sendMessage failed', { sessionId: id, error: String(err) });
       });
       return true;
