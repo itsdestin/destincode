@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFile, spawn } from 'child_process';
+import * as https from 'https';
 // WHY: app.getVersion() is only available in the main process. Used by
 // submitIssue to embed the accurate YouCoded version in the issue body
 // instead of relying on navigator.userAgent from the renderer (Fix 2).
@@ -155,6 +156,167 @@ export function classifyExistingWorkspace(
   return /[/:]itsdestin\/youcoded-dev(\.git)?\/?$/.test(remoteUrl.trim())
     ? 'workspace'
     : 'wrong-remote';
+}
+
+// ---------------------------------------------------------------------------
+// gatherDiagnostics — environment snapshot for bug reports
+// ---------------------------------------------------------------------------
+//
+// The plain log tail tells us what the app DID; this block tells us about the
+// environment the app ran in. Mac plugin/integration installs typically fail
+// for one of: git missing, claude missing, ~/.claude perms wrong, marketplace
+// cache corrupt, or network blocked. Each probe below is best-effort and
+// timeout-bounded — one failure must not block the whole report.
+//
+// Output is human-readable text, not JSON, so a non-technical user can
+// review the editable preview before submitting and recognize what's there.
+
+interface DiagProbe {
+  ok: boolean;
+  text: string;        // one-line summary suitable for a markdown bullet
+}
+
+const PROBE_TIMEOUT_MS = 5_000;
+
+function execProbe(cmd: string, args: string[]): Promise<DiagProbe> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: PROBE_TIMEOUT_MS, maxBuffer: 256 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = String(stderr || err.message || '').split('\n')[0].trim();
+        resolve({ ok: false, text: `${cmd}: not found / failed (${msg.slice(0, 120)})` });
+      } else {
+        resolve({ ok: true, text: String(stdout).split('\n')[0].trim() });
+      }
+    });
+  });
+}
+
+async function probeFsStat(absPath: string): Promise<DiagProbe> {
+  try {
+    const st = await fs.promises.stat(absPath);
+    const mode = (st.mode & 0o777).toString(8).padStart(3, '0');
+    const owner = process.getuid ? (process.getuid() === st.uid ? 'owned by current user' : `uid=${st.uid} (CURRENT USER IS ${process.getuid()})`) : 'n/a (windows)';
+    return { ok: true, text: `exists, mode=0${mode}, ${owner}` };
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return { ok: false, text: 'does not exist' };
+    return { ok: false, text: `stat failed: ${String(err?.message || err).slice(0, 120)}` };
+  }
+}
+
+async function probeMarketplaceCache(home: string): Promise<DiagProbe> {
+  const cacheDir = path.join(home, '.claude', 'youcoded-marketplace-cache', 'wecoded-marketplace');
+  try {
+    if (!fs.existsSync(cacheDir)) return { ok: false, text: 'not yet cloned' };
+    const stampFile = path.join(cacheDir, '.youcoded-last-pull');
+    let stamp = 'unknown';
+    try {
+      const ms = parseInt(await fs.promises.readFile(stampFile, 'utf8'), 10);
+      if (!Number.isNaN(ms)) stamp = new Date(ms).toISOString();
+    } catch { /* no stamp file */ }
+    const gitDir = path.join(cacheDir, '.git');
+    const corrupt = !fs.existsSync(gitDir);
+    return {
+      ok: !corrupt,
+      text: corrupt ? `present but .git missing (corrupt — needs reclone)` : `cloned, last pull ${stamp}`,
+    };
+  } catch (err: any) {
+    return { ok: false, text: `probe failed: ${String(err?.message || err).slice(0, 120)}` };
+  }
+}
+
+function probeNetwork(url: string): Promise<DiagProbe> {
+  return new Promise((resolve) => {
+    const req = https.request(url, { method: 'HEAD', timeout: PROBE_TIMEOUT_MS }, (res) => {
+      resolve({ ok: (res.statusCode ?? 0) < 400, text: `${url} → HTTP ${res.statusCode}` });
+      res.resume();
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.on('error', (err) => {
+      resolve({ ok: false, text: `${url} → ${String(err.message).slice(0, 120)}` });
+    });
+    req.end();
+  });
+}
+
+interface DiagSnapshot {
+  timestamp: string;
+  appVersion: string;
+  platform: string;     // process.platform
+  arch: string;         // process.arch
+  osRelease: string;    // os.release()
+  nodeVersion: string;  // process.version
+  electronVersion: string;
+  probes: Record<string, DiagProbe>;
+}
+
+/**
+ * Format a snapshot as a readable text block. Pure — testable without
+ * spinning up subprocesses.
+ */
+export function formatDiagnosticsBlock(snap: DiagSnapshot): string {
+  const lines: string[] = [
+    '=== YouCoded Diagnostics ===',
+    `Timestamp: ${snap.timestamp}`,
+    `App version: ${snap.appVersion}`,
+    `Platform: ${snap.platform} ${snap.arch} (release ${snap.osRelease})`,
+    `Node: ${snap.nodeVersion}, Electron: ${snap.electronVersion}`,
+    '',
+  ];
+  for (const [key, probe] of Object.entries(snap.probes)) {
+    const marker = probe.ok ? '  ✓' : '  ✗';
+    lines.push(`${marker} ${key}: ${probe.text}`);
+  }
+  lines.push('=== End Diagnostics ===');
+  return lines.join('\n');
+}
+
+/**
+ * Gather an environment snapshot used by the bug-report flow. Captures
+ * the most common failure points for plugin/integration install on Mac
+ * and Linux: git/claude on PATH, ~/.claude perms, marketplace cache
+ * health, and reachability of the GitHub raw + git endpoints. All
+ * probes are timeout-bounded; redaction (home dir → ~, GH/Anthropic
+ * tokens) is applied to the final text.
+ */
+export async function gatherDiagnostics(): Promise<string> {
+  const home = os.homedir();
+  // Run independent probes in parallel — total wall-clock stays ≤ ~6s
+  // even on a slow network because each individual probe times out at 5s.
+  const [git, claude, claudeAuth, claudeDir, pluginCache, integrationsFile, marketplaceCache, networkRaw, networkGit] =
+    await Promise.all([
+      execProbe('git', ['--version']),
+      execProbe('claude', ['--version']),
+      execProbe('claude', ['auth', 'status']),
+      probeFsStat(path.join(home, '.claude')),
+      probeFsStat(path.join(home, '.claude', 'plugins', 'installed_plugins.json')),
+      probeFsStat(path.join(home, '.claude', 'integrations.json')),
+      probeMarketplaceCache(home),
+      probeNetwork('https://raw.githubusercontent.com/itsdestin/wecoded-marketplace/master/integrations/index.json'),
+      probeNetwork('https://github.com/itsdestin/wecoded-marketplace.git/info/refs?service=git-upload-pack'),
+    ]);
+
+  const snap: DiagSnapshot = {
+    timestamp: new Date().toISOString(),
+    appVersion: (() => { try { return app.getVersion(); } catch { return 'unknown'; } })(),
+    platform: process.platform,
+    arch: process.arch,
+    osRelease: os.release(),
+    nodeVersion: process.version,
+    electronVersion: process.versions.electron || 'n/a',
+    probes: {
+      'git': git,
+      'claude': claude,
+      'claude auth': claudeAuth,
+      '~/.claude': claudeDir,
+      '~/.claude/plugins/installed_plugins.json': pluginCache,
+      '~/.claude/integrations.json': integrationsFile,
+      'marketplace cache': marketplaceCache,
+      'network: raw.githubusercontent.com': networkRaw,
+      'network: github.com (git protocol)': networkGit,
+    },
+  };
+
+  return redactLog(formatDiagnosticsBlock(snap), home);
 }
 
 // ---------------------------------------------------------------------------

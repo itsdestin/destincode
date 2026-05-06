@@ -1022,6 +1022,8 @@ export function installShim(): void {
     dev: {
       logTail: (maxLines: number) =>
         invoke('dev:log-tail', maxLines),
+      diagnostics: (): Promise<string> =>
+        invoke('dev:diagnostics') as Promise<string>,
       summarizeIssue: (args: { kind: 'bug' | 'feature'; description: string; log?: string }) =>
         invoke('dev:summarize-issue', args),
       submitIssue: (args: { kind: 'bug' | 'feature'; title: string; summary: string; description: string; log?: string; label: 'bug' | 'enhancement' }) =>

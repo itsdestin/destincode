@@ -58,9 +58,23 @@ export function BugReportPopup({ open, onClose }: Props) {
   const onContinue = async () => {
     setBusy(true);
     try {
-      const log = kind === 'bug' ? await window.claude.dev.logTail(200) : '';
-      setLogTail(log);
-      const s = await window.claude.dev.summarizeIssue({ kind, description, log: kind === 'bug' ? log : undefined });
+      // For bugs, prepend a diagnostics block (env snapshot — git/claude
+      // paths, ~/.claude perms, marketplace cache state, network reach) to
+      // the log tail. The most common Mac install failures don't leave a
+      // trace in the app log; the snapshot covers them. Both pieces are
+      // editable in the review screen before submit.
+      let combined = '';
+      if (kind === 'bug') {
+        // Run in parallel — diagnostics and log read are independent.
+        // diagnostics() probes are individually 5s-bounded so this stays cheap.
+        const [diag, log] = await Promise.all([
+          window.claude.dev.diagnostics().catch(() => ''),
+          window.claude.dev.logTail(200),
+        ]);
+        combined = diag ? `${diag}\n\n${log}` : log;
+      }
+      setLogTail(combined);
+      const s = await window.claude.dev.summarizeIssue({ kind, description, log: kind === 'bug' ? combined : undefined });
       setSummary(s);
       setScreen('review');
     } finally {

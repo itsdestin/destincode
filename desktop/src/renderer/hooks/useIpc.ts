@@ -172,6 +172,9 @@ declare global {
       // Shape mirrors preload.ts dev namespace and remote-shim.ts dev namespace.
       dev: {
         logTail: (maxLines?: number) => Promise<string>;
+        // Environment snapshot (git/claude/network/perms) prepended to log
+        // tail by the bug-report flow. See dev-tools.ts gatherDiagnostics().
+        diagnostics: () => Promise<string>;
         summarizeIssue: (args: { kind: string; description: string; log?: string }) => Promise<{ title: string; summary: string; flagged_strings: string[] }>;
         // WHY: body is now assembled in the main process; renderer passes raw fields (Fix 2).
         submitIssue: (args: { kind: 'bug' | 'feature'; title: string; summary: string; description: string; log?: string; label: string }) => Promise<{ ok: boolean; url?: string; fallbackUrl?: string }>;
