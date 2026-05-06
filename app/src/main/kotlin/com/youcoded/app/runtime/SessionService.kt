@@ -2522,6 +2522,30 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, tail) }
             }
 
+            "dev:diagnostics" -> {
+                // Environment snapshot for the bug-report flow. Mirrors
+                // gatherDiagnostics() in desktop/src/main/dev-tools.ts. The
+                // probe set differs because Android's runtime is Termux-rooted —
+                // claude lives in $PREFIX/bin, $HOME points at the app sandbox.
+                val pm = applicationContext.packageManager
+                val pkgInfo = pm.getPackageInfo(applicationContext.packageName, 0)
+                val versionName = pkgInfo.versionName ?: "unknown"
+                val osRelease = "Android ${android.os.Build.VERSION.RELEASE}"
+                val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
+                val text = withContext(Dispatchers.IO) {
+                    val bs = bootstrap
+                    DevTools.gatherDiagnostics(
+                        env = bs?.buildRuntimeEnv(),
+                        homeDir = bs?.homeDir,
+                        usrDir = bs?.usrDir,
+                        appVersion = versionName,
+                        osRelease = osRelease,
+                        arch = arch,
+                    )
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, text) }
+            }
+
             "dev:summarize-issue" -> {
                 val kind = msg.payload.optString("kind", "bug")
                 val description = msg.payload.optString("description", "")

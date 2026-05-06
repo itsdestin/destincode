@@ -810,6 +810,7 @@ export const IPC = {
   ATTENTION_REPORT: 'attention:report',
   // Settings → Development feature (bug report, contribute, known issues)
   DEV_LOG_TAIL: 'dev:log-tail',
+  DEV_DIAGNOSTICS: 'dev:diagnostics',
   DEV_SUMMARIZE_ISSUE: 'dev:summarize-issue',
   DEV_SUBMIT_ISSUE: 'dev:submit-issue',
   DEV_INSTALL_WORKSPACE: 'dev:install-workspace',

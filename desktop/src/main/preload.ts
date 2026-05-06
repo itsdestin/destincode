@@ -224,6 +224,7 @@ const IPC = {
   ATTENTION_REPORT: 'attention:report',
   // Settings → Development feature (bug report, contribute, known issues)
   DEV_LOG_TAIL: 'dev:log-tail',
+  DEV_DIAGNOSTICS: 'dev:diagnostics',
   DEV_SUMMARIZE_ISSUE: 'dev:summarize-issue',
   DEV_SUBMIT_ISSUE: 'dev:submit-issue',
   DEV_INSTALL_WORKSPACE: 'dev:install-workspace',
@@ -556,6 +557,8 @@ contextBridge.exposeInMainWorld('claude', {
   dev: {
     logTail: (maxLines: number) =>
       ipcRenderer.invoke(IPC.DEV_LOG_TAIL, maxLines),
+    diagnostics: (): Promise<string> =>
+      ipcRenderer.invoke(IPC.DEV_DIAGNOSTICS),
     summarizeIssue: (args: { kind: 'bug' | 'feature'; description: string; log?: string }) =>
       ipcRenderer.invoke(IPC.DEV_SUMMARIZE_ISSUE, args),
     submitIssue: (args: { kind: 'bug' | 'feature'; title: string; summary: string; description: string; log?: string; label: 'bug' | 'enhancement' }) =>

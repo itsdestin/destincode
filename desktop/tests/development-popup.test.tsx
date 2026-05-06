@@ -42,6 +42,7 @@ describe('BugReportPopup', () => {
     (window as any).claude = {
       dev: {
         logTail: vi.fn().mockResolvedValue(''),
+        diagnostics: vi.fn().mockResolvedValue('=== YouCoded Diagnostics ===\nfake\n=== End Diagnostics ==='),
         summarizeIssue: vi.fn().mockResolvedValue({ title: 'T', summary: 'S', flagged_strings: [] }),
         submitIssue: vi.fn().mockResolvedValue({ ok: true, url: 'https://github.com/itsdestin/youcoded/issues/1' }),
         installWorkspace: vi.fn().mockResolvedValue({ path: '/h/youcoded-dev', alreadyInstalled: false }),

@@ -27,7 +27,7 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 import { getRestoreService } from './restore-service';
 import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
-import { readLogTail, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
+import { readLogTail, gatherDiagnostics, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
 import { createUpdateInstaller, findCachedDownload, makeLaunchInstaller, UpdateInstallError } from './update-installer';
 import type { UpdateProgressEvent } from '../shared/update-install-types';
 import { getChangelog } from './changelog-service';
@@ -1966,6 +1966,14 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.DEV_LOG_TAIL, async (_event, maxLines: number) => {
     // Return the last N lines of the app log, redacted, for the bug-report flow.
     return readLogTail(typeof maxLines === 'number' ? maxLines : 200);
+  });
+
+  ipcMain.handle(IPC.DEV_DIAGNOSTICS, async () => {
+    // Environment snapshot (git/claude paths, ~/.claude perms, marketplace
+    // cache state, network reachability) prepended to the log tail in the
+    // bug-report flow. Captures the most common Mac/Linux install-failure
+    // signals that the plain log doesn't cover.
+    return gatherDiagnostics();
   });
 
   ipcMain.handle(IPC.DEV_SUMMARIZE_ISSUE, async (_event, args) => {

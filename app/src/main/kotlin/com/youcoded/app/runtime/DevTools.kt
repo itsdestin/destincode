@@ -245,4 +245,155 @@ object DevTools {
             "&body=${encode(body)}" +
             "&labels=${encode(label)}"
     }
+
+    // ── gatherDiagnostics ─────────────────────────────────────────────────
+    //
+    // Mirrors gatherDiagnostics() in dev-tools.ts. The probe set differs
+    // from desktop because Android's runtime is fundamentally different —
+    // there's no system git, claude lives at $PREFIX/bin/claude inside the
+    // Termux env, and ~/.claude is rooted at $HOME (Termux home), not the
+    // user's OS home. Network reachability and bootstrap state are the
+    // shared concerns.
+
+    private const val PROBE_TIMEOUT_SECONDS = 5L
+
+    /**
+     * Probe a Termux-env command's `--version` (or similar) and return a
+     * one-line summary. Best-effort — never throws. The env map must
+     * already include LD_PRELOAD / LD_LIBRARY_PATH from Bootstrap.
+     */
+    private fun probeCommand(env: Map<String, String>, cwd: File?, cmd: List<String>): Pair<Boolean, String> {
+        return try {
+            val (exit, out) = runStreamed(env, cmd, cwd, onLine = {}, timeoutSeconds = PROBE_TIMEOUT_SECONDS)
+            val firstLine = out.split('\n').firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+            if (exit == 0) true to firstLine.take(200)
+            else false to "exit=$exit ${firstLine.take(160)}"
+        } catch (e: Exception) {
+            false to "probe failed: ${e.message?.take(160) ?: "unknown"}"
+        }
+    }
+
+    private fun probeFsStat(absPath: String): Pair<Boolean, String> {
+        val f = File(absPath)
+        return when {
+            !f.exists() -> false to "does not exist"
+            else -> true to "exists, ${if (f.isDirectory) "dir" else "file"}, " +
+                "${f.length()}B, " +
+                "readable=${f.canRead()}, writable=${f.canWrite()}"
+        }
+    }
+
+    private fun probeNetwork(url: String): Pair<Boolean, String> {
+        return try {
+            val u = java.net.URL(url)
+            val conn = (u.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                connectTimeout = (PROBE_TIMEOUT_SECONDS * 1000).toInt()
+                readTimeout = (PROBE_TIMEOUT_SECONDS * 1000).toInt()
+            }
+            try {
+                val code = conn.responseCode
+                (code in 200..399) to "$url → HTTP $code"
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            false to "$url → ${e.message?.take(160) ?: "unknown error"}"
+        }
+    }
+
+    /**
+     * Format a snapshot as a readable text block. Mirrors
+     * formatDiagnosticsBlock() in dev-tools.ts.
+     */
+    fun formatDiagnosticsBlock(
+        timestamp: String,
+        appVersion: String,
+        platform: String,
+        arch: String,
+        osRelease: String,
+        probes: List<Triple<String, Boolean, String>>,  // (key, ok, text)
+    ): String {
+        val sb = StringBuilder()
+        sb.append("=== YouCoded Diagnostics ===\n")
+        sb.append("Timestamp: $timestamp\n")
+        sb.append("App version: $appVersion\n")
+        sb.append("Platform: $platform $arch (release $osRelease)\n")
+        sb.append("\n")
+        for ((key, ok, text) in probes) {
+            sb.append(if (ok) "  ✓ " else "  ✗ ")
+            sb.append(key).append(": ").append(text).append('\n')
+        }
+        sb.append("=== End Diagnostics ===")
+        return sb.toString()
+    }
+
+    /**
+     * Gather an environment snapshot for the bug-report flow. Android-side
+     * probes: bootstrap state, $HOME/.claude state, claude in $PREFIX/bin,
+     * gh auth status, network reach to GitHub. Redaction applied.
+     *
+     * Caller supplies env (Bootstrap.buildRuntimeEnv()), homeDir (Bootstrap.homeDir),
+     * usrDir (Bootstrap.usrDir), and metadata (timestamp, version, platform).
+     */
+    fun gatherDiagnostics(
+        env: Map<String, String>?,
+        homeDir: File?,
+        usrDir: File?,
+        appVersion: String,
+        osRelease: String,
+        arch: String,
+    ): String {
+        val timestamp = java.time.Instant.now().toString()
+        val probes = mutableListOf<Triple<String, Boolean, String>>()
+
+        if (env == null || homeDir == null || usrDir == null) {
+            probes += Triple("bootstrap", false, "not initialized — install/auth not yet run")
+        } else {
+            probes += Triple("bootstrap", true, "ready (home=${homeDir.absolutePath}, usr=${usrDir.absolutePath})")
+
+            // Termux-env binaries — claude and gh are most relevant for install/issue flows.
+            val (claudeOk, claudeText) = probeCommand(env, homeDir, listOf("claude", "--version"))
+            probes += Triple("claude", claudeOk, claudeText)
+
+            val (claudeAuthOk, claudeAuthText) = probeCommand(env, homeDir, listOf("claude", "auth", "status"))
+            probes += Triple("claude auth", claudeAuthOk, claudeAuthText)
+
+            // gh is a Go binary — must be invoked via linker64 directly (LD_PRELOAD bypassed).
+            val ghPath = File(usrDir, "bin/gh").absolutePath
+            val (ghOk, ghText) = probeCommand(env, homeDir, listOf("/system/bin/linker64", ghPath, "auth", "status"))
+            probes += Triple("gh auth", ghOk, ghText)
+
+            // Termux $HOME/.claude is the per-app config root, mirrors desktop ~/.claude.
+            val (cdOk, cdText) = probeFsStat(File(homeDir, ".claude").absolutePath)
+            probes += Triple("\$HOME/.claude", cdOk, cdText)
+
+            val (pcOk, pcText) = probeFsStat(File(homeDir, ".claude/plugins/installed_plugins.json").absolutePath)
+            probes += Triple("\$HOME/.claude/plugins/installed_plugins.json", pcOk, pcText)
+
+            val (intOk, intText) = probeFsStat(File(homeDir, ".claude/integrations.json").absolutePath)
+            probes += Triple("\$HOME/.claude/integrations.json", intOk, intText)
+        }
+
+        // Network probes always run — they don't depend on Bootstrap.
+        val (rawOk, rawText) = probeNetwork(
+            "https://raw.githubusercontent.com/itsdestin/wecoded-marketplace/master/integrations/index.json"
+        )
+        probes += Triple("network: raw.githubusercontent.com", rawOk, rawText)
+
+        val (gitOk, gitText) = probeNetwork(
+            "https://github.com/itsdestin/wecoded-marketplace.git/info/refs?service=git-upload-pack"
+        )
+        probes += Triple("network: github.com (git protocol)", gitOk, gitText)
+
+        val text = formatDiagnosticsBlock(
+            timestamp = timestamp,
+            appVersion = appVersion,
+            platform = "android",
+            arch = arch,
+            osRelease = osRelease,
+            probes = probes,
+        )
+        return redactLog(text, homeDir?.absolutePath.orEmpty())
+    }
 }
