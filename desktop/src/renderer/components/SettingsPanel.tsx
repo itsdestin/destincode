@@ -13,6 +13,8 @@ import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
+import { OLLAMA_MODEL_CATALOG } from './model-catalog';
+import { ModelInfoPopup, ModelCompareTab } from './ModelInfoPopup';
 import AboutPopup from './AboutPopup';
 import { DevelopmentPopup } from './development/DevelopmentPopup';
 import { BugReportPopup } from './development/BugReportPopup';
@@ -72,65 +74,8 @@ const KEEP_AWAKE_OPTIONS = [
   { label: '24h', value: 24 },
 ];
 
-// Curated catalog of recommended Ollama models the user can one-click install
-// from Settings → Local Models. Sizes are approximate Q4-quantized GGUF sizes
-// (Ollama's default tag for these models). Sized for ~8 GB VRAM (most modern
-// laptop GPUs and entry desktop GPUs); models marked "tight" will spill to
-// system RAM on cards smaller than ~10 GB. Custom names go through the
-// free-text input below the catalog so power users can pull anything from
-// https://ollama.com/library without us maintaining a giant list.
-//
-// Catalog ordering is "default first, then alternatives, then niche/warned."
-// The first entry is what we recommend as the new-session default. Updated
-// 2026-05-11 after the model capability research pass:
-//
-//   - Default: qwen3:8b (Apache 2.0, strong tools, healthy in probes,
-//     smallest footprint of the strong options).
-//   - qwen3.5:9b demoted from default — Ollama has 5+ open bugs against
-//     this exact model (#14748, 14759, 14745, 14621, 14867). Multimodal
-//     and 256K context are genuine wins when it works, but it's the
-//     model most likely to crash on a typical 8 GB VRAM box. Marked ⚠.
-//   - Dropped qwen2.5-coder:7b — upstream QwenLM/Qwen3-Coder #180
-//     confirms tool calling is broken (returns finish_reason:"stop" with
-//     empty tool_calls). We have no coder-specialized replacement at this
-//     size class with verified tools; positioning qwen3:8b as the coding
-//     daily-driver instead. (Real coder specialists like Qwen3-Coder only
-//     come in 30B+ which is too big for our target VRAM.)
-//   - Dropped deepseek-r1:8b (2026-05-18) — capability probe confirmed tool
-//     calling fails entirely, reasoning probes time out, and it's an older
-//     Qwen3 distill. A no-tools model in a tool-driven agent app is more
-//     confusing than useful.
-//
-// Catalog only includes tool-capable models. OpenCode is fundamentally a
-// coding agent that sends tool definitions on every prompt, so
-// non-tool-capable models fail with `APIError: ... does not support tools`.
-// Excluded: gemma3 (no tools), phi3/phi4-mini (Phi family weak on tools),
-// llama3.2:3b (too small for reliable tool use), qwen2.5-coder (broken
-// upstream), deepseek-r1 (tool calling fails — see above).
-const OLLAMA_MODEL_CATALOG: Array<{
-  name: string;
-  sizeLabel: string;
-  blurb: string;
-  /** Surface a yellow ⚠ chip + tooltip on the catalog row. Set when the
-   *  model has known issues users should weigh before installing. */
-  warning?: string;
-}> = [
-  // — Recommended default —
-  { name: 'qwen3:8b',           sizeLabel: '4.9 GB', blurb: 'Strong tools, Apache 2.0, 32K context — recommended default' },
-
-  // — Other strong options —
-  { name: 'gemma4:e2b',         sizeLabel: '7.2 GB', blurb: 'Gemma 4 — multimodal (text/image/audio), 128K context, thinking on/off' },
-  { name: 'gemma4:e4b',         sizeLabel: '9.6 GB', blurb: 'Larger Gemma 4 — better quality, tight on 8 GB VRAM' },
-
-  // — Older general-purpose baseline —
-  { name: 'qwen2.5:7b',         sizeLabel: '4.4 GB', blurb: 'Older Qwen 2.5 — stable, reliable tool use, no thinking' },
-
-  // — Larger context, known-flaky on Ollama —
-  { name: 'qwen3.5:9b',         sizeLabel: '6.6 GB', blurb: 'Qwen 3.5 — 256K context, multimodal',
-    warning: 'Five open Ollama bugs against this exact model — may crash, hang, or leak tool-call text. Try qwen3:8b first.' },
-  { name: 'qwen3.5:4b',         sizeLabel: '3.4 GB', blurb: 'Smaller Qwen 3.5 — 256K context, fast',
-    warning: 'Same family as qwen3.5:9b; inherits its Ollama bug surface, though smaller scale may mean fewer crashes.' },
-];
+// The Ollama model catalog + per-model detail copy moved to ./model-catalog.
+// OLLAMA_MODEL_CATALOG and MODEL_DETAILS are imported at the top of this file.
 
 interface TailscaleInfo {
   installed: boolean;
@@ -1381,6 +1326,10 @@ function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProp
   // bytes-transfer phase. Lets multiple downloads run concurrently.
   const [pullState, setPullState] = useState<Map<string, { phase: string; pct?: number; error?: string }>>(new Map());
   const [customModelName, setCustomModelName] = useState('');
+  // Catalog UI: which model's (i) detail popup is open, and which catalog
+  // tab is showing (the install list vs the side-by-side Compare table).
+  const [infoModel, setInfoModel] = useState<string | null>(null);
+  const [catalogTab, setCatalogTab] = useState<'library' | 'compare'>('library');
 
   // Refresh the installed-model list when the endpoint changes OR after a
   // pull completes (refreshTick bumps). Drives the "Default Model" dropdown
@@ -1610,7 +1559,26 @@ function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProp
                   <div className="border-t border-edge-dim" />
 
                   <div>
-                    <label className="text-xs text-fg-muted block mb-1">Available Models</label>
+                    {/* Library / Compare tabs. Library = the install list;
+                        Compare = the side-by-side capability table. */}
+                    <div className="flex gap-1 mb-2">
+                      {(['library', 'compare'] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          onClick={() => setCatalogTab(tab)}
+                          className={`text-[11px] px-2 py-1 rounded capitalize transition-colors ${
+                            catalogTab === tab
+                              ? 'bg-accent text-on-accent font-medium'
+                              : 'bg-inset text-fg-2 hover:bg-well'
+                          }`}
+                        >
+                          {tab}
+                        </button>
+                      ))}
+                    </div>
+
+                    {catalogTab === 'library' && (
+                    <>
                     <div className="space-y-1">
                       {OLLAMA_MODEL_CATALOG.map((m) => {
                         const installed = localModelsForSettings.some(im => im.name === m.name);
@@ -1621,8 +1589,7 @@ function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProp
                               <div className="text-xs font-mono text-fg truncate flex items-center gap-1.5">
                                 {m.name}
                                 {/* Warning chip — shown for models with known
-                                    issues (e.g. qwen3.5:9b's open Ollama bugs,
-                                    deepseek-r1's lack of tool support).
+                                    issues (e.g. qwen3.5:9b's open Ollama bugs).
                                     Hovering shows the full caveat. */}
                                 {m.warning && (
                                   <span
@@ -1632,6 +1599,15 @@ function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProp
                                     ⚠
                                   </span>
                                 )}
+                                {/* Info icon — opens the model detail popup. */}
+                                <button
+                                  onClick={() => setInfoModel(m.name)}
+                                  className="shrink-0 w-4 h-4 flex items-center justify-center rounded-full text-[10px] text-fg-muted hover:text-fg hover:bg-inset transition-colors font-sans"
+                                  title={`About ${m.name}`}
+                                  aria-label={`About ${m.name}`}
+                                >
+                                  ⓘ
+                                </button>
                               </div>
                               <div className="text-[10px] text-fg-muted truncate">{m.sizeLabel} — {m.blurb}</div>
                             </div>
@@ -1695,6 +1671,15 @@ function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProp
                         {name} — {v.error}
                       </div>
                     ))}
+                    </>
+                    )}
+
+                    {catalogTab === 'compare' && (
+                      <ModelCompareTab
+                        installedNames={localModelsForSettings.map((m) => m.name)}
+                        onShowDetails={setInfoModel}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -1703,6 +1688,11 @@ function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProp
         </>,
         document.body,
       )}
+
+      {/* (i) model-detail popup — opened from a catalog row's info icon or
+          from a Compare-tab model name. Portals to body, so its position
+          here in the tree doesn't matter. */}
+      <ModelInfoPopup modelName={infoModel} onClose={() => setInfoModel(null)} />
     </section>
   );
 }
