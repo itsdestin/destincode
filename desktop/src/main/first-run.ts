@@ -223,6 +223,20 @@ export class FirstRunManager extends EventEmitter {
       const prereq = this.state.prerequisites.find((p) => p.name === name);
       if (prereq?.status === 'installed') continue;
 
+      // Re-detect before installing. The prerequisite may have appeared on
+      // disk since detectAll() ran — the user installed it manually, or a
+      // previous attempt partially succeeded. Without this, a retry blindly
+      // re-runs install() and can fail again even though the tool is now
+      // present. (This is exactly how a Linux user got permanently stuck on
+      // the setup screen: installNode() had no Linux branch, so every retry
+      // re-failed even after Node was installed out-of-band.)
+      const preCheck = await detect();
+      if (preCheck.installed) {
+        this.updatePrereq(name, { status: 'installed', version: preCheck.version });
+        log('INFO', 'first-run', `${label} already present — skipping install`);
+        continue;
+      }
+
       this.updatePrereq(name, { status: 'installing' });
       this.updateState({
         statusMessage: `Installing ${label}...`,
