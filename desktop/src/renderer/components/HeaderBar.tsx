@@ -5,11 +5,20 @@ import type { SessionStatusColor } from './StatusDot';
 import type { PermissionMode } from '../../shared/types';
 import { isAndroid, isRemoteMode } from '../platform';
 
-/** Custom window caption buttons for Windows/Linux (macOS uses native traffic lights). */
-const showCaptionButtons = typeof navigator !== 'undefined'
-  && navigator.platform === 'Win32';
-
 const isMac = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
+
+/** Custom window caption buttons for Windows + Linux desktop. The Electron
+ *  BrowserWindow is frameless (`frame: false`) on BOTH — so without these the
+ *  window has no minimize/maximize/close at all. macOS uses native traffic
+ *  lights, Android has no OS window chrome, remote runs in a browser tab.
+ *
+ *  Fix: this was gated to `navigator.platform === 'Win32'`, which left Linux
+ *  (`navigator.platform` is e.g. `Linux x86_64`) with zero window controls on
+ *  a frameless window. Gate on "desktop and not macOS" instead. */
+const showCaptionButtons = typeof navigator !== 'undefined'
+  && !isMac
+  && !isAndroid()
+  && !isRemoteMode();
 
 /** Toggle sits on the opposite side of the OS window-control buttons
  *  so the header is balanced. macOS traffic lights live on the left,
