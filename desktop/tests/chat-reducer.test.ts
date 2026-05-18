@@ -183,6 +183,30 @@ describe('TRANSCRIPT_TURN_COMPLETE metadata', () => {
     expect(state.get(SESSION)!.attentionState).toBe('ok');
   });
 
+  it('tool dedup: repeated TRANSCRIPT_TOOL_USE for the same toolUseId does not duplicate the group entry', () => {
+    // OpenCode emits a tool part on every state transition (pending →
+    // running → completed), so TRANSCRIPT_TOOL_USE fires 2+ times for one
+    // tool. The group's toolIds must stay deduped — otherwise the tool
+    // renders as two ToolCards. (Claude emits each tool_use once, so this
+    // never bit the Claude path.)
+    const toolAction = {
+      type: 'TRANSCRIPT_TOOL_USE' as const,
+      sessionId: SESSION,
+      uuid: 'tu-1',
+      toolUseId: 'prt_read_1',
+      toolName: 'Read',
+      toolInput: { file_path: '/a/b.txt' },
+    };
+    state = dispatch(state, toolAction);
+    state = dispatch(state, toolAction); // repeat — same toolUseId
+
+    const session = state.get(SESSION)!;
+    const groups = [...session.toolGroups.values()];
+    expect(groups.length).toBe(1);
+    expect(groups[0].toolIds).toEqual(['prt_read_1']); // not ['prt_read_1','prt_read_1']
+    expect(session.toolCalls.size).toBe(1);
+  });
+
   it('Claude path: events without partId always create new segments (preserves existing behavior)', () => {
     // Claude's transcript watcher emits one event per complete text block, each
     // intended to render as its own segment. None carry partId. Must NOT merge.

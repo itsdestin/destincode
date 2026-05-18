@@ -444,7 +444,9 @@ export class OpenCodeSessionAdapter extends EventEmitter {
       // instead of the prettified per-tool view (file diff, bash output, etc).
       const status = part.state?.status;
       const toolName = normalizeToolName(part.tool);
-      const toolInput = part.state?.input;
+      // Alias camelCase ↔ snake_case so the ToolCard views resolve their
+      // input keys regardless of which convention OpenCode used.
+      const toolInput = aliasToolInputKeys(part.state?.input);
       const ts = info.time?.created ?? Date.now();
 
       if (status === 'pending' || status === 'running') {
@@ -510,6 +512,33 @@ export function normalizeToolName(name: string | undefined | null): string {
     .filter(Boolean)
     .map(s => s.charAt(0).toUpperCase() + s.slice(1))
     .join('');
+}
+
+/**
+ * Expose every tool-input key in BOTH snake_case and camelCase.
+ *
+ * OpenCode tool inputs use camelCase keys (`filePath`, `oldString`).
+ * YouCoded's ToolCard views were written against Claude Code's transcript,
+ * which uses snake_case (`file_path`, `old_string`) — so a `Read` card from
+ * an OpenCode session rendered an empty body (the view read `file_path`,
+ * the data had `filePath`). But the views are not uniform — a few read
+ * camelCase (`taskId`), so a blanket convert-to-snake_case would break those.
+ *
+ * Aliasing both forms is the safe fix: original keys are preserved and the
+ * counterpart form is added only when absent, so whichever convention a view
+ * reads resolves. Non-destructive and tool-agnostic — no per-tool mapping to
+ * maintain. (Bug surfaced 2026-05-19 in the MVP smoke test.)
+ */
+export function aliasToolInputKeys(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    const snake = k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
+    const camel = k.replace(/_([a-z])/g, (_m, c) => c.toUpperCase());
+    if (!(snake in out)) out[snake] = v;
+    if (!(camel in out)) out[camel] = v;
+  }
+  return out;
 }
 
 /**

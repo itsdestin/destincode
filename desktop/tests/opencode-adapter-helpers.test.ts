@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeToolName, deriveUsage, deriveStopReason } from '../src/main/opencode-session-adapter';
+import { normalizeToolName, deriveUsage, deriveStopReason, aliasToolInputKeys } from '../src/main/opencode-session-adapter';
 
 describe('normalizeToolName', () => {
   // Why this exists: ToolBody's view-router (tool-views/ToolBody.tsx) keys on
@@ -152,5 +152,50 @@ describe('deriveStopReason', () => {
     const info = { error: { name: 'MessageOutputLengthError' } };
     const parts = [{ type: 'step-finish', reason: 'stop' }];
     expect(deriveStopReason(info, parts)).toBe('max_tokens');
+  });
+});
+
+describe('aliasToolInputKeys', () => {
+  // Why this exists: OpenCode tool inputs are camelCase; YouCoded's ToolCard
+  // views mostly read Claude-style snake_case. Aliasing both forms means a
+  // view resolves its key regardless of convention. Bug: a Read card from an
+  // OpenCode session rendered an empty body because the view read `file_path`
+  // but the data had only `filePath`.
+
+  it('adds the snake_case form of a camelCase key', () => {
+    const out = aliasToolInputKeys({ filePath: '/a/b.txt' }) as Record<string, unknown>;
+    expect(out.filePath).toBe('/a/b.txt');
+    expect(out.file_path).toBe('/a/b.txt');
+  });
+
+  it('adds the camelCase form of a snake_case key', () => {
+    const out = aliasToolInputKeys({ task_id: 'T1' }) as Record<string, unknown>;
+    expect(out.task_id).toBe('T1');
+    expect(out.taskId).toBe('T1');
+  });
+
+  it('handles multi-word keys (oldString / runInBackground)', () => {
+    const out = aliasToolInputKeys({ oldString: 'x', runInBackground: true }) as Record<string, unknown>;
+    expect(out.old_string).toBe('x');
+    expect(out.run_in_background).toBe(true);
+  });
+
+  it('leaves single-word keys untouched (no spurious alias)', () => {
+    const out = aliasToolInputKeys({ command: 'ls', pattern: '*.ts' }) as Record<string, unknown>;
+    expect(Object.keys(out).sort()).toEqual(['command', 'pattern']);
+  });
+
+  it('does not overwrite an existing counterpart key', () => {
+    // If both forms are already present, keep both as-is.
+    const out = aliasToolInputKeys({ filePath: 'camel', file_path: 'snake' }) as Record<string, unknown>;
+    expect(out.filePath).toBe('camel');
+    expect(out.file_path).toBe('snake');
+  });
+
+  it('passes through non-objects unchanged', () => {
+    expect(aliasToolInputKeys(null)).toBeNull();
+    expect(aliasToolInputKeys(undefined)).toBeUndefined();
+    expect(aliasToolInputKeys('string')).toBe('string');
+    expect(aliasToolInputKeys([1, 2])).toEqual([1, 2]);
   });
 });

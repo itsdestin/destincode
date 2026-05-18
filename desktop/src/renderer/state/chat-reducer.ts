@@ -652,11 +652,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
 
       if (currentGroupId && toolGroups.has(currentGroupId)) {
-        // Add to existing group (no new segment needed)
+        // Add to existing group (no new segment needed). Dedup by toolUseId:
+        // OpenCode emits a tool part on every state transition (pending →
+        // running → completed), so TRANSCRIPT_TOOL_USE can fire 2+ times for
+        // the same tool. Appending unconditionally put the id in toolIds
+        // twice and rendered duplicate ToolCards. Claude's transcript emits
+        // each tool_use exactly once so this never bit the Claude path.
         const group = toolGroups.get(currentGroupId)!;
         toolGroups.set(currentGroupId, {
           ...group,
-          toolIds: [...group.toolIds, action.toolUseId],
+          toolIds: group.toolIds.includes(action.toolUseId)
+            ? group.toolIds
+            : [...group.toolIds, action.toolUseId],
         });
       } else {
         // Create new group and add as segment to current turn
