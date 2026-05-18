@@ -179,10 +179,23 @@ export function BubbleFeed({ sessionId }: Props) {
           });
           break;
         case 'assistant-thinking':
-          batchDispatch({
-            type: 'TRANSCRIPT_THINKING_HEARTBEAT',
-            sessionId: event.sessionId,
-          });
+          // OpenCode reasoning chunks carry text payload; Claude path is
+          // heartbeat-only. See App.tsx for the same branch logic.
+          if (event.data && typeof (event.data as any).text === 'string') {
+            batchDispatch({
+              type: 'TRANSCRIPT_ASSISTANT_REASONING',
+              sessionId: event.sessionId,
+              uuid: event.uuid,
+              text: (event.data as any).text,
+              timestamp: event.timestamp,
+              partId: (event.data as any).partId,
+            });
+          } else {
+            batchDispatch({
+              type: 'TRANSCRIPT_THINKING_HEARTBEAT',
+              sessionId: event.sessionId,
+            });
+          }
           break;
         // compact-summary: buddy doesn't drive compaction UI (no /compact command),
         // but we still need to close any pending compaction spinner if it was opened

@@ -124,7 +124,11 @@ describe('OpenCodeSessionAdapter', () => {
     expect(emitted[0]).toMatchObject({
       type: 'tool-use',
       sessionId: 'DESK1',
-      data: { toolName: 'read_file', toolInput: { path: '/x' }, toolUseId: 'T1' },
+      // Tool name is normalized to PascalCase (read_file → ReadFile) so
+      // ToolBody's view-router (tool-views/ToolBody.tsx) dispatches to the
+      // prettified per-tool view instead of the generic fallback. See
+      // normalizeToolName + opencode-adapter-helpers.test.ts.
+      data: { toolName: 'ReadFile', toolInput: { path: '/x' }, toolUseId: 'T1' },
     });
   });
 
@@ -180,19 +184,20 @@ describe('OpenCodeSessionAdapter', () => {
     });
   });
 
-  it('translates "message.part.delta" with field=text into "assistant-text" (OpenCode 1.14+ protocol)', () => {
+  it('translates streaming text deltas into "assistant-text" (text part primed by .updated)', () => {
     // Empirically captured from a live OpenCode 1.14.39 SSE stream — streaming
-    // chunks now arrive as message.part.delta events, not message.part.updated.
-    // Without this branch the chat UI shows nothing while OpenCode is generating.
+    // chunks arrive as message.part.delta. The .updated event for the part
+    // ALWAYS fires first with the part's `type`; the adapter caches that and
+    // routes subsequent deltas. The `field` property on deltas is NOT a
+    // discriminator — it always names the property being updated, which is
+    // `.text` for both text and reasoning parts (verified 2026-05-12).
+    svc.eventBus.emit('event', {
+      type: 'message.part.updated',
+      properties: { sessionID: 'OC1', part: { id: 'P1', type: 'text' } },
+    });
     svc.eventBus.emit('event', {
       type: 'message.part.delta',
-      properties: {
-        sessionID: 'OC1',
-        messageID: 'M1',
-        partID: 'P1',
-        field: 'text',
-        delta: 'Hello',
-      },
+      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P1', field: 'text', delta: 'Hello' },
     });
     svc.eventBus.emit('event', {
       type: 'message.part.delta',
@@ -203,19 +208,32 @@ describe('OpenCodeSessionAdapter', () => {
     expect(emitted[0].sessionId).toBe('DESK1');   // tagged with desktop id, not OC id
   });
 
-  it('translates "message.part.delta" with field=reasoning into "assistant-thinking"', () => {
+  it('translates streaming reasoning deltas into "assistant-thinking" (reasoning part primed by .updated)', () => {
+    // Critical: even though all deltas carry `field: "text"`, the partType
+    // cache from the prior .updated event correctly routes this to reasoning.
+    svc.eventBus.emit('event', {
+      type: 'message.part.updated',
+      properties: { sessionID: 'OC1', part: { id: 'P_REASON', type: 'reasoning' } },
+    });
     svc.eventBus.emit('event', {
       type: 'message.part.delta',
-      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P1', field: 'reasoning', delta: 'Hmm…' },
+      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P_REASON', field: 'text', delta: 'Hmm…' },
     });
     expect(emitted[0]).toMatchObject({ type: 'assistant-thinking', sessionId: 'DESK1' });
     expect(emitted[0].data.text).toBe('Hmm…');
   });
 
-  it('IGNORES "message.part.delta" for unknown fields (forward-compat for new field types)', () => {
+  it('IGNORES "message.part.delta" for non-content part types (step-start, tool, etc.)', () => {
+    // Lifecycle parts don't carry streaming text content. Their deltas (if
+    // OpenCode ever emits any) should be silently ignored — they are not
+    // assistant-visible content.
+    svc.eventBus.emit('event', {
+      type: 'message.part.updated',
+      properties: { sessionID: 'OC1', part: { id: 'P_STEP', type: 'step-start' } },
+    });
     svc.eventBus.emit('event', {
       type: 'message.part.delta',
-      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P1', field: 'image', delta: 'data:base64...' },
+      properties: { sessionID: 'OC1', messageID: 'M1', partID: 'P_STEP', field: 'text', delta: 'noise' },
     });
     expect(emitted).toEqual([]);
   });

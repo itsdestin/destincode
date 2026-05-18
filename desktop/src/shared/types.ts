@@ -837,6 +837,7 @@ export const IPC = {
   LOCAL_INSTALL_OPENCODE: 'local:install-opencode',
   LOCAL_INSTALL_OPENCODE_PROGRESS: 'local:install-opencode:progress',
   LOCAL_WRITE_OPENCODE_CONFIG: 'local:write-opencode-config',
+  LOCAL_RESTART_OPENCODE: 'local:restart-opencode',
   // OpenCode session ops
   LOCAL_LIST_SESSIONS: 'local:list-sessions',
 } as const;

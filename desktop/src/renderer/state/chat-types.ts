@@ -15,6 +15,13 @@ export interface InteractivePrompt {
 
 export type AssistantTurnSegment =
   | { type: 'text'; content: string; messageId: string; partId?: string }
+  // Reasoning / extended-thinking content. Streamed by OpenCode for thinking
+  // models (qwen3 family, deepseek-r1) as `message.part.delta` with
+  // field='reasoning'. Rendered as a collapsible disclosure attached to the
+  // next text bubble so the user can expand to see the model's chain of
+  // thought without it dominating the chat. partId merges streaming chunks
+  // into one segment, mirroring the text streaming path.
+  | { type: 'reasoning'; content: string; messageId: string; partId?: string }
   | { type: 'tool-group'; groupId: string }
   // Plan mode: ExitPlanMode tool's `input.plan` surfaced as its own bubble so
   // users see the full plan markdown in chat, not just the approval buttons.
@@ -210,10 +217,24 @@ export type ChatAction =
     }
   | {
       // Heartbeat fired when the transcript watcher sees an assistant
-      // thinking block (extended-thinking models). No UI; just bumps
-      // lastActivityAt and clears attentionState back to 'ok'.
+      // thinking block (extended-thinking models) WITHOUT text payload —
+      // Claude's transcript path emits these as lifecycle markers only.
+      // No UI; just bumps lastActivityAt and clears attentionState to 'ok'.
       type: 'TRANSCRIPT_THINKING_HEARTBEAT';
       sessionId: string;
+    }
+  | {
+      // Streaming reasoning chunk WITH text payload — emitted by OpenCode
+      // for thinking models (qwen3 family, deepseek-r1). Merged into a
+      // single reasoning segment by partId, then rendered as a collapsible
+      // disclosure attached to the next text bubble in AssistantTurnBubble.
+      // Also bumps lastActivityAt + clears attentionState (genuine activity).
+      type: 'TRANSCRIPT_ASSISTANT_REASONING';
+      sessionId: string;
+      uuid: string;
+      text: string;
+      timestamp: number;
+      partId?: string;
     }
   | {
       type: 'PERMISSION_REQUEST';

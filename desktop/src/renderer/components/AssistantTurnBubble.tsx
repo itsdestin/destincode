@@ -31,6 +31,33 @@ const STOP_REASON_COPY: Record<string, string> = {
   interrupted: 'Interrupted.',
 };
 
+// Collapsible disclosure for the model's reasoning / chain of thought.
+// Collapsed by default — user explicitly chose this UX so reasoning doesn't
+// dominate the chat view. Expanding reveals the full markdown body.
+// Used by AssistantTurnBubble when a VisualBubble carries reasoning content
+// (always streamed before its associated text bubble).
+function ReasoningSection({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
+  return (
+    <div className="mb-2">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-[11px] text-fg-muted hover:text-fg-dim select-none"
+        title="Show the model's reasoning"
+      >
+        <ChevronIcon className="w-3 h-3" expanded={expanded} />
+        <span className="italic">{expanded ? 'Hide reasoning' : 'Show reasoning'}</span>
+      </button>
+      {expanded && (
+        <div className="mt-1 pl-2 border-l-2 border-edge-dim text-[12.5px] text-fg-dim">
+          <MarkdownContent content={content} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopReasonFooter({ reason }: { reason: string }) {
   const copy = STOP_REASON_COPY[reason] ?? `Response ended: ${reason}.`;
   return (
@@ -131,6 +158,12 @@ export function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[
  */
 interface VisualBubble {
   key: string;
+  // Reasoning segments accumulated since the last text/plan/tool-group are
+  // attached to the next bubble as a collapsible disclosure (joined by
+  // double-newline if there were multiple). When a turn ends with reasoning
+  // and no following text (still streaming, or model never produced output),
+  // a reasoning-only bubble is emitted so the user still sees activity.
+  reasoning?: { content: string; messageId: string };
   text?: { content: string; messageId: string };
   plan?: { content: string; messageId: string; planFilePath?: string; allowedPrompts?: unknown };
   toolGroupIds: string[];
@@ -139,22 +172,38 @@ interface VisualBubble {
 function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
   const bubbles: VisualBubble[] = [];
   let current: VisualBubble | null = null;
+  // Buffer of reasoning content seen since the last bubble boundary.
+  // Drained into the next bubble's `reasoning` field, or flushed as a
+  // standalone reasoning bubble if the turn ends with reasoning unattached.
+  let pendingReasoning: { content: string; messageId: string } | null = null;
 
   for (const seg of turn.segments) {
-    if (seg.type === 'text') {
-      // Start a new bubble for this text
+    if (seg.type === 'reasoning') {
+      // Stash; will attach to the next text/plan/tool bubble.
+      if (pendingReasoning) {
+        pendingReasoning = {
+          content: `${pendingReasoning.content}\n\n${seg.content}`,
+          messageId: pendingReasoning.messageId,
+        };
+      } else {
+        pendingReasoning = { content: seg.content, messageId: seg.messageId };
+      }
+    } else if (seg.type === 'text') {
       if (current) bubbles.push(current);
       current = {
         key: seg.messageId,
+        reasoning: pendingReasoning ?? undefined,
         text: { content: seg.content, messageId: seg.messageId },
         toolGroupIds: [],
       };
+      pendingReasoning = null;
     } else if (seg.type === 'plan') {
       // Plan bubble: its own distinct bubble, rendered differently from text.
       // The following ExitPlanMode tool-group naturally attaches below.
       if (current) bubbles.push(current);
       current = {
         key: seg.messageId,
+        reasoning: pendingReasoning ?? undefined,
         plan: {
           content: seg.content,
           messageId: seg.messageId,
@@ -163,15 +212,31 @@ function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
         },
         toolGroupIds: [],
       };
+      pendingReasoning = null;
     } else {
       // tool-group: attach to current bubble, or create a tools-only bubble
       if (!current) {
-        current = { key: `tools-${seg.groupId}`, toolGroupIds: [] };
+        current = {
+          key: `tools-${seg.groupId}`,
+          reasoning: pendingReasoning ?? undefined,
+          toolGroupIds: [],
+        };
+        pendingReasoning = null;
       }
       current.toolGroupIds.push(seg.groupId);
     }
   }
   if (current) bubbles.push(current);
+  // Trailing reasoning with no text after it — the model is mid-stream or
+  // produced reasoning only. Emit a reasoning-only bubble so the user sees
+  // it and can expand to read the chain of thought.
+  if (pendingReasoning) {
+    bubbles.push({
+      key: `reasoning-${pendingReasoning.messageId}`,
+      reasoning: pendingReasoning,
+      toolGroupIds: [],
+    });
+  }
   return bubbles;
 }
 
@@ -215,11 +280,16 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
       {bubbles.map((bubble, i) => {
         const hasTools = bubble.toolGroupIds.length > 0;
         const hasContent = !!(bubble.text || bubble.plan);
-        const toolsOnly = hasTools && !hasContent;
+        const hasReasoning = !!bubble.reasoning;
+        const toolsOnly = hasTools && !hasContent && !hasReasoning;
+        const reasoningOnly = hasReasoning && !hasContent && !hasTools;
         const isLastBubble = i === bubbles.length - 1;
         return (
           <div key={bubble.key} className="flex justify-start px-4 py-0.5">
-            <div className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : 'py-3.5'}`}>
+            <div className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : reasoningOnly ? 'py-2.5' : 'py-3.5'}`}>
+              {bubble.reasoning && (
+                <ReasoningSection content={bubble.reasoning.content} />
+              )}
               {bubble.text && (
                 <MarkdownContent content={bubble.text.content} />
               )}
