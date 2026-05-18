@@ -74,8 +74,13 @@ describe('updateConversationIndex — interaction with epoch-seeded entries', ()
     svc.setSessionFlag('sess-c', 'helpful', true);
     expect(new Date(readIndex().sessions['sess-c'].lastActive).getTime()).toBe(0);
 
-    // Topic file appears later (user sent first message)
-    writeTopicFile('sess-c', 'Topic written later', new Date('2026-04-12T08:00:00Z'));
+    // Topic file appears later (user sent first message). The mtime must be
+    // RECENT relative to now: updateConversationIndex() prunes any entry whose
+    // lastActive is older than INDEX_PRUNE_DAYS (30). A hardcoded past date
+    // here is a time bomb — it upserts fine, then gets pruned in the same call
+    // once that date ages past the 30-day window. (This test failed exactly
+    // that way after 2026-05-12.)
+    writeTopicFile('sess-c', 'Topic written later', new Date(Date.now() - 60_000));
 
     svc.updateConversationIndex();
 
