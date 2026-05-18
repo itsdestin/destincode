@@ -16,6 +16,31 @@ import { app } from 'electron';
 const GH_TOKEN_RE = /gh[opsu]_[A-Za-z0-9]{20,}/g;
 const ANTHROPIC_KEY_RE = /sk-ant-[A-Za-z0-9_-]{20,}/g;
 
+// WHY (Fix, v1.2.4 — cross-platform robustness): every subprocess in this file
+// was spawned by bare command name (`git`, `gh`, `claude`, `bash`). Two Windows
+// hazards: (1) Electron snapshots a stripped PATH at launch, so a bare name may
+// not resolve; (2) a Claude Code installed via npm is a `.cmd` shim, and Node's
+// CVE-2024-27980 mitigation (18.20.2+ / 20.12.2+ / 21.7.1+) refuses to spawn
+// `.cmd`/`.bat` via spawn/execFile unless `shell: true` is set — the failure
+// surfaces as an opaque `spawn EINVAL`. resolveCmd() resolves the command to an
+// absolute path (via the optional `which` dep) and reports whether the resolved
+// extension needs `shell: true`. Mirrors `runCommand` in prerequisite-installer.ts.
+// On macOS/Linux it only does the path resolution. `shell: true` is returned
+// solely for a `.cmd`/`.bat` target; among these call sites the only such
+// target is an npm-installed `claude`, and every `claude` invocation here passes
+// static args only — so the relaxed shell quoting carries no injection risk.
+let whichSync: ((cmd: string) => string) | null = null;
+try { whichSync = require('which').sync; } catch { /* optional dep — fall back to bare name */ }
+
+function resolveCmd(cmd: string): { command: string; shell: boolean } {
+  let command = cmd;
+  if (whichSync && !path.isAbsolute(cmd)) {
+    try { command = whichSync(cmd); } catch { /* not on PATH — keep bare name so spawn errors cleanly */ }
+  }
+  const shell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
+  return { command, shell };
+}
+
 /**
  * Apply minimal, high-confidence redaction to a log excerpt before it
  * leaves the main process. We deliberately avoid aggressive token-shape
@@ -179,8 +204,9 @@ interface DiagProbe {
 const PROBE_TIMEOUT_MS = 5_000;
 
 function execProbe(cmd: string, args: string[]): Promise<DiagProbe> {
+  const { command, shell } = resolveCmd(cmd);
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: PROBE_TIMEOUT_MS, maxBuffer: 256 * 1024 }, (err, stdout, stderr) => {
+    execFile(command, args, { timeout: PROBE_TIMEOUT_MS, maxBuffer: 256 * 1024, shell }, (err, stdout, stderr) => {
       if (err) {
         const msg = String(stderr || err.message || '').split('\n')[0].trim();
         resolve({ ok: false, text: `${cmd}: not found / failed (${msg.slice(0, 120)})` });
@@ -370,8 +396,9 @@ export interface SummaryResult {
 export async function summarizeIssue(args: SummarizeArgs): Promise<SummaryResult> {
   const prompt = buildSummarizerPrompt(args);
   try {
+    const { command, shell } = resolveCmd('claude');
     const stdout: string = await new Promise((resolve, reject) => {
-      const child = spawn('claude', ['-p'], { timeout: 30_000 });
+      const child = spawn(command, ['-p'], { timeout: 30_000, shell });
       let out = '';
       let err = '';
       child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
@@ -489,9 +516,10 @@ export async function submitIssue(args: SubmitArgs): Promise<SubmitResult> {
   await fs.promises.writeFile(tmpFile, body, 'utf8');
 
   try {
+    const gh = resolveCmd('gh');
     const stdout: string = await new Promise((resolve, reject) => {
       execFile(
-        'gh',
+        gh.command,
         [
           'issue', 'create',
           '--repo', 'itsdestin/youcoded',
@@ -500,7 +528,7 @@ export async function submitIssue(args: SubmitArgs): Promise<SubmitResult> {
           '--label', args.label,
           '--label', 'youcoded-app:reported',
         ],
-        { timeout: 30_000, maxBuffer: 1024 * 1024 },
+        { timeout: 30_000, maxBuffer: 1024 * 1024, shell: gh.shell },
         (err, out) => (err ? reject(err) : resolve(String(out || ''))),
       );
     });
@@ -518,8 +546,9 @@ export async function submitIssue(args: SubmitArgs): Promise<SubmitResult> {
 }
 
 async function isGhAuthenticated(): Promise<boolean> {
+  const { command, shell } = resolveCmd('gh');
   return new Promise((resolve) => {
-    execFile('gh', ['auth', 'status'], { timeout: 5_000 }, (err) => {
+    execFile(command, ['auth', 'status'], { timeout: 5_000, shell }, (err) => {
       resolve(!err);
     });
   });
@@ -601,11 +630,12 @@ export async function installWorkspace(
 }
 
 async function getGitRemote(repoPath: string): Promise<string> {
+  const { command, shell } = resolveCmd('git');
   return new Promise((resolve, reject) => {
     execFile(
-      'git',
+      command,
       ['-C', repoPath, 'remote', 'get-url', 'origin'],
-      { timeout: 5_000 },
+      { timeout: 5_000, shell },
       (err, out) => (err ? reject(err) : resolve(String(out || '').trim())),
     );
   });
@@ -617,8 +647,9 @@ function runStreamed(
   onProgress: (line: string) => void,
   opts: { cwd?: string } = {},
 ): Promise<void> {
+  const { command, shell } = resolveCmd(cmd);
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, { cwd: opts.cwd, env: process.env });
+    const proc = spawn(command, args, { cwd: opts.cwd, env: process.env, shell });
     proc.stdout?.on('data', (b) => splitLines(b.toString()).forEach(onProgress));
     proc.stderr?.on('data', (b) => splitLines(b.toString()).forEach(onProgress));
     proc.on('error', reject);
