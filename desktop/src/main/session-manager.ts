@@ -9,6 +9,7 @@ import { EventEmitter } from 'events';
 import { log } from './logger';
 import { OpenCodeService } from './opencode-service';
 import { OpenCodeSessionAdapter } from './opencode-session-adapter';
+import { getModelCapability } from '../shared/local-effort-capability';
 
 // Optional — which may not be installed; fall back to bare command name
 let whichSync: ((cmd: string) => string) | null = null;
@@ -60,6 +61,52 @@ export class SessionManager extends EventEmitter {
   // before the OC session id resolved. Queue the texts and drain when ready.
   private localPendingSends = new Map<string, string[]>();
 
+  // Per-local-session system prompt, captured at create time. Used by
+  // sendInput's local branch to (a) pass user-configured prompts through
+  // to OpenCode, and (b) prepend thinking-trigger tokens for binary-thinking
+  // models (e.g. Gemma 4's `<|think|>`). Stored separate from the SessionInfo
+  // because SessionInfo is shaped for cross-platform parity with Claude.
+  private localSystemPrompts = new Map<string, string>();
+
+  /** Read the captured system prompt for a local session id, or undefined
+   *  if none was configured. */
+  localSystemPromptFor(desktopId: string): string | undefined {
+    return this.localSystemPrompts.get(desktopId);
+  }
+
+  /**
+   * Resolve the per-message dispatch shape for a local session: the model
+   * spec to send AND the system prompt to use. Encapsulates the per-mechanism
+   * routing (variant suffix passthrough vs system-prompt token injection).
+   * Used by BOTH sendInput's live path AND the queued-sends drain in
+   * createSession's .then() — they must produce identical shapes or queued
+   * messages would silently bypass thinking-token injection on gemma4 etc.
+   */
+  private resolveLocalDispatch(desktopId: string): {
+    modelSpec: { providerID: string; modelID: string } | undefined;
+    systemPrompt: string | undefined;
+  } {
+    const info = this.sessions.get(desktopId)?.info;
+    let resolvedModelId = info?.model ?? '';
+    const systemPrompt: string | undefined = this.localSystemPrompts.get(desktopId);
+    if (resolvedModelId) {
+      const cap = getModelCapability(resolvedModelId);
+      const at = resolvedModelId.lastIndexOf('@');
+      const baseModelId = at === -1 ? resolvedModelId : resolvedModelId.slice(0, at);
+      if (cap.mechanism === 'none') {
+        // Strip any spurious suffix; nothing else to do.
+        resolvedModelId = baseModelId;
+      }
+      // 'variant' mechanism: keep resolvedModelId with its @on suffix —
+      // opencode.json has the variant entry registered. System-prompt
+      // mechanism was retired 2026-05-11; all thinking models now use variants.
+    }
+    const modelSpec = resolvedModelId
+      ? { providerID: 'ollama', modelID: resolvedModelId }
+      : undefined;
+    return { modelSpec, systemPrompt };
+  }
+
   setPipeName(name: string) {
     this.pipeName = name;
   }
@@ -80,6 +127,7 @@ export class SessionManager extends EventEmitter {
       this.localAdapters.delete(desktopId);
       this.localIdMap.delete(desktopId);
       this.localPendingSends.delete(desktopId);
+      this.localSystemPrompts.delete(desktopId);
       session.info.status = 'destroyed';
       this.sessions.delete(desktopId);
       this.emit('session-exit', desktopId, exitCode);
@@ -133,6 +181,13 @@ export class SessionManager extends EventEmitter {
         ...(opts.initialInput !== undefined ? { initialInput: opts.initialInput } : {}),
       };
       this.sessions.set(desktopId, { info, worker: null });   // worker unused for local
+      // Capture the user-configured system prompt for this session. Used by
+      // sendInput's local branch when assembling the per-message `system`
+      // field (and prepending thinking-trigger tokens for binary-thinking
+      // models like Gemma 4 — see local-effort-capability).
+      if (typeof opts.systemPrompt === 'string' && opts.systemPrompt) {
+        this.localSystemPrompts.set(desktopId, opts.systemPrompt);
+      }
       this.emit('session-created', info);
 
       const ensureOcSession = isResume
@@ -148,22 +203,24 @@ export class SessionManager extends EventEmitter {
           isResume,
         });
         adapter.on('transcript-event', (event) => this.emit('transcript-event', event));
+        // Forward session-rename events from OpenCode (auto-generated titles)
+        // up to ipc-handlers, which re-broadcasts via broadcastRename. Mirror
+        // of the Claude path's `~/.claude/topics/topic-<sid>` watcher — without
+        // this, local sessions stay named "Local Session" forever.
+        adapter.on('session-renamed', (info) => this.emit('session-renamed', info));
         this.localAdapters.set(desktopId, adapter);
 
         // Drain any queued sends that arrived during the create race window.
-        // Resolve the model spec ONCE here; SDK's promptAsync needs both
-        // providerID and modelID. For MVP we hardcode providerID='ollama'
-        // (matches the key in opencode.json's `provider.ollama`); modelID
-        // comes from the session info (e.g. 'qwen3:8b'). When we add LM Studio
-        // or other compat providers, this needs to flow through opts.
-        const modelSpec = info.model
-          ? { providerID: 'ollama', modelID: info.model }
-          : undefined;
+        // Use resolveLocalDispatch so queued sends get the same model + system
+        // prompt resolution as live sends — without this, queued sends to
+        // binary-thinking models (gemma4) would skip the <|think|> injection
+        // and never trigger thinking on the very first message.
+        const { modelSpec, systemPrompt } = this.resolveLocalDispatch(desktopId);
         const queued = this.localPendingSends.get(desktopId) ?? [];
         this.localPendingSends.delete(desktopId);
         for (const text of queued) {
           this.emitSyntheticUserMessage(desktopId, text);
-          this.opencodeService!.sendMessage(ocSession.id, text, modelSpec).catch((err) => {
+          this.opencodeService!.sendMessage(ocSession.id, text, modelSpec, systemPrompt).catch((err) => {
             log('ERROR', 'SessionManager', 'OpenCode sendMessage (queued) failed', { sessionId: desktopId, error: String(err) });
           });
         }
@@ -331,7 +388,13 @@ export class SessionManager extends EventEmitter {
       const userText = text.endsWith('\r') ? text.slice(0, -1) : text;
       if (userText === '\x1b') {
         const ocId = this.localIdMap.get(id);
-        if (ocId) this.opencodeService.cancelSession(ocId).catch(() => { /* swallow */ });
+        if (ocId) {
+          // Mark the adapter so its next session.idle emits `user-interrupt`
+          // instead of `turn-complete` — produces the "Interrupted." footer
+          // matching the Claude path. Then issue the actual cancel.
+          this.localAdapters.get(id)?.markInterrupted();
+          this.opencodeService.cancelSession(ocId).catch(() => { /* swallow */ });
+        }
         // No queued cancel for un-mapped sessions — there's nothing to cancel yet.
         return true;
       }
@@ -346,12 +409,10 @@ export class SessionManager extends EventEmitter {
         return true;
       }
       this.emitSyntheticUserMessage(id, userText);
-      // Pass the resolved model spec so OpenCode picks Ollama (not its hosted
-      // OpenCode Zen default). providerID 'ollama' matches the config key.
-      const modelSpec = session.info.model
-        ? { providerID: 'ollama', modelID: session.info.model }
-        : undefined;
-      this.opencodeService.sendMessage(ocId, userText, modelSpec).catch((err) => {
+      // Single source of truth for model + system-prompt resolution — also
+      // used by the queued-sends drain so live and queued behavior match.
+      const { modelSpec, systemPrompt } = this.resolveLocalDispatch(id);
+      this.opencodeService.sendMessage(ocId, userText, modelSpec, systemPrompt).catch((err) => {
         log('ERROR', 'SessionManager', 'OpenCode sendMessage failed', { sessionId: id, error: String(err) });
       });
       return true;

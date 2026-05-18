@@ -40,25 +40,51 @@ export class OpenCodeConfigWriter {
     // adapter itself loaded successfully and Ollama has the model. The map
     // also lets us give human-readable display names per model.
     //
-    // Per-model `options.reasoningEffort: "none"` is critical for thinking
-    // models (qwen3, deepseek-r1, gemini-2.5, etc.). Without it, those models
-    // dump every token into a `reasoning` field, leaving `content` empty —
-    // OpenCode reads `content`, sees nothing, and the chat hangs forever.
-    // "none" is documented (Ollama #14820, ai-sdk openai-compatible) and
-    // verified end-to-end against qwen3:8b. The Model Options chip overrides
-    // this per-session when the user wants to enable thinking.
-    const modelsMap: Record<string, { name: string; options: Record<string, unknown> }> = {};
+    // Each installed Ollama model expands into TWO entries — canonical
+    // (effort=none / "off") and an `@on` variant (effort=medium, but
+    // semantically "thinking on"). Both share the canonical Ollama model
+    // via the variant's `id:` field. Switched from 4 variants (low/med/high)
+    // to 2 on 2026-05-11 after research confirmed Ollama collapses all
+    // non-none reasoning_effort tiers to a single `think: true` upstream —
+    // only `gpt-oss` honors graduated tiers. Keeping low/med/high in the
+    // wire format added confusion without any behavioral payoff.
+    //
+    //   - qwen3:8b    → effort=none (canonical, IS the off variant)
+    //   - qwen3:8b@on → id=qwen3:8b, effort=medium (semantically "thinking on")
+    //
+    // `medium` is the chosen "on" tier because Ollama's translation maps any
+    // of low/medium/high to think:true identically — picking the middle is
+    // an arbitrary defensive choice.
+    type ModelEntry = { id?: string; name: string; options: Record<string, unknown> };
+    const modelsMap: Record<string, ModelEntry> = {};
     for (const id of opts.models ?? []) {
+      const baseName = humanizeModelId(id);
+      // Canonical entry — no `id:` field (the map key IS the id).
       modelsMap[id] = {
-        name: humanizeModelId(id),
+        name: baseName,
         options: { reasoningEffort: 'none' },
       };
+      // `@on` variant — explicit `id:` redirects to the canonical model.
+      modelsMap[`${id}@on`] = {
+        id,
+        name: `${baseName} (thinking)`,
+        options: { reasoningEffort: 'medium' },
+      };
     }
+    // Defensive: a renderer caller passing undefined here used to crash with
+    // a TypeError ("Cannot read properties of undefined (reading 'replace')")
+    // which the renderer's silent catch then swallowed — the on-disk config
+    // never got written, the daemon never restarted, and freshly-pulled models
+    // returned ProviderModelNotFoundError. Coerce instead so the writer is
+    // robust to undefined/empty endpoint values regardless of caller hygiene.
+    const baseUrl = (opts.ollamaBaseUrl && opts.ollamaBaseUrl.trim().length > 0)
+      ? opts.ollamaBaseUrl
+      : 'http://localhost:11434';
     cfg.provider.ollama = {
       npm: '@ai-sdk/openai-compatible',
       name: 'Ollama (local)',
       options: {
-        baseURL: opts.ollamaBaseUrl.replace(/\/$/, '') + '/v1',
+        baseURL: baseUrl.replace(/\/$/, '') + '/v1',
       },
       models: modelsMap,
     };

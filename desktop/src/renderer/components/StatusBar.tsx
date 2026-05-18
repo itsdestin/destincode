@@ -8,6 +8,8 @@ import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { decodeLocalModel } from './ModelPickerPopup';
+import { getModelCapability } from '../../shared/local-effort-capability';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
@@ -133,6 +135,10 @@ interface Props {
   onRunSync?: () => void;
   onOpenSync?: () => void;
   model?: ModelAlias;
+  /** Local-session model id (possibly variant-suffixed, e.g. "qwen3:8b@high").
+   *  When set, the StatusBar renders a local-session pill instead of the
+   *  Claude model pill. Decoded into base + effort via decodeLocalModel(). */
+  localModel?: string | null;
   onCycleModel?: () => void;
   permissionMode?: PermissionMode;
   onCyclePermission?: () => void;
@@ -628,7 +634,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 // --- Main StatusBar component ---
 
 export default function StatusBar({
-  statusData, onRunSync, onOpenSync, model, onCycleModel,
+  statusData, onRunSync, onOpenSync, model, localModel, onCycleModel,
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
@@ -664,6 +670,44 @@ export default function StatusBar({
           <span className="capitalize">{effort || 'auto'} Effort</span>
         </button>
       )}
+
+      {/* Local-session pill — settings are LOCKED for the lifetime of the
+          session (matches Claude's per-session model). Click opens an
+          informational popup; to change settings the user starts a new
+          session. Uses the shared decodeLocalModel helper so the parsing
+          logic stays consistent with the popup, the chip, and tests. */}
+      {!model && localModel && (() => {
+        const { baseModel, effort } = decodeLocalModel(localModel);
+        const effLabel = effort === 'none' ? 'Off' : 'On';
+        // Only show a "Thinking:" label when the model actually exposes a
+        // binary Off/On choice. Models with no thinking toggle — qwen3.5
+        // (Off-only, gated for stability) and non-thinking models — would
+        // otherwise show a misleading "Thinking: Off" the user never picked.
+        // The toggle exists only when the capability set has BOTH 'none' and 'on'.
+        const cap = getModelCapability(baseModel);
+        const hasThinkingToggle = cap.levels.has('none') && cap.levels.has('on');
+        return (
+          <button
+            onClick={onOpenModelPicker}
+            className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm border border-edge bg-inset text-fg-2 cursor-pointer hover:brightness-125 transition-colors max-w-[260px]"
+            title={hasThinkingToggle
+              ? `Local session — model: ${baseModel || '(none)'}, thinking: ${effLabel}. Click for details.`
+              : `Local session — model: ${baseModel || '(none)'}. Click for details.`}
+          >
+            {/* Model name truncates rather than overflowing the status bar.
+                Long names (custom Ollama tags, future longer model ids) get
+                an ellipsis; the title attribute holds the full string for
+                tooltip discovery. */}
+            <span className="font-medium truncate min-w-0">{baseModel || '(no model)'}</span>
+            {hasThinkingToggle && (
+              <>
+                <span className="opacity-40 shrink-0">|</span>
+                <span className="shrink-0">Thinking: {effLabel}</span>
+              </>
+            )}
+          </button>
+        );
+      })()}
 
       {/* Fast mode chip — only rendered when on. Click opens the ModelPickerPopup. */}
       {fast && (

@@ -1202,6 +1202,7 @@ export function installShim(): void {
       installOpenCode: async () => ({ ok: false, error: 'local mode not supported on this platform' }),
       onInstallOpenCodeProgress: () => () => {},
       writeOpenCodeConfig: async () => ({ ok: false, error: 'local mode not supported on this platform' }),
+      restartOpenCode: async () => ({ ok: false, error: 'local mode not supported on this platform' }),
       listSessions: async () => [],
     },
   };

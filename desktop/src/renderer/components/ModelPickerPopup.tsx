@@ -4,6 +4,7 @@ import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
+import { getModelCapability } from '../../shared/local-effort-capability';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -113,6 +114,36 @@ export function ModelInfoTooltip({ model }: { model: ModelAlias }) {
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'max', 'auto'] as const;
 export type EffortLevel = typeof EFFORT_LEVELS[number];
 
+/**
+ * Decode an OpenCode local model id (possibly variant-suffixed) into its
+ * base Ollama model name and thinking effort. The variant suffix is `@on`
+ * — see OpenCodeConfigWriter.writeOllamaConfig for the encoding contract.
+ *
+ *   "qwen3:8b"        → { baseModel: "qwen3:8b", effort: "none" }
+ *   "qwen3:8b@on"     → { baseModel: "qwen3:8b", effort: "on" }
+ *   "qwen3:8b@medium" → { baseModel: "qwen3:8b", effort: "on" }  (legacy → on)
+ *   null/undefined    → { baseModel: "",         effort: "none" }
+ */
+export function decodeLocalModel(id: string | null | undefined): {
+  baseModel: string;
+  effort: 'none' | 'on';
+} {
+  if (!id) return { baseModel: '', effort: 'none' };
+  const at = id.lastIndexOf('@');
+  if (at === -1) return { baseModel: id, effort: 'none' };
+  const suffix = id.slice(at + 1);
+  // `@on` is the current binary-thinking suffix. The legacy graduated
+  // suffixes (low/medium/high) are mapped to `on` for display continuity —
+  // an old session created before the 2026-05-12 binary collapse still
+  // decodes to a sensible "thinking on" rather than falling through to Off.
+  if (suffix === 'on' || suffix === 'low' || suffix === 'medium' || suffix === 'high') {
+    return { baseModel: id.slice(0, at), effort: 'on' };
+  }
+  // Unrecognized suffix — treat the whole string as the base model. Defensive
+  // against unexpected ids (e.g. user-edited config).
+  return { baseModel: id, effort: 'none' };
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -209,30 +240,58 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
   if (!open) return null;
 
-  // Local-mode: render a simplified Ollama-models list. No fast/effort modes —
-  // those are Claude-Code-internal concepts that don't apply to OpenCode.
+  // Local-mode: settings are LOCKED per session (matches Claude's behavior —
+  // a session keeps the model+effort it was created with). The chip shows
+  // the locked configuration as informational; to change settings, the user
+  // starts a new session via the "+" form on the SessionStrip.
+  //
+  // Decode the locked model into baseModel + effort. The variants approach
+  // (verified empirically 2026-05-05) encodes effort as a `@<level>` suffix
+  // on the OpenCode model id (e.g. qwen3:8b@high). OpenCode honors the
+  // `id:` field on each variant entry to redirect to the real Ollama model;
+  // SessionManager just sends the variant id as the per-message `model`.
   if (provider === 'local') {
+    const decoded = decodeLocalModel(currentModel);
+    // Only show the Thinking row when the model exposes a real Off/On
+    // choice — qwen3.5 and non-thinking models have no toggle, so showing
+    // "Thinking: Off" implies a selection the user never made.
+    const localCap = getModelCapability(decoded.baseModel);
+    const hasThinkingToggle = localCap.levels.has('none') && localCap.levels.has('on');
     return createPortal(
       <>
         <Scrim layer={2} onClick={onClose} />
         <OverlayPanel
           layer={2}
           role="dialog"
-          className="fixed top-12 right-4 w-72 max-h-[60vh] overflow-y-auto"
+          aria-modal={true}
+          // Centered — matches the Claude-mode picker below. Was previously
+          // pinned to the top-right corner, which read as a stray tooltip
+          // rather than a modal dialog.
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-80"
+          onClick={(e) => e.stopPropagation()}
         >
-          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 px-2 pt-2">Local Models</div>
-          {localModels.length === 0 ? (
-            <div className="px-2 py-2 text-xs text-fg-muted">No local models installed.</div>
-          ) : localModels.map(m => (
-            <button
-              key={m.name}
-              onClick={() => { onSelectModel(m.name); onClose(); }}
-              className={`w-full text-left px-2 py-1.5 text-sm hover:bg-inset transition-colors ${currentModel === m.name ? 'bg-inset font-medium' : ''}`}
-            >
-              <div>{m.name}</div>
-              <div className="text-fg-muted text-[10px]">{(m.sizeBytes / 1e9).toFixed(1)} GB</div>
-            </button>
-          ))}
+          <div className="px-3 py-3 space-y-3">
+            <div className="text-[10px] uppercase tracking-wider text-fg-muted">Session Settings</div>
+
+            <div className="space-y-1">
+              <div className="text-[10px] text-fg-muted">Model</div>
+              <div className="text-sm text-fg font-medium">{decoded.baseModel || '(none selected)'}</div>
+            </div>
+
+            {hasThinkingToggle && (
+              <div className="space-y-1">
+                <div className="text-[10px] text-fg-muted">Thinking</div>
+                <div className="text-sm text-fg font-medium">
+                  {decoded.effort === 'none' ? 'Off' : 'On'}
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-edge text-[11px] text-fg-muted leading-snug">
+              Settings are locked for this session. Start a new session via the
+              {' '}<span className="text-fg-2 font-medium">+</span> button to change them.
+            </div>
+          </div>
         </OverlayPanel>
       </>,
       document.body,

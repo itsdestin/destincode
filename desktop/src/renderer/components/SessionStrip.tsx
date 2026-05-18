@@ -8,6 +8,7 @@ import { ModelInfoTooltip } from './ModelPickerPopup';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { getSupportedEffortLevels, clampEffortToSupported } from '../../shared/local-effort-capability';
 
 interface SessionEntry {
   id: string;
@@ -46,6 +47,8 @@ interface Props {
   myWindowId?: number | null;
   /** Base URL for the local Ollama endpoint (e.g. http://localhost:11434). Passed through from settings. */
   defaultLocalEndpoint?: string;
+  /** Default thinking effort to pre-populate the new-session form with (local runtime only). */
+  defaultLocalEffort?: 'none' | 'on';
 }
 
 /* ── Status dot color maps ───────────────────────────────── */
@@ -155,7 +158,7 @@ export default function SessionStrip({
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   geminiEnabled,
   windowDirectory, myWindowId,
-  defaultLocalEndpoint,
+  defaultLocalEndpoint, defaultLocalEffort,
 }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -165,6 +168,13 @@ export default function SessionStrip({
   const [newCwd, setNewCwd] = useState('');
   const [dangerous, setDangerous] = useState(false);
   const [newModel, setNewModel] = useState<string>('sonnet');
+  // Local-runtime thinking effort. Locked to the session at creation time.
+  // Encoding into the model id is by mechanism (see shared/local-effort-capability):
+  //   - 'variant' models (qwen3): @<level> resolves to a registered opencode.json entry
+  //   - 'system-prompt' models (gemma4): @on triggers per-message <|think|> injection in SessionManager
+  //   - 'none' models: no suffix; the row is hidden in the form
+  type LocalEffort = 'none' | 'on';
+  const [newLocalEffort, setNewLocalEffort] = useState<LocalEffort>('none');
   // Three-way runtime selector: Claude (default), Local (Ollama/OpenCode), Gemini
   type Runtime = 'claude' | 'local' | 'gemini';
   const [runtime, setRuntime] = useState<Runtime>('claude');
@@ -337,6 +347,15 @@ export default function SessionStrip({
   }, []);
 
 
+  // Auto-clamp effort to "none" when the user switches to a model that doesn't
+  // support the currently-selected effort. Without this, picking qwen3.5 after
+  // having "Low" selected from a previous qwen3 session would silently encode
+  // qwen3.5:9b@low into the model id and the daemon would hang forever on
+  // first message. See state/local-effort-capability for the per-model gate.
+  useEffect(() => {
+    setNewLocalEffort(prev => clampEffortToSupported(newModel || '', prev));
+  }, [newModel]);
+
   // Fetch available Ollama models when the user selects Local runtime.
   useEffect(() => {
     if (runtime !== 'local' || !localSupported) return;
@@ -375,14 +394,24 @@ export default function SessionStrip({
   }, []);
 
   const handleCreate = useCallback(() => {
-    onCreateSession(newCwd, dangerous, newModel, runtime, launchInNewWindow);
+    // For local runtime, encode the chosen thinking effort into the model
+    // ID so SessionManager can pass it to OpenCode as a per-message `model`
+    // field. The variant entries (e.g. qwen3:8b@high) were pre-written into
+    // opencode.json by OpenCodeConfigWriter; OpenCode honors the `id:` field
+    // on each variant to redirect to the real Ollama model. Verified
+    // empirically 2026-05-05. "Off" (none) uses the bare model name.
+    const effectiveModel = (runtime === 'local' && newLocalEffort !== 'none' && newModel)
+      ? `${newModel}@${newLocalEffort}`
+      : newModel;
+    onCreateSession(newCwd, dangerous, effectiveModel, runtime, launchInNewWindow);
     setMenuOpen(false);
     setShowNewForm(false);
     setDangerous(defaultSkipPermissions || false);
     setNewModel(defaultModel || 'sonnet');
+    setNewLocalEffort(defaultLocalEffort || 'none');
     setRuntime('claude');
     setLaunchInNewWindow(false);
-  }, [newCwd, dangerous, newModel, runtime, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel]);
+  }, [newCwd, dangerous, newModel, newLocalEffort, runtime, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, defaultLocalEffort]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
 
@@ -1049,15 +1078,60 @@ export default function SessionStrip({
                       </button>
                     )}
                     {localReachable === true && localModels.length > 0 && (
-                      <select
-                        className="bg-panel border border-edge rounded text-fg text-xs px-2 py-1 w-full"
-                        value={localModels.some(m => m.name === newModel) ? newModel : localModels[0].name}
-                        onChange={(e) => setNewModel(e.target.value)}
-                      >
-                        {localModels.map(m => (
-                          <option key={m.name} value={m.name}>{m.name} ({(m.sizeBytes / 1e9).toFixed(1)} GB)</option>
-                        ))}
-                      </select>
+                      <>
+                        <select
+                          className="bg-panel border border-edge rounded text-fg text-xs px-2 py-1 w-full"
+                          value={localModels.some(m => m.name === newModel) ? newModel : localModels[0].name}
+                          onChange={(e) => setNewModel(e.target.value)}
+                        >
+                          {localModels.map(m => (
+                            <option key={m.name} value={m.name}>{m.name} ({(m.sizeBytes / 1e9).toFixed(1)} GB)</option>
+                          ))}
+                        </select>
+
+                        {/* Thinking — locked to this session at create time, pre-
+                            populated from settings, user can override per session.
+                            Button set varies by model capability:
+                              - Graduated (qwen3): Off / Low / Med / High via reasoning_effort
+                              - Binary (gemma4):   Off / On via system-prompt <|think|> injection
+                              - None (most):       Off only — row hidden
+                            See shared/local-effort-capability for the per-model gate. */}
+                        {(() => {
+                          const levels = getSupportedEffortLevels(newModel || '');
+                          // Hide the entire row when the model supports nothing —
+                          // a single grayed-out "Off" button is just visual noise.
+                          if (levels.size <= 1) return null;
+                          // As of 2026-05-11 every thinking model is binary
+                          // on/off (Ollama's reasoning_effort tiers collapse to
+                          // think:bool upstream). 2-column grid is the only
+                          // shape; we keep the array form for future-proofing
+                          // if a graduated model is added back.
+                          const orderedLevels: Array<'none' | 'on'> =
+                            (['none', 'on'] as const).filter(l => levels.has(l));
+                          const gridCols = 'grid-cols-2';
+                          return (
+                            <div className="mt-1.5">
+                              <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1">Thinking</div>
+                              <div className={`grid gap-1 ${gridCols}`}>
+                                {orderedLevels.map((level) => (
+                                  <button
+                                    key={level}
+                                    type="button"
+                                    onClick={() => setNewLocalEffort(level)}
+                                    className={`py-1 text-[11px] rounded transition-colors capitalize ${
+                                      newLocalEffort === level
+                                        ? 'bg-accent text-on-accent font-medium'
+                                        : 'bg-inset text-fg-2 hover:bg-edge'
+                                    }`}
+                                  >
+                                    {level === 'none' ? 'Off' : level === 'on' ? 'On' : level}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </>
                     )}
                   </>
                 )}
@@ -1129,6 +1203,7 @@ export default function SessionStrip({
                   setNewCwd(defaultProjectFolder || '');
                   setDangerous(defaultSkipPermissions || false);
                   setNewModel(defaultModel || 'sonnet');
+                  setNewLocalEffort(defaultLocalEffort || 'none');
                   setRuntime('claude');
                   setShowNewForm(true);
                 }}

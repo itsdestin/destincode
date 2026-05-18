@@ -253,6 +253,7 @@ const IPC = {
   LOCAL_INSTALL_OPENCODE: 'local:install-opencode',
   LOCAL_INSTALL_OPENCODE_PROGRESS: 'local:install-opencode:progress',
   LOCAL_WRITE_OPENCODE_CONFIG: 'local:write-opencode-config',
+  LOCAL_RESTART_OPENCODE: 'local:restart-opencode',
   // OpenCode session ops
   LOCAL_LIST_SESSIONS: 'local:list-sessions',
 } as const;
@@ -884,6 +885,11 @@ contextBridge.exposeInMainWorld('claude', {
       return () => ipcRenderer.removeListener(IPC.LOCAL_INSTALL_OPENCODE_PROGRESS, handler);
     },
     writeOpenCodeConfig: (opts: { ollamaBaseUrl: string }) => ipcRenderer.invoke(IPC.LOCAL_WRITE_OPENCODE_CONFIG, opts),
+    // Stops + restarts the OpenCode daemon so it re-reads opencode.json. Used
+    // after a model is pulled (the daemon caches its provider config in memory
+    // on first load — without a restart, freshly-added model variants are
+    // invisible and SessionManager 404s with ProviderModelNotFoundError).
+    restartOpenCode: () => ipcRenderer.invoke(IPC.LOCAL_RESTART_OPENCODE),
     // Session ops
     listSessions: () => ipcRenderer.invoke(IPC.LOCAL_LIST_SESSIONS),
   },

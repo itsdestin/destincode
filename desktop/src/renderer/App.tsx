@@ -57,6 +57,7 @@ import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
 import { ThemeProvider, useTheme } from './state/theme-context';
+import { getSupportedEffortLevels, clampEffortToSupported } from '../shared/local-effort-capability';
 import { SkillProvider } from './state/skill-context';
 import { MarketplaceAuthProvider } from './state/marketplace-auth-context';
 import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
@@ -292,6 +293,21 @@ function AppInner() {
   const [welcomeCwd, setWelcomeCwd] = useState('');
   const [welcomeModel, setWelcomeModel] = useState('sonnet');
   const [welcomeDangerous, setWelcomeDangerous] = useState(false);
+  // Welcome-screen runtime + local-runtime fields — mirror SessionStrip's so
+  // a user can start a local (Ollama/OpenCode) session straight from the
+  // empty-app screen instead of going through the "+" form. Effects that
+  // depend on sessionDefaults are declared further down (after that state
+  // exists) to avoid temporal-dead-zone errors.
+  type WelcomeRuntime = 'claude' | 'local';
+  const [welcomeRuntime, setWelcomeRuntime] = useState<WelcomeRuntime>('claude');
+  const [welcomeLocalModel, setWelcomeLocalModel] = useState<string>('');
+  const [welcomeLocalEffort, setWelcomeLocalEffort] = useState<'none' | 'on'>('none');
+  const [welcomeLocalModels, setWelcomeLocalModels] = useState<Array<{ name: string; sizeBytes: number }>>([]);
+  const [welcomeLocalReachable, setWelcomeLocalReachable] = useState<boolean | null>(null);
+  // Local runtime presence is feature-detected via the IPC contract — same
+  // check SessionStrip uses. The handler is only attached on desktop, so
+  // this also guards Android + remote-browser callers.
+  const welcomeLocalSupported = !isRemoteMode() && !!(window as any).claude?.local?.supported;
 
   // Per-session model state — keyed by sessionId, same pattern as permissionModes.
   // Widened to string so local sessions can store Ollama model names (not ModelAlias).
@@ -315,7 +331,48 @@ function AppInner() {
     }).catch(() => {});
   }, []);
 
-  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false, localEndpoint: 'http://localhost:11434', localDefaultModel: '', localSystemPrompt: '' });
+  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false, localEndpoint: 'http://localhost:11434', localDefaultModel: '', localSystemPrompt: '', localDefaultEffort: 'none' as 'none' | 'on' });
+
+  // Welcome-form local-runtime effects (declared here because they reference
+  // sessionDefaults, which is initialized just above).
+  // 1. Fetch Ollama reachability + model list when the form opens in local mode.
+  useEffect(() => {
+    if (!welcomeFormOpen || welcomeRuntime !== 'local' || !welcomeLocalSupported) return;
+    let cancelled = false;
+    setWelcomeLocalReachable(null);
+    setWelcomeLocalModels([]);
+    (window as any).claude.local.listOllamaModels(sessionDefaults.localEndpoint || undefined).then((res: any) => {
+      if (cancelled) return;
+      setWelcomeLocalReachable(!!res?.reachable);
+      setWelcomeLocalModels(res?.models ?? []);
+    }).catch(() => {
+      if (cancelled) return;
+      setWelcomeLocalReachable(false);
+      setWelcomeLocalModels([]);
+    });
+    return () => { cancelled = true; };
+  }, [welcomeFormOpen, welcomeRuntime, welcomeLocalSupported, sessionDefaults.localEndpoint]);
+
+  // 2. Snap welcomeLocalModel to a valid entry once the list loads. Otherwise
+  // a stale value (from a prior Claude run or an uninstalled default) would
+  // be sent to OpenCode and 404 on Ollama, producing a silent no-response.
+  useEffect(() => {
+    if (welcomeRuntime !== 'local' || welcomeLocalModels.length === 0) return;
+    const stillValid = welcomeLocalModels.some(m => m.name === welcomeLocalModel);
+    if (!stillValid) {
+      const preferred = welcomeLocalModels.find(m => m.name === sessionDefaults.localDefaultModel);
+      setWelcomeLocalModel(preferred?.name || welcomeLocalModels[0].name);
+    }
+  }, [welcomeRuntime, welcomeLocalModels, welcomeLocalModel, sessionDefaults.localDefaultModel]);
+
+  // 3. Auto-clamp effort to "none" when the user switches to a model that
+  // doesn't support the currently-selected level (e.g. picking qwen3.5 after
+  // having "Low" pre-populated from a qwen3 default). Without this the form
+  // would silently encode qwen3.5:9b@low and the daemon would hang on first
+  // message — see state/local-effort-capability for the per-model gate.
+  useEffect(() => {
+    setWelcomeLocalEffort(prev => clampEffortToSupported(welcomeLocalModel || '', prev));
+  }, [welcomeLocalModel]);
 
   // Check first-run state with a 3-second safety timeout — never hang the app
   useEffect(() => {
@@ -622,7 +679,15 @@ function AppInner() {
       setPermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, info.permissionMode || 'normal'));
       setSessionModels((prev) => {
         if (prev.has(info.id)) return prev;
-        // Match the model string from SessionInfo back to a ModelAlias (e.g. 'claude-sonnet-4-6' → 'sonnet')
+        // Local sessions store the raw OpenCode model id (possibly variant-
+        // suffixed, e.g. "qwen3:8b@medium") so the status-bar pill can decode
+        // base model + effort for display. Aliasing to a ModelAlias would
+        // collapse it to 'sonnet' and the pill would show "Sonnet · Thinking: Off"
+        // for every local session — bug observed during smoke test.
+        if (info.provider === 'local') {
+          return new Map(prev).set(info.id, info.model || '');
+        }
+        // Claude path — match the API model id back to a ModelAlias (e.g. 'claude-sonnet-4-6' → 'sonnet')
         const alias = MODELS.find((m) => info.model?.includes(m.replace(/\[.*\]/, ''))) ?? 'sonnet';
         return new Map(prev).set(info.id, alias);
       });
@@ -811,12 +876,28 @@ function AppInner() {
           });
           break;
         case 'assistant-thinking':
-          // Extended-thinking heartbeat — bumps lastActivityAt and clears
-          // any stale attention banner. No timeline change.
-          batchTranscriptDispatch({
-            type: 'TRANSCRIPT_THINKING_HEARTBEAT',
-            sessionId: event.sessionId,
-          });
+          // Two shapes share this event type:
+          //   1. Claude transcript path — no text payload, just a lifecycle
+          //      marker so the attention classifier doesn't misread silence
+          //      as 'stuck'. Dispatched as HEARTBEAT (no UI).
+          //   2. OpenCode streaming path — carries reasoning text + partId,
+          //      dispatched as REASONING so the reducer accumulates it into
+          //      a collapsible reasoning segment on the current turn.
+          if (event.data && typeof (event.data as any).text === 'string') {
+            batchTranscriptDispatch({
+              type: 'TRANSCRIPT_ASSISTANT_REASONING',
+              sessionId: event.sessionId,
+              uuid: event.uuid,
+              text: (event.data as any).text,
+              timestamp: event.timestamp,
+              partId: (event.data as any).partId,
+            });
+          } else {
+            batchTranscriptDispatch({
+              type: 'TRANSCRIPT_THINKING_HEARTBEAT',
+              sessionId: event.sessionId,
+            });
+          }
           break;
         case 'compact-summary': {
           // Canonical compaction-complete signal — fired by the transcript
@@ -1589,6 +1670,10 @@ function AppInner() {
       skipPermissions: dangerous,
       model: m,
       provider: provider || 'claude',
+      // Local sessions get the user-configured system prompt from settings.
+      // SessionManager stores it and includes it on every prompt — needed for
+      // the gemma4 thinking-token injection path (see local-effort-capability).
+      systemPrompt: provider === 'local' ? sessionDefaults.localSystemPrompt : undefined,
     });
     // Launch-in-new-window: hand the freshly-created session off to a peer
     // window via the same ownership-transfer path used by drag-detach.
@@ -1650,6 +1735,10 @@ function AppInner() {
         provider: 'local',
         resumeSessionId: opencodeSessionId,
         model: sessionDefaults.localDefaultModel || undefined,
+        // Carry the system prompt forward on resume too — without it the
+        // first message after resume would be missing the gemma4 thinking
+        // token, breaking thinking continuity across an app restart.
+        systemPrompt: sessionDefaults.localSystemPrompt,
       });
       // Session ID auto-focused by the 'session:created' event listener above.
     } catch (e) {
@@ -2035,6 +2124,7 @@ function AppInner() {
                 defaultProjectFolder={sessionDefaults.projectFolder}
                 geminiEnabled={sessionDefaults.geminiEnabled}
                 defaultLocalEndpoint={sessionDefaults.localEndpoint}
+                defaultLocalEffort={sessionDefaults.localDefaultEffort}
                 windowDirectory={windowDirectory}
                 myWindowId={myWindowId}
               />
@@ -2134,6 +2224,7 @@ function AppInner() {
                     window.claude.session.sendInput(sessionId, '/sync\r');
                   } : undefined}
                   model={isLocalSession ? undefined : (currentModel as ModelAlias)}
+                  localModel={isLocalSession ? currentModel : undefined}
                   onCycleModel={cycleModel}
                   permissionMode={isLocalSession ? undefined : currentPermissionMode}
                   onCyclePermission={isLocalSession ? undefined : cyclePermission}
@@ -2188,34 +2279,139 @@ function AppInner() {
                     <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
                     <FolderSwitcher value={welcomeCwd} onChange={setWelcomeCwd} />
                   </div>
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
-                    <div className="flex gap-1">
-                      {MODELS.map((m) => (
-                        <button
-                          key={m}
-                          onClick={() => setWelcomeModel(m)}
-                          className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
-                            welcomeModel === m
-                              ? 'bg-accent text-on-accent font-medium'
-                              : 'bg-inset text-fg-dim hover:bg-edge'
-                          }`}
-                        >
-                          {WELCOME_MODEL_LABELS[m] || m}
-                        </button>
-                      ))}
+
+                  {/* Runtime selector — only shown on desktop. Lets the user
+                      pick between Claude (Anthropic API) and Local (Ollama via
+                      OpenCode). Mirrors the strip-form's runtime row. */}
+                  {welcomeLocalSupported && (
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Runtime</label>
+                      <div className="flex gap-1">
+                        {(['claude', 'local'] as const).map((r) => (
+                          <button
+                            key={r}
+                            onClick={() => setWelcomeRuntime(r)}
+                            className={`flex-1 px-1 py-1 rounded-sm text-[10px] capitalize transition-colors ${
+                              welcomeRuntime === r
+                                ? 'bg-accent text-on-accent font-medium'
+                                : 'bg-inset text-fg-dim hover:bg-edge'
+                            }`}
+                          >
+                            {r === 'claude' ? 'Claude' : 'Local'}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
-                    <button
-                      onClick={() => setWelcomeDangerous(!welcomeDangerous)}
-                      className={`w-8 h-4.5 rounded-full relative transition-colors ${welcomeDangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
-                    >
-                      <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${welcomeDangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-                    </button>
-                  </div>
-                  {welcomeDangerous && (
+                  )}
+
+                  {/* Model — Claude branch (Haiku/Sonnet/Opus). */}
+                  {welcomeRuntime === 'claude' && (
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                      <div className="flex gap-1">
+                        {MODELS.map((m) => (
+                          <button
+                            key={m}
+                            onClick={() => setWelcomeModel(m)}
+                            className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                              welcomeModel === m
+                                ? 'bg-accent text-on-accent font-medium'
+                                : 'bg-inset text-fg-dim hover:bg-edge'
+                            }`}
+                          >
+                            {WELCOME_MODEL_LABELS[m] || m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Model + Thinking — Local branch (Ollama). */}
+                  {welcomeRuntime === 'local' && (
+                    <>
+                      {welcomeLocalReachable === null && (
+                        <div className="text-[10px] text-fg-muted">Checking Ollama…</div>
+                      )}
+                      {(welcomeLocalReachable === false || (welcomeLocalReachable === true && welcomeLocalModels.length === 0)) && (
+                        <button
+                          type="button"
+                          className="text-[10px] px-2 py-1 rounded bg-accent text-on-accent"
+                          onClick={() => {
+                            setWelcomeFormOpen(false);
+                            window.dispatchEvent(new CustomEvent('youcoded:open-local-setup'));
+                          }}
+                        >
+                          Set up local models →
+                        </button>
+                      )}
+                      {welcomeLocalReachable === true && welcomeLocalModels.length > 0 && (
+                        <>
+                          <div>
+                            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                            <select
+                              className="w-full bg-panel border border-edge rounded text-fg text-xs px-2 py-1"
+                              value={welcomeLocalModels.some(m => m.name === welcomeLocalModel) ? welcomeLocalModel : welcomeLocalModels[0].name}
+                              onChange={(e) => setWelcomeLocalModel(e.target.value)}
+                            >
+                              {welcomeLocalModels.map(m => (
+                                <option key={m.name} value={m.name}>{m.name} ({(m.sizeBytes / 1e9).toFixed(1)} GB)</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Thinking — pre-populated from settings, locked to the
+                              session at create time. Capability-driven (see
+                              shared/local-effort-capability). As of 2026-05-11
+                              every thinking model is binary on/off — Ollama
+                              collapses graduated tiers to a single boolean
+                              upstream, so there's no Low/Med/High to expose. */}
+                          {(() => {
+                            const levels = getSupportedEffortLevels(welcomeLocalModel || '');
+                            if (levels.size <= 1) return null;
+                            const orderedLevels: Array<'none' | 'on'> =
+                              (['none', 'on'] as const).filter(l => levels.has(l));
+                            const gridCols = 'grid-cols-2';
+                            return (
+                              <div>
+                                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Thinking</label>
+                                <div className={`grid gap-1 ${gridCols}`}>
+                                  {orderedLevels.map((level) => (
+                                    <button
+                                      key={level}
+                                      type="button"
+                                      onClick={() => setWelcomeLocalEffort(level)}
+                                      className={`py-1 text-[11px] rounded transition-colors capitalize ${
+                                        welcomeLocalEffort === level
+                                          ? 'bg-accent text-on-accent font-medium'
+                                          : 'bg-inset text-fg-2 hover:bg-edge'
+                                      }`}
+                                    >
+                                      {level === 'none' ? 'Off' : level === 'on' ? 'On' : level}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  {/* Skip Permissions — Claude only. Local sessions run in
+                      allow-all mode (MVP) so the toggle has no meaning there. */}
+                  {welcomeRuntime === 'claude' && (
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
+                      <button
+                        onClick={() => setWelcomeDangerous(!welcomeDangerous)}
+                        className={`w-8 h-4.5 rounded-full relative transition-colors ${welcomeDangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
+                      >
+                        <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${welcomeDangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
+                      </button>
+                    </div>
+                  )}
+                  {welcomeRuntime === 'claude' && welcomeDangerous && (
                     <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
                   )}
                   <div className="flex gap-2">
@@ -2227,16 +2423,28 @@ function AppInner() {
                     </button>
                     <button
                       onClick={() => {
-                        createSession(welcomeCwd, welcomeDangerous, welcomeModel);
+                        // Local: encode effort into modelID via @<level> suffix
+                        // (matches strip-form behavior). "none" uses the bare
+                        // model name. Claude path passes the alias unchanged.
+                        const effectiveModel = welcomeRuntime === 'local'
+                          ? (welcomeLocalEffort === 'none' || !welcomeLocalModel ? welcomeLocalModel : `${welcomeLocalModel}@${welcomeLocalEffort}`)
+                          : welcomeModel;
+                        const effectiveDangerous = welcomeRuntime === 'claude' ? welcomeDangerous : false;
+                        createSession(welcomeCwd, effectiveDangerous, effectiveModel, welcomeRuntime);
                         setWelcomeFormOpen(false);
                       }}
+                      disabled={welcomeRuntime === 'local' && (welcomeLocalReachable !== true || welcomeLocalModels.length === 0)}
                       className={`flex-1 text-sm font-medium rounded-md py-1.5 transition-colors ${
-                        welcomeDangerous
-                          ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
-                          : 'bg-accent hover:bg-accent text-on-accent'
+                        welcomeRuntime === 'local'
+                          ? 'bg-accent hover:bg-accent text-on-accent disabled:opacity-50 disabled:cursor-not-allowed'
+                          : welcomeDangerous
+                            ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
+                            : 'bg-accent hover:bg-accent text-on-accent'
                       }`}
                     >
-                      {welcomeDangerous ? 'Create (Dangerous)' : 'Create Session'}
+                      {welcomeRuntime === 'local'
+                        ? 'Create Local Session'
+                        : welcomeDangerous ? 'Create (Dangerous)' : 'Create Session'}
                     </button>
                   </div>
                 </div>
@@ -2248,6 +2456,11 @@ function AppInner() {
                       setWelcomeCwd(sessionDefaults.projectFolder || '');
                       setWelcomeDangerous(sessionDefaults.skipPermissions || false);
                       setWelcomeModel(sessionDefaults.model || 'sonnet');
+                      // Local-runtime fields: keep last-used runtime, reset
+                      // model to the user's default, reset effort to settings
+                      // default. Form fetches the actual model list when opened.
+                      setWelcomeLocalModel(sessionDefaults.localDefaultModel || '');
+                      setWelcomeLocalEffort(sessionDefaults.localDefaultEffort || 'none');
                       setWelcomeFormOpen(true);
                     }}
                     className="panel-glass w-full px-8 py-2 text-base font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors"

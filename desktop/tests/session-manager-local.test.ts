@@ -49,7 +49,10 @@ describe('SessionManager local branch', () => {
     // The third arg is the model spec — info.model='qwen3:8b' produces a
     // {providerID:'ollama', modelID:'qwen3:8b'} object that OpenCode needs
     // to route the prompt to the right provider/model.
-    expect(svc.sendMessage).toHaveBeenCalledWith('oc-NEW', 'hello', { providerID: 'ollama', modelID: 'qwen3:8b' });
+    // Fourth arg is the per-message system prompt (undefined when no prompt
+    // was configured at session create — the local-effort-capability path
+    // would prepend a thinking-trigger token here for binary-thinking models).
+    expect(svc.sendMessage).toHaveBeenCalledWith('oc-NEW', 'hello', { providerID: 'ollama', modelID: 'qwen3:8b' }, undefined);
   });
 
   it('createSession with resumeSessionId uses the OC id as desktopId AND skips fresh OC creation', () => {
@@ -76,10 +79,11 @@ describe('SessionManager local branch', () => {
     svc.resolveCreate('oc-LATE');
     await new Promise((r) => setImmediate(r));
     // Both queued sends should have flushed. info.model is unset in this
-    // test, so the third arg is `undefined` — vitest's toHaveBeenCalledWith
-    // is strict about argument count, so we pass undefined explicitly.
-    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'first', undefined);
-    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'second', undefined);
+    // test, so modelSpec is undefined; no system prompt was configured, so
+    // the system arg is also undefined. vitest's toHaveBeenCalledWith is
+    // strict about argument count.
+    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'first', undefined, undefined);
+    expect(svc.sendMessage).toHaveBeenCalledWith('oc-LATE', 'second', undefined, undefined);
   });
 
   it('sendInput emits a synthetic user-message transcript-event before sendMessage (for dedup)', async () => {
@@ -92,6 +96,61 @@ describe('SessionManager local branch', () => {
     expect(userMsg).toBeDefined();
     expect(userMsg.sessionId).toBe(info.id);   // tagged with desktopId
     expect(userMsg.data.text).toBe('hi there'); // exact text we sent (no whitespace normalization risk)
+  });
+
+  it('routes a gemma4 @on session via variant passthrough', async () => {
+    // Updated 2026-05-11: Gemma 4 (and all thinking models) collapsed to
+    // binary on/off variants. opencode.json registers a single @on variant
+    // per model that maps to options.reasoningEffort: "medium" upstream
+    // (Ollama coalesces all non-none effort tiers to think:true anyway).
+    const info = sm.createSession({
+      name: 'L', cwd: '', skipPermissions: false,
+      provider: 'local', model: 'gemma4:e2b@on',
+      systemPrompt: 'You are concise.',
+    });
+    await new Promise((r) => setImmediate(r));
+    sm.sendInput(info.id, 'hi\r');
+    expect(svc.sendMessage).toHaveBeenCalledWith(
+      'oc-NEW',
+      'hi',
+      { providerID: 'ollama', modelID: 'gemma4:e2b@on' },
+      // No thinking-token injection — system-prompt mechanism retired
+      'You are concise.',
+    );
+  });
+
+  it('routes a gemma4 with no suffix (Off) unchanged', async () => {
+    const info = sm.createSession({
+      name: 'L', cwd: '', skipPermissions: false,
+      provider: 'local', model: 'gemma4:e2b',
+      systemPrompt: 'You are concise.',
+    });
+    await new Promise((r) => setImmediate(r));
+    sm.sendInput(info.id, 'hi\r');
+    expect(svc.sendMessage).toHaveBeenCalledWith(
+      'oc-NEW',
+      'hi',
+      { providerID: 'ollama', modelID: 'gemma4:e2b' },
+      'You are concise.',
+    );
+  });
+
+  it('routes a qwen3:8b@on session via variant passthrough', async () => {
+    // qwen3 family uses 'variant' mechanism — the @on suffix is a real
+    // opencode.json entry. Full suffixed id passes through unchanged.
+    const info = sm.createSession({
+      name: 'L', cwd: '', skipPermissions: false,
+      provider: 'local', model: 'qwen3:8b@on',
+      systemPrompt: 'You are concise.',
+    });
+    await new Promise((r) => setImmediate(r));
+    sm.sendInput(info.id, 'hi\r');
+    expect(svc.sendMessage).toHaveBeenCalledWith(
+      'oc-NEW',
+      'hi',
+      { providerID: 'ollama', modelID: 'qwen3:8b@on' },
+      'You are concise.',
+    );
   });
 
   it('sendInput on a local session routes single ESC byte to cancelSession with OC id', async () => {

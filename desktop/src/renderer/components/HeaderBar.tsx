@@ -176,6 +176,8 @@ interface Props {
   geminiEnabled?: boolean;
   /** Base URL for the local Ollama endpoint, passed through to SessionStrip. */
   defaultLocalEndpoint?: string;
+  /** Default thinking effort for new local sessions, passed through to SessionStrip. */
+  defaultLocalEffort?: 'none' | 'on';
   windowDirectory?: any;
   myWindowId?: number | null;
 }
@@ -188,7 +190,7 @@ export default function HeaderBar({
   settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses, onResumeSession,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
-  geminiEnabled, defaultLocalEndpoint,
+  geminiEnabled, defaultLocalEndpoint, defaultLocalEffort,
   windowDirectory, myWindowId,
 }: Props) {
   // Pill doesn't track live button widths — it pins to the active button's
@@ -515,6 +517,7 @@ export default function HeaderBar({
         defaultProjectFolder={defaultProjectFolder}
         geminiEnabled={geminiEnabled}
         defaultLocalEndpoint={defaultLocalEndpoint}
+        defaultLocalEffort={defaultLocalEffort}
         windowDirectory={windowDirectory}
         myWindowId={myWindowId}
       />

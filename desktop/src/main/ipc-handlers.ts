@@ -701,6 +701,14 @@ export function registerIpcHandlers(
     model: 'sonnet',
     projectFolder: '',
     geminiEnabled: false, // Opt-in: show Gemini CLI option in new session form
+    // Local-runtime per-session settings: pre-populate the "+" new-session
+    // form when runtime=local. User can override per session. Once a session
+    // is created, its settings are LOCKED for that session's lifetime —
+    // thinking effort is implemented via opencode.json model variants
+    // (qwen3:8b@low / @medium / @high), so changing it would require
+    // restarting the daemon. Locking matches Claude's per-session model and
+    // keeps multiple concurrent local sessions independent.
+    localDefaultEffort: 'none' as 'none' | 'on' | 'low' | 'medium' | 'high',
     permissionOverrides: { ...PERMISSION_OVERRIDES_DEFAULT },
   };
 
@@ -1814,6 +1822,18 @@ export function registerIpcHandlers(
     delete lastSessionStatsByDesktopId[sessionId];
   });
 
+  // Local-session title auto-update. OpenCode generates a smart title after
+  // the first turn and emits `session.updated` with `info.title`; the
+  // OpenCodeSessionAdapter forwards a `session-renamed` event up through
+  // SessionManager. Without this listener, local sessions would stay named
+  // "Local Session" forever (the Claude path uses the topic-file watcher
+  // above, which never fires for local sessions). Mirrors the same
+  // sendForSession + broadcastRename calls the topic watcher uses.
+  sessionManager.on('session-renamed', ({ desktopSessionId, name }: { desktopSessionId: string; name: string }) => {
+    sendForSession(desktopSessionId, IPC.SESSION_RENAMED, desktopSessionId, name);
+    broadcastRename(desktopSessionId, name);
+  });
+
   // Set a named flag on a session (complete, priority, helpful). Persists in
   // conversation-index.json via SyncService (so it rides the existing
   // backup/downsync pipeline) and broadcasts SESSION_META_CHANGED so any open
@@ -2056,6 +2076,25 @@ export function registerIpcHandlers(
     const { locateOpenCodeBinary } = await import('./prerequisite-installer');
     const binaryPath = await locateOpenCodeBinary();
     if (!binaryPath) throw new Error('OpenCode binary not installed — install it via Settings → Local Models first');
+    // Self-heal: write a fresh opencode.json before spawning the daemon so it
+    // always sees the current Ollama model list. Belt-and-suspenders against
+    // any renderer-side flow that fails to call LOCAL_WRITE_OPENCODE_CONFIG
+    // (e.g., the 2026-05-06 bug where defaults.localEndpoint was undefined,
+    // the writer crashed, the silent catch hid it, and freshly-pulled models
+    // returned ProviderModelNotFoundError because the daemon spawn was stale).
+    // Failure here is logged but not fatal — if Ollama is unreachable the
+    // daemon still starts and the user can retry from Settings.
+    try {
+      const detector = detectorFor();
+      let models: string[] = [];
+      if (await detector.isReachable()) {
+        models = (await detector.listModels()).map(m => m.name);
+      }
+      const writer = new OpenCodeConfigWriter(os.homedir());
+      await writer.writeOllamaConfig({ ollamaBaseUrl: 'http://localhost:11434', models });
+    } catch (e: any) {
+      log('WARN', 'IPC', 'ensureOpenCodeService: pre-spawn config sync failed', { error: String(e?.message ?? e) });
+    }
     opencodeService = new OpenCodeService({ binaryPath });
     await opencodeService.start();
     sessionManager.setOpenCodeService(opencodeService);
@@ -2155,6 +2194,41 @@ export function registerIpcHandlers(
     // session is created. Guard handles the pre-startup case safely.
     if (!opencodeService || !opencodeService.isRunning()) return [];
     return await opencodeService.listSessions();
+  });
+
+  ipcMain.handle(IPC.LOCAL_RESTART_OPENCODE, async () => {
+    // Stop + start the daemon so it re-reads opencode.json from disk. The
+    // daemon caches provider config in memory after first load, so writing
+    // new model variants to opencode.json is invisible until the daemon
+    // restarts. Called after a model pull so freshly-added variant entries
+    // (qwen3.5:9b@low, etc.) become available without a full app restart.
+    //
+    // No-op if the daemon was never started (no local sessions yet — the
+    // first session will pick up the latest config when ensureOpenCodeService
+    // spawns it). Returns { ok } so the caller can surface failure.
+    if (!opencodeService) return { ok: true, restarted: false };
+    try {
+      // Belt-and-suspenders: refresh opencode.json before restarting so we
+      // never spawn the daemon against a stale model list. Same self-heal
+      // pattern as ensureOpenCodeService — protects against silent
+      // writeOpenCodeConfig failures upstream of this restart.
+      try {
+        const detector = detectorFor();
+        let models: string[] = [];
+        if (await detector.isReachable()) {
+          models = (await detector.listModels()).map(m => m.name);
+        }
+        const writer = new OpenCodeConfigWriter(os.homedir());
+        await writer.writeOllamaConfig({ ollamaBaseUrl: 'http://localhost:11434', models });
+      } catch (e: any) {
+        log('WARN', 'IPC', 'restartOpenCode: pre-restart config sync failed', { error: String(e?.message ?? e) });
+      }
+      await opencodeService.stop();
+      await opencodeService.start();
+      return { ok: true, restarted: true };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) };
+    }
   });
 
   // Return cleanup function for use during app shutdown

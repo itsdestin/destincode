@@ -72,6 +72,68 @@ const KEEP_AWAKE_OPTIONS = [
   { label: '24h', value: 24 },
 ];
 
+// Curated catalog of recommended Ollama models the user can one-click install
+// from Settings → Local Models. Sizes are approximate Q4-quantized GGUF sizes
+// (Ollama's default tag for these models). Sized for ~8 GB VRAM (most modern
+// laptop GPUs and entry desktop GPUs); models marked "tight" will spill to
+// system RAM on cards smaller than ~10 GB. Custom names go through the
+// free-text input below the catalog so power users can pull anything from
+// https://ollama.com/library without us maintaining a giant list.
+//
+// Catalog ordering is "default first, then alternatives, then niche/warned."
+// The first entry is what we recommend as the new-session default. Updated
+// 2026-05-11 after the model capability research pass:
+//
+//   - Default: qwen3:8b (Apache 2.0, strong tools, healthy in probes,
+//     smallest footprint of the strong options).
+//   - qwen3.5:9b demoted from default — Ollama has 5+ open bugs against
+//     this exact model (#14748, 14759, 14745, 14621, 14867). Multimodal
+//     and 256K context are genuine wins when it works, but it's the
+//     model most likely to crash on a typical 8 GB VRAM box. Marked ⚠.
+//   - Dropped qwen2.5-coder:7b — upstream QwenLM/Qwen3-Coder #180
+//     confirms tool calling is broken (returns finish_reason:"stop" with
+//     empty tool_calls). We have no coder-specialized replacement at this
+//     size class with verified tools; positioning qwen3:8b as the coding
+//     daily-driver instead. (Real coder specialists like Qwen3-Coder only
+//     come in 30B+ which is too big for our target VRAM.)
+//   - deepseek-r1:8b kept with ⚠ no-tools warning — agent features won't
+//     work but pure reasoning-chat users may want it.
+//
+// Catalog only includes tool-capable models (except deepseek-r1 which is
+// explicitly labeled). OpenCode is fundamentally a coding agent that sends
+// tool definitions on every prompt, so non-tool-capable models fail with
+// `APIError: ... does not support tools`. Excluded: gemma3 (no tools),
+// phi3/phi4-mini (Phi family weak on tools), llama3.2:3b (too small for
+// reliable tool use), qwen2.5-coder (broken upstream).
+const OLLAMA_MODEL_CATALOG: Array<{
+  name: string;
+  sizeLabel: string;
+  blurb: string;
+  /** Surface a yellow ⚠ chip + tooltip on the catalog row. Set when the
+   *  model has known issues users should weigh before installing. */
+  warning?: string;
+}> = [
+  // — Recommended default —
+  { name: 'qwen3:8b',           sizeLabel: '4.9 GB', blurb: 'Strong tools, Apache 2.0, 32K context — recommended default' },
+
+  // — Other strong options —
+  { name: 'gemma4:e2b',         sizeLabel: '7.2 GB', blurb: 'Gemma 4 — multimodal (text/image/audio), 128K context, thinking on/off' },
+  { name: 'gemma4:e4b',         sizeLabel: '9.6 GB', blurb: 'Larger Gemma 4 — better quality, tight on 8 GB VRAM' },
+
+  // — Older general-purpose baseline —
+  { name: 'qwen2.5:7b',         sizeLabel: '4.4 GB', blurb: 'Older Qwen 2.5 — stable, reliable tool use, no thinking' },
+
+  // — Reasoning specialist (no tool support) —
+  { name: 'deepseek-r1:8b',     sizeLabel: '5.0 GB', blurb: 'Reasoning chat — Qwen3 distill, always thinks',
+    warning: 'No tool calling — agent features (file edits, terminal, web fetch) will not work. Use only for pure reasoning chat.' },
+
+  // — Larger context, known-flaky on Ollama —
+  { name: 'qwen3.5:9b',         sizeLabel: '6.6 GB', blurb: 'Qwen 3.5 — 256K context, multimodal',
+    warning: 'Five open Ollama bugs against this exact model — may crash, hang, or leak tool-call text. Try qwen3:8b first.' },
+  { name: 'qwen3.5:4b',         sizeLabel: '3.4 GB', blurb: 'Smaller Qwen 3.5 — 256K context, fast',
+    warning: 'Same family as qwen3.5:9b; inherits its Ollama bug surface, though smaller scale may mean fewer crashes.' },
+];
+
 interface TailscaleInfo {
   installed: boolean;
   connected: boolean;
@@ -1283,8 +1345,368 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 }
 
 interface DefaultsButtonProps {
-  defaults: { skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled?: boolean; permissionOverrides?: PermissionOverrides; localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string };
-  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled: boolean; permissionOverrides: PermissionOverrides; localEndpoint: string; localDefaultModel: string; localSystemPrompt: string }>) => void;
+  defaults: { skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled?: boolean; permissionOverrides?: PermissionOverrides; localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string; localDefaultEffort?: 'none' | 'on' | 'low' | 'medium' | 'high' };
+  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled: boolean; permissionOverrides: PermissionOverrides; localEndpoint: string; localDefaultModel: string; localSystemPrompt: string; localDefaultEffort: 'none' | 'on' | 'low' | 'medium' | 'high' }>) => void;
+}
+
+// ─── Local Models popup button ──────────────────────────────────────────────
+//
+// Extracted from DefaultsButton when the section grew large enough to push the
+// rest of the defaults popup off-screen (Ollama endpoint, default model,
+// thinking effort, system prompt, available-models catalog with download UI,
+// custom-name input). Owns its own scroll container so each settings popup
+// stays bounded by the viewport.
+//
+// Hidden when local mode is unsupported (Android, remote browser) — feature-
+// detected via window.claude.local.supported. Same gate as the runtime
+// selector elsewhere in the renderer; no separate platform check needed.
+
+interface LocalModelsButtonProps {
+  defaults: { localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string; localDefaultEffort?: 'none' | 'on' | 'low' | 'medium' | 'high' };
+  onDefaultsChange: (updates: Partial<{ localEndpoint: string; localDefaultModel: string; localSystemPrompt: string; localDefaultEffort: 'none' | 'on' | 'low' | 'medium' | 'high' }>) => void;
+}
+
+function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProps) {
+  const [open, setOpen] = useState(false);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useScrollFade<HTMLDivElement>();
+
+  // Local mode availability is feature-detected, not platform-detected — same
+  // gate the SessionStrip runtime selector uses. Returning null cleanly hides
+  // the chip on Android and the remote browser.
+  const localSupported = !!(window as any).claude?.local?.supported;
+
+  const [localModelsForSettings, setLocalModelsForSettings] = useState<Array<{ name: string; sizeBytes: number }>>([]);
+  const [localModelsRefreshTick, setLocalModelsRefreshTick] = useState(0);
+  // Keyed by model name. `phase` mirrors the IPC progress event ("downloading",
+  // "verifying", "done", "error", etc.); `pct` only populated during the
+  // bytes-transfer phase. Lets multiple downloads run concurrently.
+  const [pullState, setPullState] = useState<Map<string, { phase: string; pct?: number; error?: string }>>(new Map());
+  const [customModelName, setCustomModelName] = useState('');
+
+  // Refresh the installed-model list when the endpoint changes OR after a
+  // pull completes (refreshTick bumps). Drives the "Default Model" dropdown
+  // and the catalog's "Installed ✓" badges.
+  useEffect(() => {
+    if (!localSupported) return;
+    let cancelled = false;
+    const local = (window as any).claude?.local;
+    local.listOllamaModels(defaults.localEndpoint).then((res: any) => {
+      if (!cancelled) setLocalModelsForSettings(res?.models ?? []);
+    }).catch(() => {
+      if (!cancelled) setLocalModelsForSettings([]);
+    });
+    return () => { cancelled = true; };
+  }, [defaults.localEndpoint, localModelsRefreshTick, localSupported]);
+
+  // Write opencode.json when the endpoint changes (debounced — each keystroke
+  // would otherwise trigger a JSON read+write to disk). Also re-writes whenever
+  // localModelsRefreshTick bumps so a model installed via the catalog (or
+  // outside YouCoded, e.g. `ollama pull` from a terminal) gets its 4 effort
+  // variants added to opencode.json's models map. Without this re-run,
+  // SessionManager would send a variant key (qwen3.5:9b@low) that isn't
+  // registered and OpenCode 404s with ProviderModelNotFoundError.
+  useEffect(() => {
+    if (!localSupported) return;
+    if (!defaults.localEndpoint) return;
+    const local = (window as any).claude?.local;
+    const handle = setTimeout(() => {
+      local.writeOpenCodeConfig({ ollamaBaseUrl: defaults.localEndpoint }).catch(() => {});
+    }, 500);
+    return () => clearTimeout(handle);
+  }, [defaults.localEndpoint, localSupported, localModelsRefreshTick]);
+
+  // Self-heal: on first popup mount (or any time the installed-model list
+  // changes outside the catalog flow), re-sync opencode.json so existing
+  // sessions can use any newly-pulled models without restarting the app.
+  // Skips when the list is empty (Ollama unreachable) — no point overwriting.
+  useEffect(() => {
+    if (!localSupported) return;
+    if (localModelsForSettings.length === 0) return;
+    const local = (window as any).claude?.local;
+    local.writeOpenCodeConfig({ ollamaBaseUrl: defaults.localEndpoint || 'http://localhost:11434' }).catch(() => {});
+  }, [localSupported, localModelsForSettings.length, defaults.localEndpoint]);
+
+  // Pull a model from Ollama's library, with progress events fed back into
+  // pullState. On success, bump refreshTick so the new model appears in the
+  // dropdown + the catalog's badge.
+  const handlePullModel = useCallback(async (name: string) => {
+    const local = (window as any).claude?.local;
+    if (!local?.pullModel) return;
+    setPullState((prev) => new Map(prev).set(name, { phase: 'starting' }));
+    const off = local.onPullModelProgress?.((ev: { name: string; phase: string; pct?: number; message?: string }) => {
+      if (ev.name !== name) return;
+      setPullState((prev) => {
+        const next = new Map(prev);
+        next.set(name, {
+          phase: ev.phase,
+          pct: ev.pct,
+          error: ev.phase === 'error' ? ev.message : undefined,
+        });
+        return next;
+      });
+    });
+    try {
+      const res = await local.pullModel(name, defaults.localEndpoint);
+      if (!res?.ok) {
+        setPullState((prev) => new Map(prev).set(name, { phase: 'error', error: res?.error || 'Pull failed' }));
+        return;
+      }
+      setPullState((prev) => { const next = new Map(prev); next.delete(name); return next; });
+      setLocalModelsRefreshTick((t) => t + 1);
+      // Two-step refresh:
+      //   1. Rewrite opencode.json so the new model's 4 effort variants
+      //      (canonical + @low/@medium/@high) appear in the provider map.
+      //   2. Restart the daemon so it re-reads opencode.json — without this,
+      //      the running daemon's cached provider config is unaware of the
+      //      new entries and SessionManager 404s with ProviderModelNotFoundError.
+      //      (Bug surfaced 2026-05-06 when qwen3.5:9b@low produced "Model not
+      //      found" immediately after a successful pull. Re-surfaced 2026-05-06
+      //      with gemma4:e2b — root cause was defaults.localEndpoint being
+      //      undefined; writer crashed and the silent catch hid it. Fix: pass
+      //      explicit fallback AND surface errors via pullState so we'd see
+      //      this next time.)
+      try {
+        const endpoint = defaults.localEndpoint || 'http://localhost:11434';
+        await local.writeOpenCodeConfig({ ollamaBaseUrl: endpoint });
+        const r = await local.restartOpenCode?.();
+        if (r && r.ok === false) {
+          // restart failed — surface so user can see why their newly-pulled
+          // model is invisible to the daemon. Pull itself succeeded, so we
+          // mark the row with a non-fatal error message.
+          setPullState((prev) => new Map(prev).set(name, { phase: 'error', error: `Daemon restart failed: ${r.error || 'unknown'}` }));
+        }
+      } catch (e: any) {
+        setPullState((prev) => new Map(prev).set(name, { phase: 'error', error: `Config sync failed: ${e?.message || String(e)}` }));
+      }
+    } catch (e: any) {
+      setPullState((prev) => new Map(prev).set(name, { phase: 'error', error: e?.message || String(e) }));
+    } finally {
+      off?.();
+    }
+  }, [defaults.localEndpoint]);
+
+  // Outside-click closes the popup (matches SoundButton).
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (popupRef.current && !popupRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  if (!localSupported) return null;
+
+  // Compact summary line for the chip — shows what'll be used for the next
+  // local session at a glance (e.g. "qwen3:8b · Off · 3 installed").
+  const installedCount = localModelsForSettings.length;
+  const summaryParts = [
+    defaults.localDefaultModel || (installedCount > 0 ? '(first installed)' : 'No models'),
+    `Thinking: ${(defaults.localDefaultEffort || 'none') === 'none' ? 'Off' : defaults.localDefaultEffort}`,
+    `${installedCount} installed`,
+  ];
+
+  return (
+    <section>
+      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Local Models</h3>
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+      >
+        <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
+          {/* Tiny "local hardware" icon — chip silhouette */}
+          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+            <rect x="4" y="4" width="16" height="16" rx="2" />
+            <rect x="9" y="9" width="6" height="6" />
+            <line x1="9" y1="2" x2="9" y2="4" /><line x1="15" y1="2" x2="15" y2="4" />
+            <line x1="9" y1="20" x2="9" y2="22" /><line x1="15" y1="20" x2="15" y2="22" />
+            <line x1="20" y1="9" x2="22" y2="9" /><line x1="20" y1="14" x2="22" y2="14" />
+            <line x1="2" y1="9" x2="4" y2="9" /><line x1="2" y1="14" x2="4" y2="14" />
+          </svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <span className="text-xs text-fg font-medium">Local Models</span>
+          <p className="text-[10px] text-fg-muted truncate">{summaryParts.join(' · ')}</p>
+        </div>
+        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
+      {open && createPortal(
+        <>
+          <Scrim layer={2} onClick={() => setOpen(false)} />
+          <div
+            ref={popupRef}
+            className="layer-surface fixed z-[61] overflow-hidden"
+            style={{
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 'min(440px, 92vw)',
+              maxHeight: '85vh',
+            }}
+          >
+            <div className="flex flex-col h-full" style={{ maxHeight: '85vh' }}>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
+                <h2 className="text-sm font-bold text-fg">Local Models</h2>
+                <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
+              </div>
+              <div ref={scrollRef} className="scroll-fade overflow-y-auto">
+                <div className="px-4 py-4 space-y-4">
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">Ollama Endpoint URL</label>
+                    <input
+                      type="text"
+                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
+                      value={defaults.localEndpoint || 'http://localhost:11434'}
+                      onChange={(e) => onDefaultsChange({ localEndpoint: e.target.value })}
+                    />
+                    <div className="text-[10px] text-fg-muted mt-1">
+                      Defaults to Ollama on localhost. Point at LM Studio (typically <code>http://localhost:1234</code>) or any other OpenAI-compatible endpoint.
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">Default Model</label>
+                    <select
+                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
+                      value={defaults.localDefaultModel || ''}
+                      onChange={(e) => onDefaultsChange({ localDefaultModel: e.target.value })}
+                    >
+                      <option value="">(use first installed)</option>
+                      {localModelsForSettings.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">Default Thinking Effort</label>
+                    <select
+                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
+                      value={defaults.localDefaultEffort || 'none'}
+                      onChange={(e) => onDefaultsChange({ localDefaultEffort: e.target.value as 'none' | 'on' | 'low' | 'medium' | 'high' })}
+                    >
+                      <option value="none">Off (fastest)</option>
+                      <option value="on">On (binary-thinking models like Gemma 4)</option>
+                      <option value="low">Low (graduated — Qwen 3)</option>
+                      <option value="medium">Medium (graduated — Qwen 3)</option>
+                      <option value="high">High (graduated — Qwen 3, slowest)</option>
+                    </select>
+                    <div className="text-[10px] text-fg-muted mt-1">
+                      Applies to new sessions when the chosen model supports the level. The new-session form auto-clamps to "Off" if the picked model doesn't support the saved default.
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">System Prompt</label>
+                    <textarea
+                      rows={3}
+                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm font-mono"
+                      value={defaults.localSystemPrompt || ''}
+                      placeholder="You are a helpful assistant. The user is using YouCoded..."
+                      onChange={(e) => onDefaultsChange({ localSystemPrompt: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="border-t border-edge-dim" />
+
+                  <div>
+                    <label className="text-xs text-fg-muted block mb-1">Available Models</label>
+                    <div className="space-y-1">
+                      {OLLAMA_MODEL_CATALOG.map((m) => {
+                        const installed = localModelsForSettings.some(im => im.name === m.name);
+                        const pulling = pullState.get(m.name);
+                        return (
+                          <div key={m.name} className="flex items-center gap-2 bg-panel border border-edge rounded px-2 py-1.5">
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-mono text-fg truncate flex items-center gap-1.5">
+                                {m.name}
+                                {/* Warning chip — shown for models with known
+                                    issues (e.g. qwen3.5:9b's open Ollama bugs,
+                                    deepseek-r1's lack of tool support).
+                                    Hovering shows the full caveat. */}
+                                {m.warning && (
+                                  <span
+                                    title={m.warning}
+                                    className="text-[9px] px-1 py-0.5 rounded bg-yellow-500/15 text-yellow-600 shrink-0 cursor-help font-sans"
+                                  >
+                                    ⚠
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-fg-muted truncate">{m.sizeLabel} — {m.blurb}</div>
+                            </div>
+                            {installed ? (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 shrink-0">Installed</span>
+                            ) : pulling ? (
+                              <div className="text-[10px] text-fg-2 shrink-0 min-w-[60px] text-right">
+                                {pulling.error
+                                  ? <span className="text-[#DD4444]">Failed</span>
+                                  : pulling.pct !== undefined
+                                    ? `${pulling.pct}%`
+                                    : pulling.phase}
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => handlePullModel(m.name)}
+                                className="text-[10px] px-2 py-1 rounded bg-accent text-on-accent shrink-0 hover:brightness-110 transition-colors"
+                              >
+                                Install
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-2">
+                      <input
+                        type="text"
+                        className="flex-1 bg-panel border border-edge rounded px-2 py-1 text-xs font-mono"
+                        placeholder="custom-name:tag (e.g. deepseek-r1:7b)"
+                        value={customModelName}
+                        onChange={(e) => setCustomModelName(e.target.value)}
+                      />
+                      <button
+                        onClick={() => {
+                          const trimmed = customModelName.trim();
+                          if (!trimmed) return;
+                          if (pullState.has(trimmed)) return;
+                          handlePullModel(trimmed);
+                          setCustomModelName('');
+                        }}
+                        disabled={!customModelName.trim()}
+                        className="text-[10px] px-2 py-1 rounded bg-accent text-on-accent shrink-0 hover:brightness-110 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Pull
+                      </button>
+                    </div>
+                    <div className="text-[10px] text-fg-muted mt-1">
+                      Browse the full catalog at{' '}
+                      <button
+                        onClick={() => (window as any).claude?.shell?.openExternal?.('https://ollama.com/library')}
+                        className="underline hover:text-fg-2 transition-colors"
+                      >
+                        ollama.com/library
+                      </button>.
+                    </div>
+
+                    {[...pullState.entries()].filter(([, v]) => v.error).slice(-1).map(([name, v]) => (
+                      <div key={`err-${name}`} className="mt-2 text-[10px] text-[#DD4444]">
+                        {name} — {v.error}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>,
+        document.body,
+      )}
+    </section>
+  );
 }
 
 function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
@@ -1297,22 +1719,10 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
     () => localStorage.getItem(CLOSE_PROMPT_SUPPRESS_KEY) === '1',
   );
 
-  // Local Models — model list fetched from the configured Ollama endpoint.
-  const [localModelsForSettings, setLocalModelsForSettings] = useState<Array<{ name: string; sizeBytes: number }>>([]);
-
-  // Refresh model list whenever the endpoint changes (lets the dropdown reflect
-  // what's installed on the user's chosen Ollama instance).
-  useEffect(() => {
-    let cancelled = false;
-    const local = (window as any).claude?.local;
-    if (!local?.supported) return;
-    local.listOllamaModels(defaults.localEndpoint).then((res: any) => {
-      if (!cancelled) setLocalModelsForSettings(res?.models ?? []);
-    }).catch(() => {
-      if (!cancelled) setLocalModelsForSettings([]);
-    });
-    return () => { cancelled = true; };
-  }, [defaults.localEndpoint]);
+  // Local Models settings + catalog moved to LocalModelsButton (own popup).
+  // The endpoint-write debounce stays here ONLY because some legacy logic
+  // referenced it, but the new copy lives in LocalModelsButton too — leaving
+  // both is harmless because Ollama writes are idempotent.
 
   // Write OpenCode config when endpoint changes (debounced — each keystroke
   // would otherwise trigger a JSON read+write to disk).
@@ -1481,46 +1891,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                   </div>
                 </section>
 
-                {/* Local Models — Ollama endpoint + default model + system prompt */}
-                <div className="border-t border-edge pt-3 mt-3 space-y-3">
-                  <div className="text-xs uppercase tracking-wider text-fg-muted">Local Models</div>
-
-                  <div>
-                    <label className="text-xs text-fg-muted block mb-1">Ollama Endpoint URL</label>
-                    <input
-                      type="text"
-                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
-                      value={defaults.localEndpoint || 'http://localhost:11434'}
-                      onChange={(e) => onDefaultsChange({ localEndpoint: e.target.value })}
-                    />
-                    <div className="text-[10px] text-fg-muted mt-1">
-                      Defaults to Ollama on localhost. Point at LM Studio (typically <code>http://localhost:1234</code>) or any other OpenAI-compatible endpoint.
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-fg-muted block mb-1">Default Model</label>
-                    <select
-                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
-                      value={defaults.localDefaultModel || ''}
-                      onChange={(e) => onDefaultsChange({ localDefaultModel: e.target.value })}
-                    >
-                      <option value="">(use first installed)</option>
-                      {localModelsForSettings.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-fg-muted block mb-1">System Prompt</label>
-                    <textarea
-                      rows={3}
-                      className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm font-mono"
-                      value={defaults.localSystemPrompt || ''}
-                      placeholder="You are a helpful assistant. The user is using YouCoded..."
-                      onChange={(e) => onDefaultsChange({ localSystemPrompt: e.target.value })}
-                    />
-                  </div>
-                </div>
+                {/* Local Models moved to its own settings chip (LocalModelsButton). */}
                 </div>
               </div>
             </div>
@@ -2370,6 +2741,8 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
         <SoundButton />
 
         <PerformanceButton />
+
+        <LocalModelsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
