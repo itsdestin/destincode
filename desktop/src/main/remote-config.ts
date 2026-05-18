@@ -146,7 +146,10 @@ export class RemoteConfig {
         ? ['C:\\Program Files\\Tailscale\\tailscale.exe', `${process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'}\\Tailscale\\tailscale.exe`]
         : process.platform === 'darwin'
           ? ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale']
-          : ['/usr/bin/tailscale', '/usr/local/bin/tailscale'];
+          // Linux: `which` above already covers anything on PATH. These are
+          // common install locations that a GUI-launched app's stripped PATH
+          // often misses — notably /snap/bin (snap) and linuxbrew.
+          : ['/usr/bin/tailscale', '/usr/local/bin/tailscale', '/snap/bin/tailscale', '/home/linuxbrew/.linuxbrew/bin/tailscale'];
       for (const p of candidates) {
         try { fs.accessSync(p); tsPath = p; break; } catch {}
       }

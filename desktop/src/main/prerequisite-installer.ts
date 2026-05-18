@@ -423,8 +423,23 @@ export async function installGit(): Promise<{ success: boolean; error?: string }
       }
       log('INFO', 'prereq', `Git installed: ${check.version}`);
       return { success: true };
+    } else if (process.platform === 'linux') {
+      // No portable Git tarball exists, and a real install needs root +
+      // distro detection (apt/dnf/pacman) — not something to do silently.
+      // Git ships preinstalled on most Linux distros, and installMissing()
+      // re-detects before calling this, so reaching here means Git is
+      // genuinely absent. Surface actionable per-distro guidance instead of
+      // a dead-end "unsupported platform" error.
+      return {
+        success: false,
+        error:
+          'Install Git with your distribution\'s package manager, then click Try Again:\n' +
+          '  Debian / Ubuntu:  sudo apt install git\n' +
+          '  Fedora / RHEL:    sudo dnf install git\n' +
+          '  Arch:             sudo pacman -S git',
+      };
     } else {
-      return { success: false, error: 'Unsupported platform for Git install' };
+      return { success: false, error: `Unsupported platform for Git install: ${process.platform}` };
     }
 
     refreshPath();
