@@ -35,7 +35,9 @@ screenshot.png
 .worktrees/
 
 # Desktop app (Electron)
-node_modules/
+# No trailing slash: also ignores a `node_modules` symlink (a dev worktree
+# pointing its deps at a sibling checkout), not just a real directory.
+node_modules
 desktop/dist/
 desktop/build/
 desktop/release/
