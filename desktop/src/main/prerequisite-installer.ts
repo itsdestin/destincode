@@ -323,6 +323,22 @@ export async function detectAuth(): Promise<DetectionResult> {
 // Installation functions
 // ---------------------------------------------------------------------------
 
+/**
+ * True on musl-libc Linux (Alpine, etc.). The official nodejs.org prebuilt
+ * tarballs are glibc-linked and fail to exec on musl, so installNode() must
+ * bail early with actionable guidance rather than "succeed" and then fail the
+ * post-install detectNode() with an opaque error. musl ships its loader as
+ * /lib/ld-musl-<arch>.so.1; glibc does not.
+ */
+function isMuslLinux(): boolean {
+  if (process.platform !== 'linux') return false;
+  try {
+    return fs.readdirSync('/lib').some((f) => f.startsWith('ld-musl-'));
+  } catch {
+    return false;
+  }
+}
+
 /** Install Node.js silently. */
 export async function installNode(): Promise<{ success: boolean; error?: string }> {
   try {
@@ -341,6 +357,22 @@ export async function installNode(): Promise<{ success: boolean; error?: string 
         { timeout: 300000 },
       );
     } else if (process.platform === 'darwin' || process.platform === 'linux') {
+      // Fix (v1.2.4): the official nodejs.org prebuilt tarballs are glibc-linked
+      // and will not exec on musl-libc distros (Alpine). Detect musl up front
+      // and surface actionable per-distro guidance — otherwise the tarball
+      // "installs" fine and detectNode() fails afterward with an unhelpful
+      // "Node.js not found after install".
+      if (isMuslLinux()) {
+        return {
+          success: false,
+          error:
+            'This looks like a musl-libc Linux distro (e.g. Alpine), which the ' +
+            'bundled Node.js installer does not support. Install Node with your ' +
+            'package manager, then click Try Again:\n' +
+            '  Alpine:  sudo apk add nodejs npm',
+        };
+      }
+
       // User-local tarball install — no sudo, no admin prompt, no distro
       // package manager. macOS: Node's .pkg is system-wide only (previous
       // `installer -target CurrentUserHomeDirectory` was rejected by the pkg
