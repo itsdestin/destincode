@@ -70,19 +70,21 @@ export interface DetectionResult {
 }
 
 // ---------------------------------------------------------------------------
-// User-local install layout (macOS)
+// User-local install layout (macOS + Linux)
 //
-// Node's official .pkg requires admin (sudo) and does not honor
+// Node's official macOS .pkg requires admin (sudo) and does not honor
 // `-target CurrentUserHomeDirectory` — the pkg isn't authored for per-user
-// install, so `installer` exits non-zero for a normal user. We sidestep by
-// extracting the official tarball to a user-writable dir and persisting it
-// to PATH ourselves, so no admin prompt is ever needed.
+// install, so `installer` exits non-zero for a normal user. On Linux, a
+// distro-package-manager install (apt/dnf/pacman) would each need sudo plus
+// distro detection. We sidestep both by extracting the official prebuilt
+// tarball to a user-writable dir and persisting it to PATH ourselves, so no
+// admin prompt and no package manager is ever needed.
 // ---------------------------------------------------------------------------
 
 const NODE_VERSION = 'v20.19.0';
 const PATH_MARKER = '# Added by YouCoded first-run installer';
 
-/** Root dir for YouCoded-managed user-local tools (macOS). */
+/** Root dir for YouCoded-managed user-local tools (macOS: ~/Library/..., Linux: ~/.youcoded). */
 function youcodedDataDir(): string {
   if (process.platform === 'darwin') {
     return path.join(os.homedir(), 'Library', 'Application Support', 'YouCoded');
@@ -90,7 +92,7 @@ function youcodedDataDir(): string {
   return path.join(os.homedir(), '.youcoded');
 }
 
-/** Where we extract Node's tarball on macOS. */
+/** Where we extract Node's tarball (macOS + Linux). */
 export function userLocalNodeDir(): string {
   return path.join(youcodedDataDir(), 'node');
 }
@@ -338,12 +340,17 @@ export async function installNode(): Promise<{ success: boolean; error?: string 
         ],
         { timeout: 300000 },
       );
-    } else if (process.platform === 'darwin') {
-      // User-local tarball install — no sudo, no admin prompt.
-      // Node's .pkg is system-wide only; previous `installer -target
-      // CurrentUserHomeDirectory` was rejected by the pkg metadata.
+    } else if (process.platform === 'darwin' || process.platform === 'linux') {
+      // User-local tarball install — no sudo, no admin prompt, no distro
+      // package manager. macOS: Node's .pkg is system-wide only (previous
+      // `installer -target CurrentUserHomeDirectory` was rejected by the pkg
+      // metadata). Linux: apt/dnf/pacman would each need sudo + distro
+      // detection. The official prebuilt tarball sidesteps both.
+      //
+      // `process.platform` ('darwin' | 'linux') is also the exact token Node
+      // uses in its dist tarball names, so we interpolate it directly.
       const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-      const tarName = `node-${NODE_VERSION}-darwin-${arch}.tar.gz`;
+      const tarName = `node-${NODE_VERSION}-${process.platform}-${arch}.tar.gz`;
       const tmpTar = path.join(os.tmpdir(), tarName);
       await downloadFile(
         `https://nodejs.org/dist/${NODE_VERSION}/${tarName}`,
@@ -352,7 +359,7 @@ export async function installNode(): Promise<{ success: boolean; error?: string 
 
       const installDir = userLocalNodeDir();
       fs.mkdirSync(installDir, { recursive: true });
-      // --strip-components=1 peels the top-level `node-vX.Y.Z-darwin-<arch>/`
+      // --strip-components=1 peels the top-level `node-vX.Y.Z-<plat>-<arch>/`
       // directory so bin/ lib/ include/ share/ land directly under installDir.
       await runCommand('tar', [
         '-xzf', tmpTar,
@@ -365,7 +372,7 @@ export async function installNode(): Promise<{ success: boolean; error?: string 
       prependToProcessPath(userLocalNodeBinDir());
       persistPathToShellProfiles(userLocalNodeBinDir());
     } else {
-      return { success: false, error: 'Unsupported platform for Node.js install' };
+      return { success: false, error: `Unsupported platform for Node.js install: ${process.platform}` };
     }
 
     refreshPath();
