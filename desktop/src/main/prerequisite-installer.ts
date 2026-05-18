@@ -506,11 +506,24 @@ export async function installClaude(): Promise<{ success: boolean; error?: strin
       );
     } else if (process.platform === 'darwin' || process.platform === 'linux') {
       // bash is guaranteed present on macOS and on every supported Linux distro.
-      // The installer itself uses `set -e`, so any failure inside `curl | bash`
+      // The installer itself uses `set -e`, so any failure inside the pipe
       // propagates as a non-zero exit.
+      //
+      // Fix (v1.2.4): curl is NOT guaranteed on minimal Linux installs (Debian
+      // netinst, some container images ship only wget). Probe for curl first,
+      // fall back to wget, and if neither exists exit with an actionable
+      // message instead of an opaque "curl: command not found". `set -o
+      // pipefail` is required so a failure on the LEFT side of the pipe (the
+      // downloader / the no-downloader `exit 1`) is not masked by `bash`
+      // exiting 0 on empty stdin.
       await runCommand(
         'bash',
-        ['-c', 'curl -fsSL https://claude.ai/install.sh | bash'],
+        ['-c',
+          'set -o pipefail; url=https://claude.ai/install.sh; ' +
+          '{ if command -v curl >/dev/null 2>&1; then curl -fsSL "$url"; ' +
+          'elif command -v wget >/dev/null 2>&1; then wget -qO- "$url"; ' +
+          'else echo "Neither curl nor wget is installed. Install one with ' +
+          'your package manager, then click Try Again." >&2; exit 1; fi; } | bash'],
         { timeout: 300000 },
       );
     } else {
