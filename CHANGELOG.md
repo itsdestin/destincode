@@ -2,6 +2,58 @@
 
 All notable changes to YouCoded are documented in this file.
 
+## [1.2.4] — 2026-05-18
+
+**Claude Code CLI baseline:** v2.1.143
+
+Patch release. The headline change is the analytics redesign: anonymous
+telemetry is now keyed by a device-ID hash instead of a random install ID,
+so reinstalls no longer inflate the user count. The bug-report flow gained
+an environment-diagnostics snapshot, three Linux desktop platform-parity
+gaps were closed, and the first-run installer is more robust on minimal,
+musl, and fish-shell Linux setups.
+
+### Added
+- **Bug-report environment diagnostics** — The Settings → Development issue
+  reporter attaches an environment snapshot (git/claude/gh on PATH, ~/.claude
+  permissions, marketplace cache health, GitHub reachability) to bug reports.
+  Home paths and token patterns are redacted; the snapshot appears in the
+  editable preview before submission. Desktop + Android.
+- **PRIVACY.md, TERMS.md, SECURITY.md** — Public privacy policy, terms of
+  service, and security-disclosure policy for the project.
+
+### Changed
+- **Analytics: device-ID-hash redesign** — Anonymous opt-out telemetry is now
+  keyed by an on-device HMAC hash of a hardware ID — the raw machine ID never
+  leaves the device, and reinstalling no longer creates a new "user". Adds
+  approximate region (derived server-side from request IP) and drops the
+  separate install event. Desktop + Android; opt-out in Settings → About →
+  Privacy.
+
+### Fixed
+- **CC prompt-suggestion auto-submit** — YouCoded force-disables Claude Code's
+  next-prompt ghost-text suggestion on every launch. The ghost text
+  concatenated with chat→PTY writes and auto-submitted on the trailing
+  carriage return, sending text the user never typed. Desktop + Android.
+- **Linux platform parity** — Closed three desktop gaps: the first-run
+  installer auto-installs Node.js on Linux, the custom window caption buttons
+  render on Linux's frameless window, and three smaller parity gaps were fixed.
+- **First-run installer robustness (Linux)** — The Claude Code installer falls
+  back to `wget` when `curl` is absent; the Node.js installer detects musl
+  distros (Alpine) up front with package-manager guidance instead of failing
+  opaquely; and the Node PATH entry is persisted to `config.fish` for fish
+  users.
+- **Bug-report subprocess reliability (Windows)** — dev-tools subprocesses
+  (git/gh/claude) resolve to absolute paths and EINVAL-guard `.cmd` shims, so
+  environment diagnostics and the issue summarizer no longer under-deliver on
+  Windows.
+- **Theme effects** — The particle canvas pauses its animation loop when the
+  window is hidden, and masks out chrome regions so particles no longer render
+  under the header and input bar.
+- **Open Tasks popup** — The popup body is scrollable when the task list is long.
+- **Chat→PTY submit** — The submit-confirmation `\r` retry is suppressed while
+  the terminal view is active, preventing a stray carriage return.
+
 ## [1.2.3] — 2026-05-01
 
 **Claude Code CLI baseline:** v2.1.126
