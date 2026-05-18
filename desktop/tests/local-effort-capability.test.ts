@@ -31,13 +31,6 @@ describe('getSupportedEffortLevels', () => {
     expect([...getSupportedEffortLevels('gemma4:e2b@on')].sort()).toEqual(['none', 'on']);
   });
 
-  it('returns binary on/off for deepseek-r1 — reasoning specialist', () => {
-    // DeepSeek-R1 distills always think; the chip still exposes On/Off so
-    // users can see the toggle, even though Off doesn't fully disable
-    // thinking on this model.
-    expect([...getSupportedEffortLevels('deepseek-r1:8b')].sort()).toEqual(['none', 'on']);
-  });
-
   it('returns Off-only for non-thinking models (default)', () => {
     // Conservative allowlist — most Ollama models don't support thinking
     // at all, and exposing On would produce errors or hangs.
@@ -79,12 +72,10 @@ describe('getModelCapability', () => {
     expect(cap.mechanism).toBe('variant');
   });
 
-  it('marks deepseek-r1 as variant mechanism', () => {
-    const cap = getModelCapability('deepseek-r1:8b');
-    expect(cap.mechanism).toBe('variant');
-  });
-
   it('marks unknown / non-thinking models with none-mechanism', () => {
+    // deepseek-r1 was dropped from the catalog (tool calling fails) — it
+    // now falls through to the conservative none-mechanism default.
+    expect(getModelCapability('deepseek-r1:8b').mechanism).toBe('none');
     expect(getModelCapability('llama3.1:8b').mechanism).toBe('none');
     expect(getModelCapability('qwen2.5:7b').mechanism).toBe('none');
     expect(getModelCapability('mistral:7b').mechanism).toBe('none');

@@ -57,24 +57,21 @@ const NONE_ONLY: ReadonlySet<EffortLevel> = new Set(['none']);
  * OpenAI-compat translation to `think:true`). Prefix match against the
  * model's base name (size tag + @on suffix stripped).
  *
- * Updated 2026-05-11 after research + empirical probes. Removed:
+ * Updated 2026-05-18 after research + empirical probes. Removed:
  *   - 'qwen3-bigctx', 'qwen3-nothink', 'qwen3-coder' — internal variants,
  *     not in the user-visible catalog
+ *   - 'deepseek-r1' — dropped from the catalog entirely; the probe showed
+ *     tool calling fails and reasoning probes time out
  * Kept:
  *   - 'qwen3'  — confirmed working with reasoning_effort:"none" (off) and
  *                with "medium" (on, embedded reasoning OR separate field
  *                depending on Ollama renderer version)
  *   - 'gemma4' — confirmed working end-to-end via probe; reasoning field
  *                separates cleanly from content
- *   - 'deepseek-r1' — known reasoning specialist; thinking is ALWAYS on
- *                    regardless of the effort field. Listed here so the
- *                    chip's On state is enabled; callers should still
- *                    expect reasoning even with Off.
  */
 const THINKING_CAPABLE_MODELS: readonly string[] = [
   'qwen3',
   'gemma4',
-  'deepseek-r1',
 ];
 
 /**

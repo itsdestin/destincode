@@ -96,15 +96,17 @@ const KEEP_AWAKE_OPTIONS = [
 //     size class with verified tools; positioning qwen3:8b as the coding
 //     daily-driver instead. (Real coder specialists like Qwen3-Coder only
 //     come in 30B+ which is too big for our target VRAM.)
-//   - deepseek-r1:8b kept with ⚠ no-tools warning — agent features won't
-//     work but pure reasoning-chat users may want it.
+//   - Dropped deepseek-r1:8b (2026-05-18) — capability probe confirmed tool
+//     calling fails entirely, reasoning probes time out, and it's an older
+//     Qwen3 distill. A no-tools model in a tool-driven agent app is more
+//     confusing than useful.
 //
-// Catalog only includes tool-capable models (except deepseek-r1 which is
-// explicitly labeled). OpenCode is fundamentally a coding agent that sends
-// tool definitions on every prompt, so non-tool-capable models fail with
-// `APIError: ... does not support tools`. Excluded: gemma3 (no tools),
-// phi3/phi4-mini (Phi family weak on tools), llama3.2:3b (too small for
-// reliable tool use), qwen2.5-coder (broken upstream).
+// Catalog only includes tool-capable models. OpenCode is fundamentally a
+// coding agent that sends tool definitions on every prompt, so
+// non-tool-capable models fail with `APIError: ... does not support tools`.
+// Excluded: gemma3 (no tools), phi3/phi4-mini (Phi family weak on tools),
+// llama3.2:3b (too small for reliable tool use), qwen2.5-coder (broken
+// upstream), deepseek-r1 (tool calling fails — see above).
 const OLLAMA_MODEL_CATALOG: Array<{
   name: string;
   sizeLabel: string;
@@ -122,10 +124,6 @@ const OLLAMA_MODEL_CATALOG: Array<{
 
   // — Older general-purpose baseline —
   { name: 'qwen2.5:7b',         sizeLabel: '4.4 GB', blurb: 'Older Qwen 2.5 — stable, reliable tool use, no thinking' },
-
-  // — Reasoning specialist (no tool support) —
-  { name: 'deepseek-r1:8b',     sizeLabel: '5.0 GB', blurb: 'Reasoning chat — Qwen3 distill, always thinks',
-    warning: 'No tool calling — agent features (file edits, terminal, web fetch) will not work. Use only for pure reasoning chat.' },
 
   // — Larger context, known-flaky on Ollama —
   { name: 'qwen3.5:9b',         sizeLabel: '6.6 GB', blurb: 'Qwen 3.5 — 256K context, multimodal',
