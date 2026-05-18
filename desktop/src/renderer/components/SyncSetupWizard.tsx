@@ -188,8 +188,13 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
     const types: { type: BackendType; desc: string }[] = [
       { type: 'drive', desc: 'Stores your data in a Google Drive folder. Works on any device.' },
       { type: 'github', desc: 'Stores your data in a private GitHub repository. Includes full version history.' },
-      // iCloud not available on Android — no iCloud Drive support
-      ...(!checkIsAndroid() ? [{ type: 'icloud' as BackendType, desc: 'Stores your data in iCloud Drive. Best for Mac and iPhone users.' }] : []),
+      // iCloud only where an iCloud Drive client exists: macOS, and
+      // iCloud-for-Windows on Windows. Linux has no iCloud client at all and
+      // Android has no iCloud Drive support — offering it there gave users a
+      // dead option that silently failed prereq detection.
+      ...(!checkIsAndroid() && detectDesktopOS() !== 'linux'
+        ? [{ type: 'icloud' as BackendType, desc: 'Stores your data in iCloud Drive. Best for Mac and iPhone users.' }]
+        : []),
     ];
 
     return (
