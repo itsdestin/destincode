@@ -119,18 +119,36 @@ function prependToProcessPath(dir: string): void {
 function persistPathToShellProfiles(dir: string): void {
   if (process.platform === 'win32') return;
   const home = os.homedir();
-  const block = `\n${PATH_MARKER}\nexport PATH="${dir}:$PATH"\n`;
-  const candidates = [
-    path.join(home, '.zshrc'),
-    path.join(home, '.bash_profile'),
-    path.join(home, '.bashrc'),
+  const bashLine = `export PATH="${dir}:$PATH"`;
+
+  // Fix (v1.2.4): fish does not understand POSIX `export PATH=...` syntax, so a
+  // fish user (increasingly common on Linux) would lose the new Node bin dir on
+  // every shell restart. fish uses `set -gx PATH ...` and its config lives at
+  // ~/.config/fish/config.fish. Only touch the fish config when fish is
+  // plausibly the user's shell (file already exists, or $SHELL points at fish)
+  // so we don't scatter fish config onto non-fish users' machines.
+  const fishConfig = path.join(home, '.config', 'fish', 'config.fish');
+  const usesFish =
+    (process.env.SHELL ?? '').endsWith('/fish') || fs.existsSync(fishConfig);
+
+  const targets: Array<{ file: string; line: string }> = [
+    { file: path.join(home, '.zshrc'), line: bashLine },
+    { file: path.join(home, '.bash_profile'), line: bashLine },
+    { file: path.join(home, '.bashrc'), line: bashLine },
   ];
-  for (const file of candidates) {
+  if (usesFish) {
+    targets.push({ file: fishConfig, line: `set -gx PATH "${dir}" $PATH` });
+  }
+
+  for (const { file, line } of targets) {
     try {
       let existing = '';
       try { existing = fs.readFileSync(file, 'utf8'); } catch { /* file doesn't exist — that's fine */ }
       if (existing.includes(PATH_MARKER)) continue;
-      fs.appendFileSync(file, block, 'utf8');
+      // mkdir -p the parent so ~/.config/fish/ is created for a fish user who
+      // has never written a config.fish. No-op for the home-dir profiles.
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.appendFileSync(file, `\n${PATH_MARKER}\n${line}\n`, 'utf8');
       log('INFO', 'prereq', `Added Node bin to PATH in ${path.basename(file)}`);
     } catch (err) {
       log('WARN', 'prereq', `Could not update ${file}`, { error: String(err) });
