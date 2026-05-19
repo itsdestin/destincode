@@ -1,7 +1,5 @@
 appId: com.youcoded.desktop
 productName: YouCoded
-# homepage is required metadata for the deb/rpm packagers.
-homepage: https://github.com/itsdestin/youcoded
 directories:
   output: release
   buildResources: assets
