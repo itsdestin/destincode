@@ -8,14 +8,24 @@ const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const TOPICS_DIR = path.join(CLAUDE_DIR, 'topics');
 const CONVERSATION_INDEX_PATH = path.join(CLAUDE_DIR, 'conversation-index.json');
 
-/** Read the per-session flag map from conversation-index.json. Also lifts v1
- *  legacy `complete` / `completeUpdatedAt` fields into the new flags shape so
- *  older entries (written before the flags generalization) still show up. */
-function readFlagMap(): Record<string, Record<string, boolean>> {
+/** Read per-session metadata from conversation-index.json: the user-set flag
+ *  map AND the topic (display name). Lifts v1 legacy `complete` into the flags
+ *  shape so older entries still show up.
+ *
+ *  The conversation index is the *durable* name store — it keeps a session's
+ *  topic for 30 days (INDEX_PRUNE_DAYS) and syncs across devices. The
+ *  `topics/topic-<id>` files are the *ephemeral* store — pruned by the
+ *  auto-title hook and never synced. The Resume Browser reads the file first
+ *  and falls back to `topics` here when the file is gone (see readTopic). */
+function readIndexMeta(): {
+  flags: Record<string, Record<string, boolean>>;
+  topics: Record<string, string>;
+} {
+  const flags: Record<string, Record<string, boolean>> = {};
+  const topics: Record<string, string> = {};
   try {
     const raw = fs.readFileSync(CONVERSATION_INDEX_PATH, 'utf8');
     const index = JSON.parse(raw);
-    const out: Record<string, Record<string, boolean>> = {};
     for (const [sid, entry] of Object.entries<any>(index?.sessions || {})) {
       if (!entry) continue;
       const on: Record<string, boolean> = {};
@@ -24,10 +34,13 @@ function readFlagMap(): Record<string, Record<string, boolean>> {
       }
       // v1 legacy — tolerated on read until old devices are upgraded.
       if (!on.complete && entry.complete) on.complete = true;
-      if (Object.keys(on).length > 0) out[sid] = on;
+      if (Object.keys(on).length > 0) flags[sid] = on;
+      if (typeof entry.topic === 'string' && entry.topic.trim()) {
+        topics[sid] = entry.topic.trim();
+      }
     }
-    return out;
-  } catch { return {}; }
+  } catch { /* index missing/corrupt — no flags or topic fallback available */ }
+  return { flags, topics };
 }
 
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -97,13 +110,20 @@ function walkSlugParts(base: string, parts: string[]): string {
   return path.join(base, parts.join('-'));
 }
 
-async function readTopic(sessionId: string): Promise<string> {
+/** Resolve a session's display name. The auto-title hook writes
+ *  `topics/topic-<id>`, but those files are pruned (30-day) and never sync
+ *  across devices — so when the file is missing, or still holds the pre-title
+ *  "New Session" placeholder, fall back to the conversation index, which keeps
+ *  the name longer and is synced. Without this fallback the Resume Browser
+ *  showed "Untitled" for every session whose topic file had been pruned. */
+async function readTopic(sessionId: string, indexTopics: Record<string, string>): Promise<string> {
   try {
-    const content = await fs.promises.readFile(path.join(TOPICS_DIR, `topic-${sessionId}`), 'utf8');
-    return content.trim() || 'Untitled';
-  } catch {
-    return 'Untitled';
-  }
+    const content = (await fs.promises.readFile(path.join(TOPICS_DIR, `topic-${sessionId}`), 'utf8')).trim();
+    if (content && content !== 'New Session') return content;
+  } catch { /* topic file pruned or never written — fall through to the index */ }
+  const indexed = indexTopics[sessionId];
+  if (indexed && indexed !== 'New Session' && indexed !== 'Untitled') return indexed;
+  return 'Untitled';
 }
 
 /**
@@ -130,8 +150,8 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     return [];
   }
 
-  // Join complete-flag metadata from the synced conversation index
-  const flagMap = readFlagMap();
+  // Join flag + topic metadata from the synced conversation index
+  const indexMeta = readIndexMeta();
 
   const allSessions: PastSession[] = [];
 
@@ -152,9 +172,9 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
       try {
         const stat = await withRetry(() => fs.promises.stat(path.join(slugDir, file)));
         if (stat.size < 500) return null;
-        const name = await readTopic(sessionId);
+        const name = await readTopic(sessionId, indexMeta.topics);
 
-        const joinedFlags = flagMap[sessionId];
+        const joinedFlags = indexMeta.flags[sessionId];
         return {
           sessionId,
           name,

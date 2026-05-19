@@ -12,7 +12,9 @@ fi
 TOPIC_DIR="$HOME/.claude/topics"
 mkdir -p "$TOPIC_DIR"
 
-# Prune topic files older than 7 days (at most once per day)
+# Prune topic files older than 30 days (matches conversation-index.json
+# retention, so a session's name survives as long as its index entry).
+# Runs at most once per day.
 PRUNE_MARKER="$TOPIC_DIR/.prune-marker"
 NOW=$(date +%s)
 DO_PRUNE=false
@@ -26,8 +28,8 @@ else
     fi
 fi
 if [ "$DO_PRUNE" = true ]; then
-    find "$TOPIC_DIR" -name "topic-*" -mtime +7 -delete 2>/dev/null
-    find "$TOPIC_DIR" -name "marker-*" -mtime +7 -delete 2>/dev/null
+    find "$TOPIC_DIR" -name "topic-*" -mtime +30 -delete 2>/dev/null
+    find "$TOPIC_DIR" -name "marker-*" -mtime +30 -delete 2>/dev/null
     echo "$NOW" > "$PRUNE_MARKER"
 fi
 

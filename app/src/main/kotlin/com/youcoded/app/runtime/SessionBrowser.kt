@@ -62,13 +62,15 @@ object SessionBrowser {
                 val sessionId = jsonlFile.nameWithoutExtension
                 if (sessionId in activeIds) continue
 
-                // Read topic name if available
+                // Read the topic name from the topic file if present.
+                // "New Session" is the placeholder the auto-title hook writes
+                // before the model fills in a real title — normalize it (and a
+                // blank/missing file) to "Untitled" so SessionService can apply
+                // the conversation-index fallback (the topic file is pruned
+                // after 30 days and never syncs across devices).
                 val topicFile = File(topicsDir, "topic-$sessionId")
-                val name = if (topicFile.exists()) {
-                    topicFile.readText().trim().ifBlank { "Untitled" }
-                } else {
-                    "Untitled"
-                }
+                val rawName = if (topicFile.exists()) topicFile.readText().trim() else ""
+                val name = if (rawName.isBlank() || rawName == "New Session") "Untitled" else rawName
 
                 sessions.add(PastSession(
                     sessionId = sessionId,
