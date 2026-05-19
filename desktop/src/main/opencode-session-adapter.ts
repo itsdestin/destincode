@@ -490,21 +490,46 @@ export class OpenCodeSessionAdapter extends EventEmitter {
 }
 
 /**
+ * Multi-word tool names that have NO separator in OpenCode's id — the
+ * split-on-`[_-]` logic below can't recover their PascalCase. OpenCode's
+ * tool ids are concatenated lowercase (`webfetch`, `todowrite`), so
+ * `webfetch` would naively become `Webfetch` and miss the `WebFetch` view.
+ * Keyed by lowercased name; underscore variants are included defensively
+ * in case OpenCode or an MCP server emits the separated form.
+ */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  webfetch: 'WebFetch',
+  web_fetch: 'WebFetch',
+  todowrite: 'TodoWrite',
+  todo_write: 'TodoWrite',
+  todoread: 'TodoRead',
+  todo_read: 'TodoRead',
+  exitplanmode: 'ExitPlanMode',
+  exit_plan_mode: 'ExitPlanMode',
+  multiedit: 'MultiEdit',
+  multi_edit: 'MultiEdit',
+};
+
+/**
  * Normalize an OpenCode tool name to the PascalCase convention ToolBody's
  * view-router uses. OpenCode emits tools as lowercase (`read`, `bash`) or
- * snake_case / kebab-case (`web_fetch`, `todo-write`); without this the
+ * concatenated multi-word (`webfetch`, `todowrite`); without this the
  * per-tool render branches in tool-views/ToolBody.tsx miss every match and
  * the result falls through to the generic fallback view.
  *
  *   "read"        → "Read"
- *   "web_fetch"   → "WebFetch"
- *   "todo-write"  → "TodoWrite"
- *   "Read"        → "Read"   (idempotent — already PascalCase)
- *   "mcp__..."    → unchanged (MCP tools route by exact match)
+ *   "webfetch"    → "WebFetch"   (via alias map — no separator to split on)
+ *   "todowrite"   → "TodoWrite"  (via alias map)
+ *   "web_fetch"   → "WebFetch"   (split logic also handles separated forms)
+ *   "Read"        → "Read"       (idempotent — already PascalCase)
+ *   "mcp__..."    → unchanged    (MCP tools route by exact match)
  */
 export function normalizeToolName(name: string | undefined | null): string {
   if (!name) return '';
   if (name.startsWith('mcp__')) return name;
+  // Explicit alias for concatenated multi-word names the splitter can't fix.
+  const alias = TOOL_NAME_ALIASES[name.toLowerCase()];
+  if (alias) return alias;
   // Already PascalCase (no separators, leading uppercase) — pass through.
   if (/^[A-Z]/.test(name) && !/[_\-]/.test(name)) return name;
   return name

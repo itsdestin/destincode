@@ -27,6 +27,18 @@ describe('normalizeToolName', () => {
     expect(normalizeToolName('todo-write')).toBe('TodoWrite');
   });
 
+  it('maps concatenated multi-word names via the alias map', () => {
+    // OpenCode's real tool ids have NO separator (webfetch, todowrite) —
+    // the split-on-[_-] logic can't recover those, so they go through the
+    // explicit alias map. Without it, webfetch → "Webfetch" misses the
+    // WebFetch view and renders via the raw fallback.
+    expect(normalizeToolName('webfetch')).toBe('WebFetch');
+    expect(normalizeToolName('todowrite')).toBe('TodoWrite');
+    expect(normalizeToolName('todoread')).toBe('TodoRead');
+    expect(normalizeToolName('exitplanmode')).toBe('ExitPlanMode');
+    expect(normalizeToolName('multiedit')).toBe('MultiEdit');
+  });
+
   it('passes through already-PascalCase names (idempotent)', () => {
     // Important: re-running normalize on an already-normalized name MUST be
     // a no-op. Otherwise re-emitting tool events (e.g. on resume rehydration)
