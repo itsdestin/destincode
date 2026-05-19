@@ -26,6 +26,17 @@ linux:
   # maintainer is required by the deb/rpm packagers.
   maintainer: itsdestin <itsdestin@users.noreply.github.com>
   synopsis: Desktop GUI for Claude Code with the YouCoded toolkit
+pacman:
+  # electron-builder auto-generates Debian-style dependency names for the
+  # pacman target, and `libappindicator-gtk3` is AUR-only — not in Arch's
+  # official repos — so a stock `pacman -U` of the package fails to resolve
+  # it. Pin the real Arch runtime deps instead (all in core/extra).
+  depends:
+    - gtk3
+    - nss
+    - libxss
+    - libnotify
+    - alsa-lib
 npmRebuild: false
 asarUnpack:
   - dist/main/pty-worker.js
