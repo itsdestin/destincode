@@ -13,8 +13,19 @@ mac:
         - arm64
   category: public.app-category.developer-tools
 linux:
-  target: AppImage
+  # AppImage runs on any distro but stays a loose file. deb / rpm / pacman are
+  # real installers (Debian-Ubuntu / Fedora / Arch) that install to a fixed
+  # path and register a menu entry + icon, so YouCoded pins to the taskbar and
+  # behaves like a native app.
+  target:
+    - AppImage
+    - deb
+    - rpm
+    - pacman
   category: Development
+  # maintainer is required by the deb/rpm packagers.
+  maintainer: itsdestin <itsdestin@users.noreply.github.com>
+  synopsis: Desktop GUI for Claude Code with the YouCoded toolkit
 npmRebuild: false
 asarUnpack:
   - dist/main/pty-worker.js

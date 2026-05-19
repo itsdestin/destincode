@@ -21,7 +21,11 @@ jobs:
             artifact: desktop/release/*.dmg
             name: macos
           - os: ubuntu-latest
-            artifact: desktop/release/*.AppImage
+            artifact: |
+              desktop/release/*.AppImage
+              desktop/release/*.deb
+              desktop/release/*.rpm
+              desktop/release/*.pacman
             name: linux
 
     runs-on: ${{ matrix.os }}
@@ -57,9 +61,11 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Install xvfb (Linux)
+      - name: Install Linux build deps
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y xvfb
+        # xvfb: headless display for the smoke test.
+        # rpm: required by electron-builder's rpm target (not on the runner by default).
+        run: sudo apt-get install -y xvfb rpm
         working-directory: .
 
       - name: Smoke test
