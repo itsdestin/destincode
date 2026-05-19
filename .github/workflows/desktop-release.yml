@@ -58,15 +58,18 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build
-        run: npm run build
-
       - name: Install Linux build deps
         if: runner.os == 'Linux'
-        # xvfb: headless display for the smoke test.
-        # rpm: required by electron-builder's rpm target (not on the runner by default).
-        run: sudo apt-get install -y xvfb rpm
+        # Must run BEFORE the build — electron-builder's deb/rpm/pacman
+        # packagers run inside `npm run build`:
+        #   libarchive-tools -> provides bsdtar, required by the pacman target
+        #   rpm              -> required by the rpm target
+        #   xvfb             -> headless display for the smoke test below
+        run: sudo apt-get install -y xvfb rpm libarchive-tools
         working-directory: .
+
+      - name: Build
+        run: npm run build
 
       - name: Smoke test
         # Launch the production build briefly and verify no renderer crash.
