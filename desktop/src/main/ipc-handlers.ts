@@ -708,7 +708,7 @@ export function registerIpcHandlers(
     // (qwen3:8b@low / @medium / @high), so changing it would require
     // restarting the daemon. Locking matches Claude's per-session model and
     // keeps multiple concurrent local sessions independent.
-    localDefaultEffort: 'none' as 'none' | 'on' | 'low' | 'medium' | 'high',
+    localDefaultEffort: 'none' as 'none' | 'on',
     permissionOverrides: { ...PERMISSION_OVERRIDES_DEFAULT },
   };
 

@@ -1288,8 +1288,8 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
 }
 
 interface DefaultsButtonProps {
-  defaults: { skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled?: boolean; permissionOverrides?: PermissionOverrides; localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string; localDefaultEffort?: 'none' | 'on' | 'low' | 'medium' | 'high' };
-  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled: boolean; permissionOverrides: PermissionOverrides; localEndpoint: string; localDefaultModel: string; localSystemPrompt: string; localDefaultEffort: 'none' | 'on' | 'low' | 'medium' | 'high' }>) => void;
+  defaults: { skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled?: boolean; permissionOverrides?: PermissionOverrides; localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string; localDefaultEffort?: 'none' | 'on' };
+  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; geminiEnabled: boolean; permissionOverrides: PermissionOverrides; localEndpoint: string; localDefaultModel: string; localSystemPrompt: string; localDefaultEffort: 'none' | 'on' }>) => void;
 }
 
 // ─── Local Models popup button ──────────────────────────────────────────────
@@ -1305,8 +1305,8 @@ interface DefaultsButtonProps {
 // selector elsewhere in the renderer; no separate platform check needed.
 
 interface LocalModelsButtonProps {
-  defaults: { localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string; localDefaultEffort?: 'none' | 'on' | 'low' | 'medium' | 'high' };
-  onDefaultsChange: (updates: Partial<{ localEndpoint: string; localDefaultModel: string; localSystemPrompt: string; localDefaultEffort: 'none' | 'on' | 'low' | 'medium' | 'high' }>) => void;
+  defaults: { localEndpoint?: string; localDefaultModel?: string; localSystemPrompt?: string; localDefaultEffort?: 'none' | 'on' };
+  onDefaultsChange: (updates: Partial<{ localEndpoint: string; localDefaultModel: string; localSystemPrompt: string; localDefaultEffort: 'none' | 'on' }>) => void;
 }
 
 function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProps) {
@@ -1532,16 +1532,13 @@ function LocalModelsButton({ defaults, onDefaultsChange }: LocalModelsButtonProp
                     <select
                       className="w-full bg-panel border border-edge rounded px-2 py-1 text-sm"
                       value={defaults.localDefaultEffort || 'none'}
-                      onChange={(e) => onDefaultsChange({ localDefaultEffort: e.target.value as 'none' | 'on' | 'low' | 'medium' | 'high' })}
+                      onChange={(e) => onDefaultsChange({ localDefaultEffort: e.target.value as 'none' | 'on' })}
                     >
                       <option value="none">Off (fastest)</option>
-                      <option value="on">On (binary-thinking models like Gemma 4)</option>
-                      <option value="low">Low (graduated — Qwen 3)</option>
-                      <option value="medium">Medium (graduated — Qwen 3)</option>
-                      <option value="high">High (graduated — Qwen 3, slowest)</option>
+                      <option value="on">On (thinking-capable models think before answering)</option>
                     </select>
                     <div className="text-[10px] text-fg-muted mt-1">
-                      Applies to new sessions when the chosen model supports the level. The new-session form auto-clamps to "Off" if the picked model doesn't support the saved default.
+                      Applies to new sessions when the chosen model supports thinking. The new-session form auto-clamps to "Off" if the picked model has no thinking toggle.
                     </div>
                   </div>
 
