@@ -1371,12 +1371,19 @@ class SessionService : Service() {
                 }
                 // Read user-set flag map from the synced conversation-index.json
                 val flagMap = withContext(Dispatchers.IO) { readFlagMap(homeDir) }
+                // Topic files are pruned after 30 days and never sync across
+                // devices; conversation-index.json keeps the name longer and
+                // does sync — fall back to it when the topic-file name is missing.
+                val topicMap = withContext(Dispatchers.IO) { readTopicMap(homeDir) }
                 val arr = org.json.JSONArray()
                 for (s in pastSessions) {
+                    // Prefer the topic-file name; fall back to the index topic.
+                    val indexTopic = topicMap[s.sessionId]
+                    val resolvedName = if (s.name == "Untitled" && !indexTopic.isNullOrBlank()) indexTopic else s.name
                     arr.put(JSONObject().apply {
                         put("sessionId", s.sessionId)
                         put("projectSlug", s.projectSlug)
-                        put("name", s.name)
+                        put("name", resolvedName)
                         put("lastModified", s.lastModified)
                         put("projectPath", s.projectPath)
                         // Fix: React's formatSize(undefined) rendered as "NaNMB".
@@ -3457,6 +3464,34 @@ class SessionService : Service() {
                     row["complete"] = true
                 }
                 if (row.isNotEmpty()) out[sid] = row
+            }
+            out
+        } catch (_: Throwable) { emptyMap() }
+    }
+
+    /**
+     * Read per-session topic names from ~/.claude/conversation-index.json.
+     * Used as a fallback for the Resume Browser when the ephemeral
+     * ~/.claude/topics/topic-<id> file has been pruned (30-day) or was never
+     * synced from another device — the index keeps the name longer and does
+     * sync. Excludes blank / placeholder names. Mirrors the desktop's
+     * readIndexMeta() topic map in session-browser.ts.
+     */
+    private fun readTopicMap(homeDir: File): Map<String, String> {
+        val indexFile = File(homeDir, ".claude/conversation-index.json")
+        if (!indexFile.exists()) return emptyMap()
+        return try {
+            val root = JSONObject(indexFile.readText())
+            val sessions = root.optJSONObject("sessions") ?: return emptyMap()
+            val out = mutableMapOf<String, String>()
+            val keys = sessions.keys()
+            while (keys.hasNext()) {
+                val sid = keys.next()
+                val entry = sessions.optJSONObject(sid) ?: continue
+                val topic = entry.optString("topic", "").trim()
+                if (topic.isNotBlank() && topic != "New Session" && topic != "Untitled") {
+                    out[sid] = topic
+                }
             }
             out
         } catch (_: Throwable) { emptyMap() }

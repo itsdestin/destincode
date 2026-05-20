@@ -7,33 +7,58 @@ const SETTINGS_PATH = path.join(
   '.claude',
   'settings.json'
 );
-// In packaged builds, __dirname points inside app.asar (which Electron can read),
-// but Claude Code invokes relay.js externally via system node (which can't read asar).
-// Convert to the unpacked path so the hook command works at runtime.
-const rawRelayPath = path.resolve(__dirname, '..', 'hook-scripts', 'relay.js');
-const unpackedRelayPath = rawRelayPath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-// Use unpacked path if it exists, otherwise fall back to original
-const RELAY_PATH = fs.existsSync(unpackedRelayPath) ? unpackedRelayPath : rawRelayPath;
+// --- Resolve hook scripts to a STABLE location -----------------------------
+//
+// In packaged builds __dirname is inside app.asar; the hook scripts are
+// extracted to app.asar.unpacked so Claude Code (an external process) can read
+// them. But on Linux YouCoded ships as an AppImage, which mounts at a
+// *different* random /tmp/.mount_XXXXXX path on EVERY launch. Baking that
+// volatile path into ~/.claude/settings.json means every hook (relay,
+// auto-title, statusline) silently breaks the moment the app is closed — and
+// for any `claude` CLI session run outside the app.
+//
+// Fix: copy the bundled hook scripts into a fixed directory under ~/.claude on
+// each launch, and point settings.json at that stable copy instead.
+const rawHookSrcDir = path.resolve(__dirname, '..', 'hook-scripts');
+const HOOK_SRC_DIR = rawHookSrcDir.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+const STABLE_HOOK_DIR = path.join(require('os').homedir(), '.claude', 'youcoded-hooks');
 
-// Blocking relay for PermissionRequest — holds socket open for bidirectional response
-const rawBlockingRelayPath = path.resolve(__dirname, '..', 'hook-scripts', 'relay-blocking.js');
-const unpackedBlockingRelayPath = rawBlockingRelayPath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-const BLOCKING_RELAY_PATH = fs.existsSync(unpackedBlockingRelayPath) ? unpackedBlockingRelayPath : rawBlockingRelayPath;
-
-// Safety: refuse to install hooks whose paths point inside a worktree. The
-// ~/.claude/settings.json file is a shared resource — if we write a worktree
-// path and the worktree is later removed, every hook call fails with ENOENT
-// until the built app is relaunched. This is a belt-and-suspenders backstop
-// for the YOUCODED_PROFILE gate in main.ts; if any future refactor breaks
-// that gate, this guard still prevents corruption.
-if (RELAY_PATH.includes(`${path.sep}.worktrees${path.sep}`)) {
+// Safety: refuse to run when the bundled scripts live inside a dev worktree.
+// settings.json is a shared resource — staging worktree-version scripts into
+// the stable dir would have the installed app run dev code. Belt-and-suspenders
+// backstop for the YOUCODED_PROFILE gate in main.ts.
+if (HOOK_SRC_DIR.includes(`${path.sep}.worktrees${path.sep}`)) {
   console.log(
-    'install-hooks: script path is inside a worktree (' + RELAY_PATH + ') — ' +
-    'refusing to write worktree paths to ~/.claude/settings.json. ' +
+    'install-hooks: hook source is inside a worktree (' + HOOK_SRC_DIR + ') — ' +
+    'refusing to touch ~/.claude/settings.json. ' +
     'If this was unexpected, check that YOUCODED_PROFILE is set when running dev.'
   );
   process.exit(0);
 }
+
+// Copy every bundled hook script into the stable dir (overwrites, so app
+// updates propagate). Returns the directory settings.json should reference:
+// the stable copy, or the bundled dir as a fallback if staging failed.
+function resolveHookDir() {
+  try {
+    fs.mkdirSync(STABLE_HOOK_DIR, { recursive: true });
+    for (const file of fs.readdirSync(HOOK_SRC_DIR)) {
+      // recursive:true so a future lib/ subdir (statusline.sh sources one) copies too.
+      fs.cpSync(path.join(HOOK_SRC_DIR, file), path.join(STABLE_HOOK_DIR, file), { recursive: true });
+      if (file.endsWith('.sh')) fs.chmodSync(path.join(STABLE_HOOK_DIR, file), 0o755);
+    }
+    // Trust the stable dir only if the critical script actually landed.
+    if (fs.existsSync(path.join(STABLE_HOOK_DIR, 'relay.js'))) return STABLE_HOOK_DIR;
+  } catch (e) {
+    console.warn('install-hooks: failed to stage hook scripts to ' + STABLE_HOOK_DIR + ':', e.message);
+  }
+  // Fallback: a volatile path is still better than a missing one.
+  return HOOK_SRC_DIR;
+}
+
+const HOOK_DIR = resolveHookDir();
+const RELAY_PATH = path.join(HOOK_DIR, 'relay.js');
+const BLOCKING_RELAY_PATH = path.join(HOOK_DIR, 'relay-blocking.js');
 
 // Fire-and-forget events use the standard relay
 const FIRE_AND_FORGET_EVENTS = [
@@ -112,10 +137,9 @@ function installHooks() {
   }
 
   // --- Auto-titling hook ---
-  // Always use the app-bundled title-update script (app owns session naming).
-  const rawTitlePath = path.resolve(__dirname, '..', 'hook-scripts', 'title-update.sh');
-  const unpackedTitlePath = rawTitlePath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-  const activeTitlePath = fs.existsSync(unpackedTitlePath) ? unpackedTitlePath : rawTitlePath;
+  // Always use the app-bundled title-update script (app owns session naming),
+  // resolved via the stable hook dir so it survives across AppImage launches.
+  const activeTitlePath = path.join(HOOK_DIR, 'title-update.sh');
 
   if (!settings.hooks['PostToolUse']) {
     settings.hooks['PostToolUse'] = [];
@@ -170,9 +194,7 @@ When you see an \`[Auto-Title]\` reminder, **immediately** use Bash to write a 3
   // Always use the app-bundled statusline script (app owns context % display).
   // Only set if unset or pointing to a known youcoded-core/app path — don't overwrite
   // custom user scripts.
-  const rawStatuslinePath = path.resolve(__dirname, '..', 'hook-scripts', 'statusline.sh');
-  const unpackedStatuslinePath = rawStatuslinePath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-  const activeStatuslinePath = fs.existsSync(unpackedStatuslinePath) ? unpackedStatuslinePath : rawStatuslinePath;
+  const activeStatuslinePath = path.join(HOOK_DIR, 'statusline.sh');
   const currentStatuslineCmd = settings.statusLine?.command || '';
   const isOurStatusline = !currentStatuslineCmd
     || currentStatuslineCmd.includes('statusline.sh')
