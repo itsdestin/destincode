@@ -21,7 +21,11 @@ jobs:
             artifact: desktop/release/*.dmg
             name: macos
           - os: ubuntu-latest
-            artifact: desktop/release/*.AppImage
+            artifact: |
+              desktop/release/*.AppImage
+              desktop/release/*.deb
+              desktop/release/*.rpm
+              desktop/release/*.pacman
             name: linux
 
     runs-on: ${{ matrix.os }}
@@ -54,13 +58,18 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        # Must run BEFORE the build — electron-builder's deb/rpm/pacman
+        # packagers run inside `npm run build`:
+        #   libarchive-tools -> provides bsdtar, required by the pacman target
+        #   rpm              -> required by the rpm target
+        #   xvfb             -> headless display for the smoke test below
+        run: sudo apt-get install -y xvfb rpm libarchive-tools
+        working-directory: .
+
       - name: Build
         run: npm run build
-
-      - name: Install xvfb (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y xvfb
-        working-directory: .
 
       - name: Smoke test
         # Launch the production build briefly and verify no renderer crash.
