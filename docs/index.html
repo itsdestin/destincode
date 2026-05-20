@@ -4068,13 +4068,21 @@
         },
         'dl-linux': {
           platformLabel: 'Linux',
-          intro: 'YouCoded ships as an AppImage &mdash; a self-contained file that runs without a traditional installer.',
+          intro: 'The download button gives you the <strong>AppImage</strong> &mdash; a single self-contained file that runs on any distribution with no installer. If you\'d rather install YouCoded as a permanent, pinnable app, native packages for the major distros are listed at the bottom.',
           steps: [
-            'Open the file you just downloaded (the YouCoded AppImage).',
-            'If double-clicking doesn\'t work, your file manager may need permission to run it: right-click → <strong>Properties → Permissions</strong> → check <strong>"Allow executing file as program."</strong>',
-            'Double-click to launch.'
+            'Open the AppImage you just downloaded &mdash; most file managers run it on a double-click.',
+            'If double-clicking does nothing, the file needs permission to run. In your file manager: right-click the file → <strong>Properties → Permissions</strong> → tick <strong>"Allow executing file as program"</strong> (the wording varies by desktop). From a terminal instead: <code>chmod +x YouCoded-*.AppImage</code>, then launch it with <code>./YouCoded-*.AppImage</code>.',
+            'YouCoded opens straight from the file &mdash; nothing is copied into your system.',
+            '<strong>To keep it around:</strong> move the AppImage somewhere permanent (such as a <code>~/Applications</code> folder) before you rely on it &mdash; if it sits in <code>~/Downloads</code> and you clear that folder, your launcher breaks. For a real menu entry you can pin to your taskbar, install <a href="https://github.com/TheAssassin/AppImageLauncher" target="_blank" rel="noopener">AppImageLauncher</a>: it adds an icon and menu entry for any AppImage automatically the first time you run it.'
           ],
-          note: '<strong>If the app doesn\'t start:</strong> Some newer Linux distributions need an extra library. Open a terminal and run: <code>sudo apt install libfuse2</code> (Ubuntu/Debian) or equivalent for your distro.'
+          note: '<strong>If the app doesn\'t start:</strong> some distributions need the FUSE library the AppImage depends on. Install it with your package manager &mdash; <code>sudo apt install libfuse2</code> (Debian/Ubuntu/Mint), <code>sudo dnf install fuse-libs</code> (Fedora/RHEL), <code>sudo pacman -S fuse2</code> (Arch/CachyOS/Manjaro), or <code>sudo zypper install fuse</code> (openSUSE). Still nothing? Launch the AppImage from a terminal &mdash; it will print the underlying error.',
+          altPaths: '<p><strong>Prefer a native install?</strong> Packages that install to a fixed location and add a pinnable menu entry &mdash; like any other app &mdash; are on the <a href="https://github.com/itsdestin/youcoded/releases/latest" target="_blank" rel="noopener">latest release</a> page. Download the one for your distribution and install it from a terminal:</p>' +
+            '<ol>' +
+              '<li><strong>Debian, Ubuntu, Linux Mint, Pop!_OS</strong> &mdash; the <code>.deb</code> file: <code>sudo apt install ./youcoded_*.deb</code></li>' +
+              '<li><strong>Fedora, RHEL, openSUSE</strong> &mdash; the <code>.rpm</code> file: <code>sudo dnf install ./youcoded-*.rpm</code> (openSUSE: <code>sudo zypper install ./youcoded-*.rpm</code>)</li>' +
+              '<li><strong>Arch, CachyOS, Manjaro</strong> &mdash; the <code>.pacman</code> file: <code>sudo pacman -U youcoded-*.pacman</code></li>' +
+            '</ol>' +
+            '<p>Once it\'s installed, launch YouCoded from your application menu and pin it to your taskbar.</p>'
         },
         'dl-android': {
           platformLabel: 'Android',
@@ -4105,6 +4113,9 @@
         if (!p) return '';
         var stepsHtml = p.steps.map(function(s) { return '<li>' + s + '</li>'; }).join('');
         var noteHtml = p.note ? '<p class="install-modal-note">' + p.note + '</p>' : '';
+        // Optional extra section for platforms that offer more than one install
+        // route (e.g. Linux: AppImage above, native packages here).
+        var altHtml = p.altPaths ? '<div class="install-modal-section">' + p.altPaths + '</div>' : '';
         var afterInstallHtml = AFTER_INSTALL + (platformKey === 'dl-android' ? ANDROID_AFTER_EXTRA : '');
         return '' +
           '<p class="install-modal-intro">' + p.intro + '</p>' +
@@ -4112,6 +4123,7 @@
             '<ol>' + stepsHtml + '</ol>' +
             noteHtml +
           '</div>' +
+          altHtml +
           '<details class="install-modal-details">' +
             '<summary>After install: What to expect on first launch</summary>' +
             '<div class="install-modal-section">' + afterInstallHtml + '</div>' +
