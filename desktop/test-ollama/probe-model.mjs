@@ -30,10 +30,13 @@ import { join, resolve } from 'node:path';
 const OLLAMA_BASE = process.env.OLLAMA_BASE || 'http://localhost:11434';
 const TIMEOUT_MS = 90_000;
 
-// Reasoning probe prompt — chosen to elicit non-trivial reasoning so we can
-// measure depth-difference across effort levels. Asks for explicit reasoning
-// so a model that doesn't separate it will at least put it in `content`.
-const REASONING_PROMPT = 'What is 17 times 23? Walk through your reasoning step by step before giving the final answer.';
+// Reasoning probe prompt — a plain question. Earlier versions explicitly
+// asked the model to "walk through your reasoning step by step", which
+// triggered runaway thinking + 90s timeouts on every model except gemma4
+// (verified 2026-05-18 in a clean batch). A plain prompt lets the model
+// reason at its natural depth and we measure whether the response contains
+// a separate `reasoning` field — the actual signal we care about.
+const REASONING_PROMPT = 'What is 17 times 23?';
 
 // Tool definition — simple integer multiply. Spec is OpenAI-compatible.
 const MULTIPLY_TOOL = {
