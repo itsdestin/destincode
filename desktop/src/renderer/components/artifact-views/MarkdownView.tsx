@@ -1,11 +1,13 @@
-import { useState } from 'react';
+// Task 6.4: MarkdownView is now a fully controlled component.
+// Edit state (editing, draft) is managed by ActiveArtifactView in SessionDrawer.tsx
+// so the conflict banner has access to the in-progress draft.
 import MarkdownContent from '../MarkdownContent';
 import type { ArtifactViewProps } from './types';
 
-export function MarkdownView({ path, content, isEditable, onEdit }: ArtifactViewProps) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(content ?? '');
-
+export function MarkdownView({
+  path, content, isEditable,
+  editing = false, draft = '', onDraftChange, onStartEdit, onSaveEdit, onCancelEdit,
+}: ArtifactViewProps) {
   if (content === null) {
     return <div className="text-fg-muted p-4">⚠ file not on disk</div>;
   }
@@ -16,20 +18,20 @@ export function MarkdownView({ path, content, isEditable, onEdit }: ArtifactView
         <div className="flex gap-2 p-2 border-b border-edge">
           <button
             className="px-3 py-1 rounded bg-accent text-on-accent"
-            onClick={() => { onEdit?.(draft); setEditing(false); }}
+            onClick={onSaveEdit}
           >
             Save
           </button>
           <button
             className="px-3 py-1 rounded border border-edge"
-            onClick={() => { setDraft(content); setEditing(false); }}
+            onClick={onCancelEdit}
           >
             Cancel
           </button>
         </div>
         <textarea
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => onDraftChange?.(e.target.value)}
           className="flex-1 w-full p-3 bg-inset text-fg font-mono text-sm resize-none focus:outline-none"
         />
       </div>
@@ -43,7 +45,7 @@ export function MarkdownView({ path, content, isEditable, onEdit }: ArtifactView
         <div className="flex gap-2 p-2 border-b border-edge">
           <button
             className="px-3 py-1 rounded border border-edge hover:bg-inset"
-            onClick={() => setEditing(true)}
+            onClick={onStartEdit}
           >
             Edit
           </button>
