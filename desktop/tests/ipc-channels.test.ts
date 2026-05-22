@@ -343,6 +343,21 @@ describe('artifact IPC parity', () => {
     .map(m => m[1])
     .filter((v, i, a) => a.indexOf(v) === i); // deduplicate
 
+  // Build a reverse lookup mapping channel string → constant name
+  // for recognizing constant references (e.g., ARTIFACT_IPC.LIST_SESSION) in ipc-handlers.ts
+  const CHANNEL_TO_CONST = Object.entries({
+    LIST_SESSION: 'artifacts:list-session',
+    LIST_PROJECT: 'artifacts:list-project',
+    GET: 'artifacts:get',
+    SAVE: 'artifacts:save',
+    INCLUDE_EXTERNAL: 'artifacts:include-external',
+    EXCLUDE: 'artifacts:exclude',
+    CHANGED: 'artifacts:changed',
+  }).reduce<Record<string, string>>((acc, [name, value]) => {
+    acc[value] = `ARTIFACT_IPC.${name}`;
+    return acc;
+  }, {});
+
   // Resolve paths relative to the desktop directory (where vitest is invoked from)
   const preload = fs.readFileSync('src/main/preload.ts', 'utf8');
   const shim = fs.readFileSync('src/renderer/remote-shim.ts', 'utf8');
@@ -365,7 +380,11 @@ describe('artifact IPC parity', () => {
     if (channel !== 'artifacts:changed') {
       // Push events don't need an ipcMain.handle — only request/response channels do
       it(`channel ${channel} is registered in ipc-handlers.ts`, () => {
-        expect(handlers, `${channel} missing from ipc-handlers.ts`).toContain(channel);
+        // ipc-handlers.ts may use the channel as a literal string OR as a constant reference
+        // (e.g., ARTIFACT_IPC.LIST_SESSION), so accept either form
+        const literalForm = handlers.includes(channel);
+        const constForm = handlers.includes(CHANNEL_TO_CONST[channel]);
+        expect(literalForm || constForm, `${channel} missing from ipc-handlers.ts`).toBe(true);
       });
     }
 
