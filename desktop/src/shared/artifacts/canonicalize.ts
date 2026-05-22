@@ -9,6 +9,10 @@
  *   6. External paths → absolute canonical
  *   7. Strip trailing slashes
  *   8. Unicode NFC normalization
+ *
+ * Known v1 limitation: a bare `/` input returns `.`. Not a problem in practice
+ * because artifact paths are always files (nested), never bare roots. Worth
+ * cleaning up in a future task if the canonicalizer ever sees root-only inputs.
  */
 export function canonicalize(rawPath: string, projectRoot: string | null): string {
   if (!rawPath) return rawPath;
@@ -36,8 +40,6 @@ export function canonicalize(rawPath: string, projectRoot: string | null): strin
     const root = canonicalize(projectRoot, null); // canonicalize root absolute
     if (p.startsWith(root + '/')) {
       p = p.slice(root.length + 1);
-    } else if (!/^([a-z]:|\/)/.test(p)) {
-      // relative path — resolve . and .. against an implicit root
     }
     // Resolve . and ..
     p = resolveDots(p);
