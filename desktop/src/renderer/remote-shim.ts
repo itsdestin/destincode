@@ -272,6 +272,11 @@ function handleMessage(data: string): void {
       // payload is used — the event itself is the signal.
       dispatchEvent('system:back', payload);
       break;
+    case 'artifacts:changed':
+      // Artifact viewer update event — dispatched when artifacts are added,
+      // modified, or excluded. The payload contains change metadata.
+      dispatchEvent('artifacts:changed', payload);
+      break;
   }
 }
 
@@ -996,6 +1001,26 @@ export function installShim(): void {
       add: (folderPath: string, nickname?: string) => invoke('folders:add', { folderPath, nickname }),
       remove: (folderPath: string) => invoke('folders:remove', { folderPath }),
       rename: (folderPath: string, nickname: string) => invoke('folders:rename', { folderPath, nickname }),
+    },
+    artifacts: {
+      listSession: (sessionId: string, projectRoot: string) =>
+        invoke('artifacts:list-session', { sessionId, projectRoot }),
+      listProject: (projectId: string) =>
+        invoke('artifacts:list-project', { projectId }),
+      get: (projectRoot: string, artifactId: string) =>
+        invoke('artifacts:get', { projectRoot, artifactId }),
+      save: (projectRoot: string, projectId: string, projectName: string,
+             artifactId: string, content: string, sessionId: string) =>
+        invoke('artifacts:save', { projectRoot, projectId, projectName, artifactId, content, sessionId }),
+      includeExternal: (projectRoot: string, absolutePath: string) =>
+        invoke('artifacts:include-external', { projectRoot, absolutePath }),
+      exclude: (projectRoot: string, canonicalPath: string) =>
+        invoke('artifacts:exclude', { projectRoot, canonicalPath }),
+      onChanged: (cb: (event: any) => void) => {
+        const handler: Callback = (evt: any) => cb(evt);
+        addListener('artifacts:changed', handler);
+        return () => removeListener('artifacts:changed', handler);
+      },
     },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is
