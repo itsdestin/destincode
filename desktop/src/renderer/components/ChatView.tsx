@@ -12,6 +12,8 @@ import ThinkingIndicator from './ThinkingIndicator';
 import AttentionBanner from './AttentionBanner';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
+import { useArtifact } from '../state/ArtifactContext';
+import { SessionDrawer } from './SessionDrawer';
 
 interface Props {
   sessionId: string;
@@ -65,6 +67,10 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
+  // Artifact drawer state — read from ArtifactContext so ChatView reacts to
+  // the drawer toggle without needing a prop threaded down from App.tsx.
+  const { state: artifactState } = useArtifact();
+  const drawerOpen = artifactState.drawerOpen;
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -355,8 +361,18 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
         pointerEvents: visible ? 'auto' : 'none',
       }}
     >
-      <div ref={scrollContainerRef} className="chat-scroll flex-1 overflow-y-auto">
-       <div ref={contentRef}>
+      {/* framed-shell: horizontal flex row holding the chat pane + optional
+          Session Drawer. The frame-edge strips are filled with --panel so the
+          chat area reads as inset inside header/status-bar chrome (Task 6.2).
+          Floating themes suppress the edge fill via [data-theme-layout] on <html>.
+          projectRoot/projectId/projectName are stubbed with empty strings — these
+          are only needed by the drawer's artifacts.save IPC call and will be
+          resolved in a later task when session metadata is threaded to ChatView. */}
+      <div className="framed-shell">
+        <div className="frame-edge" />
+        <div className="chat-pane">
+          <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
+           <div ref={contentRef}>
         {state.timeline.length === 0 && !state.isThinking ? (
           <div className="flex items-center justify-center h-full text-fg-muted text-sm">
             Start a conversation with Claude
@@ -486,11 +502,30 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
           </>
         )}
         <div ref={bottomRef} className="h-1" />
-       </div>
+           </div>
+          </div>
+        </div>
+        {/* Right frame edge / divider + Session Drawer — only shown when open */}
+        {drawerOpen && (
+          <>
+            <div className="frame-divider" />
+            <div className="drawer-pane">
+              <SessionDrawer
+                sessionId={sessionId}
+                projectRoot=""
+                projectId=""
+                projectName="project"
+              />
+            </div>
+          </>
+        )}
+        <div className="frame-edge" />
       </div>
 
       {/* Jump to bottom button — .jump-to-bottom class handles glassmorphism
-         offset so the button appears above the frosted input bar */}
+         offset so the button appears above the frosted input bar.
+         Positioned in the outer absolute div so it floats above the full
+         framed-shell (chat + drawer) without being clipped by chat-pane. */}
       {!atBottom && (
         <button
           onClick={jumpToBottom}

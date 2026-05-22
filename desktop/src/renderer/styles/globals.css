@@ -1023,3 +1023,68 @@ body[data-mode="buddy-chat"] #theme-bg {
   background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Framed-shell layout — artifact drawer integration (Task 6.2)
+
+   When the Session Drawer is open, the chat region and drawer sit side by
+   side in a horizontal row.  Thin edge strips (--frame-edge wide) filled
+   with --panel create the "picture frame" effect: the panel color from the
+   HeaderBar/StatusBar visually extends down the left edge, between the two
+   panes, and down the right edge so the chat and drawer appear inset.
+
+   Floating themes opt out via [data-theme-layout='floating'] — edge fills
+   are hidden and the shell background becomes transparent, so wallpaper or
+   glassmorphism themes still show through correctly.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --frame-edge: 10px;
+}
+
+/* Framed-shell: flex row that holds chat-pane + optional drawer-pane.
+   Fills the available height inside ChatView's absolute wrapper. */
+.framed-shell {
+  background: var(--panel);
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Left and right edge strips — filled with panel color to form the frame */
+.framed-shell > .frame-edge,
+.framed-shell > .frame-divider {
+  background: var(--panel);
+  width: var(--frame-edge);
+  flex-shrink: 0;
+}
+
+/* Chat pane — occupies remaining width, canvas background */
+.framed-shell > .chat-pane {
+  flex: 1;
+  min-width: 0;
+  background: var(--canvas);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Drawer pane — fixed width, panel background to blend with frame edges */
+.framed-shell > .drawer-pane {
+  width: 480px;
+  flex-shrink: 0;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+/* Floating-theme override: no edge fills, transparent shell background.
+   This keeps wallpaper / glassmorphism themes unaffected by the frame color. */
+[data-theme-layout='floating'] .framed-shell > .frame-edge,
+[data-theme-layout='floating'] .framed-shell > .frame-divider {
+  display: none;
+}
+
+[data-theme-layout='floating'] .framed-shell {
+  background: transparent;
+}
+

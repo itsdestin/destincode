@@ -347,6 +347,19 @@ function AppInner() {
   // to the top of the soft keyboard on Android / mobile browsers.
   useVisualViewport();
   useRemoteAttentionSync();
+
+  // Apply data-theme-layout on <html> so the framed-shell CSS knows whether to
+  // show panel-color edge fills (framed) or suppress them (floating).
+  // ThemeDefinition.layout has chrome-style/input-style etc. but no 'layout'
+  // field for framed/floating — hardcoding 'framed' for all themes until a
+  // theme opts in via a future 'layout' field. The floating branch is dead
+  // code for now; the CSS rule is already in place for when themes add it.
+  const { activeTheme } = useTheme();
+  useEffect(() => {
+    const layout = (activeTheme as any)?.layout?.['frame-style'] ?? 'framed';
+    document.documentElement.dataset.themeLayout = layout;
+  }, [activeTheme]);
+
   const dispatch = useChatDispatch();
   const chatStateMap = useChatStateMap();
   // Artifact tracker — global reducer for session/project artifact state.
