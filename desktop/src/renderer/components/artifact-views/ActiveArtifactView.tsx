@@ -1,0 +1,174 @@
+// ActiveArtifactView — shared component for viewing and editing a single artifact.
+// Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
+// can use it identically without duplicating the edit state + conflict-detection logic.
+import React, { useCallback, useEffect, useState } from 'react';
+import { getViewer } from './RendererRegistry';
+import type { ArtifactViewProps } from './RendererRegistry';
+import { BinaryFallback } from './BinaryFallback';
+import type { ArtifactRecord } from '../../../shared/artifacts/types';
+
+export interface ActiveArtifactViewProps {
+  artifact: ArtifactRecord;
+  content: string | null;
+  projectRoot: string;
+  projectId: string;
+  projectName: string;
+  sessionId: string;
+  onContentChange: (content: string | null) => void;
+}
+
+export function ActiveArtifactView({
+  artifact, content, projectRoot, projectId, projectName, sessionId, onContentChange,
+}: ActiveArtifactViewProps) {
+  // Resolve the absolute path depending on artifact kind.
+  const absolutePath = artifact.kind === 'internal'
+    ? `${projectRoot}/${artifact.path}`
+    : (artifact.absolutePath ?? artifact.path);
+
+  const ext = artifact.path.split('.').pop()?.toLowerCase() ?? '';
+  // Only plaintext formats support inline editing in v1.
+  const isEditable = ext === 'md' || ext === 'markdown' || ext === 'txt';
+
+  // ── Task 6.4: controlled edit state (lifted from MarkdownView) ──
+  // Owning edit state here lets the conflict banner read/reset it without
+  // requiring a refactor of each individual viewer component.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(content ?? '');
+  // conflict.disk holds the agent's version when a concurrent write is detected
+  const [conflict, setConflict] = useState<{ disk: string } | null>(null);
+  const [showDiff, setShowDiff] = useState(false);
+
+  // Reset draft when content reloads from disk (e.g. artifact selection changes)
+  useEffect(() => {
+    setDraft(content ?? '');
+    setConflict(null);
+    setShowDiff(false);
+  }, [content, artifact.id]);
+
+  // ── Conflict detection: watch for concurrent agent edits while in edit mode ──
+  useEffect(() => {
+    if (!editing) return;
+    // artifacts.onChanged is optional — gracefully skip if IPC not wired yet
+    const unsubFn = (window.claude as any).artifacts?.onChanged?.((evt: any) => {
+      if (evt.projectRoot === projectRoot && evt.artifactId === artifact.id && evt.by === 'agent') {
+        // Fetch the agent's version from disk to display in the conflict banner
+        (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
+          if (res && res.ok) setConflict({ disk: res.content ?? '' });
+        });
+      }
+    });
+    return typeof unsubFn === 'function' ? unsubFn : undefined;
+  }, [editing, artifact.id, projectRoot]);
+
+  // ── Edit lifecycle callbacks (passed down to MarkdownView as controlled props) ──
+  const handleStartEdit = useCallback(() => {
+    setEditing(true);
+    setConflict(null);
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    const res = await (window.claude as any).artifacts.save(
+      projectRoot, projectId, projectName, artifact.id, draft, sessionId
+    );
+    if (res && res.ok) {
+      onContentChange(draft);
+      setEditing(false);
+      setConflict(null);
+    } else {
+      console.error('[ActiveArtifactView] artifacts.save failed', res);
+    }
+  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange]);
+
+  const handleCancel = useCallback(() => {
+    setDraft(content ?? '');
+    setEditing(false);
+    setConflict(null);
+  }, [content]);
+
+  // ── Conflict resolution actions ──
+  const resolveKeepMine = useCallback(() => {
+    // Save the user's current draft over the agent's version
+    handleSave();
+  }, [handleSave]);
+
+  const resolveUseClaudes = useCallback(() => {
+    if (!conflict) return;
+    // Accept the agent's disk version: update UI content and exit edit mode
+    onContentChange(conflict.disk);
+    setDraft(conflict.disk);
+    setEditing(false);
+    setConflict(null);
+  }, [conflict, onContentChange]);
+
+  const viewSpec = getViewer(artifact.path);
+
+  // Lazy-loaded viewers (PdfView, DocxView, XlsxView) are represented as
+  // `{ lazy: () => import(...) }` in the Registry. For v1 simplicity we fall
+  // back to BinaryFallback (opens externally). A proper React.lazy + Suspense
+  // wiring is left for a later pass — the Registry API supports it, but wiring
+  // it here requires Suspense boundary bookkeeping that's out of Task 6.1 scope.
+  if (typeof viewSpec !== 'function') {
+    // viewSpec is { lazy: LazyImporter } — not a component.
+    const props: ArtifactViewProps = {
+      path: artifact.path,
+      content,
+      absolutePath,
+      isEditable: false,
+    };
+    return <BinaryFallback {...props} />;
+  }
+
+  const ViewerComponent = viewSpec;
+  return (
+    <div className="h-full flex flex-col">
+      {/* Conflict banner — shown when agent edits the same file the user has open
+          in edit mode. Three actions: keep draft, accept agent's version, or view
+          a side-by-side diff. The diff is a simple two-column pre layout; a proper
+          diff library (e.g. diff2html) is left for a later refinement pass. */}
+      {conflict && (
+        <div className="bg-yellow-100 dark:bg-yellow-900/30 text-yellow-900 dark:text-yellow-100 p-3 text-sm flex flex-wrap gap-x-3 gap-y-1 items-center border-b border-yellow-700/30 shrink-0">
+          <span className="flex-1 min-w-0">⚠ Claude also edited this file.</span>
+          <button className="underline hover:no-underline whitespace-nowrap" onClick={resolveKeepMine}>
+            Keep mine
+          </button>
+          <button className="underline hover:no-underline whitespace-nowrap" onClick={resolveUseClaudes}>
+            Use Claude's
+          </button>
+          <button
+            className="underline hover:no-underline whitespace-nowrap"
+            onClick={() => setShowDiff((v) => !v)}
+          >
+            {showDiff ? 'Hide diff' : 'View diff'}
+          </button>
+        </div>
+      )}
+      {/* Side-by-side diff: left = user draft, right = agent's disk version */}
+      {showDiff && conflict && (
+        <div className="grid grid-cols-2 gap-0 border-b border-edge shrink-0 overflow-auto max-h-[40%]">
+          <div className="p-2 border-r border-edge overflow-auto">
+            <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">Mine</div>
+            <pre className="text-xs font-mono whitespace-pre-wrap text-fg">{draft}</pre>
+          </div>
+          <div className="p-2 overflow-auto">
+            <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">Claude's</div>
+            <pre className="text-xs font-mono whitespace-pre-wrap text-fg">{conflict.disk}</pre>
+          </div>
+        </div>
+      )}
+      <div className="flex-1 overflow-hidden">
+        <ViewerComponent
+          path={artifact.path}
+          content={content}
+          absolutePath={absolutePath}
+          isEditable={isEditable}
+          editing={editing}
+          draft={draft}
+          onDraftChange={setDraft}
+          onStartEdit={handleStartEdit}
+          onSaveEdit={handleSave}
+          onCancelEdit={handleCancel}
+        />
+      </div>
+    </div>
+  );
+}
