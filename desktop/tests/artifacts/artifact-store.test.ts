@@ -2,7 +2,8 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readSidecar, writeSidecar } from '../../src/main/artifacts/artifact-store';
+import { readSidecar, writeSidecar, appendVersion } from '../../src/main/artifacts/artifact-store';
+import type { ProjectSidecar } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
 
 describe('readSidecar', () => {
@@ -57,5 +58,61 @@ describe('writeSidecar', () => {
     const updated = { ...sample, updatedAt: '2026-05-21T15:00:00.000Z' };
     const result = await writeSidecar(projectRoot, sample.updatedAt, updated);
     expect(result.committed).toBe(false);
+  });
+});
+
+describe('appendVersion', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-append-'));
+  });
+
+  it('creates a new artifact when path is unseen', async () => {
+    await appendVersion(projectRoot, sample.projectId, sample.name, {
+      path: 'docs/new.md',
+      kind: 'internal',
+      absolutePath: null,
+      sessionId: 'sess-1',
+      type: 'create',
+      author: 'agent',
+    });
+    const sidecar = await readSidecar(projectRoot);
+    expect((sidecar as ProjectSidecar).artifacts[0].path).toBe('docs/new.md');
+    expect((sidecar as ProjectSidecar).artifacts[0].versions).toHaveLength(1);
+  });
+
+  it('appends a version to an existing artifact', async () => {
+    await appendVersion(projectRoot, sample.projectId, sample.name, {
+      path: 'docs/x.md', kind: 'internal', absolutePath: null,
+      sessionId: 'sess-1', type: 'create', author: 'agent',
+    });
+    await appendVersion(projectRoot, sample.projectId, sample.name, {
+      path: 'docs/x.md', kind: 'internal', absolutePath: null,
+      sessionId: 'sess-1', type: 'edit', author: 'agent',
+    });
+    const sidecar = await readSidecar(projectRoot);
+    expect((sidecar as ProjectSidecar).artifacts).toHaveLength(1);
+    expect((sidecar as ProjectSidecar).artifacts[0].versions).toHaveLength(2);
+  });
+
+  it('retries on CAS conflict up to MAX_RETRIES', async () => {
+    await appendVersion(projectRoot, sample.projectId, sample.name, {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+    const [r1, r2] = await Promise.all([
+      appendVersion(projectRoot, sample.projectId, sample.name, {
+        path: 'b.md', kind: 'internal', absolutePath: null,
+        sessionId: 's', type: 'create', author: 'agent',
+      }),
+      appendVersion(projectRoot, sample.projectId, sample.name, {
+        path: 'c.md', kind: 'internal', absolutePath: null,
+        sessionId: 's', type: 'create', author: 'agent',
+      }),
+    ]);
+    expect(r1.committed).toBe(true);
+    expect(r2.committed).toBe(true);
+    const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
+    expect(sidecar.artifacts).toHaveLength(3);
   });
 });
