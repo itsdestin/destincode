@@ -4,6 +4,8 @@ import SessionStrip from './SessionStrip';
 import type { SessionStatusColor } from './StatusDot';
 import type { PermissionMode } from '../../shared/types';
 import { isAndroid, isRemoteMode } from '../platform';
+// Artifact drawer trigger — reads session artifact count for the badge.
+import { useArtifact } from '../state/ArtifactContext';
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
 
@@ -183,6 +185,41 @@ interface Props {
   geminiEnabled?: boolean;
   windowDirectory?: any;
   myWindowId?: number | null;
+}
+
+/** Artifact drawer button — isolated so it can safely call useArtifact().
+ *  Placed inside <ArtifactContext.Provider> (mounted in App.tsx), so the hook
+ *  is always in-context when the main app is rendering HeaderBar.
+ *  Hidden entirely when there are no artifacts for the active session
+ *  (per plan: "Hidden completely if the session has zero artifacts"). */
+function ArtifactDrawerButton({ activeSessionId }: { activeSessionId: string | null }) {
+  const { state, dispatch } = useArtifact();
+  const artifactCount = activeSessionId
+    ? (state.sessionArtifacts[activeSessionId] ?? []).length
+    : 0;
+
+  if (artifactCount === 0) return null;
+
+  return (
+    <button
+      type="button"
+      className={`relative p-1 rounded-sm hover:bg-inset transition-colors shrink-0 flex items-center gap-0.5 ${
+        state.drawerOpen ? 'text-fg' : 'text-fg-muted'
+      }`}
+      onClick={() => dispatch({ type: state.drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED' })}
+      title="Session Artifacts"
+    >
+      {/* Document icon — SVG matches the style of the settings gear above */}
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      </svg>
+      {/* Count badge */}
+      <span className="text-[10px] bg-accent text-on-accent rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5">
+        {artifactCount}
+      </span>
+    </button>
+  );
 }
 
 export default function HeaderBar({
@@ -487,6 +524,9 @@ export default function HeaderBar({
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500" />
           ) : null}
         </button>
+        {/* Artifact drawer trigger — hidden when session has zero artifacts
+            (plan: "Hidden completely if the session has zero artifacts"). */}
+        <ArtifactDrawerButton activeSessionId={activeSessionId} />
         {isRemoteMode() && (
           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 border border-blue-500/25 shrink-0">
             REMOTE
