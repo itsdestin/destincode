@@ -368,7 +368,8 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
           projectRoot/projectId/projectName are stubbed with empty strings — these
           are only needed by the drawer's artifacts.save IPC call and will be
           resolved in a later task when session metadata is threaded to ChatView. */}
-      <div className="framed-shell">
+      {/* drawer-open modifier collapses chat pane on narrow screens (Task 6.3) */}
+      <div className={`framed-shell${drawerOpen ? ' drawer-open' : ''}`}>
         <div className="frame-edge" />
         <div className="chat-pane">
           <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">

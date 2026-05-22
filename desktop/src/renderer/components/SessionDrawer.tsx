@@ -1,8 +1,10 @@
 // SessionDrawer — slide-in panel listing artifacts collected during a session.
 // Renders the artifact sidebar (list + detail pane) when drawerOpen is true.
 // Task 6.1: scaffold only; layout integration (flex row next to chat) is Task 6.2.
-import React, { useEffect, useState } from 'react';
+// Task 6.3: back-button / ESC handling via useEscClose (same hook as modals/drawers)
+import React, { useCallback, useEffect, useState } from 'react';
 import { useArtifact } from '../state/ArtifactContext';
+import { useEscClose } from '../hooks/use-esc-close';
 import { getViewer } from './artifact-views/RendererRegistry';
 import type { ArtifactViewProps } from './artifact-views/RendererRegistry';
 import { BinaryFallback } from './artifact-views/BinaryFallback';
@@ -31,6 +33,21 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     });
     return () => { cancelled = true; };
   }, [active?.id, projectRoot]);
+
+  // Back-button / ESC handling (Task 6.3):
+  // When an artifact is active, ESC/back goes to the list (clears active artifact).
+  // When only the drawer is open (no active artifact), ESC/back closes the drawer.
+  // useEscClose participates in the shared LIFO stack that also handles Android
+  // hardware back (App.tsx wires useDismissTop to the android:back WebSocket event).
+  const handleBack = useCallback(() => {
+    if (state.activeArtifactId) {
+      dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED' });
+    } else {
+      dispatch({ type: 'DRAWER_CLOSED' });
+    }
+  }, [state.activeArtifactId, dispatch]);
+
+  useEscClose(state.drawerOpen, handleBack);
 
   // Drawer is hidden when closed — returns null to avoid any layout footprint.
   if (!state.drawerOpen) return null;

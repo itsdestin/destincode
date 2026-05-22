@@ -1088,3 +1088,22 @@ body[data-mode="buddy-chat"] #theme-bg {
   background: transparent;
 }
 
+/* Narrow-screen (phone / narrow window) responsive collapse (Task 6.3)
+   Below 700px the side-by-side layout doesn't fit:
+   - Frame edge/divider strips are hidden (no room for decorative chrome)
+   - When the drawer is open (.drawer-open modifier set by ChatView), the chat
+     pane slides out and the drawer fills the full width (stack navigation model)
+   - When no drawer is open the chat pane is shown normally (default flex-1) */
+@media (max-width: 700px) {
+  .framed-shell > .frame-edge,
+  .framed-shell > .frame-divider {
+    display: none;
+  }
+  .framed-shell.drawer-open > .chat-pane {
+    display: none;
+  }
+  .framed-shell > .drawer-pane {
+    width: 100%;
+  }
+}
+

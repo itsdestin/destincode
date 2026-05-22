@@ -31,6 +31,9 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
       return { ...s, drawerOpen: false, activeArtifactId: null };
     case 'ACTIVE_ARTIFACT_SET':
       return { ...s, activeArtifactId: a.artifactId };
+    // Back gesture in detail view: return to list without closing the drawer.
+    case 'ACTIVE_ARTIFACT_CLEARED':
+      return { ...s, activeArtifactId: null };
     case 'PROJECT_VIEW_OPENED':
       return { ...s, projectViewOpen: true };
     case 'PROJECT_VIEW_CLOSED':
