@@ -2,7 +2,7 @@
 // can call getScreenText for the attention classifier's ~1s buffer reads.
 // Must run before any TerminalView mounts (which call registerTerminal).
 import './bootstrap/terminal-bridge';
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import TerminalView from './components/TerminalView';
 import ChatView from './components/ChatView';
 import HeaderBar from './components/HeaderBar';
@@ -20,6 +20,8 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 import ErrorBoundary from './components/ErrorBoundary';
 import GamePanel from './components/game/GamePanel';
 import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './state/chat-context';
+import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
+import { ArtifactProvider } from './state/ArtifactContext';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
@@ -347,6 +349,8 @@ function AppInner() {
   useRemoteAttentionSync();
   const dispatch = useChatDispatch();
   const chatStateMap = useChatStateMap();
+  // Artifact tracker — global reducer for session/project artifact state.
+  const [artifactState, dispatchArtifact] = useReducer(artifactReducer, initialArtifactState);
   // Latest-value ref so transcript-shrink and turn-complete handlers see
   // up-to-date compactionPending state without re-subscribing on every reducer tick.
   const chatStateMapRef = useRef(chatStateMap);
@@ -971,6 +975,48 @@ function AppInner() {
       dispatch({ type: 'HYDRATE_CHAT_STATE', sessions: payload });
     });
 
+    // Artifact tracker: refresh session artifacts whenever Claude writes/edits a
+    // file inside the active project root. We piggyback on the existing
+    // transcriptEvent subscription rather than adding a second listener —
+    // filtering to Write/Edit/MultiEdit tool-use events and only paths that are
+    // inside the session's working directory (external files are never auto-tracked).
+    const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
+      if (!event?.type || !event?.sessionId) return;
+      if (event.type !== 'tool-use') return;
+      const toolName: string = event.data?.toolName ?? '';
+      if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) return;
+      const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
+      if (!targetPath) return;
+      // Guard: only auto-track files that live inside the session's working directory.
+      // cwd is the project root for the session; external paths are not tracked.
+      const projectRoot: string = event.cwd ?? '';
+      if (!projectRoot || !targetPath.startsWith(projectRoot)) return;
+      // Pull the updated artifact list for this session and hydrate the tracker.
+      (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
+        .then((res: any) => {
+          if (res && res.ok && Array.isArray(res.artifacts)) {
+            dispatchArtifact({
+              type: 'SESSION_ARTIFACTS_LOADED',
+              sessionId: event.sessionId,
+              artifacts: res.artifacts,
+            });
+          }
+        })
+        .catch(() => {/* best-effort; never block the UI on a failed artifact fetch */});
+    });
+
+    // Artifact tracker: listen for push events from the main process when
+    // any artifact is added, updated, or removed (e.g. from another session
+    // or an external file change picked up by the watcher).
+    const artifactChangedUnsubscribe = (window.claude as any).artifacts?.onChanged?.((evt: any) => {
+      if (!evt?.projectRoot || !evt?.artifactId) return;
+      dispatchArtifact({
+        type: 'ARTIFACT_CHANGED',
+        projectRoot: evt.projectRoot,
+        artifactId: evt.artifactId,
+      });
+    });
+
     return () => {
       transcriptBatchCancelled = true;
       if (transcriptRafId !== null) cancelAnimationFrame(transcriptRafId);
@@ -987,6 +1033,8 @@ function AppInner() {
       if (promptCompleteHandler) window.claude.off('prompt:complete', promptCompleteHandler);
       if (sessionPermissionModeHandler) window.claude.off('session:permission-mode', sessionPermissionModeHandler);
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
+      if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
+      if (typeof artifactChangedUnsubscribe === 'function') artifactChangedUnsubscribe();
     };
   }, [dispatch]);
 
@@ -1925,6 +1973,10 @@ function AppInner() {
   }
 
   return (
+    // ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
+    // subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
+    // etc.) because artifact operations may eventually consume chat/theme context.
+    <ArtifactProvider value={{ state: artifactState, dispatch: dispatchArtifact }}>
     <div className={`app-shell flex w-screen h-full text-fg ${getPlatform() === 'android' && currentViewMode === 'terminal' ? '' : 'bg-canvas'}`}>
       {/* Mount-only: listens for chat:export-snapshot from main, serializes
           ChatState, and sends the snapshot back for remote-browser hydration. */}
@@ -2353,6 +2405,7 @@ function AppInner() {
         onZoomReset={handleZoomReset}
       />
     </div>
+    </ArtifactProvider>
   );
 }
 
