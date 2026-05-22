@@ -161,6 +161,35 @@ function persistPathToShellProfiles(dir: string): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolves the absolute path to reg.exe on Windows.
+ * Hardcoding System32 prevents relying on the app's potentially stale or
+ * corrupted environment PATH to find the registry tool.
+ */
+function getRegPath(): string {
+  const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  const regPath = path.join(systemRoot, 'System32', 'reg.exe');
+  return fs.existsSync(regPath) ? `"${regPath}"` : 'reg';
+}
+
+/**
+ * Resolves the absolute path to powershell.exe on Windows.
+ * Prevents relying on the app's potentially stale or corrupted environment PATH
+ * to find PowerShell for first-run bootstrapping.
+ *
+ * Fix: must return the path UNQUOTED. `getRegPath` returns a quoted path because
+ * it's interpolated into a `execSync(string)` template that cmd.exe parses; this
+ * helper is consumed via `runCommand(ps, args)` → `execFile(ps, args)` which
+ * passes the literal string to CreateProcess. Embedded quotes become part of
+ * the filename and CreateProcess fails with ENOENT — verified empirically on
+ * 2026-05-21 (the bug shipped briefly in the first PATH-hardening pass).
+ */
+function getPowerShellPath(): string {
+  const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  const psPath = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return fs.existsSync(psPath) ? psPath : 'powershell';
+}
+
+/**
  * On Windows, re-reads User and System PATH from the registry so that
  * freshly-installed tools are visible without restarting the app.
  * On macOS/Linux this is a no-op — main.ts already prepends common paths.
@@ -173,8 +202,9 @@ export function refreshPath(): void {
   if (process.platform !== 'win32') return;
 
   try {
+    const reg = getRegPath();
     const userPath = execSync(
-      'reg query "HKCU\\Environment" /v Path',
+      `${reg} query "HKCU\\Environment" /v Path`,
       { encoding: 'utf8' },
     )
       .split('\n')
@@ -183,7 +213,7 @@ export function refreshPath(): void {
       .trim() ?? '';
 
     const systemPath = execSync(
-      'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path',
+      `${reg} query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path`,
       { encoding: 'utf8' },
     )
       .split('\n')
@@ -337,6 +367,38 @@ export async function detectAuth(): Promise<DetectionResult> {
   }
 }
 
+/**
+ * Detect winget on Windows.
+ *
+ * WHY: winget is an MSIX App Execution Alias, not a standard Win32 PE binary.
+ * If the Windows "App Installer" package is missing or disabled by policy, winget
+ * does not exist on the machine. Upfront detection provides a clear, actionable
+ * warning to Destin's users instead of failing with a cryptic "spawn ENOENT" error.
+ */
+export async function detectWinget(): Promise<DetectionResult> {
+  if (process.platform !== 'win32') {
+    return { installed: true };
+  }
+  try {
+    const wingetPath = resolveCommand('winget');
+    // We execute `winget --version` to verify that the execution alias is active
+    // and working, rather than just checking if the command name resolves.
+    const { stdout } = await runCommand(wingetPath, ['--version']);
+    const version = stdout.trim();
+    log('INFO', 'prereq', `winget detected: ${version}`);
+    return { installed: true, version, path: wingetPath };
+  } catch (err) {
+    log('WARN', 'prereq', 'winget detection failed', { error: String(err) });
+    return {
+      installed: false,
+      error:
+        'winget (App Installer) is missing, disabled, or not on your system PATH. ' +
+        'Please install App Installer from the Microsoft Store (https://aka.ms/getwinget) ' +
+        'or enable it in Windows Settings / Policy, then try again.',
+    };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Installation functions
 // ---------------------------------------------------------------------------
@@ -363,6 +425,13 @@ export async function installNode(): Promise<{ success: boolean; error?: string 
     log('INFO', 'prereq', 'Installing Node.js...');
 
     if (process.platform === 'win32') {
+      // WHY: winget is not guaranteed to exist on Windows Server, LTSC builds,
+      // or sandboxed machines. Run upfront detection to give a useful error
+      // instead of hardcoding a path or failing cryptically on spawn.
+      const wingetCheck = await detectWinget();
+      if (!wingetCheck.installed) {
+        return { success: false, error: wingetCheck.error };
+      }
       await runCommand(
         'winget',
         [
@@ -446,6 +515,13 @@ export async function installGit(): Promise<{ success: boolean; error?: string }
     log('INFO', 'prereq', 'Installing Git...');
 
     if (process.platform === 'win32') {
+      // WHY: winget is not guaranteed to exist on Windows Server, LTSC builds,
+      // or sandboxed machines. Run upfront detection to give a useful error
+      // instead of hardcoding a path or failing cryptically on spawn.
+      const wingetCheck = await detectWinget();
+      if (!wingetCheck.installed) {
+        return { success: false, error: wingetCheck.error };
+      }
       await runCommand(
         'winget',
         [
@@ -544,8 +620,9 @@ export async function installClaude(): Promise<{ success: boolean; error?: strin
       // -ExecutionPolicy Bypass: works around per-user "Restricted" policies
       //   that would otherwise block `iex`. Process-scoped only — does not
       //   alter the user's persistent ExecutionPolicy.
+      const ps = getPowerShellPath();
       await runCommand(
-        'powershell.exe',
+        ps,
         [
           '-NoProfile',
           '-ExecutionPolicy', 'Bypass',
@@ -808,8 +885,9 @@ export function checkWindowsDevMode(): boolean {
   if (process.platform !== 'win32') return true;
 
   try {
+    const reg = getRegPath();
     const output = execSync(
-      'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense',
+      `${reg} query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense`,
       { encoding: 'utf8' },
     );
     return output.includes('0x1');
@@ -830,7 +908,8 @@ export async function enableWindowsDevMode(): Promise<{ success: boolean; error?
   try {
     log('INFO', 'prereq', 'Attempting to enable Windows Developer Mode...');
 
-    await runCommand('powershell', [
+    const ps = getPowerShellPath();
+    await runCommand(ps, [
       '-Command',
       'Start-Process reg -ArgumentList "add","HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock","/v","AllowDevelopmentWithoutDevLicense","/t","REG_DWORD","/d","1","/f" -Verb RunAs -Wait',
     ]);

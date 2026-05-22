@@ -226,6 +226,15 @@ export class RemoteConfig {
 
     try {
       if (process.platform === 'win32') {
+        // WHY: winget is an MSIX App Execution Alias, not guaranteed to exist on
+        // Windows Server / LTSC / policy-restricted machines. Probe upfront so the
+        // user gets an actionable error instead of cryptic ENOENT. Reuses the
+        // shared detectWinget helper from prerequisite-installer.
+        const { detectWinget } = await import('./prerequisite-installer');
+        const wingetCheck = await detectWinget();
+        if (!wingetCheck.installed) {
+          return { success: false, error: wingetCheck.error };
+        }
         await execFileAsync(
           'winget',
           ['install', 'Tailscale.Tailscale', '--silent', '--accept-package-agreements', '--accept-source-agreements'],

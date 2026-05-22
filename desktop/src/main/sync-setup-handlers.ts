@@ -157,6 +157,17 @@ export async function installRclone(): Promise<{ success: boolean; error?: strin
   let cmd: string;
   let args: string[];
 
+  // WHY: winget can be absent on Windows Server / LTSC / policy-restricted
+  // machines. Probe upfront so the user sees a clear "install App Installer"
+  // message instead of a cryptic spawn ENOENT inside the safeExec call below.
+  if (process.platform === 'win32') {
+    const { detectWinget } = await import('./prerequisite-installer');
+    const wingetCheck = await detectWinget();
+    if (!wingetCheck.installed) {
+      return { success: false, error: wingetCheck.error };
+    }
+  }
+
   switch (process.platform) {
     case 'win32':
       cmd = 'winget';
