@@ -24,6 +24,7 @@
     "bcryptjs": "^3.0.3",
     "chokidar": "^4.0.3",
     "koffi": "^2.16.1",
+    "mammoth": "^1.12.0",
     "node-machine-id": "^1.1.12",
     "node-pty": "1.2.0-beta.12",
     "partysocket": "^1.1.16",
