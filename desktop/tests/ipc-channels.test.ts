@@ -324,3 +324,59 @@ describe('performance:* and app:restart parity', () => {
     }
   });
 });
+
+// Regression net for artifact:* IPC channels introduced by the artifact-viewer
+// subsystem (Phase 2). All four surfaces (preload.ts, remote-shim.ts,
+// ipc-handlers.ts, SessionService.kt) must carry identical type strings for
+// request-response channels. The push event 'artifacts:changed' does NOT need
+// an ipcMain.handle — it broadcasts from main to renderer only. Phase 8 will
+// add SessionService.kt handlers; until then, those assertions are expected to
+// fail as a tracker for when Android parity lands.
+describe('artifact IPC parity', () => {
+  // Dynamically read the ipc-channels.ts file and extract the channel values
+  const ipcChannelsSource = fs.readFileSync(
+    path.join(__dirname, '../src/main/artifacts/ipc-channels.ts'), 'utf8'
+  );
+  // Extract all string values from ARTIFACT_IPC object (pattern: : 'channel-name')
+  const channelMatches = [...ipcChannelsSource.matchAll(/'([^']+)'/g)];
+  const channels = channelMatches
+    .map(m => m[1])
+    .filter((v, i, a) => a.indexOf(v) === i); // deduplicate
+
+  // Resolve paths relative to the desktop directory (where vitest is invoked from)
+  const preload = fs.readFileSync('src/main/preload.ts', 'utf8');
+  const shim = fs.readFileSync('src/renderer/remote-shim.ts', 'utf8');
+  const handlers = fs.readFileSync('src/main/ipc-handlers.ts', 'utf8');
+
+  // Kotlin file lives in the sibling app/ directory of the youcoded sub-repo
+  const kotlinPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  const kotlinExists = fs.existsSync(kotlinPath);
+  const kotlin = kotlinExists ? fs.readFileSync(kotlinPath, 'utf8') : '';
+
+  for (const channel of channels) {
+    it(`channel ${channel} is referenced in preload.ts`, () => {
+      expect(preload, `${channel} missing from preload.ts`).toContain(channel);
+    });
+
+    it(`channel ${channel} is referenced in remote-shim.ts`, () => {
+      expect(shim, `${channel} missing from remote-shim.ts`).toContain(channel);
+    });
+
+    if (channel !== 'artifacts:changed') {
+      // Push events don't need an ipcMain.handle — only request/response channels do
+      it(`channel ${channel} is registered in ipc-handlers.ts`, () => {
+        expect(handlers, `${channel} missing from ipc-handlers.ts`).toContain(channel);
+      });
+    }
+
+    // Phase 8: Expected to fail until Android handlers land; left in place as a tracker
+    it(`channel ${channel} is registered in SessionService.kt`, () => {
+      if (kotlinExists) {
+        expect(kotlin, `${channel} missing from SessionService.kt`).toContain(channel);
+      } else {
+        // App directory not present in this worktree yet (Phase 8 pending)
+        console.warn(`SessionService.kt not found at ${kotlinPath} — skipping Android parity check`);
+      }
+    });
+  }
+});
