@@ -842,4 +842,24 @@ contextBridge.exposeInMainWorld('claude', {
       return () => {};
     },
   },
+  artifacts: {
+    listSession: (sessionId: string, projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:list-session', sessionId, projectRoot),
+    listProject: (projectId: string) =>
+      ipcRenderer.invoke('artifacts:list-project', projectId),
+    get: (projectRoot: string, artifactId: string) =>
+      ipcRenderer.invoke('artifacts:get', projectRoot, artifactId),
+    save: (projectRoot: string, projectId: string, projectName: string,
+           artifactId: string, content: string, sessionId: string) =>
+      ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId),
+    includeExternal: (projectRoot: string, absolutePath: string) =>
+      ipcRenderer.invoke('artifacts:include-external', projectRoot, absolutePath),
+    exclude: (projectRoot: string, canonicalPath: string) =>
+      ipcRenderer.invoke('artifacts:exclude', projectRoot, canonicalPath),
+    onChanged: (cb: (event: any) => void) => {
+      const handler = (_e: any, payload: any) => cb(payload);
+      ipcRenderer.on('artifacts:changed', handler);
+      return () => ipcRenderer.removeListener('artifacts:changed', handler);
+    },
+  },
 });
