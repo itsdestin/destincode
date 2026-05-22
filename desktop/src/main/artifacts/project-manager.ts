@@ -4,7 +4,7 @@ import { join, basename } from 'path';
 import { canonicalize } from '../../shared/artifacts/canonicalize';
 import { newProjectId } from '../../shared/artifacts/ulid';
 import { readSidecar } from './artifact-store';
-import { readIndex, upsertProject } from './central-index';
+import { readIndex, upsertProject, removeProject } from './central-index';
 import { CentralIndexProject } from '../../shared/artifacts/types';
 
 export interface EnsureProjectResult {
@@ -66,4 +66,45 @@ export async function applyGitTreatment(projectRoot: string): Promise<void> {
   const next = (current && !current.endsWith('\n') ? current + '\n' : current) + '.youcoded/\n';
   await fs.writeFile(gitignorePath + '.tmp', next, 'utf8');
   await fs.rename(gitignorePath + '.tmp', gitignorePath);
+}
+
+export async function detectOrphan(
+  projectRoot: string,
+  path: string,
+  kind: 'internal' | 'external',
+  absolutePath: string | null
+): Promise<boolean> {
+  // Determine the full path based on artifact kind
+  const fullPath = kind === 'internal' ? join(projectRoot, path) : absolutePath!;
+  // Return true if the file does not exist
+  return !existsSync(fullPath);
+}
+
+export async function rebuildIndex(claudeDir: string): Promise<void> {
+  // Read current index
+  const idx = await readIndex(claudeDir);
+  const survivingIds = new Set<string>();
+
+  // Iterate over all projects and check if their sidecars still exist
+  for (const p of idx.projects) {
+    const sidecar = await readSidecar(p.path);
+    // If sidecar exists and is well-formed (has projectId), keep the project
+    if (sidecar && 'projectId' in sidecar) {
+      // Refresh the project with updated stats
+      const refreshed: CentralIndexProject = {
+        ...p,
+        stats: { artifactCount: sidecar.artifacts.length },
+        lastIndexed: new Date().toISOString(),
+      };
+      await upsertProject(claudeDir, refreshed);
+      survivingIds.add(p.id);
+    }
+  }
+
+  // Remove projects whose sidecars were not found
+  for (const p of idx.projects) {
+    if (!survivingIds.has(p.id)) {
+      await removeProject(claudeDir, p.id);
+    }
+  }
 }
