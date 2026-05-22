@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
-import mammoth from 'mammoth/mammoth.browser';
 import type { ArtifactViewProps } from './types';
+
+// @ts-ignore mammoth.browser lacks type declarations
+import mammoth from 'mammoth/mammoth.browser';
 
 export function DocxView({ absolutePath }: ArtifactViewProps) {
   const [html, setHtml] = useState<string>('');

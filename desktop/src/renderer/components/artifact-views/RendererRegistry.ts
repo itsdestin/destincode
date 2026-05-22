@@ -29,11 +29,8 @@ const REGISTRY: Record<string, ViewSpec> = {
   jpeg: ImageView,
   gif: ImageView,
   webp: ImageView,
-  // @ts-expect-error PdfView created in Task 4.5
   pdf: { lazy: () => import('./PdfView').then((m) => ({ default: m.PdfView })) },
-  // @ts-expect-error DocxView created in Task 4.6
   docx: { lazy: () => import('./DocxView').then((m) => ({ default: m.DocxView })) },
-  // @ts-expect-error XlsxView created in Task 4.7
   xlsx: { lazy: () => import('./XlsxView').then((m) => ({ default: m.XlsxView })) },
 };
 

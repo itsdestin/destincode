@@ -24,7 +24,7 @@ export function PdfView({ absolutePath }: ArtifactViewProps) {
         canvas.style.maxWidth = '100%';
         canvas.style.marginBottom = '8px';
         container.appendChild(canvas);
-        await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
+        await page.render({ canvasContext: canvas.getContext('2d')!, viewport, canvas }).promise;
       }
     })();
     return () => { cancelled = true; };
