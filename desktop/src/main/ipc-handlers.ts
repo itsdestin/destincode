@@ -37,9 +37,17 @@ import { getChangelog } from './changelog-service';
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
+import { ARTIFACT_IPC } from './artifacts/ipc-channels';
+import { appendVersion, readSidecar, writeSidecar } from './artifacts/artifact-store';
+import { listProjects } from './artifacts/central-index';
+import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
+import { canonicalize } from '../shared/artifacts/canonicalize';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
+
+// Root of ~/.claude — used by artifact handlers to locate the central index.
+const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
 
 export function registerIpcHandlers(
@@ -2020,6 +2028,118 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.DEV_OPEN_SESSION_IN, async (_event, args: { cwd: string; initialInput?: string }) => {
     // Delegate to the exported helper so the logic is independently testable.
     return openDevSessionIn(args, { defaultsPrefPath, sessionManager, homedir: os.homedir });
+  });
+
+  // --- Artifact viewer IPC handlers ---
+  // All six request-response handlers plus the CHANGED push event (emitted via
+  // webContents.send() inside SAVE — no ipcMain.handle needed for push events).
+
+  ipcMain.handle(ARTIFACT_IPC.LIST_SESSION, async (_e, sessionId: string, projectRoot: string) => {
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
+    // Filter to artifacts touched by this session
+    const result = sidecar.artifacts.filter((a) =>
+      a.versions.some((v) => v.sessionId === sessionId)
+    );
+    return { ok: true, artifacts: result };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECT, async (_e, projectId: string) => {
+    const projects = await listProjects(CLAUDE_DIR);
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return { ok: false, error: 'project-not-found' };
+    const sidecar = await readSidecar(p.path);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
+    return { ok: true, artifacts: sidecar.artifacts };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.GET, async (_e, projectRoot: string, artifactId: string) => {
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
+    const artifact = sidecar.artifacts.find((a) => a.id === artifactId);
+    if (!artifact) return { ok: false, error: 'artifact-not-found' };
+    const fullPath = artifact.kind === 'internal'
+      ? path.join(projectRoot, artifact.path)
+      : artifact.absolutePath!;
+    let content: string | null = null;
+    try {
+      content = await fs.promises.readFile(fullPath, 'utf8');
+    } catch (e: any) {
+      if (e.code !== 'ENOENT') throw e;
+      // File is missing — return orphan signal
+    }
+    return { ok: true, artifact, content, orphan: content === null };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.SAVE, async (
+    _e,
+    projectRoot: string,
+    projectId: string,
+    projectName: string,
+    artifactId: string,
+    newContent: string,
+    sessionId: string
+  ) => {
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
+    const artifact = sidecar.artifacts.find((a) => a.id === artifactId);
+    if (!artifact) return { ok: false, error: 'artifact-not-found' };
+    const fullPath = artifact.kind === 'internal'
+      ? path.join(projectRoot, artifact.path)
+      : artifact.absolutePath!;
+    // Atomic write: write to .tmp then rename, so the original is never half-written
+    await fs.promises.writeFile(fullPath + '.tmp', newContent, 'utf8');
+    await fs.promises.rename(fullPath + '.tmp', fullPath);
+    await appendVersion(projectRoot, projectId, projectName, {
+      path: artifact.path,
+      kind: artifact.kind,
+      absolutePath: artifact.absolutePath,
+      sessionId,
+      type: 'edit',
+      author: 'user',
+    });
+    // Broadcast the change to every renderer so all open windows update their artifact UI
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
+    );
+    return { ok: true };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.INCLUDE_EXTERNAL, async (
+    _e, projectRoot: string, absolutePath: string
+  ) => {
+    const canonical = canonicalize(absolutePath, null);
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
+    if (sidecar.manualIncludes.some((i) => i.path === canonical)) {
+      return { ok: true }; // idempotent — already included
+    }
+    // Capture the original updatedAt BEFORE mutation so writeSidecar's CAS
+    // check compares against the version we actually read, not the new timestamp.
+    const originalUpdatedAt = sidecar.updatedAt;
+    sidecar.manualIncludes.push({
+      path: canonical,
+      addedAt: new Date().toISOString(),
+      addedBy: 'user',
+    });
+    sidecar.updatedAt = new Date().toISOString();
+    await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+    return { ok: true };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.EXCLUDE, async (
+    _e, projectRoot: string, canonicalPath: string
+  ) => {
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
+    if (!sidecar.manualExcludes.includes(canonicalPath)) {
+      // Capture the original updatedAt BEFORE mutation (same CAS safety as INCLUDE_EXTERNAL)
+      const originalUpdatedAt = sidecar.updatedAt;
+      sidecar.manualExcludes.push(canonicalPath);
+      sidecar.updatedAt = new Date().toISOString();
+      await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+    }
+    return { ok: true };
   });
 
   // Return cleanup function for use during app shutdown
