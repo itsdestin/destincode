@@ -8,6 +8,8 @@ export const ARTIFACT_IPC = {
   EXCLUDE: 'artifacts:exclude',
   CHANGED: 'artifacts:changed', // push event
   LIST_PROJECTS_INDEX: 'artifacts:list-projects-index',
+  // Task 7.3: remove a project from the central index (and optionally its sidecar)
+  DELETE_PROJECT: 'artifacts:delete-project',
 } as const;
 
 export type ArtifactIpcChannel = typeof ARTIFACT_IPC[keyof typeof ARTIFACT_IPC];

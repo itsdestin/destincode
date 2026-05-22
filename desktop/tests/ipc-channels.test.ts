@@ -354,6 +354,8 @@ describe('artifact IPC parity', () => {
     INCLUDE_EXTERNAL: 'artifacts:include-external',
     EXCLUDE: 'artifacts:exclude',
     CHANGED: 'artifacts:changed',
+    // Task 7.3: project deletion
+    DELETE_PROJECT: 'artifacts:delete-project',
   }).reduce<Record<string, string>>((acc, [name, value]) => {
     acc[value] = `ARTIFACT_IPC.${name}`;
     return acc;

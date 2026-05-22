@@ -858,6 +858,9 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('artifacts:include-external', projectRoot, absolutePath),
     exclude: (projectRoot: string, canonicalPath: string) =>
       ipcRenderer.invoke('artifacts:exclude', projectRoot, canonicalPath),
+    // Task 7.3: remove a project from the central index (files untouched)
+    deleteProject: (projectId: string, deleteSidecar: boolean) =>
+      ipcRenderer.invoke('artifacts:delete-project', projectId, deleteSidecar),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);

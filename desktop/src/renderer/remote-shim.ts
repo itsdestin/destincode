@@ -1018,6 +1018,9 @@ export function installShim(): void {
         invoke('artifacts:include-external', { projectRoot, absolutePath }),
       exclude: (projectRoot: string, canonicalPath: string) =>
         invoke('artifacts:exclude', { projectRoot, canonicalPath }),
+      // Task 7.3: remove a project from the central index (files untouched)
+      deleteProject: (projectId: string, deleteSidecar: boolean) =>
+        invoke('artifacts:delete-project', { projectId, deleteSidecar }),
       onChanged: (cb: (event: any) => void) => {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);

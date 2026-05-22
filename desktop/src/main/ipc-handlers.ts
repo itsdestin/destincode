@@ -39,7 +39,7 @@ import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from '.
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
 import { appendVersion, readSidecar, writeSidecar } from './artifacts/artifact-store';
-import { listProjects } from './artifacts/central-index';
+import { listProjects, removeProject } from './artifacts/central-index';
 import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 
@@ -2147,6 +2147,28 @@ export function registerIpcHandlers(
   ipcMain.handle(ARTIFACT_IPC.LIST_PROJECTS_INDEX, async () => {
     const projects = await listProjects(CLAUDE_DIR);
     return { ok: true, projects };
+  });
+
+  // Task 7.3: remove a project from the central index. The project folder and
+  // its files are NOT deleted — only the YouCoded tracking record is removed.
+  // When deleteSidecar is true, also removes .youcoded/artifacts.json from the
+  // project folder so artifact history starts fresh on next session.
+  ipcMain.handle(ARTIFACT_IPC.DELETE_PROJECT, async (
+    _e, projectId: string, deleteSidecar: boolean
+  ) => {
+    const projects = await listProjects(CLAUDE_DIR);
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return { ok: false, error: 'project-not-found' };
+    await removeProject(CLAUDE_DIR, projectId);
+    if (deleteSidecar) {
+      const sidecarPath = path.join(p.path, '.youcoded', 'artifacts.json');
+      try {
+        await fs.promises.unlink(sidecarPath);
+      } catch {
+        // Ignore ENOENT — sidecar may already be absent
+      }
+    }
+    return { ok: true };
   });
 
   // Return cleanup function for use during app shutdown
