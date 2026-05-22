@@ -847,6 +847,8 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('artifacts:list-session', sessionId, projectRoot),
     listProject: (projectId: string) =>
       ipcRenderer.invoke('artifacts:list-project', projectId),
+    listProjectsIndex: () =>
+      ipcRenderer.invoke('artifacts:list-projects-index'),
     get: (projectRoot: string, artifactId: string) =>
       ipcRenderer.invoke('artifacts:get', projectRoot, artifactId),
     save: (projectRoot: string, projectId: string, projectName: string,

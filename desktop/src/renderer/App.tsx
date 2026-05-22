@@ -52,6 +52,7 @@ import { MarketplaceProvider } from './state/marketplace-context';
 import ThemeShareSheet from './components/ThemeShareSheet';
 import SkillEditor from './components/SkillEditor';
 import ShareSheet from './components/ShareSheet';
+import { ProjectView } from './components/ProjectView';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import FirstRunView from './components/FirstRunView';
@@ -2417,6 +2418,11 @@ function AppInner() {
         onZoomOut={handleZoomOut}
         onZoomReset={handleZoomReset}
       />
+      {/* ProjectView — full-screen artifact browser across all projects.
+          Renders null when projectViewOpen === false so no DOM overhead when closed.
+          z-[8000]: sits below the SessionStrip dropdown (9000) but above all
+          L1–L4 overlays, the same tier used by similar full-screen views. */}
+      <ProjectView />
     </div>
     </ArtifactProvider>
   );

@@ -348,6 +348,7 @@ describe('artifact IPC parity', () => {
   const CHANNEL_TO_CONST = Object.entries({
     LIST_SESSION: 'artifacts:list-session',
     LIST_PROJECT: 'artifacts:list-project',
+    LIST_PROJECTS_INDEX: 'artifacts:list-projects-index',
     GET: 'artifacts:get',
     SAVE: 'artifacts:save',
     INCLUDE_EXTERNAL: 'artifacts:include-external',

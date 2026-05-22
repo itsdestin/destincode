@@ -2142,6 +2142,13 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
+  // Returns the full list of projects from the central index — used by
+  // ProjectView to populate the sidebar without scoping to a single session.
+  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECTS_INDEX, async () => {
+    const projects = await listProjects(CLAUDE_DIR);
+    return { ok: true, projects };
+  });
+
   // Return cleanup function for use during app shutdown
   return function cleanup() {
     stopThemeWatcher();

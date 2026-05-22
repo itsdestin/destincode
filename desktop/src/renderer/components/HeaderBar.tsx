@@ -187,6 +187,29 @@ interface Props {
   myWindowId?: number | null;
 }
 
+/** Projects button — always visible (projects are persistent, not session-local).
+ *  Opens ProjectView as a full-screen overlay via PROJECT_VIEW_OPENED dispatch.
+ *  Isolated into its own component so it can safely call useArtifact() without
+ *  requiring the parent HeaderBar to be inside an ArtifactContext. */
+function ProjectsButton() {
+  const { dispatch } = useArtifact();
+  return (
+    <button
+      type="button"
+      className="relative p-1 rounded-sm hover:bg-inset transition-colors shrink-0 text-fg-muted hover:text-fg"
+      onClick={() => dispatch({ type: 'PROJECT_VIEW_OPENED' })}
+      title="Projects"
+      aria-label="Open Projects"
+    >
+      {/* Folder icon — matches the document icon style used by ArtifactDrawerButton */}
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+      </svg>
+    </button>
+  );
+}
+
 /** Artifact drawer button — isolated so it can safely call useArtifact().
  *  Placed inside <ArtifactContext.Provider> (mounted in App.tsx), so the hook
  *  is always in-context when the main app is rendering HeaderBar.
@@ -524,6 +547,8 @@ export default function HeaderBar({
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500" />
           ) : null}
         </button>
+        {/* Projects button — always visible; opens the persistent project browser. */}
+        <ProjectsButton />
         {/* Artifact drawer trigger — hidden when session has zero artifacts
             (plan: "Hidden completely if the session has zero artifacts"). */}
         <ArtifactDrawerButton activeSessionId={activeSessionId} />
