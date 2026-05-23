@@ -35,7 +35,11 @@ jobs:
       #   libarchive-tools -> provides bsdtar, required by the pacman target
       #   rpm              -> required by the rpm target
       - name: Install Linux build deps
-        run: sudo apt-get install -y rpm libarchive-tools
+        # apt-get update prefix: the cached package index on ubuntu-latest
+        # frequently points to .deb versions that have already rolled off
+        # the mirror, so a bare `install` fails with HTTP 404 / exit 100.
+        # Refresh the index first.
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
         working-directory: .
 
       - name: Build

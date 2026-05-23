@@ -42,7 +42,10 @@ jobs:
       #   libarchive-tools -> provides bsdtar (pacman target)
       #   rpm              -> rpm target
       - name: Install Linux build deps
-        run: sudo apt-get install -y rpm libarchive-tools
+        # `apt-get update` prefix: the cached package index on ubuntu-latest
+        # often points to .deb versions that have rolled off the mirror, so
+        # a bare install hits HTTP 404 / exit 100. Refresh the index first.
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
 
       - name: Run unit tests
         run: ./gradlew test
