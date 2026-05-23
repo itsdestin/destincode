@@ -73,6 +73,9 @@ export interface SystemMarker {
   timestamp: number;
   label: string;                                // e.g. "Conversation cleared"
   variant?: 'clear' | 'compact' | 'info';       // For styling hooks
+  // Optional long-form text the marker can reveal on click. Currently only
+  // set on compact markers — the actual conversation summary CC produced.
+  summary?: string;
 }
 
 // /copy [N] picker — shown inline when the Nth assistant turn has multiple
@@ -344,6 +347,7 @@ export type ChatAction =
       markerId: string;
       afterContextTokens: number | null;
       aborted?: boolean;       // true when watchdog fires — marker text differs
+      summary?: string;        // Full compaction summary, surfaced as expandable section under the marker
     }
   // /copy picker for multi-block turns
   | {

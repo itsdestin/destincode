@@ -33,20 +33,19 @@ class TranscriptWatcher(
 
         /** Strip internal XML tags and ANSI escapes that should never appear in rendered content.
          *  - system-reminder: injected system context
-         *  - command-name/message/args: slash-command metadata (strip entirely)
-         *  - local-command-stdout/stderr: command output (keep inner text)
+         *  - command-name/message/args: slash-command metadata
+         *  - local-command-stdout/stderr: dimmed CC echoes of slash-command output
+         *    (unwrapping them surfaced "Compacted (ctrl+o to see full summary)"
+         *    as a fake user bubble after every /compact AND set isThinking:true
+         *    with nothing to clear it — both stripped now to match desktop parity).
          */
         private val STRIP_ENTIRELY_REGEX = Regex(
-            """<(system-reminder|command-name|command-message|command-args)>[\s\S]*?</\1>""",
-        )
-        private val UNWRAP_REGEX = Regex(
-            """<(local-command-stdout|local-command-stderr)>([\s\S]*?)</\1>""",
+            """<(system-reminder|command-name|command-message|command-args|local-command-stdout|local-command-stderr)>[\s\S]*?</\1>""",
         )
         private val ANSI_REGEX = Regex("""\u001b\[[0-9;]*[a-zA-Z]""")
 
         fun stripSystemTags(text: String): String {
             var result = STRIP_ENTIRELY_REGEX.replace(text, "")
-            result = UNWRAP_REGEX.replace(result) { it.groupValues[2] }
             result = ANSI_REGEX.replace(result, "")
             return result.trim()
         }
@@ -240,9 +239,27 @@ class TranscriptWatcher(
         // Compact-summary entry — canonical "compaction finished" signal.
         // Written after /compact (appended to same JSONL) or resume-from-summary
         // (first entry of new JSONL). isVisibleInTranscriptOnly=true: suppress
-        // from chat timeline and emit the dedicated signal instead.
+        // from chat timeline and emit the dedicated signal instead. Also
+        // forward the summary text so the chat-side marker can click-to-expand.
         if (obj.optBoolean("isCompactSummary", false)) {
-            _events.tryEmit(TranscriptEvent.CompactSummary(sessionId, uuid, timestamp))
+            val msg = obj.optJSONObject("message")
+            val rawContent = when (val c = msg?.opt("content")) {
+                is String -> c
+                is JSONArray -> {
+                    val sb = StringBuilder()
+                    for (i in 0 until c.length()) {
+                        val block = c.optJSONObject(i) ?: continue
+                        if (block.optString("type") == "text") {
+                            if (sb.isNotEmpty()) sb.append('\n')
+                            sb.append(block.optString("text", ""))
+                        }
+                    }
+                    sb.toString()
+                }
+                else -> ""
+            }
+            val summary = stripSystemTags(rawContent)
+            _events.tryEmit(TranscriptEvent.CompactSummary(sessionId, uuid, timestamp, summary))
             return
         }
 

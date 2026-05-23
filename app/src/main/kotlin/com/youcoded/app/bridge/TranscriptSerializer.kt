@@ -103,8 +103,16 @@ object TranscriptSerializer {
         })
     }
 
-    fun compactSummary(sessionId: String, uuid: String, timestamp: Long): JSONObject {
-        return build("compact-summary", sessionId, uuid, timestamp, JSONObject())
+    fun compactSummary(
+        sessionId: String,
+        uuid: String,
+        timestamp: Long,
+        summary: String,
+    ): JSONObject {
+        val data = JSONObject().apply {
+            if (summary.isNotBlank()) put("summary", summary)
+        }
+        return build("compact-summary", sessionId, uuid, timestamp, data)
     }
 
     /** streamingText is a custom event — not part of the desktop protocol. Keep flat. */
