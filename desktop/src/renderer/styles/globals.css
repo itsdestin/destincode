@@ -1042,9 +1042,13 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 
 /* Framed-shell: flex row that holds chat-pane + optional drawer-pane.
-   Fills the available height inside ChatView's absolute wrapper. */
+   Fills the available height inside ChatView's absolute wrapper.
+   Container is TRANSPARENT so theme wallpapers / gradients / glassmorphism
+   show through where the chat-pane sits. The actual frame chrome is painted
+   by the .frame-edge / .frame-divider / .drawer-pane children, which are
+   opaque. */
 .framed-shell {
-  background: var(--panel);
+  background: transparent;
   display: flex;
   flex-direction: row;
   flex: 1;
@@ -1052,7 +1056,9 @@ body[data-mode="buddy-chat"] #theme-bg {
   overflow: hidden;
 }
 
-/* Left and right edge strips — filled with panel color to form the frame */
+/* Left and right edge strips — filled with panel color to form the frame
+   chrome that visually connects HeaderBar's bottom edge to StatusBar's top
+   edge in framed themes. */
 .framed-shell > .frame-edge,
 .framed-shell > .frame-divider {
   background: var(--panel);
@@ -1060,16 +1066,21 @@ body[data-mode="buddy-chat"] #theme-bg {
   flex-shrink: 0;
 }
 
-/* Chat pane — occupies remaining width, canvas background */
+/* Chat pane — occupies remaining width. NO explicit background: the
+   wallpaper / gradient layer (rendered via WallpaperBackdrop behind ChatView)
+   shows through. Individual chat-message components paint their own
+   backgrounds on top of that. */
 .framed-shell > .chat-pane {
   flex: 1;
   min-width: 0;
-  background: var(--canvas);
   overflow: hidden;
   position: relative;
 }
 
-/* Drawer pane — fixed width, panel background to blend with frame edges */
+/* Drawer pane — fixed width, panel background so its inset surface blends
+   with the surrounding frame chrome. Drawer content is opaque by design
+   (text needs to be readable; we don't want the wallpaper bleeding through
+   into the artifact list / viewer). */
 .framed-shell > .drawer-pane {
   width: 480px;
   flex-shrink: 0;
@@ -1077,15 +1088,12 @@ body[data-mode="buddy-chat"] #theme-bg {
   overflow: hidden;
 }
 
-/* Floating-theme override: no edge fills, transparent shell background.
-   This keeps wallpaper / glassmorphism themes unaffected by the frame color. */
+/* Floating-theme override: no edge fills.
+   The drawer-pane keeps its panel fill (still needs to be opaque for
+   readability); only the frame chrome elements drop out. */
 [data-theme-layout='floating'] .framed-shell > .frame-edge,
 [data-theme-layout='floating'] .framed-shell > .frame-divider {
   display: none;
-}
-
-[data-theme-layout='floating'] .framed-shell {
-  background: transparent;
 }
 
 /* Narrow-screen (phone / narrow window) responsive collapse (Task 6.3)
