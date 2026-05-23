@@ -97,10 +97,14 @@ sealed class TranscriptEvent {
     /** Canonical compaction-complete signal: emitted when Claude Code writes
      *  a {type:"user", isCompactSummary:true} entry. Covers both in-session
      *  /compact (appends to same JSONL, so shrink cannot fire) and
-     *  resume-from-summary (first entry of a new JSONL). */
+     *  resume-from-summary (first entry of a new JSONL).
+     *
+     *  `summary` is the full text CC wrote, pre-stripped of system tags. Used
+     *  by the renderer to offer click-to-expand on the otherwise-thin marker. */
     data class CompactSummary(
         override val sessionId: String,
         override val uuid: String,
         override val timestamp: Long,
+        val summary: String = "",
     ) : TranscriptEvent()
 }

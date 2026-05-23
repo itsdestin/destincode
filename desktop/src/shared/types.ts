@@ -120,6 +120,13 @@ export interface TranscriptEvent {
      * (plain) vs `[Request interrupted by user for tool use]` (tool-use).
      */
     kind?: 'plain' | 'tool-use';
+    /**
+     * Populated on `compact-summary` events. The full text of the compaction
+     * summary CC wrote into the JSONL — pre-stripped of system tags. The
+     * reducer attaches it to the SystemMarker so the user can click-to-expand
+     * the otherwise-thin "Compacted" divider.
+     */
+    summary?: string;
   };
 }
 

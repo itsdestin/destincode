@@ -814,6 +814,10 @@ function AppInner() {
               sessionId: event.sessionId,
               markerId: `compact-done-${Date.now()}`,
               afterContextTokens: contextTokens,
+              // Forward CC's summary text so the SystemMarker can offer
+              // click-to-expand (replaces the dead "ctrl+o to see full summary"
+              // affordance from CC's TUI, which never worked inside YouCoded).
+              ...(event.data.summary ? { summary: event.data.summary } : {}),
             });
           }
           break;
