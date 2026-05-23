@@ -194,3 +194,11 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
   - `terminal-emulator-vendored/` (Termux v0.118.1 + RawByteListener patch)
 - **Why coupled:** xterm renders Claude Code's TUI byte stream verbatim. Any CC change that re-ANSI-encodes the TUI differently (e.g. switches Ink to alternate-screen mode `\e[?1049h`, changes how it clears screen / scrolls regions, or starts using sequences xterm doesn't support) affects what users see — including the known-issue scrollback duplication when CC redraws the full TUI. CC switching to alt-screen would actually FIX the scrollback duplication, but would break our `terminal:get-screen-text` IPC if we relied on the main-screen buffer.
 - **Review trigger:** CC CHANGELOG entries mentioning terminal rendering, alt-screen, scroll regions, ANSI escape sequence usage, or TUI redraw strategy.
+
+### TranscriptWatcher Write/Edit/Delete event consumption (Desktop + Android)
+
+- **Files:** `desktop/src/renderer/state/artifact-tracker.ts` (Artifact Tracker renderer-side state), `desktop/src/main/ipc-handlers.ts` (file I/O dispatcher), `app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt` (Android bridge handlers)
+- **Depends on:** TranscriptWatcher emitting `TRANSCRIPT_TOOL_USE` events for every Write/Edit/MultiEdit tool call CC makes, and the `args` object in each event containing either `file_path` or `path` as a top-level string field identifying the target file.
+- **Break symptom:** Artifact Tracker subscribes to `TRANSCRIPT_TOOL_USE` but the filter matching tool names (`tool === 'Write' | 'Edit' | 'MultiEdit'`) sees no matches because CC renamed the tools. The Session Drawer artifact list stays empty even as Claude edits files. External manifestation: user asks "why aren't my edits showing up in the drawer?" and sees a blank list despite successful file operations in the terminal.
+- **Detection:** Smoke test by asking Claude to write/edit a file in a session and confirming it appears in the Session Drawer within 1 second. If not, check the tool call in the JSONL transcript and compare the tool names in the Tracker's filter against what CC actually emitted.
+- **Review trigger:** CC CHANGELOG entries renaming or retiring Write/Edit/Delete/MultiEdit tools, or changing the `args` shape for file-path parameters in these tools.
