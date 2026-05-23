@@ -191,6 +191,8 @@ export function BubbleFeed({ sessionId }: Props) {
               sessionId: event.sessionId,
               markerId: `compact-done-${Date.now()}`,
               afterContextTokens: null,
+              // Forward summary so buddy's marker matches main window's expandable behavior.
+              ...(event.data.summary ? { summary: event.data.summary } : {}),
             });
           }
           break;
