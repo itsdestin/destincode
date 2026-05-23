@@ -36,6 +36,7 @@ import com.youcoded.app.marketplace.ApiResult
 import com.youcoded.app.marketplace.MarketplaceApiClient
 import com.youcoded.app.marketplace.MarketplaceAuthStore
 import com.youcoded.app.marketplace.MarketplaceUser
+import com.youcoded.app.artifacts.*
 import com.youcoded.app.skills.BundledPlugins
 import com.youcoded.app.skills.LocalSkillProvider
 import com.youcoded.app.skills.PluginInstaller
@@ -2889,6 +2890,156 @@ class SessionService : Service() {
                 lastStackEmpty = empty
                 onStackStateChanged?.invoke(empty)
             }
+
+            // ── Artifact viewer IPC ───────────────────────────────────────────────
+            // Mirrors desktop/src/main/ipc-handlers.ts ARTIFACT_IPC handlers.
+            // claudeDir convention: bootstrap?.homeDir + "/.claude" (matches the
+            // CentralIndex INDEX_FILE path used on desktop).
+
+            "artifacts:list-session" -> {
+                // Return all artifacts tracked in the sidecar that have at least one
+                // VersionEvent whose sessionId matches the requested session.
+                val sessionId   = msg.payload.optString("sessionId", "")
+                val projectRoot = msg.payload.optString("projectRoot", "")
+                if (sessionId.isEmpty() || projectRoot.isEmpty()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "sessionId and projectRoot are required")) }
+                    return@handleBridgeMessage
+                }
+                val sidecar = readSidecar(projectRoot)
+                val artifacts = if (sidecar is ReadResult.Ok) {
+                    sidecar.sidecar.artifacts.filter { a ->
+                        a.versions.any { it.sessionId == sessionId }
+                    }
+                } else emptyList()
+                val payload = org.json.JSONObject()
+                    .put("ok", true)
+                    .put("artifacts", org.json.JSONArray(artifacts.map { it.toJson() }))
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
+
+            "artifacts:get" -> {
+                // Return one artifact record plus its current on-disk content.
+                // Sets orphan=true when the backing file is missing.
+                val projectRoot = msg.payload.optString("projectRoot", "")
+                val artifactId  = msg.payload.optString("artifactId", "")
+                if (projectRoot.isEmpty() || artifactId.isEmpty()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "projectRoot and artifactId are required")) }
+                    return@handleBridgeMessage
+                }
+                val sidecar = readSidecar(projectRoot)
+                if (sidecar !is ReadResult.Ok) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "sidecar-missing")) }
+                    return@handleBridgeMessage
+                }
+                val artifact = sidecar.sidecar.artifacts.find { it.id == artifactId }
+                if (artifact == null) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
+                    return@handleBridgeMessage
+                }
+                val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
+                               else java.io.File(artifact.absolutePath!!)
+                val content  = try { fullPath.readText(Charsets.UTF_8) } catch (_: java.io.IOException) { null }
+                val payload  = org.json.JSONObject()
+                    .put("ok", true)
+                    .put("artifact", artifact.toJson())
+                    .put("content",  if (content != null) content else org.json.JSONObject.NULL)
+                    .put("orphan",   content == null)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
+
+            "artifacts:save" -> {
+                // Overwrite the on-disk file with the edited content and append a
+                // "edit" VersionEvent to the sidecar so the history stays consistent.
+                // Broadcasts artifacts:changed so any other connected client refreshes.
+                val projectRoot = msg.payload.optString("projectRoot", "")
+                val projectId   = msg.payload.optString("projectId", "")
+                val projectName = msg.payload.optString("projectName", "")
+                val artifactId  = msg.payload.optString("artifactId", "")
+                val newContent  = msg.payload.optString("content", "")
+                val sessionId   = msg.payload.optString("sessionId", "")
+                if (projectRoot.isEmpty() || artifactId.isEmpty()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "projectRoot and artifactId are required")) }
+                    return@handleBridgeMessage
+                }
+                val sidecar = readSidecar(projectRoot)
+                if (sidecar !is ReadResult.Ok) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "sidecar-missing")) }
+                    return@handleBridgeMessage
+                }
+                val artifact = sidecar.sidecar.artifacts.find { it.id == artifactId }
+                if (artifact == null) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
+                    return@handleBridgeMessage
+                }
+                val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
+                               else java.io.File(artifact.absolutePath!!)
+                // Atomic write: temp file + rename, matching desktop behaviour
+                val tmpPath = java.io.File(fullPath.path + ".tmp")
+                tmpPath.writeText(newContent, Charsets.UTF_8)
+                java.nio.file.Files.move(
+                    tmpPath.toPath(),
+                    fullPath.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+                appendVersion(
+                    projectRoot = projectRoot,
+                    projectId   = projectId,
+                    projectName = projectName,
+                    input = AppendVersionInput(
+                        path         = artifact.path,
+                        kind         = artifact.kind,
+                        absolutePath = artifact.absolutePath,
+                        sessionId    = sessionId,
+                        type         = "edit",
+                        author       = "user",
+                    )
+                )
+                // Broadcast push event so connected clients refresh their view
+                bridgeServer.broadcast(org.json.JSONObject().apply {
+                    put("type", "artifacts:changed")
+                    put("payload", org.json.JSONObject()
+                        .put("projectRoot", projectRoot)
+                        .put("artifactId",  artifactId)
+                        .put("kind",        "edit")
+                        .put("by",          "user"))
+                })
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject().put("ok", true)) }
+            }
+
+            // ── Desktop-only channels: return not-implemented so the React layer
+            //    gets a clean error rather than a silent timeout. The central-index
+            //    browser (list-projects-index) and project-level file-tree management
+            //    (list-project, include-external, exclude, delete-project) are
+            //    desktop-only in v1. ──────────────────────────────────────────────
+
+            "artifacts:list-project" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+            "artifacts:list-projects-index" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+            "artifacts:include-external" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+            "artifacts:exclude" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+            "artifacts:delete-project" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+            // artifacts:changed is a server-push event only — no inbound handler needed.
 
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
