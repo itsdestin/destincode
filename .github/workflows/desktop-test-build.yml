@@ -39,6 +39,13 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # Must run BEFORE the build — electron-builder's deb/rpm/pacman packagers
+      # run inside `npm run build`. See desktop-ci.yml for the PR #98 backstory.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y rpm libarchive-tools
+        working-directory: .
+
       - name: Build
         run: npm run build
 

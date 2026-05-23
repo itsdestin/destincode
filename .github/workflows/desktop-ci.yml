@@ -27,5 +27,16 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # Must run BEFORE the build — electron-builder's deb/rpm/pacman packagers
+      # run inside `npm run build` (see desktop/electron-builder.yml linux.target).
+      # PR #98 added rpm + pacman targets without updating CI, so every Desktop
+      # CI run since 2026-05-20 (commit 4679cc89) has been red on the same
+      # bsdtar-missing failure. Mirror desktop-release.yml's setup step:
+      #   libarchive-tools -> provides bsdtar, required by the pacman target
+      #   rpm              -> required by the rpm target
+      - name: Install Linux build deps
+        run: sudo apt-get install -y rpm libarchive-tools
+        working-directory: .
+
       - name: Build
         run: npm run build
