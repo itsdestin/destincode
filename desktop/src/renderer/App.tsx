@@ -2077,6 +2077,7 @@ function AppInner() {
                       sessionId={s.id}
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
                       resumeInfo={resumeInfo}
+                      cwd={s.cwd}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">

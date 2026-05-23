@@ -19,6 +19,8 @@ interface Props {
   sessionId: string;
   visible: boolean;
   resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
+  /** Working directory of the session — used to resolve the active project for the artifact drawer. */
+  cwd?: string;
 }
 
 function HistoryExpandButton({ sessionId, resumeInfo }: {
@@ -63,7 +65,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
+export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -71,6 +73,48 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState } = useArtifact();
   const drawerOpen = artifactState.drawerOpen;
+
+  // Resolve the active project when the artifact drawer opens. We need
+  // projectRoot / projectId / projectName to pass to SessionDrawer so its
+  // in-place edit `save` IPC call knows which project sidecar to write.
+  // The lookup is lazy (only fires when drawerOpen && cwd is available) and
+  // non-blocking — SessionDrawer renders with empty strings until it resolves.
+  const [activeProject, setActiveProject] = useState<{
+    id: string;
+    name: string;
+    path: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!drawerOpen || !cwd) {
+      setActiveProject(null);
+      return;
+    }
+    (window.claude as any).artifacts.listProjectsIndex().then((res: any) => {
+      if (!res || !res.ok || !Array.isArray(res.projects)) {
+        // Fallback: pass cwd as the path so the save IPC can still locate the
+        // sidecar directory — the handler uses projectRoot as a filesystem path,
+        // not as a registry lookup key, so this works even without an index entry.
+        setActiveProject({ id: '', name: 'project', path: cwd });
+        return;
+      }
+      // Normalize separators for comparison (Windows paths use backslashes).
+      const normalizedCwd = cwd.replace(/\\/g, '/');
+      const candidate = (res.projects as Array<{ id: string; name: string; path: string }>).find(
+        (p) => p.path === cwd || p.path === normalizedCwd || p.path === normalizedCwd.toLowerCase(),
+      );
+      if (candidate) {
+        setActiveProject({ id: candidate.id, name: candidate.name, path: candidate.path });
+      } else {
+        // cwd not in the index yet (ensureProject may not have fired) — fall
+        // back to raw cwd so the drawer still has a valid root path.
+        setActiveProject({ id: '', name: 'project', path: cwd });
+      }
+    }).catch(() => {
+      // IPC failure — still provide cwd so the drawer is not completely broken.
+      if (cwd) setActiveProject({ id: '', name: 'project', path: cwd });
+    });
+  }, [drawerOpen, cwd]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -506,16 +550,20 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
            </div>
           </div>
         </div>
-        {/* Right frame edge / divider + Session Drawer — only shown when open */}
+        {/* Right frame edge / divider + Session Drawer — only shown when open.
+            projectRoot/projectId/projectName are resolved from the session's
+            cwd via listProjectsIndex() in the useEffect above. Until the lookup
+            completes they fall back to empty strings / 'project', which is safe
+            because SessionDrawer renders an empty list rather than crashing. */}
         {drawerOpen && (
           <>
             <div className="frame-divider" />
             <div className="drawer-pane">
               <SessionDrawer
                 sessionId={sessionId}
-                projectRoot=""
-                projectId=""
-                projectName="project"
+                projectRoot={activeProject?.path ?? ''}
+                projectId={activeProject?.id ?? ''}
+                projectName={activeProject?.name ?? 'project'}
               />
             </div>
           </>
