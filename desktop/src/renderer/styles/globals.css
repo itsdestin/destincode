@@ -1096,40 +1096,6 @@ body[data-mode="buddy-chat"] #theme-bg {
   display: none;
 }
 
-/* Drawer-open chrome clearance (Option C from the design discussion).
-   YouCoded's HeaderBar and the bottom chrome (input + status) are
-   absolutely positioned — they overlay the ChatView region rather than
-   being flex siblings. The chat-scroll handles this for its own content
-   via internal padding-top/padding-bottom, which gives the immersive
-   "messages scroll behind frosted chrome" effect.
-
-   But the drawer-pane has no such internal compensation. Without help,
-   the drawer's top + bottom slip behind the absolute chrome. The fix:
-   when the drawer is open, push the WHOLE framed-shell down by the
-   header's height and up by the bottom chrome's height. Both panes
-   (chat + drawer) become properly inset. We also zero the chat-scroll's
-   own internal padding in this state so we don't double-pad chat
-   content (and so the chat layout shifts cleanly when drawer opens).
-
-   Side effect: when drawer is open the chat no longer scrolls behind
-   the chrome — chat content is also inset. This is the intentional
-   tradeoff agreed in the design discussion. When the drawer is closed,
-   original immersive behavior is preserved. */
-.framed-shell.drawer-open {
-  padding-top: 3rem;
-  padding-bottom: calc(var(--bottom-chrome-height, 5rem) + var(--vvp-offset, 0px));
-}
-
-.framed-shell.drawer-open .chat-scroll {
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.framed-shell.drawer-open .chat-scroll::-webkit-scrollbar-track {
-  margin-top: 0;
-  margin-bottom: 0;
-}
-
 /* Narrow-screen (phone / narrow window) responsive collapse (Task 6.3)
    Below 700px the side-by-side layout doesn't fit:
    - Frame edge/divider strips are hidden (no room for decorative chrome)
