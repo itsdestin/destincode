@@ -854,6 +854,10 @@ contextBridge.exposeInMainWorld('claude', {
     save: (projectRoot: string, projectId: string, projectName: string,
            artifactId: string, content: string, sessionId: string) =>
       ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId),
+    // Fix: data-flow gap — renderer Tracker calls this on Write/Edit/MultiEdit
+    // transcript events so the central index is populated automatically.
+    appendVersion: (projectRoot: string, sessionId: string, args: any) =>
+      ipcRenderer.invoke('artifacts:append-version', projectRoot, sessionId, args),
     includeExternal: (projectRoot: string, absolutePath: string) =>
       ipcRenderer.invoke('artifacts:include-external', projectRoot, absolutePath),
     exclude: (projectRoot: string, canonicalPath: string) =>

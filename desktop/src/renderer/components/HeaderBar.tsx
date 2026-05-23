@@ -221,8 +221,8 @@ function ArtifactDrawerButton({ activeSessionId }: { activeSessionId: string | n
     ? (state.sessionArtifacts[activeSessionId] ?? []).length
     : 0;
 
-  if (artifactCount === 0) return null;
-
+  // Fix: always show the button so users can open the drawer even before any
+  // artifacts exist. The count badge is conditional — hidden when count is 0.
   return (
     <button
       type="button"
@@ -237,10 +237,12 @@ function ArtifactDrawerButton({ activeSessionId }: { activeSessionId: string | n
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
           d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
       </svg>
-      {/* Count badge */}
-      <span className="text-[10px] bg-accent text-on-accent rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5">
-        {artifactCount}
-      </span>
+      {/* Count badge — only shown when there are tracked artifacts */}
+      {artifactCount > 0 && (
+        <span className="text-[10px] bg-accent text-on-accent rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5">
+          {artifactCount}
+        </span>
+      )}
     </button>
   );
 }

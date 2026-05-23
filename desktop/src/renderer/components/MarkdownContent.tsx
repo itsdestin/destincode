@@ -31,13 +31,15 @@ const rehypeFilepathTokens: Plugin<[], Root> = () => (tree: Root) => {
     const index = (parent as Element | Root).children.indexOf(node as Text);
     if (index === -1) return;
 
-    // Skip detection inside code spans and fenced code blocks.
-    const inCode = ancestors.some(
-      (a) =>
-        a.type === 'element' &&
-        ((a as Element).tagName === 'code' || (a as Element).tagName === 'pre'),
+    // Fix: skip ONLY when inside a <pre> element (fenced code block).
+    // Inline <code> spans are intentionally NOT excluded — Claude commonly formats
+    // file paths as backtick-wrapped inline code (e.g. `foo.md`) and users expect
+    // those to be clickable. Multi-line fenced blocks still get no detection because
+    // the <pre> ancestor check correctly catches them.
+    const inPreBlock = ancestors.some(
+      (a) => a.type === 'element' && (a as Element).tagName === 'pre',
     );
-    if (inCode) return;
+    if (inPreBlock) return;
 
     const textNode = node as Text;
     const matches = detectFilepaths(textNode.value);

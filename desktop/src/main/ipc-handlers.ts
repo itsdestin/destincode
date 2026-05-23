@@ -2031,8 +2031,47 @@ export function registerIpcHandlers(
   });
 
   // --- Artifact viewer IPC handlers ---
-  // All six request-response handlers plus the CHANGED push event (emitted via
-  // webContents.send() inside SAVE — no ipcMain.handle needed for push events).
+  // All request-response handlers plus the CHANGED push event (emitted via
+  // webContents.send() inside SAVE and APPEND_VERSION — no ipcMain.handle needed
+  // for push events).
+
+  // Fix: data-flow gap — the renderer Tracker calls this when it observes a
+  // Write/Edit/MultiEdit transcript event so the central index is populated and
+  // artifacts appear in the Session Drawer even before the user opens it.
+  // ensureProject and applyGitTreatment are both idempotent.
+  ipcMain.handle(ARTIFACT_IPC.APPEND_VERSION, async (
+    _e,
+    projectRoot: string,
+    sessionId: string,
+    args: {
+      path: string;
+      kind: 'internal' | 'external';
+      absolutePath: string | null;
+      type: 'create' | 'edit' | 'delete';
+      author: 'agent' | 'user';
+    }
+  ) => {
+    const { project } = await ensureProject(CLAUDE_DIR, projectRoot, sessionId);
+    await applyGitTreatment(projectRoot);
+    const result = await appendVersion(projectRoot, project.id, project.name, {
+      path: args.path,
+      kind: args.kind,
+      absolutePath: args.absolutePath,
+      sessionId,
+      type: args.type,
+      author: args.author,
+    });
+    // Broadcast so every open window's artifact UI refreshes
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, {
+        projectRoot,
+        artifactId: null,
+        kind: args.type,
+        by: args.author,
+      })
+    );
+    return { ok: result.committed, project };
+  });
 
   ipcMain.handle(ARTIFACT_IPC.LIST_SESSION, async (_e, sessionId: string, projectRoot: string) => {
     const sidecar = await readSidecar(projectRoot);

@@ -1014,6 +1014,10 @@ export function installShim(): void {
       save: (projectRoot: string, projectId: string, projectName: string,
              artifactId: string, content: string, sessionId: string) =>
         invoke('artifacts:save', { projectRoot, projectId, projectName, artifactId, content, sessionId }),
+      // Fix: data-flow gap — renderer Tracker calls this on Write/Edit/MultiEdit
+      // transcript events so the central index is populated automatically on Android.
+      appendVersion: (projectRoot: string, sessionId: string, args: any) =>
+        invoke('artifacts:append-version', { projectRoot, sessionId, args }),
       includeExternal: (projectRoot: string, absolutePath: string) =>
         invoke('artifacts:include-external', { projectRoot, absolutePath }),
       exclude: (projectRoot: string, canonicalPath: string) =>

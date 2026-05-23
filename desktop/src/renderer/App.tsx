@@ -989,11 +989,13 @@ function AppInner() {
       dispatch({ type: 'HYDRATE_CHAT_STATE', sessions: payload });
     });
 
-    // Artifact tracker: refresh session artifacts whenever Claude writes/edits a
-    // file inside the active project root. We piggyback on the existing
-    // transcriptEvent subscription rather than adding a second listener —
-    // filtering to Write/Edit/MultiEdit tool-use events and only paths that are
-    // inside the session's working directory (external files are never auto-tracked).
+    // Artifact tracker: when Claude writes/edits a file inside the active project
+    // root, call appendVersion so the central index is populated, then refresh the
+    // session drawer from disk. We piggyback on the existing transcriptEvent
+    // subscription — filtering to Write/Edit/MultiEdit tool-use events and only
+    // paths inside the session's working directory (external files are never
+    // auto-tracked). appendVersion + ensureProject (called inside the IPC handler)
+    // are both idempotent, so duplicate events are safe.
     const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
       if (!event?.type || !event?.sessionId) return;
       if (event.type !== 'tool-use') return;
@@ -1005,18 +1007,39 @@ function AppInner() {
       // cwd is the project root for the session; external paths are not tracked.
       const projectRoot: string = event.cwd ?? '';
       if (!projectRoot || !targetPath.startsWith(projectRoot)) return;
-      // Pull the updated artifact list for this session and hydrate the tracker.
-      (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
-        .then((res: any) => {
-          if (res && res.ok && Array.isArray(res.artifacts)) {
-            dispatchArtifact({
-              type: 'SESSION_ARTIFACTS_LOADED',
-              sessionId: event.sessionId,
-              artifacts: res.artifacts,
-            });
-          }
-        })
-        .catch(() => {/* best-effort; never block the UI on a failed artifact fetch */});
+
+      // Normalize to a forward-slash relative path (handles both / and \ separators).
+      const sep = projectRoot.endsWith('/') ? '' : (targetPath.includes('\\') ? '\\' : '/');
+      const prefix = projectRoot + sep;
+      const relativePath = targetPath.startsWith(prefix)
+        ? targetPath.slice(prefix.length).replace(/\\/g, '/')
+        : targetPath.replace(/\\/g, '/');
+
+      // Fix: call appendVersion FIRST so the central index is populated.
+      // Without this call the sidecar never gets an entry and listSession returns [].
+      const appendArgs = {
+        path: relativePath,
+        kind: 'internal' as const,
+        absolutePath: null,
+        type: (toolName === 'Write' ? 'create' : 'edit') as 'create' | 'edit',
+        author: 'agent' as const,
+      };
+      ((window.claude as any).artifacts?.appendVersion?.(projectRoot, event.sessionId, appendArgs) ?? Promise.resolve())
+        .catch(() => {/* best-effort */})
+        .finally(() => {
+          // Then refresh the session view from the now-updated sidecar.
+          (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
+            .then((res: any) => {
+              if (res && res.ok && Array.isArray(res.artifacts)) {
+                dispatchArtifact({
+                  type: 'SESSION_ARTIFACTS_LOADED',
+                  sessionId: event.sessionId,
+                  artifacts: res.artifacts,
+                });
+              }
+            })
+            .catch(() => {/* best-effort */});
+        });
     });
 
     // Artifact tracker: listen for push events from the main process when

@@ -351,6 +351,8 @@ describe('artifact IPC parity', () => {
     LIST_PROJECTS_INDEX: 'artifacts:list-projects-index',
     GET: 'artifacts:get',
     SAVE: 'artifacts:save',
+    // Fix: data-flow gap — new channel that wires renderer Tracker → central index
+    APPEND_VERSION: 'artifacts:append-version',
     INCLUDE_EXTERNAL: 'artifacts:include-external',
     EXCLUDE: 'artifacts:exclude',
     CHANGED: 'artifacts:changed',

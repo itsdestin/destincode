@@ -3013,6 +3013,54 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject().put("ok", true)) }
             }
 
+            // Fix: data-flow gap — renderer Tracker calls this when it sees a
+            // Write/Edit/MultiEdit transcript event so the central index is populated
+            // and artifacts appear in the Session Drawer. ensureProject +
+            // applyGitTreatment + appendVersion are all idempotent.
+            "artifacts:append-version" -> {
+                val projectRoot = msg.payload.optString("projectRoot", "")
+                val sessionId   = msg.payload.optString("sessionId", "")
+                val args        = msg.payload.optJSONObject("args")
+                if (projectRoot.isEmpty() || sessionId.isEmpty() || args == null) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "projectRoot, sessionId and args are required")) }
+                    return@handleBridgeMessage
+                }
+                // claudeDir convention: Bootstrap homeDir + "/.claude" (matches the
+                // CentralIndex INDEX_FILE path used on desktop). bootstrap?.homeDir
+                // resolves to context.filesDir/home/.claude-mobile parent; the Kotlin
+                // artifact helpers expect the ~/.claude equivalent, which on Android is
+                // the same parent (session-manager sets CLAUDE_HOME there).
+                val claudeDir = java.io.File(bootstrap?.homeDir ?: android.os.Environment.getExternalStorageDirectory().path, ".claude")
+                    .absolutePath
+                val ensured = ensureProject(claudeDir, projectRoot, sessionId)
+                applyGitTreatment(projectRoot)
+                val result = appendVersion(
+                    projectRoot = projectRoot,
+                    projectId   = ensured.project.id,
+                    projectName = ensured.project.name,
+                    input = AppendVersionInput(
+                        path         = args.optString("path", ""),
+                        kind         = args.optString("kind", "internal"),
+                        absolutePath = if (args.isNull("absolutePath")) null else args.optString("absolutePath"),
+                        sessionId    = sessionId,
+                        type         = args.optString("type", "edit"),
+                        author       = args.optString("author", "agent"),
+                    )
+                )
+                // Broadcast push event so connected clients refresh their view
+                bridgeServer.broadcast(org.json.JSONObject().apply {
+                    put("type", "artifacts:changed")
+                    put("payload", org.json.JSONObject()
+                        .put("projectRoot", projectRoot)
+                        .put("artifactId",  org.json.JSONObject.NULL)
+                        .put("kind",        args.optString("type", "edit"))
+                        .put("by",          args.optString("author", "agent")))
+                })
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", result.committed)) }
+            }
+
             // ── Desktop-only channels: return not-implemented so the React layer
             //    gets a clean error rather than a silent timeout. The central-index
             //    browser (list-projects-index) and project-level file-tree management
