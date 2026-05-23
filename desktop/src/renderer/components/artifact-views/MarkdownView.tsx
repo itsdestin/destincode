@@ -33,6 +33,10 @@ export function MarkdownView({
           value={draft}
           onChange={(e) => onDraftChange?.(e.target.value)}
           className="flex-1 w-full p-3 bg-inset text-fg font-mono text-sm resize-none focus:outline-none"
+          // Mobile soft-keyboard optimization: inputMode hints to the keyboard type,
+          // enterKeyHint gives Android a sensible Enter button label
+          inputMode="text"
+          enterKeyHint="enter"
         />
       </div>
     );

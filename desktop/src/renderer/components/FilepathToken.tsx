@@ -44,7 +44,7 @@ export function FilepathToken({ path, sessionId }: Props) {
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-inset text-fg font-mono text-[0.9em] hover:bg-inset/80"
+      className="inline-flex items-center gap-1 px-2 py-1 min-h-[28px] rounded bg-inset text-fg font-mono text-[0.9em] hover:bg-inset/80"
       onClick={onClick}
       title={path}
     >
