@@ -145,6 +145,11 @@ interface StatusDataState {
 function AppInner() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
+  // Ref mirror of `sessions` for handlers that need to read the latest list
+  // without re-subscribing on every change (e.g. the artifact tool-use handler
+  // which needs to resolve cwd by sessionId).
+  const sessionsRef = useRef<any[]>([]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   // Multi-window detach state (desktop-only; remote-shim stubs these as no-ops).
   // `myWindowId` identifies this renderer's BrowserWindow so the switcher can
   // distinguish local sessions from sessions owned by peer windows. `directory`
@@ -996,6 +1001,11 @@ function AppInner() {
     // paths inside the session's working directory (external files are never
     // auto-tracked). appendVersion + ensureProject (called inside the IPC handler)
     // are both idempotent, so duplicate events are safe.
+    //
+    // Note: the transcript event payload does NOT include cwd — only sessionId.
+    // We resolve cwd by looking up the session in the sessions state. Because
+    // the handler is registered in a useEffect that doesn't re-subscribe on
+    // sessions changes, we read via sessionsRef.current to always see fresh data.
     const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
       if (!event?.type || !event?.sessionId) return;
       if (event.type !== 'tool-use') return;
@@ -1003,17 +1013,24 @@ function AppInner() {
       if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) return;
       const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
       if (!targetPath) return;
-      // Guard: only auto-track files that live inside the session's working directory.
-      // cwd is the project root for the session; external paths are not tracked.
-      const projectRoot: string = event.cwd ?? '';
-      if (!projectRoot || !targetPath.startsWith(projectRoot)) return;
+      // Resolve cwd by looking up the session — transcript events don't carry cwd.
+      const session = sessionsRef.current?.find?.((s: any) => s.id === event.sessionId);
+      const projectRoot: string = session?.cwd ?? '';
+      if (!projectRoot) return;
+      // Internal-only auto-tracking: external files (outside cwd) are not tracked.
+      // Path normalization: targetPath from Claude Code is always absolute; compare
+      // via case-insensitive forward-slash form to handle Windows variations.
+      const normPath = targetPath.replace(/\\/g, '/').toLowerCase();
+      const normRoot = projectRoot.replace(/\\/g, '/').toLowerCase();
+      if (!normPath.startsWith(normRoot + '/') && normPath !== normRoot) return;
 
-      // Normalize to a forward-slash relative path (handles both / and \ separators).
-      const sep = projectRoot.endsWith('/') ? '' : (targetPath.includes('\\') ? '\\' : '/');
-      const prefix = projectRoot + sep;
-      const relativePath = targetPath.startsWith(prefix)
-        ? targetPath.slice(prefix.length).replace(/\\/g, '/')
-        : targetPath.replace(/\\/g, '/');
+      // Compute the relative path using the forward-slash forms (same length
+      // as the originals, so the index is correct regardless of case).
+      const fwdPath = targetPath.replace(/\\/g, '/');
+      const fwdRoot = projectRoot.replace(/\\/g, '/');
+      const relativePath = normPath === normRoot
+        ? ''
+        : fwdPath.slice(fwdRoot.length + 1);
 
       // Fix: call appendVersion FIRST so the central index is populated.
       // Without this call the sidecar never gets an entry and listSession returns [].
