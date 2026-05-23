@@ -34,4 +34,16 @@ describe('detectFilepaths', () => {
   it('does not match a bare filename without separator', () => {
     expect(detectFilepaths('see plan.md')).toEqual([]);
   });
+
+  it('matches a bare relative path with one slash (no ./ prefix)', () => {
+    // Claude commonly outputs paths like `docs/foo.md` rather than `./docs/foo.md`.
+    const matches = detectFilepaths('I added a line to docs/knowledge-debt.md');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].path).toBe('docs/knowledge-debt.md');
+  });
+
+  it('matches a multi-segment bare relative path', () => {
+    const matches = detectFilepaths('see src/main/foo.ts');
+    expect(matches[0].path).toBe('src/main/foo.ts');
+  });
 });
