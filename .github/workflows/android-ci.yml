@@ -32,6 +32,21 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # bundleWebUi (a Gradle dep of preBuild) shells out to
+      # scripts/build-web-ui.sh, which runs `npm run build` in desktop/. That
+      # invokes electron-builder for ALL configured Linux targets
+      # (AppImage + deb + rpm + pacman), so the runner needs rpm + bsdtar
+      # even though Android doesn't consume the installers. PR #98 added
+      # pacman+rpm targets without updating this workflow; every Android CI
+      # run since 2026-05-20 has been red on bsdtar exit 127.
+      #   libarchive-tools -> provides bsdtar (pacman target)
+      #   rpm              -> rpm target
+      - name: Install Linux build deps
+        # `apt-get update` prefix: the cached package index on ubuntu-latest
+        # often points to .deb versions that have rolled off the mirror, so
+        # a bare install hits HTTP 404 / exit 100. Refresh the index first.
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
+
       - name: Run unit tests
         run: ./gradlew test
 
