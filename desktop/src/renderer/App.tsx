@@ -1007,46 +1007,76 @@ function AppInner() {
     // the handler is registered in a useEffect that doesn't re-subscribe on
     // sessions changes, we read via sessionsRef.current to always see fresh data.
     const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
-      if (!event?.type || !event?.sessionId) return;
-      if (event.type !== 'tool-use') return;
+      // DIAGNOSTIC: log every event the handler sees
+      console.log('[artifact-tracker] event', { type: event?.type, sessionId: event?.sessionId, hasData: !!event?.data });
+      if (!event?.type || !event?.sessionId) { console.log('[artifact-tracker] bail: missing type/sessionId'); return; }
+      if (event.type !== 'tool-use') return; // not a bail-log; non-tool-use events are expected to be ignored silently
       const toolName: string = event.data?.toolName ?? '';
-      if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) return;
+      console.log('[artifact-tracker] tool-use seen', { toolName, dataKeys: Object.keys(event.data || {}) });
+      if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) { console.log('[artifact-tracker] bail: tool not in whitelist'); return; }
       const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
-      if (!targetPath) return;
+      console.log('[artifact-tracker] tool target', { targetPath, toolInputKeys: Object.keys(event.data?.toolInput || {}) });
+      if (!targetPath) { console.log('[artifact-tracker] bail: no targetPath in toolInput'); return; }
       // Resolve cwd by looking up the session — transcript events don't carry cwd.
       const session = sessionsRef.current?.find?.((s: any) => s.id === event.sessionId);
       const projectRoot: string = session?.cwd ?? '';
-      if (!projectRoot) return;
-      // Internal-only auto-tracking: external files (outside cwd) are not tracked.
-      // Path normalization: targetPath from Claude Code is always absolute; compare
-      // via case-insensitive forward-slash form to handle Windows variations.
+      console.log('[artifact-tracker] session lookup', {
+        looked_for_id: event.sessionId,
+        found: !!session,
+        cwd_value: projectRoot,
+      });
+      if (!projectRoot) { console.log('[artifact-tracker] bail: no cwd resolved for sessionId'); return; }
+
+      // Determine internal vs external by path comparison. The Session Drawer
+      // shows BOTH (a session's activity log includes anything Claude touched).
+      // The Project View filters externals out unless they're in manualIncludes.
       const normPath = targetPath.replace(/\\/g, '/').toLowerCase();
       const normRoot = projectRoot.replace(/\\/g, '/').toLowerCase();
-      if (!normPath.startsWith(normRoot + '/') && normPath !== normRoot) return;
+      const isInternal = normPath.startsWith(normRoot + '/') || normPath === normRoot;
 
-      // Compute the relative path using the forward-slash forms (same length
-      // as the originals, so the index is correct regardless of case).
-      const fwdPath = targetPath.replace(/\\/g, '/');
-      const fwdRoot = projectRoot.replace(/\\/g, '/');
-      const relativePath = normPath === normRoot
-        ? ''
-        : fwdPath.slice(fwdRoot.length + 1);
-
-      // Fix: call appendVersion FIRST so the central index is populated.
-      // Without this call the sidecar never gets an entry and listSession returns [].
-      const appendArgs = {
-        path: relativePath,
-        kind: 'internal' as const,
-        absolutePath: null,
-        type: (toolName === 'Write' ? 'create' : 'edit') as 'create' | 'edit',
-        author: 'agent' as const,
+      let appendArgs: {
+        path: string;
+        kind: 'internal' | 'external';
+        absolutePath: string | null;
+        type: 'create' | 'edit';
+        author: 'agent';
       };
+      if (isInternal) {
+        // Compute the relative path using the forward-slash forms (same length
+        // as the originals, so the index is correct regardless of case).
+        const fwdPath = targetPath.replace(/\\/g, '/');
+        const fwdRoot = projectRoot.replace(/\\/g, '/');
+        const relativePath = normPath === normRoot ? '' : fwdPath.slice(fwdRoot.length + 1);
+        appendArgs = {
+          path: relativePath,
+          kind: 'internal',
+          absolutePath: null,
+          type: (toolName === 'Write' ? 'create' : 'edit'),
+          author: 'agent',
+        };
+      } else {
+        // External: store absolute path canonical, use basename as display path.
+        const fwdPath = targetPath.replace(/\\/g, '/');
+        const basename = fwdPath.split('/').pop() || fwdPath;
+        appendArgs = {
+          path: basename,
+          kind: 'external',
+          absolutePath: fwdPath,
+          type: (toolName === 'Write' ? 'create' : 'edit'),
+          author: 'agent',
+        };
+      }
+      console.log('[artifact-tracker] tracking', { isInternal, appendArgs });
+      console.log('[artifact-tracker] calling appendVersion', { projectRoot, sessionId: event.sessionId, appendArgs, hasMethod: typeof (window.claude as any).artifacts?.appendVersion });
       ((window.claude as any).artifacts?.appendVersion?.(projectRoot, event.sessionId, appendArgs) ?? Promise.resolve())
-        .catch(() => {/* best-effort */})
+        .then((r: any) => console.log('[artifact-tracker] appendVersion result', r))
+        .catch((e: any) => console.error('[artifact-tracker] appendVersion FAILED', e))
         .finally(() => {
           // Then refresh the session view from the now-updated sidecar.
+          console.log('[artifact-tracker] calling listSession for refresh');
           (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
             .then((res: any) => {
+              console.log('[artifact-tracker] listSession result', res);
               if (res && res.ok && Array.isArray(res.artifacts)) {
                 dispatchArtifact({
                   type: 'SESSION_ARTIFACTS_LOADED',
@@ -1055,7 +1085,7 @@ function AppInner() {
                 });
               }
             })
-            .catch(() => {/* best-effort */});
+            .catch((e: any) => console.error('[artifact-tracker] listSession FAILED', e));
         });
     });
 

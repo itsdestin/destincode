@@ -2089,7 +2089,18 @@ export function registerIpcHandlers(
     if (!p) return { ok: false, error: 'project-not-found' };
     const sidecar = await readSidecar(p.path);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
-    return { ok: true, artifacts: sidecar.artifacts };
+    // Filter: internal artifacts always shown; external only if explicitly
+    // added via manualIncludes. External auto-captures (Claude writing to a
+    // path outside cwd) live in the sidecar so they show in the SESSION
+    // drawer, but they shouldn't pollute the PROJECT view.
+    const includedExternal = new Set(
+      sidecar.manualIncludes.map((i: any) => i.path)
+    );
+    const visible = sidecar.artifacts.filter((a: any) =>
+      a.kind === 'internal' ||
+      (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
+    );
+    return { ok: true, artifacts: visible };
   });
 
   ipcMain.handle(ARTIFACT_IPC.GET, async (_e, projectRoot: string, artifactId: string) => {
