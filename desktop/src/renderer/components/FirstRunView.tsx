@@ -246,9 +246,18 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
     }
   }, [state?.currentStep]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Busy while any prerequisite is actively installing or being checked. The
+  // retry path is guarded against re-entry in the main process too, but
+  // disabling the button here is the first line of defense against the
+  // concurrent-install race (two installers colliding on the same download).
+  const busy = !!state?.prerequisites.some(
+    (p) => p.status === 'installing' || p.status === 'checking',
+  );
+
   const handleRetry = useCallback(() => {
+    if (busy) return;
     (window as any).claude.firstRun.retry();
-  }, []);
+  }, [busy]);
 
   const handleOAuth = useCallback(() => {
     (window as any).claude.firstRun.startAuth('oauth');
@@ -335,9 +344,10 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
               </p>
               <button
                 onClick={handleRetry}
-                className="px-3 py-1.5 rounded-full bg-well border border-edge hover:bg-inset text-fg text-xs font-medium transition-colors"
+                disabled={busy}
+                className="px-3 py-1.5 rounded-full bg-well border border-edge hover:bg-inset text-fg text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Try Again
+                {busy ? 'Working…' : 'Try Again'}
               </button>
             </div>
           )}
