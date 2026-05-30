@@ -190,6 +190,67 @@ function getPowerShellPath(): string {
 }
 
 /**
+ * Absolute path where Anthropic's native installer drops the Claude Code
+ * launcher: `%USERPROFILE%\.local\bin\claude.exe` on Windows, `~/.local/bin/claude`
+ * on POSIX (verified empirically 2026-05-30 against a real install).
+ *
+ * Why this exists: the installer registers that bin dir on the *user* PATH
+ * (HKCU on Windows, shell rc on POSIX), but a still-running process — including
+ * YouCoded itself — keeps its launch-time PATH snapshot. So immediately after a
+ * successful install, `which claude` misses and detection wrongly reports
+ * not-installed, dead-ending the user (a real friend hit exactly this: "claude
+ * is not recognized" in a shell opened before the PATH write). detectClaude()
+ * falls back to this absolute path so a fresh install is recognized without an
+ * app restart.
+ */
+function claudeInstallPath(): string {
+  const home = os.homedir();
+  return process.platform === 'win32'
+    ? path.join(home, '.local', 'bin', 'claude.exe')
+    : path.join(home, '.local', 'bin', 'claude');
+}
+
+/** The dir Anthropic's bootstrap downloads the versioned binary into before installing. */
+function claudeDownloadsDir(): string {
+  return path.join(os.homedir(), '.claude', 'downloads');
+}
+
+/**
+ * True when an error message indicates a Windows sharing violation / file-in-use
+ * lock (ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION / EBUSY). The native
+ * bootstrap's `Invoke-WebRequest -OutFile` opens the download target for
+ * exclusive write; if a concurrent install attempt, a leftover partial, or an
+ * antivirus real-time scan is holding that file, the open fails with this class
+ * of error. These locks are typically transient, so installClaude() retries.
+ */
+export function isFileLockError(msg: string): boolean {
+  return /being used by another process|cannot access the file|sharing violation|lock violation|EBUSY|ERROR_SHARING_VIOLATION/i.test(
+    msg,
+  );
+}
+
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Best-effort removal of stale/partial Claude binaries left in the downloads dir
+ * by a prior failed attempt. A leftover `claude-<v>-<plat>.exe` is the most
+ * common thing an antivirus scanner or interrupted download leaves locked, and
+ * the bootstrap overwrites blindly (no in-use check), so clearing it first
+ * removes the collision target. Never throws — a missing dir or a still-locked
+ * file just means we proceed and let the retry loop handle it.
+ */
+function cleanStaleClaudeDownloads(): void {
+  try {
+    const dir = claudeDownloadsDir();
+    for (const name of fs.readdirSync(dir)) {
+      if (/^claude-.*\.exe$/i.test(name) || /^claude-/i.test(name)) {
+        try { fs.rmSync(path.join(dir, name), { force: true }); } catch { /* still locked — let retry handle it */ }
+      }
+    }
+  } catch { /* dir doesn't exist yet — nothing to clean */ }
+}
+
+/**
  * On Windows, re-reads User and System PATH from the registry so that
  * freshly-installed tools are visible without restarting the app.
  * On macOS/Linux this is a no-op — main.ts already prepends common paths.
@@ -222,6 +283,13 @@ export function refreshPath(): void {
       .trim() ?? '';
 
     process.env.PATH = `${userPath};${systemPath}`;
+    // The Claude Code native installer does not always register its bin dir
+    // (%USERPROFILE%\.local\bin) on the user PATH — verified 2026-05-30, a real
+    // install printed "Native installation exists but ...\.local\bin is not in
+    // your PATH". Rebuilding PATH from the registry above would then leave
+    // claude unresolvable. Re-prepend the bin dir so which.sync() (detection)
+    // and forked pty-worker spawns (session launch) both find claude.exe.
+    prependToProcessPath(path.dirname(claudeInstallPath()));
     log('INFO', 'prereq', 'PATH refreshed from registry');
   } catch (err) {
     log('WARN', 'prereq', 'Failed to refresh PATH from registry', {
@@ -321,15 +389,28 @@ export async function detectGit(): Promise<DetectionResult> {
 
 /** Detect Claude Code CLI. */
 export async function detectClaude(): Promise<DetectionResult> {
-  try {
-    const claudePath = resolveCommand('claude');
-    const { stdout } = await runCommand(claudePath, ['--version']);
-    const version = stdout.trim();
-    log('INFO', 'prereq', `Claude Code detected: ${version}`);
-    return { installed: true, version, path: claudePath };
-  } catch (err) {
-    return { installed: false, error: String(err) };
+  // Resolve via PATH first (covers npm/global installs and a propagated PATH).
+  // Fall back to the native installer's known absolute path so a brand-new
+  // install is recognized even when its bin dir hasn't propagated to this
+  // process's PATH yet — see claudeInstallPath() for the why.
+  const candidates = [resolveCommand('claude')];
+  const absolute = claudeInstallPath();
+  if (!candidates.includes(absolute) && fs.existsSync(absolute)) {
+    candidates.push(absolute);
   }
+
+  let lastErr = 'claude not found';
+  for (const claudePath of candidates) {
+    try {
+      const { stdout } = await runCommand(claudePath, ['--version']);
+      const version = stdout.trim();
+      log('INFO', 'prereq', `Claude Code detected: ${version}`, { path: claudePath });
+      return { installed: true, version, path: claudePath };
+    } catch (err) {
+      lastErr = String(err);
+    }
+  }
+  return { installed: false, error: lastErr };
 }
 
 /** Detect YouCoded toolkit by checking for VERSION file. No command execution. */
@@ -611,10 +692,8 @@ export async function installGit(): Promise<{ success: boolean; error?: string }
  * Both bootstraps are non-interactive, require no admin/sudo, and exit 0 on
  * success / 1 on failure with a descriptive message on stderr.
  */
-export async function installClaude(): Promise<{ success: boolean; error?: string }> {
-  try {
-    log('INFO', 'prereq', 'Installing Claude Code via native installer...');
-
+/** Run the platform-specific native-installer bootstrap exactly once. */
+async function runClaudeBootstrap(): Promise<void> {
     if (process.platform === 'win32') {
       // -NoProfile: skip user PowerShell profile (faster, no side effects).
       // -ExecutionPolicy Bypass: works around per-user "Restricted" policies
@@ -654,8 +733,41 @@ export async function installClaude(): Promise<{ success: boolean; error?: strin
         { timeout: 300000 },
       );
     } else {
-      return { success: false, error: `Unsupported platform: ${process.platform}` };
+      throw new Error(`Unsupported platform: ${process.platform}`);
     }
+}
+
+/** Max attempts when the bootstrap dies on a transient file-lock. */
+const CLAUDE_INSTALL_LOCK_RETRIES = 3;
+
+export async function installClaude(): Promise<{ success: boolean; error?: string }> {
+  try {
+    log('INFO', 'prereq', 'Installing Claude Code via native installer...');
+
+    // Run the bootstrap, retrying on transient file-lock errors. The bootstrap
+    // downloads claude-<v>-<plat>.exe to ~/.claude/downloads with an exclusive
+    // OutFile open and has no retry of its own; a concurrent attempt, a leftover
+    // partial, or an antivirus real-time scan can hold that file and fail the
+    // open with "being used by another process". Pre-clean the stale download
+    // and give transient locks a moment to clear before retrying.
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= CLAUDE_INSTALL_LOCK_RETRIES; attempt++) {
+      cleanStaleClaudeDownloads();
+      try {
+        await runClaudeBootstrap();
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (isFileLockError(String(err)) && attempt < CLAUDE_INSTALL_LOCK_RETRIES) {
+          log('WARN', 'prereq', `Claude download locked, retrying (${attempt}/${CLAUDE_INSTALL_LOCK_RETRIES})`, { error: String(err) });
+          await delay(2000);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (lastErr) throw lastErr;
 
     refreshPath();
     const check = await detectClaude();
@@ -664,7 +776,9 @@ export async function installClaude(): Promise<{ success: boolean; error?: strin
       // Electron process snapshotted PATH at launch and our refreshPath() only
       // re-reads the registry on Windows. On macOS/Linux, the installer
       // updates ~/.zshrc / ~/.bashrc, which a still-running app can't see.
-      // Either way, a restart fixes it deterministically.
+      // detectClaude() already probes the native installer's absolute path, so
+      // reaching here means the binary isn't even on disk there — a restart is
+      // the deterministic fix either way.
       return {
         success: false,
         error:
@@ -677,6 +791,14 @@ export async function installClaude(): Promise<{ success: boolean; error?: strin
   } catch (err) {
     const msg = String(err);
     log('ERROR', 'prereq', 'Claude Code install failed', { error: msg });
+    // Map the opaque sharing-violation stack trace to an actionable message.
+    if (isFileLockError(msg)) {
+      return {
+        success: false,
+        error:
+          'Another program (often antivirus, or a second install attempt) is holding the Claude Code download open. Close other YouCoded windows, wait a moment, and click Try Again. If it keeps happening, restart your PC and reopen YouCoded.',
+      };
+    }
     return { success: false, error: msg };
   }
 }
