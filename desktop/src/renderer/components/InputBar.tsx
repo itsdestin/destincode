@@ -403,7 +403,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
 
   return (
     <div
-      className="input-bar-container border-t border-edge shrink-0"
+      className="input-bar-container shrink-0"
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >

@@ -373,7 +373,16 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     const scrimBlur = Math.min(panelsBlur, 8);
     const bubbleRule = bubbleBlur > 0 ? `
     [data-wallpaper] .in-view .bg-inset,
-    [data-wallpaper] .in-view .bg-accent {
+    [data-wallpaper] .in-view .bg-accent,
+    /* Artifact drawer reads as a bubble-like surface in any partial-or-
+       full floating-chrome theme, so it picks up the bubble blur radius
+       (not the panels blur used for chrome). Gating includes both
+       chrome-style='floating' (full floating) and input-style='floating'
+       (partial: floating input over default header — e.g. devils-garden).
+       Wallpaper presence is required since there's nothing behind a
+       solid theme to actually blur. */
+    [data-wallpaper] [data-chrome-style='floating'] .framed-shell > .drawer-pane,
+    [data-wallpaper] [data-input-style='floating'] .framed-shell > .drawer-pane {
       backdrop-filter: blur(${bubbleBlur}px) saturate(1.1);
       -webkit-backdrop-filter: blur(${bubbleBlur}px) saturate(1.1);
     }` : '';
@@ -384,9 +393,31 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     // visibly stutters the slide on integrated GPUs.
     const drawerReducedBlur = Math.max(1, Math.round(panelsBlur * 0.3));
     glassEl.textContent = `
-    [data-wallpaper] .header-bar,
-    [data-wallpaper] .status-bar,
-    [data-wallpaper] .input-bar-container,
+    /* SINGLE chrome-glass surface for the entire framed chrome region.
+       In framed mode this one element carries the backdrop-filter for
+       the whole frame (header strip, side edges, divider, bottom strip,
+       rounded inner corners) — see globals.css .chrome-glass for the
+       full rationale. The per-element backdrop-filters on
+       header-bar/status-bar/input-bar-container/frame-edge/etc. were
+       removed because compositing them produced subpixel-boundary
+       seams at non-100% zoom. */
+    [data-wallpaper] .chrome-glass,
+
+    /* Floating chrome themes — header/input/status are independent
+       pills (chrome-glass is display:none in those themes) and need
+       their own backdrop-filter. The selectors match BOTH full
+       floating chrome AND partial-floating (input-only) variants.
+       Partial-floating themes like devils-garden have chrome-style
+       'default' but input-style 'floating'; their header + status are
+       non-pill full-width strips that still need glass treatment. */
+    [data-wallpaper] [data-chrome-style='floating'] .header-bar,
+    [data-wallpaper] [data-chrome-style='floating'] .status-bar,
+    [data-wallpaper] [data-chrome-style='floating'] .input-bar-container,
+    [data-wallpaper] [data-input-style='floating'] .header-bar,
+    [data-wallpaper] [data-input-style='floating'] .status-bar,
+    [data-wallpaper] [data-input-style='floating'] .input-bar-container,
+
+    /* Popups / drawers / modals — independent of chrome style. */
     [data-wallpaper] .settings-drawer,
     [data-wallpaper] .glass-overlay,
     [data-wallpaper] .layer-surface,

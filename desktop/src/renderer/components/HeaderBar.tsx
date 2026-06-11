@@ -518,7 +518,7 @@ export default function HeaderBar({
   );
 
   return (
-    <div ref={headerRef} className="header-bar flex items-center h-10 px-2 sm:px-3 border-b border-edge shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+    <div ref={headerRef} className="header-bar flex items-center h-10 px-2 sm:px-3 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
       {/* Mac-only decorative pill under the native traffic lights. Mirrors the
           bg-inset rounded-md look of <CaptionButtons> on Windows/Linux. */}
       <MacTrafficLights headerRef={headerRef} />

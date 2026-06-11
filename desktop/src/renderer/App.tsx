@@ -354,17 +354,10 @@ function AppInner() {
   useVisualViewport();
   useRemoteAttentionSync();
 
-  // Apply data-theme-layout on <html> so the framed-shell CSS knows whether to
-  // show panel-color edge fills (framed) or suppress them (floating).
-  // ThemeDefinition.layout has chrome-style/input-style etc. but no 'layout'
-  // field for framed/floating — hardcoding 'framed' for all themes until a
-  // theme opts in via a future 'layout' field. The floating branch is dead
-  // code for now; the CSS rule is already in place for when themes add it.
-  const { activeTheme } = useTheme();
-  useEffect(() => {
-    const layout = (activeTheme as any)?.layout?.['frame-style'] ?? 'framed';
-    document.documentElement.dataset.themeLayout = layout;
-  }, [activeTheme]);
+  // Removed: data-theme-layout effect. The chrome-glass refactor replaced
+  // the data-theme-layout gating with data-chrome-style / data-input-style,
+  // which are already published by theme-engine.ts. No CSS consumes
+  // data-theme-layout anymore, so the effect was dead code.
 
   const dispatch = useChatDispatch();
   const chatStateMap = useChatStateMap();
@@ -1007,25 +1000,16 @@ function AppInner() {
     // the handler is registered in a useEffect that doesn't re-subscribe on
     // sessions changes, we read via sessionsRef.current to always see fresh data.
     const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
-      // DIAGNOSTIC: log every event the handler sees
-      console.log('[artifact-tracker] event', { type: event?.type, sessionId: event?.sessionId, hasData: !!event?.data });
-      if (!event?.type || !event?.sessionId) { console.log('[artifact-tracker] bail: missing type/sessionId'); return; }
-      if (event.type !== 'tool-use') return; // not a bail-log; non-tool-use events are expected to be ignored silently
+      if (!event?.type || !event?.sessionId) return;
+      if (event.type !== 'tool-use') return;
       const toolName: string = event.data?.toolName ?? '';
-      console.log('[artifact-tracker] tool-use seen', { toolName, dataKeys: Object.keys(event.data || {}) });
-      if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) { console.log('[artifact-tracker] bail: tool not in whitelist'); return; }
+      if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) return;
       const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
-      console.log('[artifact-tracker] tool target', { targetPath, toolInputKeys: Object.keys(event.data?.toolInput || {}) });
-      if (!targetPath) { console.log('[artifact-tracker] bail: no targetPath in toolInput'); return; }
+      if (!targetPath) return;
       // Resolve cwd by looking up the session — transcript events don't carry cwd.
       const session = sessionsRef.current?.find?.((s: any) => s.id === event.sessionId);
       const projectRoot: string = session?.cwd ?? '';
-      console.log('[artifact-tracker] session lookup', {
-        looked_for_id: event.sessionId,
-        found: !!session,
-        cwd_value: projectRoot,
-      });
-      if (!projectRoot) { console.log('[artifact-tracker] bail: no cwd resolved for sessionId'); return; }
+      if (!projectRoot) return;
 
       // Determine internal vs external by path comparison. The Session Drawer
       // shows BOTH (a session's activity log includes anything Claude touched).
@@ -1066,17 +1050,12 @@ function AppInner() {
           author: 'agent',
         };
       }
-      console.log('[artifact-tracker] tracking', { isInternal, appendArgs });
-      console.log('[artifact-tracker] calling appendVersion', { projectRoot, sessionId: event.sessionId, appendArgs, hasMethod: typeof (window.claude as any).artifacts?.appendVersion });
       ((window.claude as any).artifacts?.appendVersion?.(projectRoot, event.sessionId, appendArgs) ?? Promise.resolve())
-        .then((r: any) => console.log('[artifact-tracker] appendVersion result', r))
-        .catch((e: any) => console.error('[artifact-tracker] appendVersion FAILED', e))
+        .catch((e: any) => console.error('[artifact-tracker] appendVersion failed', e))
         .finally(() => {
           // Then refresh the session view from the now-updated sidecar.
-          console.log('[artifact-tracker] calling listSession for refresh');
           (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
             .then((res: any) => {
-              console.log('[artifact-tracker] listSession result', res);
               if (res && res.ok && Array.isArray(res.artifacts)) {
                 dispatchArtifact({
                   type: 'SESSION_ARTIFACTS_LOADED',
@@ -1085,7 +1064,7 @@ function AppInner() {
                 });
               }
             })
-            .catch((e: any) => console.error('[artifact-tracker] listSession FAILED', e));
+            .catch((e: any) => console.error('[artifact-tracker] listSession failed', e));
         });
     });
 
@@ -2016,6 +1995,45 @@ function AppInner() {
     };
   }, [sessionId, currentViewMode]);
 
+  // Track top chrome (HeaderBar) bottom edge for the artifact drawer.
+  // The drawer-pane sits inside .framed-shell beneath the absolute HeaderBar,
+  // so its content needs to clear the rendered bottom of the header. Two vars
+  // are published:
+  //   --top-chrome-height — the header element's own height. Used by
+  //     .chat-scroll padding-top so chat content scrolls behind the chrome.
+  //   --top-chrome-bottom — the y-coordinate of the header's BOTTOM in the
+  //     window. Used by .drawer-pane to position itself just below the
+  //     header. The distinction matters for floating-chrome themes where
+  //     the header pill carries its own margin-top — the header's
+  //     bottom is then at `margin + height`, not just `height`, so
+  //     drawer.margin-top must use the rect's bottom value or the drawer
+  //     ends up flush against the floating header with no gap.
+  // Both vars track ResizeObserver updates on the .header-bar element.
+  //
+  // NOTE: we measure the inner .header-bar element, NOT the chrome-wrapper at
+  // headerRef. The wrapper has no specified height and its only child is the
+  // position: absolute .header-bar (no flow content) — measuring the wrapper
+  // returns 0, which is what made the first attempt at this observer ineffective.
+  useEffect(() => {
+    const wrapper = headerRef.current;
+    if (!wrapper) return;
+    const headerBar = wrapper.querySelector('.header-bar');
+    if (!headerBar) return;
+    const update = () => {
+      const rect = (headerBar as HTMLElement).getBoundingClientRect();
+      document.documentElement.style.setProperty('--top-chrome-height', `${Math.ceil(rect.height)}px`);
+      document.documentElement.style.setProperty('--top-chrome-bottom', `${Math.ceil(rect.bottom)}px`);
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(headerBar);
+    update();
+    return () => {
+      observer.disconnect();
+      document.documentElement.style.removeProperty('--top-chrome-height');
+      document.documentElement.style.removeProperty('--top-chrome-bottom');
+    };
+  }, [sessionId, currentViewMode]);
+
   // Report header/bottom bar heights to native Android side for terminal overlay sizing.
   // Must be before early returns to maintain consistent hook ordering across renders.
   useEffect(() => {
@@ -2076,6 +2094,18 @@ function AppInner() {
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
+            {/* Chrome-glass: single backdrop-filter layer for the entire
+                frame chrome. Replaces the per-element backdrop-filters on
+                HeaderBar, frame-edges, frame-divider, drawer-pane, and the
+                rounded-corner pseudos. Subpixel boundaries between those
+                elements at non-100% zoom levels caused either tiny gaps
+                (sharp wallpaper bleed through) or tiny overlaps (darker
+                tone from double translucent-panel + double backdrop-filter).
+                A single chrome-glass element clipped to the donut shape via
+                clip-path: polygon() has only ONE backdrop-filter sampling the
+                wallpaper directly, so the whole chrome reads as one
+                continuous tone. */}
+            <div className={`chrome-glass${artifactState.drawerOpen ? ' chrome-glass--drawer-open' : ''}`} />
             <div ref={headerRef} className="chrome-wrapper bg-canvas">
               <HeaderBar
                 sessions={sessions}

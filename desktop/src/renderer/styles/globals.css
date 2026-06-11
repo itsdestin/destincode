@@ -114,8 +114,11 @@
   --fg: #2C2418;
   --fg-2: #5C4F3E;
   --fg-dim: #7A6E5D;
-  --fg-muted: #9E9283;
-  --fg-faint: #BEB3A4;
+  /* Darkened from #9E9283 (2.47:1) and #BEB3A4 (1.67:1) to clear
+     audit-theme-contrast thresholds (≥3:1 for fg-muted, ≥1.8:1 for
+     fg-faint) against canvas. */
+  --fg-muted: #8A7E6E;
+  --fg-faint: #B0A595;
   --edge: #CBBFAD;
   --edge-dim: #D4C8B580;
   --scrollbar-thumb: #CBBFB0;
@@ -398,33 +401,71 @@ body[data-mode="buddy-chat"] #theme-bg {
    background token for generic surfaces. Glass is applied to specific
    chrome/overlay surfaces below. */
 
-/* When a wallpaper is active, the app shell and chrome wrappers must be
-   transparent so the wallpaper shows through. */
-[data-wallpaper] .app-shell,
-[data-wallpaper] .chrome-wrapper {
+/* When a wallpaper is active, the app shell must be transparent so the
+   wallpaper shows through. */
+[data-wallpaper] .app-shell {
+  background-color: transparent !important;
+}
+
+/* chrome-wrapper has bg-canvas as a Tailwind class on every instance in
+   App.tsx, but with chrome-glass now providing the chrome surface in
+   framed mode (and floating-chrome themes applying bg directly to the
+   chrome children), the wrapper's own bg shouldn't paint. Top wrapper
+   has 0 layout height (HeaderBar absolute inside), so its bg-canvas
+   was invisible anyway. Bottom wrapper has visible size from its
+   InputBar/StatusBar children AND .bottom-float at z-20 — that put its
+   bg-canvas ABOVE chrome-glass (z-10), making the bottom chrome paint
+   --canvas instead of --panel in solid themes. Result: header rendered
+   panel-color, bottom rendered canvas-color, visibly different. Force
+   transparent on chrome-wrapper across all themes; the chrome surface
+   comes from chrome-glass (framed) or per-pill bg (floating). */
+.chrome-wrapper {
   background-color: transparent !important;
 }
 
 /* Header bar — always absolutely positioned so chat scrolls under it.
-   Default (solid themes): opaque var(--panel). Wallpaper themes get
-   translucent color-mix + backdrop-filter injected by theme-engine. */
+   In FRAMED mode (default) the chrome surface comes from .chrome-glass
+   behind the header-bar — header-bar itself is transparent so the glass
+   shows through. In FLOATING-chrome themes the header-bar is its own
+   pill with its own background + backdrop-filter (overrides below).
+   Earlier this base rule painted opaque var(--panel) and theme-engine
+   layered backdrop-filter on top; combined with the analogous treatment
+   on frame-edge/frame-divider/drawer-pane that made every chrome
+   element a backdrop-filter stacking context, and adjacent elements
+   produced visible seams at non-integer zoom levels (subpixel overlap
+   = darker tone from double-blur; subpixel gap = sharp wallpaper bleed
+   through). Single chrome-glass below fixes both by being THE one
+   backdrop-filter for the entire framed chrome region. */
 .header-bar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   z-index: 20;
+}
+/* HeaderBar background — needed in any mode where chrome-glass is
+   display: none. chrome-glass is hidden when EITHER chrome-style OR
+   input-style is 'floating' (full floating = pills everywhere; partial
+   floating = default header + floating input, e.g. devils-garden). The
+   partial-floating case still has a non-pill header strip — it needs a
+   background, otherwise the header disappears. */
+[data-chrome-style='floating'] .header-bar,
+[data-input-style='floating'] .header-bar {
   background-color: var(--panel);
 }
-[data-wallpaper] .header-bar {
+[data-wallpaper] [data-chrome-style='floating'] .header-bar,
+[data-wallpaper] [data-input-style='floating'] .header-bar {
   background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
 }
 
 /* Chat scroll area extends behind header and bottom chrome —
    extra padding so content starts below the header / above the
-   input bar, but scrolls behind frosted glass in both directions */
+   input bar, but scrolls behind frosted glass in both directions.
+   Both vars are published by App.tsx's ResizeObservers on the header
+   and bottom chrome refs; the fallback values keep behavior sane if
+   the observers haven't run yet. */
 .chat-scroll {
-  padding-top: 3rem;
+  padding-top: var(--top-chrome-height, 3rem);
   /* --vvp-offset is the soft-keyboard height; added so the last message
      clears BOTH the floating input bar AND the on-screen keyboard. */
   padding-bottom: calc(var(--bottom-chrome-height, 5rem) + var(--vvp-offset, 0px));
@@ -433,7 +474,7 @@ body[data-mode="buddy-chat"] #theme-bg {
 /* Inset the scrollbar track so it stops below the header and above the
    bottom chrome, matching the visible content area. */
 .chat-scroll::-webkit-scrollbar-track {
-  margin-top: 2.5rem;
+  margin-top: var(--top-chrome-height, 2.5rem);
   margin-bottom: calc(var(--bottom-chrome-height, 5rem) + var(--vvp-offset, 0px));
 }
 
@@ -472,20 +513,41 @@ body[data-mode="buddy-chat"] #theme-bg {
   contain: layout style;
 }
 
-/* Status bar — opaque on solid themes; translucent (+backdrop-filter
-   injected by theme-engine) on wallpaper themes. */
+/* Status bar — transparent in framed mode (chrome-glass behind provides
+   the visible chrome surface). Floating-chrome themes add the pill
+   background back via the [data-chrome-style='floating'] rules below. */
 .status-bar {
+  /* no background in framed mode */
+}
+/* StatusBar — same partial-floating treatment as HeaderBar above. */
+[data-chrome-style='floating'] .status-bar,
+[data-input-style='floating'] .status-bar {
   background-color: var(--panel);
 }
-[data-wallpaper] .status-bar {
+[data-wallpaper] [data-chrome-style='floating'] .status-bar,
+[data-wallpaper] [data-input-style='floating'] .status-bar {
   background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
 }
 
-/* Input bar wrapper — same pattern as status bar. */
+/* Input bar wrapper — same pattern as status bar.
+   Note: input-style='floating' (partial-floating themes like
+   devils-garden) sets its own background-color via the
+   [data-input-style='floating'] .input-bar-container rule farther
+   down in this file, so it gets the pill treatment even when
+   chrome-style is default. */
 .input-bar-container {
+  /* no background in framed mode */
+}
+[data-chrome-style='floating'] .input-bar-container {
   background-color: var(--panel);
 }
-[data-wallpaper] .input-bar-container {
+[data-wallpaper] [data-chrome-style='floating'] .input-bar-container {
+  background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
+}
+[data-input-style='floating'] .input-bar-container {
+  background-color: var(--panel);
+}
+[data-wallpaper] [data-input-style='floating'] .input-bar-container {
   background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
 }
 
@@ -1039,6 +1101,149 @@ body[data-mode="buddy-chat"] #theme-bg {
 
 :root {
   --frame-edge: 10px;
+  --frame-corner: 12px;
+}
+
+/* ─── Single chrome-glass surface ─────────────────────────────────────
+   ONE element provides the chrome surface (panel color, plus backdrop
+   blur in wallpaper themes) for the entire framed-shell. Mix-blend-mode
+   cutouts inside punch out a rounded-rectangle hole at the chat-pane
+   position (and another at drawer-pane when open). This replaces the
+   prior tiled-elements design (header-bar / frame-edge / frame-divider
+   / drawer-pane / corner-pseudos each carrying their own translucent
+   panel + backdrop-filter), which produced visible seams at non-integer
+   zoom levels — subpixel-overlap regions composited darker (double
+   translucent + double blur), subpixel-gap regions showed sharp
+   wallpaper bleed-through. One element = one backdrop-filter = one
+   uniform tone across the entire chrome.
+
+   z-index: 10 keeps chrome-glass ABOVE chat content (so its backdrop-
+   filter blurs the chat content scrolling under the chrome — the
+   frosted-glass effect we want) but BELOW the interactive chrome bars
+   at z-20 (HeaderBar, InputBar, StatusBar — they paint their buttons
+   on top of the chrome surface).
+
+   Floating chrome themes (full or partial) hide chrome-glass; their
+   header/input/status pills carry their own bg + backdrop-filter,
+   since there's no continuous frame chrome to merge into. */
+.chrome-glass {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  background-color: var(--panel);
+
+  /* --chat-right-offset is the distance from the window's right edge to
+     the right edge of the chat-pane cutout. It's --frame-edge by default
+     (chat extends to the right outer chrome strip) and grows when the
+     drawer is open to leave room for the drawer + frame-divider. The
+     polygon below references it instead of hard-coding which edge to
+     use, so the drawer-open variant only has to redeclare this var. */
+  --chat-right-offset: var(--frame-edge);
+
+  /* clip-path: polygon() defines the chrome donut shape directly.
+     Outer rectangle (clockwise) + inner rounded rectangle (counter-
+     clockwise) uses CSS's default nonzero fill rule to "subtract" the
+     inner from the outer — chrome-glass renders only in the donut
+     region around the chat-pane. backdrop-filter (applied via theme-
+     engine) only takes effect where chrome-glass actually renders, so
+     the chat-pane area shows the wallpaper sharp.
+
+     Each inner corner is approximated with 3 intermediate points on the
+     quarter-circle arc using CSS cos()/sin() (Chromium 111+). 5 points
+     per corner total (2 endpoints shared with adjacent sides + 3
+     intermediates at 22.5° steps) is visually smooth at --frame-corner
+     = 12px without bloating the polygon list.
+
+     For drawer-pane's rounded corners: we DON'T add a second cutout
+     here. Drawer-pane has its own border-radius and sits on top of
+     chrome-glass (in the chrome region, not inside the chat cutout).
+     Where drawer-pane's rounded corners "cut into" the rectangle,
+     drawer-pane doesn't paint — chrome-glass shows through with the
+     same panel + blur as the rest of the chrome, naturally wrapping
+     the drawer.
+
+     This replaced an earlier mix-blend-mode: destination-out approach
+     that was a bad diagnosis — destination-out is a Porter-Duff
+     compositing operator, NOT a CSS mix-blend-mode value, so the
+     browser silently ignored it and the "cutout" black background
+     rendered straight through. */
+  clip-path: polygon(
+    /* OUTER rectangle, clockwise */
+    0 0, 100% 0, 100% 100%, 0 100%, 0 0,
+
+    /* INNER rounded rectangle, counter-clockwise */
+    /* top side, right end (to the left of TR corner radius) */
+    calc(100% - var(--chat-right-offset) - var(--frame-corner)) var(--top-chrome-height, 3rem),
+    /* top side, left end (to the right of TL corner radius) */
+    calc(var(--frame-edge) + var(--frame-corner)) var(--top-chrome-height, 3rem),
+
+    /* TL corner arc, intermediate points at 247.5°, 225°, 202.5° */
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(247.5deg))) calc(var(--top-chrome-height, 3rem) + var(--frame-corner) * (1 + sin(247.5deg))),
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(225deg))) calc(var(--top-chrome-height, 3rem) + var(--frame-corner) * (1 + sin(225deg))),
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(202.5deg))) calc(var(--top-chrome-height, 3rem) + var(--frame-corner) * (1 + sin(202.5deg))),
+
+    /* left side, top end (below TL corner radius) */
+    var(--frame-edge) calc(var(--top-chrome-height, 3rem) + var(--frame-corner)),
+    /* left side, bottom end (above BL corner radius) */
+    var(--frame-edge) calc(100% - var(--bottom-chrome-height, 5rem) - var(--frame-corner)),
+
+    /* BL corner arc, intermediates at 157.5°, 135°, 112.5° */
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(157.5deg))) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(157.5deg) - 1)),
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(135deg))) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(135deg) - 1)),
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(112.5deg))) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(112.5deg) - 1)),
+
+    /* bottom side, left end (to the right of BL corner radius) */
+    calc(var(--frame-edge) + var(--frame-corner)) calc(100% - var(--bottom-chrome-height, 5rem)),
+    /* bottom side, right end (to the left of BR corner radius) */
+    calc(100% - var(--chat-right-offset) - var(--frame-corner)) calc(100% - var(--bottom-chrome-height, 5rem)),
+
+    /* BR corner arc, intermediates at 67.5°, 45°, 22.5° */
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(67.5deg) - 1)) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(67.5deg) - 1)),
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(45deg) - 1)) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(45deg) - 1)),
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(22.5deg) - 1)) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(22.5deg) - 1)),
+
+    /* right side, bottom end (above BR corner radius) */
+    calc(100% - var(--chat-right-offset)) calc(100% - var(--bottom-chrome-height, 5rem) - var(--frame-corner)),
+    /* right side, top end (below TR corner radius) */
+    calc(100% - var(--chat-right-offset)) calc(var(--top-chrome-height, 3rem) + var(--frame-corner)),
+
+    /* TR corner arc, intermediates at -22.5°, -45°, -67.5° */
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(-22.5deg) - 1)) calc(var(--top-chrome-height, 3rem) + var(--frame-corner) * (1 + sin(-22.5deg))),
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(-45deg) - 1)) calc(var(--top-chrome-height, 3rem) + var(--frame-corner) * (1 + sin(-45deg))),
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(-67.5deg) - 1)) calc(var(--top-chrome-height, 3rem) + var(--frame-corner) * (1 + sin(-67.5deg))),
+
+    /* Explicit close back to inner start (TR arc end at -90°, = top side
+       right end = first inner point above). Without this, the implicit
+       polygon close jumps from the last TR intermediate directly to (0,0),
+       which leaves a stray diagonal segment that distorts the TR arc
+       visually. The other three corners get away without an explicit
+       closer because their arc endpoints are already in the polygon list
+       as the start of the next side; TR's endpoint is the inner start,
+       which appears at the TOP of the list, not the bottom — so we
+       repeat it here. The implicit close from this point back to (0,0)
+       exactly cancels the forward connector (0,0)→(R-C,T) at the top of
+       the inner section in winding-number terms. */
+    calc(100% - var(--chat-right-offset) - var(--frame-corner)) var(--top-chrome-height, 3rem)
+  );
+}
+[data-wallpaper] .chrome-glass {
+  background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
+}
+[data-chrome-style='floating'] .chrome-glass,
+[data-input-style='floating'] .chrome-glass {
+  display: none;
+}
+
+/* When drawer is open, the chat cutout's right edge shifts left to
+   leave room for: outer right frame-edge + drawer width + frame-divider
+   = 2*frame-edge + 480px. The polygon shape stays identical (rounded
+   corners and all) — only --chat-right-offset changes. Drawer-pane's
+   own border-radius creates the drawer's rounded corners; chrome-glass
+   shows through where drawer-pane's rounded edges cut into the
+   rectangle. */
+.chrome-glass--drawer-open {
+  --chat-right-offset: calc(var(--frame-edge) * 2 + 480px);
 }
 
 /* Framed-shell: flex row that holds chat-pane + optional drawer-pane.
@@ -1056,12 +1261,16 @@ body[data-mode="buddy-chat"] #theme-bg {
   overflow: hidden;
 }
 
-/* Left and right edge strips — filled with panel color to form the frame
-   chrome that visually connects HeaderBar's bottom edge to StatusBar's top
-   edge in framed themes. */
+/* Frame edges + divider — flex layout spacers ONLY. Width is preserved
+   (so chat-pane and drawer-pane are sized to fit inside the cutouts),
+   but no background or backdrop-filter. The visible chrome surface comes
+   from .chrome-glass behind. The previous design painted these as
+   translucent panel + their own backdrop-filter, but compositing
+   multiple translucent + blurred elements introduced subpixel-boundary
+   seams at non-100% zoom — the chrome-glass refactor moved the entire
+   chrome to a single backdrop-filter element to eliminate that. */
 .framed-shell > .frame-edge,
 .framed-shell > .frame-divider {
-  background: var(--panel);
   width: var(--frame-edge);
   flex-shrink: 0;
 }
@@ -1077,23 +1286,189 @@ body[data-mode="buddy-chat"] #theme-bg {
   position: relative;
 }
 
-/* Drawer pane — fixed width, panel background so its inset surface blends
-   with the surrounding frame chrome. Drawer content is opaque by design
-   (text needs to be readable; we don't want the wallpaper bleeding through
-   into the artifact list / viewer). */
+/* Rounded-inset corner pieces. ::before is a thin strip at the top of the
+   pane (just below absolute HeaderBar), ::after a matching strip at the
+   bottom (just above the bottom chrome). Each strip's background is a
+   uniform fill (var(--panel), color-mixed translucent on wallpaper themes),
+   but the strip's MASK clips it to two 12x12 wedges at the left + right
+   ends — leaving the middle of the strip fully cut out. backdrop-filter
+   is then applied via theme-engine.ts on wallpaper themes, the same way
+   it's applied to .header-bar / .status-bar / .frame-edge. Because the
+   masked-out middle has no rendered pixels, no backdrop blur appears
+   there — chat content underneath stays sharp. The wedge areas read as
+   panel-colored corners that visually wrap around a rounded inner
+   window. z-index 1 keeps them above pane content but below absolute
+   HeaderBar (z-20) which still covers any actual chrome region.
+   Gated to framed chrome: floating-chrome / floating-input themes get
+   the drawer-as-pill treatment instead, with its own border-radius. */
+.framed-shell > .chat-pane::before,
+.framed-shell > .chat-pane::after,
+.framed-shell > .drawer-pane::before,
+.framed-shell > .drawer-pane::after {
+  /* Disabled: chrome-glass cutout border-radius now provides the rounded
+     inner corners. These pseudos created their own translucent panel +
+     backdrop-filter wedges that subpixel-overlapped with neighbouring
+     chrome elements at non-100% zoom; the chrome-glass refactor moved
+     the whole chrome to a single backdrop-filter element. Left as
+     `display: none` (vs deleted) so floating-chrome themes can still
+     opt back in via their own rule if needed. */
+  display: none;
+}
+
+[data-wallpaper] .framed-shell > .chat-pane::before,
+[data-wallpaper] .framed-shell > .chat-pane::after,
+[data-wallpaper] .framed-shell > .drawer-pane::before,
+[data-wallpaper] .framed-shell > .drawer-pane::after {
+  background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
+}
+
+/* TOP corner mask — clips the strip to two 12x12 wedges at left/right.
+   Each mask radial-gradient inverts the radial pattern: BLACK (visible)
+   in the outer wedge area, TRANSPARENT inside the rounded curve. With
+   two gradients positioned at left/right ends + no-repeat, the middle of
+   the strip has no mask coverage = mask alpha 0 = nothing renders.
+   Quirk: -webkit-mask-image is required for Safari/Chromium parity;
+   modern Chrome supports `mask` but with a webkit-prefix the rule
+   doesn't break older builds. */
+.framed-shell > .chat-pane::before,
+.framed-shell > .drawer-pane::before {
+  mask-image:
+    radial-gradient(circle var(--frame-corner) at 100% 100%, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner)),
+    radial-gradient(circle var(--frame-corner) at 0 100%, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner));
+  mask-position: left top, right top;
+  -webkit-mask-image:
+    radial-gradient(circle var(--frame-corner) at 100% 100%, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner)),
+    radial-gradient(circle var(--frame-corner) at 0 100%, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner));
+  -webkit-mask-position: left top, right top;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: var(--frame-corner) var(--frame-corner);
+}
+
+/* BOTTOM corner mask — mirrored geometry: gradient circles centered at
+   the top edge of the swatch so the wedge sits in the lower portion. */
+.framed-shell > .chat-pane::after,
+.framed-shell > .drawer-pane::after {
+  mask-image:
+    radial-gradient(circle var(--frame-corner) at 100% 0, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner)),
+    radial-gradient(circle var(--frame-corner) at 0 0, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner));
+  mask-position: left bottom, right bottom;
+  -webkit-mask-image:
+    radial-gradient(circle var(--frame-corner) at 100% 0, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner)),
+    radial-gradient(circle var(--frame-corner) at 0 0, transparent 0 calc(var(--frame-corner) - 0.5px), black var(--frame-corner));
+  -webkit-mask-position: left bottom, right bottom;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: var(--frame-corner) var(--frame-corner);
+}
+
+/* Top/bottom positioning — chat-pane and drawer-pane diverge here because
+   chat-pane still spans the full framed-shell height (so chat content can
+   scroll behind the absolute chrome), while drawer-pane is margin-clipped
+   to the visible mid-region (no overlap with chrome — see comment on
+   .drawer-pane above). The pseudo's `top` is measured relative to its
+   parent's content box, so for chat-pane we offset by the chrome height,
+   and for drawer-pane we anchor at 0 (already at the chrome boundary). */
+.framed-shell > .chat-pane::before { top: var(--top-chrome-height, 3rem); }
+.framed-shell > .chat-pane::after  { bottom: var(--bottom-chrome-height, 5rem); }
+.framed-shell > .drawer-pane::before { top: 0; }
+.framed-shell > .drawer-pane::after  { bottom: 0; }
+
+/* Floating-chrome themes: drawer is a self-contained rounded pill, and
+   chat-pane doesn't have continuous chrome to round against, so suppress
+   the corner pseudos entirely. */
+[data-chrome-style='floating'] .framed-shell > .chat-pane::before,
+[data-chrome-style='floating'] .framed-shell > .chat-pane::after,
+[data-chrome-style='floating'] .framed-shell > .drawer-pane::before,
+[data-chrome-style='floating'] .framed-shell > .drawer-pane::after,
+[data-input-style='floating'] .framed-shell > .chat-pane::before,
+[data-input-style='floating'] .framed-shell > .chat-pane::after,
+[data-input-style='floating'] .framed-shell > .drawer-pane::before,
+[data-input-style='floating'] .framed-shell > .drawer-pane::after {
+  display: none;
+}
+
+/* Drawer pane — fixed width, sits inside its chrome-glass cutout in
+   framed mode. The cutout (defined on .chrome-glass) punches out the
+   chrome donut at this position; drawer-pane's own opaque --inset
+   background fills the cutout area. Margin-top/bottom keep the pane
+   aligned with the cutout vertically (= visible chrome boundary).
+   border-radius matches the cutout's --frame-corner so the drawer's
+   visible corners follow the same rounded shape. */
 .framed-shell > .drawer-pane {
   width: 480px;
   flex-shrink: 0;
-  background: var(--panel);
+  background-color: var(--canvas);
+  margin-top: var(--top-chrome-height, 3rem);
+  margin-bottom: var(--bottom-chrome-height, 5rem);
+  overflow: hidden;
+  position: relative;
+  /* z-index: 11 puts the drawer ABOVE chrome-glass (z 10) so its opaque
+     --inset background covers chrome-glass in the drawer interior. The
+     chrome-glass polygon clip-path only cuts out the chat-pane region,
+     so without this promotion chrome-glass would paint over drawer-pane
+     entirely. (Adding a second cutout for the drawer in chrome-glass's
+     polygon would also work, but at the cost of ~20 more polygon
+     points; z-index is cheaper and equivalent visually.) */
+  z-index: 11;
+  /* Rounded corners — drawer-pane sits on top of chrome-glass in the
+     chrome region (no chat-pane-style cutout for drawer; chrome-glass
+     paints chrome behind drawer-pane). Where drawer-pane's border-
+     radius cuts into its rectangular bounds, drawer-pane doesn't
+     paint and chrome-glass shows through — naturally wrapping the
+     drawer with the same chrome surface as the rest of the frame. */
+  border-radius: var(--frame-corner);
+}
+
+/* Floating chrome override — gated on chrome-style="floating" (full
+   floating chrome) OR input-style="floating" (partial: floating input
+   pill over a default header, e.g. devils-garden). A prior version
+   used [data-theme-layout='floating'] (from layout['frame-style']),
+   but no theme populates that field, so the rule never fired on real
+   themes. When any chrome element is a floating pill the drawer can't
+   visually merge with continuous chrome — there isn't any — so it
+   becomes a single self-contained rounded panel matching the floating
+   pill aesthetic instead. The frame edges + divider drop out for the
+   same reason: there's no continuous frame to paint into. */
+[data-chrome-style='floating'] .framed-shell > .frame-edge,
+[data-chrome-style='floating'] .framed-shell > .frame-divider,
+[data-input-style='floating'] .framed-shell > .frame-edge,
+[data-input-style='floating'] .framed-shell > .frame-divider {
+  display: none;
+}
+
+[data-chrome-style='floating'] .framed-shell > .drawer-pane,
+[data-input-style='floating'] .framed-shell > .drawer-pane {
+  /* Position the drawer pill below the header and above the bottom chrome
+     with a visible gap. --top-chrome-bottom is the y-coordinate of the
+     rendered bottom edge of the header (in window space) — using rect.bottom
+     instead of just height correctly accounts for the floating header's own
+     margin-top (6px in chrome-style='floating' themes). Adding a 6px gap on
+     top of that gives breathing room between the floating header pill and
+     the drawer pill. Bottom mirror uses the existing --bottom-chrome-height
+     since the bottom wrapper is anchored to bottom: 0 and its height alone
+     captures the full vertical space it occupies. */
+  margin-top: calc(var(--top-chrome-bottom, 3rem) + 6px);
+  margin-bottom: calc(var(--bottom-chrome-height, 5rem) + 6px);
+  margin-right: 8px;
+  padding-top: 0;
+  padding-bottom: 0;
+  /* Glassmorphic surface — wallpaper themes still get backdrop-filter
+     injected by theme-engine.ts for .header-bar / .status-bar / etc.,
+     and chat-bubble (.bg-inset) translucency comes from --bubble-opacity.
+     Match the bubble look so the floating drawer reads as "one of the
+     floating surfaces" instead of an opaque rectangle. Solid floating
+     themes (no wallpaper) fall back to opaque --inset via the base
+     .bg-inset rule. */
+  background-color: var(--inset);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--edge);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  /* clip aside's internal border-l so it doesn't poke past the rounded edge */
   overflow: hidden;
 }
 
-/* Floating-theme override: no edge fills.
-   The drawer-pane keeps its panel fill (still needs to be opaque for
-   readability); only the frame chrome elements drop out. */
-[data-theme-layout='floating'] .framed-shell > .frame-edge,
-[data-theme-layout='floating'] .framed-shell > .frame-divider {
-  display: none;
+[data-wallpaper] [data-chrome-style='floating'] .framed-shell > .drawer-pane,
+[data-wallpaper] [data-input-style='floating'] .framed-shell > .drawer-pane {
+  background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 1) * 100%), transparent);
 }
 
 /* Narrow-screen (phone / narrow window) responsive collapse (Task 6.3)
