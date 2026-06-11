@@ -358,6 +358,8 @@ describe('artifact IPC parity', () => {
     CHANGED: 'artifacts:changed',
     // Task 7.3: project deletion
     DELETE_PROJECT: 'artifacts:delete-project',
+    // Existence check folds "file not on disk" into the deleted UI state.
+    CHECK_EXISTENCE: 'artifacts:check-existence',
   }).reduce<Record<string, string>>((acc, [name, value]) => {
     acc[value] = `ARTIFACT_IPC.${name}`;
     return acc;

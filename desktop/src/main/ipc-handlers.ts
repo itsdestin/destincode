@@ -2221,6 +2221,39 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
+  // Batch-check whether each requested artifact's resolved path still exists on
+  // disk. Used by SessionDrawer + ProjectView to mark "file not on disk"
+  // artifacts as deleted in the UI without mutating the sidecar. Internal
+  // artifacts resolve to projectRoot/path; external artifacts resolve to
+  // absolutePath. Parallel fs.access keeps this cheap even for hundreds of IDs.
+  ipcMain.handle(ARTIFACT_IPC.CHECK_EXISTENCE, async (
+    _e, projectRoot: string, artifactIds: string[]
+  ) => {
+    if (!projectRoot || !Array.isArray(artifactIds) || artifactIds.length === 0) {
+      return { ok: true, missingIds: [] };
+    }
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: true, missingIds: [] };
+    const byId = new Map(sidecar.artifacts.map((a) => [a.id, a]));
+    const results = await Promise.all(
+      artifactIds.map(async (id) => {
+        const a = byId.get(id);
+        if (!a) return id; // unknown id treated as missing
+        const fullPath = a.kind === 'internal'
+          ? path.join(projectRoot, a.path)
+          : a.absolutePath;
+        if (!fullPath) return id;
+        try {
+          await fs.promises.access(fullPath);
+          return null;
+        } catch {
+          return id;
+        }
+      })
+    );
+    return { ok: true, missingIds: results.filter((x): x is string => x !== null) };
+  });
+
   // Return cleanup function for use during app shutdown
   return function cleanup() {
     stopThemeWatcher();

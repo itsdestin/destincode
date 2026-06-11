@@ -3087,6 +3087,13 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
+            // Stub: existence check returns an empty missingIds list on mobile so the
+            // SessionDrawer renders every artifact as present. Real implementation
+            // arrives when mobile Project View / orphan handling lands (v2).
+            "artifacts:check-existence" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", true).put("missingIds", org.json.JSONArray())) }
+            }
             // artifacts:changed is a server-push event only — no inbound handler needed.
 
             else -> {

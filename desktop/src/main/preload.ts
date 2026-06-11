@@ -865,6 +865,10 @@ contextBridge.exposeInMainWorld('claude', {
     // Task 7.3: remove a project from the central index (files untouched)
     deleteProject: (projectId: string, deleteSidecar: boolean) =>
       ipcRenderer.invoke('artifacts:delete-project', projectId, deleteSidecar),
+    // Returns the subset of artifactIds whose underlying file is missing from
+    // disk. Used to fold "file not on disk" into the deleted UI state.
+    checkExistence: (projectRoot: string, artifactIds: string[]) =>
+      ipcRenderer.invoke('artifacts:check-existence', projectRoot, artifactIds),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);

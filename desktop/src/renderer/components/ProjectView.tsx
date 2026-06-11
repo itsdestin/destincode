@@ -4,13 +4,17 @@
 // z-[8000]: below SessionStrip dropdown (9000) but above all other overlays (L2 = 61).
 // Task 7.2: right-column detail pane (ProjectViewDetailPane) shows artifact content.
 // Task 7.3: project deletion confirmation modal + real add-external-file picker.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useArtifact } from '../state/ArtifactContext';
+import { useTheme } from '../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../shared/artifacts/types';
 import { ActiveArtifactView } from './artifact-views/ActiveArtifactView';
+import { ArtifactThumbnail } from './ArtifactThumbnail';
+import { categorizeArtifact } from '../../shared/artifacts/categorization';
 
 export function ProjectView() {
   const { state, dispatch } = useArtifact();
+  const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts } = useTheme();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
@@ -48,13 +52,43 @@ export function ProjectView() {
     dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED' });
   }, [activeProject?.id]);
 
-  if (!state.projectViewOpen) return null;
+  // Existence check: fold "file not on disk" into the deleted UI state alongside
+  // sidecar-tracked delete versions. Re-runs whenever the artifact list changes.
+  const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (!activeProject || artifacts.length === 0) { setOrphanIds(new Set()); return; }
+    let cancelled = false;
+    const ids = artifacts.map((a) => a.id);
+    (window.claude as any).artifacts.checkExistence(activeProject.path, ids)
+      .then((res: any) => {
+        if (cancelled || !res?.ok) return;
+        setOrphanIds(new Set(res.missingIds ?? []));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [activeProject?.path, artifacts]);
 
-  // Filter to active (non-deleted) artifacts matching the search query.
-  const filtered = artifacts.filter((a) =>
-    a.status !== 'deleted' &&
-    (!search || a.path.toLowerCase().includes(search.toLowerCase()))
+  // Filter the artifact grid. Hooks MUST run before any early return — Rules of
+  // Hooks. Don't move these below the projectViewOpen guard or React throws
+  // "Rendered more hooks than during the previous render" the first time the
+  // view is opened.
+  const filtered = useMemo(
+    () => artifacts.filter((a) => {
+      const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
+      if (isDeleted && !showDeletedArtifacts) return false;
+      if (hideCodeAndConfigs && categorizeArtifact(a.path) !== 'document') return false;
+      if (search && !a.path.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    }),
+    [artifacts, hideCodeAndConfigs, showDeletedArtifacts, orphanIds, search],
   );
+  // Counts for tooltip hints — total non-deleted, total deleted (any cause).
+  const deletedCount = useMemo(
+    () => artifacts.filter((a) => a.status === 'deleted' || orphanIds.has(a.id)).length,
+    [artifacts, orphanIds],
+  );
+
+  if (!state.projectViewOpen) return null;
 
   // ── Task 7.3: project deletion ───────────────────────────────────────────
   const confirmDelete = async () => {
@@ -99,18 +133,55 @@ export function ProjectView() {
     <div className="fixed inset-0 bg-canvas z-[8000] flex flex-col">
       <header className="flex items-center justify-between px-3 py-2 border-b border-edge shrink-0">
         <h2 className="text-base font-semibold">Projects</h2>
-        <button
-          type="button"
-          className="p-1 rounded-sm hover:bg-inset transition-colors text-fg-muted hover:text-fg shrink-0"
-          onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
-          title="Close"
-          aria-label="Close Projects"
-        >
-          {/* ✕ close icon */}
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Filter toggles — shared preferences w/ SessionDrawer.
+              Hide code & configs defaults ON. Show deleted defaults OFF. */}
+          <button
+            type="button"
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border text-xs transition-colors ${
+              hideCodeAndConfigs
+                ? 'bg-inset border-edge text-fg'
+                : 'border-edge text-fg-muted hover:text-fg hover:bg-inset'
+            }`}
+            onClick={() => setHideCodeAndConfigs(!hideCodeAndConfigs)}
+            title={hideCodeAndConfigs
+              ? 'Showing Documents and Mockups only. Click to show all.'
+              : 'Showing all files. Click to hide code & configs.'}
+          >
+            <span className="text-sm leading-none">{hideCodeAndConfigs ? '☑' : '☐'}</span>
+            <span>Hide code &amp; configs</span>
+          </button>
+          <button
+            type="button"
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border text-xs transition-colors ${
+              showDeletedArtifacts
+                ? 'bg-inset border-edge text-fg'
+                : 'border-edge text-fg-muted hover:text-fg hover:bg-inset'
+            }`}
+            onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
+            title={showDeletedArtifacts
+              ? 'Including deleted files in the grid. Click to hide them.'
+              : `Hiding deleted files${deletedCount > 0 ? ` — ${deletedCount} hidden in this project` : ''}. Click to include them.`}
+          >
+            <span className="text-sm leading-none">{showDeletedArtifacts ? '☑' : '☐'}</span>
+            <span>Show deleted</span>
+            {!showDeletedArtifacts && deletedCount > 0 && (
+              <span className="text-fg-muted">+{deletedCount}</span>
+            )}
+          </button>
+          <button
+            type="button"
+            className="p-1 rounded-sm hover:bg-inset transition-colors text-fg-muted hover:text-fg shrink-0"
+            onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
+            title="Close"
+            aria-label="Close Projects"
+          >
+            {/* ✕ close icon */}
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
@@ -183,32 +254,44 @@ export function ProjectView() {
               {activeProject
                 ? search
                   ? 'No artifacts match your search.'
-                  : 'This project has no artifacts yet.'
+                  : 'This project has no artifacts to show under the current filters. Try toggling "Hide code & configs" or "Show deleted" above.'
                 : 'Select a project to view its artifacts.'}
             </p>
           )}
 
-          <div className="flex-1 overflow-auto grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 content-start">
+          <div className="flex-1 overflow-auto grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start">
             {filtered.map((a) => {
               const filename = a.path.split('/').pop() ?? a.path;
-              const ext = filename.includes('.')
-                ? filename.split('.').pop()!.toUpperCase()
-                : '—';
               const isActive = state.activeArtifactId === a.id;
+              const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
               return (
                 <button
                   key={a.id}
                   type="button"
-                  className={`flex flex-col items-center p-3 border rounded-sm transition-colors min-h-[90px] text-left ${
+                  className={`relative flex flex-col p-2 border rounded-sm transition-colors text-left overflow-hidden ${
                     isActive
                       ? 'border-accent bg-inset'
                       : 'border-edge hover:bg-inset'
-                  }`}
+                  } ${isDeleted ? 'opacity-60' : ''}`}
                   onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_SET', artifactId: a.id })}
-                  title={a.path}
+                  title={isDeleted ? `${a.path}\nDeleted (file is no longer on disk)` : a.path}
                 >
-                  <div className="text-xl font-mono text-fg-muted mb-2">{ext}</div>
-                  <div className="text-xs truncate w-full text-center text-fg-2">
+                  {/* Mini pre-render of the file (image/text/html) or ext-letter fallback */}
+                  <ArtifactThumbnail
+                    artifact={a}
+                    projectPath={activeProject?.path ?? ''}
+                    className={`h-28 w-full rounded-sm mb-2 ${isDeleted ? 'grayscale' : ''}`}
+                  />
+                  {/* "Deleted" overlay badge — anchored top-right of the thumbnail */}
+                  {isDeleted && (
+                    <span
+                      className="absolute top-3 right-3 px-1.5 py-0.5 text-[10px] font-semibold bg-canvas/80 border border-edge rounded text-fg-2"
+                      aria-label="Deleted"
+                    >
+                      ✕ deleted
+                    </span>
+                  )}
+                  <div className={`text-xs truncate w-full text-fg-2 ${isDeleted ? 'line-through' : ''}`}>
                     {filename}
                   </div>
                 </button>

@@ -1025,6 +1025,11 @@ export function installShim(): void {
       // Task 7.3: remove a project from the central index (files untouched)
       deleteProject: (projectId: string, deleteSidecar: boolean) =>
         invoke('artifacts:delete-project', { projectId, deleteSidecar }),
+      // Returns the subset of artifactIds whose underlying file is missing from
+      // disk. Android stub returns empty missingIds (existence check is desktop-only
+      // until Project View ships on mobile).
+      checkExistence: (projectRoot: string, artifactIds: string[]) =>
+        invoke('artifacts:check-existence', { projectRoot, artifactIds }),
       onChanged: (cb: (event: any) => void) => {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);
