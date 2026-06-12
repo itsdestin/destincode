@@ -64,4 +64,23 @@ describe('updateConversationIndex — phantom id guard', () => {
     expect(idx.sessions['sess-with-flag']).toBeTruthy(); // flagged → kept
     expect(idx.sessions[GOOD_ID]).toBeTruthy();
   });
+
+  // Composition of the scan guard + self-heal: an EXISTING flagless phantom
+  // entry whose phantom topic file is still on disk gets updated by the scan
+  // (the guard only blocks creation) and then deleted by the prune — net
+  // removal. Pins the seam so a future "optimization" of the scan guard
+  // can't silently change update-then-delete into something else.
+  it('net-deletes a flagless phantom entry even when its topic file still exists', async () => {
+    fs.writeFileSync(indexPath(), JSON.stringify({
+      version: 1,
+      sessions: {
+        [PHANTOM_ID]: { topic: 'Old Phantom', lastActive: new Date().toISOString(), slug: '', device: 'x' },
+      },
+    }));
+    writeTopic(PHANTOM_ID, 'Phantom Reborn');
+    const svc = await freshService();
+    svc.updateConversationIndex();
+    const idx = readIndex();
+    expect(idx.sessions[PHANTOM_ID]).toBeUndefined();
+  });
 });
