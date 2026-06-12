@@ -61,4 +61,16 @@ describe('seedCleanupPeriodDefault', () => {
     expect(r.changed).toBe(false);
     expect(fs.readFileSync(settingsPath(), 'utf8')).toBe('{ not json');
   });
+
+  // Pins the wrong-type decision: a non-number value (e.g. "30" written by a
+  // buggy tool) is meaningless to Claude Code, so seeding replaces it rather
+  // than leaving retention silently at CC's 30-day default.
+  it('replaces a non-number cleanupPeriodDays with the default', async () => {
+    fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+    fs.writeFileSync(settingsPath(), JSON.stringify({ cleanupPeriodDays: '30' }));
+    const r = await seed();
+    expect(r.changed).toBe(true);
+    expect(r.effective).toBe(365);
+    expect(JSON.parse(fs.readFileSync(settingsPath(), 'utf8')).cleanupPeriodDays).toBe(365);
+  });
 });
