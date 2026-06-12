@@ -119,7 +119,10 @@ function walkSlugParts(base: string, parts: string[]): string {
 async function readTopic(sessionId: string, indexTopics: Record<string, string>): Promise<string> {
   try {
     const content = (await fs.promises.readFile(path.join(TOPICS_DIR, `topic-${sessionId}`), 'utf8')).trim();
-    if (content && content !== 'New Session') return content;
+    // 'Untitled' in a file is a placeholder too (older clients synced such
+    // files) — treating it as a real name would bypass the index fallback
+    // AND the transcript-derived title, so reject it like 'New Session'.
+    if (content && content !== 'New Session' && content !== 'Untitled') return content;
   } catch { /* topic file pruned or never written — fall through to the index */ }
   const indexed = indexTopics[sessionId];
   if (indexed && indexed !== 'New Session' && indexed !== 'Untitled') return indexed;
