@@ -17,6 +17,13 @@ object SessionBrowser {
     /** Allow dots for Android package names in slugs (e.g., com.youcoded.app). */
     private val SAFE_ID_RE = Regex("^[a-zA-Z0-9._-]+$")
 
+    // Bounded reads so a 100MB transcript doesn't blow up the browse call.
+    // Mirrors desktop session-browser.ts constants exactly.
+    private const val HEAD_CHUNK = 256 * 1024
+    private const val TAIL_CHUNK = 64 * 1024
+    private const val FALLBACK_TITLE_MAX = 48
+    private val WHITESPACE_RE = Regex("\\s+")
+
     data class PastSession(
         val sessionId: String,
         val projectSlug: String,
@@ -24,6 +31,14 @@ object SessionBrowser {
         val lastModified: Long,
         val projectPath: String,
         val size: Long,
+        /**
+         * Title derived from the transcript's first real user message.
+         * Used ONLY by SessionService as the last fallback when both the
+         * topic file and the conversation-index topic miss ("Untitled").
+         * SessionService owns name precedence, so this is carried separately
+         * from `name` rather than baked into it.
+         */
+        val derivedTitle: String? = null,
     )
 
     data class HistoryMessage(
@@ -72,13 +87,22 @@ object SessionBrowser {
                 val rawName = if (topicFile.exists()) topicFile.readText().trim() else ""
                 val name = if (rawName.isBlank() || rawName == "New Session") "Untitled" else rawName
 
+                // Transcript-derived metadata: the content timestamp beats the
+                // file mtime (sync restores clobber mtimes), and the first user
+                // message names sessions the title pipeline missed. Only ask for
+                // a title when the topic file gave us nothing — saves the head
+                // read for already-named sessions. Returns nulls on any failure,
+                // so this can only improve on the defaults.
+                val meta = readTranscriptMeta(jsonlFile, wantTitle = name == "Untitled")
+
                 sessions.add(PastSession(
                     sessionId = sessionId,
                     projectSlug = slug,
                     name = name,
-                    lastModified = jsonlFile.lastModified(),
+                    lastModified = meta.lastTimestampMs ?: jsonlFile.lastModified(),
                     projectPath = slugToPath(slug),
                     size = jsonlFile.length(),
+                    derivedTitle = meta.fallbackTitle,
                 ))
             }
         }
@@ -192,6 +216,117 @@ object SessionBrowser {
         }
 
         return messages
+    }
+
+    /**
+     * Display metadata derived straight from the transcript JSONL.
+     * Mirrors desktop session-browser.ts TranscriptMeta.
+     */
+    data class TranscriptMeta(
+        /** Title from the first real user prompt, or null. */
+        val fallbackTitle: String?,
+        /** Timestamp (ms) of the last parseable transcript line, or null. */
+        val lastTimestampMs: Long?,
+    )
+
+    /**
+     * Collapse whitespace and trim a derived title to a word boundary.
+     * Pure + public so it's unit-testable without filesystem I/O. MUST produce
+     * byte-identical output to desktop session-browser.ts cleanTitle (same
+     * constants, same >20-char word-boundary rule).
+     */
+    fun cleanTitle(text: String): String? {
+        val collapsed = text.replace(WHITESPACE_RE, " ").trim()
+        if (collapsed.isEmpty()) return null
+        if (collapsed.length <= FALLBACK_TITLE_MAX) return collapsed
+        val cut = collapsed.substring(0, FALLBACK_TITLE_MAX)
+        val lastSpace = cut.lastIndexOf(' ')
+        // Trim back to the last word boundary, but only when that leaves a
+        // reasonable stub (>20 chars) — otherwise a long first word would
+        // shrink the title to almost nothing, so we hard-cut mid-word instead.
+        val body = if (lastSpace > 20) cut.substring(0, lastSpace) else cut
+        return "$body…"
+    }
+
+    /**
+     * Derive display metadata straight from the transcript JSONL. Mirrors
+     * desktop readTranscriptMeta.
+     *
+     * WHY: the topic/index naming pipeline has gaps (the auto-title hook only
+     * fires on PostToolUse, so chat-only sessions are never titled), and file
+     * mtimes are clobbered by sync restores. The transcript content itself is
+     * the only source of truth that survives both. Returns nulls on any
+     * failure, so it can only ever improve on the caller's defaults. Does NOT
+     * log (kept unit-testable on plain JVM).
+     *
+     * CC-coupled: relies on the transcript JSONL line shape (`type`, `isMeta`,
+     * `promptId`, `timestamp`, `message.content`) — same contract the
+     * transcript-watcher parses. See youcoded/docs/cc-dependencies.md.
+     */
+    fun readTranscriptMeta(jsonlFile: File, wantTitle: Boolean): TranscriptMeta {
+        var fallbackTitle: String? = null
+        var lastTimestampMs: Long? = null
+        try {
+            java.io.RandomAccessFile(jsonlFile, "r").use { raf ->
+                val size = raf.length()
+
+                // --- Tail: last parseable line's timestamp ---
+                val tailLen = minOf(TAIL_CHUNK.toLong(), size).toInt()
+                if (tailLen > 0) {
+                    val tailBuf = ByteArray(tailLen)
+                    raf.seek(size - tailLen)
+                    raf.readFully(tailBuf)
+                    // First "line" of the chunk is usually a partial JSON line —
+                    // the backwards scan just skips anything that doesn't parse.
+                    val tailLines = String(tailBuf, Charsets.UTF_8).split('\n')
+                    for (i in tailLines.indices.reversed()) {
+                        val line = tailLines[i]
+                        if (line.isBlank() || line.contains('\u0000')) continue
+                        try {
+                            val ts = JSONObject(line).optString("timestamp")
+                            val ms = java.time.Instant.parse(ts).toEpochMilli()
+                            lastTimestampMs = ms
+                            break
+                        } catch (_: Exception) { /* partial/corrupt — keep scanning back */ }
+                    }
+                }
+
+                // --- Head: first real user prompt → fallback title ---
+                if (wantTitle) {
+                    val headLen = minOf(HEAD_CHUNK.toLong(), size).toInt()
+                    if (headLen > 0) {
+                        val headBuf = ByteArray(headLen)
+                        raf.seek(0)
+                        raf.readFully(headBuf)
+                        for (line in String(headBuf, Charsets.UTF_8).split('\n')) {
+                            if (line.isBlank() || line.contains('\u0000')) continue
+                            val parsed = try { JSONObject(line) } catch (_: Exception) { continue }
+                            // Same "real conversational prompt" gate as loadHistory:
+                            // user-type, has promptId, not meta, has a message object.
+                            if (parsed.optString("type") != "user") continue
+                            if (parsed.optBoolean("isMeta", false)) continue
+                            if (!parsed.has("promptId")) continue
+                            val message = parsed.optJSONObject("message") ?: continue
+                            val content = message.opt("content")
+                            val text = when (content) {
+                                is String -> content
+                                is org.json.JSONArray -> extractTextFromContent(content)
+                                else -> continue
+                            }
+                            // Skip injected wrappers (<command-name>…, <system-reminder>…)
+                            // — they're plumbing, not what the user said. Deliberately
+                            // lossy: a real prompt starting with '<' is also skipped.
+                            if (text.isBlank() || text.trim().startsWith("<")) continue
+                            val cleaned = cleanTitle(text)
+                            if (cleaned != null) { fallbackTitle = cleaned; break }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Any failure → return whatever was gathered so far (nulls are fine).
+        }
+        return TranscriptMeta(fallbackTitle, lastTimestampMs)
     }
 
     /**
