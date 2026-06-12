@@ -5,8 +5,9 @@ import { MODELS } from '../StatusBar';
 // Same labels as App.tsx / BuddyWelcome — keep in sync if MODELS changes.
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 
 interface Props {

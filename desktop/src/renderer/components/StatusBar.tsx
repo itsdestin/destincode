@@ -50,13 +50,21 @@ interface StatusData {
   backgroundPull?: { type: 'conversations'; startedAt: number } | null;
 }
 
-const MODELS = ['haiku', 'sonnet', 'opus[1m]'] as const;
+// Model aliases sent to the CC CLI via `/model <alias>`. `opus[1m]` keeps the
+// bracket form so CC selects Opus's 1M-context variant; the alias→transcript
+// matcher (App.tsx) strips the `[...]` before substring-matching the raw model
+// id (`'claude-fable-5'.includes('fable')`), so a bare `fable` alias slots in
+// with no collision. Labels are model-class only (no version numbers) by design.
+const MODELS = ['haiku', 'sonnet', 'opus[1m]', 'fable'] as const;
 type ModelAlias = typeof MODELS[number];
 
 const MODEL_DISPLAY: Record<ModelAlias, { label: string; color: string; bg: string; border: string }> = {
-  sonnet:      { label: 'Sonnet 4.6', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
-  'opus[1m]':  { label: 'Opus 4.7',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
-  haiku:       { label: 'Haiku 4.5',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
+  sonnet:      { label: 'Sonnet', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
+  'opus[1m]':  { label: 'Opus',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
+  haiku:       { label: 'Haiku',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
+  // Fable 5 — most capable. Fuchsia pill reads as the top/premium tier, distinct
+  // from Opus's indigo and the amber reserved for AUTO permission mode.
+  fable:       { label: 'Fable',  color: '#E879F9', bg: 'rgba(232,121,249,0.15)', border: 'rgba(232,121,249,0.25)' },
 };
 
 // Amber (#F2B33D) for AUTO matches CC's own banner color and visually sits
