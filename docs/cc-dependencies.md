@@ -115,13 +115,13 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
 - **Break symptom:** MCP reconciliation writes invalid config; CC refuses to load MCP servers after YouCoded touches the file; silent MCP-server drop-offs.
 
 ### Slash commands YouCoded references or intercepts
-- **Files:** `desktop/src/renderer/state/slash-command-dispatcher.ts`, `desktop/src/renderer/components/InputBar.tsx`, `desktop/src/renderer/components/ModelPickerPopup.tsx`
-- **Depends on:** CC's command names stable across releases (`/model`, `/resume`, `/compact`, `/help`, etc.)
-- **Break symptom:** Session-pill reconciliation mis-detects model drift; user-facing tips reference dead commands.
+- **Files:** `desktop/src/renderer/state/slash-command-dispatcher.ts`, `desktop/src/renderer/components/InputBar.tsx`, `desktop/src/renderer/components/ModelPickerPopup.tsx`, `desktop/src/renderer/components/StatusBar.tsx` (canonical `MODELS` alias list), `desktop/src/renderer/App.tsx` (Shift+Space cycle + `/model ${alias}` send)
+- **Depends on:** CC's command names stable across releases (`/model`, `/resume`, `/compact`, `/help`, etc.) AND CC's `/model` accepting the alias strings YouCoded sends — `haiku`, `sonnet`, `opus[1m]`, `fable`. The model picker/cycle writes `/model <alias>\r` into the PTY verbatim.
+- **Break symptom:** Session-pill reconciliation mis-detects model drift; user-facing tips reference dead commands; a renamed/removed alias (e.g. `fable`) makes the switch silently fail and surfaces the "couldn't switch" toast.
 
 ### Anthropic model ID convention
 - **Files:** `desktop/src/renderer/state/chat-reducer.ts` (per-turn metadata), `desktop/src/renderer/App.tsx` (session-pill model reconciliation useEffect)
-- **Depends on:** Dotted-hyphen model ID form (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) served by CC in transcript `message.model`
+- **Depends on:** Dotted-hyphen model ID form (`claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `claude-fable-5`) served by CC in transcript `message.model`. The alias→ID matcher strips `[...]` then substring-matches (`'claude-fable-5'.includes('fable')`), so the served ID must keep containing the alias substring.
 - **Break symptom:** Unknown model IDs render raw in session pill; display-name lookup fails silently.
 
 ### CLI invocation flags
