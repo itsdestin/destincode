@@ -116,6 +116,34 @@ describe('listPastSessions — content-timestamp ordering', () => {
   });
 });
 
+describe('listPastSessions — degradation paths', () => {
+  it('handles CRLF transcripts (Windows line endings) for both title and timestamp', async () => {
+    const dir = path.join(tmpHome, '.claude', 'projects', 'C--proj-alpha');
+    fs.mkdirSync(dir, { recursive: true });
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', promptId: 'p1', timestamp: '2026-06-01T10:00:01Z', message: { content: 'crlf transcript question' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-06-03T10:05:00Z', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'y'.repeat(500) }] } }),
+    ];
+    fs.writeFileSync(path.join(dir, `${SID_A}.jsonl`), lines.join('\r\n') + '\r\n');
+    const sessions = await listSessions();
+    expect(sessions[0].name).toBe('crlf transcript question');
+    expect(sessions[0].lastModified).toBe(Date.parse('2026-06-03T10:05:00Z'));
+  });
+
+  it('falls back to Untitled + file mtime when no prompt or timestamp is usable', async () => {
+    const dir = path.join(tmpHome, '.claude', 'projects', 'C--proj-alpha');
+    fs.mkdirSync(dir, { recursive: true });
+    // No qualifying user line (meta only) and no timestamp on any line.
+    const file = path.join(dir, `${SID_A}.jsonl`);
+    fs.writeFileSync(file, jsonlLine({ type: 'user', isMeta: true, uuid: 'm1', message: { content: 'z'.repeat(600) } }));
+    const mtime = new Date('2026-05-05T00:00:00Z');
+    fs.utimesSync(file, mtime, mtime);
+    const sessions = await listSessions();
+    expect(sessions[0].name).toBe('Untitled');
+    expect(sessions[0].lastModified).toBe(mtime.getTime());
+  });
+});
+
 describe('listPastSessions — existing gates still hold', () => {
   it('skips sub-500-byte files and active sessions, dedups by longest slug', async () => {
     // Empty stub (0 bytes)

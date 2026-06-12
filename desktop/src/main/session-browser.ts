@@ -145,6 +145,9 @@ function cleanTitle(text: string): string | null {
   if (collapsed.length <= FALLBACK_TITLE_MAX) return collapsed;
   const cut = collapsed.slice(0, FALLBACK_TITLE_MAX);
   const lastSpace = cut.lastIndexOf(' ');
+  // Trim back to the last word boundary, but only when that leaves a
+  // reasonable stub (>20 chars) — otherwise a long first word would shrink
+  // the title to almost nothing, so we hard-cut mid-word instead.
   return (lastSpace > 20 ? cut.slice(0, lastSpace) : cut) + '…';
 }
 
@@ -207,6 +210,8 @@ export async function readTranscriptMeta(jsonlPath: string, wantTitle: boolean):
             : '';
         // Skip injected wrappers (<command-name>…, <local-command-stdout>…,
         // <system-reminder>…) — they're plumbing, not what the user said.
+        // Deliberately lossy: a real prompt that starts with '<' (pasted
+        // HTML/XML) is also skipped, and the scan moves to the next prompt.
         if (!text.trim() || text.trim().startsWith('<')) continue;
         fallbackTitle = cleanTitle(text);
         if (fallbackTitle) break;
