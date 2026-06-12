@@ -1958,6 +1958,10 @@ export class SyncService extends EventEmitter {
     const pruneThreshold = Date.now() - INDEX_PRUNE_DAYS * 24 * 60 * 60 * 1000;
 
     for (const [sid, entry] of Object.entries(index.sessions || {})) {
+      // Phantom-id symmetry with the topic scan: never materialize a topic
+      // file for a malformed session id (e.g. synced from a device that
+      // predates the scan guard) — it would sit on disk as an inert orphan.
+      if (!SESSION_UUID_RE.test(sid)) continue;
       // Skip placeholder names — readTopic treats Untitled/New Session/empty as
       // "no title", so writing them just churns files for no UI gain.
       if (!entry.topic || entry.topic === 'Untitled' || entry.topic === 'New Session') continue;

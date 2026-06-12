@@ -25,7 +25,10 @@ class RetentionDefault(homeDir: File) {
             // genuinely missing. A parse failure below throws into the catch,
             // which deliberately does NOT rewrite — we must not clobber hooks.
             val root = if (settingsFile.exists()) JSONObject(settingsFile.readText()) else JSONObject()
-            if (root.has("cleanupPeriodDays")) return false
+            // Type-aware check (desktop parity): a non-number value (e.g. "30"
+            // written by a buggy tool) is meaningless to Claude Code, so it gets
+            // replaced with the default rather than treated as a user setting.
+            if (root.opt("cleanupPeriodDays") is Number) return false
             root.put("cleanupPeriodDays", DEFAULT_DAYS)
             settingsFile.parentFile?.mkdirs()
             // Atomic write (tmp + rename) — same convention as PromptSuggestionDisabler,

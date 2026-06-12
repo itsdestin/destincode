@@ -134,7 +134,7 @@ const HEAD_CHUNK_BYTES = 256 * 1024;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const FALLBACK_TITLE_MAX = 48;
 
-export interface TranscriptMeta {
+export interface SessionTranscriptMeta {
   /** Title derived from the first real user prompt, or null. */
   fallbackTitle: string | null;
   /** Timestamp (ms) of the last parseable transcript line, or null. */
@@ -167,7 +167,7 @@ function cleanTitle(text: string): string | null {
  * `promptId`, `timestamp`, `message.content`) — same contract the
  * transcript-watcher parses. See youcoded/docs/cc-dependencies.md.
  */
-export async function readTranscriptMeta(jsonlPath: string, wantTitle: boolean): Promise<TranscriptMeta> {
+export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: boolean): Promise<SessionTranscriptMeta> {
   let fh: fs.promises.FileHandle | null = null;
   try {
     fh = await fs.promises.open(jsonlPath, 'r');
@@ -279,9 +279,9 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
 
         // Transcript-derived metadata: content timestamp beats file mtime
         // (sync restores clobber mtimes), and the first user message names
-        // sessions the title pipeline missed. readTranscriptMeta returns
+        // sessions the title pipeline missed. readSessionTranscriptMeta returns
         // nulls on any failure, so this can only improve on the defaults.
-        const meta = await readTranscriptMeta(path.join(slugDir, file), topicName === 'Untitled');
+        const meta = await readSessionTranscriptMeta(path.join(slugDir, file), topicName === 'Untitled');
         const name = topicName !== 'Untitled'
           ? topicName
           : (meta.fallbackTitle ?? 'Untitled');
