@@ -14,8 +14,9 @@ import FolderSwitcher from './components/FolderSwitcher';
 // Labels for the welcome-screen model picker (mirrors SessionStrip)
 const WELCOME_MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import GamePanel from './components/game/GamePanel';

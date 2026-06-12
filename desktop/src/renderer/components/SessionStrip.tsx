@@ -18,8 +18,9 @@ interface SessionEntry {
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 
 interface Props {
