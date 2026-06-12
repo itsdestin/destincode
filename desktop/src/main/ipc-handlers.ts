@@ -14,6 +14,7 @@ import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
 import { TranscriptWatcher } from './transcript-watcher';
+import { resolveMappingAction } from './session-id-mapping';
 import { listPastSessions, loadHistory } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
@@ -1753,7 +1754,33 @@ export function registerIpcHandlers(
       const desktopId = event.sessionId; // _desktop_session_id (set by parseHookPayload)
       const claudeId = event.payload?.session_id as string;
       if (!desktopId || !claudeId) return;
-      if (sessionIdMap.has(desktopId)) return;
+
+      // Decide whether to (re)map this desktop session to a Claude session id.
+      // Not set-once: Claude Code rotates its session id mid-PTY on `/clear`, so
+      // we must follow that rotation — but ONLY from SessionStart events, since
+      // subagent/tool hooks carry child session ids that would poison the map.
+      const current = sessionIdMap.get(desktopId);
+      if (resolveMappingAction(current, claudeId, event.payload?.hook_event_name as string) !== 'adopt') return;
+
+      // Remap (e.g. /clear rotated the CC session id): tear down the old
+      // topic + transcript watchers before starting new ones. startWatching
+      // OVERWRITES the topicWatchers entry, so without closing the old watcher
+      // first we'd leak its FSWatcher/interval and keep broadcasting renames
+      // from the stale topic file. Mirrors the session-exit cleanup below.
+      if (current) {
+        const oldWatcher = topicWatchers.get(desktopId);
+        if (oldWatcher) {
+          if (typeof (oldWatcher as fs.FSWatcher).close === 'function') {
+            (oldWatcher as fs.FSWatcher).close();
+          } else {
+            clearInterval(oldWatcher as NodeJS.Timeout);
+          }
+          topicWatchers.delete(desktopId);
+          lastTopics.delete(desktopId);
+        }
+        transcriptWatcher.stopWatching(desktopId);
+      }
+
       sessionIdMap.set(desktopId, claudeId);
       startWatching(desktopId, claudeId);
 
