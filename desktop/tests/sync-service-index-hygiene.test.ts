@@ -84,3 +84,60 @@ describe('updateConversationIndex — phantom id guard', () => {
     expect(idx.sessions[PHANTOM_ID]).toBeUndefined();
   });
 });
+
+describe('regenerateTopicCache — mtime preservation', () => {
+  const RECENT = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000); // 2 days ago
+
+  it('stamps regenerated topic files with the entry lastActive, not now', async () => {
+    fs.writeFileSync(indexPath(), JSON.stringify({
+      version: 1,
+      sessions: {
+        [GOOD_ID]: { topic: 'Real Session', lastActive: RECENT.toISOString(), slug: '', device: 'x' },
+      },
+    }));
+    const svc = await freshService();
+    svc.regenerateTopicCache();
+    const f = path.join(tmpHome, '.claude', 'topics', `topic-${GOOD_ID}`);
+    expect(fs.existsSync(f)).toBe(true);
+    expect(Math.abs(fs.statSync(f).mtimeMs - RECENT.getTime())).toBeLessThan(2000);
+  });
+
+  it('does not bump lastActive when updateConversationIndex runs after a regenerate', async () => {
+    fs.writeFileSync(indexPath(), JSON.stringify({
+      version: 1,
+      sessions: {
+        [GOOD_ID]: { topic: 'Real Session', lastActive: RECENT.toISOString(), slug: '', device: 'x' },
+      },
+    }));
+    const svc = await freshService();
+    svc.regenerateTopicCache();
+    svc.updateConversationIndex();
+    const idx = readIndex();
+    expect(Math.abs(new Date(idx.sessions[GOOD_ID].lastActive).getTime() - RECENT.getTime())).toBeLessThan(2000);
+  });
+
+  it('skips placeholder topics entirely', async () => {
+    fs.writeFileSync(indexPath(), JSON.stringify({
+      version: 1,
+      sessions: {
+        [GOOD_ID]: { topic: 'Untitled', lastActive: RECENT.toISOString(), slug: '', device: 'x' },
+      },
+    }));
+    const svc = await freshService();
+    svc.regenerateTopicCache();
+    expect(fs.existsSync(path.join(tmpHome, '.claude', 'topics', `topic-${GOOD_ID}`))).toBe(false);
+  });
+
+  it('skips entries older than the index prune window', async () => {
+    const OLD = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000); // 45 days ago
+    fs.writeFileSync(indexPath(), JSON.stringify({
+      version: 1,
+      sessions: {
+        [GOOD_ID]: { topic: 'Ancient Session', lastActive: OLD.toISOString(), slug: '', device: 'x' },
+      },
+    }));
+    const svc = await freshService();
+    svc.regenerateTopicCache();
+    expect(fs.existsSync(path.join(tmpHome, '.claude', 'topics', `topic-${GOOD_ID}`))).toBe(false);
+  });
+});

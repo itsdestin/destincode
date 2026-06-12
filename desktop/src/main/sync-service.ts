@@ -1955,11 +1955,35 @@ export class SyncService extends EventEmitter {
     const topicsDir = path.join(this.claudeDir, 'topics');
     fs.mkdirSync(topicsDir, { recursive: true });
 
+    const pruneThreshold = Date.now() - INDEX_PRUNE_DAYS * 24 * 60 * 60 * 1000;
+
     for (const [sid, entry] of Object.entries(index.sessions || {})) {
+      // Skip placeholder names — readTopic treats Untitled/New Session/empty as
+      // "no title", so writing them just churns files for no UI gain.
+      if (!entry.topic || entry.topic === 'Untitled' || entry.topic === 'New Session') continue;
+
+      const ts = new Date(entry.lastActive).getTime();
+      // Skip invalid / epoch / pre-prune-window entries. A file created today
+      // for a 45-day-old entry would be deleted by the title hook's daily
+      // `find -mtime +30` prune tomorrow — pure churn. The conversation-index
+      // fallback in session-browser still names these sessions, so dropping the
+      // topic file costs nothing.
+      if (Number.isNaN(ts) || ts <= 0 || ts < pruneThreshold) continue;
+
       const topicFile = path.join(topicsDir, `topic-${sid}`);
       // Only create if local file doesn't exist (local-first)
       if (!this.fileExists(topicFile)) {
-        try { fs.writeFileSync(topicFile, entry.topic); } catch {}
+        try {
+          fs.writeFileSync(topicFile, entry.topic);
+          // Stamp the file with the entry's real lastActive, NOT "now".
+          // updateConversationIndex() treats topic-file mtime AS the entry's
+          // lastActive (it upserts when mtime > existing lastActive). Writing
+          // fresh "now" mtimes here bumped every session's lastActive on each
+          // regenerate, so the 30-day prune never fired (dead entries lived
+          // forever) and the recent-50 backup pull selected the wrong sessions.
+          const d = new Date(ts);
+          fs.utimesSync(topicFile, d, d);
+        } catch {}
       }
     }
   }
