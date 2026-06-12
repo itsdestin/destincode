@@ -28,8 +28,9 @@ class RetentionDefault(homeDir: File) {
             if (root.has("cleanupPeriodDays")) return false
             root.put("cleanupPeriodDays", DEFAULT_DAYS)
             settingsFile.parentFile?.mkdirs()
-            // Atomic write (tmp + rename) — same convention as PromptSuggestionDisabler.
-            val tmp = File(settingsFile.parentFile, settingsFile.name + ".tmp")
+            // Atomic write (tmp + rename) — same convention as PromptSuggestionDisabler,
+            // including the PID suffix so two writers can't collide on one temp file.
+            val tmp = File(settingsFile.parentFile, "${settingsFile.name}.${android.os.Process.myPid()}.tmp")
             tmp.writeText(root.toString(2))
             if (!tmp.renameTo(settingsFile)) settingsFile.writeText(root.toString(2))
             true

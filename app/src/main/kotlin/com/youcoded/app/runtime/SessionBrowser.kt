@@ -85,7 +85,10 @@ object SessionBrowser {
                 // after 30 days and never syncs across devices).
                 val topicFile = File(topicsDir, "topic-$sessionId")
                 val rawName = if (topicFile.exists()) topicFile.readText().trim() else ""
-                val name = if (rawName.isBlank() || rawName == "New Session") "Untitled" else rawName
+                // Literal "Untitled" content is a placeholder too (older clients
+                // synced such files) — normalize it explicitly so the index/derived
+                // fallback chain applies, matching desktop readTopic.
+                val name = if (rawName.isBlank() || rawName == "New Session" || rawName == "Untitled") "Untitled" else rawName
 
                 // Transcript-derived metadata: the content timestamp beats the
                 // file mtime (sync restores clobber mtimes), and the first user
