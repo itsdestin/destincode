@@ -1140,6 +1140,17 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to force-disable prompt suggestion', { error: String(e) });
   }
 
+  // Seed a transcript-retention default so Claude Code's 30-day cleanup
+  // doesn't silently delete Resume Browser history. Only writes when the
+  // user hasn't set cleanupPeriodDays themselves. See retention-default.ts.
+  try {
+    const { seedCleanupPeriodDefault } = require('./retention-default');
+    const r = seedCleanupPeriodDefault();
+    if (r.changed) log('INFO', 'Main', 'Seeded cleanupPeriodDays default', { effective: r.effective });
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to seed cleanupPeriodDays', { error: String(e) });
+  }
+
   // Clean up orphan symlinks left by pre-decomposition post-update.sh —
   // entries under ~/.claude/{hooks,commands,skills}/ that point into now-deleted
   // core/life/productivity subtrees of the toolkit. No replacement mechanism
