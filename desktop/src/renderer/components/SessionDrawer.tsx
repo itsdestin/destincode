@@ -375,7 +375,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     return <aside ref={asideRef} className={asideClass}>{listInner}</aside>;
   }
 
-  const info = statusInfo(active, active.status === 'deleted' || orphanIds.has(active.id));
+  const statusWord = statusInfo(active, active.status === 'deleted' || orphanIds.has(active.id));
   const fileName = active.path.split('/').pop() ?? active.path;
 
   return (
@@ -442,8 +442,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 
       {/* metadata strip */}
       <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-b border-edge-dim bg-well shrink-0">
-        <span className="text-fg-dim">{info.glyph}</span>
-        <span>{info.word}</span>
+        {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
+        <span>{statusWord}</span>
         <span className="text-fg-faint">·</span>
         <span>{formatRelativeTime(active.lastModified)}</span>
         {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
@@ -541,7 +541,7 @@ interface ListItemProps {
 }
 
 function ArtifactListItem({ artifact, isActive, isDeleted, onSelect }: ListItemProps) {
-  const glyph = statusInfo(artifact, isDeleted).glyph;
+  const statusWord = statusInfo(artifact, isDeleted);
   const relTime = formatRelativeTime(artifact.lastModified);
   const fileName = artifact.path.split('/').pop() ?? artifact.path;
 
@@ -554,25 +554,27 @@ function ArtifactListItem({ artifact, isActive, isDeleted, onSelect }: ListItemP
       title={isDeleted ? 'Deleted (file is no longer on disk)' : undefined}
     >
       <div className="flex items-center gap-1 min-w-0">
-        <span className="text-fg-muted shrink-0 text-xs">{glyph}</span>
         <span className={`font-mono text-xs truncate flex-1 ${isDeleted ? 'line-through' : ''}`}>{fileName}</span>
       </div>
-      <div className="text-[10px] text-fg-muted ml-3">{relTime}</div>
+      {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
+      <div className="text-[10px] text-fg-muted ml-0.5">{statusWord} · {relTime}</div>
     </button>
   );
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// Glyph + status word: ✕ deleted, ○ read-only (only 'read' versions),
-// ◐ edited (>1 modifying version), ● created/unmodified. 'read' versions are
+// Status word: deleted, viewed (read-only — only 'read' versions),
+// edited (>1 modifying version), created/unmodified. 'read' versions are
 // excluded from the edit count so a viewed-only doc doesn't look edited.
-function statusInfo(artifact: ArtifactRecord, isDeleted: boolean): { glyph: string; word: string } {
-  if (isDeleted) return { glyph: '✕', word: 'deleted' };
+// WHY: returns the word only — the ●◐○ glyph form was dropped (user-disliked,
+// see dislikes-status-glyphs memory).
+function statusInfo(artifact: ArtifactRecord, isDeleted: boolean): string {
+  if (isDeleted) return 'deleted';
   const modifying = artifact.versions.filter((v) => v.type !== 'read').length;
-  if (modifying === 0) return { glyph: '○', word: 'viewed' };
-  if (modifying > 1) return { glyph: '◐', word: 'edited' };
-  return { glyph: '●', word: 'created' };
+  if (modifying === 0) return 'viewed';
+  if (modifying > 1) return 'edited';
+  return 'created';
 }
 
 function fileNameOf(a: ArtifactRecord): string {
