@@ -12,8 +12,10 @@ import React, { useEffect, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
+import type { ContextFile, ContextScope } from '../../../shared/project-context-types';
 import { ArtifactsTab } from './tabs/ArtifactsTab';
 import { ConversationsTab } from './tabs/ConversationsTab';
+import { ContextTab } from './tabs/ContextTab';
 import { ConversationPreview } from './ConversationPreview';
 import { ProjectHero } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
@@ -75,6 +77,13 @@ export function ProjectView(props: ProjectViewProps) {
   // Project deletion modal state.
   const [deletingProject, setDeletingProject] = useState<CentralIndexProject | null>(null);
   const [alsoDeleteSidecar, setAlsoDeleteSidecar] = useState(false);
+
+  // Context tab selection state. The ContextTab bubbles a clicked file (to edit)
+  // or a clicked group's (i) info button (to explain the scope) up to here. The
+  // editor + info popup themselves are built by Tasks 4.4 / 4.3 — these setters
+  // are stored-but-not-yet-rendered for now (intentional; noUnusedLocals is off).
+  const [editingContext, setEditingContext] = useState<ContextFile | null>(null);
+  const [infoScope, setInfoScope] = useState<ContextScope | null>(null);
 
   // Load the projects index whenever the view is opened. Hooks MUST run before
   // any early return — Rules of Hooks. Don't move below the projectViewOpen guard
@@ -328,9 +337,15 @@ export function ProjectView(props: ProjectViewProps) {
                 }}
               />
             )}
-            {tab === 'context' && (
-              <div className="p-6 text-fg-muted">Coming in a later task</div>
+            {activeProject && tab === 'context' && (
+              <ContextTab
+                project={activeProject}
+                onEditFile={setEditingContext}
+                onOpenInfo={setInfoScope}
+              />
             )}
+            {/* TODO(Task 4.3): render <HowContextWorksPopup> when infoScope is set */}
+            {/* TODO(Task 4.4): render <ContextEditorOverlay> when editingContext is set */}
           </div>
         </main>
       </div>
