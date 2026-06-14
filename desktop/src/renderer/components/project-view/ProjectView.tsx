@@ -11,7 +11,9 @@
 import React, { useEffect, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
+import type { PastSession } from '../../../shared/types';
 import { ArtifactsTab } from './tabs/ArtifactsTab';
+import { ConversationsTab } from './tabs/ConversationsTab';
 import { ProjectHero } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
 
@@ -63,6 +65,11 @@ export function ProjectView(props: ProjectViewProps) {
 
   // Project switcher palette state. Nothing renders it yet — wired in Task 2.3.
   const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  // Selected conversation for the preview overlay. Stored here so the
+  // ConversationsTab can bubble a click up; the actual <ConversationPreview>
+  // overlay is built in Task 3.2.
+  const [previewSession, setPreviewSession] = useState<PastSession | null>(null);
 
   // Project deletion modal state.
   const [deletingProject, setDeletingProject] = useState<CentralIndexProject | null>(null);
@@ -304,9 +311,10 @@ export function ProjectView(props: ProjectViewProps) {
             {activeProject && tab === 'artifacts' && (
               <ArtifactsTab project={activeProject} />
             )}
-            {tab === 'conversations' && (
-              <div className="p-6 text-fg-muted">Coming in a later task</div>
+            {activeProject && tab === 'conversations' && (
+              <ConversationsTab project={activeProject} onOpenPreview={setPreviewSession} />
             )}
+            {/* TODO(Task 3.2): render <ConversationPreview> when previewSession is set */}
             {tab === 'context' && (
               <div className="p-6 text-fg-muted">Coming in a later task</div>
             )}
