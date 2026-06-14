@@ -14,6 +14,7 @@ import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
 import { ArtifactsTab } from './tabs/ArtifactsTab';
 import { ConversationsTab } from './tabs/ConversationsTab';
+import { ConversationPreview } from './ConversationPreview';
 import { ProjectHero } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
 
@@ -314,7 +315,19 @@ export function ProjectView(props: ProjectViewProps) {
             {activeProject && tab === 'conversations' && (
               <ConversationsTab project={activeProject} onOpenPreview={setPreviewSession} />
             )}
-            {/* TODO(Task 3.2): render <ConversationPreview> when previewSession is set */}
+            {previewSession && activeProject && (
+              <ConversationPreview
+                project={activeProject}
+                session={previewSession}
+                onClose={() => setPreviewSession(null)}
+                onResume={(s) => {
+                  // WHY: resume closes Project View and launches/resumes the session
+                  // (handled by the App-threaded prop), then drops the preview.
+                  props.onResumeConversation(s.sessionId, s.projectSlug, s.projectPath);
+                  setPreviewSession(null);
+                }}
+              />
+            )}
             {tab === 'context' && (
               <div className="p-6 text-fg-muted">Coming in a later task</div>
             )}
