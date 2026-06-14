@@ -6,6 +6,7 @@ export interface ArtifactState {
   projectArtifacts: Record<string, ArtifactRecord[]>; // by projectRoot
   pendingRefresh: Record<string, boolean>;            // by projectRoot
   drawerOpen: boolean;
+  drawerExpanded: boolean;                            // panel fills the content region
   projectViewOpen: boolean;
   activeArtifactId: string | null;
 }
@@ -15,6 +16,7 @@ export const initialArtifactState: ArtifactState = {
   projectArtifacts: {},
   pendingRefresh: {},
   drawerOpen: false,
+  drawerExpanded: false,
   projectViewOpen: false,
   activeArtifactId: null,
 };
@@ -28,7 +30,10 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
     case 'DRAWER_OPENED':
       return { ...s, drawerOpen: true };
     case 'DRAWER_CLOSED':
-      return { ...s, drawerOpen: false, activeArtifactId: null };
+      // Reset expand so a re-opened drawer starts at its normal width.
+      return { ...s, drawerOpen: false, drawerExpanded: false, activeArtifactId: null };
+    case 'DRAWER_EXPAND_TOGGLED':
+      return { ...s, drawerExpanded: !s.drawerExpanded };
     case 'ACTIVE_ARTIFACT_SET':
       return { ...s, activeArtifactId: a.artifactId };
     // Back gesture in detail view: return to list without closing the drawer.

@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { join, dirname, extname } from 'path';
 import { ProjectSidecar } from '../../shared/artifacts/types';
 import { newArtifactId, newVersionId } from '../../shared/artifacts/ulid';
 import { SIDECAR_SCHEMA_VERSION } from '../../shared/artifacts/types';
@@ -51,7 +51,7 @@ export interface AppendVersionInput {
   kind: 'internal' | 'external';
   absolutePath: string | null;
   sessionId: string;
-  type: 'create' | 'edit' | 'delete';
+  type: 'create' | 'edit' | 'delete' | 'read';
   author: 'agent' | 'user';
 }
 
@@ -135,4 +135,84 @@ export async function appendVersion(
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+export interface RenameResult {
+  ok: boolean;
+  error?: string;
+  newPath?: string;
+}
+
+// Rename an artifact's file on disk and update its sidecar record. `newBaseName`
+// is the new filename WITHOUT extension — the original extension is preserved so
+// the file type can't be changed by accident. Path-traversal names and
+// collisions with an existing file are rejected.
+//
+// The file rename happens exactly ONCE (before the CAS-retry loop). Only the
+// sidecar record update is retried, so a write conflict can never double-rename
+// the file on disk (which would ENOENT the second time).
+export async function renameArtifact(
+  projectRoot: string,
+  artifactId: string,
+  newBaseName: string
+): Promise<RenameResult> {
+  const clean = newBaseName.trim();
+  if (!clean || /[\\/]/.test(clean) || clean === '.' || clean === '..') {
+    return { ok: false, error: 'invalid-name' };
+  }
+
+  // Validate + compute paths from a single read.
+  const first = await readSidecar(projectRoot);
+  if (first === null || 'corrupted' in first) return { ok: false, error: 'sidecar-missing' };
+  const a0 = first.artifacts.find((a) => a.id === artifactId);
+  if (!a0) return { ok: false, error: 'artifact-not-found' };
+
+  const oldAbs = a0.kind === 'internal' ? join(projectRoot, a0.path) : (a0.absolutePath ?? '');
+  if (!oldAbs) return { ok: false, error: 'no-path' };
+  const dir = dirname(oldAbs);
+  const ext = extname(a0.path); // keep the original extension
+  const newFilename = clean + ext;
+  const newAbs = join(dir, newFilename);
+  if (newAbs === oldAbs) return { ok: true, newPath: a0.path }; // no-op (same name)
+
+  // Collision guard — never clobber an existing file.
+  try {
+    await fs.access(newAbs);
+    return { ok: false, error: 'name-taken' };
+  } catch { /* ENOENT — the name is free */ }
+
+  // Rename on disk — once.
+  try {
+    await fs.rename(oldAbs, newAbs);
+  } catch (e: any) {
+    return { ok: false, error: e?.code === 'ENOENT' ? 'file-missing' : 'rename-failed' };
+  }
+
+  // Reflect the new path in the sidecar (CAS-retry; file is already moved).
+  const relDir = a0.kind === 'internal' ? dirname(a0.path) : '';
+  const newRelPath = a0.kind === 'internal'
+    ? (relDir === '.' || relDir === '' ? newFilename : `${relDir.replace(/\\/g, '/')}/${newFilename}`)
+    : newFilename;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const cur = await readSidecar(projectRoot);
+    // File already moved; if the sidecar vanished/corrupted, report success on
+    // the file op — a later listSession re-reads whatever the sidecar holds.
+    if (cur === null || 'corrupted' in cur) return { ok: true, newPath: newRelPath };
+    const art = cur.artifacts.find((a) => a.id === artifactId);
+    if (!art) return { ok: true, newPath: newRelPath };
+
+    const expectedUpdatedAt = cur.updatedAt;
+    art.path = newRelPath;
+    if (art.kind === 'external') art.absolutePath = newAbs.replace(/\\/g, '/');
+    const now = new Date().toISOString();
+    art.lastModified = now;
+    cur.updatedAt = now;
+
+    const result = await writeSidecar(projectRoot, expectedUpdatedAt, cur);
+    if (result.committed) return { ok: true, newPath: newRelPath };
+    await sleep(10 * (attempt + 1));
+  }
+  // Sustained contention only — the file IS renamed, so report success.
+  return { ok: true, newPath: newRelPath };
 }

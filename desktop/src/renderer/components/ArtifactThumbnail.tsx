@@ -17,6 +17,10 @@ interface Props {
   artifact: ArtifactRecord;
   projectPath: string;
   className?: string;
+  // Background utility for the thumbnail container. Defaults to bg-inset (the
+  // Project View grid look). The tool-call preview card passes bg-canvas so the
+  // thumbnail reads as recessed inside the raised bg-inset card.
+  bgClass?: string;
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
@@ -48,7 +52,7 @@ function toFileUrl(absPath: string): string {
   return `file://${absPath.replace(/\\/g, '/')}`;
 }
 
-export function ArtifactThumbnail({ artifact, projectPath, className = '' }: Props) {
+export function ArtifactThumbnail({ artifact, projectPath, className = '', bgClass = 'bg-inset' }: Props) {
   const ext = getExt(artifact.path);
   const kind: Kind = useMemo(() => {
     if (IMAGE_EXTS.has(ext)) return 'image';
@@ -108,7 +112,7 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '' }: Pro
   return (
     <div
       ref={containerRef}
-      className={`relative flex items-center justify-center bg-inset overflow-hidden ${className}`}
+      className={`relative flex items-center justify-center ${bgClass} overflow-hidden ${className}`}
     >
       {showFallbackGlyph && (
         <span className="text-2xl font-mono text-fg-muted">{ext ? ext.toUpperCase() : '—'}</span>

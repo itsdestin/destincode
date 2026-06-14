@@ -38,7 +38,7 @@ import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
-import { appendVersion, readSidecar, writeSidecar } from './artifacts/artifact-store';
+import { appendVersion, readSidecar, writeSidecar, renameArtifact } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
 import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
@@ -526,6 +526,14 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.OPEN_EXTERNAL, async (_event, url: string) => {
     if (typeof url === 'string' && url.startsWith('https://')) {
       await shell.openExternal(url);
+    }
+  });
+
+  // Reveal a local file in the OS file manager. Used by the artifact panel's
+  // "Reveal in folder" action. No-op for empty / non-string paths.
+  ipcMain.handle(IPC.SHOW_ITEM_IN_FOLDER, async (_event, filePath: string) => {
+    if (typeof filePath === 'string' && filePath.length > 0) {
+      shell.showItemInFolder(filePath);
     }
   });
 
@@ -2047,7 +2055,7 @@ export function registerIpcHandlers(
       path: string;
       kind: 'internal' | 'external';
       absolutePath: string | null;
-      type: 'create' | 'edit' | 'delete';
+      type: 'create' | 'edit' | 'delete' | 'read';
       author: 'agent' | 'user';
     }
   ) => {
@@ -2071,6 +2079,22 @@ export function registerIpcHandlers(
       })
     );
     return { ok: result.committed, project };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.RENAME, async (
+    _e,
+    projectRoot: string,
+    artifactId: string,
+    newName: string
+  ) => {
+    const result = await renameArtifact(projectRoot, artifactId, newName);
+    if (result.ok) {
+      // Broadcast so every open window's artifact UI re-lists with the new name.
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'rename', by: 'user' })
+      );
+    }
+    return result;
   });
 
   ipcMain.handle(ARTIFACT_IPC.LIST_SESSION, async (_e, sessionId: string, projectRoot: string) => {

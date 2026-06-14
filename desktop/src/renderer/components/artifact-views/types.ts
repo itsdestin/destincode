@@ -13,4 +13,9 @@ export interface ArtifactViewProps {
   onStartEdit?: () => void;
   onSaveEdit?: () => void;
   onCancelEdit?: () => void;
+  // When true the viewer renders content/editor only — the Edit / Save / Cancel
+  // controls live elsewhere (the SessionDrawer header toolbar drives them via
+  // the onStartEdit/onSaveEdit/onCancelEdit callbacks). ProjectView leaves this
+  // unset and keeps the in-viewer buttons.
+  hideControls?: boolean;
 }

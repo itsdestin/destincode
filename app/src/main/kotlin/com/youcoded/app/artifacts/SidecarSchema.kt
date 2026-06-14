@@ -17,7 +17,7 @@ const val INDEX_SCHEMA_VERSION   = 1
 typealias ArtifactKind   = String  // "internal" | "external"
 typealias ArtifactStatus = String  // "active" | "deleted"
 typealias VersionAuthor  = String  // "agent" | "user"
-typealias VersionType    = String  // "create" | "edit" | "delete"
+typealias VersionType    = String  // "create" | "edit" | "delete" | "read"
 
 // ── Data classes ─────────────────────────────────────────────────────────────
 

@@ -1418,6 +1418,31 @@ body[data-mode="buddy-chat"] #theme-bg {
   border-radius: var(--frame-corner);
 }
 
+/* Artifact viewer find-in-document (ContentFindBar). The CSS Custom Highlight
+   API paints these without touching the DOM — all matches get a translucent
+   accent wash; the current match is a solid accent block. */
+::highlight(artifact-find) {
+  background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+::highlight(artifact-find-current) {
+  background-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Expand-in-place: the artifact drawer grows to fill the framed-shell content
+   region. The chat pane + divider are hidden and the drawer-pane flexes to
+   fill, but the drawer-pane keeps its top/bottom chrome-height margins, so the
+   absolute HeaderBar + InputBar chrome stay exactly where they are — the panel
+   just gets wider, it does NOT become a separate fullscreen overlay. */
+.framed-shell.drawer-expanded > .chat-pane,
+.framed-shell.drawer-expanded > .frame-divider {
+  display: none;
+}
+.framed-shell.drawer-expanded > .drawer-pane {
+  width: auto;
+  flex: 1 1 auto;
+}
+
 /* Floating chrome override — gated on chrome-style="floating" (full
    floating chrome) OR input-style="floating" (partial: floating input
    pill over a default header, e.g. devils-garden). A prior version

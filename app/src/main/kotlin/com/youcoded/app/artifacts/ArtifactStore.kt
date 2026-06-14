@@ -134,7 +134,7 @@ data class AppendVersionInput(
     val kind:         String,   // "internal" | "external"
     val absolutePath: String?,
     val sessionId:    String,
-    val type:         String,   // "create" | "edit" | "delete"
+    val type:         String,   // "create" | "edit" | "delete" | "read"
     val author:       String,   // "agent" | "user"
 )
 

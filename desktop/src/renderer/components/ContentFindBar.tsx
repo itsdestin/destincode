@@ -1,0 +1,115 @@
+// ContentFindBar — Ctrl+F find-in-document for the artifact viewer. Scoped to a
+// container element (the artifact content pane) using the CSS Custom Highlight
+// API, so it highlights matches WITHOUT mutating the rendered DOM (which would
+// fight React) and without leaking into the rest of the page.
+//
+// The bar must live OUTSIDE the searched container (it's rendered as a sibling
+// overlay) — otherwise its own text (the match counter) would be walked and
+// matched by the search.
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+
+const HL = 'artifact-find';
+const HL_CURRENT = 'artifact-find-current';
+
+function highlightsSupported(): boolean {
+  return typeof CSS !== 'undefined' && 'highlights' in CSS && typeof (window as any).Highlight === 'function';
+}
+
+function clearHighlights() {
+  const h = (CSS as any).highlights;
+  if (h) { h.delete(HL); h.delete(HL_CURRENT); }
+}
+
+// Walk text nodes in `root` and build a Range for every case-insensitive
+// occurrence of `query`.
+function computeRanges(root: HTMLElement, query: string): Range[] {
+  const ranges: Range[] = [];
+  const q = query.toLowerCase();
+  if (!q) return ranges;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.nodeValue && n.nodeValue.trim().length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+  });
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = (node.nodeValue ?? '').toLowerCase();
+    let idx = text.indexOf(q);
+    while (idx !== -1) {
+      const r = document.createRange();
+      r.setStart(node, idx);
+      r.setEnd(node, idx + q.length);
+      ranges.push(r);
+      idx = text.indexOf(q, idx + q.length);
+    }
+  }
+  return ranges;
+}
+
+export function ContentFindBar({ containerRef, onClose, resetKey }: {
+  containerRef: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+  resetKey: string; // changes when the active artifact changes → reset the search
+}) {
+  const [query, setQuery] = useState('');
+  const [count, setCount] = useState(0);
+  const [current, setCurrent] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  // New artifact → clear the search.
+  useEffect(() => { setQuery(''); setCurrent(0); }, [resetKey]);
+  // New query → jump back to the first match.
+  useEffect(() => { setCurrent(0); }, [query]);
+
+  // Recompute + paint highlights whenever the query, current match, or artifact
+  // changes. Scrolls the current match into view if it's off-screen.
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root || !highlightsSupported()) { setCount(0); return; }
+    const ranges = computeRanges(root, query);
+    setCount(ranges.length);
+    if (ranges.length === 0) { clearHighlights(); return; }
+    const cur = ((current % ranges.length) + ranges.length) % ranges.length;
+    const HighlightCtor = (window as any).Highlight;
+    (CSS as any).highlights.set(HL, new HighlightCtor(...ranges));
+    (CSS as any).highlights.set(HL_CURRENT, new HighlightCtor(ranges[cur]));
+    try {
+      const rect = ranges[cur].getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      if (rect.top < rootRect.top || rect.bottom > rootRect.bottom) {
+        (ranges[cur].startContainer.parentElement as HTMLElement | null)?.scrollIntoView({ block: 'center' });
+      }
+    } catch { /* range geometry can throw on detached nodes — ignore */ }
+  }, [query, current, resetKey, containerRef]);
+
+  // Always clear highlights when the bar unmounts (closed).
+  useEffect(() => () => clearHighlights(), []);
+
+  const go = useCallback((dir: number) => {
+    setCurrent((c) => (count === 0 ? 0 : (c + dir + count) % count));
+  }, [count]);
+
+  const shown = count > 0 ? `${((current % count) + count) % count + 1}/${count}` : (query ? '0/0' : '');
+
+  return (
+    <div className="absolute top-2 right-2 z-20 flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg">
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); go(e.shiftKey ? -1 : 1); }
+          else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+        }}
+        placeholder="Find in document"
+        className="bg-canvas text-fg text-xs px-2 py-1 rounded-md w-[150px] outline-none border border-edge focus:border-fg-muted"
+      />
+      <span className="text-[11px] text-fg-muted tabular-nums text-center px-1 min-w-[40px]">{shown}</span>
+      <button type="button" title="Previous (Shift+Enter)" onClick={() => go(-1)}
+        className="w-6 h-6 rounded text-fg-dim hover:text-fg hover:bg-well text-xs">↑</button>
+      <button type="button" title="Next (Enter)" onClick={() => go(1)}
+        className="w-6 h-6 rounded text-fg-dim hover:text-fg hover:bg-well text-xs">↓</button>
+      <button type="button" title="Close (Esc)" onClick={onClose}
+        className="w-6 h-6 rounded text-fg-dim hover:text-fg hover:bg-well text-sm leading-none">✕</button>
+    </div>
+  );
+}

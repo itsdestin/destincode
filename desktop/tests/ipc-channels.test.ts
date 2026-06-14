@@ -360,6 +360,8 @@ describe('artifact IPC parity', () => {
     DELETE_PROJECT: 'artifacts:delete-project',
     // Existence check folds "file not on disk" into the deleted UI state.
     CHECK_EXISTENCE: 'artifacts:check-existence',
+    // Rename a file on disk + update the sidecar record.
+    RENAME: 'artifacts:rename',
   }).reduce<Record<string, string>>((acc, [name, value]) => {
     acc[value] = `ARTIFACT_IPC.${name}`;
     return acc;

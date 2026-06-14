@@ -865,6 +865,9 @@ export function installShim(): void {
         window.open('https://github.com/itsdestin/youcoded/blob/master/CHANGELOG.md', '_blank');
       },
       openExternal: async (url: string) => { window.open(url, '_blank'); },
+      // No-op on remote/Android — a browser can't reveal a file in the host's
+      // file manager. The artifact panel hides the button on touch anyway.
+      showItemInFolder: async () => {},
     },
     update: {
       changelog: async (opts: { forceRefresh: boolean }) =>
@@ -1030,6 +1033,8 @@ export function installShim(): void {
       // until Project View ships on mobile).
       checkExistence: (projectRoot: string, artifactIds: string[]) =>
         invoke('artifacts:check-existence', { projectRoot, artifactIds }),
+      rename: (projectRoot: string, artifactId: string, newName: string) =>
+        invoke('artifacts:rename', { projectRoot, artifactId, newName }),
       onChanged: (cb: (event: any) => void) => {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);

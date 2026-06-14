@@ -22,6 +22,7 @@ import GamePanel from './components/game/GamePanel';
 import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
+import { categorizeArtifact } from '../shared/artifacts/categorization';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
@@ -363,6 +364,11 @@ function AppInner() {
   const chatStateMap = useChatStateMap();
   // Artifact tracker — global reducer for session/project artifact state.
   const [artifactState, dispatchArtifact] = useReducer(artifactReducer, initialArtifactState);
+  // Ref mirror of artifact state so the (once-registered) tool-use handler can
+  // dedup Read-tracking against the session's already-known artifacts without
+  // re-subscribing on every reducer tick.
+  const artifactStateRef = useRef(artifactState);
+  useEffect(() => { artifactStateRef.current = artifactState; }, [artifactState]);
   // Latest-value ref so transcript-shrink and turn-complete handlers see
   // up-to-date compactionPending state without re-subscribing on every reducer tick.
   const chatStateMapRef = useRef(chatStateMap);
@@ -1003,13 +1009,37 @@ function AppInner() {
       if (!event?.type || !event?.sessionId) return;
       if (event.type !== 'tool-use') return;
       const toolName: string = event.data?.toolName ?? '';
-      if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) return;
+      const isRead = toolName === 'Read';
+      if (!['Write', 'Edit', 'MultiEdit', 'Read'].includes(toolName)) return;
       const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
       if (!targetPath) return;
+
+      // Reads are tracked for DOCUMENTS only (plans, notes, mockups, images) so
+      // the tool card becomes openable — code/config reads would flood the
+      // drawer and aren't what the artifact viewer is for. Writes/Edits track
+      // everything (they're genuine changes Claude made).
+      if (isRead && categorizeArtifact(targetPath) !== 'document') return;
+
       // Resolve cwd by looking up the session — transcript events don't carry cwd.
       const session = sessionsRef.current?.find?.((s: any) => s.id === event.sessionId);
       const projectRoot: string = session?.cwd ?? '';
       if (!projectRoot) return;
+
+      // Dedup reads: only the FIRST read of a doc this session appends a 'read'
+      // version. Skip if the file is already a known session artifact (already
+      // written/edited/read this session) so repeated reads don't stack version
+      // noise or bump lastModified on a real artifact. appendVersion has no
+      // dedup of its own.
+      if (isRead) {
+        const known = artifactStateRef.current.sessionArtifacts[event.sessionId] ?? [];
+        const tnorm = targetPath.replace(/\\/g, '/');
+        const already = known.some((a: any) => {
+          const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
+          const an = aPath.replace(/\\/g, '/');
+          return an === tnorm || tnorm.endsWith('/' + an) || an.endsWith('/' + tnorm);
+        });
+        if (already) return;
+      }
 
       // Determine internal vs external by path comparison. The Session Drawer
       // shows BOTH (a session's activity log includes anything Claude touched).
@@ -1018,11 +1048,15 @@ function AppInner() {
       const normRoot = projectRoot.replace(/\\/g, '/').toLowerCase();
       const isInternal = normPath.startsWith(normRoot + '/') || normPath === normRoot;
 
+      // Read → 'read' (viewed, not modified); Write → 'create'; Edit/MultiEdit → 'edit'.
+      const versionType: 'create' | 'edit' | 'read' =
+        isRead ? 'read' : toolName === 'Write' ? 'create' : 'edit';
+
       let appendArgs: {
         path: string;
         kind: 'internal' | 'external';
         absolutePath: string | null;
-        type: 'create' | 'edit';
+        type: 'create' | 'edit' | 'read';
         author: 'agent';
       };
       if (isInternal) {
@@ -1035,7 +1069,7 @@ function AppInner() {
           path: relativePath,
           kind: 'internal',
           absolutePath: null,
-          type: (toolName === 'Write' ? 'create' : 'edit'),
+          type: versionType,
           author: 'agent',
         };
       } else {
@@ -1046,7 +1080,7 @@ function AppInner() {
           path: basename,
           kind: 'external',
           absolutePath: fwdPath,
-          type: (toolName === 'Write' ? 'create' : 'edit'),
+          type: versionType,
           author: 'agent',
         };
       }

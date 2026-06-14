@@ -1,22 +1,52 @@
-import { useArtifact } from '../state/ArtifactContext';
+import { useArtifactOptional } from '../state/ArtifactContext';
 
 interface Props {
   path: string;
   sessionId: string;
 }
 
-const EXT_ICON: Record<string, string> = {
-  md: '📝', markdown: '📝', txt: '📄',
-  pdf: '📕', docx: '📘', xlsx: '📗',
-  png: '🖼', jpg: '🖼', jpeg: '🖼', gif: '🖼', webp: '🖼',
-};
+// Inline SVG glyphs (not emoji) so the icon inherits `currentColor` and matches
+// the app's lucide-style iconography. Image files get the picture glyph; every
+// other type gets the document glyph.
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
+
+function FileGlyph({ ext }: { ext: string }) {
+  const common = {
+    width: 13, height: 13, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const, className: 'text-fg-dim shrink-0',
+  };
+  if (IMAGE_EXTS.has(ext)) {
+    return (
+      <svg {...common}>
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <circle cx="9" cy="9" r="2" />
+        <path d="m21 15-3.5-3.5L11 18" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </svg>
+  );
+}
 
 export function FilepathToken({ path, sessionId }: Props) {
-  const { state, dispatch } = useArtifact();
+  // Optional: the buddy window / sandbox render this without ArtifactProvider.
+  // When absent, the pill still renders (so prose isn't disrupted) but the
+  // click is a no-op — there's no drawer to open in those roots.
+  const artifactCtx = useArtifactOptional();
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  const icon = EXT_ICON[ext] ?? '📎';
+  // Basename only inline — the full path lives in the title tooltip. Keeps prose
+  // calm when Claude references deep paths mid-sentence.
+  const name = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path;
 
   const onClick = async () => {
+    // No provider (buddy window / sandbox) → nothing to open. Bail quietly.
+    if (!artifactCtx) return;
+    const { state, dispatch } = artifactCtx;
     // 1. Session-current artifact? Match by the stored path or absolutePath.
     //    For internal artifacts, `a.path` is relative to the project root;
     //    we match against the text-detected path's suffix as a best-effort heuristic.
@@ -44,12 +74,18 @@ export function FilepathToken({ path, sessionId }: Props) {
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 px-2 py-1 min-h-[28px] rounded bg-inset text-fg font-mono text-[0.9em] hover:bg-inset/80"
+      // B4 recessed pill: sits on --well with a hairline --edge border so it
+      // lifts out of the bg-inset chat bubble. (Before this, the chip was also
+      // bg-inset — same color as the bubble, so it read as flat text, not a
+      // clickable file.) Monospace basename keeps the "this is a file" signal.
+      className="group inline-flex items-center gap-1.5 align-middle px-2 py-0.5 rounded-md bg-well border border-edge hover:border-fg-muted transition-colors"
       onClick={onClick}
       title={path}
     >
-      <span>{icon}</span>
-      <span>{path}</span>
+      <FileGlyph ext={ext} />
+      <span className="font-mono text-[0.85em] text-fg group-hover:underline underline-offset-2 decoration-fg-muted">
+        {name}
+      </span>
     </button>
   );
 }

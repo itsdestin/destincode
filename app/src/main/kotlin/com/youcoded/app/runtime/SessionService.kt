@@ -3094,6 +3094,12 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", true).put("missingIds", org.json.JSONArray())) }
             }
+            // Stub: artifact rename is desktop-only for now (mobile file-op + sidecar
+            // rename path lands with the v2 mobile artifact work).
+            "artifacts:rename" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
             // artifacts:changed is a server-push event only — no inbound handler needed.
 
             else -> {

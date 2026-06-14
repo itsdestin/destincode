@@ -7,6 +7,7 @@ import type { ArtifactViewProps } from './types';
 export function MarkdownView({
   path, content, isEditable,
   editing = false, draft = '', onDraftChange, onStartEdit, onSaveEdit, onCancelEdit,
+  hideControls = false,
 }: ArtifactViewProps) {
   if (content === null) {
     return <div className="text-fg-muted p-4">⚠ file not on disk</div>;
@@ -15,20 +16,22 @@ export function MarkdownView({
   if (editing) {
     return (
       <div className="flex flex-col h-full">
-        <div className="flex gap-2 p-2 border-b border-edge">
-          <button
-            className="px-3 py-1 rounded bg-accent text-on-accent"
-            onClick={onSaveEdit}
-          >
-            Save
-          </button>
-          <button
-            className="px-3 py-1 rounded border border-edge"
-            onClick={onCancelEdit}
-          >
-            Cancel
-          </button>
-        </div>
+        {!hideControls && (
+          <div className="flex gap-2 p-2 border-b border-edge">
+            <button
+              className="px-3 py-1 rounded bg-accent text-on-accent"
+              onClick={onSaveEdit}
+            >
+              Save
+            </button>
+            <button
+              className="px-3 py-1 rounded border border-edge"
+              onClick={onCancelEdit}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         <textarea
           value={draft}
           onChange={(e) => onDraftChange?.(e.target.value)}
@@ -45,7 +48,7 @@ export function MarkdownView({
   const isMarkdown = path.endsWith('.md') || path.endsWith('.markdown');
   return (
     <div className="flex flex-col h-full">
-      {isEditable && (
+      {isEditable && !hideControls && (
         <div className="flex gap-2 p-2 border-b border-edge">
           <button
             className="px-3 py-1 rounded border border-edge hover:bg-inset"

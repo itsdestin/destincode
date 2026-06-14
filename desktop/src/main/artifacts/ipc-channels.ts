@@ -21,6 +21,10 @@ export const ARTIFACT_IPC = {
   // (No apostrophes in this comment — the ipc-channels parity test scans for
   // single-quoted strings and any stray apostrophe would be treated as a channel.)
   CHECK_EXISTENCE: 'artifacts:check-existence',
+  // Rename an artifact: renames the file on disk (extension preserved) and
+  // updates the sidecar record so version history follows the file. The new
+  // name is a basename without extension; collisions are rejected.
+  RENAME: 'artifacts:rename',
 } as const;
 
 export type ArtifactIpcChannel = typeof ARTIFACT_IPC[keyof typeof ARTIFACT_IPC];

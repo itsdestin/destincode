@@ -661,6 +661,7 @@ export const IPC = {
   UPDATE_PROGRESS: 'update:progress',
   UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
+  SHOW_ITEM_IN_FOLDER: 'shell:show-item-in-folder',
   PERMISSION_RESPOND: 'permission:respond',
   // Remote settings
   REMOTE_GET_CONFIG: 'remote:get-config',

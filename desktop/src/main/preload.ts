@@ -73,6 +73,7 @@ const IPC = {
   UPDATE_PROGRESS: 'update:progress',
   UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
+  SHOW_ITEM_IN_FOLDER: 'shell:show-item-in-folder',
   TERMINAL_READY: 'session:terminal-ready',
   PERMISSION_RESPOND: 'permission:respond',
   REMOTE_GET_CONFIG: 'remote:get-config',
@@ -470,6 +471,9 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.OPEN_CHANGELOG),
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.OPEN_EXTERNAL, url),
+    // Reveal a file in the OS file manager (Finder / Explorer / Files).
+    showItemInFolder: (filePath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.SHOW_ITEM_IN_FOLDER, filePath),
   },
   update: {
     changelog: (opts: { forceRefresh: boolean }): Promise<ChangelogIpcResult> =>
@@ -869,6 +873,9 @@ contextBridge.exposeInMainWorld('claude', {
     // disk. Used to fold "file not on disk" into the deleted UI state.
     checkExistence: (projectRoot: string, artifactIds: string[]) =>
       ipcRenderer.invoke('artifacts:check-existence', projectRoot, artifactIds),
+    // Rename an artifact's file on disk; newName is the basename without extension.
+    rename: (projectRoot: string, artifactId: string, newName: string) =>
+      ipcRenderer.invoke('artifacts:rename', projectRoot, artifactId, newName),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);

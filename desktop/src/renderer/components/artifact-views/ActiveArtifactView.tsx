@@ -1,11 +1,22 @@
 // ActiveArtifactView — shared component for viewing and editing a single artifact.
 // Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
 // can use it identically without duplicating the edit state + conflict-detection logic.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
 import { getViewer } from './RendererRegistry';
 import type { ArtifactViewProps } from './RendererRegistry';
 import { BinaryFallback } from './BinaryFallback';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
+
+// Imperative handle so an external chrome (the SessionDrawer header toolbar) can
+// drive edit mode while ActiveArtifactView keeps owning the edit/save/conflict
+// logic. Paired with onEditStateChange so the header re-renders on state change.
+export interface ActiveArtifactHandle {
+  isEditable: boolean;
+  editing: boolean;
+  startEdit(): void;
+  saveEdit(): void;
+  cancelEdit(): void;
+}
 
 export interface ActiveArtifactViewProps {
   artifact: ArtifactRecord;
@@ -15,11 +26,17 @@ export interface ActiveArtifactViewProps {
   projectName: string;
   sessionId: string;
   onContentChange: (content: string | null) => void;
+  // When true, the viewer hides its own Edit/Save/Cancel buttons — the host
+  // (SessionDrawer) renders them in its header instead. ProjectView omits this.
+  controlsInHeader?: boolean;
+  // Fires whenever editability / edit-mode changes so the host header can update.
+  onEditStateChange?: (s: { isEditable: boolean; editing: boolean }) => void;
 }
 
-export function ActiveArtifactView({
+export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifactViewProps>(function ActiveArtifactView({
   artifact, content, projectRoot, projectId, projectName, sessionId, onContentChange,
-}: ActiveArtifactViewProps) {
+  controlsInHeader = false, onEditStateChange,
+}, ref) {
   // Resolve the absolute path depending on artifact kind.
   const absolutePath = artifact.kind === 'internal'
     ? `${projectRoot}/${artifact.path}`
@@ -100,6 +117,21 @@ export function ActiveArtifactView({
     setConflict(null);
   }, [conflict, onContentChange]);
 
+  // Expose edit control to the host header (SessionDrawer).
+  useImperativeHandle(ref, () => ({
+    isEditable,
+    editing,
+    startEdit: handleStartEdit,
+    saveEdit: handleSave,
+    cancelEdit: handleCancel,
+  }), [isEditable, editing, handleStartEdit, handleSave, handleCancel]);
+
+  // Notify the host whenever editability / edit-mode changes so its header
+  // can swap the pencil ↔ save/cancel icons.
+  useEffect(() => {
+    onEditStateChange?.({ isEditable, editing });
+  }, [isEditable, editing, onEditStateChange]);
+
   const viewSpec = getViewer(artifact.path);
 
   // Lazy-loaded viewers (PdfView, DocxView, XlsxView) are represented as
@@ -167,8 +199,9 @@ export function ActiveArtifactView({
           onStartEdit={handleStartEdit}
           onSaveEdit={handleSave}
           onCancelEdit={handleCancel}
+          hideControls={controlsInHeader}
         />
       </div>
     </div>
   );
-}
+});

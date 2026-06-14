@@ -4,7 +4,12 @@ export const INDEX_SCHEMA_VERSION = 1;
 export type ArtifactKind = 'internal' | 'external';
 export type ArtifactStatus = 'active' | 'deleted';
 export type VersionAuthor = 'agent' | 'user';
-export type VersionType = 'create' | 'edit' | 'delete';
+// 'read' marks a document Claude opened (Read tool) but did not modify — it
+// makes the file appear as a session artifact so it's openable from the tool
+// card, without fabricating fake edit history. Only document-type files get a
+// 'read' version (see the artifact tracker in App.tsx); code/config reads are
+// not tracked.
+export type VersionType = 'create' | 'edit' | 'delete' | 'read';
 
 export interface VersionEvent {
   id: string;            // ULID

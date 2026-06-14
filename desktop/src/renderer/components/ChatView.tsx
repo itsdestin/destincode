@@ -73,6 +73,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props)
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState } = useArtifact();
   const drawerOpen = artifactState.drawerOpen;
+  const drawerExpanded = artifactState.drawerExpanded;
 
   // Resolve the active project when the artifact drawer opens. We need
   // projectRoot / projectId / projectName to pass to SessionDrawer so its
@@ -413,7 +414,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props)
           are only needed by the drawer's artifacts.save IPC call and will be
           resolved in a later task when session metadata is threaded to ChatView. */}
       {/* drawer-open modifier collapses chat pane on narrow screens (Task 6.3) */}
-      <div className={`framed-shell${drawerOpen ? ' drawer-open' : ''}`}>
+      <div className={`framed-shell${drawerOpen ? ' drawer-open' : ''}${drawerExpanded ? ' drawer-expanded' : ''}`}>
         <div className="frame-edge" />
         <div className="chat-pane">
           <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
