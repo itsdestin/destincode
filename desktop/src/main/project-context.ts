@@ -37,7 +37,9 @@ async function readRules(rulesDir: string): Promise<RuleEntry[]> {
     try {
       const head = (await fs.promises.readFile(absolutePath, 'utf8')).slice(0, 2000);
       const fm = /^---\s*([\s\S]*?)\s*---/.exec(head)?.[1] ?? '';
-      const g = /(?:globs?|glob)\s*:\s*(.+)/i.exec(fm)?.[1]?.trim();
+      // WHY: anchor to line start (m flag) so a key like `myglobs:` does not
+      // shadow the real `globs:`/`glob:` key.
+      const g = /^\s*(?:globs?|glob)\s*:\s*(.+)/im.exec(fm)?.[1]?.trim();
       if (g) glob = g.replace(/^['"\[]+|['"\]]+$/g, '').split(',')[0].trim();
     } catch { /* unreadable rule — list it with no glob */ }
     out.push({ file, glob, absolutePath });
