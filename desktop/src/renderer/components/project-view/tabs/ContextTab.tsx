@@ -13,6 +13,7 @@ import type {
   ContextFile,
   ContextScope,
 } from '../../../../shared/project-context-types';
+import { ContextIntroBanner } from '../ContextIntroBanner';
 
 interface ContextTabProps {
   project: { path: string }; // active CentralIndexProject; only .path is needed here
@@ -87,9 +88,13 @@ export function ContextTab({ project, onEditFile, onOpenInfo }: ContextTabProps)
     return () => { cancelled = true; };
   }, [project.path]);
 
+  // The dismiss-forever intro banner renders at the top of the tab body in EVERY
+  // state (loading / empty / populated) so the teaching copy is visible whenever
+  // the Context tab is open, regardless of whether context files loaded.
   if (loading) {
     return (
-      <div className="flex flex-col h-full overflow-hidden p-4 min-w-0">
+      <div className="flex flex-col h-full overflow-auto p-4 min-w-0">
+        <ContextIntroBanner />
         <p className="text-sm text-fg-muted">Loading…</p>
       </div>
     );
@@ -97,7 +102,8 @@ export function ContextTab({ project, onEditFile, onOpenInfo }: ContextTabProps)
 
   if (groups.length === 0) {
     return (
-      <div className="flex flex-col h-full overflow-hidden p-4 min-w-0">
+      <div className="flex flex-col h-full overflow-auto p-4 min-w-0">
+        <ContextIntroBanner />
         <p className="text-sm text-fg-muted">No context files found for this project.</p>
       </div>
     );
@@ -105,6 +111,7 @@ export function ContextTab({ project, onEditFile, onOpenInfo }: ContextTabProps)
 
   return (
     <div className="flex flex-col h-full overflow-auto p-4 min-w-0">
+      <ContextIntroBanner />
       {groups.map((group) => {
         const meta = GROUP_META[group.scope];
         return (
