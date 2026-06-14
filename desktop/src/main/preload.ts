@@ -882,4 +882,20 @@ contextBridge.exposeInMainWorld('claude', {
       return () => ipcRenderer.removeListener('artifacts:changed', handler);
     },
   },
+  // Project View IPC — sibling to artifacts. Backs the project overlay's
+  // conversations / repo / context tabs.
+  project: {
+    listConversations: (projectPath: string) =>
+      ipcRenderer.invoke('project:list-conversations', projectPath),
+    conversationHistory: (projectPath: string, sessionId: string, count: number, all: boolean) =>
+      ipcRenderer.invoke('project:conversation-history', projectPath, sessionId, count, all),
+    repoInfo: (projectPath: string) =>
+      ipcRenderer.invoke('project:repo-info', projectPath),
+    listContext: (projectPath: string) =>
+      ipcRenderer.invoke('project:list-context', projectPath),
+    readContextFile: (projectPath: string, absolutePath: string) =>
+      ipcRenderer.invoke('project:read-context-file', projectPath, absolutePath),
+    writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
+      ipcRenderer.invoke('project:write-context-file', projectPath, absolutePath, content),
+  },
 });

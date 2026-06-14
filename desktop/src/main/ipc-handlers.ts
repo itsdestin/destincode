@@ -42,6 +42,10 @@ import { appendVersion, readSidecar, writeSidecar, renameArtifact } from './arti
 import { listProjects, removeProject } from './artifacts/central-index';
 import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
+import { PROJECT_IPC } from './project/ipc-channels';
+import { listProjectConversations, projectConversationHistory } from './project-conversations';
+import { getRepoInfo } from './project-repo';
+import { listContext, readContextFile, writeContextFile } from './project-context';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -2105,6 +2109,28 @@ export function registerIpcHandlers(
       a.versions.some((v) => v.sessionId === sessionId)
     );
     return { ok: true, artifacts: result };
+  });
+
+  // Project View IPC — list project-scoped conversations, their history, git
+  // repo info, and the discovered context files (CLAUDE.md, rules, etc.).
+  // Main-process modules already exist; these handlers just wire them to IPC.
+  ipcMain.handle(PROJECT_IPC.LIST_CONVERSATIONS, async (_e, projectPath: string) => {
+    return { ok: true, conversations: await listProjectConversations(projectPath) };
+  });
+  ipcMain.handle(PROJECT_IPC.CONVERSATION_HISTORY, async (_e, projectPath: string, sessionId: string, count: number, all: boolean) => {
+    return { ok: true, messages: await projectConversationHistory(projectPath, sessionId, count ?? 20, !!all) };
+  });
+  ipcMain.handle(PROJECT_IPC.REPO_INFO, async (_e, projectPath: string) => {
+    return { ok: true, ...(await getRepoInfo(projectPath)) };
+  });
+  ipcMain.handle(PROJECT_IPC.LIST_CONTEXT, async (_e, projectPath: string) => {
+    return { ok: true, groups: await listContext(projectPath) };
+  });
+  ipcMain.handle(PROJECT_IPC.READ_CONTEXT_FILE, async (_e, projectPath: string, absolutePath: string) => {
+    return readContextFile(projectPath, absolutePath);
+  });
+  ipcMain.handle(PROJECT_IPC.WRITE_CONTEXT_FILE, async (_e, projectPath: string, absolutePath: string, content: string) => {
+    return writeContextFile(projectPath, absolutePath, content);
   });
 
   ipcMain.handle(ARTIFACT_IPC.LIST_PROJECT, async (_e, projectId: string) => {

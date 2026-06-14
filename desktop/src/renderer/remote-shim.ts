@@ -1041,6 +1041,23 @@ export function installShim(): void {
         return () => removeListener('artifacts:changed', handler);
       },
     },
+    // Project View IPC — sibling to artifacts. Object-payload invoke style
+    // mirrors the artifacts namespace above; the literal 'project:*' channel
+    // strings are required by the IPC parity test.
+    project: {
+      listConversations: (projectPath: string) =>
+        invoke('project:list-conversations', { projectPath }),
+      conversationHistory: (projectPath: string, sessionId: string, count: number, all: boolean) =>
+        invoke('project:conversation-history', { projectPath, sessionId, count, all }),
+      repoInfo: (projectPath: string) =>
+        invoke('project:repo-info', { projectPath }),
+      listContext: (projectPath: string) =>
+        invoke('project:list-context', { projectPath }),
+      readContextFile: (projectPath: string, absolutePath: string) =>
+        invoke('project:read-context-file', { projectPath, absolutePath }),
+      writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
+        invoke('project:write-context-file', { projectPath, absolutePath, content }),
+    },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is
     //   non-empty. Android sets OnBackPressedCallback.isEnabled accordingly
