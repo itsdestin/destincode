@@ -19,6 +19,7 @@ import { ContextTab } from './tabs/ContextTab';
 import { ConversationPreview } from './ConversationPreview';
 import { ProjectHero } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
+import { HowContextWorksPopup } from './HowContextWorksPopup';
 
 type TabId = 'artifacts' | 'conversations' | 'context';
 
@@ -344,7 +345,15 @@ export function ProjectView(props: ProjectViewProps) {
                 onOpenInfo={setInfoScope}
               />
             )}
-            {/* TODO(Task 4.3): render <HowContextWorksPopup> when infoScope is set */}
+            {/* How-context-works teaching popup. Map the clicked scope to an
+                initial tab: memory → Memory page, project/global → Overview
+                (the broad→specific stack covers both). */}
+            {infoScope && (
+              <HowContextWorksPopup
+                initialTab={infoScope === 'memory' ? 'memory' : 'overview'}
+                onClose={() => setInfoScope(null)}
+              />
+            )}
             {/* TODO(Task 4.4): render <ContextEditorOverlay> when editingContext is set */}
           </div>
         </main>
