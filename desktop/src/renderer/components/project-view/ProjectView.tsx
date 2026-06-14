@@ -20,6 +20,7 @@ import { ConversationPreview } from './ConversationPreview';
 import { ProjectHero } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { HowContextWorksPopup } from './HowContextWorksPopup';
+import { ContextEditorOverlay } from './ContextEditorOverlay';
 
 type TabId = 'artifacts' | 'conversations' | 'context';
 
@@ -354,7 +355,16 @@ export function ProjectView(props: ProjectViewProps) {
                 onClose={() => setInfoScope(null)}
               />
             )}
-            {/* TODO(Task 4.4): render <ContextEditorOverlay> when editingContext is set */}
+            {/* Context editor overlay — view/edit an agent-context file with a
+                blast-radius warning (amber + save-confirm for global files,
+                neutral + direct save for project files). */}
+            {editingContext && activeProject && (
+              <ContextEditorOverlay
+                project={activeProject}
+                file={editingContext}
+                onClose={() => setEditingContext(null)}
+              />
+            )}
           </div>
         </main>
       </div>
