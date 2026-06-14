@@ -3102,6 +3102,20 @@ class SessionService : Service() {
             }
             // artifacts:changed is a server-push event only — no inbound handler needed.
 
+            // Project View hub (conversations, repo, context) is desktop-only in v1
+            // (see docs/superpowers/specs/2026-06-14-project-view-redesign-design.md).
+            // Reply not-implemented so the shared React UI can degrade to an
+            // "available on desktop" state instead of timing out.
+            "project:list-conversations",
+            "project:conversation-history",
+            "project:repo-info",
+            "project:list-context",
+            "project:read-context-file",
+            "project:write-context-file" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }

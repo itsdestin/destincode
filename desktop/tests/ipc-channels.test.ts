@@ -408,3 +408,41 @@ describe('artifact IPC parity', () => {
     });
   }
 });
+
+// Regression net for the project:* IPC channels (Project View redesign).
+// Desktop is authoritative in v1; SessionService.kt carries stub cases so the
+// type strings stay in parity (handlers return not-implemented-on-mobile).
+// ipc-handlers.ts references PROJECT_IPC.* constants rather than literal
+// strings (same convention as ARTIFACT_IPC), so that assertion accepts either.
+describe('project:* channel parity', () => {
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'project:list-conversations': 'PROJECT_IPC.LIST_CONVERSATIONS',
+    'project:conversation-history': 'PROJECT_IPC.CONVERSATION_HISTORY',
+    'project:repo-info': 'PROJECT_IPC.REPO_INFO',
+    'project:list-context': 'PROJECT_IPC.LIST_CONTEXT',
+    'project:read-context-file': 'PROJECT_IPC.READ_CONTEXT_FILE',
+    'project:write-context-file': 'PROJECT_IPC.WRITE_CONTEXT_FILE',
+  };
+  const NEW_TYPES = Object.keys(CHANNEL_TO_CONST);
+
+  it('declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts (literal or PROJECT_IPC constant)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts'), 'utf8');
+    for (const t of NEW_TYPES) {
+      const literal = src.includes(`'${t}'`);
+      const constRef = src.includes(CHANNEL_TO_CONST[t]);
+      expect(literal || constRef, `${t} missing from ipc-handlers.ts`).toBe(true);
+    }
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt).toContain(`"${t}"`);
+  });
+});
