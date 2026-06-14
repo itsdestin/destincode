@@ -10,6 +10,7 @@ import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/art
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
 import { ArtifactThumbnail } from '../../ArtifactThumbnail';
 import { categorizeArtifact } from '../../../../shared/artifacts/categorization';
+import { ProjectDetailOverlay } from '../ProjectDetailOverlay';
 
 // ProjectView keeps its own artifact selection separate from any chat session's
 // drawer, keyed under this reserved sessionId in activeArtifactBySession.
@@ -195,12 +196,11 @@ export function ArtifactsTab({ project }: { project: CentralIndexProject }) {
         })}
       </div>
 
-      {/* Selected-artifact inline detail. Rendered full-bleed within this tab.
-          TODO(Task 2.4): replace this inline detail with the shared centered
-          ProjectDetailOverlay. Kept functional now so the build works and the
-          feature isn't broken between tasks. */}
+      {/* Selected-artifact detail — rendered in the shared centered overlay
+          (Task 2.4). Same load/view/edit/exclude behavior as the prior inline
+          detail; only the presentation changed (full-bleed → centered overlay). */}
       {activeArtifact && (
-        <InlineArtifactDetail
+        <ArtifactDetail
           artifact={activeArtifact}
           project={project}
           onRefreshArtifacts={refreshArtifacts}
@@ -210,10 +210,11 @@ export function ArtifactsTab({ project }: { project: CentralIndexProject }) {
   );
 }
 
-// ─── InlineArtifactDetail ─────────────────────────────────────────────────────
-// Inline right-pane detail for the selected artifact, mirroring the old
-// ProjectViewDetailPane. Uses the shared ActiveArtifactView with the same props.
-// TODO(Task 2.4): replace with the shared centered ProjectDetailOverlay.
+// ─── ArtifactDetail ───────────────────────────────────────────────────────────
+// Selected-artifact detail, now hosted in the shared centered ProjectDetailOverlay
+// (Task 2.4) instead of a full-bleed inline pane. Uses the shared
+// ActiveArtifactView with the same props as before. The Exclude action lives in
+// a small action row inside the overlay body so it stays reachable.
 
 interface DetailProps {
   artifact: ArtifactRecord;
@@ -221,9 +222,11 @@ interface DetailProps {
   onRefreshArtifacts: () => void;
 }
 
-function InlineArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) {
+function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) {
   const { dispatch } = useArtifact();
   const [content, setContent] = useState<string | null>(null);
+
+  const handleClose = () => dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
 
   // Load file content whenever the selected artifact changes.
   useEffect(() => {
@@ -243,23 +246,18 @@ function InlineArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailP
       ? artifact.path
       : artifact.absolutePath!;
     await (window.claude as any).artifacts.exclude(project.path, canonicalPath);
-    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
+    handleClose();
     onRefreshArtifacts();
   };
 
   return (
-    // Full-bleed overlay over the tab body. z-[10] keeps it above the grid but
-    // below the ProjectView overlay's own chrome.
-    <div className="absolute inset-0 z-10 bg-canvas flex flex-col">
-      {/* Pane header: artifact path + close button */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-edge shrink-0">
-        <span
-          className="font-mono text-xs truncate flex-1 text-fg-2"
-          title={artifact.path}
-        >
-          {artifact.path}
-        </span>
-        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+    <ProjectDetailOverlay title={artifact.path} onClose={handleClose}>
+      {/* Fill the overlay body as a flex column: fixed action row + viewer that
+          owns its own scroll (so the generic overlay body doesn't double-scroll). */}
+      <div className="flex flex-col h-full">
+        {/* Action row: Exclude (moved here from the old inline header so it stays
+            reachable inside the content-agnostic overlay shell). */}
+        <div className="flex items-center justify-end px-3 py-1.5 border-b border-edge shrink-0">
           <button
             type="button"
             className="px-2 py-1 rounded-sm border border-edge hover:bg-inset transition-colors text-xs"
@@ -268,32 +266,21 @@ function InlineArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailP
           >
             Exclude
           </button>
-          <button
-            type="button"
-            className="text-fg-muted hover:text-fg px-1"
-            onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION })}
-            title="Close detail"
-            aria-label="Close detail"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+        </div>
+
+        {/* Content viewer — fills the remaining overlay body. */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ActiveArtifactView
+            artifact={artifact}
+            content={content}
+            projectRoot={project.path}
+            projectId={project.id}
+            projectName={project.name}
+            sessionId="project-view"
+            onContentChange={setContent}
+          />
         </div>
       </div>
-
-      {/* Content viewer */}
-      <div className="flex-1 overflow-hidden">
-        <ActiveArtifactView
-          artifact={artifact}
-          content={content}
-          projectRoot={project.path}
-          projectId={project.id}
-          projectName={project.name}
-          sessionId="project-view"
-          onContentChange={setContent}
-        />
-      </div>
-    </div>
+    </ProjectDetailOverlay>
   );
 }
