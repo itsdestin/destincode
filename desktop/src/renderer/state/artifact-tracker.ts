@@ -11,7 +11,10 @@ export interface ArtifactState {
   drawerOpenBySession: Record<string, boolean>;
   drawerExpanded: boolean;                            // panel fills the content region
   projectViewOpen: boolean;
-  activeArtifactId: string | null;
+  // Selected artifact is scoped per session (keyed by sessionId), so each
+  // session's drawer remembers which file was open across session switches.
+  // ProjectView uses the literal 'project-view' key for its own selection.
+  activeArtifactBySession: Record<string, string | null>;
 }
 
 export const initialArtifactState: ArtifactState = {
@@ -21,7 +24,7 @@ export const initialArtifactState: ArtifactState = {
   drawerOpenBySession: {},
   drawerExpanded: false,
   projectViewOpen: false,
-  activeArtifactId: null,
+  activeArtifactBySession: {},
 };
 
 export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactState {
@@ -33,20 +36,21 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
     case 'DRAWER_OPENED':
       return { ...s, drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: true } };
     case 'DRAWER_CLOSED':
-      // Reset expand so a re-opened drawer starts at its normal width.
+      // Reset expand + clear this session's selection so a re-opened drawer
+      // starts at its normal width on the list.
       return {
         ...s,
         drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: false },
         drawerExpanded: false,
-        activeArtifactId: null,
+        activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: null },
       };
     case 'DRAWER_EXPAND_TOGGLED':
       return { ...s, drawerExpanded: !s.drawerExpanded };
     case 'ACTIVE_ARTIFACT_SET':
-      return { ...s, activeArtifactId: a.artifactId };
+      return { ...s, activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: a.artifactId } };
     // Back gesture in detail view: return to list without closing the drawer.
     case 'ACTIVE_ARTIFACT_CLEARED':
-      return { ...s, activeArtifactId: null };
+      return { ...s, activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: null } };
     case 'PROJECT_VIEW_OPENED':
       return { ...s, projectViewOpen: true };
     case 'PROJECT_VIEW_CLOSED':

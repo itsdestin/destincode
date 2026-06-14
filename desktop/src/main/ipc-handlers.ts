@@ -2220,7 +2220,25 @@ export function registerIpcHandlers(
   // ProjectView to populate the sidebar without scoping to a single session.
   ipcMain.handle(ARTIFACT_IPC.LIST_PROJECTS_INDEX, async () => {
     const projects = await listProjects(CLAUDE_DIR);
-    return { ok: true, projects };
+    // The stored stats.artifactCount is seeded to 0 at project creation and only
+    // refreshed by rebuildIndex (which rarely runs), so it's almost always stale
+    // (showed "0 artifacts" for every project). Compute the live count fresh from
+    // each sidecar using the SAME "visible" filter the grid uses (internal +
+    // manually-included external) so the sidebar count matches what LIST_PROJECT
+    // returns.
+    const withCounts = await Promise.all(projects.map(async (p) => {
+      const sidecar = await readSidecar(p.path);
+      if (!sidecar || 'corrupted' in sidecar) {
+        return { ...p, stats: { ...p.stats, artifactCount: 0 } };
+      }
+      const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
+      const count = sidecar.artifacts.filter((a: any) =>
+        a.kind === 'internal' ||
+        (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
+      ).length;
+      return { ...p, stats: { ...p.stats, artifactCount: count } };
+    }));
+    return { ok: true, projects: withCounts };
   });
 
   // Task 7.3: remove a project from the central index. The project folder and

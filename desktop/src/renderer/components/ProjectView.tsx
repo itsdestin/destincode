@@ -12,8 +12,13 @@ import { ActiveArtifactView } from './artifact-views/ActiveArtifactView';
 import { ArtifactThumbnail } from './ArtifactThumbnail';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 
+// ProjectView keeps its own artifact selection separate from any chat session's
+// drawer, keyed under this reserved sessionId in activeArtifactBySession.
+const PV_SESSION = 'project-view';
+
 export function ProjectView() {
   const { state, dispatch } = useArtifact();
+  const pvActiveId = state.activeArtifactBySession[PV_SESSION] ?? null;
   const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts } = useTheme();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
@@ -49,7 +54,7 @@ export function ProjectView() {
     });
     // Clear the active artifact when the project switches so the detail pane
     // doesn't carry stale content from the previous project.
-    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED' });
+    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
   }, [activeProject?.id]);
 
   // Existence check: fold "file not on disk" into the deleted UI state alongside
@@ -262,25 +267,29 @@ export function ProjectView() {
           <div className="flex-1 overflow-auto grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start">
             {filtered.map((a) => {
               const filename = a.path.split('/').pop() ?? a.path;
-              const isActive = state.activeArtifactId === a.id;
+              const isActive = pvActiveId === a.id;
               const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
               return (
+                // Fixed height (h-44) + shrink-0 children → every card is the same
+                // size and always shows its thumbnail + name. Without this the
+                // h-28 thumbnail could be flex-shrunk to nothing in a grid row,
+                // which collapsed cards into blank/nameless pills.
                 <button
                   key={a.id}
                   type="button"
-                  className={`relative flex flex-col p-2 border rounded-sm transition-colors text-left overflow-hidden ${
+                  className={`relative flex flex-col h-44 p-2 border rounded-sm transition-colors text-left overflow-hidden ${
                     isActive
                       ? 'border-accent bg-inset'
                       : 'border-edge hover:bg-inset'
                   } ${isDeleted ? 'opacity-60' : ''}`}
-                  onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_SET', artifactId: a.id })}
+                  onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId: PV_SESSION, artifactId: a.id })}
                   title={isDeleted ? `${a.path}\nDeleted (file is no longer on disk)` : a.path}
                 >
                   {/* Mini pre-render of the file (image/text/html) or ext-letter fallback */}
                   <ArtifactThumbnail
                     artifact={a}
                     projectPath={activeProject?.path ?? ''}
-                    className={`h-28 w-full rounded-sm mb-2 ${isDeleted ? 'grayscale' : ''}`}
+                    className={`h-28 w-full rounded-sm mb-2 shrink-0 ${isDeleted ? 'grayscale' : ''}`}
                   />
                   {/* "Deleted" overlay badge — anchored top-right of the thumbnail */}
                   {isDeleted && (
@@ -291,7 +300,7 @@ export function ProjectView() {
                       ✕ deleted
                     </span>
                   )}
-                  <div className={`text-xs truncate w-full text-fg-2 ${isDeleted ? 'line-through' : ''}`}>
+                  <div className={`text-xs truncate w-full text-fg-2 shrink-0 ${isDeleted ? 'line-through' : ''}`}>
                     {filename}
                   </div>
                 </button>
@@ -301,8 +310,8 @@ export function ProjectView() {
         </main>
 
         {/* Right detail pane — shown when an artifact is selected (Task 7.2) */}
-        {state.activeArtifactId && (() => {
-          const activeArtifact = artifacts.find((a) => a.id === state.activeArtifactId);
+        {pvActiveId && (() => {
+          const activeArtifact = artifacts.find((a) => a.id === pvActiveId);
           if (!activeArtifact || !activeProject) return null;
           return (
             <ProjectViewDetailPane
@@ -399,7 +408,7 @@ function ProjectViewDetailPane({ artifact, project, onRefreshArtifacts }: Detail
       ? artifact.path
       : artifact.absolutePath!;
     await (window.claude as any).artifacts.exclude(project.path, canonicalPath);
-    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED' });
+    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
     // Refresh the artifact list so the excluded artifact disappears from the grid
     onRefreshArtifacts();
   };
@@ -417,7 +426,7 @@ function ProjectViewDetailPane({ artifact, project, onRefreshArtifacts }: Detail
         <button
           type="button"
           className="text-fg-muted hover:text-fg px-1 shrink-0 ml-1"
-          onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED' })}
+          onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION })}
           title="Close detail"
         >
           ×

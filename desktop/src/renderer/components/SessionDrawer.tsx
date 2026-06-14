@@ -81,9 +81,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const { state, dispatch } = useArtifact();
   const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts } = useTheme();
   const allArtifacts = state.sessionArtifacts[sessionId] ?? [];
-  // Drawer open/closed is per-session (remembered across switches). This drawer
-  // instance belongs to `sessionId`, so read/toggle that session's flag.
+  // Drawer open/closed AND the selected artifact are per-session (remembered
+  // across switches). This drawer instance belongs to `sessionId`.
   const drawerOpen = state.drawerOpenBySession[sessionId] ?? false;
+  const activeArtifactId = state.activeArtifactBySession[sessionId] ?? null;
 
   // Existence check (unchanged): mark artifacts whose file is gone as orphans,
   // folded into the "deleted" UI state alongside explicit delete versions.
@@ -117,7 +118,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     () => allArtifacts.filter((a) => a.status === 'deleted' || orphanIds.has(a.id)).length,
     [allArtifacts, orphanIds],
   );
-  const active = artifacts.find((a) => a.id === state.activeArtifactId);
+  const active = artifacts.find((a) => a.id === activeArtifactId);
   const [content, setContent] = useState<string | null>(null);
 
   useEffect(() => {
@@ -282,9 +283,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     if (editState.editing) { editRef.current?.cancelEdit(); return; }
     if (expanded) { dispatch({ type: 'DRAWER_EXPAND_TOGGLED' }); return; }
     if (listOpen) { setListOpen(false); return; }
-    if (state.activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED' }); return; }
+    if (activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId }); return; }
     dispatch({ type: 'DRAWER_CLOSED', sessionId });
-  }, [findOpen, editState.editing, expanded, listOpen, state.activeArtifactId, dispatch, cancelRename, sessionId]);
+  }, [findOpen, editState.editing, expanded, listOpen, activeArtifactId, dispatch, cancelRename, sessionId]);
 
   useEscClose(drawerOpen, handleBack);
 
@@ -343,7 +344,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             <ArtifactListItem
               key={a.id}
               artifact={a}
-              isActive={state.activeArtifactId === a.id}
+              isActive={activeArtifactId === a.id}
               isDeleted={a.status === 'deleted' || orphanIds.has(a.id)}
               onSelect={() => {
                 // Preview-on-click: set the active artifact but KEEP the list open
@@ -353,7 +354,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 // Cancel any in-progress rename first so its open field doesn't
                 // bleed onto the newly-selected artifact.
                 if (renameActiveRef.current || renaming) cancelRename();
-                dispatch({ type: 'ACTIVE_ARTIFACT_SET', artifactId: a.id });
+                dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: a.id });
                 setListOpen(true);
               }}
             />

@@ -63,7 +63,7 @@ export function FilepathToken({ path, sessionId }: Props) {
     });
     if (sessMatch) {
       dispatch({ type: 'DRAWER_OPENED', sessionId });
-      dispatch({ type: 'ACTIVE_ARTIFACT_SET', artifactId: sessMatch.id });
+      dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: sessMatch.id });
       return;
     }
     // 2. Otherwise: pivot to Project View. (Task 7 builds the actual

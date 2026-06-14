@@ -52,11 +52,22 @@ describe('artifactReducer', () => {
     expect(s.drawerOpenBySession['sess_b']).toBe(true);
   });
 
-  it('DRAWER_CLOSED clears that session and activeArtifactId', () => {
+  it('DRAWER_CLOSED clears that session and its selection', () => {
     let s = artifactReducer(initialArtifactState, { type: 'DRAWER_OPENED', sessionId: 'sess_a' });
-    s = artifactReducer(s, { type: 'ACTIVE_ARTIFACT_SET', artifactId: 'art_1' });
+    s = artifactReducer(s, { type: 'ACTIVE_ARTIFACT_SET', sessionId: 'sess_a', artifactId: 'art_1' });
     s = artifactReducer(s, { type: 'DRAWER_CLOSED', sessionId: 'sess_a' });
     expect(s.drawerOpenBySession['sess_a']).toBe(false);
-    expect(s.activeArtifactId).toBeNull();
+    expect(s.activeArtifactBySession['sess_a']).toBeNull();
+  });
+
+  it('selected artifact is scoped per session', () => {
+    let s = artifactReducer(initialArtifactState, { type: 'ACTIVE_ARTIFACT_SET', sessionId: 'sess_a', artifactId: 'art_1' });
+    s = artifactReducer(s, { type: 'ACTIVE_ARTIFACT_SET', sessionId: 'sess_b', artifactId: 'art_2' });
+    expect(s.activeArtifactBySession['sess_a']).toBe('art_1');
+    expect(s.activeArtifactBySession['sess_b']).toBe('art_2');
+    // Clearing one session leaves the other intact.
+    s = artifactReducer(s, { type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: 'sess_a' });
+    expect(s.activeArtifactBySession['sess_a']).toBeNull();
+    expect(s.activeArtifactBySession['sess_b']).toBe('art_2');
   });
 });

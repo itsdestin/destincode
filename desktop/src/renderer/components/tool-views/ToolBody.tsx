@@ -141,7 +141,7 @@ function ToolFilePreview({ fp, sessionId, chips }: { fp: string; sessionId?: str
   const open = () => {
     if (!sessionId) return; // per-session drawer needs a session to scope to
     artifactCtx?.dispatch({ type: 'DRAWER_OPENED', sessionId });
-    artifactCtx?.dispatch({ type: 'ACTIVE_ARTIFACT_SET', artifactId: artifact.id });
+    artifactCtx?.dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: artifact.id });
   };
 
   return (
