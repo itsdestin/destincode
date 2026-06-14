@@ -53,7 +53,7 @@ import { MarketplaceProvider } from './state/marketplace-context';
 import ThemeShareSheet from './components/ThemeShareSheet';
 import SkillEditor from './components/SkillEditor';
 import ShareSheet from './components/ShareSheet';
-import { ProjectView } from './components/ProjectView';
+import { ProjectView } from './components/project-view/ProjectView';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import FirstRunView from './components/FirstRunView';
@@ -2587,7 +2587,10 @@ function AppInner() {
           Renders null when projectViewOpen === false so no DOM overhead when closed.
           z-[8000]: sits below the SessionStrip dropdown (9000) but above all
           L1–L4 overlays, the same tier used by similar full-screen views. */}
-      <ProjectView />
+      <ProjectView
+        onNewConversation={(cwd) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); createSession(cwd, false); }}
+        onResumeConversation={(sid, slug, path) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path); }}
+      />
     </div>
     </ArtifactProvider>
   );
