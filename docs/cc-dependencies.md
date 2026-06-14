@@ -202,3 +202,15 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
 - **Break symptom:** Artifact Tracker subscribes to `TRANSCRIPT_TOOL_USE` but the filter matching tool names (`tool === 'Write' | 'Edit' | 'MultiEdit'`) sees no matches because CC renamed the tools. The Session Drawer artifact list stays empty even as Claude edits files. External manifestation: user asks "why aren't my edits showing up in the drawer?" and sees a blank list despite successful file operations in the terminal.
 - **Detection:** Smoke test by asking Claude to write/edit a file in a session and confirming it appears in the Session Drawer within 1 second. If not, check the tool call in the JSONL transcript and compare the tool names in the Tracker's filter against what CC actually emitted.
 - **Review trigger:** CC CHANGELOG entries renaming or retiring Write/Edit/Delete/MultiEdit tools, or changing the `args` shape for file-path parameters in these tools.
+
+### Project View context discovery (Desktop)
+
+- **What:** The Project View Context tab surfaces the agent-context files that shape Claude's behavior in a project. `desktop/src/main/project-context.ts` (+ the pure mapper `desktop/src/main/project/context-discovery.ts`) discovers them by reading Claude Code's on-disk conventions, and `desktop/src/main/project-conversations.ts` lists a project's past sessions by mapping its path to CC's project-slug directory.
+- **CC-coupled files:**
+  - `desktop/src/main/project-context.ts` — reads project + global `CLAUDE.md`/`AGENTS.md`, `.claude/rules/*.md` (frontmatter `globs:`), and `~/.claude/projects/<slug>/memory/` (`MEMORY.md` index + per-fact notes)
+  - `desktop/src/main/project/context-discovery.ts` — pure mapper that classifies each file's load timing
+  - `desktop/src/main/project-conversations.ts` — uses `cwdToProjectSlug` to filter `listPastSessions()` to one project, and `loadHistory()` to read JSONL transcripts for the no-launch preview
+  - `desktop/src/shared/project-context-types.ts` — `RECOGNIZED_INSTRUCTION_FILES` (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`)
+- **Depends on CC's:** project-slug directory layout (`~/.claude/projects/<slug>/`, encoded by `cwdToProjectSlug`); the `CLAUDE.md` / `.claude/rules/` instruction-file + project-memory conventions; the `memory/MEMORY.md` index format; and the JSONL transcript shape consumed by `loadHistory` (already covered by the JSONL transcript-location entry above).
+- **Break symptom:** If CC changes the slug encoding, the Context tab shows no memory and the Conversations tab shows no sessions for a project (slug points at a non-existent dir). If CC relocates project memory or changes the instruction-file discovery (e.g. stops reading root `CLAUDE.md`), the Context tab's grouping no longer reflects what actually loads into Claude — the teaching layer silently lies.
+- **Review trigger:** CC CHANGELOG entries touching `~/.claude/projects/` layout, memory storage/recall, `CLAUDE.md`/`AGENTS.md`/rules discovery, or the slug-encoding scheme.
