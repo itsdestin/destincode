@@ -217,8 +217,10 @@ function ProjectsButton() {
  *  (per plan: "Hidden completely if the session has zero artifacts"). */
 function ArtifactDrawerButton({ activeSessionId }: { activeSessionId: string | null }) {
   const { state, dispatch } = useArtifact();
+  // Count only still-present artifacts — exclude ones deleted during the session
+  // so the badge reflects what's actually on disk, not the full activity log.
   const artifactCount = activeSessionId
-    ? (state.sessionArtifacts[activeSessionId] ?? []).length
+    ? (state.sessionArtifacts[activeSessionId] ?? []).filter((a) => a.status !== 'deleted').length
     : 0;
 
   // Fix: always show the button so users can open the drawer even before any

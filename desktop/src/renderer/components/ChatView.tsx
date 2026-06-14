@@ -457,6 +457,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
           {findOpen && (
             <ContentFindBar
               containerRef={contentRef}
+              scrollRef={scrollContainerRef}
               highlightName="chat-find"
               placeholder="Find in chat"
               positionClassName="right-3 top-[calc(var(--top-chrome-height,3rem)+0.5rem)]"

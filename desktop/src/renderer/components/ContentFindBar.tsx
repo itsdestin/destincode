@@ -41,7 +41,7 @@ function computeRanges(root: HTMLElement, query: string): Range[] {
   return ranges;
 }
 
-export function ContentFindBar({ containerRef, onClose, resetKey, highlightName = 'artifact-find', placeholder = 'Find in document', positionClassName = 'top-2 right-2' }: {
+export function ContentFindBar({ containerRef, onClose, resetKey, highlightName = 'artifact-find', placeholder = 'Find in document', positionClassName = 'top-2 right-2', scrollRef }: {
   containerRef: React.RefObject<HTMLElement | null>;
   onClose: () => void;
   resetKey: string; // changes when the active artifact changes → reset the search
@@ -53,6 +53,13 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
   // Tailwind positioning utilities for the absolute bar (caller anchors it past
   // any overlaid chrome). Default sits top-right of the searched container.
   positionClassName?: string;
+  // The actual scrolling viewport, when it differs from the searched container.
+  // Used for the "is the current match off-screen?" check. In the artifact
+  // viewer the container IS the scroller, so this defaults to containerRef; the
+  // chat timeline searches an inner content div nested inside .chat-scroll, so
+  // it must pass the scroll element here or the off-screen check never fires
+  // (the content div's rect spans the full scroll height).
+  scrollRef?: React.RefObject<HTMLElement | null>;
 }) {
   const HL = highlightName;
   const HL_CURRENT = `${highlightName}-current`;
@@ -80,13 +87,17 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
     (CSS as any).highlights.set(HL, new HighlightCtor(...ranges));
     (CSS as any).highlights.set(HL_CURRENT, new HighlightCtor(ranges[cur]));
     try {
+      // Measure "off-screen" against the actual scrolling viewport, not the
+      // searched container (they differ for the chat timeline). Falls back to
+      // the container when no scrollRef is given (artifact viewer).
+      const viewport = scrollRef?.current ?? root;
       const rect = ranges[cur].getBoundingClientRect();
-      const rootRect = root.getBoundingClientRect();
-      if (rect.top < rootRect.top || rect.bottom > rootRect.bottom) {
+      const vpRect = viewport.getBoundingClientRect();
+      if (rect.top < vpRect.top || rect.bottom > vpRect.bottom) {
         (ranges[cur].startContainer.parentElement as HTMLElement | null)?.scrollIntoView({ block: 'center' });
       }
     } catch { /* range geometry can throw on detached nodes — ignore */ }
-  }, [query, current, resetKey, containerRef, HL, HL_CURRENT]);
+  }, [query, current, resetKey, containerRef, scrollRef, HL, HL_CURRENT]);
 
   // Always clear highlights when the bar unmounts (closed).
   useEffect(() => () => clearHighlights(HL, HL_CURRENT), [HL, HL_CURRENT]);
