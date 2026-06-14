@@ -215,13 +215,35 @@ function ProjectsButton() {
  *  is always in-context when the main app is rendering HeaderBar.
  *  Hidden entirely when there are no artifacts for the active session
  *  (per plan: "Hidden completely if the session has zero artifacts"). */
-function ArtifactDrawerButton({ activeSessionId }: { activeSessionId: string | null }) {
+function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionId: string | null; projectRoot?: string }) {
   const { state, dispatch } = useArtifact();
-  // Count only still-present artifacts — exclude ones deleted during the session
-  // so the badge reflects what's actually on disk, not the full activity log.
-  const artifactCount = activeSessionId
-    ? (state.sessionArtifacts[activeSessionId] ?? []).filter((a) => a.status !== 'deleted').length
-    : 0;
+  const sessionArtifacts = activeSessionId ? (state.sessionArtifacts[activeSessionId] ?? []) : [];
+
+  // Count only still-present artifacts. Two ways a file stops being present:
+  //  1. status === 'deleted' — an explicit Delete tool version (rare; CC has no
+  //     Delete tool, so this mostly never happens).
+  //  2. "orphan" — the file was removed via `bash rm` (which produces NO
+  //     artifact event), so the record stays status:'active' but the file is
+  //     gone from disk. The drawer detects these with checkExistence; we mirror
+  //     that here so the badge reflects what's actually on disk, not the full
+  //     session activity log. Re-checks when the list changes or the drawer
+  //     toggles (same triggers the drawer uses).
+  const [missingIds, setMissingIds] = useState<Set<string>>(() => new Set());
+  const liveIds = sessionArtifacts.filter((a) => a.status !== 'deleted').map((a) => a.id);
+  const idsKey = liveIds.join(',');
+  useEffect(() => {
+    if (!projectRoot || liveIds.length === 0) { setMissingIds(new Set()); return; }
+    let cancelled = false;
+    (window.claude as any).artifacts.checkExistence(projectRoot, liveIds)
+      .then((res: any) => { if (!cancelled && res?.ok) setMissingIds(new Set(res.missingIds ?? [])); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectRoot, idsKey, state.drawerOpen]);
+
+  const artifactCount = sessionArtifacts.filter(
+    (a) => a.status !== 'deleted' && !missingIds.has(a.id)
+  ).length;
 
   // Fix: always show the button so users can open the drawer even before any
   // artifacts exist. The count badge is conditional — hidden when count is 0.
@@ -555,7 +577,10 @@ export default function HeaderBar({
         <ProjectsButton />
         {/* Artifact drawer trigger — hidden when session has zero artifacts
             (plan: "Hidden completely if the session has zero artifacts"). */}
-        <ArtifactDrawerButton activeSessionId={activeSessionId} />
+        <ArtifactDrawerButton
+          activeSessionId={activeSessionId}
+          projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}
+        />
         {isRemoteMode() && (
           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 border border-blue-500/25 shrink-0">
             REMOTE
