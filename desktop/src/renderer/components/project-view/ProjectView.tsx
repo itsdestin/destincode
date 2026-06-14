@@ -13,6 +13,7 @@ import { useArtifact } from '../../state/ArtifactContext';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import { ArtifactsTab } from './tabs/ArtifactsTab';
 import { ProjectHero } from './ProjectHero';
+import { ProjectSwitcher } from './ProjectSwitcher';
 
 type TabId = 'artifacts' | 'conversations' | 'context';
 
@@ -146,6 +147,15 @@ export function ProjectView(props: ProjectViewProps) {
 
   if (!state.projectViewOpen) return null;
 
+  // Add-a-project (v1): a project only enters the index once a session runs in
+  // its folder, so there's no folder-register flow to kick off here. The switcher
+  // shows its own inline "start a session in a folder to add it" hint on click,
+  // so this is intentionally a no-op (closing the palette would hide the hint).
+  // Don't invent a folder-registration path.
+  const handleAddProject = () => {
+    /* no-op — ProjectSwitcher surfaces the inline hint itself */
+  };
+
   const confirmDelete = async () => {
     if (!deletingProject) return;
     await (window.claude as any).artifacts.deleteProject(deletingProject.id, alsoDeleteSidecar);
@@ -256,7 +266,6 @@ export function ProjectView(props: ProjectViewProps) {
                 project={activeProject}
                 stats={heroStats}
                 repo={heroRepo}
-                // TODO(Task 2.3): open <ProjectSwitcher> when switcherOpen.
                 onOpenSwitcher={() => setSwitcherOpen(true)}
                 onNewConversation={props.onNewConversation}
               />
@@ -304,6 +313,17 @@ export function ProjectView(props: ProjectViewProps) {
           </div>
         </main>
       </div>
+
+      {/* Project switcher (command palette) — Task 2.3. */}
+      {switcherOpen && (
+        <ProjectSwitcher
+          projects={projects}
+          activeId={activeProject?.id ?? null}
+          onSelect={(p) => { setActiveProject(p); setSwitcherOpen(false); }}
+          onClose={() => setSwitcherOpen(false)}
+          onAddProject={handleAddProject}
+        />
+      )}
 
       {/* Project deletion confirmation modal */}
       {deletingProject && (
