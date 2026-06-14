@@ -466,9 +466,16 @@ export default function ChatView({ sessionId, visible, resumeInfo }: Props) {
               );
               });
             })()}
-            {/* Awaiting-approval tools pop out as standalone bubbles at the bottom */}
+            {/* Awaiting-approval tools (incl. AskUserQuestion) pop out as standalone
+                bubbles at the bottom. The `in-view` class is required: theme-engine's
+                glass selector is `[data-wallpaper] .in-view .bg-inset` — without an
+                `.in-view` ancestor the bubble gets the translucent color-mix but NOT
+                the backdrop-filter blur, so it reads as a flat panel instead of frosted
+                glass. Normal timeline bubbles get `in-view` from their wrapper; these
+                pop-out bubbles aren't in that wrapper, so set it here. They're pinned
+                at the bottom and always visible, so a static `in-view` is correct. */}
             {awaitingTools.map((tool) => (
-                <div key={tool.toolUseId} className="flex justify-start px-4 py-0.5">
+                <div key={tool.toolUseId} className="in-view flex justify-start px-4 py-0.5">
                   <div className="assistant-bubble max-w-[85%] rounded-2xl rounded-bl-sm bg-inset px-5 py-3">
                     <ToolCard tool={tool} sessionId={sessionId} />
                   </div>
