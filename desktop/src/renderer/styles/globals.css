@@ -1102,6 +1102,12 @@ body[data-mode="buddy-chat"] #theme-bg {
 :root {
   --frame-edge: 10px;
   --frame-corner: 12px;
+  /* Width of the framed-shell's right pane (artifact drawer OR game pane).
+     The artifact drawer uses the 480px default; App overrides it to a narrower
+     value when the game pane is the active right pane. Referenced by both
+     .drawer-pane (width) and chrome-glass--drawer-open (cutout offset) so the
+     frosted-chrome cutout always matches the actual pane width. */
+  --right-pane-width: 480px;
 }
 
 /* ─── Single chrome-glass surface ─────────────────────────────────────
@@ -1235,15 +1241,15 @@ body[data-mode="buddy-chat"] #theme-bg {
   display: none;
 }
 
-/* When drawer is open, the chat cutout's right edge shifts left to
-   leave room for: outer right frame-edge + drawer width + frame-divider
-   = 2*frame-edge + 480px. The polygon shape stays identical (rounded
-   corners and all) — only --chat-right-offset changes. Drawer-pane's
-   own border-radius creates the drawer's rounded corners; chrome-glass
-   shows through where drawer-pane's rounded edges cut into the
+/* When a right pane (artifact drawer OR game pane) is open, the chat
+   cutout's right edge shifts left to leave room for: outer right frame-edge +
+   pane width + frame-divider = 2*frame-edge + --right-pane-width. The polygon
+   shape stays identical (rounded corners and all) — only --chat-right-offset
+   changes. The pane's own border-radius creates its rounded corners;
+   chrome-glass shows through where those rounded edges cut into the
    rectangle. */
 .chrome-glass--drawer-open {
-  --chat-right-offset: calc(var(--frame-edge) * 2 + 480px);
+  --chat-right-offset: calc(var(--frame-edge) * 2 + var(--right-pane-width, 480px));
 }
 
 /* Framed-shell: flex row that holds chat-pane + optional drawer-pane.
@@ -1394,7 +1400,7 @@ body[data-mode="buddy-chat"] #theme-bg {
    border-radius matches the cutout's --frame-corner so the drawer's
    visible corners follow the same rounded shape. */
 .framed-shell > .drawer-pane {
-  width: 480px;
+  width: var(--right-pane-width, 480px);
   flex-shrink: 0;
   background-color: var(--canvas);
   margin-top: var(--top-chrome-height, 3rem);
@@ -1425,6 +1431,16 @@ body[data-mode="buddy-chat"] #theme-bg {
   background-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 ::highlight(artifact-find-current) {
+  background-color: var(--accent);
+  color: var(--on-accent);
+}
+/* Chat-timeline find (Ctrl+F over message history). Distinct highlight name
+   from the artifact viewer so the two find bars never clobber each other's
+   ranges on the global CSS.highlights registry. */
+::highlight(chat-find) {
+  background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+::highlight(chat-find-current) {
   background-color: var(--accent);
   color: var(--on-accent);
 }

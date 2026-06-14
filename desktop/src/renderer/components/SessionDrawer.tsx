@@ -18,6 +18,19 @@ import { getPlatform } from '../platform';
 
 type SortKey = 'recent' | 'name' | 'type';
 
+// Maps the rename IPC's error codes to user-facing copy. Falls back to a
+// generic message so an unexpected code still surfaces *something* rather than
+// silently keeping the old name.
+function renameErrorCopy(code: unknown): string {
+  switch (code) {
+    case 'name-taken': return 'A file with that name already exists.';
+    case 'invalid-name': return 'That name has characters that aren’t allowed.';
+    case 'file-missing': return 'The original file is no longer on disk.';
+    case 'artifact-not-found': return 'This file is no longer tracked.';
+    default: return 'Couldn’t rename the file. Try a different name.';
+  }
+}
+
 interface Props {
   sessionId: string;
   projectRoot: string;
@@ -121,8 +134,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const expanded = state.drawerExpanded;             // fill-the-region (shared, drives ChatView)
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
+  // Inline rename failure message (e.g. name taken). Null = no error.
+  const [renameError, setRenameError] = useState<string | null>(null);
   // Guards against the Enter-then-blur double-commit (both fire on the input).
   const renameActiveRef = useRef(false);
+  // Lets us re-focus the rename input after a failed commit (autoFocus only
+  // fires on first mount; the field stays mounted across a failed attempt).
+  const renameInputRef = useRef<HTMLInputElement>(null);
   // Edit control is owned by ActiveArtifactView; the header drives it through
   // this ref + mirrors its state so the toolbar can swap pencil ↔ save/cancel.
   const editRef = useRef<ActiveArtifactHandle>(null);
@@ -144,6 +162,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const startRename = useCallback(() => {
     if (!active) return;
     setRenameDraft(baseName(active.path));
+    setRenameError(null);
     renameActiveRef.current = true;
     setRenaming(true);
   }, [active]);
@@ -151,24 +170,39 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const cancelRename = useCallback(() => {
     renameActiveRef.current = false;
     setRenaming(false);
+    setRenameError(null);
   }, []);
 
-  const commitRename = useCallback(async () => {
+  // `viaEnter` distinguishes an explicit Enter commit from a blur commit. On a
+  // failed Enter we re-focus the field so the user can immediately retry; on a
+  // failed blur we keep the field open with the error but DON'T steal focus
+  // back (that would trap the cursor — you could never click away from a bad
+  // name). Either way the error is shown rather than silently swallowed.
+  const commitRename = useCallback(async (viaEnter = false) => {
     if (!renameActiveRef.current || !active) return;
     renameActiveRef.current = false;
-    setRenaming(false);
     const next = renameDraft.trim();
-    if (!next || next === baseName(active.path)) return; // unchanged / empty → no-op
+    if (!next || next === baseName(active.path)) { // unchanged / empty → no-op
+      setRenaming(false);
+      setRenameError(null);
+      return;
+    }
     const res = await (window.claude as any).artifacts.rename(projectRoot, active.id, next);
     if (res?.ok) {
+      setRenaming(false);
+      setRenameError(null);
       // Re-list from the (now-updated) sidecar so the header + list show the new name.
       const r = await (window.claude as any).artifacts.listSession(sessionId, projectRoot);
       if (r?.ok && Array.isArray(r.artifacts)) {
         dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: r.artifacts });
       }
     } else {
-      // name-taken / invalid — keep the old name. (A toast surface is a follow-up.)
-      console.warn('[SessionDrawer] rename failed:', res?.error);
+      // Failure (name-taken / invalid / etc.) — keep the field open with the old
+      // name and surface WHY, so the rename doesn't silently appear to do nothing.
+      setRenameError(renameErrorCopy(res?.error));
+      renameActiveRef.current = true; // re-arm so the next Enter/blur commits again
+      setRenaming(true);
+      if (viaEnter) requestAnimationFrame(() => renameInputRef.current?.focus());
     }
   }, [active, renameDraft, projectRoot, sessionId, dispatch]);
 
@@ -313,6 +347,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 // so the user can click across artifacts to preview them. The list
                 // collapses only when they engage the content pane (see the
                 // contentRef effect: click into it or scroll it).
+                // Cancel any in-progress rename first so its open field doesn't
+                // bleed onto the newly-selected artifact.
+                if (renameActiveRef.current || renaming) cancelRename();
                 dispatch({ type: 'ACTIVE_ARTIFACT_SET', artifactId: a.id });
                 setListOpen(true);
               }}
@@ -343,18 +380,25 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
         {renaming ? (
-          <div className="flex items-center gap-2 min-w-0 px-1">
-            <span className="inline-flex items-center border border-accent rounded-md overflow-hidden">
+          <div className="flex items-center gap-2 min-w-0 px-1 relative">
+            <span className={`inline-flex items-center border rounded-md overflow-hidden ${renameError ? 'border-red-500' : 'border-accent'}`}>
               <input
+                ref={renameInputRef}
                 autoFocus
                 value={renameDraft}
-                onChange={(e) => setRenameDraft(e.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitRename(); } }}
+                onChange={(e) => { setRenameDraft(e.target.value); if (renameError) setRenameError(null); }}
+                onBlur={() => commitRename(false)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitRename(true); } }}
                 className="bg-canvas text-fg text-[13px] font-semibold px-2 py-1 w-[150px] outline-none"
               />
               <span className="text-[12px] text-fg-muted font-mono px-2">{extOf(fileName)}</span>
             </span>
+            {/* Inline failure note — keeps the field open so the user can correct it. */}
+            {renameError && (
+              <span className="absolute left-1 top-full mt-1 text-[11px] text-red-400 whitespace-nowrap z-10">
+                {renameError}
+              </span>
+            )}
           </div>
         ) : (
           <button

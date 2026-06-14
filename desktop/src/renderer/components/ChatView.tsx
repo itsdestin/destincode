@@ -14,6 +14,7 @@ import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
 import { useArtifact } from '../state/ArtifactContext';
 import { SessionDrawer } from './SessionDrawer';
+import { ContentFindBar } from './ContentFindBar';
 
 interface Props {
   sessionId: string;
@@ -21,6 +22,11 @@ interface Props {
   resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
   /** Working directory of the session — used to resolve the active project for the artifact drawer. */
   cwd?: string;
+  /** Game pane content, when the multiplayer panel is open. Rendered in the
+   *  framed-shell's right slot (same chrome as the artifact drawer). Only the
+   *  active session's ChatView receives this — App passes null otherwise. When
+   *  present it takes precedence over the artifact drawer in the right slot. */
+  gamePane?: React.ReactNode;
 }
 
 function HistoryExpandButton({ sessionId, resumeInfo }: {
@@ -65,7 +71,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props) {
+export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -74,6 +80,12 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props)
   const { state: artifactState } = useArtifact();
   const drawerOpen = artifactState.drawerOpen;
   const drawerExpanded = artifactState.drawerExpanded;
+  // The game pane and artifact drawer share the framed-shell's right slot.
+  // The game pane wins when both are somehow open (App also enforces mutual
+  // exclusivity, so this is just a render-time safety net).
+  const gameOpen = !!gamePane;
+  // Either occupant means the right slot is in use → frame the chat accordingly.
+  const rightPaneOpen = gameOpen || drawerOpen;
 
   // Resolve the active project when the artifact drawer opens. We need
   // projectRoot / projectId / projectName to pass to SessionDrawer so its
@@ -119,6 +131,9 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props)
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
+  // Ctrl+F find-over-chat-history. Searches the message timeline (contentRef)
+  // via the same CSS-Highlight ContentFindBar the artifact viewer uses.
+  const [findOpen, setFindOpen] = useState(false);
 
   // Single pass — compute all tool status flags, memoized to avoid re-iterating
   // the Map on every render (toolCalls is a new ref on every reducer dispatch)
@@ -304,6 +319,25 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props)
     };
   }, []);
 
+  // Ctrl/Cmd+F opens the chat-history find bar. Only the visible ChatView
+  // responds (one per session is mounted). Defers to the artifact drawer's own
+  // find when the pointer is over the drawer — that handler preventDefaults in
+  // its hover case, and we additionally bail on drawer-hover so the two never
+  // both open regardless of which window listener runs first.
+  useEffect(() => {
+    if (!visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || (e.key !== 'f' && e.key !== 'F')) return;
+      if (e.defaultPrevented) return;
+      const drawer = document.querySelector('.framed-shell .drawer-pane');
+      if (drawer && drawer.matches(':hover')) return; // drawer owns find when hovered
+      e.preventDefault();
+      setFindOpen(true);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [visible]);
+
   // Wheel scroll acceleration: rapid successive touchpad/mousewheel flicks
   // compound — the 5th flick in a row scrolls farther than the 1st. A pause
   // (~350ms) resets the multiplier so an intentional small scroll stays small.
@@ -414,9 +448,22 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props)
           are only needed by the drawer's artifacts.save IPC call and will be
           resolved in a later task when session metadata is threaded to ChatView. */}
       {/* drawer-open modifier collapses chat pane on narrow screens (Task 6.3) */}
-      <div className={`framed-shell${drawerOpen ? ' drawer-open' : ''}${drawerExpanded ? ' drawer-expanded' : ''}`}>
+      <div className={`framed-shell${rightPaneOpen ? ' drawer-open' : ''}${drawerExpanded && !gameOpen ? ' drawer-expanded' : ''}`}>
         <div className="frame-edge" />
         <div className="chat-pane">
+          {/* Chat-history find bar — sibling of (not inside) the scroll/content
+              container so its own text isn't matched. Anchored below the
+              overlaid header chrome via the top offset. */}
+          {findOpen && (
+            <ContentFindBar
+              containerRef={contentRef}
+              highlightName="chat-find"
+              placeholder="Find in chat"
+              positionClassName="right-3 top-[calc(var(--top-chrome-height,3rem)+0.5rem)]"
+              resetKey={sessionId}
+              onClose={() => setFindOpen(false)}
+            />
+          )}
           <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
            <div ref={contentRef}>
         {state.timeline.length === 0 && !state.isThinking ? (
@@ -556,7 +603,16 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd }: Props)
             cwd via listProjectsIndex() in the useEffect above. Until the lookup
             completes they fall back to empty strings / 'project', which is safe
             because SessionDrawer renders an empty list rather than crashing. */}
-        {drawerOpen && (
+        {/* Right slot: the game pane takes precedence over the artifact drawer
+            (App keeps them mutually exclusive, so normally only one is open).
+            Both render as a .drawer-pane so they share the framed chrome; the
+            game pane is narrower via --right-pane-width (set by App). */}
+        {gameOpen ? (
+          <>
+            <div className="frame-divider" />
+            <div className="drawer-pane game-pane">{gamePane}</div>
+          </>
+        ) : drawerOpen && (
           <>
             <div className="frame-divider" />
             <div className="drawer-pane">

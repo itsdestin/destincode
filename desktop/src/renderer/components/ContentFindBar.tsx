@@ -8,16 +8,13 @@
 // matched by the search.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-const HL = 'artifact-find';
-const HL_CURRENT = 'artifact-find-current';
-
 function highlightsSupported(): boolean {
   return typeof CSS !== 'undefined' && 'highlights' in CSS && typeof (window as any).Highlight === 'function';
 }
 
-function clearHighlights() {
+function clearHighlights(hl: string, hlCurrent: string) {
   const h = (CSS as any).highlights;
-  if (h) { h.delete(HL); h.delete(HL_CURRENT); }
+  if (h) { h.delete(hl); h.delete(hlCurrent); }
 }
 
 // Walk text nodes in `root` and build a Range for every case-insensitive
@@ -44,11 +41,21 @@ function computeRanges(root: HTMLElement, query: string): Range[] {
   return ranges;
 }
 
-export function ContentFindBar({ containerRef, onClose, resetKey }: {
+export function ContentFindBar({ containerRef, onClose, resetKey, highlightName = 'artifact-find', placeholder = 'Find in document', positionClassName = 'top-2 right-2' }: {
   containerRef: React.RefObject<HTMLElement | null>;
   onClose: () => void;
   resetKey: string; // changes when the active artifact changes → reset the search
+  // Distinct highlight registry name per surface, so two find bars (e.g. the
+  // artifact viewer and the chat timeline) don't clobber each other's ranges on
+  // the global CSS.highlights map. Needs a matching ::highlight() CSS rule.
+  highlightName?: string;
+  placeholder?: string;
+  // Tailwind positioning utilities for the absolute bar (caller anchors it past
+  // any overlaid chrome). Default sits top-right of the searched container.
+  positionClassName?: string;
 }) {
+  const HL = highlightName;
+  const HL_CURRENT = `${highlightName}-current`;
   const [query, setQuery] = useState('');
   const [count, setCount] = useState(0);
   const [current, setCurrent] = useState(0);
@@ -67,7 +74,7 @@ export function ContentFindBar({ containerRef, onClose, resetKey }: {
     if (!root || !highlightsSupported()) { setCount(0); return; }
     const ranges = computeRanges(root, query);
     setCount(ranges.length);
-    if (ranges.length === 0) { clearHighlights(); return; }
+    if (ranges.length === 0) { clearHighlights(HL, HL_CURRENT); return; }
     const cur = ((current % ranges.length) + ranges.length) % ranges.length;
     const HighlightCtor = (window as any).Highlight;
     (CSS as any).highlights.set(HL, new HighlightCtor(...ranges));
@@ -79,10 +86,10 @@ export function ContentFindBar({ containerRef, onClose, resetKey }: {
         (ranges[cur].startContainer.parentElement as HTMLElement | null)?.scrollIntoView({ block: 'center' });
       }
     } catch { /* range geometry can throw on detached nodes — ignore */ }
-  }, [query, current, resetKey, containerRef]);
+  }, [query, current, resetKey, containerRef, HL, HL_CURRENT]);
 
   // Always clear highlights when the bar unmounts (closed).
-  useEffect(() => () => clearHighlights(), []);
+  useEffect(() => () => clearHighlights(HL, HL_CURRENT), [HL, HL_CURRENT]);
 
   const go = useCallback((dir: number) => {
     setCurrent((c) => (count === 0 ? 0 : (c + dir + count) % count));
@@ -91,7 +98,7 @@ export function ContentFindBar({ containerRef, onClose, resetKey }: {
   const shown = count > 0 ? `${((current % count) + count) % count + 1}/${count}` : (query ? '0/0' : '');
 
   return (
-    <div className="absolute top-2 right-2 z-20 flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg">
+    <div className={`absolute ${positionClassName} z-20 flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg`}>
       <input
         ref={inputRef}
         value={query}
@@ -100,7 +107,7 @@ export function ContentFindBar({ containerRef, onClose, resetKey }: {
           if (e.key === 'Enter') { e.preventDefault(); go(e.shiftKey ? -1 : 1); }
           else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
         }}
-        placeholder="Find in document"
+        placeholder={placeholder}
         className="bg-canvas text-fg text-xs px-2 py-1 rounded-md w-[150px] outline-none border border-edge focus:border-fg-muted"
       />
       <span className="text-[11px] text-fg-muted tabular-nums text-center px-1 min-w-[40px]">{shown}</span>

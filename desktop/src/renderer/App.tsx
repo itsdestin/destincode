@@ -431,6 +431,25 @@ function AppInner() {
 
   const gameState = useGameState();
   const gameDispatch = useGameDispatch();
+  // The game pane and the artifact drawer share the framed-shell's single right
+  // slot, so they're mutually exclusive: opening one closes the other. Two
+  // transition-gated effects (each keyed on only the OTHER pane's open flag)
+  // enforce this without ping-ponging — closing one pane never re-opens the
+  // other. Covers every open path, including the game panel auto-opening on an
+  // incoming challenge (CHALLENGE_RECEIVED sets panelOpen) and the artifact
+  // drawer opening from a file-pill / tool-card click.
+  useEffect(() => {
+    if (gameState.panelOpen && artifactState.drawerOpen) {
+      dispatchArtifact({ type: 'DRAWER_CLOSED' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState.panelOpen]);
+  useEffect(() => {
+    if (artifactState.drawerOpen && gameState.panelOpen) {
+      gameDispatch({ type: 'TOGGLE_PANEL' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artifactState.drawerOpen]);
   // Gate on isLeader so only the first-launched window opens the lobby
   // socket — avoids duplicate presence for the same GitHub identity when
   // multiple peer windows are open. When detach isn't available (remote
@@ -2125,6 +2144,10 @@ function AppInner() {
       <div
         className="flex-1 flex flex-col overflow-hidden relative"
         hidden={activeView === 'marketplace' || activeView === 'library'}
+        // --right-pane-width drives BOTH the framed-shell drawer-pane width and
+        // the chrome-glass cutout offset (both descend from here). The game pane
+        // is narrower than the artifact drawer's 480px default.
+        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? '400px' : '480px' }}
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
@@ -2139,7 +2162,7 @@ function AppInner() {
                 clip-path: polygon() has only ONE backdrop-filter sampling the
                 wallpaper directly, so the whole chrome reads as one
                 continuous tone. */}
-            <div className={`chrome-glass${artifactState.drawerOpen ? ' chrome-glass--drawer-open' : ''}`} />
+            <div className={`chrome-glass${(artifactState.drawerOpen || gameState.panelOpen) ? ' chrome-glass--drawer-open' : ''}`} />
             <div ref={headerRef} className="chrome-wrapper bg-canvas">
               <HeaderBar
                 sessions={sessions}
@@ -2212,6 +2235,14 @@ function AppInner() {
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
                       resumeInfo={resumeInfo}
                       cwd={s.cwd}
+                      // Game pane lives in the active session's framed-shell
+                      // right slot. Only the active session renders it (others
+                      // get null) so there's a single GamePanel instance.
+                      gamePane={s.id === sessionId && gameState.panelOpen ? (
+                        <ErrorBoundary name="Game">
+                          <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
+                        </ErrorBoundary>
+                      ) : null}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">
@@ -2422,12 +2453,9 @@ function AppInner() {
         )}
       </div>
 
-      {/* Game panel (conditional) */}
-      {gameState.panelOpen && (
-        <ErrorBoundary name="Game">
-          <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
-        </ErrorBoundary>
-      )}
+      {/* The game panel now renders inside the active session's framed-shell
+          right slot (passed as ChatView's gamePane prop above), so it shares the
+          artifact drawer's framed chrome instead of being a separate slide-out. */}
       <SettingsPanel
         open={settingsOpen}
         onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); }}
