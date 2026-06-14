@@ -12,21 +12,56 @@ import React, { useEffect, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import { ArtifactsTab } from './tabs/ArtifactsTab';
+import { ProjectHero } from './ProjectHero';
 
 type TabId = 'artifacts' | 'conversations' | 'context';
 
+// Live hero stats, computed from the project:* / artifacts:* IPC (not the stale
+// stats.artifactCount). null repo means the project folder has no git remote.
+interface HeroStats {
+  artifacts: number;
+  conversations: number;
+  contextFiles: number;
+  activeLabel: string;
+}
+interface HeroRepo { webUrl?: string; owner?: string; name?: string }
+
+// Relative-time formatter for the hero "active <when>" stat. Mirrors the
+// epoch-ms formatter in ResumeBrowser.tsx (kept inline to avoid coupling the
+// project-view subtree to a chat component's internal helper).
+function formatRelativeTime(epochMs: number): string {
+  const diff = Date.now() - epochMs;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(epochMs).toLocaleDateString();
+}
+
 interface ProjectViewProps {
-  // Threaded now for the hero/conversation tasks (2.2 / 3.x). Unused in this task.
+  // Threaded from App: starts a new conversation in the given cwd.
   onNewConversation: (cwd: string) => void;
   onResumeConversation: (sessionId: string, projectSlug: string, projectPath: string) => void;
 }
 
-export function ProjectView(_props: ProjectViewProps) {
+export function ProjectView(props: ProjectViewProps) {
   const { state, dispatch } = useArtifact();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
   const [tab, setTab] = useState<TabId>('artifacts');
   const [search, setSearch] = useState('');
+
+  // Hero data (recomputed when the active project changes).
+  const [heroStats, setHeroStats] = useState<HeroStats>({
+    artifacts: 0, conversations: 0, contextFiles: 0, activeLabel: '—',
+  });
+  const [heroRepo, setHeroRepo] = useState<HeroRepo | null>(null);
+
+  // Project switcher palette state. Nothing renders it yet — wired in Task 2.3.
+  const [switcherOpen, setSwitcherOpen] = useState(false);
 
   // Project deletion modal state.
   const [deletingProject, setDeletingProject] = useState<CentralIndexProject | null>(null);
@@ -49,6 +84,65 @@ export function ProjectView(_props: ProjectViewProps) {
       }
     });
   }, [state.projectViewOpen]);
+
+  // Compute hero data whenever the active project changes. All four stats come
+  // from independent IPC calls; a `cancelled` flag guards against the project
+  // switching mid-flight (a late response must not overwrite the new project's).
+  useEffect(() => {
+    if (!activeProject) {
+      setHeroStats({ artifacts: 0, conversations: 0, contextFiles: 0, activeLabel: '—' });
+      setHeroRepo(null);
+      return;
+    }
+    let cancelled = false;
+    const path = activeProject.path;
+    const id = activeProject.id;
+    (async () => {
+      // Conversations: count of project-filtered past sessions (sorted newest-first).
+      let conversations = 0;
+      let activeLabel = 'never';
+      try {
+        const res = await (window.claude as any).project.listConversations(path);
+        const list = res?.conversations ?? [];
+        conversations = list.length;
+        // active <when>: most-recent conversation's lastModified (epoch ms).
+        const newest = list[0]?.lastModified;
+        if (typeof newest === 'number') activeLabel = formatRelativeTime(newest);
+      } catch { /* leave defaults */ }
+
+      // Context files: sum of group sizes from the context discovery.
+      let contextFiles = 0;
+      try {
+        const res = await (window.claude as any).project.listContext(path);
+        const groups = res?.groups ?? [];
+        contextFiles = groups.reduce(
+          (acc: number, g: { files?: unknown[] }) => acc + (g.files?.length ?? 0), 0);
+      } catch { /* leave 0 */ }
+
+      // Artifacts: WHY live count of non-deleted artifacts from the sidecar — the
+      // stored stats.artifactCount is seeded to 0 and almost always stale.
+      let artifacts = 0;
+      try {
+        const res = await (window.claude as any).artifacts.listProject(id);
+        const list = res?.artifacts ?? [];
+        artifacts = list.filter((a: { status?: string }) => a.status !== 'deleted').length;
+      } catch { /* leave 0 */ }
+
+      // Repo: only surface when there's a real web URL to outlink to.
+      let repo: HeroRepo | null = null;
+      try {
+        const res = await (window.claude as any).project.repoInfo(path);
+        if (res?.hasRepo && res.webUrl) {
+          repo = { webUrl: res.webUrl, owner: res.owner, name: res.name };
+        }
+      } catch { /* leave null */ }
+
+      if (cancelled) return;
+      setHeroStats({ artifacts, conversations, contextFiles, activeLabel });
+      setHeroRepo(repo);
+    })();
+    return () => { cancelled = true; };
+  }, [activeProject?.id, activeProject?.path]);
 
   if (!state.projectViewOpen) return null;
 
@@ -156,13 +250,16 @@ export function ProjectView(_props: ProjectViewProps) {
 
         {/* Main column — hero + segmented control + active tab */}
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-          {/* TODO(Task 2.2): replace inline hero with <ProjectHero>. */}
           {activeProject ? (
-            <div className="px-4 pt-4 pb-3 border-b border-edge shrink-0">
-              <div className="text-lg font-semibold text-fg truncate">{activeProject.name}</div>
-              <div className="font-mono text-xs text-fg-muted truncate" title={activeProject.path}>
-                {activeProject.path}
-              </div>
+            <div className="px-4 pt-4 pb-3 shrink-0">
+              <ProjectHero
+                project={activeProject}
+                stats={heroStats}
+                repo={heroRepo}
+                // TODO(Task 2.3): open <ProjectSwitcher> when switcherOpen.
+                onOpenSwitcher={() => setSwitcherOpen(true)}
+                onNewConversation={props.onNewConversation}
+              />
             </div>
           ) : (
             <div className="px-4 pt-4 pb-3 border-b border-edge shrink-0 text-sm text-fg-muted">
