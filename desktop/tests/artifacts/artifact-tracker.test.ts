@@ -36,16 +36,27 @@ describe('artifactReducer', () => {
     expect(next.pendingRefresh['/p']).toBe(true);
   });
 
-  it('DRAWER_OPENED sets drawerOpen', () => {
-    const next = artifactReducer(initialArtifactState, { type: 'DRAWER_OPENED' });
-    expect(next.drawerOpen).toBe(true);
+  it('DRAWER_OPENED sets the per-session open flag', () => {
+    const next = artifactReducer(initialArtifactState, { type: 'DRAWER_OPENED', sessionId: 'sess_a' });
+    expect(next.drawerOpenBySession['sess_a']).toBe(true);
   });
 
-  it('DRAWER_CLOSED clears drawerOpen and activeArtifactId', () => {
-    let s = artifactReducer(initialArtifactState, { type: 'DRAWER_OPENED' });
+  it('drawer open state is scoped per session', () => {
+    let s = artifactReducer(initialArtifactState, { type: 'DRAWER_OPENED', sessionId: 'sess_a' });
+    // A different session stays closed (no entry → undefined → treated as closed).
+    expect(s.drawerOpenBySession['sess_a']).toBe(true);
+    expect(s.drawerOpenBySession['sess_b']).toBeUndefined();
+    // Opening B doesn't disturb A.
+    s = artifactReducer(s, { type: 'DRAWER_OPENED', sessionId: 'sess_b' });
+    expect(s.drawerOpenBySession['sess_a']).toBe(true);
+    expect(s.drawerOpenBySession['sess_b']).toBe(true);
+  });
+
+  it('DRAWER_CLOSED clears that session and activeArtifactId', () => {
+    let s = artifactReducer(initialArtifactState, { type: 'DRAWER_OPENED', sessionId: 'sess_a' });
     s = artifactReducer(s, { type: 'ACTIVE_ARTIFACT_SET', artifactId: 'art_1' });
-    s = artifactReducer(s, { type: 'DRAWER_CLOSED' });
-    expect(s.drawerOpen).toBe(false);
+    s = artifactReducer(s, { type: 'DRAWER_CLOSED', sessionId: 'sess_a' });
+    expect(s.drawerOpenBySession['sess_a']).toBe(false);
     expect(s.activeArtifactId).toBeNull();
   });
 });

@@ -81,12 +81,15 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const { state, dispatch } = useArtifact();
   const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts } = useTheme();
   const allArtifacts = state.sessionArtifacts[sessionId] ?? [];
+  // Drawer open/closed is per-session (remembered across switches). This drawer
+  // instance belongs to `sessionId`, so read/toggle that session's flag.
+  const drawerOpen = state.drawerOpenBySession[sessionId] ?? false;
 
   // Existence check (unchanged): mark artifacts whose file is gone as orphans,
   // folded into the "deleted" UI state alongside explicit delete versions.
   const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (!state.drawerOpen || allArtifacts.length === 0 || !projectRoot) {
+    if (!drawerOpen || allArtifacts.length === 0 || !projectRoot) {
       setOrphanIds(new Set());
       return;
     }
@@ -99,7 +102,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [state.drawerOpen, allArtifacts.length, projectRoot]);
+  }, [drawerOpen, allArtifacts.length, projectRoot]);
 
   const artifacts = useMemo(() => {
     return allArtifacts.filter((a) => {
@@ -259,7 +262,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // Ctrl/Cmd+F opens find-in-document — but only when the pointer is over the
   // drawer, so it doesn't hijack Ctrl+F while the user is working in the chat.
   useEffect(() => {
-    if (!state.drawerOpen) return;
+    if (!drawerOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
         if (active && asideRef.current?.matches(':hover')) {
@@ -270,7 +273,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [state.drawerOpen, active]);
+  }, [drawerOpen, active]);
 
   // ── ESC / back: rename → find → edit → expand → list → active → drawer ──
   const handleBack = useCallback(() => {
@@ -280,12 +283,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     if (expanded) { dispatch({ type: 'DRAWER_EXPAND_TOGGLED' }); return; }
     if (listOpen) { setListOpen(false); return; }
     if (state.activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED' }); return; }
-    dispatch({ type: 'DRAWER_CLOSED' });
-  }, [findOpen, editState.editing, expanded, listOpen, state.activeArtifactId, dispatch, cancelRename]);
+    dispatch({ type: 'DRAWER_CLOSED', sessionId });
+  }, [findOpen, editState.editing, expanded, listOpen, state.activeArtifactId, dispatch, cancelRename, sessionId]);
 
-  useEscClose(state.drawerOpen, handleBack);
+  useEscClose(drawerOpen, handleBack);
 
-  if (!state.drawerOpen) return null;
+  if (!drawerOpen) return null;
 
   // ── List column (shared by the no-selection and push-sidebar layouts) ──
   const listInner = (
@@ -295,7 +298,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         {!active && (
           <button
             className="text-fg-muted hover:text-fg px-1 text-base leading-none"
-            onClick={() => dispatch({ type: 'DRAWER_CLOSED' })}
+            onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })}
             title="Close drawer"
           >×</button>
         )}
@@ -433,7 +436,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <IconBtn name="link" title="Copy path" onClick={handleCopyPath} />
         {isElectron && <IconBtn name="folder" title="Reveal in folder" onClick={handleReveal} />}
         <IconBtn name={expanded ? 'shrink' : 'expand'} title={expanded ? 'Shrink panel' : 'Expand panel'} active={expanded} onClick={() => dispatch({ type: 'DRAWER_EXPAND_TOGGLED' })} />
-        <IconBtn name="close" title="Close" onClick={() => dispatch({ type: 'DRAWER_CLOSED' })} />
+        <IconBtn name="close" title="Close" onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })} />
       </div>
 
       {/* metadata strip */}

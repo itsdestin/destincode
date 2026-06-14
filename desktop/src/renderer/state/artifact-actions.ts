@@ -3,8 +3,10 @@ import type { ArtifactRecord } from '../../shared/artifacts/types';
 export type ArtifactAction =
   | { type: 'SESSION_ARTIFACTS_LOADED'; sessionId: string; artifacts: ArtifactRecord[] }
   | { type: 'ARTIFACT_CHANGED'; projectRoot: string; artifactId: string }
-  | { type: 'DRAWER_OPENED' }
-  | { type: 'DRAWER_CLOSED' }
+  // Open/close is per-session (remembered across session switches), so both
+  // carry the sessionId whose drawer is being toggled.
+  | { type: 'DRAWER_OPENED'; sessionId: string }
+  | { type: 'DRAWER_CLOSED'; sessionId: string }
   // Expand-in-place: the drawer grows to fill the framed-shell content region
   // (chat pane hidden) while the header/input chrome stay put. Toggled by the
   // panel's expand button.

@@ -5,7 +5,10 @@ export interface ArtifactState {
   sessionArtifacts: Record<string, ArtifactRecord[]>; // by sessionId
   projectArtifacts: Record<string, ArtifactRecord[]>; // by projectRoot
   pendingRefresh: Record<string, boolean>;            // by projectRoot
-  drawerOpen: boolean;
+  // Drawer open/closed is scoped per session and remembered across switches.
+  // A new/unseen session has no entry → closed by default. Consumers read the
+  // ACTIVE session's flag; the open/close actions carry the sessionId.
+  drawerOpenBySession: Record<string, boolean>;
   drawerExpanded: boolean;                            // panel fills the content region
   projectViewOpen: boolean;
   activeArtifactId: string | null;
@@ -15,7 +18,7 @@ export const initialArtifactState: ArtifactState = {
   sessionArtifacts: {},
   projectArtifacts: {},
   pendingRefresh: {},
-  drawerOpen: false,
+  drawerOpenBySession: {},
   drawerExpanded: false,
   projectViewOpen: false,
   activeArtifactId: null,
@@ -28,10 +31,15 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
     case 'ARTIFACT_CHANGED':
       return { ...s, pendingRefresh: { ...s.pendingRefresh, [a.projectRoot]: true } };
     case 'DRAWER_OPENED':
-      return { ...s, drawerOpen: true };
+      return { ...s, drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: true } };
     case 'DRAWER_CLOSED':
       // Reset expand so a re-opened drawer starts at its normal width.
-      return { ...s, drawerOpen: false, drawerExpanded: false, activeArtifactId: null };
+      return {
+        ...s,
+        drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: false },
+        drawerExpanded: false,
+        activeArtifactId: null,
+      };
     case 'DRAWER_EXPAND_TOGGLED':
       return { ...s, drawerExpanded: !s.drawerExpanded };
     case 'ACTIVE_ARTIFACT_SET':

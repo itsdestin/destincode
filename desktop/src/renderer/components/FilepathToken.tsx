@@ -62,7 +62,7 @@ export function FilepathToken({ path, sessionId }: Props) {
       );
     });
     if (sessMatch) {
-      dispatch({ type: 'DRAWER_OPENED' });
+      dispatch({ type: 'DRAWER_OPENED', sessionId });
       dispatch({ type: 'ACTIVE_ARTIFACT_SET', artifactId: sessMatch.id });
       return;
     }

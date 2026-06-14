@@ -438,18 +438,20 @@ function AppInner() {
   // other. Covers every open path, including the game panel auto-opening on an
   // incoming challenge (CHALLENGE_RECEIVED sets panelOpen) and the artifact
   // drawer opening from a file-pill / tool-card click.
+  // Drawer open/closed is per-session; exclusivity acts on the ACTIVE session.
+  const activeDrawerOpen = sessionId ? (artifactState.drawerOpenBySession[sessionId] ?? false) : false;
   useEffect(() => {
-    if (gameState.panelOpen && artifactState.drawerOpen) {
-      dispatchArtifact({ type: 'DRAWER_CLOSED' });
+    if (gameState.panelOpen && activeDrawerOpen && sessionId) {
+      dispatchArtifact({ type: 'DRAWER_CLOSED', sessionId });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.panelOpen]);
   useEffect(() => {
-    if (artifactState.drawerOpen && gameState.panelOpen) {
+    if (activeDrawerOpen && gameState.panelOpen) {
       gameDispatch({ type: 'TOGGLE_PANEL' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artifactState.drawerOpen]);
+  }, [activeDrawerOpen]);
   // Gate on isLeader so only the first-launched window opens the lobby
   // socket — avoids duplicate presence for the same GitHub identity when
   // multiple peer windows are open. When detach isn't available (remote
@@ -2162,7 +2164,7 @@ function AppInner() {
                 clip-path: polygon() has only ONE backdrop-filter sampling the
                 wallpaper directly, so the whole chrome reads as one
                 continuous tone. */}
-            <div className={`chrome-glass${(artifactState.drawerOpen || gameState.panelOpen) ? ' chrome-glass--drawer-open' : ''}`} />
+            <div className={`chrome-glass${(activeDrawerOpen || gameState.panelOpen) ? ' chrome-glass--drawer-open' : ''}`} />
             <div ref={headerRef} className="chrome-wrapper bg-canvas">
               <HeaderBar
                 sessions={sessions}

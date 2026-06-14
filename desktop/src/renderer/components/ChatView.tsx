@@ -78,7 +78,8 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   // Artifact drawer state — read from ArtifactContext so ChatView reacts to
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState } = useArtifact();
-  const drawerOpen = artifactState.drawerOpen;
+  // Drawer open/closed is per-session — read this session's flag (absent → closed).
+  const drawerOpen = artifactState.drawerOpenBySession[sessionId] ?? false;
   const drawerExpanded = artifactState.drawerExpanded;
   // The game pane and artifact drawer share the framed-shell's right slot.
   // The game pane wins when both are somehow open (App also enforces mutual

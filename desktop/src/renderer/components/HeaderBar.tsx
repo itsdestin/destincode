@@ -218,6 +218,8 @@ function ProjectsButton() {
 function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionId: string | null; projectRoot?: string }) {
   const { state, dispatch } = useArtifact();
   const sessionArtifacts = activeSessionId ? (state.sessionArtifacts[activeSessionId] ?? []) : [];
+  // Open/closed is per-session — reflect (and toggle) the ACTIVE session's flag.
+  const drawerOpen = activeSessionId ? (state.drawerOpenBySession[activeSessionId] ?? false) : false;
 
   // Count only still-present artifacts. Two ways a file stops being present:
   //  1. status === 'deleted' — an explicit Delete tool version (rare; CC has no
@@ -239,7 +241,7 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
       .catch(() => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectRoot, idsKey, state.drawerOpen]);
+  }, [projectRoot, idsKey, drawerOpen]);
 
   const artifactCount = sessionArtifacts.filter(
     (a) => a.status !== 'deleted' && !missingIds.has(a.id)
@@ -251,9 +253,12 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
     <button
       type="button"
       className={`relative p-1 rounded-sm hover:bg-inset transition-colors shrink-0 flex items-center gap-0.5 ${
-        state.drawerOpen ? 'text-fg' : 'text-fg-muted'
+        drawerOpen ? 'text-fg' : 'text-fg-muted'
       }`}
-      onClick={() => dispatch({ type: state.drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED' })}
+      onClick={() => {
+        if (!activeSessionId) return;
+        dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
+      }}
       title="Session Artifacts"
     >
       {/* Document icon — SVG matches the style of the settings gear above */}
