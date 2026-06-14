@@ -3,10 +3,20 @@ import os from 'os';
 import path from 'path';
 import { discoverContext, RuleEntry } from './project/context-discovery';
 import { cwdToProjectSlug } from './transcript-watcher';
-import { RECOGNIZED_INSTRUCTION_FILES, ContextGroup } from '../shared/project-context-types';
+import { RECOGNIZED_INSTRUCTION_FILES, ContextGroup, ContextFile } from '../shared/project-context-types';
 
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, '.claude');
+
+// CC encodes its project dirs with an UPPERCASE drive letter (C--Users-…), but
+// YouCoded's canonical project paths can carry a LOWERCASE drive (c:/Users/…).
+// Uppercase the drive before slugifying so the memory dir (~/.claude/projects/
+// <slug>/memory) resolves; without this the Memory group is silently empty on
+// Windows. Windows paths are case-insensitive, so only the drive is normalized.
+function ccProjectSlug(projectPath: string): string {
+  const driveNormalized = projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
+  return cwdToProjectSlug(driveNormalized);
+}
 
 async function exists(p: string): Promise<boolean> {
   try { await fs.promises.access(p); return true; } catch { return false; }
@@ -48,7 +58,7 @@ async function readRules(rulesDir: string): Promise<RuleEntry[]> {
 }
 
 export async function listContext(projectPath: string): Promise<ContextGroup[]> {
-  const slug = cwdToProjectSlug(projectPath);
+  const slug = ccProjectSlug(projectPath);
   const projInstr = await findInstructionFiles([projectPath, path.join(projectPath, '.claude')]);
   const globalInstr = await findInstructionFiles([CLAUDE_DIR]);
   const projRules = await readRules(path.join(projectPath, '.claude', 'rules'));
@@ -62,7 +72,7 @@ export async function listContext(projectPath: string): Promise<ContextGroup[]> 
     for (const f of memoryFiles) memoryPaths[f] = path.join(memoryDir, f);
   } catch { /* no memory dir for this project */ }
 
-  return discoverContext({
+  const groups = discoverContext({
     projectRoot: projectPath, homeDir: HOME, projectSlug: slug,
     projectInstructionFiles: Object.keys(projInstr), projectInstructionPaths: projInstr,
     projectRules: projRules,
@@ -70,6 +80,48 @@ export async function listContext(projectPath: string): Promise<ContextGroup[]> 
     globalRules,
     memoryFiles, memoryPaths,
   });
+
+  // Enrich each file with a one-line description + formatted size for the rows
+  // (the prototype's ctxRow shows both). Cheap — a handful of files per project.
+  await Promise.all(groups.flatMap((g) => g.files).map(enrichContextFile));
+  return groups;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// First useful line of a context file → a plain-language description. Prefers a
+// frontmatter `description:` (common in rule files), else the first non-empty,
+// non-heading body line. Mutates the file in place (it's the discovered object).
+function deriveDescription(headRaw: string): string | undefined {
+  let head = headRaw;
+  const fm = /^---\s*([\s\S]*?)\s*---/.exec(head)?.[1];
+  if (fm) {
+    const d = /^\s*description\s*:\s*(.+)$/im.exec(fm)?.[1]?.trim();
+    if (d) return d.replace(/^['"]|['"]$/g, '').slice(0, 120);
+    const close = head.indexOf('---', 3);
+    if (close !== -1) head = head.slice(close + 3);
+  }
+  for (const raw of head.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('---') || line.startsWith('<!--')) continue;
+    return line.replace(/[*_`>]/g, '').trim().slice(0, 120);
+  }
+  return undefined;
+}
+
+async function enrichContextFile(f: ContextFile): Promise<void> {
+  try {
+    const stat = await fs.promises.stat(f.absolutePath);
+    f.size = formatBytes(stat.size);
+  } catch { /* leave size undefined */ }
+  try {
+    const head = (await fs.promises.readFile(f.absolutePath, 'utf8')).slice(0, 4000);
+    f.description = deriveDescription(head);
+  } catch { /* leave description undefined */ }
 }
 
 // Allow-list guard: only paths that appear in the discovered set for this

@@ -16,6 +16,10 @@ interface ProjectSwitcherProps {
   onSelect: (project: CentralIndexProject) => void;
   onClose: () => void;
   onAddProject: () => void;
+  // Optional: removes a project from YouCoded (opens the confirm modal in the
+  // parent). The palette is the project-list surface now that the rail is gone,
+  // so the hover-revealed × delete lives on each row here.
+  onDeleteProject?: (project: CentralIndexProject) => void;
 }
 
 // lucide-style search glyph (matches prototype IC.search).
@@ -70,6 +74,7 @@ export function ProjectSwitcher({
   onSelect,
   onClose,
   onAddProject,
+  onDeleteProject,
 }: ProjectSwitcherProps) {
   const [query, setQuery] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
@@ -187,47 +192,68 @@ export function ProjectSwitcher({
             const isHighlighted = i === highlightIndex;
             const avatar = p.name.charAt(0).toUpperCase() || '?';
             return (
-              <button
-                key={p.id}
-                type="button"
-                // Keyboard highlight is outline-not-fill (border-accent); the
-                // active project gets a subtle bg-inset fill instead.
-                className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors border ${
-                  isHighlighted
-                    ? 'border-accent bg-inset'
-                    : isActive
-                      ? 'border-transparent bg-inset'
-                      : 'border-transparent hover:bg-inset'
-                }`}
-                onMouseEnter={() => setHighlightIndex(i)}
-                onClick={() => onSelect(p)}
-              >
-                {/* Avatar: first letter of the name in a rounded square. */}
-                <span className="shrink-0 w-7 h-7 rounded-md bg-inset border border-edge-dim flex items-center justify-center text-[12px] font-semibold text-fg-2">
-                  {avatar}
-                </span>
-                {/* Name + path. */}
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="text-[13.5px] font-medium text-fg truncate">
-                      {p.name}
+              // group/relative so the row can host a hover-revealed × delete
+              // button (a button cannot nest inside the select button).
+              <div key={p.id} className="group relative">
+                <button
+                  type="button"
+                  // Keyboard highlight is outline-not-fill (border-accent); the
+                  // active project gets a subtle bg-inset fill instead. pr-9
+                  // reserves room for the hover × when delete is available.
+                  className={`w-full flex items-center gap-2.5 px-2 py-2 ${onDeleteProject ? 'pr-9' : ''} rounded-md text-left transition-colors border ${
+                    isHighlighted
+                      ? 'border-accent bg-inset'
+                      : isActive
+                        ? 'border-transparent bg-inset'
+                        : 'border-transparent hover:bg-inset'
+                  }`}
+                  onMouseEnter={() => setHighlightIndex(i)}
+                  onClick={() => onSelect(p)}
+                >
+                  {/* Avatar: first letter of the name in a rounded square. */}
+                  <span className="shrink-0 w-7 h-7 rounded-md bg-inset border border-edge-dim flex items-center justify-center text-[12px] font-semibold text-fg-2">
+                    {avatar}
+                  </span>
+                  {/* Name + path. */}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="text-[13.5px] font-medium text-fg truncate">
+                        {p.name}
+                      </span>
+                    </span>
+                    <span className="block font-mono text-[11px] text-fg-muted truncate" title={p.path}>
+                      {p.path}
                     </span>
                   </span>
-                  <span className="block font-mono text-[11px] text-fg-muted truncate" title={p.path}>
-                    {p.path}
+                  {/* Files hint. */}
+                  <span className="text-[11px] text-fg-faint shrink-0">
+                    {p.stats.artifactCount} file{p.stats.artifactCount === 1 ? '' : 's'}
                   </span>
-                </span>
-                {/* Files hint. */}
-                <span className="text-[11px] text-fg-faint shrink-0">
-                  {p.stats.artifactCount} file{p.stats.artifactCount === 1 ? '' : 's'}
-                </span>
-                {/* Active check (NOT a status glyph). */}
-                {isActive && (
-                  <span className="text-fg shrink-0 ml-1">
-                    <CheckGlyph size={15} />
-                  </span>
+                  {/* Active check (NOT a status glyph). */}
+                  {isActive && (
+                    <span className="text-fg shrink-0 ml-1">
+                      <CheckGlyph size={15} />
+                    </span>
+                  )}
+                </button>
+                {/* Hover-revealed remove-from-YouCoded × (opens the confirm modal
+                    in the parent). Does not delete files. */}
+                {onDeleteProject && (
+                  <button
+                    type="button"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-well"
+                    title={`Remove ${p.name} from YouCoded`}
+                    aria-label={`Remove ${p.name} from YouCoded`}
+                    onClick={(e) => { e.stopPropagation(); onDeleteProject(p); }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
                 )}
-              </button>
+              </div>
             );
           })}
         </div>

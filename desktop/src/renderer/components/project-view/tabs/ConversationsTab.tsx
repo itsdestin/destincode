@@ -1,16 +1,20 @@
 // ConversationsTab — flat list of past conversations scoped to one project
-// (Task 3.1). Fetches project-filtered past sessions (sorted newest-first) and
-// renders each as a .layer-surface row. Row click opens a preview (Task 3.2
-// builds the actual preview overlay; here we just bubble the selection up).
-// No ●◐○ status glyphs anywhere — plain words/numbers only (the glyph language
-// is disliked).
+// (Task 3.1). Fetches project-filtered past sessions (sorted newest-first,
+// enriched with a preview + message count) and renders each as a row matching
+// the prototype's convRow: an icon avatar + title/time + a one-line preview +
+// a "N messages" line. Rows use `bg-panel border border-edge-dim rounded-lg`
+// (NOT .layer-surface — its overflow:hidden + flex compression clips the text).
+// No ●◐○ status glyphs anywhere — plain words/numbers only.
 import React, { useEffect, useState } from 'react';
 import type { PastSession } from '../../../../shared/types';
 
-// Relative-time formatter for the "active <when>" hint. Duplicated (6 lines)
-// from ProjectView.tsx rather than lifted to a shared module — per the task
-// guidance, duplicating a tiny formatter is the lower-risk option vs. exporting
-// and threading a helper through the project-view subtree.
+// Enriched session shape returned by project:list-conversations.
+interface ConversationSummary extends PastSession {
+  preview?: string;
+  messageCount?: number;
+}
+
+// Relative-time formatter for the per-row time hint.
 function formatRelativeTime(epochMs: number): string {
   const diff = Date.now() - epochMs;
   const mins = Math.floor(diff / 60000);
@@ -23,11 +27,14 @@ function formatRelativeTime(epochMs: number): string {
   return new Date(epochMs).toLocaleDateString();
 }
 
-// Lightweight "length" signal from the transcript byte size (proxy for
-// conversation length). Non-glyphy, KB/MB only.
-function formatSize(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+// Inline lucide-style chat glyph for the row avatar (matches the prototype).
+function ChatGlyph({ size = 17 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
 }
 
 interface ConversationsTabProps {
@@ -36,7 +43,7 @@ interface ConversationsTabProps {
 }
 
 export function ConversationsTab({ project, onOpenPreview }: ConversationsTabProps) {
-  const [conversations, setConversations] = useState<PastSession[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Load project-filtered conversations on mount and whenever the project path
@@ -61,7 +68,7 @@ export function ConversationsTab({ project, onOpenPreview }: ConversationsTabPro
   }, [project.path]);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden p-4 min-w-0">
+    <div className="flex flex-col h-full overflow-hidden px-4 pt-1 pb-4 min-w-0">
       {loading ? (
         <p className="text-sm text-fg-muted">Loading…</p>
       ) : conversations.length === 0 ? (
@@ -71,22 +78,32 @@ export function ConversationsTab({ project, onOpenPreview }: ConversationsTabPro
           {conversations.map((c) => {
             const title = c.name?.trim() ? c.name : 'Untitled';
             return (
+              // bg-panel + border + rounded-lg (NOT layer-surface). shrink-0 so
+              // the scroll container doesn't compress rows and clip their text.
               <button
                 key={c.sessionId}
                 type="button"
-                className="layer-surface w-full text-left p-3 transition-colors hover:bg-inset"
+                className="w-full text-left flex items-start gap-3 bg-panel border border-edge-dim rounded-lg p-3 shrink-0 hover:bg-inset hover:border-edge transition-colors"
                 onClick={() => onOpenPreview(c)}
                 title={title}
               >
-                <div className="flex items-baseline gap-2 justify-between">
-                  <span className="text-sm font-medium text-fg truncate">{title}</span>
-                  <span className="text-[11px] text-fg-faint shrink-0">
-                    {formatRelativeTime(c.lastModified)}
+                <span className="w-9 h-9 rounded-md shrink-0 inline-flex items-center justify-center bg-inset text-fg-dim mt-0.5">
+                  <ChatGlyph size={17} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-baseline gap-2 justify-between">
+                    <span className="text-[13.5px] font-medium text-fg truncate">{title}</span>
+                    <span className="text-[11px] text-fg-faint shrink-0">
+                      {formatRelativeTime(c.lastModified)}
+                    </span>
                   </span>
-                </div>
-                <div className="text-[11px] text-fg-muted mt-1">
-                  {formatSize(c.size)}
-                </div>
+                  {c.preview ? (
+                    <span className="block text-[12px] text-fg-2 truncate mt-0.5">{c.preview}</span>
+                  ) : null}
+                  <span className="block text-[10.5px] text-fg-muted mt-1.5">
+                    {typeof c.messageCount === 'number' ? `${c.messageCount} messages` : ''}
+                  </span>
+                </span>
               </button>
             );
           })}

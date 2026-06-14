@@ -61,7 +61,10 @@ export function ContextIntroBanner() {
   if (dismissed) return null;
 
   return (
-    <div className="layer-surface relative flex gap-3 p-3.5 pr-9 mb-4">
+    // shrink-0: the Context tab is a flex-col with overflow-auto; without this the
+    // banner gets vertically compressed by the column and `.layer-surface`'s
+    // overflow:hidden clips the paragraph down to the eyebrow line.
+    <div className="layer-surface relative flex gap-3 p-3.5 pr-9 mb-4 shrink-0">
       <span className="shrink-0 text-fg-dim mt-px">
         <InfoIcon />
       </span>

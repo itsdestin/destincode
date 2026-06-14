@@ -84,7 +84,7 @@ export function ProjectHero({
     <div className="layer-surface p-5 flex items-start justify-between gap-4">
       {/* Left: eyebrow + name switcher + path/repo + stat row */}
       <div className="min-w-0">
-        <div className="text-[10px] tracking-wider text-fg-muted uppercase mb-1.5">
+        <div className="text-[10px] font-medium tracking-wider text-fg-muted uppercase mb-1.5">
           Project
         </div>
 
@@ -136,7 +136,7 @@ export function ProjectHero({
           <button
             type="button"
             onClick={() => window.claude.shell.openExternal(repo.webUrl!)}
-            className="px-3 py-2 rounded-md border border-edge text-fg-2 hover:bg-inset text-xs inline-flex items-center gap-1.5 transition-colors"
+            className="px-3 py-2 rounded-md bg-inset text-fg-2 hover:text-fg border border-edge-dim hover:border-edge text-[13px] inline-flex items-center gap-1.5 transition-colors"
             title={showRepoSlug ? `Open ${repo.owner}/${repo.name} on GitHub` : 'Open repository'}
           >
             <ExternalLink size={14} />
@@ -147,7 +147,7 @@ export function ProjectHero({
         <button
           type="button"
           onClick={() => onNewConversation(project.path)}
-          className="px-4 py-2 rounded-md bg-accent text-on-accent text-xs hover:opacity-90 transition-opacity"
+          className="px-4 py-2 rounded-md bg-accent text-on-accent text-[13px] hover:opacity-90 transition-opacity"
         >
           New Conversation
         </button>

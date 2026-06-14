@@ -65,6 +65,9 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
   const [inView, setInView] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
+  // Measured container size, used to scale the HTML iframe preview down so the
+  // whole page (rendered at a desktop logical width) fits the small card.
+  const [boxSize, setBoxSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
   const absolutePath = artifact.kind === 'internal'
     ? joinPath(projectPath, artifact.path)
@@ -104,6 +107,24 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
     return () => { cancelled = true; };
   }, [inView, kind, projectPath, artifact.id, artifact.lastModified]);
 
+  // Measure the thumbnail box so the HTML iframe can be rendered at a desktop
+  // logical width and scaled to fit (a true zoomed-out webpage thumbnail rather
+  // than a cropped top-left fragment). Only needed for the html branch.
+  useEffect(() => {
+    if (kind !== 'html') return;
+    const node = containerRef.current;
+    if (!node) return;
+    const measure = () => setBoxSize({ w: node.clientWidth, h: node.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, [kind]);
+
+  // Render the HTML page at this logical width, then scale down to the card.
+  const HTML_DESIGN_WIDTH = 1100;
+  const htmlScale = boxSize.w > 0 ? boxSize.w / HTML_DESIGN_WIDTH : 0.16;
+
   const showFallbackGlyph =
     kind === 'fallback' ||
     (kind === 'image' && (imgFailed || !absolutePath)) ||
@@ -139,14 +160,22 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
       )}
 
       {kind === 'html' && content !== null && (
-        // Empty sandbox = scripts disabled, no plugins, no forms. pointer-events
-        // none ensures the parent <button> still receives the click.
+        // Render the page at a desktop logical width (HTML_DESIGN_WIDTH) and
+        // scale it down to the card so the WHOLE page is visible as a zoomed-out
+        // thumbnail, instead of a 1:1 cropped top-left fragment. Empty sandbox =
+        // scripts disabled; pointer-events none keeps the parent <button> clickable.
         <iframe
           srcDoc={content}
           sandbox=""
           loading="lazy"
-          className="absolute inset-0 w-full h-full border-0 pointer-events-none bg-white"
           title=""
+          className="absolute top-0 left-0 border-0 pointer-events-none bg-white origin-top-left"
+          style={{
+            width: HTML_DESIGN_WIDTH,
+            // Height in logical px that, once scaled, fills the box exactly.
+            height: boxSize.h > 0 ? boxSize.h / htmlScale : HTML_DESIGN_WIDTH,
+            transform: `scale(${htmlScale})`,
+          }}
         />
       )}
     </div>

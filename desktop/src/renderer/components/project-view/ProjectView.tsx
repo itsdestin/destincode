@@ -10,6 +10,7 @@
 // ArtifactsTab (artifact-scoped) since it operates on the active project's artifacts.
 import React, { useEffect, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
+import { useTheme } from '../../state/theme-context';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
 import type { ContextFile, ContextScope } from '../../../shared/project-context-types';
@@ -49,6 +50,41 @@ function formatRelativeTime(epochMs: number): string {
   return new Date(epochMs).toLocaleDateString();
 }
 
+// Inline lucide-style tab icons (stroke currentColor) for the segmented control.
+function GridIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+function ChatIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+function DocIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" />
+    </svg>
+  );
+}
+function SearchGlyph({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+    </svg>
+  );
+}
+
 interface ProjectViewProps {
   // Threaded from App: starts a new conversation in the given cwd.
   onNewConversation: (cwd: string) => void;
@@ -57,10 +93,21 @@ interface ProjectViewProps {
 
 export function ProjectView(props: ProjectViewProps) {
   const { state, dispatch } = useArtifact();
+  // Artifact filter toggles live in the shared theme context (also read by the
+  // SessionDrawer). The seg-row chips here toggle them; ArtifactsTab reads them.
+  const {
+    hideCodeAndConfigs, setHideCodeAndConfigs,
+    showDeletedArtifacts, setShowDeletedArtifacts,
+  } = useTheme();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
   const [tab, setTab] = useState<TabId>('artifacts');
-  const [search, setSearch] = useState('');
+  // Artifacts search query (lifted out of ArtifactsTab so it can sit on the
+  // shared seg-row next to the segmented control, matching the design).
+  const [artifactSearch, setArtifactSearch] = useState('');
+  // Bumped after "Add external file" so ArtifactsTab re-loads its list without
+  // owning the add flow (the toolbar lives up here now).
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Hero data (recomputed when the active project changes).
   const [heroStats, setHeroStats] = useState<HeroStats>({
@@ -115,6 +162,11 @@ export function ProjectView(props: ProjectViewProps) {
       return;
     }
     let cancelled = false;
+    // Reset immediately so the PREVIOUS project's repo/stats don't linger while
+    // the new project's data loads — fixes the belated appear/disappear of the
+    // GitHub outlink (and stale counts) when switching projects.
+    setHeroStats({ artifacts: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
+    setHeroRepo(null);
     const path = activeProject.path;
     const id = activeProject.id;
     (async () => {
@@ -191,17 +243,23 @@ export function ProjectView(props: ProjectViewProps) {
     setAlsoDeleteSidecar(false);
   };
 
-  // Filter the project list by the global search box (matches name + path).
-  const q = search.trim().toLowerCase();
-  const visibleProjects = q
-    ? projects.filter((p) =>
-        p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q))
-    : projects;
+  // Add an external file to the active project, then trigger an ArtifactsTab
+  // reload. window.claude.dialog.openFile() returns a string[] of paths.
+  const addExternal = async () => {
+    if (!activeProject) return;
+    const paths: string[] = await (window.claude as any).dialog.openFile();
+    if (!paths || paths.length === 0) return;
+    await Promise.all(
+      paths.map((p) => (window.claude as any).artifacts.includeExternal(activeProject.path, p)),
+    );
+    setRefreshKey((k) => k + 1);
+  };
 
-  const SEGMENTS: { id: TabId; label: string }[] = [
-    { id: 'artifacts', label: 'Artifacts' },
-    { id: 'conversations', label: 'Conversations' },
-    { id: 'context', label: 'Context' },
+  // Unified segmented control: icon + label + live count per tab.
+  const SEGMENTS: { id: TabId; label: string; icon: React.ReactNode; count: number }[] = [
+    { id: 'artifacts', label: 'Artifacts', icon: <GridIcon />, count: heroStats.artifacts },
+    { id: 'conversations', label: 'Conversations', icon: <ChatIcon />, count: heroStats.conversations },
+    { id: 'context', label: 'Context', icon: <DocIcon />, count: heroStats.contextFiles },
   ];
 
   return (
@@ -209,13 +267,6 @@ export function ProjectView(props: ProjectViewProps) {
       {/* Header: title + global search + Esc·Close */}
       <header className="flex items-center gap-3 px-4 py-2.5 border-b border-edge shrink-0">
         <h2 className="text-base font-semibold text-fg shrink-0">Projects</h2>
-        <input
-          type="text"
-          placeholder="Search projects…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 max-w-md px-3 py-1.5 text-sm bg-inset rounded-sm border border-edge placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent"
-        />
         <div className="flex-1" />
         <button
           type="button"
@@ -230,57 +281,15 @@ export function ProjectView(props: ProjectViewProps) {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar — project list */}
-        <aside className="w-[220px] shrink-0 border-r border-edge overflow-y-auto p-2 flex flex-col gap-1">
-          <h3 className="text-[10px] font-semibold text-fg-muted uppercase tracking-wider px-2 py-1">
-            Projects
-          </h3>
-
-          {visibleProjects.length === 0 && (
-            <p className="text-xs text-fg-muted px-2 py-2 leading-relaxed">
-              {q
-                ? 'No projects match your search.'
-                : 'No projects yet. Start a session in a folder to create one.'}
-            </p>
-          )}
-
-          {visibleProjects.map((p) => (
-            // WHY: `group` enables hover-revealed delete button via group-hover.
-            <div key={p.id} className="group relative">
-              <button
-                type="button"
-                className={`w-full text-left px-2 py-2 rounded-sm transition-colors pr-7 ${
-                  activeProject?.id === p.id
-                    ? 'bg-inset text-fg'
-                    : 'hover:bg-inset text-fg-2'
-                }`}
-                onClick={() => setActiveProject(p)}
-              >
-                <div className="font-medium text-sm truncate">{p.name}</div>
-                <div className="text-[11px] text-fg-muted">
-                  {p.stats.artifactCount} artifact{p.stats.artifactCount === 1 ? '' : 's'}
-                </div>
-              </button>
-              {/* Delete button — hover-revealed to avoid visual clutter. */}
-              <button
-                type="button"
-                className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-fg-muted hover:text-fg px-1 py-0.5 rounded text-xs"
-                title={`Remove ${p.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDeletingProject(p);
-                }}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </aside>
-
-        {/* Main column — hero + segmented control + active tab */}
+        {/* Main column — hero + segmented control + active tab. There is no
+            project rail anymore; switching projects goes through the palette
+            (ProjectSwitcher) opened from the hero name, and project removal
+            lives on the palette rows. */}
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-          {activeProject ? (
-            <div className="px-4 pt-4 pb-3 shrink-0">
+          {/* Chrome: hero + seg-row, centered to a comfortable reading width to
+              match the prototype (the tab body below shares the same max-width). */}
+          <div className="w-full max-w-[1100px] mx-auto px-4 pt-4 shrink-0 flex flex-col gap-4">
+            {activeProject ? (
               <ProjectHero
                 project={activeProject}
                 stats={heroStats}
@@ -288,40 +297,103 @@ export function ProjectView(props: ProjectViewProps) {
                 onOpenSwitcher={() => setSwitcherOpen(true)}
                 onNewConversation={props.onNewConversation}
               />
-            </div>
-          ) : (
-            <div className="px-4 pt-4 pb-3 border-b border-edge shrink-0 text-sm text-fg-muted">
-              Select a project to view its artifacts.
-            </div>
-          )}
+            ) : (
+              <div className="text-sm text-fg-muted">Select a project to view its artifacts.</div>
+            )}
 
-          {/* Segmented control — accent used ONCE per view (the active chip). */}
-          <div className="px-4 py-3 shrink-0">
-            <div className="inline-flex items-center gap-1.5">
-              {SEGMENTS.map((s) => {
-                const active = tab === s.id;
-                return (
+            {/* Seg-row: unified segmented control (left) + the active tab's
+                search/filter controls (right), on one row — matches the design. */}
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              {/* Unified segmented control: one rounded-full pill holding all three
+                  segments (icon + label + count). Accent used ONCE — the active seg. */}
+              <div
+                className="flex items-center gap-1 p-1 layer-surface !rounded-full"
+                style={{ boxShadow: 'none' }}
+              >
+                {SEGMENTS.map((s) => {
+                  const active = tab === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className={`px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center gap-2 transition-colors ${
+                        active
+                          ? 'bg-accent text-on-accent'
+                          : 'text-fg-2 hover:text-fg hover:bg-inset'
+                      }`}
+                      onClick={() => setTab(s.id)}
+                    >
+                      {s.icon}
+                      {s.label}
+                      <span className={`text-[11px] ${active ? 'opacity-80' : 'text-fg-muted'}`}>
+                        {s.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Right controls — artifacts tab only (search + filter chips +
+                  add-external). Conversations/Context have no toolbar in v1. */}
+              {tab === 'artifacts' && activeProject && (
+                <div className="flex items-center gap-2">
+                  {/* Compact search field (theme rounded-md), matches the prototype. */}
+                  <div className="flex items-center gap-2 bg-inset border border-edge rounded-md px-3 py-1.5 w-[220px]">
+                    <span className="text-fg-muted shrink-0"><SearchGlyph size={15} /></span>
+                    <input
+                      type="text"
+                      placeholder="Search artifacts…"
+                      value={artifactSearch}
+                      onChange={(e) => setArtifactSearch(e.target.value)}
+                      className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
+                    />
+                  </div>
+                  {/* Filter chips — rounded-full, accent fill when active. */}
                   <button
-                    key={s.id}
                     type="button"
-                    className={`px-3 py-1 rounded-full text-xs transition-colors ${
-                      active
+                    className={`px-3 py-1 rounded-full text-[12.5px] transition-colors ${
+                      hideCodeAndConfigs
                         ? 'bg-accent text-on-accent'
-                        : 'bg-inset text-fg-2 border border-edge hover:text-fg'
+                        : 'bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim'
                     }`}
-                    onClick={() => setTab(s.id)}
+                    onClick={() => setHideCodeAndConfigs(!hideCodeAndConfigs)}
+                    title={hideCodeAndConfigs
+                      ? 'Showing Documents and Mockups only. Click to show all.'
+                      : 'Showing all files. Click to hide code & configs.'}
                   >
-                    {s.label}
+                    Hide code &amp; configs
                   </button>
-                );
-              })}
+                  <button
+                    type="button"
+                    className={`px-3 py-1 rounded-full text-[12.5px] transition-colors ${
+                      showDeletedArtifacts
+                        ? 'bg-accent text-on-accent'
+                        : 'bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim'
+                    }`}
+                    onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
+                    title={showDeletedArtifacts
+                      ? 'Including deleted files in the grid. Click to hide them.'
+                      : 'Hiding deleted files. Click to include them.'}
+                  >
+                    Show deleted
+                  </button>
+                  <button
+                    type="button"
+                    className="px-3 py-1 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors"
+                    onClick={addExternal}
+                    title="Add an external file to this project"
+                  >
+                    + Add file
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Tab routing */}
-          <div className="flex-1 overflow-hidden min-h-0">
+          {/* Tab routing — shares the centered max-width with the chrome above. */}
+          <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto">
             {activeProject && tab === 'artifacts' && (
-              <ArtifactsTab project={activeProject} />
+              <ArtifactsTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab project={activeProject} onOpenPreview={setPreviewSession} />
@@ -377,6 +449,7 @@ export function ProjectView(props: ProjectViewProps) {
           onSelect={(p) => { setActiveProject(p); setSwitcherOpen(false); }}
           onClose={() => setSwitcherOpen(false)}
           onAddProject={handleAddProject}
+          onDeleteProject={(p) => setDeletingProject(p)}
         />
       )}
 

@@ -14,6 +14,11 @@ export interface ContextFile {
   glob?: string;         // set when timing === 'conditional'
   editable: boolean;     // true in v1
   blastRadius: 'global' | 'project';
+  // Populated by the IO shell (project-context.ts) for the row UI: a one-line
+  // human description (frontmatter `description:` or the file's first real line)
+  // and a formatted file size (e.g. "9.4 KB").
+  description?: string;
+  size?: string;
 }
 
 export interface ContextGroup {

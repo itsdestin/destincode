@@ -3,6 +3,7 @@ import { ComponentType } from 'react';
 import { MarkdownView } from './MarkdownView';
 import { CodeView } from './CodeView';
 import { ImageView } from './ImageView';
+import { HtmlView } from './HtmlView';
 import { BinaryFallback } from './BinaryFallback';
 import type { ArtifactViewProps } from './types';
 
@@ -29,6 +30,8 @@ const REGISTRY: Record<string, ViewSpec> = {
   jpeg: ImageView,
   gif: ImageView,
   webp: ImageView,
+  html: HtmlView,
+  htm: HtmlView,
   pdf: { lazy: () => import('./PdfView').then((m) => ({ default: m.PdfView })) },
   docx: { lazy: () => import('./DocxView').then((m) => ({ default: m.DocxView })) },
   xlsx: { lazy: () => import('./XlsxView').then((m) => ({ default: m.XlsxView })) },

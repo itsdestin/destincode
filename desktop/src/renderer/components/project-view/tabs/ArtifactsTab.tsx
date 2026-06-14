@@ -16,14 +16,30 @@ import { ProjectDetailOverlay } from '../ProjectDetailOverlay';
 // drawer, keyed under this reserved sessionId in activeArtifactBySession.
 const PV_SESSION = 'project-view';
 
-export function ArtifactsTab({ project }: { project: CentralIndexProject }) {
+// Human "kind" label for a card (Document / Image / Code / Config), derived from
+// the shared categorizer — matches the prototype's artCard second line.
+function kindLabel(p: string): string {
+  const c = categorizeArtifact(p);
+  return c ? c.charAt(0).toUpperCase() + c.slice(1) : 'File';
+}
+
+export function ArtifactsTab({
+  project,
+  search,
+  refreshKey,
+}: {
+  project: CentralIndexProject;
+  search: string;     // lifted to ProjectView — lives on the shared seg-row now
+  refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
+}) {
   const { state, dispatch } = useArtifact();
   const pvActiveId = state.activeArtifactBySession[PV_SESSION] ?? null;
-  const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts } = useTheme();
+  // Read-only here: the toggle chips that SET these live on the ProjectView seg-row.
+  const { hideCodeAndConfigs, showDeletedArtifacts } = useTheme();
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
-  const [search, setSearch] = useState('');
 
-  // Load artifacts whenever the active project changes.
+  // Load artifacts whenever the active project changes, or after an add-external
+  // (refreshKey bump from ProjectView).
   useEffect(() => {
     let cancelled = false;
     (window.claude as any).artifacts.listProject(project.id).then((res: any) => {
@@ -35,7 +51,7 @@ export function ArtifactsTab({ project }: { project: CentralIndexProject }) {
     // doesn't carry stale content from the previous project.
     dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
     return () => { cancelled = true; };
-  }, [project.id]);
+  }, [project.id, refreshKey]);
 
   // Existence check: fold "file not on disk" into the deleted UI state alongside
   // sidecar-tracked delete versions. Re-runs whenever the artifact list changes.
@@ -64,86 +80,16 @@ export function ArtifactsTab({ project }: { project: CentralIndexProject }) {
     }),
     [artifacts, hideCodeAndConfigs, showDeletedArtifacts, orphanIds, search],
   );
-  // Counts for tooltip hints — total deleted (any cause).
-  const deletedCount = useMemo(
-    () => artifacts.filter((a) => a.status === 'deleted' || orphanIds.has(a.id)).length,
-    [artifacts, orphanIds],
-  );
-
   const refreshArtifacts = () => {
     (window.claude as any).artifacts.listProject(project.id).then((r: any) => {
       if (r && r.ok) setArtifacts(r.artifacts);
     });
   };
 
-  // window.claude.dialog.openFile() returns Promise<string[]> (array of paths).
-  const addExternal = async () => {
-    const paths: string[] = await (window.claude as any).dialog.openFile();
-    if (!paths || paths.length === 0) return;
-    await Promise.all(
-      paths.map((p: string) =>
-        (window.claude as any).artifacts.includeExternal(project.path, p)
-      )
-    );
-    refreshArtifacts();
-  };
-
   const activeArtifact = pvActiveId ? artifacts.find((a) => a.id === pvActiveId) : undefined;
 
   return (
-    <div className="relative flex flex-col h-full overflow-hidden p-4 gap-3 min-w-0">
-      {/* Toolbar: search + filter toggles + add-external */}
-      <div className="flex items-center gap-2 shrink-0">
-        <input
-          type="text"
-          placeholder="Search artifacts…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 px-3 py-1.5 text-sm bg-inset rounded-sm border border-edge placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent"
-        />
-        {/* Filter toggles — shared preferences w/ SessionDrawer.
-            Hide code & configs defaults ON. Show deleted defaults OFF.
-            Plain-word toggle state (no ☑/☐ glyph language). */}
-        <button
-          type="button"
-          className={`flex items-center gap-1.5 px-2 py-1.5 rounded-sm border text-xs transition-colors shrink-0 ${
-            hideCodeAndConfigs
-              ? 'bg-inset border-edge text-fg'
-              : 'border-edge text-fg-muted hover:text-fg hover:bg-inset'
-          }`}
-          onClick={() => setHideCodeAndConfigs(!hideCodeAndConfigs)}
-          title={hideCodeAndConfigs
-            ? 'Showing Documents and Mockups only. Click to show all.'
-            : 'Showing all files. Click to hide code & configs.'}
-        >
-          <span>Hide code &amp; configs</span>
-        </button>
-        <button
-          type="button"
-          className={`flex items-center gap-1.5 px-2 py-1.5 rounded-sm border text-xs transition-colors shrink-0 ${
-            showDeletedArtifacts
-              ? 'bg-inset border-edge text-fg'
-              : 'border-edge text-fg-muted hover:text-fg hover:bg-inset'
-          }`}
-          onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
-          title={showDeletedArtifacts
-            ? 'Including deleted files in the grid. Click to hide them.'
-            : `Hiding deleted files${deletedCount > 0 ? ` — ${deletedCount} hidden in this project` : ''}. Click to include them.`}
-        >
-          <span>Show deleted</span>
-          {!showDeletedArtifacts && deletedCount > 0 && (
-            <span className="text-fg-muted">+{deletedCount}</span>
-          )}
-        </button>
-        <button
-          type="button"
-          className="px-2 py-1.5 border border-edge rounded-sm text-xs text-fg-muted hover:bg-inset hover:text-fg transition-colors shrink-0"
-          onClick={addExternal}
-        >
-          + Add external file
-        </button>
-      </div>
-
+    <div className="relative flex flex-col h-full overflow-hidden px-4 pt-4 pb-4 gap-3 min-w-0">
       {filtered.length === 0 && (
         <p className="text-sm text-fg-muted">
           {search
@@ -166,31 +112,39 @@ export function ArtifactsTab({ project }: { project: CentralIndexProject }) {
             <button
               key={a.id}
               type="button"
-              className={`layer-surface relative flex flex-col h-44 p-2 transition-colors text-left overflow-hidden ${
-                isActive ? 'border-accent' : 'hover:bg-inset'
+              // Fixed h-44 (PITFALL: without a fixed card height the thumbnail
+              // flex-shrinks to zero in a short grid row, collapsing cards into
+              // blank pills). The thumbnail is flex-1 to fill the space above the
+              // filename/kind; both text lines are shrink-0 so the card stays uniform.
+              className={`layer-surface !rounded-lg relative flex flex-col h-44 overflow-hidden text-left transition-transform duration-200 hover:scale-[1.02] ${
+                isActive ? 'border-accent' : ''
               } ${isDeleted ? 'opacity-60' : ''}`}
               onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId: PV_SESSION, artifactId: a.id })}
               title={isDeleted ? `${a.path}\nDeleted (file is no longer on disk)` : a.path}
             >
-              {/* Mini pre-render of the file (image/text/html) or ext-letter fallback */}
+              {/* Mini pre-render (image/text/html). flex-1 fills the space above
+                  the filename/kind in the fixed-height card. */}
               <ArtifactThumbnail
                 artifact={a}
                 projectPath={project.path}
-                className={`h-28 w-full rounded-sm mb-2 shrink-0 ${isDeleted ? 'grayscale' : ''}`}
+                className={`flex-1 min-h-0 w-full border-b border-edge-dim ${isDeleted ? 'grayscale' : ''}`}
               />
               {/* "deleted" word badge — anchored top-right of the thumbnail.
                   Plain word, no glyph (the ✕/●◐○ language is disliked). */}
               {isDeleted && (
                 <span
-                  className="absolute top-3 right-3 px-1.5 py-0.5 text-[10px] font-semibold bg-canvas/80 border border-edge rounded text-fg-2"
+                  className="absolute top-2 right-2 px-1.5 py-0.5 text-[10px] font-semibold bg-canvas/80 border border-edge rounded text-fg-2"
                   aria-label="Deleted"
                 >
                   deleted
                 </span>
               )}
-              <div className={`text-xs truncate w-full text-fg-2 shrink-0 ${isDeleted ? 'line-through' : ''}`}>
+              <span className={`px-2.5 pt-2 pb-0.5 text-[12px] font-mono truncate w-full text-fg-2 shrink-0 ${isDeleted ? 'line-through' : ''}`}>
                 {filename}
-              </div>
+              </span>
+              <span className="px-2.5 pb-2.5 text-[10.5px] text-fg-muted shrink-0">
+                {kindLabel(a.path)}
+              </span>
             </button>
           );
         })}
