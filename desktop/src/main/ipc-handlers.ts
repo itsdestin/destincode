@@ -13,7 +13,7 @@ import { CommandProvider } from './command-provider';
 import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
-import { TranscriptWatcher } from './transcript-watcher';
+import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
 import { listPastSessions, loadHistory } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
@@ -40,6 +40,8 @@ import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
 import { appendVersion, readSidecar, writeSidecar, renameArtifact } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
+import { buildSavedFolderProjects } from './artifacts/saved-folder-projects';
+import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/project-file-discovery';
 import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { PROJECT_IPC } from './project/ipc-channels';
@@ -817,8 +819,16 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.FOLDERS_REMOVE, async (_event, folderPath: string) => {
     const folders = readFolders();
+    // Compare case-insensitively on Windows (paths are case-insensitive there).
+    // WHY: Project View passes the project's CANONICAL path (lowercase drive,
+    // e.g. c:\…) while the store holds the path.resolve form (uppercase drive,
+    // C:\…). A case-sensitive compare would silently fail to remove the entry.
+    const samePath = (a: string, b: string) =>
+      process.platform === 'win32'
+        ? a.toLowerCase() === b.toLowerCase()
+        : a === b;
     const normalized = path.resolve(folderPath);
-    const filtered = folders.filter(f => path.resolve(f.path) !== normalized);
+    const filtered = folders.filter(f => !samePath(path.resolve(f.path), normalized));
     if (filtered.length === folders.length) return false;
     writeFolders(filtered);
     return true;
@@ -2073,6 +2083,9 @@ export function registerIpcHandlers(
       type: args.type,
       author: args.author,
     });
+    // A newly created/edited file may also be a discovered doc — drop the cached
+    // disk scan so it shows up on the next LIST_PROJECT without waiting for TTL.
+    invalidateDiscoveryCache(projectRoot);
     // Broadcast so every open window's artifact UI refreshes
     webContents.getAllWebContents().forEach((wc) =>
       wc.send(ARTIFACT_IPC.CHANGED, {
@@ -2133,34 +2146,140 @@ export function registerIpcHandlers(
     return writeContextFile(projectPath, absolutePath, content);
   });
 
-  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECT, async (_e, projectId: string) => {
+  // CORE PRINCIPLE helpers — TWO distinct counts, never conflated:
+  //
+  //   countArtifacts → ARTIFACTS: files Claude directly created/edited (sidecar
+  //     tracked, internal or included-external), non-deleted AND still on disk
+  //     (orphans excluded). This is what the Artifacts tab shows with "Show
+  //     deleted" OFF. NO on-disk discovery is mixed in here.
+  //   countAllFiles → ALL FILES: the count of the project folder's real documents
+  //     on disk (the full-browser view), independent of what Claude touched.
+  //
+  // Each is the single source of truth for its number, read identically by the
+  // hero, the segment badges, and the switcher row.
+  async function countArtifacts(projectRoot: string): Promise<number> {
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return 0;
+    const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
+    // Visible-with-deleted-OFF tracked set: non-deleted, internal or included-external.
+    const visible = sidecar.artifacts.filter((a: any) =>
+      a.status !== 'deleted' && (
+        a.kind === 'internal' ||
+        (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
+      )
+    );
+    // Drop orphans — files marked 'active' but bash-rm'd off disk (CC has no
+    // Delete tool, so this is the common case). fs.access in parallel is cheap.
+    const alive = await Promise.all(visible.map(async (a: any) => {
+      const full = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath!;
+      try { await fs.promises.access(full); return true; } catch { return false; }
+    }));
+    return alive.filter(Boolean).length;
+  }
+
+  // ALL FILES = on-disk discovery UNIONed with any tracked artifact that exists on
+  // disk but discovery didn't reach (e.g. an artifact inside a skipped nested
+  // sub-repo). The union GUARANTEES All files is a SUPERSET of Artifacts — it is
+  // nonsensical for a project to report fewer "all files" than "artifacts".
+  async function projectAllFiles(projectRoot: string): Promise<{ files: any[]; truncated: boolean }> {
+    let scan: { files: any[]; truncated: boolean };
+    try { scan = await discoverProjectFiles(projectRoot); }
+    catch { scan = { files: [], truncated: false }; }
+    const seen = new Set(scan.files.map((f: any) => f.path));
+    const sidecar = await readSidecar(projectRoot);
+    const extra: any[] = [];
+    if (sidecar && !('corrupted' in sidecar)) {
+      for (const a of sidecar.artifacts) {
+        if (a.kind !== 'internal' || a.status === 'deleted') continue;
+        const rel = canonicalize(a.path, projectRoot);
+        if (seen.has(rel)) continue;
+        // Only include artifacts that still exist on disk (skip orphans).
+        try { await fs.promises.access(path.join(projectRoot, a.path)); } catch { continue; }
+        seen.add(rel);
+        // Present as a browser entry (discovered shape) so the All files tab treats
+        // it uniformly (no existence re-check; opens via the path-fallback GET).
+        extra.push({
+          id: rel, path: rel, kind: 'internal', absolutePath: null,
+          lastModified: a.lastModified ?? '', status: 'active',
+          versions: [], comments: [], tags: [], discovered: true,
+        });
+      }
+    }
+    return { files: [...scan.files, ...extra], truncated: scan.truncated };
+  }
+
+  async function countAllFiles(projectRoot: string): Promise<number> {
+    try { return (await projectAllFiles(projectRoot)).files.length; }
+    catch { return 0; }
+  }
+
+  // LIST_PROJECT → ARTIFACTS ONLY. Returns the tracked sidecar artifacts (internal
+  // always; external only if manually included). Deleted ones are INCLUDED so the
+  // Artifacts tab's "Show deleted" toggle works; the renderer filters them. NO
+  // on-disk discovery is merged in — that is LIST_ALL_FILES's job (the split is the
+  // core principle). visibleCount (withCount) is the authoritative non-deleted,
+  // on-disk artifact count shared with the hero + switcher.
+  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECT, async (_e, projectId: string, opts?: { withCount?: boolean }) => {
     const projects = await listProjects(CLAUDE_DIR);
     const p = projects.find((x) => x.id === projectId);
-    if (!p) return { ok: false, error: 'project-not-found' };
-    const sidecar = await readSidecar(p.path);
-    if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
-    // Filter: internal artifacts always shown; external only if explicitly
-    // added via manualIncludes. External auto-captures (Claude writing to a
-    // path outside cwd) live in the sidecar so they show in the SESSION
-    // drawer, but they shouldn't pollute the PROJECT view.
-    const includedExternal = new Set(
-      sidecar.manualIncludes.map((i: any) => i.path)
-    );
-    const visible = sidecar.artifacts.filter((a: any) =>
-      a.kind === 'internal' ||
-      (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
-    );
-    return { ok: true, artifacts: visible };
+    // Synth (saved-folder) projects use their canonical PATH as id and have no
+    // index entry — fall back to reading the sidecar at that path so their
+    // artifacts resolve too. A bogus id simply yields no sidecar.
+    const projectRoot = p ? p.path : projectId;
+    const sidecar = await readSidecar(projectRoot);
+
+    let tracked: any[] = [];
+    if (sidecar && !('corrupted' in sidecar)) {
+      const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
+      tracked = sidecar.artifacts.filter((a: any) =>
+        a.kind === 'internal' ||
+        (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
+      );
+    }
+
+    const visibleCount = opts?.withCount ? await countArtifacts(projectRoot) : undefined;
+    return {
+      ok: true,
+      artifacts: tracked,
+      ...(visibleCount !== undefined ? { visibleCount } : {}),
+    };
+  });
+
+  // LIST_ALL_FILES → ALL FILES. The project folder's real documents on disk (the
+  // full-browser view). Pure discovery — bounded, deterministic (stops at nested
+  // git repos), cached. Independent of the sidecar / what Claude touched, so a
+  // Claude-authored doc legitimately appears in BOTH Artifacts and All files.
+  ipcMain.handle(ARTIFACT_IPC.LIST_ALL_FILES, async (_e, projectId: string) => {
+    const projects = await listProjects(CLAUDE_DIR);
+    const p = projects.find((x) => x.id === projectId);
+    const projectRoot = p ? p.path : projectId;
+    const r = await projectAllFiles(projectRoot);
+    return { ok: true, files: r.files, truncated: r.truncated };
   });
 
   ipcMain.handle(ARTIFACT_IPC.GET, async (_e, projectRoot: string, artifactId: string) => {
     const sidecar = await readSidecar(projectRoot);
-    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
-    const artifact = sidecar.artifacts.find((a) => a.id === artifactId);
-    if (!artifact) return { ok: false, error: 'artifact-not-found' };
-    const fullPath = artifact.kind === 'internal'
-      ? path.join(projectRoot, artifact.path)
-      : artifact.absolutePath!;
+    const artifact = (sidecar && !('corrupted' in sidecar))
+      ? sidecar.artifacts.find((a) => a.id === artifactId)
+      : undefined;
+
+    let fullPath: string;
+    if (artifact) {
+      fullPath = artifact.kind === 'internal'
+        ? path.join(projectRoot, artifact.path)
+        : artifact.absolutePath!;
+    } else {
+      // Discovered (on-disk) file: the id IS a canonical relative path. Resolve
+      // it inside the project root and refuse anything that escapes (traversal
+      // guard) so this can't be used to read arbitrary files.
+      const resolved = path.resolve(projectRoot, artifactId);
+      const root = path.resolve(projectRoot);
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        return { ok: false, error: 'artifact-not-found' };
+      }
+      fullPath = resolved;
+    }
+
     let content: string | null = null;
     try {
       content = await fs.promises.readFile(fullPath, 'utf8');
@@ -2168,7 +2287,7 @@ export function registerIpcHandlers(
       if (e.code !== 'ENOENT') throw e;
       // File is missing — return orphan signal
     }
-    return { ok: true, artifact, content, orphan: content === null };
+    return { ok: true, artifact: artifact ?? null, content, orphan: content === null };
   });
 
   ipcMain.handle(ARTIFACT_IPC.SAVE, async (
@@ -2181,24 +2300,43 @@ export function registerIpcHandlers(
     sessionId: string
   ) => {
     const sidecar = await readSidecar(projectRoot);
-    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
-    const artifact = sidecar.artifacts.find((a) => a.id === artifactId);
-    if (!artifact) return { ok: false, error: 'artifact-not-found' };
-    const fullPath = artifact.kind === 'internal'
-      ? path.join(projectRoot, artifact.path)
-      : artifact.absolutePath!;
-    // Atomic write: write to .tmp then rename, so the original is never half-written
-    await fs.promises.writeFile(fullPath + '.tmp', newContent, 'utf8');
-    await fs.promises.rename(fullPath + '.tmp', fullPath);
-    await appendVersion(projectRoot, projectId, projectName, {
-      path: artifact.path,
-      kind: artifact.kind,
-      absolutePath: artifact.absolutePath,
-      sessionId,
-      type: 'edit',
-      author: 'user',
-    });
-    // Broadcast the change to every renderer so all open windows update their artifact UI
+    const artifact = (sidecar && !('corrupted' in sidecar))
+      ? sidecar.artifacts.find((a) => a.id === artifactId)
+      : undefined;
+
+    if (artifact) {
+      const fullPath = artifact.kind === 'internal'
+        ? path.join(projectRoot, artifact.path)
+        : artifact.absolutePath!;
+      // Atomic write: write to .tmp then rename, so the original is never half-written
+      await fs.promises.writeFile(fullPath + '.tmp', newContent, 'utf8');
+      await fs.promises.rename(fullPath + '.tmp', fullPath);
+      await appendVersion(projectRoot, projectId, projectName, {
+        path: artifact.path,
+        kind: artifact.kind,
+        absolutePath: artifact.absolutePath,
+        sessionId,
+        type: 'edit',
+        author: 'user',
+      });
+      // Broadcast the change to every renderer so all open windows update their artifact UI
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
+      );
+      return { ok: true };
+    }
+
+    // Discovered (on-disk) file: write directly by path. NO sidecar mutation, so
+    // editing a doc never silently creates a .youcoded/ tracking dir. Resolve
+    // inside the project root and refuse escapes (traversal guard, same as GET).
+    const resolved = path.resolve(projectRoot, artifactId);
+    const root = path.resolve(projectRoot);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return { ok: false, error: 'artifact-not-found' };
+    }
+    await fs.promises.writeFile(resolved + '.tmp', newContent, 'utf8');
+    await fs.promises.rename(resolved + '.tmp', resolved);
+    invalidateDiscoveryCache(projectRoot); // refresh the cached mtime next scan
     webContents.getAllWebContents().forEach((wc) =>
       wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
     );
@@ -2242,29 +2380,78 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // Returns the full list of projects from the central index — used by
-  // ProjectView to populate the sidebar without scoping to a single session.
-  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECTS_INDEX, async () => {
-    const projects = await listProjects(CLAUDE_DIR);
-    // The stored stats.artifactCount is seeded to 0 at project creation and only
-    // refreshed by rebuildIndex (which rarely runs), so it's almost always stale
-    // (showed "0 artifacts" for every project). Compute the live count fresh from
-    // each sidecar using the SAME "visible" filter the grid uses (internal +
-    // manually-included external) so the sidebar count matches what LIST_PROJECT
-    // returns.
-    const withCounts = await Promise.all(projects.map(async (p) => {
-      const sidecar = await readSidecar(p.path);
-      if (!sidecar || 'corrupted' in sidecar) {
-        return { ...p, stats: { ...p.stats, artifactCount: 0 } };
+  // Returns the Project View project list — the user's SAVED FOLDERS (the same
+  // list the session-creation folder picker shows), reconciled with the central
+  // index for artifact ids + stats. WHY saved folders rather than the raw index:
+  // the index only gains an entry once Claude writes a tracked artifact in a
+  // folder, so folders the user works in (conversations / reads only, or
+  // pre-artifact-viewer) were invisible. The picker list is the user's own
+  // source of truth and needs no Claude Code ~/.claude/projects dependency.
+  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECTS_INDEX, async (_e, opts?: { withCounts?: boolean }) => {
+    let saved = readFolders();
+    if (saved.length === 0) {
+      // Mirror the folder picker's first-use seed so a fresh install isn't empty.
+      saved = [{ path: os.homedir(), nickname: 'Home', addedAt: Date.now() }];
+    }
+    const indexProjects = await listProjects(CLAUDE_DIR);
+    const projects = buildSavedFolderProjects(saved, indexProjects);
+
+    // Conversation counts: a single global session scan, bucketed by CC slug.
+    // Only when requested — listPastSessions is heavier (global), and ChatView's
+    // frequent cwd-resolution calls don't need it. WHY a flag rather than always:
+    // ChatView calls this on every drawer open and must stay fast.
+    const ccSlug = (projectPath: string) =>
+      cwdToProjectSlug(projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`));
+    let convBySlug: Map<string, number> | null = null;
+    if (opts?.withCounts) {
+      const sessions = await listPastSessions();
+      convBySlug = new Map();
+      for (const s of sessions) convBySlug.set(s.projectSlug, (convBySlug.get(s.projectSlug) ?? 0) + 1);
+    }
+
+    // The stored stats.artifactCount is seeded to 0 and almost always stale, so
+    // compute it live per project. Fast mode = tracked (sidecar) only — matches
+    // what ChatView needs. withCounts mode ALSO scans on-disk docs (bounded +
+    // cached, in parallel) so the switcher's "N files" reflects real files, not
+    // just tracked artifacts, plus the conversation count.
+    const computed = await Promise.all(projects.map(async (p) => {
+      // artifactCount (stats.artifactCount) = ARTIFACTS (Claude-authored, tracked).
+      // fileCount = ALL FILES (on-disk documents). Two distinct numbers, per the
+      // core principle — the hero/segments/switcher each read the right one.
+      let artifactCount: number;
+      let fileCount: number | undefined;
+      let conversationCount: number | undefined;
+      if (opts?.withCounts) {
+        // Authoritative counts via the SAME helpers the hero/segments use, so the
+        // switcher row never disagrees with the open project's header.
+        artifactCount = await countArtifacts(p.path);
+        fileCount = await countAllFiles(p.path);
+        conversationCount = convBySlug!.get(ccSlug(p.path)) ?? 0;
+      } else {
+        // Fast path for ChatView's frequent cwd-resolution calls: cheap sidecar-
+        // only artifact count, no on-disk scan and no existence check.
+        const sidecar = await readSidecar(p.path);
+        let trackedCount = 0;
+        if (sidecar && !('corrupted' in sidecar)) {
+          const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
+          trackedCount = sidecar.artifacts.filter((a: any) =>
+            a.status !== 'deleted' && (
+              a.kind === 'internal' ||
+              (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
+            )
+          ).length;
+        }
+        artifactCount = trackedCount;
       }
-      const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
-      const count = sidecar.artifacts.filter((a: any) =>
-        a.kind === 'internal' ||
-        (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
-      ).length;
-      return { ...p, stats: { ...p.stats, artifactCount: count } };
+
+      return {
+        ...p,
+        stats: { ...p.stats, artifactCount },
+        ...(fileCount !== undefined ? { fileCount } : {}),
+        ...(conversationCount !== undefined ? { conversationCount } : {}),
+      };
     }));
-    return { ok: true, projects: withCounts };
+    return { ok: true, projects: computed };
   });
 
   // Task 7.3: remove a project from the central index. The project folder and

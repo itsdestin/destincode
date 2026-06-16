@@ -3071,6 +3071,12 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
+            // ALL FILES (full-browser on-disk discovery) — Project View v2 on mobile;
+            // desktop is authoritative. Stub keeps the IPC type-string parity.
+            "artifacts:list-all-files" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
             "artifacts:list-projects-index" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }

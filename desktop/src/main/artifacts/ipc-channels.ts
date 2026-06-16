@@ -1,7 +1,15 @@
 // IPC channel constants for artifact viewer subsystem
 export const ARTIFACT_IPC = {
   LIST_SESSION: 'artifacts:list-session',
+  // CORE PRINCIPLE — two distinct concepts, never merged. (No apostrophes or
+  // single quotes in this comment: the parity test treats any single-quoted
+  // string here as a channel name.)
+  //   LIST_PROJECT   = ARTIFACTS: files Claude directly created/edited (tracked
+  //                    sidecar entries, internal or included-external).
+  //   LIST_ALL_FILES = ALL FILES: the project folder real documents on disk
+  //                    (full-browser view), independent of what Claude touched.
   LIST_PROJECT: 'artifacts:list-project',
+  LIST_ALL_FILES: 'artifacts:list-all-files',
   GET: 'artifacts:get',
   SAVE: 'artifacts:save',
   // Fix: wire the data-flow gap — renderer calls this when it observes a

@@ -849,10 +849,12 @@ contextBridge.exposeInMainWorld('claude', {
   artifacts: {
     listSession: (sessionId: string, projectRoot: string) =>
       ipcRenderer.invoke('artifacts:list-session', sessionId, projectRoot),
-    listProject: (projectId: string) =>
-      ipcRenderer.invoke('artifacts:list-project', projectId),
-    listProjectsIndex: () =>
-      ipcRenderer.invoke('artifacts:list-projects-index'),
+    listProject: (projectId: string, opts?: { withCount?: boolean }) =>
+      ipcRenderer.invoke('artifacts:list-project', projectId, opts),
+    listAllFiles: (projectId: string) =>
+      ipcRenderer.invoke('artifacts:list-all-files', projectId),
+    listProjectsIndex: (opts?: { withCounts?: boolean }) =>
+      ipcRenderer.invoke('artifacts:list-projects-index', opts),
     get: (projectRoot: string, artifactId: string) =>
       ipcRenderer.invoke('artifacts:get', projectRoot, artifactId),
     save: (projectRoot: string, projectId: string, projectName: string,

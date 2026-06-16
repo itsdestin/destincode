@@ -20,7 +20,7 @@ export interface VersionEvent {
 }
 
 export interface ArtifactRecord {
-  id: string;            // ULID
+  id: string;            // ULID (tracked) OR canonical relative path (discovered)
   path: string;          // canonical, relative if kind='internal'
   kind: ArtifactKind;
   absolutePath: string | null;  // canonical, set when kind='external'
@@ -29,6 +29,12 @@ export interface ArtifactRecord {
   versions: VersionEvent[];
   comments: unknown[];    // empty in v1
   tags: string[];         // empty in v1
+  // Synthesized at list time for files found on disk that Claude never tracked
+  // (on-disk document discovery). NEVER persisted to the sidecar. Consumers must
+  // treat discovered files as always-present (skip orphan/existence checks) and
+  // resolve their content by PATH (id == canonical relative path), not by sidecar
+  // lookup.
+  discovered?: boolean;
 }
 
 export interface ManualInclude {
@@ -55,7 +61,17 @@ export interface CentralIndexProject {
   lastIndexed: string;
   lastSession: string | null;
   contentTypes: ('artifacts' | 'conversations')[];
+  // ARTIFACTS count — files Claude directly created/edited (tracked). In the fast
+  // (no-withCounts) list this is the cheap sidecar count; withCounts makes it the
+  // authoritative non-deleted, on-disk artifact count.
   stats: { artifactCount: number };
+  // Computed at list time (only when LIST_PROJECTS_INDEX is called withCounts) —
+  // NOT persisted to the index. Powers the project switcher's "files · chats" hint.
+  // fileCount = ALL FILES (the project folder's on-disk documents — the full-browser
+  // count), distinct from stats.artifactCount above. conversationCount = number of
+  // past sessions in the folder.
+  fileCount?: number;
+  conversationCount?: number;
 }
 
 export interface CentralIndex {
