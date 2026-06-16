@@ -5,7 +5,7 @@
 //   PROJECT eyebrow
 //   <project name button ▾>          [Open repo ↗] [New Conversation]
 //   path · owner/name
-//   N artifacts · N conversations · N context files · active <when>
+//   N artifacts · N files · N conversations · N context files · active <when>
 //
 // The project name is a clickable switcher trigger (opens <ProjectSwitcher>,
 // Task 2.3) and MUST NOT truncate — it wraps. The ONE accent use in this card is
@@ -15,7 +15,8 @@ import type { CentralIndexProject } from '../../../shared/artifacts/types';
 
 // Live, computed-in-ProjectView stats (NOT the stale stats.artifactCount).
 interface HeroStats {
-  artifacts: number;
+  artifacts: number;  // Claude-authored (tracked)
+  files: number;      // all on-disk documents (the All files section)
   conversations: number;
   contextFiles: number;
   activeLabel: string;
@@ -124,6 +125,7 @@ export function ProjectHero({
         {/* Stat row — dot-separated. */}
         <div className="flex flex-wrap gap-4 mt-3 text-xs text-fg-muted">
           <span><b className="text-fg-2 font-semibold">{stats.artifacts}</b> artifacts</span>
+          <span><b className="text-fg-2 font-semibold">{stats.files}</b> files</span>
           <span><b className="text-fg-2 font-semibold">{stats.conversations}</b> conversations</span>
           <span><b className="text-fg-2 font-semibold">{stats.contextFiles}</b> context files</span>
           <span>active <b className="text-fg-2 font-semibold">{stats.activeLabel}</b></span>

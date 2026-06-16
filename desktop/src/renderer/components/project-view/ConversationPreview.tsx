@@ -10,12 +10,26 @@
 import React, { useEffect, useState } from 'react';
 import type { PastSession, HistoryMessage } from '../../../shared/types';
 import { ProjectDetailOverlay } from './ProjectDetailOverlay';
+import { TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PlayIcon } from './detail-tool-icons';
 
 interface ConversationPreviewProps {
   project: { path: string };
   session: PastSession;
   onClose: () => void;
   onResume: (session: PastSession) => void;
+}
+
+// Compact relative-time for the meta strip (mirrors ConversationsTab's row hint).
+function relTime(epochMs: number): string {
+  const diff = Date.now() - epochMs;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(epochMs).toLocaleDateString();
 }
 
 export function ConversationPreview({ project, session, onClose, onResume }: ConversationPreviewProps) {
@@ -67,31 +81,42 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
     }
   };
 
-  return (
-    <ProjectDetailOverlay title={session.name || 'Untitled'} onClose={onClose}>
-      {/* Header action row — sticky so the actions stay reachable while scrolling. */}
-      <div className="sticky top-0 z-10 flex items-center gap-2 px-4 py-2.5 bg-panel border-b border-edge-dim">
-        <button
-          type="button"
-          className="px-3.5 py-1.5 rounded-md bg-accent text-on-accent text-xs font-medium hover:opacity-90 transition-opacity"
-          onClick={() => onResume(session)}
-        >
-          Resume in Claude
-        </button>
-        <button
-          type="button"
-          className="px-3 py-1.5 rounded-md bg-inset text-fg-2 border border-edge-dim hover:text-fg hover:border-edge text-xs transition-colors disabled:opacity-50 disabled:cursor-default"
-          onClick={loadFullTranscript}
-          disabled={all}
-        >
-          {all ? 'Showing full transcript' : 'Open full transcript'}
-        </button>
-        <div className="flex-1" />
-        <span className="text-[11px] text-fg-muted shrink-0">read-only preview</span>
-      </div>
+  // Total message count: the enriched ConversationSummary carries messageCount
+  // (untyped on PastSession); fall back to however many we've loaded.
+  const totalMessages = (session as any).messageCount as number | undefined;
+  const shownCount = messages.length;
+  const metaCount = all ? shownCount : (totalMessages ?? shownCount);
+  // Footer only when we know there are more than the preview slice shows.
+  const showFooter = !all && typeof totalMessages === 'number' && totalMessages > shownCount;
 
+  // Header tools: Resume (accent) + Open full transcript (neutral).
+  const tools = (
+    <>
+      <button type="button" className={TOOL_BTN_ACCENT} onClick={() => onResume(session)}>
+        <PlayIcon size={13} />
+        Resume in Claude
+      </button>
+      <button type="button" className={TOOL_BTN_NEUTRAL} onClick={loadFullTranscript} disabled={all}>
+        {all ? 'Showing full transcript' : 'Open full transcript'}
+      </button>
+    </>
+  );
+
+  // Meta strip: "N messages · 2d ago · read-only preview".
+  const meta = (
+    <>
+      <span>{metaCount} messages</span>
+      <span className="text-fg-faint">·</span>
+      <span>{relTime(session.lastModified)}</span>
+      <span className="text-fg-faint">·</span>
+      <span>read-only preview</span>
+    </>
+  );
+
+  return (
+    <ProjectDetailOverlay title={session.name || 'Untitled'} onClose={onClose} tools={tools} meta={meta}>
       {/* Message list */}
-      <div className="px-4 py-4">
+      <div className="px-5 py-4">
         {loading ? (
           <p className="text-sm text-fg-muted">Loading…</p>
         ) : messages.length === 0 ? (
@@ -100,22 +125,29 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
           <div className="max-w-[680px] mx-auto">
             {messages.map((m, i) => (
               <div key={i} className="mb-4">
-                <div className="text-[10px] tracking-wider uppercase text-fg-muted mb-1.5">
+                <div className={`text-[10px] font-medium tracking-wider uppercase mb-1.5 ${
+                  m.role === 'user' ? 'text-fg-2' : 'text-fg-muted'
+                }`}>
                   {m.role === 'user' ? 'You' : 'Claude'}
                 </div>
                 {/* Plain text only — whitespace-pre-wrap + break-words. We do NOT
                     execute markdown/HTML here; this is a lightweight read-only preview. */}
                 <div
-                  className={`text-[13px] text-fg-2 rounded-lg px-3.5 py-2.5 whitespace-pre-wrap break-words ${
+                  className={`text-[13px] text-fg-2 rounded-lg px-3.5 py-2.5 whitespace-pre-wrap break-words border ${
                     m.role === 'user'
-                      ? 'bg-inset border border-edge'
-                      : 'border border-edge-dim'
+                      ? 'bg-inset border-edge'
+                      : 'bg-canvas border-edge-dim'
                   }`}
                 >
                   {m.content}
                 </div>
               </div>
             ))}
+            {showFooter && (
+              <div className="text-center text-[11.5px] text-fg-muted py-2">
+                — showing last {shownCount} of {totalMessages} messages —
+              </div>
+            )}
           </div>
         )}
       </div>

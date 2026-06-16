@@ -4,17 +4,21 @@
 // z-[8000]: below SessionStrip dropdown (9000) but above all other overlays (L2 = 61).
 //
 // This file is the composed SHELL: header + project list + segmented tab control +
-// tab routing. The artifact grid lives in tabs/ArtifactsTab; Conversations/Context
+// tab routing. The artifact grid lives in tabs/FilesTab; Conversations/Context
 // tabs are filled by later tasks. The project-deletion modal + project list stay
 // here (project-scoped). The "+ Add external file" affordance moved into
-// ArtifactsTab (artifact-scoped) since it operates on the active project's artifacts.
-import React, { useEffect, useState } from 'react';
+// FilesTab (artifact-scoped) since it operates on the active project's artifacts.
+import React, { useEffect, useRef, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
 import { useTheme } from '../../state/theme-context';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
-import type { ContextFile, ContextScope } from '../../../shared/project-context-types';
-import { ArtifactsTab } from './tabs/ArtifactsTab';
+import type { ContextFile, ContextGroup, ContextScope } from '../../../shared/project-context-types';
+
+// Enriched session shape returned by project:list-conversations (preview only —
+// see project-conversations.ts for why there's no message count).
+type ConversationSummary = PastSession & { preview?: string };
+import { FilesTab } from './tabs/FilesTab';
 import { ConversationsTab } from './tabs/ConversationsTab';
 import { ContextTab } from './tabs/ContextTab';
 import { ConversationPreview } from './ConversationPreview';
@@ -23,12 +27,15 @@ import { ProjectSwitcher } from './ProjectSwitcher';
 import { HowContextWorksPopup } from './HowContextWorksPopup';
 import { ContextEditorOverlay } from './ContextEditorOverlay';
 
-type TabId = 'artifacts' | 'conversations' | 'context';
+type TabId = 'artifacts' | 'allfiles' | 'conversations' | 'context';
 
 // Live hero stats, computed from the project:* / artifacts:* IPC (not the stale
 // stats.artifactCount). null repo means the project folder has no git remote.
+// CORE PRINCIPLE: `artifacts` (Claude-authored) and `files` (all on-disk docs)
+// are DISTINCT counts — never the same number.
 interface HeroStats {
   artifacts: number;
+  files: number;
   conversations: number;
   contextFiles: number;
   activeLabel: string;
@@ -68,6 +75,14 @@ function ChatIcon({ size = 15 }: { size?: number }) {
     </svg>
   );
 }
+function FolderTabIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+    </svg>
+  );
+}
 function DocIcon({ size = 15 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -94,26 +109,34 @@ interface ProjectViewProps {
 export function ProjectView(props: ProjectViewProps) {
   const { state, dispatch } = useArtifact();
   // Artifact filter toggles live in the shared theme context (also read by the
-  // SessionDrawer). The seg-row chips here toggle them; ArtifactsTab reads them.
+  // SessionDrawer). The seg-row chips here toggle them; FilesTab reads them.
   const {
-    hideCodeAndConfigs, setHideCodeAndConfigs,
     showDeletedArtifacts, setShowDeletedArtifacts,
   } = useTheme();
   const [projects, setProjects] = useState<CentralIndexProject[]>([]);
   const [activeProject, setActiveProject] = useState<CentralIndexProject | null>(null);
   const [tab, setTab] = useState<TabId>('artifacts');
-  // Artifacts search query (lifted out of ArtifactsTab so it can sit on the
+  // Artifacts search query (lifted out of FilesTab so it can sit on the
   // shared seg-row next to the segmented control, matching the design).
   const [artifactSearch, setArtifactSearch] = useState('');
-  // Bumped after "Add external file" so ArtifactsTab re-loads its list without
+  // Bumped after "Add external file" so FilesTab re-loads its list without
   // owning the add flow (the toolbar lives up here now).
   const [refreshKey, setRefreshKey] = useState(0);
 
   // Hero data (recomputed when the active project changes).
   const [heroStats, setHeroStats] = useState<HeroStats>({
-    artifacts: 0, conversations: 0, contextFiles: 0, activeLabel: '—',
+    artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '—',
   });
   const [heroRepo, setHeroRepo] = useState<HeroRepo | null>(null);
+
+  // Lifted, per-project-cached tab data. Both the hero counts and the tab bodies
+  // read these, so conversations/context are fetched ONCE per project switch
+  // (not once for the hero AND once for the tab) and re-selecting a project or
+  // toggling tabs is instant. null = still loading for the active project.
+  const convCache = useRef<Map<string, ConversationSummary[]>>(new Map());
+  const ctxCache = useRef<Map<string, ContextGroup[]>>(new Map());
+  const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
+  const [context, setContext] = useState<ContextGroup[] | null>(null);
 
   // Project switcher palette state. Nothing renders it yet — wired in Task 2.3.
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -139,78 +162,136 @@ export function ProjectView(props: ProjectViewProps) {
   // or React throws "Rendered more hooks than during the previous render".
   useEffect(() => {
     if (!state.projectViewOpen) return;
+    // Fresh data each time the browser is opened — the caches only de-duplicate
+    // within a single open session (project switches / tab toggles), so clear
+    // them on open so newly-created conversations/context show up.
+    convCache.current.clear();
+    ctxCache.current.clear();
+    let cancelled = false;
+    // Phase 1: fast list (sidecar-only counts) so the list/switcher appears
+    // instantly and a project is selected without waiting on disk scans.
     (window.claude as any).artifacts.listProjectsIndex().then((res: any) => {
-      if (res && res.ok) {
-        setProjects(res.projects);
-        // Auto-select the first project if nothing is selected (or the
-        // previously-selected project is no longer in the list).
-        setActiveProject((prev) => {
-          if (prev && res.projects.some((p: CentralIndexProject) => p.id === prev.id)) return prev;
-          return res.projects.length > 0 ? res.projects[0] : null;
-        });
-      }
+      if (cancelled || !res?.ok) return;
+      setProjects(res.projects);
+      // Auto-select the first project if nothing is selected (or the
+      // previously-selected project is no longer in the list).
+      setActiveProject((prev) => {
+        // Match by PATH, not id: a synth (saved-folder) project's id is its
+        // canonical path until it gains a central-index entry, at which point
+        // its id changes to a real ULID — matching by path keeps the selection
+        // stable across that promotion.
+        if (prev && res.projects.some((p: CentralIndexProject) => p.path === prev.path)) return prev;
+        return res.projects.length > 0 ? res.projects[0] : null;
+      });
+      // Phase 2: real file + conversation counts (on-disk discovery + a global
+      // session scan) merged in when ready — progressively enhances the switcher's
+      // "files · chats" hint without blocking the initial render.
+      (window.claude as any).artifacts.listProjectsIndex({ withCounts: true }).then((res2: any) => {
+        if (cancelled || !res2?.ok) return;
+        setProjects(res2.projects);
+      });
     });
+    return () => { cancelled = true; };
   }, [state.projectViewOpen]);
 
-  // Compute hero data whenever the active project changes. All four stats come
-  // from independent IPC calls; a `cancelled` flag guards against the project
-  // switching mid-flight (a late response must not overwrite the new project's).
+  // Compute hero data + tab data whenever the active project changes. The four
+  // IPC calls run in PARALLEL (Promise.all) so first paint waits on the slowest,
+  // not the sum. Conversations + context are fetched-or-reused-from-cache once
+  // and feed BOTH the hero counts AND the tab bodies (no duplicate fetch). A
+  // `cancelled` flag guards against the project switching mid-flight.
   useEffect(() => {
     if (!activeProject) {
-      setHeroStats({ artifacts: 0, conversations: 0, contextFiles: 0, activeLabel: '—' });
+      setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '—' });
       setHeroRepo(null);
+      setConversations(null);
+      setContext(null);
       return;
     }
     let cancelled = false;
+    const { id, path } = activeProject;
     // Reset immediately so the PREVIOUS project's repo/stats don't linger while
-    // the new project's data loads — fixes the belated appear/disappear of the
-    // GitHub outlink (and stale counts) when switching projects.
-    setHeroStats({ artifacts: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
+    // the new project's data loads. Seed tab data from cache (instant) or null
+    // (shows the tab's "Loading…" until the fetch resolves).
+    setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
     setHeroRepo(null);
-    const path = activeProject.path;
-    const id = activeProject.id;
-    (async () => {
-      // Conversations: count of project-filtered past sessions (sorted newest-first).
-      let conversations = 0;
-      let activeLabel = 'never';
+    setConversations(convCache.current.get(id) ?? null);
+    setContext(ctxCache.current.get(id) ?? null);
+
+    // Cache-or-fetch helpers — the cache makes re-selecting a project / toggling
+    // tabs instant; the bounded head-read in listProjectConversations keeps the
+    // first fetch cheap (no full-transcript parse per session).
+    const getConversations = async (): Promise<ConversationSummary[]> => {
+      const cached = convCache.current.get(id);
+      if (cached) return cached;
       try {
         const res = await (window.claude as any).project.listConversations(path);
-        const list = res?.conversations ?? [];
-        conversations = list.length;
-        // active <when>: most-recent conversation's lastModified (epoch ms).
-        const newest = list[0]?.lastModified;
-        if (typeof newest === 'number') activeLabel = formatRelativeTime(newest);
-      } catch { /* leave defaults */ }
-
-      // Context files: sum of group sizes from the context discovery.
-      let contextFiles = 0;
+        const list: ConversationSummary[] = res?.ok ? (res.conversations ?? []) : [];
+        convCache.current.set(id, list);
+        return list;
+      } catch { return []; }
+    };
+    const getContext = async (): Promise<ContextGroup[]> => {
+      const cached = ctxCache.current.get(id);
+      if (cached) return cached;
       try {
         const res = await (window.claude as any).project.listContext(path);
-        const groups = res?.groups ?? [];
-        contextFiles = groups.reduce(
-          (acc: number, g: { files?: unknown[] }) => acc + (g.files?.length ?? 0), 0);
-      } catch { /* leave 0 */ }
-
-      // Artifacts: WHY live count of non-deleted artifacts from the sidecar — the
-      // stored stats.artifactCount is seeded to 0 and almost always stale.
-      let artifacts = 0;
+        const groups: ContextGroup[] = res?.ok ? (res.groups ?? []) : [];
+        ctxCache.current.set(id, groups);
+        return groups;
+      } catch { return []; }
+    };
+    // Live artifact count — delegates to the main-process countVisibleArtifacts
+    // helper (via listProject withCount) so the hero, the segment badge, and the
+    // project-switcher row all show the SAME number. The helper returns exactly
+    // what the Artifacts tab shows with "Show deleted" OFF: non-deleted tracked
+    // files that still exist on disk (orphans excluded) plus on-disk discovered
+    // docs. No more renderer-side recomputation that could drift from the switcher.
+    const getArtifactCount = async (): Promise<number> => {
       try {
-        const res = await (window.claude as any).artifacts.listProject(id);
-        const list = res?.artifacts ?? [];
-        artifacts = list.filter((a: { status?: string }) => a.status !== 'deleted').length;
-      } catch { /* leave 0 */ }
-
-      // Repo: only surface when there's a real web URL to outlink to.
-      let repo: HeroRepo | null = null;
+        const res = await (window.claude as any).artifacts.listProject(id, { withCount: true });
+        return typeof res?.visibleCount === 'number' ? res.visibleCount : 0;
+      } catch { return 0; }
+    };
+    // ALL FILES count — the project folder's on-disk documents (DISTINCT from the
+    // artifact count). Shares main's discovery cache with the All files tab, so
+    // this and the tab don't double-scan.
+    const getAllFilesCount = async (): Promise<number> => {
       try {
-        const res = await (window.claude as any).project.repoInfo(path);
-        if (res?.hasRepo && res.webUrl) {
-          repo = { webUrl: res.webUrl, owner: res.owner, name: res.name };
-        }
-      } catch { /* leave null */ }
+        const res = await (window.claude as any).artifacts.listAllFiles(id);
+        return res?.ok && Array.isArray(res.files) ? res.files.length : 0;
+      } catch { return 0; }
+    };
 
+    (async () => {
+      const [convs, ctxGroups, artifactCount, fileCount, repoRes] = await Promise.all([
+        getConversations(),
+        getContext(),
+        getArtifactCount(),
+        getAllFilesCount(),
+        (window.claude as any).project.repoInfo(path).catch(() => null),
+      ]);
       if (cancelled) return;
-      setHeroStats({ artifacts, conversations, contextFiles, activeLabel });
+
+      // Feed the tab bodies.
+      setConversations(convs);
+      setContext(ctxGroups);
+
+      // Hero counts (live — NOT the stale stored stats.artifactCount).
+      const conversationCount = convs.length;
+      const newest = convs[0]?.lastModified; // listPastSessions is newest-first
+      const activeLabel = typeof newest === 'number' ? formatRelativeTime(newest) : 'never';
+      const contextFiles = ctxGroups.reduce((acc, g) => acc + (g.files?.length ?? 0), 0);
+      const repo: HeroRepo | null = repoRes?.hasRepo && repoRes.webUrl
+        ? { webUrl: repoRes.webUrl, owner: repoRes.owner, name: repoRes.name }
+        : null;
+
+      setHeroStats({
+        artifacts: artifactCount,
+        files: fileCount,
+        conversations: conversationCount,
+        contextFiles,
+        activeLabel,
+      });
       setHeroRepo(repo);
     })();
     return () => { cancelled = true; };
@@ -229,21 +310,27 @@ export function ProjectView(props: ProjectViewProps) {
 
   const confirmDelete = async () => {
     if (!deletingProject) return;
-    await (window.claude as any).artifacts.deleteProject(deletingProject.id, alsoDeleteSidecar);
-    // Refresh project list after deletion.
-    const res = await (window.claude as any).artifacts.listProjectsIndex();
+    // The project list IS the saved-folders store now, so "Remove" removes the
+    // folder from that store (which also drops it from the new-session folder
+    // picker). Optionally wipe the artifact-history sidecar + any index entry.
+    await (window.claude as any).folders.remove(deletingProject.path);
+    if (alsoDeleteSidecar) {
+      await (window.claude as any).artifacts.deleteProject(deletingProject.id, true).catch(() => {});
+    }
+    // Refresh project list after removal.
+    const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
     if (res && res.ok) {
       setProjects(res.projects);
-      // If we deleted the active project, select the first remaining one.
+      // If we removed the active project, select the first remaining one.
       setActiveProject((prev) =>
-        prev?.id === deletingProject.id ? (res.projects[0] ?? null) : prev
+        prev?.path === deletingProject.path ? (res.projects[0] ?? null) : prev
       );
     }
     setDeletingProject(null);
     setAlsoDeleteSidecar(false);
   };
 
-  // Add an external file to the active project, then trigger an ArtifactsTab
+  // Add an external file to the active project, then trigger an FilesTab
   // reload. window.claude.dialog.openFile() returns a string[] of paths.
   const addExternal = async () => {
     if (!activeProject) return;
@@ -256,8 +343,11 @@ export function ProjectView(props: ProjectViewProps) {
   };
 
   // Unified segmented control: icon + label + live count per tab.
+  // CORE PRINCIPLE: Artifacts (Claude-authored) and All files (everything on disk)
+  // are separate sections with separate counts.
   const SEGMENTS: { id: TabId; label: string; icon: React.ReactNode; count: number }[] = [
     { id: 'artifacts', label: 'Artifacts', icon: <GridIcon />, count: heroStats.artifacts },
+    { id: 'allfiles', label: 'All files', icon: <FolderTabIcon />, count: heroStats.files },
     { id: 'conversations', label: 'Conversations', icon: <ChatIcon />, count: heroStats.conversations },
     { id: 'context', label: 'Context', icon: <DocIcon />, count: heroStats.contextFiles },
   ];
@@ -333,58 +423,53 @@ export function ProjectView(props: ProjectViewProps) {
                 })}
               </div>
 
-              {/* Right controls — artifacts tab only (search + filter chips +
-                  add-external). Conversations/Context have no toolbar in v1. */}
-              {tab === 'artifacts' && activeProject && (
+              {/* Right controls for the two file sections. Search applies to both.
+                  Mode-specific chips: "Show deleted" + "Add file" belong to the
+                  Artifacts (tracked) section; "Hide code & configs" declutters the
+                  All files browser. Conversations/Context have no toolbar in v1. */}
+              {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
                 <div className="flex items-center gap-2">
                   {/* Compact search field (theme rounded-md), matches the prototype. */}
                   <div className="flex items-center gap-2 bg-inset border border-edge rounded-md px-3 py-1.5 w-[220px]">
                     <span className="text-fg-muted shrink-0"><SearchGlyph size={15} /></span>
                     <input
                       type="text"
-                      placeholder="Search artifacts…"
+                      placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
                       value={artifactSearch}
                       onChange={(e) => setArtifactSearch(e.target.value)}
                       className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
                     />
                   </div>
-                  {/* Filter chips — rounded-full, accent fill when active. */}
-                  <button
-                    type="button"
-                    className={`px-3 py-1 rounded-full text-[12.5px] transition-colors ${
-                      hideCodeAndConfigs
-                        ? 'bg-accent text-on-accent'
-                        : 'bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim'
-                    }`}
-                    onClick={() => setHideCodeAndConfigs(!hideCodeAndConfigs)}
-                    title={hideCodeAndConfigs
-                      ? 'Showing Documents and Mockups only. Click to show all.'
-                      : 'Showing all files. Click to hide code & configs.'}
-                  >
-                    Hide code &amp; configs
-                  </button>
-                  <button
-                    type="button"
-                    className={`px-3 py-1 rounded-full text-[12.5px] transition-colors ${
-                      showDeletedArtifacts
-                        ? 'bg-accent text-on-accent'
-                        : 'bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim'
-                    }`}
-                    onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
-                    title={showDeletedArtifacts
-                      ? 'Including deleted files in the grid. Click to hide them.'
-                      : 'Hiding deleted files. Click to include them.'}
-                  >
-                    Show deleted
-                  </button>
-                  <button
-                    type="button"
-                    className="px-3 py-1 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors"
-                    onClick={addExternal}
-                    title="Add an external file to this project"
-                  >
-                    + Add file
-                  </button>
+                  {/* Show deleted + Add file — Artifacts (tracked) section only.
+                      All files has no filter chips: it shows every file, so its
+                      badge count always matches what's on screen (and is always a
+                      superset of Artifacts). */}
+                  {tab === 'artifacts' && (
+                    <>
+                      <button
+                        type="button"
+                        className={`px-3 py-1 rounded-full text-[12.5px] transition-colors ${
+                          showDeletedArtifacts
+                            ? 'bg-accent text-on-accent'
+                            : 'bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim'
+                        }`}
+                        onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
+                        title={showDeletedArtifacts
+                          ? 'Including deleted files in the grid. Click to hide them.'
+                          : 'Hiding deleted files. Click to include them.'}
+                      >
+                        Show deleted
+                      </button>
+                      <button
+                        type="button"
+                        className="px-3 py-1 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors"
+                        onClick={addExternal}
+                        title="Add an external file to this project"
+                      >
+                        + Add file
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -393,10 +478,13 @@ export function ProjectView(props: ProjectViewProps) {
           {/* Tab routing — shares the centered max-width with the chrome above. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto">
             {activeProject && tab === 'artifacts' && (
-              <ArtifactsTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} />
+              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="artifacts" />
+            )}
+            {activeProject && tab === 'allfiles' && (
+              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="allfiles" />
             )}
             {activeProject && tab === 'conversations' && (
-              <ConversationsTab project={activeProject} onOpenPreview={setPreviewSession} />
+              <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />
             )}
             {previewSession && activeProject && (
               <ConversationPreview
@@ -413,7 +501,7 @@ export function ProjectView(props: ProjectViewProps) {
             )}
             {activeProject && tab === 'context' && (
               <ContextTab
-                project={activeProject}
+                groups={context}
                 onEditFile={setEditingContext}
                 onOpenInfo={setInfoScope}
               />
@@ -468,8 +556,9 @@ export function ProjectView(props: ProjectViewProps) {
               Remove "<span className="font-medium">{deletingProject.name}</span>" from YouCoded?
             </p>
             <p className="text-sm text-fg-muted mb-3">
-              The project folder and its files will NOT be deleted. You can re-discover
-              this project by launching a session in that folder again.
+              The folder and its files are NOT deleted — this only removes it from your
+              YouCoded folders, so it also disappears from the new-session folder picker.
+              You can add it back anytime with "Browse for folder."
             </p>
             <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer text-fg">
               <input

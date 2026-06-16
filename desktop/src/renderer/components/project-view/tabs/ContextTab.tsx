@@ -7,7 +7,11 @@
 // whose overflow:hidden + flex compression clips text).
 //
 // NO ●◐○ status glyphs anywhere — load timing is spelled out in words.
-import React, { useEffect, useState } from 'react';
+//
+// Data is fetched ONCE by ProjectView (shared with the hero count + cached per
+// project) and passed in as `groups` — this tab no longer fetches on its own,
+// which removed the duplicate context discovery that ran on every project switch.
+import React from 'react';
 import type {
   ContextGroup,
   ContextFile,
@@ -16,7 +20,8 @@ import type {
 import { ContextIntroBanner } from '../ContextIntroBanner';
 
 interface ContextTabProps {
-  project: { path: string }; // active CentralIndexProject; only .path is needed here
+  // Lifted, cached groups from ProjectView. null = still loading for this project.
+  groups: ContextGroup[] | null;
   onEditFile: (file: ContextFile) => void;
   onOpenInfo: (scope: ContextScope) => void;
 }
@@ -82,29 +87,8 @@ function InfoIcon() {
   );
 }
 
-export function ContextTab({ project, onEditFile, onOpenInfo }: ContextTabProps) {
-  const [groups, setGroups] = useState<ContextGroup[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    (window.claude as any).project.listContext(project.path)
-      .then((res: any) => {
-        if (cancelled) return;
-        if (res && res.ok) setGroups(res.groups ?? []);
-        else setGroups([]);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setGroups([]);
-        setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [project.path]);
-
-  if (loading) {
+export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) {
+  if (groups === null) {
     return (
       <div className="flex flex-col h-full overflow-auto px-4 pt-1 pb-4 min-w-0">
         <ContextIntroBanner />

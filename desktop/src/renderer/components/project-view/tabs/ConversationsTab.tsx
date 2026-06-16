@@ -1,17 +1,17 @@
 // ConversationsTab — flat list of past conversations scoped to one project
-// (Task 3.1). Fetches project-filtered past sessions (sorted newest-first,
-// enriched with a preview + message count) and renders each as a row matching
-// the prototype's convRow: an icon avatar + title/time + a one-line preview +
-// a "N messages" line. Rows use `bg-panel border border-edge-dim rounded-lg`
-// (NOT .layer-surface — its overflow:hidden + flex compression clips the text).
-// No ●◐○ status glyphs anywhere — plain words/numbers only.
-import React, { useEffect, useState } from 'react';
+// (Task 3.1). The list is fetched ONCE by ProjectView (shared with the hero
+// count + cached per project) and passed in as a prop — this tab no longer
+// fetches on its own, which removed the duplicate enumeration that ran on every
+// project switch / tab toggle. Each row matches the prototype's convRow: an icon
+// avatar + title/time + a one-line preview. Rows use
+// `bg-panel border border-edge-dim rounded-lg` (NOT .layer-surface — its
+// overflow:hidden + flex compression clips the text). No ●◐○ status glyphs.
+import React from 'react';
 import type { PastSession } from '../../../../shared/types';
 
 // Enriched session shape returned by project:list-conversations.
 interface ConversationSummary extends PastSession {
   preview?: string;
-  messageCount?: number;
 }
 
 // Relative-time formatter for the per-row time hint.
@@ -38,44 +38,24 @@ function ChatGlyph({ size = 17 }: { size?: number }) {
 }
 
 interface ConversationsTabProps {
-  project: { path: string }; // active CentralIndexProject; only .path is needed here
+  // Lifted, cached list from ProjectView. null = still loading for this project.
+  conversations: ConversationSummary[] | null;
   onOpenPreview: (session: PastSession) => void;
 }
 
-export function ConversationsTab({ project, onOpenPreview }: ConversationsTabProps) {
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Load project-filtered conversations on mount and whenever the project path
-  // changes. `cancelled` guards against a late response overwriting the current
-  // project's list after a fast switch.
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    (window.claude as any).project.listConversations(project.path)
-      .then((res: any) => {
-        if (cancelled) return;
-        if (res && res.ok) setConversations(res.conversations ?? []);
-        else setConversations([]);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setConversations([]);
-        setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [project.path]);
+export function ConversationsTab({ conversations, onOpenPreview }: ConversationsTabProps) {
+  const loading = conversations === null;
+  const rows = conversations ?? [];
 
   return (
     <div className="flex flex-col h-full overflow-hidden px-4 pt-1 pb-4 min-w-0">
       {loading ? (
         <p className="text-sm text-fg-muted">Loading…</p>
-      ) : conversations.length === 0 ? (
+      ) : rows.length === 0 ? (
         <p className="text-sm text-fg-muted">No conversations in this project yet.</p>
       ) : (
         <div className="flex-1 overflow-auto flex flex-col gap-2 content-start">
-          {conversations.map((c) => {
+          {rows.map((c) => {
             const title = c.name?.trim() ? c.name : 'Untitled';
             return (
               // bg-panel + border + rounded-lg (NOT layer-surface). shrink-0 so
@@ -100,9 +80,6 @@ export function ConversationsTab({ project, onOpenPreview }: ConversationsTabPro
                   {c.preview ? (
                     <span className="block text-[12px] text-fg-2 truncate mt-0.5">{c.preview}</span>
                   ) : null}
-                  <span className="block text-[10.5px] text-fg-muted mt-1.5">
-                    {typeof c.messageCount === 'number' ? `${c.messageCount} messages` : ''}
-                  </span>
                 </span>
               </button>
             );

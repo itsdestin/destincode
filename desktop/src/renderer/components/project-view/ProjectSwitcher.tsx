@@ -225,10 +225,21 @@ export function ProjectSwitcher({
                       {p.path}
                     </span>
                   </span>
-                  {/* Files hint. */}
-                  <span className="text-[11px] text-fg-faint shrink-0">
-                    {p.stats.artifactCount} file{p.stats.artifactCount === 1 ? '' : 's'}
-                  </span>
+                  {/* Files · chats hint. "files" = ALL FILES (fileCount) — the
+                      folder's on-disk documents — falling back to the artifact
+                      count until the withCounts pass resolves both. Chat count also
+                      appears only after that pass (undefined on the fast first paint). */}
+                  {(() => {
+                    const files = p.fileCount ?? p.stats.artifactCount;
+                    return (
+                      <span className="text-[11px] text-fg-faint shrink-0 whitespace-nowrap">
+                        {files} file{files === 1 ? '' : 's'}
+                        {typeof p.conversationCount === 'number' && (
+                          <> · {p.conversationCount} chat{p.conversationCount === 1 ? '' : 's'}</>
+                        )}
+                      </span>
+                    );
+                  })()}
                   {/* Active check (NOT a status glyph). */}
                   {isActive && (
                     <span className="text-fg shrink-0 ml-1">

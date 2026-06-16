@@ -1,8 +1,12 @@
 // ProjectDetailOverlay — shared centered detail host for Project View (Task 2.4).
-// Generic, content-agnostic shell: a scrim + large centered panel with a thin
-// header (title + close) and a scrollable body slot. Reused by the artifact
-// viewer (Task 2.4), the conversation preview (Task 3.2), and the context
-// editor (Task 4.4) — so it MUST NOT bake in any artifact-specific logic.
+// Generic, content-agnostic shell: a scrim + large centered panel. The header
+// carries the title (left) plus a `tools` slot for content-specific action
+// buttons and the close button (right); an optional `meta` strip sits below the
+// header (bg-well) for content-specific metadata; the body slot scrolls. Layout
+// matches the prototype's renderDetail() (header → meta strip → body). Reused by
+// the artifact viewer (Task 2.4), the conversation preview (Task 3.2), and the
+// context editor (Task 4.4) — so it MUST NOT bake in any artifact-specific logic;
+// each consumer supplies its own `tools` / `meta` / body.
 import React from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
@@ -10,10 +14,17 @@ import { useEscClose } from '../../hooks/use-esc-close';
 interface ProjectDetailOverlayProps {
   title: React.ReactNode;
   onClose: () => void;
+  // Content-specific action buttons rendered in the header, left of the close
+  // button (e.g. Edit/Save, Reveal, Copy path, Resume). Omit for a chrome-only
+  // header.
+  tools?: React.ReactNode;
+  // Optional meta strip below the header (e.g. "N messages · 2d ago · read-only").
+  // The strip is only rendered when this is provided.
+  meta?: React.ReactNode;
   children: React.ReactNode;
 }
 
-export function ProjectDetailOverlay({ title, onClose, children }: ProjectDetailOverlayProps) {
+export function ProjectDetailOverlay({ title, onClose, tools, meta, children }: ProjectDetailOverlayProps) {
   // ESC-close via the centralized LIFO stack (see docs/PITFALLS.md → Keyboard
   // Routing). `true` because the overlay is only mounted while it should be
   // dismissible — mounting/unmounting is the open/close gate.
@@ -28,23 +39,31 @@ export function ProjectDetailOverlay({ title, onClose, children }: ProjectDetail
         role="dialog"
         aria-modal
       >
-        {/* Thin header: title (left) + close (right) */}
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-edge shrink-0">
-          <div className="font-mono text-xs text-fg-2 truncate flex-1 min-w-0">
-            {title}
+        {/* Header: title (left) + tools + close (right). */}
+        <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-edge shrink-0">
+          <span className="text-[15px] font-semibold text-fg truncate min-w-0">{title}</span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {tools}
+            <button
+              type="button"
+              className="ml-1 text-fg-dim hover:text-fg w-7 h-7 inline-flex items-center justify-center shrink-0"
+              onClick={onClose}
+              title="Close"
+              aria-label="Close"
+            >
+              <svg className="w-[17px] h-[17px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-          <button
-            type="button"
-            className="text-fg-muted hover:text-fg px-1 shrink-0"
-            onClick={onClose}
-            title="Close"
-            aria-label="Close"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+        </header>
+
+        {/* Meta strip — only when the consumer supplies metadata. */}
+        {meta != null && (
+          <div className="flex items-center gap-2 px-4 py-1.5 text-[11.5px] text-fg-muted border-b border-edge-dim bg-well shrink-0">
+            {meta}
+          </div>
+        )}
 
         {/* Scrollable body slot */}
         <div className="flex-1 overflow-auto min-h-0">{children}</div>
