@@ -2,6 +2,15 @@ import type { ArtifactRecord } from '../../shared/artifacts/types';
 
 export type ArtifactAction =
   | { type: 'SESSION_ARTIFACTS_LOADED'; sessionId: string; artifacts: ArtifactRecord[] }
+  // Add/replace ONE artifact in a session's list (by id) without clearing the
+  // rest. Used when an inline filepath pill resolves a file that wasn't in the
+  // session's live list (e.g. edited in a prior session, or on-disk) so it can be
+  // shown in the drawer.
+  | { type: 'SESSION_ARTIFACT_UPSERTED'; sessionId: string; artifact: ArtifactRecord }
+  // Remember a session's working directory so consumers without the cwd prop
+  // (the inline filepath pills, rendered deep in markdown) can resolve a clicked
+  // path against the project's full artifact set.
+  | { type: 'SET_SESSION_CWD'; sessionId: string; cwd: string }
   | { type: 'ARTIFACT_CHANGED'; projectRoot: string; artifactId: string }
   // Open/close is per-session (remembered across session switches), so both
   // carry the sessionId whose drawer is being toggled.

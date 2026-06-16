@@ -1,4 +1,5 @@
 import { useArtifactOptional } from '../state/ArtifactContext';
+import type { ArtifactRecord } from '../../shared/artifacts/types';
 
 interface Props {
   path: string;
@@ -43,32 +44,62 @@ export function FilepathToken({ path, sessionId }: Props) {
   // calm when Claude references deep paths mid-sentence.
   const name = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path;
 
+  // Suffix-tolerant path match: Claude may reference a file relative to a
+  // subdirectory (`desktop/src/x.ts`) while the artifact is stored relative to the
+  // project root (`youcoded/desktop/src/x.ts`), so match either direction's tail.
+  const normalised = path.replace(/\\/g, '/');
+  const matches = (a: ArtifactRecord) => {
+    const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
+    const aPathNorm = aPath.replace(/\\/g, '/');
+    return (
+      aPathNorm === normalised ||
+      normalised.endsWith('/' + aPathNorm) ||
+      aPathNorm.endsWith('/' + normalised)
+    );
+  };
+
   const onClick = async () => {
     // No provider (buddy window / sandbox) → nothing to open. Bail quietly.
     if (!artifactCtx) return;
     const { state, dispatch } = artifactCtx;
-    // 1. Session-current artifact? Match by the stored path or absolutePath.
-    //    For internal artifacts, `a.path` is relative to the project root;
-    //    we match against the text-detected path's suffix as a best-effort heuristic.
-    const sessArtifacts = state.sessionArtifacts[sessionId] ?? [];
-    const normalised = path.replace(/\\/g, '/');
-    const sessMatch = sessArtifacts.find((a) => {
-      const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
-      const aPathNorm = aPath.replace(/\\/g, '/');
-      return (
-        aPathNorm === normalised ||
-        normalised.endsWith('/' + aPathNorm) ||
-        aPathNorm.endsWith('/' + normalised)
-      );
-    });
+
+    // Clicking a file in chat ALWAYS opens the artifact viewer — NEVER Project
+    // View. Open the drawer first so there's an immediate response regardless of
+    // how the lookup below resolves.
+    dispatch({ type: 'DRAWER_OPENED', sessionId });
+
+    // 1. Already in this session's live list? Select it.
+    const sessMatch = (state.sessionArtifacts[sessionId] ?? []).find(matches);
     if (sessMatch) {
-      dispatch({ type: 'DRAWER_OPENED', sessionId });
       dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: sessMatch.id });
       return;
     }
-    // 2. Otherwise: pivot to Project View. (Task 7 builds the actual
-    //    focused-on-path behavior; for now opening Project View is enough.)
-    dispatch({ type: 'PROJECT_VIEW_OPENED' });
+
+    // 2. Not in this session — resolve against the WHOLE project: every tracked
+    //    artifact (from any session, including deleted) plus on-disk files. Inject
+    //    the match into the session list so the drawer can display it. This is why
+    //    a file Claude edited in a prior session — or one that's just on disk —
+    //    still opens instead of dead-ending.
+    const cwd = state.sessionCwd?.[sessionId];
+    if (!cwd) return; // drawer stays on the list; nothing to resolve without a root
+    try {
+      // Try ARTIFACTS first (tracked, the common case — Claude edited the file).
+      // listProject is artifacts-only now, so fall back to ALL FILES (on-disk docs)
+      // for a path Claude only read/mentioned but never edited. Either way it
+      // opens in the artifact viewer, never Project View.
+      const [projRes, filesRes] = await Promise.all([
+        (window.claude as any).artifacts.listProject(cwd),
+        (window.claude as any).artifacts.listAllFiles(cwd),
+      ]);
+      const projMatch: ArtifactRecord | undefined =
+        (projRes?.ok ? (projRes.artifacts ?? []) : []).find(matches)
+        ?? (filesRes?.ok ? (filesRes.files ?? []) : []).find(matches);
+      if (projMatch) {
+        dispatch({ type: 'SESSION_ARTIFACT_UPSERTED', sessionId, artifact: projMatch });
+        dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: projMatch.id });
+      }
+      // else: not tracked and not on disk — drawer stays on the list (still not Project View).
+    } catch { /* leave the drawer on its list */ }
   };
 
   return (

@@ -77,7 +77,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   const { showTimestamps } = useTheme();
   // Artifact drawer state — read from ArtifactContext so ChatView reacts to
   // the drawer toggle without needing a prop threaded down from App.tsx.
-  const { state: artifactState } = useArtifact();
+  const { state: artifactState, dispatch: artifactDispatch } = useArtifact();
   // Drawer open/closed is per-session — read this session's flag (absent → closed).
   const drawerOpen = artifactState.drawerOpenBySession[sessionId] ?? false;
   const drawerExpanded = artifactState.drawerExpanded;
@@ -129,6 +129,32 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       if (cwd) setActiveProject({ id: '', name: 'project', path: cwd });
     });
   }, [drawerOpen, cwd]);
+
+  // Backfill this session's artifact list from the on-disk sidecar so the chat
+  // artifact drawer AND inline filepath pills work immediately after an app
+  // reload/restart. WHY: the live tracker (App.tsx) only APPENDS to
+  // sessionArtifacts on NEW transcript Write/Edit events — without this, a reload
+  // leaves the list empty until the next file write, so the drawer shows
+  // "0 artifacts" and clicking an inline pill falls back to opening Project View
+  // (its no-match behavior) instead of the file. listSession reads the sidecar at
+  // cwd and filters by sessionId; the live tracker keeps it current afterward.
+  // Not gated on drawerOpen — pills can be clicked without opening the drawer.
+  useEffect(() => {
+    if (!cwd || !sessionId) return;
+    // Remember this session's cwd so the inline filepath pills (rendered deep in
+    // markdown, without a cwd prop) can resolve a clicked path against the whole
+    // project's artifacts.
+    artifactDispatch({ type: 'SET_SESSION_CWD', sessionId, cwd });
+    let cancelled = false;
+    (window.claude as any).artifacts?.listSession?.(sessionId, cwd)
+      .then((res: any) => {
+        if (cancelled || !res?.ok || !Array.isArray(res.artifacts)) return;
+        artifactDispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: res.artifacts });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [cwd, sessionId, artifactDispatch]);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
