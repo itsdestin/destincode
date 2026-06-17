@@ -995,6 +995,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
               timestamp: Date.now(),
               label,
               variant: 'compact',
+              // Attaches the CC-produced summary text so the otherwise-thin
+              // marker can click-to-expand inline. Absent on aborted/watchdog
+              // completions (no summary available).
+              ...(action.summary ? { summary: action.summary } : {}),
             },
           },
         ],

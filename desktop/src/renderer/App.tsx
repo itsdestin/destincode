@@ -14,8 +14,9 @@ import FolderSwitcher from './components/FolderSwitcher';
 // Labels for the welcome-screen model picker (mirrors SessionStrip)
 const WELCOME_MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import GamePanel from './components/game/GamePanel';
@@ -857,6 +858,10 @@ function AppInner() {
               sessionId: event.sessionId,
               markerId: `compact-done-${Date.now()}`,
               afterContextTokens: contextTokens,
+              // Forward CC's summary text so the SystemMarker can offer
+              // click-to-expand (replaces the dead "ctrl+o to see full summary"
+              // affordance from CC's TUI, which never worked inside YouCoded).
+              ...(event.data.summary ? { summary: event.data.summary } : {}),
             });
           }
           break;

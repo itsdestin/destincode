@@ -14,6 +14,7 @@ import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
 import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
+import { resolveMappingAction } from './session-id-mapping';
 import { listPastSessions, loadHistory } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
@@ -1777,13 +1778,57 @@ export function registerIpcHandlers(
     topicWatchers.set(desktopId, interval);
   }
 
+  // Tear down the topic + transcript watchers for a desktop session. Shared
+  // by the remap path (CC rotated its session id on /clear) and the
+  // session-exit cleanup — the close()-vs-clearInterval discriminator is
+  // subtle enough that two drifting copies would be a bug factory.
+  function teardownSessionWatchers(desktopId: string): void {
+    const watcher = topicWatchers.get(desktopId);
+    if (watcher) {
+      if (typeof (watcher as fs.FSWatcher).close === 'function') {
+        (watcher as fs.FSWatcher).close();
+      } else {
+        clearInterval(watcher as NodeJS.Timeout);
+      }
+      topicWatchers.delete(desktopId);
+      lastTopics.delete(desktopId);
+    }
+    transcriptWatcher.stopWatching(desktopId);
+  }
+
   // Listen for hook events to extract the desktop→claude session ID mapping
   if (hookRelay) {
     hookRelay.on('hook-event', (event: { sessionId: string; payload: Record<string, unknown> }) => {
       const desktopId = event.sessionId; // _desktop_session_id (set by parseHookPayload)
       const claudeId = event.payload?.session_id as string;
       if (!desktopId || !claudeId) return;
-      if (sessionIdMap.has(desktopId)) return;
+
+      // Decide whether to (re)map this desktop session to a Claude session id.
+      // Not set-once: Claude Code rotates its session id mid-PTY on `/clear`, so
+      // we must follow that rotation — but ONLY from SessionStart events, since
+      // subagent/tool hooks carry child session ids that would poison the map.
+      // (payload.hook_event_name is CC's raw field, distinct from the
+      // normalized event.type which coerces missing names to 'unknown'.)
+      // /compact is safe here: it rewrites the SAME transcript file without
+      // rotating the id (the transcript-shrink machinery depends on that), so
+      // its SessionStart arrives with a matching id and resolves to 'ignore'.
+      const current = sessionIdMap.get(desktopId);
+      if (resolveMappingAction(current, claudeId, event.payload?.hook_event_name as string) !== 'adopt') return;
+
+      // Remap (e.g. /clear rotated the CC session id): tear down the old
+      // topic + transcript watchers before starting new ones. startWatching
+      // OVERWRITES the topicWatchers entry, so without closing the old watcher
+      // first we'd leak its FSWatcher/interval and keep broadcasting renames
+      // from the stale topic file.
+      // INVARIANT: this remap assumes the rotated transcript starts EMPTY
+      // (true for /clear). If a future CC change rotates onto a non-empty
+      // file, the offset-0 replay would append into an already-populated
+      // chat timeline — the renderer would need a CLEAR_TIMELINE-equivalent
+      // coupled to the remap.
+      if (current) {
+        teardownSessionWatchers(desktopId);
+      }
+
       sessionIdMap.set(desktopId, claudeId);
       startWatching(desktopId, claudeId);
 
@@ -1797,17 +1842,7 @@ export function registerIpcHandlers(
 
   // Stop watching when a session is destroyed
   sessionManager.on('session-exit', (sessionId: string) => {
-    transcriptWatcher.stopWatching(sessionId);
-    const watcher = topicWatchers.get(sessionId);
-    if (watcher) {
-      if (typeof (watcher as fs.FSWatcher).close === 'function') {
-        (watcher as fs.FSWatcher).close();
-      } else {
-        clearInterval(watcher as NodeJS.Timeout);
-      }
-      topicWatchers.delete(sessionId);
-      lastTopics.delete(sessionId);
-    }
+    teardownSessionWatchers(sessionId);
     // Clean up context + session stats cache files
     const claudeId = sessionIdMap.get(sessionId);
     if (claudeId) {

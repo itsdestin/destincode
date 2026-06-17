@@ -26,6 +26,16 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # build-web-ui.sh runs `npm run build` in desktop/, which invokes
+      # electron-builder for all configured Linux targets. Pacman needs
+      # bsdtar (libarchive-tools); rpm target needs the rpm package. See
+      # android-ci.yml for the full backstory on the PR #98 regression.
+      - name: Install Linux build deps
+        # `apt-get update` prefix: the cached package index on ubuntu-latest
+        # often points to .deb versions that have rolled off the mirror, so
+        # a bare install hits HTTP 404 / exit 100. Refresh the index first.
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
+
       # Build the full React UI so the APK has a working WebView.
       # bundleWebUi (Gradle preBuild dep) would do this too, but running
       # it explicitly here keeps this workflow's intent self-documenting.

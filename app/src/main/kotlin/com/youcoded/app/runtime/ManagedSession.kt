@@ -308,7 +308,7 @@ class ManagedSession(
                             anthropicRequestId = event.anthropicRequestId,
                         )
                         is TranscriptEvent.StreamingText -> TranscriptSerializer.streamingText(event.sessionId, event.text)
-                        is TranscriptEvent.CompactSummary -> TranscriptSerializer.compactSummary(event.sessionId, event.uuid, event.timestamp)
+                        is TranscriptEvent.CompactSummary -> TranscriptSerializer.compactSummary(event.sessionId, event.uuid, event.timestamp, event.summary)
                     }
                     server.broadcast(JSONObject().apply {
                         put("type", "transcript:event")

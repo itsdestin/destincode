@@ -119,11 +119,114 @@ function walkSlugParts(base: string, parts: string[]): string {
 async function readTopic(sessionId: string, indexTopics: Record<string, string>): Promise<string> {
   try {
     const content = (await fs.promises.readFile(path.join(TOPICS_DIR, `topic-${sessionId}`), 'utf8')).trim();
-    if (content && content !== 'New Session') return content;
+    // 'Untitled' in a file is a placeholder too (older clients synced such
+    // files) — treating it as a real name would bypass the index fallback
+    // AND the transcript-derived title, so reject it like 'New Session'.
+    if (content && content !== 'New Session' && content !== 'Untitled') return content;
   } catch { /* topic file pruned or never written — fall through to the index */ }
   const indexed = indexTopics[sessionId];
   if (indexed && indexed !== 'New Session' && indexed !== 'Untitled') return indexed;
   return 'Untitled';
+}
+
+// Bounded reads so a 100MB transcript doesn't blow up the browse call.
+const HEAD_CHUNK_BYTES = 256 * 1024;
+const TAIL_CHUNK_BYTES = 64 * 1024;
+const FALLBACK_TITLE_MAX = 48;
+
+export interface SessionTranscriptMeta {
+  /** Title derived from the first real user prompt, or null. */
+  fallbackTitle: string | null;
+  /** Timestamp (ms) of the last parseable transcript line, or null. */
+  lastTimestampMs: number | null;
+}
+
+/** Collapse whitespace and trim a derived title to a word boundary. */
+function cleanTitle(text: string): string | null {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return null;
+  if (collapsed.length <= FALLBACK_TITLE_MAX) return collapsed;
+  const cut = collapsed.slice(0, FALLBACK_TITLE_MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Trim back to the last word boundary, but only when that leaves a
+  // reasonable stub (>20 chars) — otherwise a long first word would shrink
+  // the title to almost nothing, so we hard-cut mid-word instead.
+  return (lastSpace > 20 ? cut.slice(0, lastSpace) : cut) + '…';
+}
+
+/**
+ * Derive display metadata straight from the transcript JSONL.
+ *
+ * WHY: the topic/index naming pipeline has gaps (the auto-title hook only
+ * fires on PostToolUse, so chat-only sessions are never titled; titles also
+ * depend on the in-session model complying), and file mtimes are clobbered
+ * by sync restores. The transcript content itself is the only source of
+ * truth that survives both. See docs/PITFALLS.md → Resume Browser.
+ *
+ * CC-coupled: relies on the transcript JSONL line shape (`type`, `isMeta`,
+ * `promptId`, `timestamp`, `message.content`) — same contract the
+ * transcript-watcher parses. See youcoded/docs/cc-dependencies.md.
+ */
+export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: boolean): Promise<SessionTranscriptMeta> {
+  let fh: fs.promises.FileHandle | null = null;
+  try {
+    fh = await fs.promises.open(jsonlPath, 'r');
+    const { size } = await fh.stat();
+
+    // --- Tail: last parseable line's timestamp ---
+    let lastTimestampMs: number | null = null;
+    const tailLen = Math.min(TAIL_CHUNK_BYTES, size);
+    if (tailLen > 0) {
+      const tailBuf = Buffer.alloc(tailLen);
+      await fh.read(tailBuf, 0, tailLen, size - tailLen);
+      // First "line" of the chunk is usually a partial JSON line — the
+      // backwards scan just skips anything that doesn't parse.
+      const tailLines = tailBuf.toString('utf8').split('\n');
+      for (let i = tailLines.length - 1; i >= 0; i--) {
+        const line = tailLines[i];
+        if (!line.trim() || line.includes('\x00')) continue;
+        try {
+          const ts = Date.parse(JSON.parse(line).timestamp);
+          if (!Number.isNaN(ts)) { lastTimestampMs = ts; break; }
+        } catch { /* partial or corrupt line — keep scanning backwards */ }
+      }
+    }
+
+    // --- Head: first real user prompt → fallback title ---
+    let fallbackTitle: string | null = null;
+    if (wantTitle) {
+      const headLen = Math.min(HEAD_CHUNK_BYTES, size);
+      const headBuf = Buffer.alloc(headLen);
+      await fh.read(headBuf, 0, headLen, 0);
+      for (const line of headBuf.toString('utf8').split('\n')) {
+        if (!line.trim() || line.includes('\x00')) continue;
+        let parsed: any;
+        try { parsed = JSON.parse(line); } catch { continue; }
+        // Same "real conversational prompt" gate as loadHistory: user-type,
+        // has promptId, not meta.
+        if (parsed.type !== 'user' || parsed.isMeta || !parsed.promptId || !parsed.message) continue;
+        const c = parsed.message.content;
+        const text = typeof c === 'string'
+          ? c
+          : Array.isArray(c)
+            ? c.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
+            : '';
+        // Skip injected wrappers (<command-name>…, <local-command-stdout>…,
+        // <system-reminder>…) — they're plumbing, not what the user said.
+        // Deliberately lossy: a real prompt that starts with '<' (pasted
+        // HTML/XML) is also skipped, and the scan moves to the next prompt.
+        if (!text.trim() || text.trim().startsWith('<')) continue;
+        fallbackTitle = cleanTitle(text);
+        if (fallbackTitle) break;
+      }
+    }
+
+    return { fallbackTitle, lastTimestampMs };
+  } catch {
+    return { fallbackTitle: null, lastTimestampMs: null };
+  } finally {
+    try { await fh?.close(); } catch {}
+  }
 }
 
 /**
@@ -172,7 +275,16 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
       try {
         const stat = await withRetry(() => fs.promises.stat(path.join(slugDir, file)));
         if (stat.size < 500) return null;
-        const name = await readTopic(sessionId, indexMeta.topics);
+        const topicName = await readTopic(sessionId, indexMeta.topics);
+
+        // Transcript-derived metadata: content timestamp beats file mtime
+        // (sync restores clobber mtimes), and the first user message names
+        // sessions the title pipeline missed. readSessionTranscriptMeta returns
+        // nulls on any failure, so this can only improve on the defaults.
+        const meta = await readSessionTranscriptMeta(path.join(slugDir, file), topicName === 'Untitled');
+        const name = topicName !== 'Untitled'
+          ? topicName
+          : (meta.fallbackTitle ?? 'Untitled');
 
         const joinedFlags = indexMeta.flags[sessionId];
         return {
@@ -180,7 +292,7 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           name,
           projectSlug: slug,
           projectPath: resolveSlugToPath(slug),
-          lastModified: stat.mtimeMs,
+          lastModified: meta.lastTimestampMs ?? stat.mtimeMs,
           size: stat.size,
           ...(joinedFlags ? { flags: joinedFlags } : {}),
         } as PastSession;

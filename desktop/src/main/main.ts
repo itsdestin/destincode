@@ -33,8 +33,21 @@ import { loadConfigSync, setAppliedAtLaunch, setCachedGpu } from './performance-
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
 // only provides /usr/bin:/bin:/usr/sbin:/sbin. Linux Snap/Flatpak/some DEs may
 // also strip user paths. Prepend common locations on both platforms.
-// Windows is not affected — which.sync() resolves executables independently.
-if (process.platform === 'darwin' || process.platform === 'linux') {
+if (process.platform === 'win32') {
+  // Windows IS affected too (the old comment here claimed otherwise). The Claude
+  // Code native installer drops claude.exe in %USERPROFILE%\.local\bin and does
+  // NOT always register that dir on the user PATH — verified 2026-05-30: a real
+  // first-run install printed "Native installation exists but
+  // C:\Users\...\.local\bin is not in your PATH". which.sync('claude') only
+  // resolves what's on process.env.PATH, so without this, both prereq detection
+  // AND session launch fail (pty-worker forks inherit this process's PATH).
+  // Prepend the dir so YouCoded finds Claude with zero user PATH edits.
+  const localBin = path.join(os.homedir(), '.local', 'bin');
+  const parts = (process.env.PATH ?? '').split(path.delimiter);
+  if (!parts.includes(localBin)) {
+    process.env.PATH = `${localBin}${path.delimiter}${process.env.PATH ?? ''}`;
+  }
+} else if (process.platform === 'darwin' || process.platform === 'linux') {
   const home = os.homedir();
   const extraPaths = [
     `${home}/.local/bin`,         // pipx, cargo, etc.
@@ -1125,6 +1138,17 @@ app.whenReady().then(async () => {
     if (r.changed) log('INFO', 'Main', 'Prompt suggestion force-disabled', { prior: r.prior });
   } catch (e) {
     log('ERROR', 'Main', 'Failed to force-disable prompt suggestion', { error: String(e) });
+  }
+
+  // Seed a transcript-retention default so Claude Code's 30-day cleanup
+  // doesn't silently delete Resume Browser history. Only writes when the
+  // user hasn't set cleanupPeriodDays themselves. See retention-default.ts.
+  try {
+    const { seedCleanupPeriodDefault } = require('./retention-default');
+    const r = seedCleanupPeriodDefault();
+    if (r.changed) log('INFO', 'Main', 'Seeded cleanupPeriodDays default', { effective: r.effective });
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to seed cleanupPeriodDays', { error: String(e) });
   }
 
   // Clean up orphan symlinks left by pre-decomposition post-update.sh —

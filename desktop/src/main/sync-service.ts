@@ -120,6 +120,12 @@ const SESSION_PUSH_TIMEOUT = 15_000;
 // 2026-04-24 restore UX investigation in git log.
 const RECENT_PULL_LIMIT = 50;
 
+// Canonical Claude Code session id. The auto-title flow has the in-session
+// model hand-type `echo "Title" > topics/topic-<id>` — a typo'd id creates a
+// phantom index entry pointing at no transcript (seen in the wild:
+// `3f3a5cccc-…`, nine c's). Gate the topic scan + prune on this shape.
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // --- SyncService ---
 
 export class SyncService extends EventEmitter {
@@ -1635,6 +1641,14 @@ export class SyncService extends EventEmitter {
     for (const file of files) {
       if (!file.startsWith('topic-')) continue;
       const sessionId = file.replace(/^topic-/, '');
+      // Phantom-id guard: don't CREATE a new index entry from a topic file
+      // whose id isn't a canonical UUID (these come from auto-title-write
+      // typos and point at no transcript). But still allow updating an entry
+      // that already exists under a non-UUID id — setSessionFlag() can seed
+      // one legitimately (a user tagged the session before its topic file
+      // existed; the flag-bearing entry must get its real topic). The prune
+      // loop below self-heals leftover flagless non-UUID rows.
+      if (!SESSION_UUID_RE.test(sessionId) && !index.sessions[sessionId]) continue;
       const filePath = path.join(topicsDir, file);
 
       try {
@@ -1672,7 +1686,17 @@ export class SyncService extends EventEmitter {
     // setSessionFlag() when a user tags a session before its topic file exists;
     // epoch is older than any prune threshold, so without this guard the
     // pending entry (and its flag) would be deleted immediately on next push.
+    // Also self-heal phantom entries: malformed session ids carry no
+    // transcript and were created by title-write typos — but only delete them
+    // when they hold NO user flags (deleting a user's tag is worse than
+    // carrying a dead row).
     for (const [sid, entry] of Object.entries(index.sessions)) {
+      const migrated = migrateEntry(entry);
+      const hasFlags = Object.keys(migrated.flags || {}).length > 0;
+      if (!SESSION_UUID_RE.test(sid) && !hasFlags) {
+        delete index.sessions[sid];
+        continue;
+      }
       const ts = new Date(entry.lastActive).getTime();
       if (ts === 0) continue;
       if (ts < pruneThreshold) {
@@ -1931,11 +1955,39 @@ export class SyncService extends EventEmitter {
     const topicsDir = path.join(this.claudeDir, 'topics');
     fs.mkdirSync(topicsDir, { recursive: true });
 
+    const pruneThreshold = Date.now() - INDEX_PRUNE_DAYS * 24 * 60 * 60 * 1000;
+
     for (const [sid, entry] of Object.entries(index.sessions || {})) {
+      // Phantom-id symmetry with the topic scan: never materialize a topic
+      // file for a malformed session id (e.g. synced from a device that
+      // predates the scan guard) — it would sit on disk as an inert orphan.
+      if (!SESSION_UUID_RE.test(sid)) continue;
+      // Skip placeholder names — readTopic treats Untitled/New Session/empty as
+      // "no title", so writing them just churns files for no UI gain.
+      if (!entry.topic || entry.topic === 'Untitled' || entry.topic === 'New Session') continue;
+
+      const ts = new Date(entry.lastActive).getTime();
+      // Skip invalid / epoch / pre-prune-window entries. A file created today
+      // for a 45-day-old entry would be deleted by the title hook's daily
+      // `find -mtime +30` prune tomorrow — pure churn. The conversation-index
+      // fallback in session-browser still names these sessions, so dropping the
+      // topic file costs nothing.
+      if (Number.isNaN(ts) || ts <= 0 || ts < pruneThreshold) continue;
+
       const topicFile = path.join(topicsDir, `topic-${sid}`);
       // Only create if local file doesn't exist (local-first)
       if (!this.fileExists(topicFile)) {
-        try { fs.writeFileSync(topicFile, entry.topic); } catch {}
+        try {
+          fs.writeFileSync(topicFile, entry.topic);
+          // Stamp the file with the entry's real lastActive, NOT "now".
+          // updateConversationIndex() treats topic-file mtime AS the entry's
+          // lastActive (it upserts when mtime > existing lastActive). Writing
+          // fresh "now" mtimes here bumped every session's lastActive on each
+          // regenerate, so the 30-day prune never fired (dead entries lived
+          // forever) and the recent-50 backup pull selected the wrong sessions.
+          const d = new Date(ts);
+          fs.utimesSync(topicFile, d, d);
+        } catch {}
       }
     }
   }

@@ -215,13 +215,34 @@ process.on('message', (msg) => {
       // Resolve full path — node-pty on Windows needs it (no shell lookup)
       const shell = resolveCommand(msg.command || 'claude');
       const args = msg.args || [];
+      // Fix: strip Claude Code's own session-identity env vars before spawning
+      // the child CLI. When YouCoded itself is launched from inside a Claude Code
+      // session (e.g. `bash scripts/run-dev.sh` run from the Bash tool, or any
+      // terminal that is itself a CC session), the Electron process inherits
+      // CLAUDECODE=1, CLAUDE_CODE_CHILD_SESSION=1, CLAUDE_CODE_SESSION_ID=<parent>,
+      // etc. Passing those down makes the spawned `claude` believe it is a
+      // NESTED/child session — and nested interactive CC does NOT write a
+      // top-level transcript to ~/.claude/projects/<slug>/<id>.jsonl. With no
+      // transcript file, the TranscriptWatcher (the sole source of chat-view
+      // state) has nothing to read, so chat view stays permanently empty even
+      // though the terminal/PTY shows output normally and hooks still fire.
+      // Stripping these makes every session we spawn a clean top-level session
+      // regardless of how YouCoded itself was launched.
+      // See docs/PITFALLS.md → "Local Dev & Launch Environment".
+      const childEnv = { ...process.env };
+      delete childEnv.CLAUDECODE;
+      delete childEnv.CLAUDE_CODE_CHILD_SESSION;
+      delete childEnv.CLAUDE_CODE_SESSION_ID;
+      delete childEnv.CLAUDE_CODE_ENTRYPOINT;
+      delete childEnv.CLAUDE_CODE_EXECPATH;
+      delete childEnv.CLAUDE_EFFORT;
       ptyProcess = pty.spawn(shell, args, {
         name: 'xterm-256color',
         cols: msg.cols || 120,
         rows: msg.rows || 30,
         cwd: msg.cwd || require('os').homedir(),
         env: {
-          ...process.env,
+          ...childEnv,
           // Pass our session ID so hook scripts can include it in payloads
           CLAUDE_DESKTOP_SESSION_ID: msg.sessionId || '',
           // Pass the unique pipe name so relay.js connects to the right instance

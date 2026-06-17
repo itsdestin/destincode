@@ -306,6 +306,15 @@ class SessionService : Service() {
             android.util.Log.w("SessionService", "Failed to force-disable prompt suggestion", e)
         }
 
+        // Seed transcript retention so CC's 30-day cleanup doesn't delete
+        // Resume Browser history. Mirrors desktop retention-default.ts.
+        try {
+            val seeded = RetentionDefault(bs.homeDir).seedIfAbsent()
+            if (seeded) android.util.Log.i("SessionService", "Seeded cleanupPeriodDays=${RetentionDefault.DEFAULT_DAYS}")
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Failed to seed cleanupPeriodDays", e)
+        }
+
         // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
         // .claude.json mcpServers. Only auto:true entries; filtered to "linux"/"all".
         val mcpReconciler = com.youcoded.app.skills.McpReconciler(bs.homeDir)
@@ -1378,9 +1387,21 @@ class SessionService : Service() {
                 val topicMap = withContext(Dispatchers.IO) { readTopicMap(homeDir) }
                 val arr = org.json.JSONArray()
                 for (s in pastSessions) {
-                    // Prefer the topic-file name; fall back to the index topic.
+                    // Name precedence: topic-file name > conversation-index topic
+                    // > transcript-derived title > "Untitled". The topic file is
+                    // pruned/unsynced, the index topic syncs but the auto-title
+                    // hook may never have fired, so the transcript's first user
+                    // message is the last-resort name. Mirrors desktop's
+                    // session-browser.ts precedence. derivedTitle stays
+                    // server-side — the payload's `name` already carries the
+                    // final value, so the IPC shape is unchanged.
                     val indexTopic = topicMap[s.sessionId]
-                    val resolvedName = if (s.name == "Untitled" && !indexTopic.isNullOrBlank()) indexTopic else s.name
+                    val resolvedName = when {
+                        s.name != "Untitled" -> s.name
+                        !indexTopic.isNullOrBlank() -> indexTopic
+                        !s.derivedTitle.isNullOrBlank() -> s.derivedTitle!!
+                        else -> "Untitled"
+                    }
                     arr.put(JSONObject().apply {
                         put("sessionId", s.sessionId)
                         put("projectSlug", s.projectSlug)

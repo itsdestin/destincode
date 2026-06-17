@@ -14,10 +14,12 @@ import { useEscClose } from '../hooks/use-esc-close';
 // Effort and fast are YouCoded-local state (Claude Code doesn't transcribe
 // them) — we trust the popup as source of truth and forward to PTY on change.
 
+// Labels are model-class only (no version numbers) by design.
 const MODELS: { id: ModelAlias; label: string }[] = [
   { id: 'haiku', label: 'Haiku' },
   { id: 'sonnet', label: 'Sonnet' },
-  { id: 'opus[1m]', label: 'Opus 1M' },
+  { id: 'opus[1m]', label: 'Opus' },
+  { id: 'fable', label: 'Fable' },
 ];
 
 const MODEL_INFO: Record<ModelAlias, { tagline: string; pros: string[]; cons: string[] }> = {
@@ -32,9 +34,14 @@ const MODEL_INFO: Record<ModelAlias, { tagline: string; pros: string[]; cons: st
     cons: ['Not as deep as Opus for complex analysis'],
   },
   'opus[1m]': {
-    tagline: 'Most powerful — 1M context',
-    pros: ['Deepest reasoning & analysis', '1 million token context window', 'Best for complex multi-step tasks'],
-    cons: ['Slowest responses', 'Uses more plan capacity'],
+    tagline: 'Powerful — 1M context',
+    pros: ['Deep reasoning & analysis', '1 million token context window', 'Great for complex multi-step tasks'],
+    cons: ['Slower responses', 'Uses more plan capacity'],
+  },
+  fable: {
+    tagline: 'Most capable — hardest tasks',
+    pros: ['Best reasoning & long-horizon work', '1 million token context window', 'Strongest at agentic coding'],
+    cons: ['Slowest responses', 'Uses the most plan capacity'],
   },
 };
 
@@ -113,6 +120,11 @@ export function ModelInfoTooltip({ model }: { model: ModelAlias }) {
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'max', 'auto'] as const;
 export type EffortLevel = typeof EFFORT_LEVELS[number];
 
+// `max` effort is only accepted by the top-tier models (Opus 1M + Fable);
+// Claude Code rejects it elsewhere. Keep this list in sync with the disable
+// gate + downgrade-on-switch logic below.
+const MAX_EFFORT_MODELS: ModelAlias[] = ['opus[1m]', 'fable'];
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -152,9 +164,10 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
   const handleModelSelect = (m: ModelAlias) => {
     onSelectModel(m);
-    // If user switches off Opus while max-effort is set, downgrade silently —
-    // Claude Code rejects max on non-opus and we'd get into an inconsistent state.
-    if (effort === 'max' && m !== 'opus[1m]') {
+    // If user switches to a model that doesn't support max-effort while max is
+    // set, downgrade silently — Claude Code rejects max there and we'd get into
+    // an inconsistent state.
+    if (effort === 'max' && !MAX_EFFORT_MODELS.includes(m)) {
       updateEffort('auto');
     }
   };
@@ -190,8 +203,8 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
   if (!open) return null;
 
-  // "max" effort is opus-only; disable the button otherwise.
-  const maxAllowed = currentModel === 'opus[1m]';
+  // "max" effort is top-tier-only (Opus 1M + Fable); disable the button otherwise.
+  const maxAllowed = currentModel != null && MAX_EFFORT_MODELS.includes(currentModel);
 
   return createPortal(
     // Overlay layer L2 — theme-driven scrim/surface via Scrim/OverlayPanel.
@@ -251,7 +264,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                       key={level}
                       onClick={() => !disabled && updateEffort(level)}
                       disabled={disabled}
-                      title={disabled ? 'Max effort requires Opus' : undefined}
+                      title={disabled ? 'Max effort requires Opus or Fable' : undefined}
                       className={`py-1.5 text-xs rounded transition-colors capitalize ${
                         effort === level
                           ? 'bg-accent text-on-accent font-medium'

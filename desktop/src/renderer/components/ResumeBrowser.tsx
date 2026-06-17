@@ -16,8 +16,9 @@ import {
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 
 function formatRelativeTime(epochMs: number): string {
@@ -293,18 +294,20 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     return applyFilters(sessions, state);
   }, [sessions, search, showComplete, stickyComplete, selectedProjects, selectedTags]);
 
-  // Group by project path; within-group sort priority-pinned + lastModified by sortDir.
-  // Between-group order also follows sortDir (newest-first when desc, oldest-first when asc).
+  // Group by project path ONLY when the user has narrowed via the Projects
+  // pill — the default view is pure chronological (each row carries its own
+  // project label instead). Within-group sort is priority-pinned + lastModified
+  // by sortDir; between-group order also follows sortDir. Search always stays
+  // flat so results read as one ranked list.
   const grouped = useMemo(() => {
-    if (search.trim()) return null;
+    if (search.trim() || selectedProjects.size === 0) return null;
     return groupSessions(filtered, sortDir);
-  }, [filtered, search, sortDir]);
+  }, [filtered, search, selectedProjects, sortDir]);
 
-  // Flat list (search mode) — priority-pinned, lastModified by sortDir.
+  // Flat list (default + search modes) — priority-pinned, lastModified by sortDir.
   const flatSorted = useMemo(() => {
-    if (!search.trim()) return filtered;
     return sortSessions(filtered, sortDir);
-  }, [filtered, search, sortDir]);
+  }, [filtered, sortDir]);
 
   // Distinct projects with counts — what the Projects pill dropdown displays.
   // Derived from the unfiltered session list so the dropdown always shows
@@ -537,9 +540,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             ))}
             <span className="truncate">{s.name}</span>
           </div>
-          <div className="text-[10px] text-fg-faint">
+          {/* Second line: in flat (chronological) mode each row carries its
+              project label since there's no group header; size rides along so
+              no info is lost vs. the grouped view. Grouped rows keep size only
+              — the group header already names the project. */}
+          <div className="text-[10px] text-fg-faint truncate">
             {showPath
-              ? s.projectPath.replace(/\\/g, '/').split('/').pop()
+              ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
               : formatSize(s.size)}
           </div>
         </div>
@@ -753,7 +760,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   {search.trim() ? 'No matching sessions' : 'No previous sessions found'}
                 </p>
               ) : grouped ? (
-                // Grouped by project
+                // Grouped by project — only when the Projects filter is active
                 [...grouped.entries()].map(([projectPath, items]) => (
                   <div key={projectPath} className="mb-2">
                     <div className="px-4 py-1">
@@ -765,7 +772,8 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   </div>
                 ))
               ) : (
-                // Flat search results, priority-pinned
+                // Flat chronological list (default view + search results),
+                // priority-pinned; each row shows its own project label.
                 flatSorted.map((s) => renderSessionRow(s, true))
               )}
             </div>
