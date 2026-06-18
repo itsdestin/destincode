@@ -1,8 +1,13 @@
 const WHITELIST = new Set([
   'md', 'markdown', 'txt',
   'pdf', 'docx', 'xlsx',
-  'png', 'jpg', 'jpeg', 'gif', 'webp',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg',
   'ts', 'tsx', 'js', 'jsx', 'py', 'css', 'json', 'yaml', 'yml',
+  // Web docs: agent-generated mockups/pages. categorizeArtifact() already
+  // treats html/htm/svg as 'document' — whitelist them here too so a path like
+  // `C:\…\smiley.html` becomes a clickable pill (opens in the artifact viewer,
+  // where the new "Open externally" button launches it in the browser).
+  'html', 'htm',
 ]);
 
 // Matches:

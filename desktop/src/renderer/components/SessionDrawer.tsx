@@ -45,6 +45,8 @@ const PATHS: Record<string, string> = {
   link: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
   // Folder — "Reveal in folder".
   folder: 'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
+  // External-link (box + arrow-out) — "Open externally" (OS default app).
+  external: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3',
   expand: 'M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3',
   shrink: 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3',
   pencil: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z',
@@ -95,7 +97,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       return;
     }
     let cancelled = false;
-    const ids = allArtifacts.map((a) => a.id);
+    // Exclude DISCOVERED (on-disk) records: their id is a relative path, not a
+    // sidecar id, so checkExistence would treat them as "missing" and wrongly
+    // mark a file that's literally on disk as deleted. They exist by definition
+    // (discovery only lists real files), so skip them here.
+    const ids = allArtifacts.filter((a) => !(a as any).discovered).map((a) => a.id);
     (window.claude as any).artifacts.checkExistence(projectRoot, ids)
       .then((res: any) => {
         if (cancelled || !res?.ok) return;
@@ -222,6 +228,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 
   const handleReveal = useCallback(() => {
     if (absolutePath) (window.claude as any).shell?.showItemInFolder?.(absolutePath);
+  }, [absolutePath]);
+
+  // Open the file with the OS default app (HTML→browser, .docx→Word, etc.) —
+  // the right action for formats the in-app viewer can't fully render. Desktop
+  // only (shell.openPath); the button is gated on isElectron like Reveal.
+  const handleOpenExternal = useCallback(() => {
+    if (absolutePath) (window.claude as any).shell?.openPath?.(absolutePath);
   }, [absolutePath]);
 
   // Rows to render: the filtered set, narrowed by the search box and sorted.
@@ -434,6 +447,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           )
         )}
         <span className="w-px h-[18px] bg-edge mx-0.5" />
+        {isElectron && <IconBtn name="external" title="Open with the default app" onClick={handleOpenExternal} />}
         <IconBtn name="link" title="Copy path" onClick={handleCopyPath} />
         {isElectron && <IconBtn name="folder" title="Reveal in folder" onClick={handleReveal} />}
         <IconBtn name={expanded ? 'shrink' : 'expand'} title={expanded ? 'Shrink panel' : 'Expand panel'} active={expanded} onClick={() => dispatch({ type: 'DRAWER_EXPAND_TOGGLED' })} />

@@ -34,6 +34,31 @@ function FileGlyph({ ext }: { ext: string }) {
   );
 }
 
+// Build the appendVersion args for "artifactifying" a clicked path that isn't
+// tracked or discovered anywhere (e.g. a file Claude created via a Bash/python
+// script, or one in a temp dir outside the project). Mirrors the internal-vs-
+// external logic the App.tsx artifact tracker uses for tool-use events: a path
+// under cwd is internal (relative path); anything else is external (basename +
+// absolute path). Relative clicked paths are resolved against cwd first.
+function buildArtifactifyArgs(clickedPath: string, cwd: string): {
+  path: string; kind: 'internal' | 'external'; absolutePath: string | null;
+  type: 'read'; author: 'user';
+} {
+  const norm = clickedPath.replace(/\\/g, '/');
+  const isAbs = /^[a-zA-Z]:\//.test(norm) || norm.startsWith('/');
+  const cwdFwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  const absFwd = isAbs ? norm : `${cwdFwd}/${norm.replace(/^\.\//, '')}`;
+  const absLower = absFwd.toLowerCase();
+  const rootLower = cwdFwd.toLowerCase();
+  const isInternal = absLower === rootLower || absLower.startsWith(rootLower + '/');
+  if (isInternal) {
+    const rel = absLower === rootLower ? '' : absFwd.slice(cwdFwd.length + 1);
+    return { path: rel, kind: 'internal', absolutePath: null, type: 'read', author: 'user' };
+  }
+  const basename = absFwd.split('/').pop() || absFwd;
+  return { path: basename, kind: 'external', absolutePath: absFwd, type: 'read', author: 'user' };
+}
+
 export function FilepathToken({ path, sessionId }: Props) {
   // Optional: the buddy window / sandbox render this without ArtifactProvider.
   // When absent, the pill still renders (so prose isn't disrupted) but the
@@ -97,8 +122,24 @@ export function FilepathToken({ path, sessionId }: Props) {
       if (projMatch) {
         dispatch({ type: 'SESSION_ARTIFACT_UPSERTED', sessionId, artifact: projMatch });
         dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: projMatch.id });
+        return;
       }
-      // else: not tracked and not on disk — drawer stays on the list (still not Project View).
+
+      // 3. Nothing matched anywhere — ARTIFACTIFY the clicked path. If a file is
+      //    visible as a pill in chat, clicking it should always open it, no matter
+      //    how it was created (Bash/python script output, untracked read) or where
+      //    it lives (temp dir outside the project). appendVersion records it in the
+      //    sidecar (author 'user', type 'read'); we then refresh the session list
+      //    and select the new entry. This is the only path that PERSISTS a brand-
+      //    new artifact, so the file also appears in the Session Drawer afterward.
+      const args = buildArtifactifyArgs(path, cwd);
+      await (window.claude as any).artifacts.appendVersion(cwd, sessionId, args);
+      const refreshed = await (window.claude as any).artifacts.listSession(sessionId, cwd);
+      if (refreshed?.ok && Array.isArray(refreshed.artifacts)) {
+        dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: refreshed.artifacts });
+        const added = (refreshed.artifacts as ArtifactRecord[]).find(matches);
+        if (added) dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: added.id });
+      }
     } catch { /* leave the drawer on its list */ }
   };
 

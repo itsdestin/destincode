@@ -16,7 +16,7 @@ import { ArtifactThumbnail } from '../../ArtifactThumbnail';
 import { categorizeArtifact } from '../../../../shared/artifacts/categorization';
 import { ProjectDetailOverlay } from '../ProjectDetailOverlay';
 import {
-  TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PencilIcon, CheckIcon, FolderIcon, LinkIcon,
+  TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PencilIcon, CheckIcon, FolderIcon, LinkIcon, ExternalLinkIcon,
 } from '../detail-tool-icons';
 
 // Compact relative-time for the detail meta strip (matches ConversationsTab).
@@ -435,6 +435,10 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
   };
 
   const handleReveal = () => (window.claude as any).shell?.showItemInFolder?.(absPath);
+  // Open the file with the OS default app (HTML→browser, .docx→Word, etc.) —
+  // the right action for formats the in-app viewer can't render (html) or only
+  // renders partially (docx/xlsx). Desktop-only (shell.openPath); no-op on remote.
+  const handleOpenExternal = () => (window.claude as any).shell?.openPath?.(absPath);
   const handleCopyPath = () => {
     navigator.clipboard?.writeText(absPath).then(() => {
       setCopied(true);
@@ -461,6 +465,10 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
           Edit
         </button>
       ))}
+      <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleOpenExternal} title="Open with the default app">
+        <ExternalLinkIcon size={13} />
+        Open
+      </button>
       <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleReveal}>
         <FolderIcon size={13} />
         Reveal
