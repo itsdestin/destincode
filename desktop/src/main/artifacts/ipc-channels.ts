@@ -11,6 +11,9 @@ export const ARTIFACT_IPC = {
   LIST_PROJECT: 'artifacts:list-project',
   LIST_ALL_FILES: 'artifacts:list-all-files',
   GET: 'artifacts:get',
+  // Read a file as base64 bytes — for binary viewers (xlsx/docx/pdf/images) that
+  // cannot fetch a file URL from the renderer origin. Takes an absolute path.
+  READ_BINARY: 'artifacts:read-binary',
   SAVE: 'artifacts:save',
   // Fix: wire the data-flow gap — renderer calls this when it observes a
   // Write/Edit/MultiEdit tool-use event so the central index and sidecar are

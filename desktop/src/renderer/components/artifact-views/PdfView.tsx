@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useArtifactBytes } from './useArtifactBytes';
 import * as pdfjs from 'pdfjs-dist';
 // Fix: pdfjs-dist v5+ ships ESM-only workers (.mjs, not .js). Import via Vite's
 // `?url` suffix so it's treated as a static asset URL rather than a bundled
@@ -11,11 +12,16 @@ import type { ArtifactViewProps } from './types';
 
 export function PdfView({ absolutePath }: ArtifactViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Bytes come through IPC (renderer can't fetch file:// from its origin).
+  const { bytes } = useArtifactBytes(absolutePath);
 
   useEffect(() => {
+    if (!bytes) return;
     let cancelled = false;
     (async () => {
-      const loadingTask = pdfjs.getDocument(`file://${absolutePath}`);
+      // Copy into a fresh Uint8Array — pdfjs takes ownership of (detaches) the
+      // buffer it's handed, which would break a re-render off the same bytes.
+      const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
       const pdf = await loadingTask.promise;
       if (cancelled) return;
       const container = containerRef.current;
@@ -34,7 +40,7 @@ export function PdfView({ absolutePath }: ArtifactViewProps) {
       }
     })();
     return () => { cancelled = true; };
-  }, [absolutePath]);
+  }, [bytes]);
 
   return <div ref={containerRef} className="overflow-auto h-full p-4" />;
 }

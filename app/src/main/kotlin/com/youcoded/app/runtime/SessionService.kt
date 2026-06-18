@@ -2972,6 +2972,26 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
 
+            "artifacts:read-binary" -> {
+                // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image).
+                // The WebView can't fetch a file:// URL from the asset origin, so
+                // bytes come through the bridge. Takes an absolute path.
+                val absolutePath = msg.payload.optString("absolutePath", "")
+                if (absolutePath.isEmpty()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "no path")) }
+                    return@handleBridgeMessage
+                }
+                val payload = try {
+                    val bytes = java.io.File(absolutePath).readBytes()
+                    val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    org.json.JSONObject().put("ok", true).put("base64", b64)
+                } catch (e: java.io.IOException) {
+                    org.json.JSONObject().put("ok", false).put("error", "orphan")
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
+
             "artifacts:save" -> {
                 // Overwrite the on-disk file with the edited content and append a
                 // "edit" VersionEvent to the sidecar so the history stays consistent.

@@ -62,3 +62,12 @@ export const PlayIcon = ({ size }: { size?: number }) => (
     <polygon points="6 3 20 12 6 21 6 3" />
   </Svg>
 );
+
+// External-link (box + arrow-out) — "Open externally" (OS default app).
+export const ExternalLinkIcon = ({ size }: { size?: number }) => (
+  <Svg size={size}>
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    <path d="M15 3h6v6" />
+    <path d="M10 14 21 3" />
+  </Svg>
+);

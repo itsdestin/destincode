@@ -74,6 +74,7 @@ const IPC = {
   UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
   SHOW_ITEM_IN_FOLDER: 'shell:show-item-in-folder',
+  OPEN_PATH: 'shell:open-path',
   TERMINAL_READY: 'session:terminal-ready',
   PERMISSION_RESPOND: 'permission:respond',
   REMOTE_GET_CONFIG: 'remote:get-config',
@@ -474,6 +475,10 @@ contextBridge.exposeInMainWorld('claude', {
     // Reveal a file in the OS file manager (Finder / Explorer / Files).
     showItemInFolder: (filePath: string): Promise<void> =>
       ipcRenderer.invoke(IPC.SHOW_ITEM_IN_FOLDER, filePath),
+    // Open a local file with the OS default app (HTML→browser, .docx→Word, …).
+    // Returns the empty string on success, or an error message on failure.
+    openPath: (filePath: string): Promise<string> =>
+      ipcRenderer.invoke(IPC.OPEN_PATH, filePath),
   },
   update: {
     changelog: (opts: { forceRefresh: boolean }): Promise<ChangelogIpcResult> =>
@@ -857,6 +862,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('artifacts:list-projects-index', opts),
     get: (projectRoot: string, artifactId: string) =>
       ipcRenderer.invoke('artifacts:get', projectRoot, artifactId),
+    // Read a file as base64 — binary viewers (xlsx/docx/pdf/image) decode this
+    // to bytes (renderer can't fetch a file:// URL from the http/app origin).
+    readBinary: (absolutePath: string) =>
+      ipcRenderer.invoke('artifacts:read-binary', absolutePath),
     save: (projectRoot: string, projectId: string, projectName: string,
            artifactId: string, content: string, sessionId: string) =>
       ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId),

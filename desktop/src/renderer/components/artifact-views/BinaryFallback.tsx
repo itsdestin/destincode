@@ -2,8 +2,8 @@ import type { ArtifactViewProps } from './types';
 
 export function BinaryFallback({ path, absolutePath }: ArtifactViewProps) {
   const openExternally = () => {
-    // Uses existing platform IPC if available; degrade gracefully otherwise.
-    (window.claude as any).platform?.openExternal?.(absolutePath);
+    // Open with the OS default app via shell.openPath (HTML→browser, etc.).
+    (window.claude as any).shell?.openPath?.(absolutePath);
   };
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-fg-muted">

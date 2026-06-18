@@ -1,5 +1,5 @@
 // desktop/src/renderer/components/artifact-views/RendererRegistry.ts
-import { ComponentType } from 'react';
+import { ComponentType, lazy } from 'react';
 import { MarkdownView } from './MarkdownView';
 import { CodeView } from './CodeView';
 import { ImageView } from './ImageView';
@@ -9,8 +9,15 @@ import type { ArtifactViewProps } from './types';
 
 export type { ArtifactViewProps } from './types';
 
-type LazyImporter = () => Promise<{ default: ComponentType<ArtifactViewProps> }>;
-type ViewSpec = ComponentType<ArtifactViewProps> | { lazy: LazyImporter };
+type ViewSpec = ComponentType<ArtifactViewProps>;
+
+// Heavy viewers (pdfjs / mammoth / SheetJS) are code-split via React.lazy so
+// their bundles only load when a file of that type is opened. The Registry now
+// returns a real component for every entry — ActiveArtifactView wraps the render
+// in a <Suspense> boundary so the lazy ones resolve transparently.
+const PdfView = lazy(() => import('./PdfView').then((m) => ({ default: m.PdfView })));
+const DocxView = lazy(() => import('./DocxView').then((m) => ({ default: m.DocxView })));
+const XlsxView = lazy(() => import('./XlsxView').then((m) => ({ default: m.XlsxView })));
 
 const REGISTRY: Record<string, ViewSpec> = {
   md: MarkdownView,
@@ -32,9 +39,10 @@ const REGISTRY: Record<string, ViewSpec> = {
   webp: ImageView,
   html: HtmlView,
   htm: HtmlView,
-  pdf: { lazy: () => import('./PdfView').then((m) => ({ default: m.PdfView })) },
-  docx: { lazy: () => import('./DocxView').then((m) => ({ default: m.DocxView })) },
-  xlsx: { lazy: () => import('./XlsxView').then((m) => ({ default: m.XlsxView })) },
+  svg: ImageView,
+  pdf: PdfView,
+  docx: DocxView,
+  xlsx: XlsxView,
 };
 
 export function getViewer(path: string): ViewSpec {

@@ -669,6 +669,9 @@ export const IPC = {
   UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
   SHOW_ITEM_IN_FOLDER: 'shell:show-item-in-folder',
+  // Open a local file with the OS default app (HTML→browser, .docx→Word, etc.).
+  // Desktop-only: Android has no desktop shell; remote-shim no-ops it.
+  OPEN_PATH: 'shell:open-path',
   PERMISSION_RESPOND: 'permission:respond',
   // Remote settings
   REMOTE_GET_CONFIG: 'remote:get-config',

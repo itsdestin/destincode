@@ -1,10 +1,8 @@
 // ActiveArtifactView — shared component for viewing and editing a single artifact.
 // Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
 // can use it identically without duplicating the edit state + conflict-detection logic.
-import React, { useCallback, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
+import React, { useCallback, useEffect, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
 import { getViewer } from './RendererRegistry';
-import type { ArtifactViewProps } from './RendererRegistry';
-import { BinaryFallback } from './BinaryFallback';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 
 // Imperative handle so an external chrome (the SessionDrawer header toolbar) can
@@ -132,25 +130,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     onEditStateChange?.({ isEditable, editing });
   }, [isEditable, editing, onEditStateChange]);
 
-  const viewSpec = getViewer(artifact.path);
-
-  // Lazy-loaded viewers (PdfView, DocxView, XlsxView) are represented as
-  // `{ lazy: () => import(...) }` in the Registry. For v1 simplicity we fall
-  // back to BinaryFallback (opens externally). A proper React.lazy + Suspense
-  // wiring is left for a later pass — the Registry API supports it, but wiring
-  // it here requires Suspense boundary bookkeeping that's out of Task 6.1 scope.
-  if (typeof viewSpec !== 'function') {
-    // viewSpec is { lazy: LazyImporter } — not a component.
-    const props: ArtifactViewProps = {
-      path: artifact.path,
-      content,
-      absolutePath,
-      isEditable: false,
-    };
-    return <BinaryFallback {...props} />;
-  }
-
-  const ViewerComponent = viewSpec;
+  // The Registry returns a real component for every type (heavy viewers —
+  // pdf/docx/xlsx — are React.lazy, so they're code-split but still rendered
+  // here). The <Suspense> boundary below resolves the lazy chunk transparently.
+  const ViewerComponent = getViewer(artifact.path);
   return (
     <div className="h-full flex flex-col">
       {/* Conflict banner — shown when agent edits the same file the user has open
@@ -188,19 +171,21 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         </div>
       )}
       <div className="flex-1 overflow-hidden">
-        <ViewerComponent
-          path={artifact.path}
-          content={content}
-          absolutePath={absolutePath}
-          isEditable={isEditable}
-          editing={editing}
-          draft={draft}
-          onDraftChange={setDraft}
-          onStartEdit={handleStartEdit}
-          onSaveEdit={handleSave}
-          onCancelEdit={handleCancel}
-          hideControls={controlsInHeader}
-        />
+        <Suspense fallback={<div className="flex items-center justify-center h-full text-fg-muted text-sm">Loading viewer…</div>}>
+          <ViewerComponent
+            path={artifact.path}
+            content={content}
+            absolutePath={absolutePath}
+            isEditable={isEditable}
+            editing={editing}
+            draft={draft}
+            onDraftChange={setDraft}
+            onStartEdit={handleStartEdit}
+            onSaveEdit={handleSave}
+            onCancelEdit={handleCancel}
+            hideControls={controlsInHeader}
+          />
+        </Suspense>
       </div>
     </div>
   );

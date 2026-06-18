@@ -351,6 +351,7 @@ describe('artifact IPC parity', () => {
     LIST_ALL_FILES: 'artifacts:list-all-files',
     LIST_PROJECTS_INDEX: 'artifacts:list-projects-index',
     GET: 'artifacts:get',
+    READ_BINARY: 'artifacts:read-binary',
     SAVE: 'artifacts:save',
     // Fix: data-flow gap — new channel that wires renderer Tracker → central index
     APPEND_VERSION: 'artifacts:append-version',

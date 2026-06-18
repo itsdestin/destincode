@@ -868,6 +868,10 @@ export function installShim(): void {
       // No-op on remote/Android — a browser can't reveal a file in the host's
       // file manager. The artifact panel hides the button on touch anyway.
       showItemInFolder: async () => {},
+      // No-op on remote/Android — a browser can't launch the host's default app
+      // for a local path. The "Open externally" button is desktop-gated, so this
+      // only exists to keep the window.claude shape symmetric.
+      openPath: async () => '',
     },
     update: {
       changelog: async (opts: { forceRefresh: boolean }) =>
@@ -1016,6 +1020,10 @@ export function installShim(): void {
         invoke('artifacts:list-projects-index', opts ?? {}),
       get: (projectRoot: string, artifactId: string) =>
         invoke('artifacts:get', { projectRoot, artifactId }),
+      // Routed to the host (desktop/Android) over WS — the host has filesystem
+      // access, so binary viewers work for remote browsers too.
+      readBinary: (absolutePath: string) =>
+        invoke('artifacts:read-binary', { absolutePath }),
       save: (projectRoot: string, projectId: string, projectName: string,
              artifactId: string, content: string, sessionId: string) =>
         invoke('artifacts:save', { projectRoot, projectId, projectName, artifactId, content, sessionId }),

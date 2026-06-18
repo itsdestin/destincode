@@ -23,6 +23,7 @@
     "@xterm/xterm": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "chokidar": "^4.0.3",
+    "exceljs": "^4.4.0",
     "koffi": "^2.16.1",
     "mammoth": "^1.12.0",
     "node-machine-id": "^1.1.12",
@@ -37,8 +38,7 @@
     "remark-gfm": "^4.0.1",
     "ulid": "^3.0.2",
     "which": "^4.0.0",
-    "ws": "^8.20.0",
-    "xlsx": "^0.18.5"
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",

@@ -544,6 +544,13 @@ export function registerIpcHandlers(
     }
   });
 
+  // Open a local file with the OS default app (HTML→browser, .docx→Word, etc.).
+  // shell.openPath resolves with '' on success or an error string on failure.
+  ipcMain.handle(IPC.OPEN_PATH, async (_event, filePath: string) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) return 'no path';
+    return shell.openPath(filePath);
+  });
+
   // Read model + context from a transcript JSONL file (async, first/last byte-range reads)
   ipcMain.handle(IPC.READ_TRANSCRIPT_META, async (_event, transcriptPath: string) => {
     try {
@@ -2323,6 +2330,22 @@ export function registerIpcHandlers(
       // File is missing — return orphan signal
     }
     return { ok: true, artifact: artifact ?? null, content, orphan: content === null };
+  });
+
+  // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image). The
+  // renderer can't fetch a file:// URL from the http(dev)/app(prod) origin, so
+  // bytes come through IPC. Takes an absolute path (the viewer already resolved
+  // it from the artifact record); same desktop-local trust level as openPath.
+  ipcMain.handle(ARTIFACT_IPC.READ_BINARY, async (_e, absolutePath: string) => {
+    if (typeof absolutePath !== 'string' || absolutePath.length === 0) {
+      return { ok: false, error: 'no path' };
+    }
+    try {
+      const buf = await fs.promises.readFile(absolutePath);
+      return { ok: true, base64: buf.toString('base64') };
+    } catch (e: any) {
+      return { ok: false, error: e?.code === 'ENOENT' ? 'orphan' : String(e?.message ?? e) };
+    }
   });
 
   ipcMain.handle(ARTIFACT_IPC.SAVE, async (
