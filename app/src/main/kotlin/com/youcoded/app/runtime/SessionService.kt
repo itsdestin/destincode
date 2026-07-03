@@ -1121,34 +1121,6 @@ class SessionService : Service() {
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
-            // GitHub identity via `gh api user` — same as desktop's github:auth,
-            // which is used by the multiplayer lobby to name the player. The gh
-            // binary is installed through Termux bootstrap and reads ~/.netrc
-            // (set up by Bootstrap after the user signs in).
-            "github:auth" -> {
-                val bs = bootstrap
-                val result: Any = if (bs == null) {
-                    JSONObject.NULL
-                } else withContext(Dispatchers.IO) {
-                    try {
-                        // gh is a Go binary — bypasses termux-exec LD_PRELOAD, so
-                        // we invoke it through linker64 directly (matches the bash
-                        // wrapper in Bootstrap.buildBashEnvSh's gh() function).
-                        val ghPath = File(bs.usrDir, "bin/gh").absolutePath
-                        val pb = ProcessBuilder("/system/bin/linker64", ghPath, "api", "user", "--jq", ".login")
-                            .directory(bs.homeDir)
-                            .redirectErrorStream(true)
-                        pb.environment().putAll(bs.buildRuntimeEnv())
-                        val process = pb.start()
-                        val output = process.inputStream.bufferedReader().readText().trim()
-                        val ok = process.waitFor() == 0 && output.isNotEmpty() && !output.contains("not logged")
-                        if (ok) JSONObject().put("username", output) else JSONObject.NULL
-                    } catch (_: Exception) {
-                        JSONObject.NULL
-                    }
-                }
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
-            }
             // Reads the last model name from a Claude Code JSONL transcript —
             // used by the model picker to remember which model the session was
             // running. Mirrors desktop's model:read-last in ipc-handlers.ts.
@@ -2628,7 +2600,7 @@ class SessionService : Service() {
                     } else {
                         val env = bs.buildRuntimeEnv()
                         // gh is a Go binary — must be routed through linker64 directly
-                        // (bypasses LD_PRELOAD). This matches the github:auth handler above.
+                        // (bypasses LD_PRELOAD), same as the other gh invocations here.
                         val ghPath = File(bs.usrDir, "bin/gh").absolutePath
                         val (authExit, _) = DevTools.runStreamed(
                             env,
