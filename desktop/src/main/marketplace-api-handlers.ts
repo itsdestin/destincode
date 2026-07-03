@@ -15,6 +15,12 @@ import type { PostRatingInput, AuthStartResponse, AuthPollResponse } from "../re
 // generic errors (Task 7+).
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; status: number; message: string };
 
+// Worker may return avatar_url: null (theoretical — GitHub always sets one);
+// the store type uses a plain string, so normalize at this boundary.
+function toStoredUser(me: { id: string; login: string; avatar_url: string | null }) {
+  return { id: me.id, login: me.login, avatar_url: me.avatar_url ?? "" };
+}
+
 async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
   try {
     return { ok: true, value: await run() };
@@ -71,18 +77,39 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     wrap(async () => {
       const res = await client.authPoll(deviceCode);
       if (res.status === "complete") {
-        store.setToken(res.token);
-        // TODO(Task 5): fetch /user from GitHub once that endpoint is available,
-        // or decode user info from the JWT. For now only the token is stored;
-        // user profile is populated lazily when the signed-in check fires.
+        // The Worker now returns the user profile alongside the token — store
+        // both together so `user()` works immediately after sign-in. WHY: the
+        // games lobby needs user.login as the player tag; storing only the
+        // token left the profile null forever (the stuck-"Connecting…" bug).
+        if (res.user) {
+          store.setSession(res.token, toStoredUser(res.user));
+        } else {
+          store.setToken(res.token); // older Worker without `user` in the payload
+        }
       }
       return res;
     })
   );
 
-  // Auth state queries — pure local reads, no API call, return plain values.
+  // Auth state queries — local reads, plus a one-time lazy heal for `user`.
   ipcMain.handle("marketplace:auth:signed-in", () => !!store.getToken());
-  ipcMain.handle("marketplace:auth:user", () => store.getUser());
+  ipcMain.handle("marketplace:auth:user", async () => {
+    const cached = store.getUser();
+    if (cached) return cached;
+    // Heal path: a token stored before profile storage existed (pre-2026-07
+    // sign-ins) has no user. Fetch it once from /auth/me and persist. On any
+    // failure (offline, revoked session) return null — same as signed-out for
+    // profile consumers; the token itself stays untouched.
+    const token = store.getToken();
+    if (!token) return null;
+    try {
+      const stored = toStoredUser(await client.authMe());
+      store.setSession(token, stored);
+      return stored;
+    } catch {
+      return null;
+    }
+  });
   ipcMain.handle("marketplace:auth:sign-out", () => store.signOut());
 
   // ── Write endpoints ───────────────────────────────────────────────────────
