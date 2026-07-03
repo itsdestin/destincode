@@ -627,7 +627,6 @@ contextBridge.exposeInMainWorld('claude', {
   setFavorites: (favorites: string[]) => ipcRenderer.invoke('favorites:set', favorites),
   getIncognito: () => ipcRenderer.invoke('game:getIncognito'),
   setIncognito: (incognito: boolean) => ipcRenderer.invoke('game:setIncognito', incognito),
-  getGitHubAuth: () => ipcRenderer.invoke('github:auth'),
   // Async IPC — renderer must await this (was sendSync before v2.2.0)
   getHomePath: (): Promise<string> => ipcRenderer.invoke('get-home-path'),
   window: {

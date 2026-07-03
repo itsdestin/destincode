@@ -2,8 +2,6 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, scree
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { WindowRegistry } from './window-registry';
@@ -68,10 +66,6 @@ if (process.platform === 'win32') {
   process.env.PATH = `${extraPaths.join(path.delimiter)}${path.delimiter}${process.env.PATH}`;
 }
 
-const execFileAsync = promisify(execFile);
-// Resolve 'gh' path for Windows where Electron's PATH may not include it
-let ghPath = 'gh';
-try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
 let mainWindow: BrowserWindow | null = null;
 // Module-level ref so createAppWindow's 'closed' handler can reach the
@@ -1224,23 +1218,6 @@ app.whenReady().then(async () => {
     const data = readGamePrefs();
     data.incognito = incognito;
     return writeGamePrefs(data);
-  });
-
-  ipcMain.handle('github:auth', async () => {
-    try {
-      const { stdout: username } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login']);
-      return { username: username.trim() };
-    } catch (err: any) {
-      // Log specific failure reason for debugging
-      if (err.code === 'ENOENT') {
-        log('WARN', 'GitHubAuth', 'gh CLI not found on PATH');
-      } else if (err.stderr?.includes('not logged in')) {
-        log('WARN', 'GitHubAuth', 'gh CLI not authenticated');
-      } else {
-        log('WARN', 'GitHubAuth', 'Failed', { error: String(err.message || err) });
-      }
-      return null;
-    }
   });
 
   // Expose the system home directory to the renderer (async to avoid blocking)

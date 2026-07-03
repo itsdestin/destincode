@@ -18,9 +18,18 @@ export interface AuthStartResponse {
   expires_in: number;
 }
 
+// `user` on completion: the Worker returns the profile alongside the token so
+// clients can store both atomically (games player tag needs `login`).
+// Optional because a Worker deployed before 2026-07 omits it.
+export interface AuthMeResponse {
+  id: string;
+  login: string;
+  avatar_url: string | null;
+}
+
 export type AuthPollResponse =
   | { status: "pending" }
-  | { status: "complete"; token: string };
+  | { status: "complete"; token: string; user?: AuthMeResponse };
 
 export interface StatsResponse {
   generated_at: number;
@@ -56,6 +65,8 @@ export interface MarketplaceApiClient {
   getStats(): Promise<StatsResponse>;
   authStart(): Promise<AuthStartResponse>;
   authPoll(deviceCode: string): Promise<AuthPollResponse>;
+  /** Resolve the current session token to the signed-in user's profile. */
+  authMe(): Promise<AuthMeResponse>;
   postInstall(pluginId: string): Promise<void>;
   postRating(input: PostRatingInput): Promise<{ hidden: boolean }>;
   deleteRating(pluginId: string): Promise<void>;
@@ -100,6 +111,7 @@ export function createMarketplaceApiClient(opts: {
         method: "POST",
         body: JSON.stringify({ device_code }),
       }),
+    authMe: () => request<AuthMeResponse>("/auth/me", { method: "GET", auth: true }),
     postInstall: async (plugin_id) => {
       await request("/installs", { method: "POST", body: JSON.stringify({ plugin_id }), auth: true });
     },

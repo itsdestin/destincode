@@ -106,7 +106,6 @@ declare global {
       };
       off: (channel: string, handler: (...args: any[]) => void) => void;
       removeAllListeners: (channel: string) => void;
-      getGitHubAuth: () => Promise<{ username: string } | null>;
       getHomePath: () => Promise<string>;
       getFavorites: () => Promise<any>;
       setFavorites: (favorites: any) => Promise<void>;
