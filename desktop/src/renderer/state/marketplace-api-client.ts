@@ -18,9 +18,7 @@ export interface AuthStartResponse {
   expires_in: number;
 }
 
-// `user` on completion: the Worker returns the profile alongside the token so
-// clients can store both atomically (games player tag needs `login`).
-// Optional because a Worker deployed before 2026-07 omits it.
+// Signed-in user's profile as returned by GET /auth/me (Worker accounts Phase 1 shape).
 export interface AuthMeResponse {
   id: string;
   login: string;              // GitHub login (player-tag continuity)
@@ -29,6 +27,9 @@ export interface AuthMeResponse {
   handle: string | null;      // unique @handle, null until the user claims one
 }
 
+// `user` on completion: the Worker returns the profile alongside the token so
+// clients can store both atomically (games player tag needs `login`).
+// Optional because a Worker deployed before 2026-07 omits it.
 export type AuthPollResponse =
   | { status: "pending" }
   | { status: "complete"; token: string; user?: AuthMeResponse };
@@ -106,11 +107,28 @@ export function createMarketplaceApiClient(opts: {
     const { auth: _auth, ...fetchInit } = init;
     const res = await fetch(`${host}${path}`, { ...fetchInit, headers });
     // 202 Accepted is used for poll-pending responses — treat as success with { status: "pending" }
-    const body = res.status === 202 ? { status: "pending" as const } : await res.json().catch(() => ({}));
-    if (!res.ok && res.status !== 202) {
-      throw new MarketplaceApiError(res.status, (body as { message?: string })?.message ?? res.statusText);
+    if (res.status === 202) return { status: "pending" } as T;
+    if (!res.ok) {
+      // Fix: the Worker's 400/409 errors (Hono HTTPException, e.g. "that handle is
+      // taken") arrive as text/plain with the message as the raw body — NOT JSON
+      // {message}. The old res.json() path threw on those and fell back to
+      // res.statusText, which is EMPTY over HTTP/2 on Cloudflare, so every such
+      // error reached the UI with a blank message. Read the body as text once,
+      // then accept either shape: JSON {message} or the raw text itself.
+      const raw = await res.text().catch(() => "");
+      let message = "";
+      try {
+        const parsed = JSON.parse(raw) as { message?: unknown };
+        if (typeof parsed?.message === "string") message = parsed.message;
+      } catch {
+        // Not JSON — plain-text body; the raw text fallback below covers it.
+      }
+      if (!message) message = raw.trim();
+      if (!message) message = `request failed (status ${res.status})`;
+      throw new MarketplaceApiError(res.status, message);
     }
-    return body as T;
+    // Success path: tolerate empty bodies (204 No Content endpoints) by returning {}
+    return (await res.json().catch(() => ({}))) as T;
   }
 
   return {

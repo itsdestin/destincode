@@ -97,77 +97,84 @@ describe("MarketplaceApiClient", () => {
     const callArgs = fetchMock.mock.calls[0][1] as RequestInit;
     expect(callArgs.signal).toBe(controller.signal);
   });
-});
 
-// Accounts Phase 1: profile/handle/account/logout endpoints on the Worker.
-// Each verifies the HTTP method, path, JSON body (where applicable), and Bearer auth.
-describe("account endpoints", () => {
-  const HOST = "https://api.test";
-  let fetchMock: ReturnType<typeof vi.fn>;
+  // Accounts Phase 1: profile/handle/account/logout endpoints on the Worker.
+  // Each verifies the HTTP method, path, JSON body (where applicable), and Bearer auth.
+  // Nested so it shares the outer describe's fetchMock/beforeEach setup.
+  describe("account endpoints", () => {
+    it("updateProfile PATCHes /auth/profile with auth", async () => {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ display_name: "New Name" })));
+      const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
+      const out = await client.updateProfile("New Name");
 
-  beforeEach(() => {
-    fetchMock = vi.fn();
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-  });
+      expect(out).toEqual({ display_name: "New Name" });
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${HOST}/auth/profile`,
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ display_name: "New Name" }),
+          headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
+        })
+      );
+    });
 
-  it("updateProfile PATCHes /auth/profile with auth", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ display_name: "New Name" })));
-    const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
-    const out = await client.updateProfile("New Name");
+    it("setHandle PUTs /auth/handle with auth", async () => {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ handle: "destin" })));
+      const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
+      const out = await client.setHandle("Destin");
 
-    expect(out).toEqual({ display_name: "New Name" });
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${HOST}/auth/profile`,
-      expect.objectContaining({
-        method: "PATCH",
-        body: JSON.stringify({ display_name: "New Name" }),
-        headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
-      })
-    );
-  });
+      expect(out).toEqual({ handle: "destin" });
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${HOST}/auth/handle`,
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ handle: "Destin" }),
+          headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
+        })
+      );
+    });
 
-  it("setHandle PUTs /auth/handle with auth", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ handle: "destin" })));
-    const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
-    const out = await client.setHandle("Destin");
+    it("deleteAccount DELETEs /auth/account with auth", async () => {
+      // 204 No Content — empty body; the void method must not throw on an empty response.
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
+      await expect(client.deleteAccount()).resolves.toBeUndefined();
 
-    expect(out).toEqual({ handle: "destin" });
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${HOST}/auth/handle`,
-      expect.objectContaining({
-        method: "PUT",
-        body: JSON.stringify({ handle: "Destin" }),
-        headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
-      })
-    );
-  });
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${HOST}/auth/account`,
+        expect.objectContaining({
+          method: "DELETE",
+          headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
+        })
+      );
+    });
 
-  it("deleteAccount DELETEs /auth/account with auth", async () => {
-    // 204 No Content — empty body; the void method must not throw on an empty response.
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
-    await expect(client.deleteAccount()).resolves.toBeUndefined();
+    it("logout POSTs /auth/logout with auth", async () => {
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
+      await expect(client.logout()).resolves.toBeUndefined();
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${HOST}/auth/account`,
-      expect.objectContaining({
-        method: "DELETE",
-        headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
-      })
-    );
-  });
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${HOST}/auth/logout`,
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
+        })
+      );
+    });
 
-  it("logout POSTs /auth/logout with auth", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
-    await expect(client.logout()).resolves.toBeUndefined();
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${HOST}/auth/logout`,
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer TOKEN" }),
-      })
-    );
+    it("surfaces text/plain error bodies (Hono HTTPException shape)", async () => {
+      // The Worker's 400/409s are plain-text bodies, not JSON {message}.
+      // Regression guard for the blank-error-message bug: res.statusText is empty
+      // over HTTP/2 on Cloudflare, so the client must read the raw text body.
+      fetchMock.mockResolvedValueOnce(
+        new Response("that handle is taken", { status: 409, headers: { "content-type": "text/plain" } })
+      );
+      const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
+      await expect(client.setHandle("taken")).rejects.toMatchObject({
+        status: 409,
+        message: "that handle is taken",
+      });
+    });
   });
 });
