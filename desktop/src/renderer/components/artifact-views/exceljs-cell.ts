@@ -111,10 +111,14 @@ export function cellStyleToCss(cell: any): CSSProperties {
     if (font.bold) css.fontWeight = 700;
     if (font.italic) css.fontStyle = 'italic';
     if (font.underline) css.textDecoration = 'underline';
-    if (font.size) css.fontSize = `${font.size}px`;
-    if (font.name) css.fontFamily = `"${font.name}", sans-serif`;
     const fc = argbToCss(font.color);
     if (fc) css.color = fc;
+    // NOTE: deliberately NOT applying per-cell font.size / font.name. ExcelJS
+    // reports font.size in POINTS (Excel default 11pt); rendering it as px shrinks
+    // touched cells below the grid's base size, so a file where openpyxl stamped
+    // the default font on some cells looked inconsistently sized. The grid uses
+    // one uniform font for legibility (like a clean spreadsheet). Weight/italic/
+    // underline/color still carry the meaningful emphasis (bold headers, etc.).
   }
   // Fill — solid pattern fills are the common case.
   const fill = cell?.fill;

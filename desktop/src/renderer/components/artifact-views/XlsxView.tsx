@@ -17,10 +17,18 @@ const MAX_COLS = 100;
 const MIN_ROWS = 50;
 const MIN_COLS = 26; // A … Z
 
-const GRID = '#d8d8d8';
-const GUTTER_BG = '#f3f3f3';
-const GUTTER_FG = '#6a6a6a';
-const SEL = '#217346'; // Excel green
+// The spreadsheet "paper" stays LIGHT (cell fills + dark cell text assume a light
+// sheet, like real Excel) but takes on a subtle tint from the active theme's
+// accent hue instead of pure white — so it reads as part of the themed app, not a
+// stark white rectangle. color-mix is already used elsewhere in the app's CSS and
+// is supported in Electron + the Android WebView.
+const PAPER = 'color-mix(in srgb, var(--accent) 4%, #ffffff)';     // cell area
+const GUTTER_BG = 'color-mix(in srgb, var(--accent) 13%, #ffffff)'; // A/B/C + row gutters
+const FBAR_BG = 'color-mix(in srgb, var(--accent) 7%, #ffffff)';    // formula bar
+const TAB_BG = 'color-mix(in srgb, var(--accent) 10%, #ffffff)';    // sheet-tab strip
+const GRID = 'color-mix(in srgb, var(--accent) 16%, #d2d2d2)';      // gridlines (faintly tinted)
+const GUTTER_FG = '#5f5f5f';
+const SEL = '#217346'; // Excel green — kept for guaranteed-visible cell selection
 
 interface CellVM {
   r: number; c: number;
@@ -174,10 +182,10 @@ export function XlsxView({ absolutePath }: ArtifactViewProps) {
   if (error || parseError || !sheets || !sheet) return <Center>Couldn’t open this spreadsheet.</Center>;
 
   return (
-    <div className="flex flex-col h-full" style={{ background: '#fff', color: '#1d1d1d' }}>
+    <div className="flex flex-col h-full" style={{ background: PAPER, color: '#1d1d1d' }}>
       {/* Formula bar — Name Box + fx + selected cell contents (reveals formulas). */}
-      <div className="flex items-center gap-2 shrink-0" style={{ background: '#fafafa', borderBottom: `1px solid ${GRID}`, padding: '5px 8px' }}>
-        <span style={{ minWidth: 60, textAlign: 'center', fontSize: 12, background: '#fff', border: `1px solid ${GRID}`, borderRadius: 4, padding: '2px 6px' }}>
+      <div className="flex items-center gap-2 shrink-0" style={{ background: FBAR_BG, borderBottom: `1px solid ${GRID}`, padding: '5px 8px' }}>
+        <span style={{ minWidth: 60, textAlign: 'center', fontSize: 12, background: '#ffffff', border: `1px solid ${GRID}`, borderRadius: 4, padding: '2px 6px' }}>
           {selInfo.addr || '—'}
         </span>
         <span style={{ color: '#999', fontStyle: 'italic', fontSize: 13, paddingRight: 6, borderRight: `1px solid ${GRID}` }}>fx</span>
@@ -242,7 +250,7 @@ export function XlsxView({ absolutePath }: ArtifactViewProps) {
 
       {/* Sheet tabs (bottom, like Excel) */}
       {sheets.length > 1 && (
-        <div className="flex items-stretch shrink-0" style={{ background: '#efefef', borderTop: `1px solid ${GRID}`, fontSize: 12 }}>
+        <div className="flex items-stretch shrink-0" style={{ background: TAB_BG, borderTop: `1px solid ${GRID}`, fontSize: 12 }}>
           {sheets.map((s, i) => (
             <button
               key={s.name + i}
@@ -250,7 +258,7 @@ export function XlsxView({ absolutePath }: ArtifactViewProps) {
               style={{
                 padding: '5px 16px', borderRight: `1px solid ${GRID}`,
                 color: i === active ? SEL : '#555', fontWeight: i === active ? 600 : 400,
-                background: i === active ? '#fff' : 'transparent',
+                background: i === active ? PAPER : 'transparent',
                 borderTop: i === active ? `2px solid ${SEL}` : '2px solid transparent',
               }}
             >

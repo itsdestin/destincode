@@ -305,7 +305,9 @@ export function BubbleFeed({ sessionId }: Props) {
               switch (entry.kind) {
                 case 'user':
                   key = entry.message.id;
-                  content = <UserMessage message={entry.message} showTimestamps={showTimestamps} />;
+                  // sessionId ?? '' — the buddy window has no ArtifactProvider, so
+                  // FilepathToken pills render but their click is a documented no-op.
+                  content = <UserMessage message={entry.message} sessionId={sessionId ?? ''} showTimestamps={showTimestamps} />;
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);

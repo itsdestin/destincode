@@ -520,7 +520,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               switch (entry.kind) {
                 case 'user':
                   key = entry.message.id;
-                  content = <UserMessage message={entry.message} showTimestamps={showTimestamps} />;
+                  content = <UserMessage message={entry.message} sessionId={sessionId} showTimestamps={showTimestamps} />;
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
