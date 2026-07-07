@@ -1,7 +1,6 @@
 export type FirstRunStep =
   | 'DETECT_PREREQUISITES'
   | 'INSTALL_PREREQUISITES'
-  | 'CLONE_TOOLKIT'
   | 'ENABLE_DEVELOPER_MODE'
   | 'AUTHENTICATE'
   | 'LAUNCH_WIZARD'
@@ -36,6 +35,5 @@ export const INITIAL_PREREQUISITES: PrerequisiteState[] = [
   { name: 'node', displayName: 'Node.js', status: 'waiting' },
   { name: 'git', displayName: 'Git', status: 'waiting' },
   { name: 'claude', displayName: 'Claude Code', status: 'waiting' },
-  { name: 'toolkit', displayName: 'YouCoded Toolkit', status: 'waiting' },
   { name: 'auth', displayName: 'Sign in', status: 'waiting' },
 ];

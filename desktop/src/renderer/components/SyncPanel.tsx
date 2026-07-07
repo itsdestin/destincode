@@ -936,11 +936,13 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               )}
             </div>
 
-            {/* Empty state when no toolkit */}
+            {/* Empty state before the first sync status arrives. Copy fix: this
+                used to say "Install the YouCoded toolkit" — the toolkit is
+                deprecated and the app owns sync natively now. */}
             {!status && !loading && (
               <div className="text-center py-6">
                 <div className="text-fg-muted text-sm mb-1">No Sync Data</div>
-                <div className="text-fg-faint text-[11px]">Install the YouCoded toolkit to enable sync.</div>
+                <div className="text-fg-faint text-[11px]">Sync hasn't run yet. Configure a backup destination to get started.</div>
               </div>
             )}
             </div>

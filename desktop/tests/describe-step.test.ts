@@ -9,7 +9,6 @@ function state(overrides: Partial<FirstRunState> = {}): FirstRunState {
       { name: 'node', displayName: 'Node.js', status: 'waiting' },
       { name: 'git', displayName: 'Git', status: 'waiting' },
       { name: 'claude', displayName: 'Claude Code', status: 'waiting' },
-      { name: 'toolkit', displayName: 'YouCoded Toolkit', status: 'waiting' },
       { name: 'auth', displayName: 'Sign in', status: 'waiting' },
     ],
     overallProgress: 0,
@@ -34,7 +33,6 @@ describe('describeStep', () => {
         { name: 'node', displayName: 'Node.js', status: 'installing' },
         { name: 'git', displayName: 'Git', status: 'waiting' },
         { name: 'claude', displayName: 'Claude Code', status: 'waiting' },
-        { name: 'toolkit', displayName: 'YouCoded Toolkit', status: 'waiting' },
         { name: 'auth', displayName: 'Sign in', status: 'waiting' },
       ],
     });
@@ -50,7 +48,6 @@ describe('describeStep', () => {
         { name: 'node', displayName: 'Node.js', status: 'installed', version: 'v20.11.0' },
         { name: 'git', displayName: 'Git', status: 'installing' },
         { name: 'claude', displayName: 'Claude Code', status: 'waiting' },
-        { name: 'toolkit', displayName: 'YouCoded Toolkit', status: 'waiting' },
         { name: 'auth', displayName: 'Sign in', status: 'waiting' },
       ],
     });
@@ -66,28 +63,11 @@ describe('describeStep', () => {
         { name: 'node', displayName: 'Node.js', status: 'installed' },
         { name: 'git', displayName: 'Git', status: 'installed' },
         { name: 'claude', displayName: 'Claude Code', status: 'installing' },
-        { name: 'toolkit', displayName: 'YouCoded Toolkit', status: 'waiting' },
         { name: 'auth', displayName: 'Sign in', status: 'waiting' },
       ],
     });
     expect(describeStep(s)).toBe(
       'Installing Claude Code — the AI that powers YouCoded.',
-    );
-  });
-
-  it('names the toolkit when toolkit is installing', () => {
-    const s = state({
-      currentStep: 'CLONE_TOOLKIT',
-      prerequisites: [
-        { name: 'node', displayName: 'Node.js', status: 'installed' },
-        { name: 'git', displayName: 'Git', status: 'installed' },
-        { name: 'claude', displayName: 'Claude Code', status: 'installed' },
-        { name: 'toolkit', displayName: 'YouCoded Toolkit', status: 'installing' },
-        { name: 'auth', displayName: 'Sign in', status: 'waiting' },
-      ],
-    });
-    expect(describeStep(s)).toBe(
-      'Installing the YouCoded toolkit — skills, themes, and sync.',
     );
   });
 

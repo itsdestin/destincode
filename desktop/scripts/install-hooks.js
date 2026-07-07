@@ -183,6 +183,34 @@ When you see an \`[Auto-Title]\` reminder, **immediately** use Bash to write a 3
     console.warn('Failed to deploy Auto-Title instruction:', e.message);
   }
 
+  // --- Write-guard hook ---
+  // PreToolUse on Write|Edit matchers. Blocks concurrent writes to tracked
+  // files when another active Claude session last modified them. Absorbed
+  // from youcoded-core as part of toolkit deprecation (2026-04).
+  const rawWriteGuardPath = path.resolve(__dirname, '..', 'hook-scripts', 'write-guard.sh');
+  const unpackedWriteGuardPath = rawWriteGuardPath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+  const activeWriteGuardPath = fs.existsSync(unpackedWriteGuardPath) ? unpackedWriteGuardPath : rawWriteGuardPath;
+
+  if (!settings.hooks['PreToolUse']) {
+    settings.hooks['PreToolUse'] = [];
+  }
+
+  const writeGuardCmd = `bash ${JSON.stringify(activeWriteGuardPath)}`;
+  const writeGuardEntry = {
+    matcher: 'Write|Edit',
+    hooks: [{ type: 'command', command: writeGuardCmd, timeout: 10 }],
+  };
+
+  const existingWriteGuardIdx = settings.hooks['PreToolUse'].findIndex((matcher) =>
+    matcher.hooks?.some((h) => h.command?.includes('write-guard.sh'))
+  );
+
+  if (existingWriteGuardIdx >= 0) {
+    settings.hooks['PreToolUse'][existingWriteGuardIdx] = writeGuardEntry;
+  } else {
+    settings.hooks['PreToolUse'].push(writeGuardEntry);
+  }
+
   // --- Remove done-sound.sh (app handles completion sounds natively) ---
   if (settings.hooks['Stop']) {
     settings.hooks['Stop'] = settings.hooks['Stop'].filter((matcher) =>
@@ -209,7 +237,7 @@ When you see an \`[Auto-Title]\` reminder, **immediately** use Bash to write a 3
   }
 
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
-  console.log('Hooks installed for ' + FIRE_AND_FORGET_EVENTS.length + ' fire-and-forget events + PermissionRequest (blocking) + auto-title + statusline');
+  console.log('Hooks installed for ' + FIRE_AND_FORGET_EVENTS.length + ' fire-and-forget events + PermissionRequest (blocking) + auto-title + statusline + write-guard');
 }
 
 installHooks();

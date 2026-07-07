@@ -12,12 +12,10 @@ import {
   detectNode,
   detectGit,
   detectClaude,
-  detectToolkit,
   detectAuth,
   installNode,
   installGit,
   installClaude,
-  cloneToolkit,
   startOAuthLogin,
   pollAuthStatus,
   submitApiKey,
@@ -139,9 +137,6 @@ export class FirstRunManager extends EventEmitter {
       case 'INSTALL_PREREQUISITES':
         await this.installMissing();
         break;
-      case 'CLONE_TOOLKIT':
-        await this.cloneToolkitStep();
-        break;
       case 'ENABLE_DEVELOPER_MODE':
         this.devModeStep();
         break;
@@ -189,14 +184,6 @@ export class FirstRunManager extends EventEmitter {
     this.updatePrereq('claude', {
       status: claudeResult.installed ? 'installed' : 'waiting',
       version: claudeResult.version,
-    });
-
-    // Toolkit
-    this.updatePrereq('toolkit', { status: 'checking' });
-    const toolkitResult = await detectToolkit();
-    this.updatePrereq('toolkit', {
-      status: toolkitResult.installed ? 'installed' : 'waiting',
-      version: toolkitResult.version,
     });
 
     // Auth
@@ -281,49 +268,9 @@ export class FirstRunManager extends EventEmitter {
       }
     }
 
-    // All installable prerequisites are now installed — advance to toolkit
-    this.advanceTo('CLONE_TOOLKIT');
-    await this.runStep('CLONE_TOOLKIT');
-  }
-
-  // -------------------------------------------------------------------------
-  // Toolkit
-  // -------------------------------------------------------------------------
-
-  private async cloneToolkitStep(): Promise<void> {
-    const toolkitPrereq = this.state.prerequisites.find((p) => p.name === 'toolkit');
-    if (toolkitPrereq?.status === 'installed') {
-      this.advanceAfterToolkit();
-      return;
-    }
-
-    this.updatePrereq('toolkit', { status: 'installing' });
-    this.updateState({ statusMessage: 'Cloning YouCoded toolkit...' });
-
-    const result = await cloneToolkit();
-
-    if (result.success) {
-      // Verify by re-detecting
-      const detection = await detectToolkit();
-      this.updatePrereq('toolkit', {
-        status: detection.installed ? 'installed' : 'failed',
-        version: detection.version,
-        error: detection.installed ? undefined : 'Toolkit not found after clone',
-      });
-
-      if (detection.installed) {
-        log('INFO', 'first-run', 'Toolkit cloned and verified');
-        this.advanceAfterToolkit();
-      } else {
-        this.updateState({ lastError: 'Toolkit not found after clone' });
-      }
-    } else {
-      this.updatePrereq('toolkit', { status: 'failed', error: result.error });
-      this.updateState({ lastError: `Failed to clone toolkit: ${result.error}` });
-    }
-  }
-
-  private advanceAfterToolkit(): void {
+    // All installable prerequisites are now installed — advance to next step.
+    // cloneToolkit() was removed: the app bundles write-guard via install-hooks.js;
+    // legacy clones are cleaned up by legacy-cleanup.ts on first launch after upgrade.
     if (this.state.needsDevMode) {
       this.advanceTo('ENABLE_DEVELOPER_MODE');
       this.devModeStep();

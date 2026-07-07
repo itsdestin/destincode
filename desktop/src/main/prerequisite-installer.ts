@@ -413,24 +413,6 @@ export async function detectClaude(): Promise<DetectionResult> {
   return { installed: false, error: lastErr };
 }
 
-/** Detect YouCoded toolkit by checking for VERSION file. No command execution. */
-export async function detectToolkit(): Promise<DetectionResult> {
-  try {
-    const versionFile = path.join(
-      os.homedir(),
-      '.claude',
-      'plugins',
-      'youcoded-core',
-      'VERSION',
-    );
-    const version = fs.readFileSync(versionFile, 'utf8').trim();
-    log('INFO', 'prereq', `Toolkit detected: ${version}`);
-    return { installed: true, version, path: versionFile };
-  } catch {
-    return { installed: false, error: 'Toolkit not found' };
-  }
-}
-
 /** Detect whether Claude Code is authenticated. */
 export async function detectAuth(): Promise<DetectionResult> {
   try {
@@ -803,50 +785,6 @@ export async function installClaude(): Promise<{ success: boolean; error?: strin
   }
 }
 
-/** Clone the YouCoded toolkit into ~/.claude/plugins/youcoded-core. */
-export async function cloneToolkit(): Promise<{ success: boolean; error?: string }> {
-  try {
-    const targetDir = path.join(
-      os.homedir(),
-      '.claude',
-      'plugins',
-      'youcoded-core',
-    );
-    const versionFile = path.join(targetDir, 'VERSION');
-
-    // Already cloned — return early
-    if (fs.existsSync(versionFile)) {
-      log('INFO', 'prereq', 'Toolkit already present, skipping clone');
-      return { success: true };
-    }
-
-    log('INFO', 'prereq', 'Cloning YouCoded toolkit...');
-
-    // Ensure parent directory exists
-    fs.mkdirSync(path.join(os.homedir(), '.claude', 'plugins'), {
-      recursive: true,
-    });
-
-    const gitPath = resolveCommand('git');
-    await runCommand(gitPath, [
-      'clone',
-      'https://github.com/itsdestin/youcoded-core.git',
-      targetDir,
-    ]);
-
-    // No ~/.claude/{skills,commands} symlinks needed. Post-decomposition the
-    // app owns the user-facing setup flow (no CLI setup-wizard to discover),
-    // and Claude Code v2.1+ loads plugin commands/skills from the plugin root
-    // via enabledPlugins + plugin.json — it no longer scans those dirs.
-
-    log('INFO', 'prereq', 'Toolkit cloned successfully');
-    return { success: true };
-  } catch (err) {
-    const msg = String(err);
-    log('ERROR', 'prereq', 'Toolkit clone failed', { error: msg });
-    return { success: false, error: msg };
-  }
-}
 
 /**
  * Start OAuth login by spawning `claude auth login` inside a PTY.
