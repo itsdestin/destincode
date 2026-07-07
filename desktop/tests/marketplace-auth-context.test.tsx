@@ -31,7 +31,7 @@ function Probe() {
 // Helper — build a fresh mock and assign to globalThis.window.claude
 function makeMock() {
   return {
-    marketplaceAuth: {
+    account: {
       // start() returns ApiResult<AuthStartResponse>
       start: vi.fn().mockResolvedValue({
         ok: true,

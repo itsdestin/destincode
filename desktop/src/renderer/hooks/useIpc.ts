@@ -109,10 +109,11 @@ declare global {
       getHomePath: () => Promise<string>;
       getFavorites: () => Promise<any>;
       setFavorites: (favorites: any) => Promise<void>;
-      // Fix: marketplace auth — start/poll return typed ApiResult discriminated unions;
-      // the rest return plain values (not wrapped). Keep these types local — do NOT
-      // import from main; the renderer/main boundary must stay clean.
-      marketplaceAuth: {
+      // Fix: YouCoded account — start/poll/updateProfile/setHandle/deleteAccount return
+      // typed ApiResult discriminated unions; signedIn/user/signOut return plain values
+      // (not wrapped). Keep these types local — do NOT import from main; the
+      // renderer/main boundary must stay clean.
+      account: {
         start: () => Promise<ApiResult<{
           device_code: string;
           user_code: string;
@@ -121,11 +122,26 @@ declare global {
         }>>;
         poll: (deviceCode: string) => Promise<ApiResult<
           | { status: "pending" }
-          | { status: "complete"; token: string }
+          | {
+              status: "complete";
+              token: string;
+              // Identity rebuild: the complete branch now carries the resolved user so
+              // the renderer can prompt for a handle right after sign-in (Task 7).
+              user?: {
+                id: string;
+                login: string;
+                avatar_url: string | null;
+                display_name?: string;
+                handle?: string | null;
+              };
+            }
         >>;
         signedIn: () => Promise<boolean>;
         user: () => Promise<import('../../main/marketplace-auth-store').MarketplaceUser | null>;
         signOut: () => Promise<void>;
+        updateProfile: (displayName: string) => Promise<ApiResult<{ display_name: string }>>;
+        setHandle: (handle: string) => Promise<ApiResult<{ handle: string }>>;
+        deleteAccount: () => Promise<ApiResult<void>>;
       };
       // Fix: expose marketplaceApi on Window.claude so Tasks 9-12 can call install,
       // rate, deleteRating, likeTheme, and report without (window as any) casts.

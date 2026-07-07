@@ -1,13 +1,18 @@
 // marketplace-auth-context.tsx
-// Global "am I signed in to the marketplace?" React context.
+// Global "am I signed in to my YouCoded account?" React context.
 //
-// Uses window.claude.marketplaceAuth (exposed via preload + remote-shim) for all
+// WHY the exported names still say "Marketplace": this is the account context now,
+// but the MarketplaceAuthProvider / useMarketplaceAuth rename lands with the Phase 2
+// friends UI so the churn stays in one diff. Only the underlying window.claude
+// surface renamed (marketplaceAuth → account) in Phase 1.
+//
+// Uses window.claude.account (exposed via preload + remote-shim) for all
 // communication with the main process. The main process owns the token — it never
 // crosses the IPC boundary into the renderer.
 //
 // Polling contract (device-code OAuth flow):
-//   1. startSignIn() calls marketplaceAuth.start() → receives device_code + auth_url
-//   2. A poll loop calls marketplaceAuth.poll(device_code) every pollIntervalMs ms
+//   1. startSignIn() calls account.start() → receives device_code + auth_url
+//   2. A poll loop calls account.poll(device_code) every pollIntervalMs ms
 //   3. When poll returns status "complete", refresh() is called to update state
 //   4. The loop times out after 15 minutes (POLL_TIMEOUT_MS)
 
@@ -25,7 +30,7 @@ import type { MarketplaceUser } from "../../main/marketplace-auth-store";
 // ── Context shape ─────────────────────────────────────────────────────────────
 
 interface MarketplaceAuthCtx {
-  /** Whether the user is currently signed in to the marketplace. */
+  /** Whether the user is currently signed in to their YouCoded account. */
   signedIn: boolean;
   /** The signed-in user's profile, or null if not signed in. */
   user: MarketplaceUser | null;
@@ -35,6 +40,12 @@ interface MarketplaceAuthCtx {
   startSignIn(): Promise<void>;
   /** Sign out and clear local state. */
   signOut(): Promise<void>;
+  /** Update display name; refreshes user state on success. Throws on failure. */
+  updateProfile(displayName: string): Promise<void>;
+  /** Set/change handle; refreshes user state. Throws with the server's message on 400/409. */
+  setHandle(handle: string): Promise<void>;
+  /** Delete the account server-side and clear local state. */
+  deleteAccount(): Promise<void>;
 }
 
 const MarketplaceAuthContext = createContext<MarketplaceAuthCtx | null>(null);
@@ -75,9 +86,9 @@ export function MarketplaceAuthProvider({
   const refresh = useCallback(async () => {
     // Note: signedIn() and user() return plain values (NOT ApiResult-wrapped).
     // The main process reads from its in-memory store so these are cheap/fast.
-    const isIn = await window.claude.marketplaceAuth.signedIn();
+    const isIn = await window.claude.account.signedIn();
     if (cancelledRef.current) return; // unmounted — skip setState
-    const profile = await window.claude.marketplaceAuth.user();
+    const profile = await window.claude.account.user();
     if (cancelledRef.current) return; // unmounted — skip setState
     setSignedIn(isIn);
     setUser(profile);
@@ -96,7 +107,7 @@ export function MarketplaceAuthProvider({
     try {
       // Fix: start() returns ApiResult<AuthStartResponse> — must check .ok and
       // read .value; the main process may return an error if the auth server is down.
-      const startRes = await window.claude.marketplaceAuth.start();
+      const startRes = await window.claude.account.start();
       if (cancelledRef.current) return; // unmounted mid-await — abort before setState
       if (!startRes.ok) {
         throw new Error(`sign-in start failed: ${startRes.message ?? "unknown error"}`);
@@ -114,7 +125,7 @@ export function MarketplaceAuthProvider({
           throw new Error("sign-in timed out — please try again");
         }
 
-        const pollRes = await window.claude.marketplaceAuth.poll(device_code);
+        const pollRes = await window.claude.account.poll(device_code);
         if (cancelledRef.current) return; // unmounted mid-await — stop loop
 
         if (!pollRes.ok) {
@@ -147,18 +158,44 @@ export function MarketplaceAuthProvider({
   // is worse than the edge-case inconsistency. Do NOT add error propagation here
   // unless the design explicitly requires rollback on failure.
   const signOut = useCallback(async () => {
-    await window.claude.marketplaceAuth.signOut();
+    await window.claude.account.signOut();
+    setSignedIn(false);
+    setUser(null);
+  }, []);
+
+  // Update the display name. Unlike signOut, this propagates failure to the caller
+  // (the Settings UI shows the error inline) and refreshes user state on success so
+  // the new name renders without a manual reload.
+  const updateProfile = useCallback(async (displayName: string) => {
+    const res = await window.claude.account.updateProfile(displayName);
+    if (!res.ok) throw new Error(res.message ?? "couldn't update name");
+    await refresh();
+  }, [refresh]);
+
+  // Claim/change the @handle. Throws with the server's message (e.g. "that handle is
+  // taken" on 409) so the Settings UI can surface it verbatim; refreshes on success.
+  const setHandle = useCallback(async (handle: string) => {
+    const res = await window.claude.account.setHandle(handle);
+    if (!res.ok) throw new Error(res.message ?? "couldn't set handle");
+    await refresh();
+  }, [refresh]);
+
+  // Permanent hard-delete. Main clears the local session too, but we also clear
+  // renderer state immediately so the UI reflects the signed-out state at once.
+  const deleteAccount = useCallback(async () => {
+    const res = await window.claude.account.deleteAccount();
+    if (!res.ok) throw new Error(res.message ?? "couldn't delete account");
     setSignedIn(false);
     setUser(null);
   }, []);
 
   // Fix: memoize context value so consumers only re-render when signedIn / user /
-  // signInPending actually change. Action fns (startSignIn, signOut) are stable
-  // useCallback references, so they don't break the memo comparison.
-  // Matches the pattern used in ThemeProvider (theme-context.tsx).
+  // signInPending actually change. Action fns (startSignIn, signOut, updateProfile,
+  // setHandle, deleteAccount) are stable useCallback references, so they don't break
+  // the memo comparison. Matches the pattern used in ThemeProvider (theme-context.tsx).
   const value = useMemo<MarketplaceAuthCtx>(
-    () => ({ signedIn, user, signInPending, startSignIn, signOut }),
-    [signedIn, user, signInPending, startSignIn, signOut],
+    () => ({ signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount }),
+    [signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount],
   );
 
   return (

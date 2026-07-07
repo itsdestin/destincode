@@ -129,6 +129,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     wrap(async () => {
       const out = await client.updateProfile(displayName);
       const user = store.getUser();
+      // user-present implies token-present: setSession writes both, signOut clears both atomically
       if (user) store.setSession(store.getToken()!, { ...user, display_name: out.display_name });
       return out;
     })
@@ -139,6 +140,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     wrap(async () => {
       const out = await client.setHandle(handle);
       const user = store.getUser();
+      // user-present implies token-present: setSession writes both, signOut clears both atomically
       if (user) store.setSession(store.getToken()!, { ...user, handle: out.handle });
       return out;
     })

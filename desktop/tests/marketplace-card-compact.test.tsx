@@ -37,7 +37,7 @@ function setupWindowClaude() {
     marketplace: {
       getPackages: vi.fn().mockResolvedValue({}),
     },
-    marketplaceAuth: {
+    account: {
       signedIn: vi.fn().mockResolvedValue(false),
     },
     marketplaceApi: {

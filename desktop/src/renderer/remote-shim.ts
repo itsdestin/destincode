@@ -779,17 +779,22 @@ export function installShim(): void {
       readComponent: (args: { pluginId: string; kind: 'skill' | 'command' | 'agent'; name: string }) =>
         invoke('marketplace:read-component', args),
     },
-    // Marketplace sign-in (device-code OAuth flow) — same shape as preload.ts.
-    // On Android the handlers live in SessionService.kt (Task 13). Until then
-    // these will time-out gracefully — no crash, just a pending Promise.
-    // start/poll return ApiResult; signedIn/user/signOut have no HTTP call, no ApiResult wrapper.
-    marketplaceAuth: {
-      start: (): Promise<ApiResult<unknown>> => invoke('marketplace:auth:start'),
+    // YouCoded account (device-code OAuth) — same shape as preload.ts. Android
+    // handlers live in SessionService.kt (Task 4). The shim wraps args in objects
+    // (Kotlin reads with optString); start/poll/updateProfile/setHandle/deleteAccount
+    // return ApiResult, signedIn/user/signOut have no HTTP call, no ApiResult wrapper.
+    account: {
+      start: (): Promise<ApiResult<unknown>> => invoke('account:start'),
       poll: (deviceCode: string): Promise<ApiResult<unknown>> =>
-        invoke('marketplace:auth:poll', { deviceCode }),
-      signedIn: (): Promise<boolean> => invoke('marketplace:auth:signed-in'),
-      user: (): Promise<MarketplaceUser | null> => invoke('marketplace:auth:user'),
-      signOut: (): Promise<void> => invoke('marketplace:auth:sign-out'),
+        invoke('account:poll', { deviceCode }),
+      signedIn: (): Promise<boolean> => invoke('account:signed-in'),
+      user: (): Promise<MarketplaceUser | null> => invoke('account:user'),
+      signOut: (): Promise<void> => invoke('account:sign-out'),
+      updateProfile: (displayName: string): Promise<ApiResult<unknown>> =>
+        invoke('account:update-profile', { displayName }),
+      setHandle: (handle: string): Promise<ApiResult<unknown>> =>
+        invoke('account:set-handle', { handle }),
+      deleteAccount: (): Promise<ApiResult<unknown>> => invoke('account:delete'),
     },
     // Marketplace write endpoints — same shape as preload.ts.
     marketplaceApi: {
