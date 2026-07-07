@@ -2,7 +2,15 @@ import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 import type { AuthStartResponse, AuthPollResponse, PostRatingInput } from '../renderer/state/marketplace-api-client';
 import type { MarketplaceUser } from './marketplace-auth-store';
 import type { ApiResult } from './marketplace-api-handlers';
-import type { AttentionSummary, AttentionReport } from '../shared/types';
+import type { AttentionSummary, AttentionReport, PerformanceConfigSnapshot } from '../shared/types';
+
+// Mirrored type — must match ChangelogResult in src/main/changelog-service.ts.
+interface ChangelogIpcResult {
+  markdown: string | null;
+  entries: Array<{ version: string; date?: string; body: string }>;
+  fromCache: boolean;
+  error?: boolean;
+}
 
 // IPC channel names inlined here because Electron's sandboxed preload
 // cannot resolve relative imports to other modules
@@ -15,6 +23,7 @@ const IPC = {
   SESSION_CREATED: 'session:created',
   SESSION_DESTROYED: 'session:destroyed',
   PTY_OUTPUT: 'pty:output',
+  PTY_RAW_BYTES: 'pty:raw-bytes',
   HOOK_EVENT: 'hook:event',
   SESSION_RENAMED: 'session:renamed',
   DIALOG_OPEN_FILE: 'dialog:open-file',
@@ -49,12 +58,20 @@ const IPC = {
   INTEGRATIONS_UNINSTALL: 'integrations:uninstall',
   INTEGRATIONS_STATUS: 'integrations:status',
   INTEGRATIONS_CONFIGURE: 'integrations:configure',
+  INTEGRATIONS_CONNECT: 'integrations:connect',
+  PLATFORM_GET: 'platform:get',
   // Phase 4 — skip 24h cache after /feature curation.
   MARKETPLACE_INVALIDATE_CACHE: 'marketplace:invalidate-cache',
   SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
   SKILLS_INSTALL_MANY: 'skills:install-many',
   SKILLS_APPLY_OUTPUT_STYLE: 'skills:apply-output-style',
   OPEN_CHANGELOG: 'shell:open-changelog',
+  UPDATE_CHANGELOG: 'update:changelog',
+  UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_CANCEL: 'update:cancel',
+  UPDATE_LAUNCH: 'update:launch',
+  UPDATE_PROGRESS: 'update:progress',
+  UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
   TERMINAL_READY: 'session:terminal-ready',
   PERMISSION_RESPOND: 'permission:respond',
@@ -205,6 +222,25 @@ const IPC = {
   BUDDY_ATTACH_FILE: 'buddy:attach-file',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
+  // Settings → Development feature (bug report, contribute, known issues)
+  DEV_LOG_TAIL: 'dev:log-tail',
+  DEV_DIAGNOSTICS: 'dev:diagnostics',
+  DEV_SUMMARIZE_ISSUE: 'dev:summarize-issue',
+  DEV_SUBMIT_ISSUE: 'dev:submit-issue',
+  DEV_INSTALL_WORKSPACE: 'dev:install-workspace',
+  DEV_INSTALL_PROGRESS: 'dev:install-progress',
+  DEV_OPEN_SESSION_IN: 'dev:open-session-in',
+  // Anonymous analytics opt-out — read/write the boolean gate that
+  // analytics-service consults on launch (Phase 6).
+  ANALYTICS_GET_OPT_IN: 'analytics:get-opt-in',
+  ANALYTICS_SET_OPT_IN: 'analytics:set-opt-in',
+  // Performance / GPU settings. APP_RESTART is intentionally generic — not
+  // 'performance:restart' — so future restart-required settings can reuse it.
+  PERFORMANCE_GET_CONFIG: 'performance:get-config',
+  PERFORMANCE_SET_CONFIG: 'performance:set-config',
+  SYSTEM_NOTIFY_STACK_STATE: 'system:notify-stack-state',
+  SYSTEM_BACK: 'system:back',
+  APP_RESTART: 'app:restart',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -256,6 +292,13 @@ contextBridge.exposeInMainWorld('claude', {
       const handler = (_event: IpcRendererEvent, data: string) => cb(data);
       ipcRenderer.on(channel, handler);
       return () => ipcRenderer.removeListener(channel, handler);
+    },
+    // Shape parity with remote-shim — desktop never fires this push event
+    // (Electron PTY emits pty:output strings instead). The stub keeps the
+    // window.claude.on shape symmetric so an optional-chained call from a
+    // future hook returns a benign no-op unsubscriber rather than crashing.
+    ptyRawBytesForSession: (_sessionId: string, _cb: (data: string) => void) => {
+      return () => {};
     },
     hookEvent: (cb: (event: any) => void) => {
       const handler = (_e: IpcRendererEvent, event: any) => cb(event);
@@ -374,7 +417,12 @@ contextBridge.exposeInMainWorld('claude', {
     status: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.INTEGRATIONS_STATUS, slug),
     configure: (slug: string, settings: Record<string, any>): Promise<any> =>
       ipcRenderer.invoke(IPC.INTEGRATIONS_CONFIGURE, slug, settings),
+    connect: (slug: string): Promise<any> => ipcRenderer.invoke(IPC.INTEGRATIONS_CONNECT, slug),
   },
+  // Returns the raw process.platform code so the renderer can gate UI (e.g.
+  // hide Install buttons on macOS-only integrations when running on Windows).
+  getPlatform: (): Promise<'darwin' | 'win32' | 'linux' | 'android'> =>
+    ipcRenderer.invoke(IPC.PLATFORM_GET),
   // Marketplace sign-in (device-code OAuth flow) — token stays in main process.
   // start/poll wrap API calls and return ApiResult so the renderer can inspect
   // HTTP status codes across the contextBridge (structuredClone drops Error fields).
@@ -423,6 +471,19 @@ contextBridge.exposeInMainWorld('claude', {
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.OPEN_EXTERNAL, url),
   },
+  update: {
+    changelog: (opts: { forceRefresh: boolean }): Promise<ChangelogIpcResult> =>
+      ipcRenderer.invoke(IPC.UPDATE_CHANGELOG, opts),
+    download: () => ipcRenderer.invoke(IPC.UPDATE_DOWNLOAD),
+    cancel: (jobId: string) => ipcRenderer.invoke(IPC.UPDATE_CANCEL, { jobId }),
+    launch: (jobId: string, filePath: string) => ipcRenderer.invoke(IPC.UPDATE_LAUNCH, { jobId, filePath }),
+    getCachedDownload: (version: string) => ipcRenderer.invoke(IPC.UPDATE_GET_CACHED_DOWNLOAD, { version }),
+    onProgress: (handler: (ev: { jobId: string; bytesReceived: number; bytesTotal: number; percent: number }) => void) => {
+      const wrap = (_event: unknown, ev: any) => handler(ev);
+      ipcRenderer.on(IPC.UPDATE_PROGRESS, wrap);
+      return () => ipcRenderer.removeListener(IPC.UPDATE_PROGRESS, wrap);
+    },
+  },
   remote: {
     getConfig: () => ipcRenderer.invoke(IPC.REMOTE_GET_CONFIG),
     setPassword: (password: string) => ipcRenderer.invoke(IPC.REMOTE_SET_PASSWORD, password),
@@ -468,6 +529,13 @@ contextBridge.exposeInMainWorld('claude', {
     set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>): Promise<any> =>
       ipcRenderer.invoke(IPC.DEFAULTS_SET, updates),
   },
+  // Anonymous analytics opt-out — read/write the gate that analytics-service
+  // checks on launch. Default state is ON; users flip from About → Privacy.
+  analytics: {
+    getOptIn: (): Promise<boolean> => ipcRenderer.invoke(IPC.ANALYTICS_GET_OPT_IN),
+    setOptIn: (enabled: boolean): Promise<void> =>
+      ipcRenderer.invoke(IPC.ANALYTICS_SET_OPT_IN, enabled),
+  },
   // Claude Code settings.json — used by Preferences panel (/config intercept).
   // Field names follow Claude Code's schema; dot-paths supported (e.g. 'permissions.defaultMode').
   settings: {
@@ -484,6 +552,26 @@ contextBridge.exposeInMainWorld('claude', {
     add: (folderPath: string, nickname?: string): Promise<any> => ipcRenderer.invoke(IPC.FOLDERS_ADD, folderPath, nickname),
     remove: (folderPath: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_REMOVE, folderPath),
     rename: (folderPath: string, nickname: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_RENAME, folderPath, nickname),
+  },
+  // Settings → Development feature (bug report, contribute, known issues)
+  dev: {
+    logTail: (maxLines: number) =>
+      ipcRenderer.invoke(IPC.DEV_LOG_TAIL, maxLines),
+    diagnostics: (): Promise<string> =>
+      ipcRenderer.invoke(IPC.DEV_DIAGNOSTICS),
+    summarizeIssue: (args: { kind: 'bug' | 'feature'; description: string; log?: string }) =>
+      ipcRenderer.invoke(IPC.DEV_SUMMARIZE_ISSUE, args),
+    submitIssue: (args: { kind: 'bug' | 'feature'; title: string; summary: string; description: string; log?: string; label: 'bug' | 'enhancement' }) =>
+      ipcRenderer.invoke(IPC.DEV_SUBMIT_ISSUE, args),
+    installWorkspace: () =>
+      ipcRenderer.invoke(IPC.DEV_INSTALL_WORKSPACE),
+    onInstallProgress: (cb: (line: string) => void) => {
+      const listener = (_e: unknown, line: string) => cb(line);
+      ipcRenderer.on(IPC.DEV_INSTALL_PROGRESS, listener);
+      return () => ipcRenderer.removeListener(IPC.DEV_INSTALL_PROGRESS, listener);
+    },
+    openSessionIn: (args: { cwd: string; initialInput?: string }) =>
+      ipcRenderer.invoke(IPC.DEV_OPEN_SESSION_IN, args),
   },
   off: (channel: string, handler: (...args: any[]) => void) =>
     ipcRenderer.removeListener(channel, handler),
@@ -539,7 +627,6 @@ contextBridge.exposeInMainWorld('claude', {
   setFavorites: (favorites: string[]) => ipcRenderer.invoke('favorites:set', favorites),
   getIncognito: () => ipcRenderer.invoke('game:getIncognito'),
   setIncognito: (incognito: boolean) => ipcRenderer.invoke('game:setIncognito', incognito),
-  getGitHubAuth: () => ipcRenderer.invoke('github:auth'),
   // Async IPC — renderer must await this (was sendSync before v2.2.0)
   getHomePath: (): Promise<string> => ipcRenderer.invoke('get-home-path'),
   window: {
@@ -682,8 +769,8 @@ contextBridge.exposeInMainWorld('claude', {
     unsubscribe: (sessionId: string) => ipcRenderer.invoke(IPC.BUDDY_UNSUBSCRIBE, sessionId),
     getViewedSession: () => ipcRenderer.invoke(IPC.BUDDY_GET_VIEWED_SESSION),
     // Fire-and-forget: pointer drag fires ~60 events/sec; invoke() round-trips
-    // would starve the renderer. Main clamps to visible workArea.
-    moveMascot: (delta: { dx: number; dy: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, delta),
+    // would starve the renderer. Main clamps target to visible workArea.
+    moveMascot: (target: { targetX: number; targetY: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, target),
     onAttentionSummary: (cb: (summary: AttentionSummary) => void) => {
       const listener = (_: unknown, summary: AttentionSummary) => cb(summary);
       ipcRenderer.on(IPC.SESSION_ATTENTION_SUMMARY, listener);
@@ -711,5 +798,47 @@ contextBridge.exposeInMainWorld('claude', {
   // and broadcasts a global AttentionSummary to buddy subscribers.
   attention: {
     report: (payload: AttentionReport) => ipcRenderer.send(IPC.ATTENTION_REPORT, payload),
+  },
+  // Exposes the live xterm buffer for a session. Used by useAttentionClassifier
+  // (~1s cadence) so it can read terminal state on both Electron and Android
+  // via the same window.claude.terminal.getScreenText API.
+  // The call chain on desktop is intentionally circuitous:
+  //   renderer → preload contextBridge → ipcMain.handle →
+  //   event.sender.executeJavaScript → window.__terminalRegistry.getScreenText
+  // This round-trip is necessary because contextBridge freezes the exposed
+  // object, so the renderer cannot write back to it. The registry is wired
+  // up in bootstrap/terminal-bridge.ts. Round-trip cost is not perf-sensitive
+  // at ~1s cadence.
+  terminal: {
+    getScreenText: (sessionId: string): Promise<string> =>
+      ipcRenderer.invoke('terminal:get-screen-text', sessionId),
+  },
+  // GPU / performance preference — read and write the preferPowerSaving flag.
+  // multiGpuDetected: false in the response means the UI section stays hidden.
+  performance: {
+    get: (): Promise<PerformanceConfigSnapshot> =>
+      ipcRenderer.invoke(IPC.PERFORMANCE_GET_CONFIG),
+    set: (preferPowerSaving: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.PERFORMANCE_SET_CONFIG, { preferPowerSaving }),
+  },
+  // WHY: named 'app:restart' (not 'performance:restart') so any future
+  // restart-required setting can reuse this single generic channel.
+  app: {
+    restart: (): Promise<void> => ipcRenderer.invoke(IPC.APP_RESTART),
+  },
+  // System namespace — platform integrations like hardware back button.
+  // Desktop no-op stub: notifyStackState / onBack are only meaningful on
+  // Android, where MainActivity uses them to enable/disable
+  // OnBackPressedCallback and broadcast back-press events. Exposed here for
+  // shape parity with remote-shim.ts (PITFALLS.md → Cross-Platform parity).
+  system: {
+    notifyStackState: (_empty: boolean) => {
+      // No-op on desktop. Electron has no hardware back button.
+    },
+    onBack: (_cb: () => void) => {
+      // No-op on desktop. Returns an empty unsubscribe function so callers
+      // can call it unconditionally without platform branching.
+      return () => {};
+    },
   },
 });

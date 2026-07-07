@@ -18,7 +18,7 @@ Electron + React app that wraps Claude Code CLI in a GUI.
 - **IPC** — Electron contextBridge connects main process to React renderer
 - **Preload** (`src/main/preload.ts`) — IPC channel constants are inlined (not imported) because Electron's sandboxed preload cannot resolve relative imports
 - **TerminalRegistry** (`src/renderer/hooks/terminal-registry.ts`) — Coordinates xterm.js instances, screen buffer reads, and write-completion notifications. Permission prompt detection depends on the write-callback pub/sub here — do not bypass it by reading the buffer on raw `pty:output` events
-- **PermissionMode** (`src/shared/types.ts`) — `'normal' | 'auto-accept' | 'plan' | 'bypass'`. The HeaderBar badge cycles through these on click by sending Shift+Tab (`\x1b[Z`) to the PTY. Bypass mode only appears in sessions created with `skipPermissions: true`
+- **PermissionMode** (`src/shared/types.ts`) — `'normal' | 'auto-accept' | 'plan' | 'auto' | 'bypass'`. The HeaderBar badge cycles through these on click by sending Shift+Tab (`\x1b[Z`) to the PTY. `bypass` only appears in sessions created with `skipPermissions: true`. `auto` (CC v2.1.83+ classifier-backed mode) only appears when the active session is on Opus 4.7 1M — Anthropic gates it by plan/model so showing it elsewhere would be a click-but-nothing-happens state. Mode detection is PTY screen-scrape (`'auto mode on'`, `'accept edits on'`, etc.) and the optimistic UI state is corrected by that watcher within ~1 tick if the user's local cycle order disagrees with CC's.
 - **RemoteServer** (`src/main/remote-server.ts`) — HTTP + WebSocket server for remote browser access. Handles auth tokens, PTY buffer replay, hook event relay, transcript event relay, and cross-device session sync
 - **RemoteConfig** (`src/main/remote-config.ts`) — Reads/writes `~/.claude/youcoded-remote.json` for port, password hash, and Tailscale trust settings
 - **SkillScanner** (`src/main/skill-scanner.ts`) — Scans installed skills: (1) YouCoded skills at `~/.claude/plugins/youcoded-core/skills/`, (2) marketplace plugins via `~/.claude/plugins/installed_plugins.json` (inside the plugin cache dir — an earlier version wrote to `~/.claude/installed_plugins.json`, fixed in the marketplace-paths refactor)
@@ -26,6 +26,9 @@ Electron + React app that wraps Claude Code CLI in a GUI.
 - **PluginInstaller** (`src/main/plugin-installer.ts`) — Installs Claude Code plugins to `~/.claude/plugins/marketplaces/youcoded/plugins/<name>/` and wires them into all four Claude Code registries via `ClaudeCodeRegistry`. Source types: git clone (url), copy from cache (local), sparse checkout (git-subdir)
 - **ClaudeCodeRegistry** (`src/main/claude-code-registry.ts`) — Writes the four on-disk registries that Claude Code v2.1+ requires to recognize a plugin: `settings.json` (`enabledPlugins["id@youcoded"]: true`), `installed_plugins.json` (v2 entry with absolute `installPath`), `known_marketplaces.json` (marketplace source), and `marketplaces/youcoded/.claude-plugin/marketplace.json` (plugin manifest list). Without entries in all four, `/reload-plugins` silently reports 0 new plugins and the plugin is invisible to the CLI
 - **SkillConfigStore** (`src/main/skill-config-store.ts`) — Reads/writes `~/.claude/youcoded-skills.json`: favorites, chips, overrides, private prompt skills, and marketplace-installed plugin tracking
+- **CommandProvider** (`src/main/command-provider.ts`) — Merges slash commands from three sources for the CommandDrawer search/browse: YouCoded-handled (dispatcher-backed list in `src/main/youcoded-commands.ts`), filesystem-scanned (user/project/plugin commands via `src/main/command-scanner.ts`), and Claude Code built-ins (hand-maintained list in `src/main/cc-builtin-commands.ts`). Exposed to the renderer via `window.claude.commands.list()`. Cache invalidated on plugin install/uninstall. Android mirror at `app/.../runtime/CommandProvider.kt`
+- **BundledPlugins** (`src/shared/bundled-plugins.ts`) — Hardcoded list of plugins auto-installed on every launch (currently `wecoded-themes-plugin` and `wecoded-marketplace-publisher`). Duplicated in `app/.../skills/BundledPlugins.kt` for Android — keep in sync. Uninstall is blocked at the UI layer (SkillCard / MarketplaceDetailOverlay) AND the IPC layer (skills:uninstall handler in main, SessionService.kt on Android) so users cannot accidentally remove the plugins that power the bundled `/theme-builder` and marketplace-publisher flows
+- **AnnouncementService** (`src/main/announcement-service.ts`) — Fetches `announcements.txt` from the youcoded repo (raw.githubusercontent.com) every 1h and writes `~/.claude/.announcement-cache.json`. Both fetch-time and render-time expiry filters apply. Android mirror at `app/.../runtime/AnnouncementService.kt`. The toolkit's statusline reads the cache file but no longer owns the fetch.
 - **SettingsPanel** (`src/renderer/components/SettingsPanel.tsx`) — Settings UI for remote access config, appearance popup (theme + font)
 - **ThemeProvider** (`src/renderer/state/theme-context.tsx`) — Appearance state: active theme, cycle list, font family, reducedEffects, showTimestamps, showTurnMetadata. Persists to localStorage (`youcoded-theme`, `youcoded-theme-cycle`, `youcoded-font`, `youcoded-reduced-effects`, `youcoded-show-timestamps`, `youcoded-show-turn-metadata`), applies `data-theme` attribute on `<html>`, swaps highlight.js stylesheet, sets font CSS variables. See `docs/theme-spec.md` for details
 
@@ -36,7 +39,7 @@ The Chat View timeline is built from four event sources:
 1. **TranscriptWatcher** (primary) — `transcript:event` IPC → `TRANSCRIPT_*` reducer actions. Provides user messages, assistant text, tool calls, tool results, turn completion. Intermediate assistant messages (text between tool calls) appear as chat bubbles in real-time. Also emits `assistant-thinking` heartbeats for extended-thinking models (dispatched as `TRANSCRIPT_THINKING_HEARTBEAT`).
 2. **HookRelay** (permissions only) — `hook:event` IPC → `PERMISSION_REQUEST`/`PERMISSION_EXPIRED` reducer actions. Transitions tool cards to approval state with Yes/No buttons.
 3. **InputBar** (optimistic) — `USER_PROMPT` reducer action dispatched immediately when user sends a message, before the transcript watcher catches up. Dedup uses a `pending` flag on user timeline entries: `USER_PROMPT` appends with `pending: true`, and `TRANSCRIPT_USER_MESSAGE` finds the oldest matching pending entry and clears the flag (if no pending match exists, a new `pending: false` entry is appended). This replaces the prior last-10-entries content match, which silently dropped legitimate rapid-fire duplicates. See `docs/PITFALLS.md → Chat Reducer` and `docs/transcript-watcher-spec.md` Design Decision #5.
-4. **PTY classifier** — `useAttentionClassifier` reads the xterm buffer every 1s while Claude is thinking and no tool is running/awaiting-approval. Pure `classifyBuffer` in `src/renderer/state/attention-classifier.ts` maps the tail to `'ok' | 'stuck' | 'awaiting-input' | 'shell-idle' | 'error'`. `ATTENTION_STATE_CHANGED` is dispatched only on diffs; any transcript event clears back to `'ok'`. `ChatView` swaps `<ThinkingIndicator />` for `<AttentionBanner state={...} />` when the state is non-ok. Process exits piped through as `SESSION_PROCESS_EXITED` surface as `'session-died'` when a turn was in flight or exitCode != 0.
+4. **PTY classifier** — `useAttentionClassifier` reads the xterm buffer every 1s while Claude is thinking and no tool is running/awaiting-approval. Pure `classifyBuffer` in `src/renderer/state/attention-classifier.ts` returns an internal `BufferClass` (`'thinking-active' | 'thinking-stalled' | 'unknown'`); the upstream hook maps that to the public `AttentionState` union `'ok' | 'stuck' | 'session-died'` (3 reachable states only — the prior `awaiting-input | shell-idle | error` branches were deleted in the 2026-04-26 audit because nothing dispatched them). `ATTENTION_STATE_CHANGED` is dispatched only on diffs; any transcript event clears back to `'ok'`. `ChatView` swaps `<ThinkingIndicator />` for `<AttentionBanner state={...} />` when the state is non-ok. Process exits piped through as `SESSION_PROCESS_EXITED` surface as `'session-died'` when a turn was in flight or exitCode != 0.
 
 **Permission race:** The hook relay is faster than the file watcher. If `PERMISSION_REQUEST` arrives before `TRANSCRIPT_TOOL_USE`, the reducer creates a synthetic tool entry from the permission payload. See spec for details.
 
@@ -46,7 +49,7 @@ The Chat View timeline is built from four event sources:
 
 - **Never use `process.env`** in renderer code — it doesn't exist in the browser. Use `import.meta.env` with `VITE_` prefixed vars if you need build-time env injection, but note the tsconfig uses `module: "commonjs"` so `import.meta` will fail `tsc`. Prefer constants or IPC for config the renderer needs.
 - **Never use `require()`** in renderer code — use ES `import` only.
-- **`node-pty`** cannot load in Electron's main process (ABI mismatch). It runs in a separate `node` child process via `pty-worker.js`. The worker's `case 'input'` handler also implements two Windows-ConPTY workarounds — 600ms Enter-split and 64-byte/50ms chunking — without which paste >~600 chars silently loses bytes. See `docs/PITFALLS.md` → "PTY Writes" before changing how input is written.
+- **`node-pty`** cannot load in Electron's main process (ABI mismatch). It runs in a separate `node` child process via `pty-worker.js`. The worker's `case 'input'` handler implements Windows-ConPTY-aware submit logic — passthrough for non-CR writes, atomic single-write when `body + \r` ≤ 56 bytes (`SAFE_ATOMIC_LEN`, with an 8-byte margin under the empirically-measured 64-byte ConPTY paste threshold), and **echo-driven submit** for longer text (chunk the body in ≤56-byte pieces, wait for CC's stdout echo, then write a bare `\r`). See `docs/PITFALLS.md` → "PTY Writes" before changing how input is written. Android's `PtyBridge.writeInput` still uses a 600 ms gap because Linux PTY doesn't have ConPTY's gap-collapse issue.
 - **Preload** is sandboxed — no `require()`, no relative imports, no `process.env`. IPC channel names are inlined as string literals.
 
 ## Dev Commands
@@ -107,7 +110,7 @@ The app uses a semantic CSS token system for theming. All colors are CSS custom 
 
 ## Keyboard Shortcuts
 
-The desktop app uses a layered keyboard system. The text input auto-focuses when any printable character is typed, and auto-unfocuses after 0.5s of idle so global shortcuts become available.
+The desktop app uses a layered keyboard system. The text input auto-focuses when any printable character is typed, and auto-unfocuses after 0.5s of idle so global shortcuts become available. (Auto-unfocus is skipped on Android because blur dismisses the soft keyboard; the relevant Shift-hold global shortcuts don't exist on touch devices anyway.)
 
 | Shortcut | Context | Action |
 |----------|---------|--------|
@@ -116,15 +119,16 @@ The desktop app uses a layered keyboard system. The text input auto-focuses when
 | **Shift (release)** | Dropdown open | Switch to highlighted session |
 | **Arrow Up/Down** | Not typing | Scroll chat view (accelerates with held press) |
 | **Ctrl+`** | Any | Toggle between chat and terminal view |
-| **Shift+Tab** | Any | Cycle permission mode (normal → auto-accept → plan → bypass) |
+| **Shift+Tab** | Any | Cycle permission mode (normal → auto-accept → plan → auto* → bypass*). `auto` only on Opus 4.7 1M; `bypass` only when session was started with `skipPermissions: true`. |
 | **Shift+Enter** | Text input focused | Insert newline |
 | **Enter** | Text input focused | Send message |
 | **/** | Text input focused | Open skill/command drawer |
-| **Escape** | Drawer/modal open | Close drawer or modal |
+| **Escape** | Drawer/modal open | Close the topmost drawer/modal |
+| **Escape** | Chat view focused, no overlay open | Interrupt the active Claude session (sends `\x1b` to the PTY) |
 | **Arrow Left/Right** | Permission prompt visible | Cycle between Yes/No/Always Allow buttons |
 
 **Implementation:** Global shortcuts use capture-phase `window` event listeners so they work even when xterm has focus. The idle unfocus timer and auto-focus listener coordinate through `document.activeElement` without direct coupling between components. See `InputBar.tsx` (idle unfocus + auto-focus), `SessionStrip.tsx` (Shift-hold nav), and `ChatView.tsx` (arrow scroll).
 
 ## Specs
 
-See `desktop/docs/` for design documents and implementation plans.
+See `desktop/docs/` for older design documents (theme-spec, transcript-watcher-spec) and `docs/superpowers/` (workspace root in `youcoded-dev`) for current design specs and implementation plans. The cross-cutting `docs/PITFALLS.md` and rule files in `.claude/rules/` also live in the workspace scaffold.

@@ -1,7 +1,8 @@
 {
   "name": "youcoded",
-  "version": "1.1.1",
+  "version": "1.2.4",
   "description": "Desktop GUI for Claude Code with the YouCoded toolkit",
+  "homepage": "https://github.com/itsdestin/youcoded",
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "node scripts/run-dev.js",
@@ -23,6 +24,7 @@
     "bcryptjs": "^3.0.3",
     "chokidar": "^4.0.3",
     "koffi": "^2.16.1",
+    "node-machine-id": "^1.1.12",
     "node-pty": "1.2.0-beta.12",
     "partysocket": "^1.1.16",
     "qrcode.react": "^4.2.0",
@@ -44,6 +46,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.1",
+    "@xterm/headless": "^6.0.0",
     "autoprefixer": "^10.4.27",
     "concurrently": "^9.2.1",
     "electron": "^41.0.3",

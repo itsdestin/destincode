@@ -1,0 +1,7 @@
+{
+  "description": "Empty buffer (zero lines) → unknown",
+  "bufferTail": [],
+  "previousSpinnerGlyph": null,
+  "secondsSincePreviousGlyph": 0,
+  "previousCounterSeconds": null
+}

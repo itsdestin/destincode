@@ -89,8 +89,12 @@ class ManagedSession(
     var bridgeServer: LocalBridgeServer? = null
 
     /** Current Claude Code permission mode, detected from terminal status bar.
-     *  Values match React's PermissionMode type: "normal" | "auto-accept" | "plan" | "bypass". */
-    var permissionMode: String = "normal"
+     *  Values match React's PermissionMode type: "normal" | "auto-accept" | "plan" | "bypass".
+     *  Fix: initialize to "bypass" when dangerousMode (parity with desktop session-manager.ts:93).
+     *  Without this, SessionStrip's danger indicator never lit up because it reads
+     *  permissionMode === "bypass", not the dangerousMode flag. The user can still cycle
+     *  modes with Shift+Tab during the session — the cycle handler updates this field. */
+    var permissionMode: String = if (dangerousMode) "bypass" else "normal"
 
     /** Draft text in the input bar — shared across Chat/Terminal/Shell modes */
     var inputDraft by mutableStateOf(TextFieldValue())
@@ -304,7 +308,7 @@ class ManagedSession(
                             anthropicRequestId = event.anthropicRequestId,
                         )
                         is TranscriptEvent.StreamingText -> TranscriptSerializer.streamingText(event.sessionId, event.text)
-                        is TranscriptEvent.CompactSummary -> TranscriptSerializer.compactSummary(event.sessionId, event.uuid, event.timestamp)
+                        is TranscriptEvent.CompactSummary -> TranscriptSerializer.compactSummary(event.sessionId, event.uuid, event.timestamp, event.summary)
                     }
                     server.broadcast(JSONObject().apply {
                         put("type", "transcript:event")
@@ -399,6 +403,8 @@ class ManagedSession(
         "Choose a Theme for the Terminal",
         "Select Login Method",
         "Resume Session", // Stale session resume — lets user choose summary vs full resume
+        "Usage Limit Reached", // /rate-limit-options menu — Upgrade / Stop and wait
+        "Enable auto mode?", // CC v2.1.83+ first-run opt-in — 4-option auto-mode confirmation
     )
 
     /** Detect permission mode from visible screen only (not raw buffer).
@@ -408,8 +414,13 @@ class ManagedSession(
      *  detection in App.tsx never fires here. */
     private fun detectPermissionMode(screen: String) {
         val lower = screen.lowercase()
+        // CC v2.1.83+ adds "auto mode on" — checked before "accept edits on" because
+        // both contain the substring "on" but "auto mode" is more specific. Order
+        // mirrors desktop's pty:output handler in App.tsx so the two platforms
+        // never disagree on which mode the screen indicates.
         val newMode = when {
             "bypass permissions on" in lower -> "bypass"
+            "auto mode on" in lower -> "auto"
             "accept edits on" in lower -> "auto-accept"
             "plan mode on" in lower -> "plan"
             else -> "normal"

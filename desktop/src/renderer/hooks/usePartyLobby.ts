@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useGameDispatch } from '../state/game-context';
+import { useMarketplaceAuth } from '../state/marketplace-auth-context';
 import { PartyClient, PARTYKIT_HOST } from '../game/party-client';
 
 const PING_INTERVAL = 30_000; // 30s — matches server sweep interval
@@ -38,6 +39,11 @@ async function classifySlowConnect(): Promise<string> {
 // would otherwise double-register the same user as online.
 export function usePartyLobby(isLeader: boolean = true) {
   const dispatch = useGameDispatch();
+  // Identity now comes from the marketplace sign-in (user.login), not the gh CLI
+  // — no terminal login is needed to play. The effect below reacts to sign-in
+  // state flipping: sign in → connect, sign out → tear down.
+  const { user } = useMarketplaceAuth();
+  const username = user?.login;
   const clientRef = useRef<PartyClient | null>(null);
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [incognito, setIncognitoState] = useState(false);
@@ -89,97 +95,92 @@ export function usePartyLobby(isLeader: boolean = true) {
       return;
     }
 
+    // Not signed in → no username. Don't open the socket and — importantly — do
+    // NOT dispatch PARTY_ERROR: signing in isn't a failure, it's a gate the
+    // GameLobby sign-in screen owns. Tear down any socket left from a prior
+    // signed-in run (handles the sign-out transition).
+    if (!username) {
+      pingRef.current && clearInterval(pingRef.current);
+      pingRef.current = null;
+      clientRef.current?.close();
+      clientRef.current = null;
+      dispatch({ type: 'PARTY_DISCONNECTED' });
+      return;
+    }
+
     let cancelled = false;
-    const w = window as any;
 
-    w.claude?.getGitHubAuth?.()
-      .then((auth: { username: string } | null) => {
-        if (cancelled) return;
-        if (!auth) {
-          dispatch({ type: 'PARTY_ERROR', message: "You're not signed in to GitHub yet — games use your GitHub name as your player tag." });
-          return;
-        }
-
-        const client = new PartyClient({
-          room: 'global-lobby',
-          username: auth.username,
-          onMessage: (data) => {
-            switch (data.type) {
-              case 'presence':
-              case 'pong':
-                // Both carry a full user list — 'presence' on first connect,
-                // 'pong' every 30s so clients self-correct missed events
-                dispatch({ type: 'PRESENCE_UPDATE', online: data.users });
-                break;
-              case 'user-joined':
-                dispatch({ type: 'USER_JOINED', username: data.username, status: data.status });
-                break;
-              case 'user-left':
-                dispatch({ type: 'USER_LEFT', username: data.username });
-                break;
-              case 'user-status':
-                dispatch({ type: 'USER_STATUS', username: data.username, status: data.status });
-                break;
-              case 'challenge':
-                dispatch({ type: 'CHALLENGE_RECEIVED', from: data.from, code: data.code });
-                break;
-              case 'challenge-response':
-                if (data.accept) {
-                  dispatch({ type: 'CHALLENGE_ACCEPTED', by: data.from });
-                } else {
-                  dispatch({ type: 'CHALLENGE_DECLINED', by: data.from });
-                }
-                break;
-              case 'challenge-failed':
-                // Target wasn't reachable on the server
-                dispatch({ type: 'CHALLENGE_FAILED', target: data.target });
-                break;
+    const client = new PartyClient({
+      room: 'global-lobby',
+      username,
+      onMessage: (data) => {
+        switch (data.type) {
+          case 'presence':
+            // Full presence list on first connect (and on every reconnect,
+            // which is the resync-on-drift mechanism now that pong is bare).
+            dispatch({ type: 'PRESENCE_UPDATE', online: data.users });
+            break;
+          case 'pong':
+            // Liveness only. Server used to include the full user list
+            // here every 30s as a belt-and-suspenders resync, but that
+            // was O(N²) bandwidth (every client pings → N-entry reply).
+            // Drift now self-heals on reconnect instead.
+            break;
+          case 'user-joined':
+            dispatch({ type: 'USER_JOINED', username: data.username, status: data.status });
+            break;
+          case 'user-left':
+            dispatch({ type: 'USER_LEFT', username: data.username });
+            break;
+          case 'user-status':
+            dispatch({ type: 'USER_STATUS', username: data.username, status: data.status });
+            break;
+          case 'challenge':
+            dispatch({ type: 'CHALLENGE_RECEIVED', from: data.from, code: data.code });
+            break;
+          case 'challenge-response':
+            if (data.accept) {
+              dispatch({ type: 'CHALLENGE_ACCEPTED', by: data.from });
+            } else {
+              dispatch({ type: 'CHALLENGE_DECLINED', by: data.from });
             }
-          },
-          onOpen: () => {
-            dispatch({ type: 'PARTY_CONNECTED', username: auth.username });
-          },
-          onSlowConnect: () => {
-            // Swap the bare spinner for friendlier copy immediately, then
-            // kick off an HTTP probe to refine the hint. We dispatch twice
-            // so the user sees *something* change right at the 10s mark
-            // without waiting on the probe round-trip.
-            dispatch({ type: 'PARTY_SLOW_CONNECT', hint: 'Taking a little longer than usual. Hang tight…' });
-            classifySlowConnect().then((hint) => {
-              if (!cancelled) dispatch({ type: 'PARTY_SLOW_CONNECT', hint });
-            });
-          },
-          onClose: (info) => {
-            // Forward the close code so the UI can show *why* (DevTools is
-            // unavailable in some environments — this is the only way for
-            // a non-developer to see the reason behind a flicker loop)
-            dispatch({ type: 'PARTY_DISCONNECTED', code: info.code, reason: info.reason });
-          },
-          onError: () => {
-            dispatch({ type: 'PARTY_ERROR', message: "Lost the connection to the game server. We'll keep trying." });
-          },
-        });
-
-        clientRef.current = client;
-
-        // Start heartbeat pings
-        pingRef.current = setInterval(() => {
-          clientRef.current?.send({ type: 'ping' });
-        }, PING_INTERVAL);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          // Surface the actual error — "Failed to get GitHub auth" alone gave
-          // no signal whether the IPC was missing, gh wasn't on PATH, or the
-          // token call failed. The detail makes the lobby ErrorScreen useful.
-          const detail = err instanceof Error ? err.message : String(err);
-          console.warn('[lobby] getGitHubAuth failed:', err);
-          // Keep the raw detail in the console for debugging, but show the
-          // user a plain-language version. Destin is a non-dev — "GitHub auth
-          // failed: Error: spawn gh ENOENT" is meaningless to a real user.
-          dispatch({ type: 'PARTY_ERROR', message: "Couldn't check your GitHub sign-in. Make sure the GitHub CLI (gh) is installed and you've signed in." });
+            break;
+          case 'challenge-failed':
+            // Target wasn't reachable on the server
+            dispatch({ type: 'CHALLENGE_FAILED', target: data.target });
+            break;
         }
-      });
+      },
+      onOpen: () => {
+        dispatch({ type: 'PARTY_CONNECTED', username });
+      },
+      onSlowConnect: () => {
+        // Swap the bare spinner for friendlier copy immediately, then
+        // kick off an HTTP probe to refine the hint. We dispatch twice
+        // so the user sees *something* change right at the 10s mark
+        // without waiting on the probe round-trip.
+        dispatch({ type: 'PARTY_SLOW_CONNECT', hint: 'Taking a little longer than usual. Hang tight…' });
+        classifySlowConnect().then((hint) => {
+          if (!cancelled) dispatch({ type: 'PARTY_SLOW_CONNECT', hint });
+        });
+      },
+      onClose: (info) => {
+        // Forward the close code so the UI can show *why* (DevTools is
+        // unavailable in some environments — this is the only way for
+        // a non-developer to see the reason behind a flicker loop)
+        dispatch({ type: 'PARTY_DISCONNECTED', code: info.code, reason: info.reason });
+      },
+      onError: () => {
+        dispatch({ type: 'PARTY_ERROR', message: "Lost the connection to the game server. We'll keep trying." });
+      },
+    });
+
+    clientRef.current = client;
+
+    // Start heartbeat pings
+    pingRef.current = setInterval(() => {
+      clientRef.current?.send({ type: 'ping' });
+    }, PING_INTERVAL);
 
     return () => {
       cancelled = true;
@@ -188,12 +189,13 @@ export function usePartyLobby(isLeader: boolean = true) {
       clientRef.current?.close();
       clientRef.current = null;
     };
-  }, [dispatch, incognito, incognitoLoaded, isLeader, reconnectNonce]);
+  }, [dispatch, incognito, incognitoLoaded, isLeader, reconnectNonce, username]);
 
   const reconnect = useCallback(() => {
     // Clear the banner immediately so the UI returns to the spinner state,
     // then bump the nonce — the cleanup function above closes the dead socket
-    // and the effect re-runs to build a fresh PartyClient + re-fetch gh auth.
+    // and the effect re-runs to build a fresh PartyClient with the current
+    // marketplace identity.
     dispatch({ type: 'PARTY_ERROR_CLEARED' });
     setReconnectNonce(n => n + 1);
   }, [dispatch]);

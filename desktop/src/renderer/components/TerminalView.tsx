@@ -5,8 +5,10 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { usePtyOutput } from '../hooks/useIpc';
+import { usePtyRawBytes } from '../hooks/usePtyRawBytes';
 import { registerTerminal, unregisterTerminal, notifyBufferReady } from '../hooks/terminal-registry';
 import { useTheme } from '../state/theme-context';
+import { isTouchDevice } from '../platform';
 
 /** Terminal always uses Cascadia Code — user font selection applies to the
  *  chat UI only. Proportional or display fonts break xterm's character grid. */
@@ -29,9 +31,16 @@ interface Props {
 
 export default function TerminalView({ sessionId, visible }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Custom overlay scrollbar thumb — painted on top of xterm so the native
+  // scrollbar gutter doesn't eat the rightmost terminal column.
+  const thumbRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
+  // Re-attach helper exposed across effects so the theme effect can recover
+  // WebGL using the same construction + onContextLoss handler shape as the
+  // mount effect (with the shared retry-cap counter).
+  const attachWebglRef = useRef<(() => void) | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
   const { activeTheme, reducedEffects } = useTheme();
@@ -58,19 +67,17 @@ export default function TerminalView({ sessionId, visible }: Props) {
   useEffect(() => {
     if (!terminalRef.current) return;
     requestAnimationFrame(() => {
-      if (!terminalRef.current) return;
+      const terminal = terminalRef.current;
+      if (!terminal) return;
       // Always use opaque xterm background — transparency is handled by the
       // container overlay, not by xterm itself. WebGL requires opaque backgrounds.
-      terminalRef.current.options.theme = getXtermTheme(false);
+      terminal.options.theme = getXtermTheme(false);
 
-      // Ensure WebGL is attached (may have been disposed by a previous version)
+      // Ensure WebGL is attached (may have been disposed by a previous version
+      // or by a prior context loss). Delegates to attachWebgl from the mount
+      // effect so we share the same onContextLoss recovery + retry cap.
       if (!webglRef.current) {
-        try {
-          const webgl = new WebglAddon();
-          webgl.onContextLoss(() => webgl.dispose());
-          terminalRef.current.loadAddon(webgl);
-          webglRef.current = webgl;
-        } catch {}
+        attachWebglRef.current?.();
       }
     });
   }, [activeTheme]);
@@ -78,6 +85,12 @@ export default function TerminalView({ sessionId, visible }: Props) {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    // Touch platforms (Android, remote browser) render xterm display-only:
+    // typing flows through the InputBar minimal-mode <textarea> instead of
+    // xterm's hidden textarea (which would summon the soft keyboard and
+    // expose the historical xterm.js mobile IME issues). disableStdin
+    // suppresses xterm's input handling entirely.
+    const touch = isTouchDevice();
     const terminal = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
@@ -85,9 +98,10 @@ export default function TerminalView({ sessionId, visible }: Props) {
       // constantly move the cursor; without this, it visibly bounces around
       // when the user is in chat view (terminal unfocused but still rendering).
       cursorInactiveStyle: 'none',
-      fontSize: 14,
+      fontSize: touch ? 12 : 14,
       fontFamily: TERMINAL_FONT,
       theme: getXtermTheme(false),
+      disableStdin: touch,
     });
 
     const fitAddon = new FitAddon();
@@ -97,16 +111,89 @@ export default function TerminalView({ sessionId, visible }: Props) {
     terminal.unicode.activeVersion = '11';
     terminal.open(containerRef.current);
 
+    // Overlay scrollbar — sized/positioned from the active xterm buffer.
+    // Native scrollbar is hidden by `.terminal-overlay-scroll` CSS so xterm
+    // can use the full container width; this thumb sits absolutely on top of
+    // the rightmost column. Read-only (display only — not draggable) for the
+    // prototype. Mouse-wheel scrolling still goes through xterm's own handler.
+    const updateThumb = () => {
+      const thumb = thumbRef.current;
+      const term = terminalRef.current ?? terminal;
+      if (!thumb || !term) return;
+      const buf = term.buffer.active;
+      const rows = term.rows;
+      const total = buf.length;
+      // Hide thumb when there's nothing to scroll (buffer fits in viewport).
+      if (total <= rows) {
+        thumb.style.opacity = '0';
+        return;
+      }
+      // Track height excludes a 4px top/bottom inset for visual breathing room.
+      const containerH = containerRef.current?.clientHeight ?? 0;
+      const trackH = Math.max(0, containerH - 8);
+      const thumbH = Math.max(24, (rows / total) * trackH);
+      const maxTop = trackH - thumbH;
+      const scrollFraction = buf.viewportY / (total - rows);
+      const top = 4 + scrollFraction * maxTop;
+      thumb.style.height = `${thumbH}px`;
+      thumb.style.top = `${top}px`;
+      thumb.style.opacity = '0.55';
+    };
+    terminal.onScroll(updateThumb);
+    // Initial paint after layout settles (matches the existing fit timer).
+    const thumbInitTimer = setTimeout(updateThumb, 120);
+
     // WebGL renderer — always load for performance. Wallpaper visibility is
     // handled by the container's opacity, not by xterm transparency.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      terminal.loadAddon(webgl);
-      webglRef.current = webgl;
-    } catch {
-      // Falls back to DOM renderer if WebGL unavailable
-    }
+    //
+    // WebGL context loss happens when the GPU resets, the browser reclaims
+    // GPU memory, or a driver crashes. Without a recovery handler, xterm
+    // keeps showing the disposed atlas's stale glyphs even though the
+    // underlying buffer is intact (text selection still reveals real text).
+    // A window resize forces xterm to repaint every cell — that's why
+    // resizing "fixes" it. Here we proactively dispose, re-attach a fresh
+    // WebglAddon, and refresh visible rows so the grid recovers immediately.
+    // Cap retries at 3 in a row so a persistently broken GPU context can't
+    // loop forever — after that, fall back to the DOM renderer permanently.
+    // The retry counter resets if 30+ minutes pass between losses, so a
+    // long-running session that occasionally drifts (sleep/wake, monitor
+    // hot-plug spread across hours) doesn't burn through its 3 strikes.
+    const RETRY_RESET_MS = 30 * 60 * 1000;
+    let webglContextLossRetries = 0;
+    let lastContextLossAt = 0;
+    const attachWebgl = () => {
+      const term = terminalRef.current ?? terminal;
+      if (!term) return;
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          webglRef.current = null;
+          const now = Date.now();
+          if (now - lastContextLossAt > RETRY_RESET_MS) {
+            webglContextLossRetries = 0;
+          }
+          lastContextLossAt = now;
+          if (webglContextLossRetries >= 3) {
+            // Give up — DOM renderer takes over for the rest of this session.
+            term.refresh(0, term.rows - 1);
+            return;
+          }
+          webglContextLossRetries += 1;
+          attachWebgl();
+          // Repaint visible cells from the buffer so corrupted glyphs from
+          // the disposed atlas are replaced immediately (don't wait for the
+          // next resize/scroll).
+          term.refresh(0, term.rows - 1);
+        });
+        term.loadAddon(webgl);
+        webglRef.current = webgl;
+      } catch {
+        // Falls back to DOM renderer if WebGL unavailable
+      }
+    };
+    attachWebgl();
+    attachWebglRef.current = attachWebgl;
 
     // Ctrl+C copies the selection (if any) instead of sending SIGINT;
     // Ctrl+C with no selection falls through to xterm's default so users
@@ -173,6 +260,8 @@ export default function TerminalView({ sessionId, visible }: Props) {
         const el = containerRef.current;
         if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
         fitAddon.fit();
+        // Container height changed → thumb proportions need to recompute.
+        updateThumb();
         const dims = fitAddon.proposeDimensions();
         if (!dims || !dims.cols || !dims.rows) return;
         // Dedup target: if a resize is already queued, compare against the
@@ -201,10 +290,86 @@ export default function TerminalView({ sessionId, visible }: Props) {
     // into the chat InputBar can also trigger xterm's bracketed paste handler,
     // sending the raw multi-line text (wrapped in ESC[200~/ESC[201~) to the
     // PTY alongside the chat InputBar's sanitized single-line send.
-    terminal.onData((data) => {
-      if (!visibleRef.current) return;
-      window.claude.session.sendInput(sessionId, data);
-    });
+    //
+    // Skipped on touch platforms — disableStdin already silences xterm's
+    // keyboard input, but the paste listener is registered separately, so we
+    // also skip onData wiring to make sure no path can deliver text from
+    // xterm's hidden textarea to the PTY (the InputBar minimal-mode textarea
+    // is the canonical input on touch).
+    if (!touch) {
+      terminal.onData((data) => {
+        if (!visibleRef.current) return;
+        window.claude.session.sendInput(sessionId, data);
+      });
+    }
+
+    // Touch platforms: one-finger drag scrolls scrollback, matching the
+    // chat-view scroll feel. xterm.js's default mouse logic interprets
+    // touch-drag as text selection (carried over from desktop where the
+    // mouse wheel is used for scroll); on mobile that means selection works
+    // but scrolling doesn't, which is the inverse of what users expect.
+    // We override at capture phase so xterm never starts a selection.
+    // Selection-on-touch is the trade-off; chat view doesn't have it
+    // either, so the two views feel consistent.
+    let touchScrollCleanup: (() => void) | null = null;
+    if (touch) {
+      const container = containerRef.current;
+      let lastY = 0;
+      let active = false;
+      // Pixels of finger travel per scrolled line. Tuned empirically against
+      // a 12px font (cell height ≈ 16px) so finger-distance ≈ scrolled pixels.
+      const PX_PER_LINE = 16;
+      // Carry remainder pixel-deltas across touchmove events so slow drags
+      // accumulate into eventual single-line scrolls instead of being lost.
+      let remainder = 0;
+
+      const onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length !== 1) {
+          active = false;
+          return;
+        }
+        active = true;
+        lastY = e.touches[0].clientY;
+        remainder = 0;
+      };
+      const onTouchMove = (e: TouchEvent) => {
+        if (!active || e.touches.length !== 1) return;
+        // preventDefault stops xterm's selection AND any browser-level
+        // text selection / pull-to-refresh interference.
+        e.preventDefault();
+        e.stopPropagation();
+        const currentY = e.touches[0].clientY;
+        // delta > 0 → finger moved up → show newer (scroll down: positive)
+        // delta < 0 → finger moved down → show older (scroll up: negative)
+        const deltaPx = lastY - currentY + remainder;
+        const lines = (deltaPx / PX_PER_LINE) | 0; // truncate toward zero
+        if (lines !== 0) {
+          terminal.scrollLines(lines);
+          remainder = deltaPx - lines * PX_PER_LINE;
+        } else {
+          remainder = deltaPx;
+        }
+        lastY = currentY;
+      };
+      const onTouchEnd = () => {
+        active = false;
+        remainder = 0;
+      };
+
+      // Capture phase so we run before xterm's own touch-as-mouse handlers.
+      // passive:false on touchmove because we call preventDefault.
+      container.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+      container.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+      container.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
+      container.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
+
+      touchScrollCleanup = () => {
+        container.removeEventListener('touchstart', onTouchStart, { capture: true } as any);
+        container.removeEventListener('touchmove', onTouchMove, { capture: true } as any);
+        container.removeEventListener('touchend', onTouchEnd, { capture: true } as any);
+        container.removeEventListener('touchcancel', onTouchEnd, { capture: true } as any);
+      };
+    }
 
     // Resize handler
     window.addEventListener('resize', fitAndSync);
@@ -222,11 +387,17 @@ export default function TerminalView({ sessionId, visible }: Props) {
 
     return () => {
       clearTimeout(timer);
+      clearTimeout(thumbInitTimer);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
       window.removeEventListener('resize', fitAndSync);
       resizeObserver.disconnect();
+      touchScrollCleanup?.();
       unregisterTerminal(sessionId);
+      // Clear the cross-effect helper so the theme effect can't call into
+      // the disposed terminal between unmount and remount.
+      attachWebglRef.current = null;
+      webglRef.current = null;
       terminal.dispose();
     };
   }, [sessionId]);
@@ -247,8 +418,18 @@ export default function TerminalView({ sessionId, visible }: Props) {
     }
   }, [visible, sessionId]);
 
-  // Write PTY output to terminal; notify registry when buffer is updated
-  usePtyOutput(sessionId, (data) => {
+  // Write PTY output to terminal; notify registry when buffer is updated.
+  // Touch platforms (Android, remote browser) consume pty:raw-bytes (Uint8Array)
+  // from the WebSocket bridge — Tier 2 of android-terminal-data-parity. Desktop
+  // continues to consume pty:output (string) from node-pty's UTF-8-decoded stream.
+  // isTouchDevice() is a stable platform constant, so calling different hooks
+  // based on it does not violate React's rules-of-hooks (the hook order is
+  // stable for the lifetime of the renderer).
+  const useRawBytes = isTouchDevice();
+  usePtyOutput(useRawBytes ? null : sessionId, (data) => {
+    terminalRef.current?.write(data, () => notifyBufferReady(sessionId));
+  });
+  usePtyRawBytes(useRawBytes ? sessionId : null, (data) => {
     terminalRef.current?.write(data, () => notifyBufferReady(sessionId));
   });
 
@@ -260,9 +441,16 @@ export default function TerminalView({ sessionId, visible }: Props) {
     ? 'var(--terminal-xterm-opacity)'
     : 1;
 
+  // `terminal-overlay-scroll` hides xterm's native scrollbar (see globals.css)
+  // so the floating thumb below paints in front of the rightmost column.
+  const wrapperClass = [
+    'terminal-overlay-scroll',
+    visible ? undefined : 'terminal-hidden',
+  ].filter(Boolean).join(' ');
+
   return (
     <div
-      className={visible ? undefined : 'terminal-hidden'}
+      className={wrapperClass}
       style={{
         position: 'absolute',
         top: 0,
@@ -306,11 +494,25 @@ export default function TerminalView({ sessionId, visible }: Props) {
         />
       )}
       <div
+        ref={thumbRef}
+        className="terminal-scrollbar-thumb"
+        aria-hidden
+      />
+      <div
         ref={containerRef}
         style={{
           position: 'absolute',
           inset: 0,
           opacity: xtermOpacityStyle,
+          // xterm renders cell rows to a canvas; if container height isn't a
+          // whole multiple of cell height (typical — fonts round irregularly),
+          // there's a few-pixel uncovered strip at the bottom that reveals
+          // whatever's behind the WebView. On Android that's the Compose Box's
+          // dark color, producing a visible black bar between xterm and the
+          // input bar. Match the xterm theme background here so the strip is
+          // indistinguishable from a rendered cell. Skip when a visual
+          // background (wallpaper/gradient/glass) is active so we don't cover it.
+          backgroundColor: seeThrough ? undefined : 'var(--canvas)',
         }}
       />
     </div>

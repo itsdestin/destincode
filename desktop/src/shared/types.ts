@@ -1,4 +1,9 @@
-export type PermissionMode = 'normal' | 'auto-accept' | 'plan' | 'bypass';
+// 'auto' is Claude Code's classifier-backed mode (CC v2.1.83+, March 2026).
+// Sits between 'auto-accept' (only file edits + 7 safe bash) and 'bypass'
+// (no checks): a background classifier blocks risky actions like mass deletion
+// or curl|bash. Plan-gated by Anthropic — only surfaced in the Shift+Tab cycle
+// when the session is running on Opus 4.7 1M.
+export type PermissionMode = 'normal' | 'auto-accept' | 'plan' | 'auto' | 'bypass';
 
 // Advanced permission overrides for bypass mode. Controls which PermissionRequest
 // categories are auto-approved when --dangerously-skip-permissions is active.
@@ -35,6 +40,10 @@ export interface SessionInfo {
   provider: SessionProvider;
   /** Model alias the session was started with (e.g. 'claude-sonnet-4-6') */
   model?: string;
+  /** Optional text to prefill into the input bar after this session is selected.
+   *  Consumed once by InputBar on first render after session switch; cleared via
+   *  a consumed-set ref so it never re-fires on re-renders. */
+  initialInput?: string;
 }
 
 export interface HookEvent {
@@ -60,7 +69,12 @@ export type TranscriptEventType =
   // Emitted when Claude Code writes a {type:"user", isCompactSummary:true}
   // entry — the canonical "compaction finished" signal. In-session /compact
   // appends to the SAME file (no shrink), so we can't use file-size heuristics.
-  | 'compact-summary';
+  | 'compact-summary'
+  // Emitted when Claude Code writes a user-interrupt marker ("[Request
+  // interrupted by user]" / "...for tool use"), produced when the user
+  // presses ESC during a turn. The reducer uses this to end the turn
+  // without rendering the marker as a user bubble.
+  | 'user-interrupt';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;
@@ -100,6 +114,19 @@ export interface TranscriptEvent {
     parentAgentToolUseId?: string;
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
+    /**
+     * Populated only on `user-interrupt` events. Distinguishes the two exact
+     * marker strings Claude Code writes: `[Request interrupted by user]`
+     * (plain) vs `[Request interrupted by user for tool use]` (tool-use).
+     */
+    kind?: 'plain' | 'tool-use';
+    /**
+     * Populated on `compact-summary` events. The full text of the compaction
+     * summary CC wrote into the JSONL — pre-stripped of system tags. The
+     * reducer attaches it to the SystemMarker so the user can click-to-expand
+     * the otherwise-thin "Compacted" divider.
+     */
+    summary?: string;
   };
 }
 
@@ -400,6 +427,9 @@ export interface IntegrationEntry {
   // Relative path under integrations/icons/ in the marketplace repo; the UI
   // resolves this against the raw.githubusercontent.com base URL.
   iconUrl?: string;
+  // Human tags for search and the detail-page chip row. Freeform strings;
+  // the detail overlay renders each as a "#tag" pill.
+  tags?: string[];
   // Platforms where this integration can run. When present and the current
   // platform isn't listed, the card shows a "<platform>-only" affordance.
   platforms?: Array<'darwin' | 'linux' | 'win32'>;
@@ -422,19 +452,29 @@ export interface IntegrationState {
 // the AttentionBanner (everything else). A classifier reads the PTY buffer
 // and maps its conclusions onto these states; process-exit events also
 // transition to 'session-died' directly. See docs/chat-reducer.md.
+//
+// Narrowed 2026-04-26: 'awaiting-input' / 'shell-idle' / 'error' were
+// removed because nothing in the codebase ever dispatched them — the
+// classifier was simplified to spinner-only signals back in the April
+// rewrite, but the type and the AttentionBanner copy table still carried
+// the dead branches. Reducer tests that used them have been switched to
+// 'stuck' (the only buffer-driven non-ok state). If we ever need finer
+// distinctions, reintroduce them along with the dispatching code path.
 export type AttentionState =
   | 'ok'              // Default — indicator renders if isThinking
-  | 'awaiting-input'  // PTY shows a non-hook prompt (CLI-level confirm, etc.)
-  | 'shell-idle'      // PTY shows bash/shell prompt; session not actively running
-  | 'error'           // PTY tail matches error pattern
-  | 'stuck'           // Spinner frame stale ≥ 10s OR unknown silence > 60s
+  | 'stuck'           // Spinner glyph stale ≥ 10s OR no spinner ≥ 20s while thinking
   | 'session-died';   // Process exited mid-turn
 
 // Red | green | blue | gray — mirrors SessionStatusColor in renderer.
 // Duplicated as a string literal type here (not imported) so main-process
 // code in Node can consume this interface without dragging renderer
 // imports across the main/renderer boundary.
-export type SessionStatusDotColor = 'green' | 'red' | 'blue' | 'gray';
+// Mirrored in renderer as SessionStatusColor (StatusDot.tsx). Duplicated as a
+// string literal here (not imported) so main-process Node code can consume
+// this interface without crossing the main/renderer boundary. Keep the two
+// unions in sync — adding a color in one place without the other will make
+// the AttentionSummary IPC payload reject valid renderer values.
+export type SessionStatusDotColor = 'green' | 'red' | 'amber' | 'blue' | 'gray';
 
 export interface AttentionSummary {
   anyNeedsAttention: boolean;
@@ -474,8 +514,10 @@ export interface BuddyApi {
   unsubscribe(sessionId: string): Promise<void>;
   getViewedSession(): Promise<string | null>;
   // Fire-and-forget. Called by BuddyMascot during pointer drag; main
-  // moves the window by the supplied delta (clamped to visible workArea).
-  moveMascot(delta: { dx: number; dy: number }): void;
+  // places the mascot at the supplied target (clamped to visible workArea).
+  // Anchor-based, not delta-based, so per-move rounding on HiDPI displays
+  // cannot accumulate drift between the cursor and the mascot.
+  moveMascot(target: { targetX: number; targetY: number }): void;
   onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
 }
 
@@ -503,7 +545,7 @@ export interface PastSession {
   sessionId: string;
   /** Human-readable name from topic file, or 'Untitled' */
   name: string;
-  /** Project directory slug (e.g. 'C--Users-desti') */
+  /** Project directory slug (e.g. 'C--Users-alice') */
   projectSlug: string;
   /** Display-friendly project path derived from slug */
   projectPath: string;
@@ -592,6 +634,14 @@ export const IPC = {
   INTEGRATIONS_UNINSTALL: 'integrations:uninstall',
   INTEGRATIONS_STATUS: 'integrations:status',
   INTEGRATIONS_CONFIGURE: 'integrations:configure',
+  // Re-runs postInstallCommand for an already-installed integration; used
+  // by the detail overlay's Connect button when state is installed-but-not-
+  // connected (e.g. OAuth expired).
+  INTEGRATIONS_CONNECT: 'integrations:connect',
+  // Static-per-session lookup — returns 'darwin' | 'win32' | 'linux' | 'android'.
+  // Used by the integration cards to gate UI by platform before the user
+  // clicks (backend integration-installer.ts also re-checks).
+  PLATFORM_GET: 'platform:get',
   // Decomposition v3 §9.9: used by SkillDetail to render integration badges
   SKILLS_GET_INTEGRATION_INFO: 'skills:get-integration-info',
   // Decomposition v3 §9.10: onboarding bulk install + output-style apply
@@ -611,6 +661,12 @@ export const IPC = {
   STATUS_DATA: 'status:data',
   READ_TRANSCRIPT_META: 'transcript:read-meta',
   OPEN_CHANGELOG: 'shell:open-changelog',
+  UPDATE_CHANGELOG: 'update:changelog',
+  UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_CANCEL: 'update:cancel',
+  UPDATE_LAUNCH: 'update:launch',
+  UPDATE_PROGRESS: 'update:progress',
+  UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
   PERMISSION_RESPOND: 'permission:respond',
   // Remote settings
@@ -759,7 +815,32 @@ export const IPC = {
   BUDDY_ATTACH_FILE: 'buddy:attach-file',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
+  // Settings → Development feature (bug report, contribute, known issues)
+  DEV_LOG_TAIL: 'dev:log-tail',
+  DEV_DIAGNOSTICS: 'dev:diagnostics',
+  DEV_SUMMARIZE_ISSUE: 'dev:summarize-issue',
+  DEV_SUBMIT_ISSUE: 'dev:submit-issue',
+  DEV_INSTALL_WORKSPACE: 'dev:install-workspace',
+  DEV_INSTALL_PROGRESS: 'dev:install-progress',
+  DEV_OPEN_SESSION_IN: 'dev:open-session-in',
+  // Performance / GPU settings — not app:restart because future restart-required
+  // settings (e.g. renderer process changes) can reuse the same generic channel.
+  PERFORMANCE_GET_CONFIG: 'performance:get-config',
+  PERFORMANCE_SET_CONFIG: 'performance:set-config',
+  APP_RESTART: 'app:restart',
+  // System namespace — hardware back button bridge (Android only)
+  SYSTEM_NOTIFY_STACK_STATE: 'system:notify-stack-state',
+  SYSTEM_BACK: 'system:back',
 } as const;
+
+// Performance / GPU configuration snapshot — returned by performance:get-config.
+// multiGpuDetected: false means the Performance section in Settings is hidden.
+export interface PerformanceConfigSnapshot {
+  preferPowerSaving: boolean;
+  appliedAtLaunch: boolean;
+  multiGpuDetected: boolean;
+  gpuList: string[];
+}
 
 // --- Window registry / detach types ---
 
@@ -893,5 +974,9 @@ export interface RestoreProgressEvent {
   filesDone: number;
   filesTotal: number;
   currentFile?: string;
-  phase: 'snapshotting' | 'fetching' | 'staging' | 'swapping' | 'done';
+  // 'error' = restore failed; UI surfaces the exception message in the wizard.
+  phase: 'snapshotting' | 'fetching' | 'staging' | 'swapping' | 'done' | 'error';
 }
+
+// Discriminator for development-flow IPC payloads.
+export type DevIssueKind = 'bug' | 'feature';

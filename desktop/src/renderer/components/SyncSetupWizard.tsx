@@ -11,6 +11,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { isAndroid as checkIsAndroid } from '../platform';
+import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { ExistingBackupDetected } from './restore/ExistingBackupDetected';
 import { RestoreWizard } from './restore/RestoreWizard';
@@ -125,6 +126,8 @@ function normalizeRepoUrl(url: string): string {
 }
 
 export default function SyncSetupWizard({ initialType, existingBackends, onComplete, onClose, preselectedBackendId, preselectedBackendType }: SyncSetupWizardProps) {
+  // Always mounted when open (parent conditionally renders this component) — so open=true is correct here.
+  useEscClose(true, onClose);
   // If a specific backend needs reconnecting, jump straight to auth for that type.
   // iCloud has no auth step (no OAuth flow), so land at 'prereqs' for it instead.
   // Falls back to the initialType behavior (skip type-picker → prereqs) if set,
@@ -185,14 +188,20 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
     const types: { type: BackendType; desc: string }[] = [
       { type: 'drive', desc: 'Stores your data in a Google Drive folder. Works on any device.' },
       { type: 'github', desc: 'Stores your data in a private GitHub repository. Includes full version history.' },
-      // iCloud not available on Android — no iCloud Drive support
-      ...(!checkIsAndroid() ? [{ type: 'icloud' as BackendType, desc: 'Stores your data in iCloud Drive. Best for Mac and iPhone users.' }] : []),
+      // iCloud only where an iCloud Drive client exists: macOS, and
+      // iCloud-for-Windows on Windows. Linux has no iCloud client at all and
+      // Android has no iCloud Drive support — offering it there gave users a
+      // dead option that silently failed prereq detection.
+      ...(!checkIsAndroid() && detectDesktopOS() !== 'linux'
+        ? [{ type: 'icloud' as BackendType, desc: 'Stores your data in iCloud Drive. Best for Mac and iPhone users.' }]
+        : []),
     ];
 
     return (
       <div className="flex flex-col h-full">
         <WizardHeader title="Add a Backup Destination" onClose={onClose} />
-        <div ref={typeStepRef} className="scroll-fade flex-1 px-4 py-4 space-y-3">
+        <div ref={typeStepRef} className="scroll-fade flex-1">
+          <div className="px-4 py-4 space-y-3">
           {types.map(({ type, desc }) => {
             const existing = existingBackends.filter(b => b.type === type).length;
             // Only Drive supports multiple accounts — rclone gives each its own remote.
@@ -233,6 +242,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
               </button>
             );
           })}
+          </div>
         </div>
       </div>
     );
@@ -371,7 +381,8 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           onBack={() => setStep(backendType === 'icloud' ? 'prereqs' : 'auth')}
           onClose={onClose}
         />
-        <div ref={configureStepRef} className="scroll-fade flex-1 px-4 py-4 space-y-4">
+        <div ref={configureStepRef} className="scroll-fade flex-1">
+          <div className="px-4 py-4 space-y-4">
           {/* Name */}
           <div>
             <label className="block text-[10px] text-fg-muted mb-1">Give this backup a name</label>
@@ -549,6 +560,7 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
               </span>
             ) : 'Start Backup'}
           </button>
+          </div>
         </div>
       </div>
     );
@@ -693,7 +705,8 @@ function PrereqCheckStep({
   return (
     <div className="flex flex-col h-full">
       <WizardHeader title="Checking Setup" onBack={onBack} onClose={onClose} />
-      <div ref={bodyRef} className="scroll-fade flex-1 px-4 py-4 space-y-4">
+      <div ref={bodyRef} className="scroll-fade flex-1">
+        <div className="px-4 py-4 space-y-4">
 
         {/* Checklist */}
         {backendType === 'drive' && (
@@ -761,6 +774,7 @@ function PrereqCheckStep({
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

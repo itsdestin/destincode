@@ -39,6 +39,16 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # Must run BEFORE the build — electron-builder's deb/rpm/pacman packagers
+      # run inside `npm run build`. See desktop-ci.yml for the PR #98 backstory.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        # `apt-get update` prefix: the cached package index on ubuntu-latest
+        # often points to .deb versions that have rolled off the mirror, so
+        # a bare install hits HTTP 404 / exit 100. Refresh the index first.
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
+        working-directory: .
+
       - name: Build
         run: npm run build
 

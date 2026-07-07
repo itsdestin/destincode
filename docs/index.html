@@ -3,24 +3,33 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>YouCoded — Claude Code on Every Device</title>
-<meta name="description" content="An open-source app that puts Claude Code into a real chat UI with themes, a marketplace for skills and games, and multiplayer mini-games. Windows, macOS, Linux, Android.">
+<title>YouCoded — Make Claude Yours</title>
+<meta name="description" content="The hyper-personalized AI assistant app. Sign in with your Claude Pro or Max plan, then make it yours with custom themes, skills, journaling, and a personal encyclopedia. Share with friends, play multiplayer games while Claude works. Windows, macOS, Linux, Android.">
 
 <!-- OG / Social Meta Tags -->
-<meta property="og:title" content="YouCoded — Claude Code on Every Device">
-<meta property="og:description" content="An open-source app that puts Claude Code into a real chat UI with themes, a marketplace for skills and games, and multiplayer mini-games.">
+<meta property="og:title" content="YouCoded — Make Claude Yours">
+<meta property="og:description" content="Make Claude yours — themes, skills, journaling, multiplayer, and a personal encyclopedia, all on top of your Claude Pro or Max plan. Windows, macOS, Linux, Android.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://itsdestin.github.io/youcoded/">
 <meta property="og:image" content="https://itsdestin.github.io/youcoded/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="YouCoded — Claude Code on Every Device">
-<meta name="twitter:description" content="An open-source app that puts Claude Code into a real chat UI with themes, a marketplace for skills and games, and multiplayer mini-games.">
+<meta name="twitter:title" content="YouCoded — Make Claude Yours">
+<meta name="twitter:description" content="Make Claude yours — themes, skills, journaling, multiplayer, and a personal encyclopedia, all on top of your Claude Pro or Max plan. Windows, macOS, Linux, Android.">
 <meta name="twitter:image" content="https://itsdestin.github.io/youcoded/og-image.png">
 
 <link rel="icon" href="favicon-light.svg" id="favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,700;1,800;1,900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Preload theme backdrops so the intro's theme crossfades never stall
+     waiting on a decode. The strawberry wallpaper and each pattern tile are
+     only referenced from CSS selectors that match post-theme-swap, so the
+     browser wouldn't request them until ~4s into the intro without this. -->
+<link rel="preload" as="image" href="assets/strawberry-kitty-wallpaper.webp" type="image/webp">
+<link rel="preload" as="image" href="assets/halftone-pattern.svg" type="image/svg+xml">
+<link rel="preload" as="image" href="assets/strawberry-kitty-pattern.svg" type="image/svg+xml">
+<link rel="preload" as="image" href="assets/golden-sunbreak-wallpaper.jpg">
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   * { -webkit-tap-highlight-color: transparent; }
@@ -459,8 +468,8 @@
     align-items: center;
     justify-content: center;
     min-height: 0;
-    transition: min-height 0.9s cubic-bezier(0.22, 1, 0.36, 1),
-                padding 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: min-height 0.75s cubic-bezier(0.22, 1, 0.36, 1),
+                padding 0.75s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   /* Intro mode: page opens with the hero headline locked to the viewport.
@@ -585,7 +594,7 @@
     line-height: inherit;
     opacity: 0;
     transform: translateY(110%);
-    animation-duration: 2s;
+    animation-duration: 1.7s;
     animation-fill-mode: forwards;
     animation-iteration-count: 1;
     animation-timing-function: linear;
@@ -600,9 +609,9 @@
   .cycler-word-1,
   .cycler-word-2,
   .cycler-word-3 { animation-name: bump-through; }
-  .cycler-word-1 { animation-delay: 1.3s;  color: color-mix(in srgb, var(--title-highlight) 100%, #fff 0%); }
-  .cycler-word-2 { animation-delay: 3.1s;  color: color-mix(in srgb, var(--title-highlight) 80%, #fff 20%); }
-  .cycler-word-3 { animation-delay: 4.9s;  color: color-mix(in srgb, var(--title-highlight) 75%, #000 25%); }
+  .cycler-word-1 { animation-delay: 1.1s;  color: color-mix(in srgb, var(--title-highlight) 100%, #fff 0%); }
+  .cycler-word-2 { animation-delay: 2.65s; color: color-mix(in srgb, var(--title-highlight) 80%, #fff 20%); }
+  .cycler-word-3 { animation-delay: 4.2s;  color: color-mix(in srgb, var(--title-highlight) 75%, #000 25%); }
   /* Final word: enters at the same pace as the others, then stays pinned
      (fill-mode: forwards on bump-final holds the final keyframe forever).
      The text-stroke adds extra optical weight on top of font-weight 900 —
@@ -610,7 +619,7 @@
      "display headline" territory so "Yours." lands with real impact. */
   .cycler-word-4 {
     animation-name: bump-final;
-    animation-delay: 6.7s;
+    animation-delay: 5.75s;
     font-style: italic;
     font-weight: 900;
     letter-spacing: -0.02em;
@@ -2288,11 +2297,12 @@
   .back-to-top:hover { border-color: var(--accent); color: var(--accent); }
 
   /* --- Install-tips modal ---
-     Shown after any download card is clicked. Tells the user the download
-     is starting, gives platform-specific "your OS will warn about unsigned
-     app" guidance (macOS right-click-Open / Windows Run-anyway), and signs
-     off with a custom outro. Plain CSS modal (no overlay primitives in use
-     on this static page). */
+     Opens when a download card is clicked. Shows platform-specific
+     "Before you install" friction-bypass steps (Gatekeeper / SmartScreen /
+     sideload / AppImage) and a collapsible "After install" section for
+     first-launch expectations. Download only fires when the user clicks
+     the Download Now button in the footer. Plain CSS modal (no overlay
+     primitives in use on this static page). */
   .install-modal {
     display: none;
     position: fixed;
@@ -2312,7 +2322,7 @@
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
     width: calc(100% - 32px);
-    max-width: 520px;
+    max-width: 560px;
     background: color-mix(in srgb, var(--bg-card) 92%, transparent);
     backdrop-filter: blur(24px) saturate(1.2);
     -webkit-backdrop-filter: blur(24px) saturate(1.2);
@@ -2320,8 +2330,10 @@
     border-radius: var(--radius);
     padding: 28px 28px 24px;
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
-    max-height: calc(100vh - 48px);
-    overflow: auto;
+    /* 90vh so the collapsible "After install" section can expand without
+       pushing the Download Now footer off-screen on laptop viewports. */
+    max-height: 90vh;
+    overflow-y: auto;
   }
   .install-modal-close {
     position: absolute;
@@ -2338,31 +2350,31 @@
   }
   .install-modal-close:hover { color: var(--text-primary); background: var(--bg-surface); }
   .install-modal-title {
-    font-size: 1.4rem;
+    font-size: 1.3rem;
     font-weight: 700;
-    margin-bottom: 16px;
+    margin-bottom: 8px;
+    padding-right: 32px; /* leave room for close button */
     color: var(--text-primary);
+    letter-spacing: -0.01em;
   }
-  .install-modal-heading {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 10px;
+  .install-modal-intro {
+    margin: 0 0 16px;
+    font-size: 0.92rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
   }
-  .install-modal-tips ol {
+  .install-modal-section + .install-modal-section { margin-top: 20px; }
+  .install-modal-section ol {
     margin: 0 0 0 18px;
     padding: 0;
     line-height: 1.55;
     color: var(--text-secondary);
     font-size: 0.92rem;
   }
-  .install-modal-tips li { margin-bottom: 8px; }
-  .install-modal-tips li:last-child { margin-bottom: 0; }
-  .install-modal-tips strong { color: var(--text-primary); font-weight: 600; }
-  .install-modal-tips code {
+  .install-modal-section li { margin-bottom: 8px; }
+  .install-modal-section li:last-child { margin-bottom: 0; }
+  .install-modal-section strong { color: var(--text-primary); font-weight: 600; }
+  .install-modal-section code {
     font-family: var(--font-mono);
     font-size: 0.82rem;
     background: var(--bg-surface);
@@ -2370,14 +2382,92 @@
     border-radius: 4px;
     padding: 1px 6px;
   }
-  .install-modal-outro {
+  .install-modal-note {
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.86rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .install-modal-note strong { color: var(--text-primary); font-weight: 600; }
+  .install-modal-note code {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  /* Collapsible "After install" uses native <details>/<summary>. */
+  .install-modal-details {
     margin-top: 20px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    color: var(--accent);
+  }
+  .install-modal-details summary {
+    list-style: none;
+    cursor: pointer;
     font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+  }
+  .install-modal-details summary::-webkit-details-marker { display: none; }
+  .install-modal-details summary::before {
+    content: '▸';
+    color: var(--accent);
+    font-size: 0.85rem;
+    transition: transform 0.15s ease;
+    display: inline-block;
+  }
+  .install-modal-details[open] summary::before { transform: rotate(90deg); }
+  .install-modal-details .install-modal-section { margin-top: 12px; }
+  /* Footer row: Download Now lives here. The button is an <a> styled as a
+     button so right-click → "Save link as" and keyboard nav work for free,
+     and so the browser's native click-to-download fires without JS gymnastics. */
+  .install-modal-footer {
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+  }
+  .install-modal-download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    background: var(--accent);
+    color: var(--bg-deep);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    font-weight: 700;
+    font-size: 0.98rem;
+    letter-spacing: -0.005em;
+    text-decoration: none;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 28%, transparent);
+  }
+  .install-modal-download-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 36%, transparent);
+  }
+  /* Initiated state: visually "clicked" — dimmed and non-interactive so the
+     user can still see which button they pressed but isn't tempted to
+     double-fire the download. */
+  .install-modal-download-btn[data-initiated] {
+    opacity: 0.75;
+    pointer-events: none;
+    box-shadow: none;
+    transform: none;
   }
 
   /* --- HERO MINI MOCKUP --- */
@@ -3233,7 +3323,7 @@
             <span class="faq-chevron">&#9660;</span>
           </button>
           <div class="faq-answer" role="region">
-            <div class="faq-answer-inner">Everything YouCoded and your installed WeCoded skills create — journal entries, your Encyclopedia, tasks — is stored in <strong>your own</strong> Google Drive or iCloud account. While data is temporarily sent to Claude/Anthropic to make the actual AI work, the long-term storage of your data is fully managed by you. YouCoded only collects skills, themes, and other marketplace entries &mdash; and only if you choose to share them.</div>
+            <div class="faq-answer-inner">Everything YouCoded and your installed WeCoded skills create — journal entries, your Encyclopedia, tasks — is stored in <strong>your own</strong> Google Drive or iCloud account. While data is temporarily sent to Claude/Anthropic to make the actual AI work, the long-term storage of your data is fully managed by you. YouCoded itself sends one anonymous daily ping — a random install ID, the app version, platform and OS, and the country from the connection — so we can see whether the app is growing and which versions people are running. No IP address, no username, no message content, nothing traceable back to you. You can turn this off at any time in <strong>Settings &rarr; About &rarr; Privacy</strong>. Skills, themes, and other marketplace entries you publish are shared publicly on purpose — those are the only contents you actively submit to YouCoded.</div>
           </div>
         </div>
         <div class="faq-item reveal">
@@ -3332,15 +3422,23 @@
   <!-- Floating Get Started pill -->
   <a href="#prerequisites" class="floating-cta" id="floating-cta">Download &darr;</a>
 
-  <!-- Install-tips modal: opened by any download-card click; content inside
-       .install-modal-tips is replaced per-platform at click time by JS. -->
+  <!-- Install-tips modal: opened by any download-card click. Content inside
+       .install-modal-body is rebuilt per-platform at click time by JS, and
+       the Download Now button's href / size-label is wired to the
+       matching GitHub release asset. -->
   <div class="install-modal" id="install-modal" aria-hidden="true">
     <div class="install-modal-scrim" data-close></div>
     <div class="install-modal-panel" role="dialog" aria-modal="true" aria-labelledby="install-modal-title">
       <button class="install-modal-close" data-close aria-label="Close">&times;</button>
-      <h3 class="install-modal-title" id="install-modal-title">Installing now&hellip;</h3>
-      <div class="install-modal-tips" id="install-modal-tips"></div>
-      <p class="install-modal-outro">Now go make it YouCoded.</p>
+      <h3 class="install-modal-title" id="install-modal-title">Before you install YouCoded</h3>
+      <div class="install-modal-body" id="install-modal-body"></div>
+      <div class="install-modal-footer">
+        <a class="install-modal-download-btn"
+           id="install-modal-download-btn"
+           href="https://github.com/itsdestin/youcoded/releases/latest"
+           target="_blank"
+           rel="noopener">Download Now</a>
+      </div>
     </div>
   </div>
 
@@ -3435,14 +3533,14 @@
     // word settles. Word entry + theme shift feel like one motion: the
     // word carries the new color/theme in with it.
     //
-    // Word delays (CSS):  1.3s / 3.1s / 4.9s / 6.7s  (1.8s spacing)
-    // Swap fires (-0.1s): 1.2s / 3.0s / 4.8s / 6.6s
-    // Word settles + theme completes (both):  1.7s / 3.5s / 5.3s / 7.1s
+    // Word delays (CSS):  1.1s / 2.65s / 4.2s / 5.75s  (1.55s spacing)
+    // Swap fires (-0.1s): 1.0s / 2.55s / 4.1s / 5.65s
+    // Word settles + theme completes (both):  1.44s / 2.99s / 4.54s / 6.09s
     var HERO_THEME_SEQUENCE = [
-      { theme: 'midnight',         at: 1200 },
-      { theme: 'halftone',         at: 3000 },
-      { theme: 'strawberry-kitty', at: 4800 },
-      { theme: 'creme',            at: 6600 }
+      { theme: 'midnight',         at: 1000 },
+      { theme: 'halftone',         at: 2550 },
+      { theme: 'strawberry-kitty', at: 4100 },
+      { theme: 'creme',            at: 5650 }
     ];
     var heroSyncCancelled = false;
     var heroSyncTimers = [];
@@ -3522,12 +3620,12 @@
       });
 
       // Release intro-mode shortly after the final "Yours." + creme theme
-      // settle together at 7100ms. 200ms buffer lets the eye register the
+      // settle together at ~6090ms. 210ms buffer lets the eye register the
       // settled frame before the rest of the page starts fading in.
       var exitId = setTimeout(function() {
         if (heroSyncCancelled) return;
         exitIntroMode();
-      }, 7300);
+      }, 6300);
       heroSyncTimers.push(exitId);
     }
 
@@ -3544,12 +3642,59 @@
     // warm creme background for ~1s before cycling begins. Instant apply
     // (applyThemeRaw) so we don't fire a crossfade before the first frame.
     applyThemeRaw('creme');
-    runHeroThemeSync();
+
+    // Gate the intro on fonts being ready so DM Sans/JetBrains Mono don't swap
+    // in mid-animation (which would reflow the cycler words and cause visible
+    // jitter). Cap the wait at 400ms so a slow font fetch can't noticeably
+    // defer the intro — the first word doesn't appear until 1.1s anyway.
+    (function startIntroWhenReady() {
+      var started = false;
+      function start() {
+        if (started) return;
+        started = true;
+        runHeroThemeSync();
+      }
+      if (document.fonts && document.fonts.ready && document.fonts.ready.then) {
+        var fallback = setTimeout(start, 400);
+        document.fonts.ready.then(function() { clearTimeout(fallback); start(); });
+      } else {
+        start();
+      }
+    })();
 
     // Bind both toggle buttons
     document.getElementById('theme-toggle').addEventListener('click', cycleTheme);
     var mobileToggle = document.getElementById('theme-toggle-mobile');
     if (mobileToggle) mobileToggle.addEventListener('click', cycleTheme);
+
+    // Nav/CTA anchor clicks during the intro must not leave users staring at
+    // opacity:0 content with body.overflow:hidden blocking their scroll.
+    // Intercept the click, fast-forward the intro to its rest state (creme
+    // theme, hero collapsed), then smooth-scroll to the target after the hero
+    // finishes its min-height transition so destination offsets are stable.
+    function interceptIntroNavClick(e) {
+      if (!document.body.classList.contains('intro-mode')) return;
+      var href = this.getAttribute('href');
+      e.preventDefault();
+      cancelHeroSync();
+      applyTheme('creme');
+      localStorage.setItem('dc-theme', 'creme');
+      // 0.75s hero collapse + small settle buffer. Scrolling earlier makes the
+      // destination drift upward underneath the smooth-scroll animation.
+      setTimeout(function() {
+        if (!href || href === '#' || href === '#top') {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          var target = document.querySelector(href);
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 800);
+    }
+    document.querySelectorAll(
+      '.nav a[href^="#"], .floating-cta[href^="#"], .footer-logo[href^="#"]'
+    ).forEach(function(a) {
+      a.addEventListener('click', interceptIntroNavClick);
+    });
 
     // --- Demo app mockup animation ---
     function runDemo() {
@@ -3751,12 +3896,17 @@
 
     // --- Latest release download links ---
     // Rewrites each download card's href to the matching asset from the newest
-    // GitHub release (.exe / .dmg / .AppImage / .apk). The unauthenticated GitHub
-    // API allows 60 requests/hour per IP, so we cache the response in localStorage
-    // for 1 hour — each visitor hits the API at most once per hour, and stale
-    // cache is reused as a fallback if the API ever fails or rate-limits.
+    // GitHub release (.exe / .dmg / .AppImage / .apk) and exposes a per-platform
+    // {url, sizeBytes} lookup on window.__youcodedReleaseAssets so the install
+    // modal can show the file size in its Download Now button. The unauthenticated
+    // GitHub API allows 60 requests/hour per IP, so we cache the response in
+    // localStorage for 1 hour — each visitor hits the API at most once per hour,
+    // and stale cache is reused as a fallback if the API ever fails or rate-limits.
     (function() {
       var CACHE_KEY = 'youcoded-latest-release';
+      // Cache version bumped when the cached shape changed to include `size`.
+      // Older cache entries are ignored and refetched.
+      var CACHE_VERSION = 2;
       var CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
       var API_URL = 'https://api.github.com/repos/itsdestin/youcoded/releases/latest';
       var matchers = {
@@ -3766,6 +3916,9 @@
         'dl-android': function(n) { return /\.apk$/i.test(n); }
       };
 
+      // Per-platform lookup the install modal reads on open.
+      window.__youcodedReleaseAssets = window.__youcodedReleaseAssets || {};
+
       function applyAssets(assets) {
         if (!assets || !assets.length) return;
         Object.keys(matchers).forEach(function(id) {
@@ -3773,19 +3926,31 @@
           if (!match) return;
           var el = document.getElementById(id);
           if (el) el.href = match.browser_download_url;
+          window.__youcodedReleaseAssets[id] = {
+            url: match.browser_download_url,
+            sizeBytes: typeof match.size === 'number' ? match.size : null
+          };
         });
       }
 
       function readCache() {
         try {
           var raw = localStorage.getItem(CACHE_KEY);
-          return raw ? JSON.parse(raw) : null;
+          if (!raw) return null;
+          var parsed = JSON.parse(raw);
+          // Ignore cache entries from older shapes (no `size` field).
+          if (!parsed || parsed.v !== CACHE_VERSION) return null;
+          return parsed;
         } catch (e) { return null; }
       }
 
       function writeCache(assets) {
         try {
-          localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), assets: assets }));
+          localStorage.setItem(CACHE_KEY, JSON.stringify({
+            v: CACHE_VERSION,
+            ts: Date.now(),
+            assets: assets
+          }));
         } catch (e) { /* localStorage may be disabled / full */ }
       }
 
@@ -3802,9 +3967,14 @@
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(release) {
           if (!release || !release.assets) return;
-          // Slim down before caching — only the fields we actually use
+          // Slim down before caching — only the fields we actually use.
+          // `size` is included so the modal can show "Download Now (XX MB)".
           var slim = release.assets.map(function(a) {
-            return { name: a.name, browser_download_url: a.browser_download_url };
+            return {
+              name: a.name,
+              browser_download_url: a.browser_download_url,
+              size: a.size
+            };
           });
           writeCache(slim);
           applyAssets(slim);
@@ -3834,63 +4004,189 @@
     }
 
     // --- Install-tips modal ---
-    // Any download card click shows the "Installing now..." popup with
-    // platform-gated "heads up about unsigned-app prompts" instructions.
-    // The download itself proceeds normally — we don't preventDefault.
+    // Click on a download card opens the modal instead of starting the
+    // download. The modal shows "Before you install" friction-bypass steps
+    // and a collapsible "After install" section. The actual download fires
+    // only when the user clicks the Download Now button in the footer.
+    //
+    // Content below is deliberately per-platform and tuned for each OS's
+    // current gatekeeping behavior (Sequoia System Settings flow for macOS,
+    // SmartScreen for Windows, sideload permissions + Play Protect for
+    // Android, AppImage quirks for Linux). Keep language non-technical and
+    // honest about *why* the warning appears — users who understand the
+    // reason are more likely to proceed calmly.
     (function() {
       var modal = document.getElementById('install-modal');
       if (!modal) return;
-      var tips = document.getElementById('install-modal-tips');
+      var body = document.getElementById('install-modal-body');
+      var title = document.getElementById('install-modal-title');
+      var downloadBtn = document.getElementById('install-modal-download-btn');
+      if (!body || !title || !downloadBtn) return;
 
-      // macOS and Windows have Gatekeeper / SmartScreen prompts that users
-      // will hit on first launch of an unsigned app. Linux (AppImage) and
-      // Android (sideload) have their own friction but not the same warning
-      // dialog, so keep their entries minimal. Each entry starts with the
-      // shared heading so HTML structure stays consistent.
-      var HEADING = '<p class="install-modal-heading">A few things to know while you wait:</p>';
-      var tipsByPlatform = {
-        'dl-windows': HEADING +
-          '<ol>' +
-            '<li>On first launch, Windows will likely show a blue <strong>"Windows protected your PC"</strong> dialog &mdash; YouCoded isn\'t Microsoft-signed yet.</li>' +
-            '<li>Click <strong>"More info"</strong> in that dialog, then the <strong>"Run anyway"</strong> button that appears below the app name.</li>' +
-            '<li>You\'ll only see this prompt the first time. Windows remembers your choice for future launches.</li>' +
-          '</ol>',
-        'dl-macos': HEADING +
-          '<ol>' +
-            '<li>macOS blocks unsigned apps from launching by double-click. Instead, <strong>right-click (or Control-click) the app in your Applications folder and choose "Open"</strong>.</li>' +
-            '<li>macOS will ask if you\'re sure &mdash; click <strong>"Open"</strong> again.</li>' +
-            '<li>You only need to do this the first time. After that, normal double-click works.</li>' +
-          '</ol>',
-        'dl-linux': HEADING +
-          '<ol>' +
-            '<li>Make the downloaded AppImage executable: <code>chmod +x YouCoded-*.AppImage</code></li>' +
-            '<li>Double-click it, or run it directly from your terminal.</li>' +
-          '</ol>',
-        'dl-android': HEADING +
-          '<ol>' +
-            '<li>Android will ask to <strong>allow installs from your browser</strong> the first time you sideload an APK.</li>' +
-            '<li>Tap through the prompt, return to the download, and retry the install.</li>' +
-          '</ol>'
+      // Universal "After install" content. Same on every platform. The
+      // androidExtra HTML is appended only when the modal opens for Android.
+      var AFTER_INSTALL = '' +
+        '<ol>' +
+          '<li><strong>Sign in with your Claude account.</strong> YouCoded uses your existing <strong>Claude Pro or Max</strong> subscription &mdash; the same account you use on claude.ai. No separate account, no API key. If you don\'t have a paid plan yet, you can <a href="https://claude.ai/upgrade" target="_blank" rel="noopener">sign up here</a>.</li>' +
+          '<li><strong>Pick a starter theme and model.</strong> Both are changeable anytime from the settings panel, so don\'t overthink it.</li>' +
+          '<li><strong>Browse the marketplace.</strong> Skills (things that give Claude new abilities) and themes (visual overhauls) are a few taps away and shareable with friends.</li>' +
+        '</ol>';
+
+      var ANDROID_AFTER_EXTRA = '' +
+        '<p class="install-modal-note"><strong>On Android, expect one extra step:</strong> the first launch runs a one-time setup that downloads and unpacks the Claude Code runtime (~400&ndash;600MB depending on the package tier you pick). Keep the app open on the setup screen until it finishes &mdash; it\'s fast on Wi-Fi.</p>';
+
+      // Per-platform structured content. Each entry builds into the modal
+      // body via renderPlatform() — keeping content data-shaped rather than
+      // HTML-string-shaped makes it easier to tweak wording without touching
+      // markup.
+      var platforms = {
+        'dl-windows': {
+          platformLabel: 'Windows',
+          intro: 'YouCoded is open-source and isn\'t signed with a Microsoft code-signing certificate yet. Windows will show a warning on first launch &mdash; this is expected. Here\'s how to get past it.',
+          steps: [
+            'Open the file you just downloaded (the YouCoded installer).',
+            'Windows SmartScreen will likely show a blue window: <strong>"Windows protected your PC."</strong> Don\'t click the big "Don\'t run" button.',
+            'Click the small <strong>More info</strong> link under the warning text. A <strong>Run anyway</strong> button will appear.',
+            'Click <strong>Run anyway</strong>. The installer will proceed normally.',
+            'You only see this prompt the first time. Windows remembers your choice for future launches.'
+          ],
+          note: null
+        },
+        'dl-macos': {
+          platformLabel: 'Mac',
+          intro: 'YouCoded is open-source and isn\'t signed with an Apple Developer certificate yet (it costs $99/yr 😢). macOS will block it on first launch &mdash; this is expected. Here\'s how to get past it.',
+          steps: [
+            'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
+            'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
+            'Open <strong>System Settings → Privacy &amp; Security</strong> (Apple menu → System Settings).',
+            'Scroll down to the <strong>Security</strong> section. You\'ll see a note: <em>"YouCoded was blocked to protect your Mac."</em> Click the <strong>Open Anyway</strong> button next to it.',
+            'Enter your password or use Touch ID to confirm.',
+            'Go back to your Applications folder and double-click YouCoded one more time. A final dialog appears &mdash; click <strong>Open</strong>.',
+            'You only have to do this the first time. After that, YouCoded opens normally.'
+          ],
+          note: null
+        },
+        'dl-linux': {
+          platformLabel: 'Linux',
+          intro: 'The download button gives you the <strong>AppImage</strong> &mdash; a single self-contained file that runs on any distribution with no installer. If you\'d rather install YouCoded as a permanent, pinnable app, native packages for the major distros are listed at the bottom.',
+          steps: [
+            'Open the AppImage you just downloaded &mdash; most file managers run it on a double-click.',
+            'If double-clicking does nothing, the file needs permission to run. In your file manager: right-click the file → <strong>Properties → Permissions</strong> → tick <strong>"Allow executing file as program"</strong> (the wording varies by desktop). From a terminal instead: <code>chmod +x YouCoded-*.AppImage</code>, then launch it with <code>./YouCoded-*.AppImage</code>.',
+            'YouCoded opens straight from the file &mdash; nothing is copied into your system.',
+            '<strong>To keep it around:</strong> move the AppImage somewhere permanent (such as a <code>~/Applications</code> folder) before you rely on it &mdash; if it sits in <code>~/Downloads</code> and you clear that folder, your launcher breaks. For a real menu entry you can pin to your taskbar, install <a href="https://github.com/TheAssassin/AppImageLauncher" target="_blank" rel="noopener">AppImageLauncher</a>: it adds an icon and menu entry for any AppImage automatically the first time you run it.'
+          ],
+          note: '<strong>If the app doesn\'t start:</strong> some distributions need the FUSE library the AppImage depends on. Install it with your package manager &mdash; <code>sudo apt install libfuse2</code> (Debian/Ubuntu/Mint), <code>sudo dnf install fuse-libs</code> (Fedora/RHEL), <code>sudo pacman -S fuse2</code> (Arch/CachyOS/Manjaro), or <code>sudo zypper install fuse</code> (openSUSE). Still nothing? Launch the AppImage from a terminal &mdash; it will print the underlying error.',
+          altPaths: '<p><strong>Prefer a native install?</strong> Packages that install to a fixed location and add a pinnable menu entry &mdash; like any other app &mdash; are on the <a href="https://github.com/itsdestin/youcoded/releases/latest" target="_blank" rel="noopener">latest release</a> page. Download the one for your distribution and install it from a terminal:</p>' +
+            '<ol>' +
+              '<li><strong>Debian, Ubuntu, Linux Mint, Pop!_OS</strong> &mdash; the <code>.deb</code> file: <code>sudo apt install ./youcoded_*.deb</code></li>' +
+              '<li><strong>Fedora, RHEL, openSUSE</strong> &mdash; the <code>.rpm</code> file: <code>sudo dnf install ./youcoded-*.rpm</code> (openSUSE: <code>sudo zypper install ./youcoded-*.rpm</code>)</li>' +
+              '<li><strong>Arch, CachyOS, Manjaro</strong> &mdash; the <code>.pacman</code> file: <code>sudo pacman -U youcoded-*.pacman</code></li>' +
+            '</ol>' +
+            '<p>Once it\'s installed, launch YouCoded from your application menu and pin it to your taskbar.</p>'
+        },
+        'dl-android': {
+          platformLabel: 'Android',
+          intro: 'YouCoded isn\'t on the Google Play Store yet, so you\'ll install it directly from the APK you just downloaded. Android asks for permission the first time you do this.',
+          steps: [
+            'When the download finishes, tap the notification (or open <strong>Files → Downloads</strong> and tap the YouCoded APK).',
+            'Android will say <em>"For your security, your phone isn\'t allowed to install unknown apps from this source."</em> Tap <strong>Settings</strong>.',
+            'Enable <strong>Allow from this source</strong> for whichever app you\'re installing from (usually Chrome). Tap back.',
+            'Tap <strong>Install</strong>. If <strong>Google Play Protect</strong> shows a warning, tap <strong>More details → Install anyway</strong>. Play Protect often doesn\'t recognize apps that aren\'t in the Play Store &mdash; this is normal.',
+            'Wait for the install to finish, then tap <strong>Open</strong>.'
+          ],
+          note: '<strong>On Samsung phones:</strong> The "Allow from this source" setting lives under <strong>Settings → Biometrics and security → Install unknown apps</strong> if Android doesn\'t take you there automatically.'
+        }
       };
 
+      // Format a byte count as "XX MB". Returns null if bytes is null/missing.
+      function formatSize(bytes) {
+        if (typeof bytes !== 'number' || !isFinite(bytes) || bytes <= 0) return null;
+        var mb = bytes / 1024 / 1024;
+        // Under 10 MB → one decimal, over → round. Keeps label compact.
+        return mb < 10 ? mb.toFixed(1) + ' MB' : Math.round(mb) + ' MB';
+      }
+
+      // Build the modal body HTML for a given platform, including the
+      // "After install" collapsible and (for Android) the runtime-size note.
+      function renderPlatform(platformKey) {
+        var p = platforms[platformKey];
+        if (!p) return '';
+        var stepsHtml = p.steps.map(function(s) { return '<li>' + s + '</li>'; }).join('');
+        var noteHtml = p.note ? '<p class="install-modal-note">' + p.note + '</p>' : '';
+        // Optional extra section for platforms that offer more than one install
+        // route (e.g. Linux: AppImage above, native packages here).
+        var altHtml = p.altPaths ? '<div class="install-modal-section">' + p.altPaths + '</div>' : '';
+        var afterInstallHtml = AFTER_INSTALL + (platformKey === 'dl-android' ? ANDROID_AFTER_EXTRA : '');
+        return '' +
+          '<p class="install-modal-intro">' + p.intro + '</p>' +
+          '<div class="install-modal-section">' +
+            '<ol>' + stepsHtml + '</ol>' +
+            noteHtml +
+          '</div>' +
+          altHtml +
+          '<details class="install-modal-details">' +
+            '<summary>After install: What to expect on first launch</summary>' +
+            '<div class="install-modal-section">' + afterInstallHtml + '</div>' +
+          '</details>';
+      }
+
+      // Reset the Download Now button to its "unclicked" state. Called on
+      // every openModal() so reopening the same platform's modal doesn't
+      // leave a stale "Download Initiated" label.
+      function resetDownloadButton(platformKey, label) {
+        downloadBtn.removeAttribute('data-initiated');
+        downloadBtn.textContent = label;
+
+        // Resolve href + size from whatever the latest-release fetch captured.
+        // If the fetch hasn't completed yet (or failed), fall back to the
+        // generic /releases/latest page so the button is never broken.
+        var asset = (window.__youcodedReleaseAssets || {})[platformKey];
+        if (asset && asset.url) {
+          downloadBtn.href = asset.url;
+          var sizeLabel = formatSize(asset.sizeBytes);
+          if (sizeLabel) {
+            downloadBtn.textContent = label + ' (' + sizeLabel + ')';
+          }
+        } else {
+          downloadBtn.href = 'https://github.com/itsdestin/youcoded/releases/latest';
+        }
+      }
+
       function openModal(platformKey) {
-        tips.innerHTML = tipsByPlatform[platformKey] || '';
+        var p = platforms[platformKey];
+        if (!p) return;
+        title.textContent = 'Before you install YouCoded on ' + p.platformLabel;
+        body.innerHTML = renderPlatform(platformKey);
+        resetDownloadButton(platformKey, 'Download Now');
         modal.setAttribute('data-open', '');
         modal.setAttribute('aria-hidden', 'false');
         document.body.style.overflow = 'hidden';
       }
+
       function closeModal() {
         modal.removeAttribute('data-open');
         modal.setAttribute('aria-hidden', 'true');
         document.body.style.overflow = '';
       }
 
+      // Card click: intercept navigation and open the modal instead.
+      // The card's own href still exists as a no-JS fallback — if JS is
+      // disabled, clicking just navigates to /releases/latest as before.
       ['dl-windows', 'dl-macos', 'dl-linux', 'dl-android'].forEach(function(id) {
         var el = document.getElementById(id);
         if (!el) return;
-        el.addEventListener('click', function() {
+        el.addEventListener('click', function(e) {
+          e.preventDefault();
           openModal(id);
         });
+      });
+
+      // Download Now click: flip the button to "Download Initiated" *before*
+      // the default navigation runs. We don't preventDefault — the anchor's
+      // native click-to-download (or new-tab) is what actually starts the file.
+      downloadBtn.addEventListener('click', function() {
+        downloadBtn.setAttribute('data-initiated', '');
+        downloadBtn.textContent = 'Download Initiated';
       });
 
       modal.addEventListener('click', function(e) {

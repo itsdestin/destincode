@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
+import { useMarketplaceAuth } from '../../state/marketplace-auth-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
 
@@ -22,33 +23,27 @@ interface Props {
 //  - tell the user what *they* can do, not what the code is doing
 // The raw code stays in the headline string (from the reducer) for
 // debugging, but the hint below it is always plain language.
-function classifyPartyError(msg: string | null): {
-  hint: string;
-  showAuthCmd: boolean;
-} {
+function classifyPartyError(msg: string | null): { hint: string } {
+  // Note: the not-signed-in case is no longer an error — it's handled by the
+  // SignInScreen gate in GameLobby (identity comes from the marketplace sign-in,
+  // not the gh CLI), so there's no "sign in from a terminal" branch here anymore.
   const text = (msg ?? '').toLowerCase();
-  if (text.includes('github') || text.includes('gh auth') || text.includes('auth failed') || text.includes("sign-in") || text.includes("signed in")) {
-    return {
-      hint: "Games use your GitHub name as your player tag. Sign in to GitHub from a terminal with:",
-      showAuthCmd: true,
-    };
-  }
   if (text.includes('code 1011') || text.includes('code 500') || text.includes('code 1012') || text.includes('code 1013')) {
-    return { hint: 'The game server is taking a breather. This usually fixes itself in a minute.', showAuthCmd: false };
+    return { hint: 'The game server is taking a breather. This usually fixes itself in a minute.' };
   }
   if (text.includes('code 1006') || text.includes('code 1015') || text.includes('lost the connection') || text.includes('lost connection')) {
-    return { hint: "Looks like the internet hiccuped. We'll keep trying — you can also hit Retry.", showAuthCmd: false };
+    return { hint: "Looks like the internet hiccuped. We'll keep trying — you can also hit Retry." };
   }
   if (text.includes('code 4000')) {
-    return { hint: 'Something got mixed up signing in. Try reloading the app.', showAuthCmd: false };
+    return { hint: 'Something got mixed up signing in. Try reloading the app.' };
   }
-  return { hint: "Hang tight — we'll keep trying in the background.", showAuthCmd: false };
+  return { hint: "Hang tight — we'll keep trying in the background." };
 }
 
 function ErrorScreen({ connection }: { connection: GameConnection }) {
   const state = useGameState();
   const dispatch = useGameDispatch();
-  const { hint, showAuthCmd } = classifyPartyError(state.partyError);
+  const { hint } = classifyPartyError(state.partyError);
   // Track retries so we can offer a harder reload after repeated failures —
   // partysocket reconnect can fail forever if e.g. the host name is bad or the
   // user is rate-limited. After 2 manual retries we surface "Reload app" too.
@@ -71,9 +66,6 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
       </div>
       <p className="text-sm text-red-400 text-center">{state.partyError}</p>
       <p className="text-xs text-fg-muted text-center max-w-xs">{hint}</p>
-      {showAuthCmd && (
-        <code className="text-xs text-fg-2 bg-inset px-2 py-1 rounded-sm">gh auth login</code>
-      )}
       <div className="flex gap-2 mt-1 items-center">
         <button
           onClick={handleRetry}
@@ -367,8 +359,41 @@ function WaitingScreen({ connection }: Props) {
   );
 }
 
+// Shown when the user isn't signed in to the marketplace. Games use the
+// marketplace GitHub identity as the player tag, so there's nothing to connect
+// with until they sign in — a clean gate, not an error. The button launches the
+// in-app browser sign-in (no terminal / gh CLI needed); the lobby hook reacts to
+// the sign-in flipping and connects automatically once it completes.
+function SignInScreen() {
+  const { signInPending, startSignIn } = useMarketplaceAuth();
+
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
+      <div className="w-16 h-16 rounded-full bg-inset flex items-center justify-center">
+        <span className="text-2xl">🎮</span>
+      </div>
+      <p className="text-sm text-fg text-center">Sign in to play</p>
+      <p className="text-xs text-fg-muted text-center max-w-xs">
+        Games use your GitHub name as your player tag.
+      </p>
+      <button
+        onClick={() => { void startSignIn(); }}
+        disabled={signInPending}
+        className="bg-accent hover:bg-accent text-on-accent text-sm font-medium rounded-lg px-4 py-2 transition-colors disabled:opacity-50"
+      >
+        {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
+      </button>
+    </div>
+  );
+}
+
 export default function GameLobby({ connection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
+  const { signedIn } = useMarketplaceAuth();
+  // Sign-in gate comes BEFORE the error/spinner branches — not being signed in
+  // isn't a failure or a slow connection, it's a prerequisite. Incognito keeps
+  // its own UI (you don't need to sign in to stay intentionally disconnected).
+  if (!incognito && !signedIn) return <SignInScreen />;
   if (state.partyError && !incognito) return <ErrorScreen connection={connection} />;
   if (state.screen === 'joining') return <JoiningScreen connection={connection} />;
   if (state.screen === 'waiting') return <WaitingScreen connection={connection} />;

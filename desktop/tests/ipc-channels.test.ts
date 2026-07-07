@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 
@@ -86,6 +86,241 @@ describe('IPC channel consistency', () => {
       if (preloadVal && typesVal) {
         expect(preloadVal[1]).toBe(typesVal[1]);
       }
+    }
+  });
+});
+
+// Regression net for the dev:* IPC channels introduced by the
+// Settings → Development feature. All three platforms must carry identical
+// type strings.
+describe('dev:* channel parity', () => {
+  const NEW_TYPES = [
+    'dev:log-tail',
+    'dev:diagnostics',
+    'dev:summarize-issue',
+    'dev:submit-issue',
+    'dev:install-workspace',
+    'dev:install-progress',
+    'dev:open-session-in',
+  ];
+
+  it('all dev:* types are declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  it('all dev:* types are referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  it('all dev:* types are handled by SessionService.kt (Android)', () => {
+    const ktPath = path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    );
+    const src = fs.readFileSync(ktPath, 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
+  });
+});
+
+// Regression net for terminal:get-screen-text, introduced by the
+// android-terminal-data-parity plan (Task 7/9/10). All four surfaces
+// (preload.ts, remote-shim.ts, ipc-handlers.ts, SessionService.kt) must
+// carry identical type strings — drift would silently break the PTY
+// buffer classifier on one platform.
+describe('terminal:get-screen-text channel parity', () => {
+  const CHANNEL = 'terminal:get-screen-text';
+
+  it('terminal:get-screen-text is declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    expect(src).toContain(`'${CHANNEL}'`);
+  });
+
+  it('terminal:get-screen-text is referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    expect(src).toContain(`'${CHANNEL}'`);
+  });
+
+  it('terminal:get-screen-text is referenced in ipc-handlers.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts'), 'utf8');
+    expect(src).toContain(`'${CHANNEL}'`);
+  });
+
+  it('terminal:get-screen-text is handled by SessionService.kt (Android)', () => {
+    const ktPath = path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    );
+    const src = fs.readFileSync(ktPath, 'utf8');
+    expect(src).toContain(`"${CHANNEL}"`);
+  });
+});
+
+// Regression net for pty:raw-bytes. Tier 1 introduced the Android broadcaster;
+// Tier 2 (xterm-in-WebView) added the desktop-side consumer surfaces. Three
+// surfaces must carry identical type strings — drift would silently break the
+// xterm-on-Android renderer. ipc-handlers.ts is intentionally NOT in this list:
+// pty:raw-bytes is a push event from Android via WebSocket, not a request-
+// response handler, and there is no desktop sender (Electron PTY emits
+// pty:output strings instead).
+describe('pty:raw-bytes channel parity', () => {
+  const CHANNEL = 'pty:raw-bytes';
+
+  it('pty:raw-bytes is declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    expect(src).toContain(`'${CHANNEL}'`);
+  });
+
+  it('pty:raw-bytes is referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    expect(src).toContain(`'${CHANNEL}'`);
+  });
+
+  it('pty:raw-bytes is broadcast by SessionService.kt (Android)', () => {
+    const ktPath = path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    );
+    const src = fs.readFileSync(ktPath, 'utf8');
+    expect(src).toContain(`"${CHANNEL}"`);
+  });
+});
+
+// Regression net for the update:changelog IPC channel introduced by the
+// UpdatePanel popup feature. All three platforms must carry identical
+// type strings — drift would silently break changelog fetch on one side.
+describe('update:changelog channel parity', () => {
+  const NEW_TYPES = [
+    'update:changelog',
+  ];
+
+  it('update:changelog type is declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  it('update:changelog type is referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  it('update:changelog type is handled by SessionService.kt (Android)', () => {
+    const ktPath = path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    );
+    const src = fs.readFileSync(ktPath, 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
+  });
+});
+
+// Regression net for the analytics:* IPC channels introduced by the
+// privacy-analytics plan (anonymous install + DAU/MAU telemetry opt-out).
+// All three platforms must carry identical type strings. The Android
+// assertion is intentionally expected to fail until Phase 7 (SessionService.kt
+// analytics:* handlers) lands. Not a regression — the desktop IPC landing
+// ahead of Android is the planned integration order.
+describe('analytics:* channel parity', () => {
+  const NEW_TYPES = [
+    'analytics:get-opt-in',
+    'analytics:set-opt-in',
+  ];
+
+  it('both analytics:* types are declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  it('both analytics:* types are referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+
+  // WHY: This assertion is intentionally failing until Phase 7 adds the
+  // SessionService.kt analytics:* handlers. It acts as the regression net —
+  // when Phase 7 lands, this turns green and confirms Android parity is
+  // complete.
+  it('both analytics:* types are handled by SessionService.kt (Android)', () => {
+    const ktPath = path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    );
+    const src = fs.readFileSync(ktPath, 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
+  });
+});
+
+// Regression net for system:back and system:notify-stack-state introduced by the
+// android-back-button implementation. system:notify-stack-state flows React → Android
+// (via SessionService.handleBridgeMessage). system:back flows Android → React
+// (broadcast by MainActivity, subscribed in remote-shim). Both channel names must
+// appear literally in their respective files — drift would silently break back-button
+// support on one platform.
+describe('system:back and system:notify-stack-state parity', () => {
+  test('system:notify-stack-state appears in preload.ts, types.ts, remote-shim.ts, SessionService.kt', () => {
+    const stackStateSites = {
+      'preload.ts': fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8'),
+      'types.ts': fs.readFileSync(path.join(__dirname, '../src/shared/types.ts'), 'utf8'),
+      'remote-shim.ts': fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8'),
+      'SessionService.kt': fs.readFileSync(
+        path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt'),
+        'utf8',
+      ),
+    };
+
+    const channel = 'system:notify-stack-state';
+    for (const [siteName, source] of Object.entries(stackStateSites)) {
+      expect(source, `expected '${channel}' to appear in ${siteName}`).toContain(channel);
+    }
+  });
+
+  test('system:back appears in preload.ts, types.ts, remote-shim.ts, MainActivity.kt', () => {
+    const backSites = {
+      'preload.ts': fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8'),
+      'types.ts': fs.readFileSync(path.join(__dirname, '../src/shared/types.ts'), 'utf8'),
+      'remote-shim.ts': fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8'),
+      'MainActivity.kt': fs.readFileSync(
+        path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/MainActivity.kt'),
+        'utf8',
+      ),
+    };
+
+    const channel = 'system:back';
+    for (const [siteName, source] of Object.entries(backSites)) {
+      expect(source, `expected '${channel}' to appear in ${siteName}`).toContain(channel);
+    }
+  });
+});
+
+describe('performance:* and app:restart parity', () => {
+  const channels = ['performance:get-config', 'performance:set-config', 'app:restart'];
+
+  it('all three types are declared in preload.ts', () => {
+    const preload = fs.readFileSync(
+      path.join(__dirname, '../src/main/preload.ts'), 'utf8'
+    );
+    for (const ch of channels) {
+      expect(preload, `${ch} missing from preload.ts`).toContain(`'${ch}'`);
+    }
+  });
+
+  it('all three types are referenced in remote-shim.ts', () => {
+    const shim = fs.readFileSync(
+      path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8'
+    );
+    for (const ch of channels) {
+      expect(shim, `${ch} missing from remote-shim.ts`).toContain(`'${ch}'`);
+    }
+  });
+
+  it('all three types are handled by SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(
+      path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt'),
+      'utf8'
+    );
+    for (const ch of channels) {
+      expect(kt, `${ch} missing from SessionService.kt`).toContain(`"${ch}"`);
     }
   });
 });

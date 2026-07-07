@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.143",
+  "platform": "linux",
+  "nodeVersion": "v26.1.0",
+  "capturedAt": "2026-05-18T09:00:48.994Z",
+  "probes": {
+    "pasteThreshold": {
+      "minSubmits": 62,
+      "maxFails": 63,
+      "bisectionRange": [
+        62,
+        63
+      ]
+    },
+    "echo": {
+      "echoes": true,
+      "sentinel": "echotest-c5yrpa",
+      "delayMs": 50
+    }
+  }
+}

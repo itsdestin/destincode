@@ -13,11 +13,15 @@ import android.os.Binder
 import android.os.FileObserver
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
+import com.youcoded.app.BuildConfig
 import com.youcoded.app.MainActivity
+import com.youcoded.app.analytics.AnalyticsService
 import com.youcoded.app.bridge.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.SupervisorJob
@@ -49,6 +53,18 @@ class SessionService : Service() {
     // pattern. On Android there's typically one client, so we also allow input
     // if there's only one authenticated connection (covers reconnect cases).
     private val sessionOwnership = ConcurrentHashMap<String, String>()
+
+    // Tracks the per-session coroutine job that collects rawByteFlow and
+    // broadcasts pty:raw-bytes push events. Cancelled when the session is destroyed
+    // or (implicitly) when serviceScope.cancel() fires in onDestroy().
+    // Fix: ConcurrentHashMap instead of mutableMapOf — handleBridgeMessage runs on
+    // Dispatchers.IO so concurrent create/destroy could race on a plain HashMap.
+    // Matches the sessionOwnership field above, which uses ConcurrentHashMap for the same reason.
+    private val rawByteJobs = ConcurrentHashMap<String, Job>()
+
+    // Concurrency guard: prevent two concurrent dev:install-workspace ops from
+    // cloning/pulling the workspace simultaneously (e.g. double-tap the button).
+    @Volatile private var devInstallInFlight: Boolean = false
 
     /**
      * Security: use EncryptedSharedPreferences for paired device storage so
@@ -119,6 +135,29 @@ class SessionService : Service() {
      */
     var onMarketplaceAuthUrlRequested: ((String) -> Unit)? = null
 
+    /**
+     * MainActivity binds this to flip OnBackPressedCallback.isEnabled.
+     * `empty = true` means the React dismissal stack is empty (so hardware
+     * back should fall through to Android default — background the app).
+     * `empty = false` means at least one overlay/full-screen view is open
+     * and back should be intercepted to call dismissTop().
+     *
+     * The setter replays the cached lastStackEmpty so MainActivity rebinds
+     * (e.g. after rotation) get the current state immediately. Without this
+     * replay, OnBackPressedCallback would default to disabled until the user
+     * opens or closes another overlay.
+     */
+    var onStackStateChanged: ((empty: Boolean) -> Unit)? = null
+        set(value) {
+            field = value
+            value?.invoke(lastStackEmpty)
+        }
+
+    /** Cached most-recent stack-empty value. Defaults to true so that until
+     *  React first signals, hardware back behaves as Android default
+     *  (back backgrounds the app — no regression vs pre-feature behavior). */
+    private var lastStackEmpty: Boolean = true
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
     private var usageRefreshTimer: java.util.Timer? = null
@@ -171,6 +210,32 @@ class SessionService : Service() {
                 }
             }
         }
+
+        // Privacy analytics: fire install + daily-heartbeat ping to the marketplace
+        // Worker. Fire-and-forget: no await, no logging. Respects opt-out internally
+        // (AnalyticsService.runOnLaunch returns early if state.optIn is false).
+        // Runs on a raw thread so service startup is never blocked by network I/O.
+        // Mirror of desktop/src/main/main.ts's analytics wire-in.
+        Thread {
+            try {
+                AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    // $HOME is set by Bootstrap to the Termux home dir, but onCreate
+                    // runs BEFORE initBootstrap, so fall back to filesDir.parent
+                    // (Android internal files root) or filesDir itself.
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                    // Settings.Secure.ANDROID_ID is per-(app-signing-key, user, device)
+                    // since Android 8 — stable across reinstalls of THIS app, resets
+                    // only on factory reset. Empty/null falls back to a persisted UUID.
+                    machineIdReader = {
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                    },
+                ).runOnLaunch()
+            } catch (_: Exception) {
+                // Swallow — analytics must never impact app startup.
+            }
+        }.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -226,6 +291,27 @@ class SessionService : Service() {
             android.util.Log.i("SessionService", "Hook reconciled: added=${hr.added} updatedPath=${hr.updatedPath} updatedTimeout=${hr.updatedTimeout}")
         } catch (e: Exception) {
             android.util.Log.w("SessionService", "Initial hook reconcile failed", e)
+        }
+
+        // Force CC's prompt-suggestion feature off in settings.json on every
+        // launch. CC pre-fills the input bar with a generated next-prompt
+        // suggestion that interacts badly with our chat→PTY write path (the
+        // body gets concatenated with the ghost text and submitted on the
+        // trailing CR). Mirror of desktop's `enforcePromptSuggestionDisabled`.
+        try {
+            val r = PromptSuggestionDisabler(bs.homeDir).enforce()
+            if (r.changed) android.util.Log.i("SessionService", "Prompt suggestion force-disabled: priorWasEnabled=${r.priorWasEnabled}")
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Failed to force-disable prompt suggestion", e)
+        }
+
+        // Seed transcript retention so CC's 30-day cleanup doesn't delete
+        // Resume Browser history. Mirrors desktop retention-default.ts.
+        try {
+            val seeded = RetentionDefault(bs.homeDir).seedIfAbsent()
+            if (seeded) android.util.Log.i("SessionService", "Seeded cleanupPeriodDays=${RetentionDefault.DEFAULT_DAYS}")
+        } catch (e: Exception) {
+            android.util.Log.w("SessionService", "Failed to seed cleanupPeriodDays", e)
         }
 
         // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
@@ -344,9 +430,14 @@ class SessionService : Service() {
                             try { payload.put("syncWarnings", warnFile.readText().trim()) } catch (_: Exception) {}
                         }
 
-                        // Per-session context % and session stats
+                        // Per-session context %, session stats, and git branch.
+                        // Mirrors desktop's ipc-handlers.ts:buildStatusData per-session
+                        // loop — the git branch file is written by statusline.sh at
+                        // `~/.claude/.gitbranch-$claudeId`. Without this map, the
+                        // git-branch status bar widget receives no data and hides.
                         val contextMap = JSONObject()
                         val sessionStatsMap = JSONObject()
+                        val gitBranchMap = JSONObject()
                         for ((mobileId, session) in sessionRegistry.sessions.value) {
                             val claudeId = session.ptyBridge?.getEventBridge()
                                 ?.getClaudeSessionId(mobileId) ?: continue
@@ -358,9 +449,32 @@ class SessionService : Service() {
                             if (statsFile.exists()) {
                                 try { sessionStatsMap.put(mobileId, JSONObject(statsFile.readText())) } catch (_: Exception) {}
                             }
+                            val branchFile = File(claudeDir, ".gitbranch-$claudeId")
+                            if (branchFile.exists()) {
+                                try {
+                                    val branch = branchFile.readText().trim()
+                                    if (branch.isNotEmpty()) gitBranchMap.put(mobileId, branch)
+                                } catch (_: Exception) {}
+                            }
                         }
                         payload.put("contextMap", contextMap)
                         payload.put("sessionStatsMap", sessionStatsMap)
+                        payload.put("gitBranchMap", gitBranchMap)
+
+                        // Background bulk-conversations pull state — non-null
+                        // while a recent restore is still fetching older
+                        // history. Renders as a chip in StatusBar so the user
+                        // knows why conversations are still appearing after
+                        // the restore wizard's "Done" screen closed.
+                        val bgState = syncService?.backgroundPullState
+                        if (bgState != null) {
+                            payload.put("backgroundPull", JSONObject().apply {
+                                put("type", bgState.type)
+                                put("startedAt", bgState.startedAt)
+                            })
+                        } else {
+                            payload.put("backgroundPull", JSONObject.NULL)
+                        }
 
                         bridgeServer.broadcast(JSONObject().apply {
                             put("type", "status:data")
@@ -646,12 +760,27 @@ class SessionService : Service() {
                 val info = MessageRouter.buildSessionInfo(
                     id = session.id, name = session.name.value,
                     cwd = cwd, status = "active",
-                    permissionMode = "normal", skipPermissions = dangerous,
-                    createdAt = session.createdAt
+                    // Fix: derive permissionMode from the dangerous flag (parity with
+                    // desktop session-manager.ts). Hardcoding "normal" here meant the
+                    // initial session:created broadcast told React permissionMode=normal
+                    // even when dangerous=true, so SessionStrip's danger indicator missed
+                    // until the next cycle of session:list. Now correct from message #1.
+                    permissionMode = if (dangerous) "bypass" else "normal", skipPermissions = dangerous,
+                    createdAt = session.createdAt,
+                    // Pass the resolved model (payload > model-preference.json > "sonnet")
+                    // so React's status-bar switcher shows the right alias immediately,
+                    // not after the first assistant-text event reconciles it.
+                    model = model,
                 )
                 // Security: record which client ID owns this session
                 val ownerClientId = ws.getAttachment<String>() ?: "unknown"
                 sessionOwnership[session.id] = ownerClientId
+                // Start broadcasting raw PTY bytes for this session. The coroutine
+                // lives on serviceScope so it's cancelled automatically on onDestroy();
+                // it's also cancelled explicitly in session:destroy below.
+                session.ptyBridge?.let { ptyBridge ->
+                    rawByteJobs[session.id] = launchRawByteBroadcast(session.id, ptyBridge)
+                }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, info) }
                 bridgeServer.broadcast(JSONObject().apply {
                     put("type", "session:created")
@@ -661,6 +790,8 @@ class SessionService : Service() {
             "session:destroy" -> {
                 val sessionId = msg.payload.optString("sessionId", "")
                 sessionOwnership.remove(sessionId) // Clean up ownership tracking
+                // Cancel the raw-byte broadcast coroutine for this session.
+                rawByteJobs.remove(sessionId)?.cancel()
                 withContext(Dispatchers.Main) {
                     destroySession(sessionId)
                 }
@@ -724,6 +855,18 @@ class SessionService : Service() {
                         android.util.Log.w("SessionService", "Resize failed: ${e.message}")
                     }
                 }
+            }
+            "terminal:get-screen-text" -> {
+                // Returns the current visible screen buffer as plain text.
+                // Used by the React-side attention classifier so it can run on
+                // standalone Android with the same classifyBuffer function as
+                // desktop. Unknown sessionId returns {text: ""} — callers
+                // (classifier) already tolerate empty buffers during startup.
+                val sessionId = msg.payload.optString("sessionId", "")
+                val session = sessionRegistry.sessions.value[sessionId]
+                val text = session?.ptyBridge?.readScreenText() ?: ""
+                val response = JSONObject().apply { put("text", text) }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
             }
             "permission:respond" -> {
                 val requestId = msg.payload.optString("requestId", "")
@@ -871,12 +1014,13 @@ class SessionService : Service() {
                 val result = skillProvider?.getFeatured() ?: JSONObject()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
-            // Marketplace redesign Phase 3 — integrations scaffold. List
-            // returns the cached catalog; the rest are stubs that will gain
-            // real wiring when the desktop Google Workspace slice ships and
-            // we port it to Android.
+            // Marketplace redesign Phase 3 — integrations.
+            // List returns the catalog (fetched from the wecoded-marketplace
+            // registry) with a default state attached; install/connect/etc.
+            // are still stubs that fail with not-implemented until the
+            // Android Workspace slice ships.
             "integrations:list" -> {
-                val result = org.json.JSONArray()
+                val result = skillProvider?.listIntegrations() ?: org.json.JSONArray()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
             // Phase 4 — no-op on Android. Android MarketplaceFetcher caches
@@ -887,6 +1031,7 @@ class SessionService : Service() {
             "integrations:status",
             "integrations:install",
             "integrations:uninstall",
+            "integrations:connect",
             "integrations:configure" -> {
                 val result = JSONObject().apply {
                     put("slug", msg.payload?.optString("slug") ?: "")
@@ -895,6 +1040,14 @@ class SessionService : Service() {
                     put("error", "not-implemented: integrations available on Android in a follow-up")
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+            // Renderer-side platform detection. Android is explicitly "android"
+            // — distinct from "linux" so integrations declaring
+            // `platforms: ['linux']` don't accidentally enable here. Desktop
+            // returns the raw process.platform string ('darwin'/'win32'/'linux').
+            "platform:get" -> {
+                val payload = JSONObject().apply { put("platform", "android") }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
             // Decomposition v3 §9.9: integration badges for the detail view
             "skills:get-integration-info" -> {
@@ -964,34 +1117,6 @@ class SessionService : Service() {
                         )
                     } catch (e: Exception) {
                         JSONObject().put("error", e.message ?: "read-component failed")
-                    }
-                }
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
-            }
-            // GitHub identity via `gh api user` — same as desktop's github:auth,
-            // which is used by the multiplayer lobby to name the player. The gh
-            // binary is installed through Termux bootstrap and reads ~/.netrc
-            // (set up by Bootstrap after the user signs in).
-            "github:auth" -> {
-                val bs = bootstrap
-                val result: Any = if (bs == null) {
-                    JSONObject.NULL
-                } else withContext(Dispatchers.IO) {
-                    try {
-                        // gh is a Go binary — bypasses termux-exec LD_PRELOAD, so
-                        // we invoke it through linker64 directly (matches the bash
-                        // wrapper in Bootstrap.buildBashEnvSh's gh() function).
-                        val ghPath = File(bs.usrDir, "bin/gh").absolutePath
-                        val pb = ProcessBuilder("/system/bin/linker64", ghPath, "api", "user", "--jq", ".login")
-                            .directory(bs.homeDir)
-                            .redirectErrorStream(true)
-                        pb.environment().putAll(bs.buildRuntimeEnv())
-                        val process = pb.start()
-                        val output = process.inputStream.bufferedReader().readText().trim()
-                        val ok = process.waitFor() == 0 && output.isNotEmpty() && !output.contains("not logged")
-                        if (ok) JSONObject().put("username", output) else JSONObject.NULL
-                    } catch (_: Exception) {
-                        JSONObject.NULL
                     }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
@@ -1227,14 +1352,37 @@ class SessionService : Service() {
                 }
                 // Read user-set flag map from the synced conversation-index.json
                 val flagMap = withContext(Dispatchers.IO) { readFlagMap(homeDir) }
+                // Topic files are pruned after 30 days and never sync across
+                // devices; conversation-index.json keeps the name longer and
+                // does sync — fall back to it when the topic-file name is missing.
+                val topicMap = withContext(Dispatchers.IO) { readTopicMap(homeDir) }
                 val arr = org.json.JSONArray()
                 for (s in pastSessions) {
+                    // Name precedence: topic-file name > conversation-index topic
+                    // > transcript-derived title > "Untitled". The topic file is
+                    // pruned/unsynced, the index topic syncs but the auto-title
+                    // hook may never have fired, so the transcript's first user
+                    // message is the last-resort name. Mirrors desktop's
+                    // session-browser.ts precedence. derivedTitle stays
+                    // server-side — the payload's `name` already carries the
+                    // final value, so the IPC shape is unchanged.
+                    val indexTopic = topicMap[s.sessionId]
+                    val resolvedName = when {
+                        s.name != "Untitled" -> s.name
+                        !indexTopic.isNullOrBlank() -> indexTopic
+                        !s.derivedTitle.isNullOrBlank() -> s.derivedTitle!!
+                        else -> "Untitled"
+                    }
                     arr.put(JSONObject().apply {
                         put("sessionId", s.sessionId)
                         put("projectSlug", s.projectSlug)
-                        put("name", s.name)
+                        put("name", resolvedName)
                         put("lastModified", s.lastModified)
                         put("projectPath", s.projectPath)
+                        // Fix: React's formatSize(undefined) rendered as "NaNMB".
+                        // The size field exists on PastSession but was never
+                        // copied into the JSON response before.
+                        put("size", s.size)
                         // flags: { complete: true, priority: true, ... } — only set flags included
                         val entryFlags = flagMap[s.sessionId]
                         if (entryFlags != null && entryFlags.isNotEmpty()) {
@@ -1844,6 +1992,15 @@ class SessionService : Service() {
                             svc.browseCategoryUrl(backendId, cat, versionRef)
                         } catch (_: Exception) { null }
                     }
+                    // Fire Intent.ACTION_VIEW here — desktop's handler calls
+                    // shell.openExternal as a side effect, but React on Android
+                    // runs under file:// so its window.open fallback is a no-op.
+                    // Without this, tapping the folder icon silently does
+                    // nothing on mobile. Still return the URL so the IPC
+                    // response shape stays identical to desktop.
+                    if (url != null) {
+                        platformBridge?.openUrl(url)
+                    }
                     msg.id?.let {
                         bridgeServer.respond(ws, msg.type, it,
                             JSONObject().put("url", url ?: JSONObject.NULL))
@@ -1872,7 +2029,11 @@ class SessionService : Service() {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "RestoreService not initialized")) }
                 } else {
                     try {
-                        val opts = RestoreOptions.fromJson(msg.payload)
+                        // React shim wraps as { opts: {...} } for preview/execute;
+                        // other sync:restore:* handlers pass backendId at the top
+                        // level. Mirror desktop's `payload.opts || payload` fallback.
+                        val optsJson = msg.payload.optJSONObject("opts") ?: msg.payload
+                        val opts = RestoreOptions.fromJson(optsJson)
                         val preview = svc.previewRestore(opts)
                         msg.id?.let { bridgeServer.respond(ws, msg.type, it, preview.toJson()) }
                     } catch (e: Exception) {
@@ -1886,7 +2047,9 @@ class SessionService : Service() {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("error", "RestoreService not initialized")) }
                 } else {
                     try {
-                        val opts = RestoreOptions.fromJson(msg.payload)
+                        // Same { opts } unwrap as sync:restore:preview above.
+                        val optsJson = msg.payload.optJSONObject("opts") ?: msg.payload
+                        val opts = RestoreOptions.fromJson(optsJson)
                         // Progress events are broadcast (no id) — matches desktop's
                         // sync:restore:progress push-event shape. Wizard UI subscribes
                         // to them across every connected client.
@@ -2124,14 +2287,21 @@ class SessionService : Service() {
                     .put("configured", configured).put("remoteName", remoteName ?: org.json.JSONObject.NULL)) }
             }
             "sync:setup:auth-gdrive" -> {
-                // Run rclone config create — BROWSER env var routes OAuth to Android browser
+                // Stream rclone's stderr and open the OAuth URL via Intent —
+                // rclone can't auto-open xdg-open on Android (Go's raw execve
+                // bypasses termux-exec's LD_PRELOAD shim; see PITFALLS.md →
+                // Android Runtime). PlatformBridge.openUrl uses
+                // Intent.ACTION_VIEW, the SELinux-safe path.
                 val sync = syncService
+                val pb = platformBridge
                 if (sync == null) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject()
                         .put("success", false).put("remoteName", "gdrive").put("error", "SyncService not initialized")) }
                 } else {
                     try {
-                        val result = sync.execCommand(listOf("rclone", "config", "create", "gdrive", "drive"), timeoutSeconds = 120)
+                        val result = sync.authGdriveWithBrowserIntent { url ->
+                            pb?.openUrl(url)
+                        }
                         if (result.code == 0) {
                             msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject()
                                 .put("success", true).put("remoteName", "gdrive")) }
@@ -2337,6 +2507,380 @@ class SessionService : Service() {
                 msg.id?.let {
                     bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL })
                 }
+            }
+
+            // ── Settings → Development IPC handlers ──────────────────────────────
+            // Android parity for the six dev:* types in desktop/src/main/ipc-handlers.ts.
+            // Logic is delegated to DevTools.kt which mirrors dev-tools.ts.
+
+            "dev:log-tail" -> {
+                val maxLines = (msg.payload as? Number)?.toInt() ?: 200
+                val homeDir = bootstrap?.homeDir ?: filesDir
+                val tail = withContext(Dispatchers.IO) {
+                    DevTools.readLogTail(homeDir.absolutePath, maxLines)
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, tail) }
+            }
+
+            "dev:diagnostics" -> {
+                // Environment snapshot for the bug-report flow. Mirrors
+                // gatherDiagnostics() in desktop/src/main/dev-tools.ts. The
+                // probe set differs because Android's runtime is Termux-rooted —
+                // claude lives in $PREFIX/bin, $HOME points at the app sandbox.
+                val pm = applicationContext.packageManager
+                val pkgInfo = pm.getPackageInfo(applicationContext.packageName, 0)
+                val versionName = pkgInfo.versionName ?: "unknown"
+                val osRelease = "Android ${android.os.Build.VERSION.RELEASE}"
+                val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
+                val text = withContext(Dispatchers.IO) {
+                    val bs = bootstrap
+                    DevTools.gatherDiagnostics(
+                        env = bs?.buildRuntimeEnv(),
+                        homeDir = bs?.homeDir,
+                        usrDir = bs?.usrDir,
+                        appVersion = versionName,
+                        osRelease = osRelease,
+                        arch = arch,
+                    )
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, text) }
+            }
+
+            "dev:summarize-issue" -> {
+                val kind = msg.payload.optString("kind", "bug")
+                val description = msg.payload.optString("description", "")
+                // Only include the log block for bug reports, not feature requests.
+                val log = if (kind == "bug") msg.payload.optString("log", "") else ""
+                val prompt = DevTools.buildSummarizerPrompt(kind, description, log)
+                val result = withContext(Dispatchers.IO) {
+                    val bs = bootstrap
+                    if (bs == null) {
+                        DevTools.parseSummary("", description, false)
+                    } else {
+                        val env = bs.buildRuntimeEnv()
+                        // claude is a Node.js program — runs via LD_PRELOAD (not linker64),
+                        // so we can pass it directly through runStreamed without the linker64 prefix.
+                        // Fix: pipe prompt via stdin (matches Phase 3 TS fix) so large prompts
+                        // don't hit ARG_MAX and special characters don't need shell-escaping.
+                        val (exit, out) = DevTools.runStreamed(
+                            env,
+                            listOf("claude", "-p"),
+                            bs.homeDir,
+                            stdinInput = prompt,
+                            onLine = { /* ignore intermediate lines — we only need final stdout */ },
+                        )
+                        DevTools.parseSummary(out, description, exit == 0)
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+
+            "dev:submit-issue" -> {
+                // Fix: read new SubmitArgs shape { kind, title, summary, description, log?, label }
+                // matching the Phase 5 TS fix. Old shape ({ title, body, label }) sent an empty body.
+                val kind = msg.payload.optString("kind", "bug")
+                val title = msg.payload.optString("title", "")
+                val summary = msg.payload.optString("summary", "")
+                val description = msg.payload.optString("description", "")
+                val log = msg.payload.optString("log", "")
+                val label = msg.payload.optString("label", "bug")
+                // Build body using canonical helper (mirrors buildIssueBody() in dev-tools.ts).
+                val pm = applicationContext.packageManager
+                val pkgInfo = pm.getPackageInfo(applicationContext.packageName, 0)
+                val versionName = pkgInfo.versionName ?: "unknown"
+                val osString = "Android ${android.os.Build.VERSION.RELEASE}"
+                val body = DevTools.buildIssueBody(kind, summary, description, log, versionName, osString)
+                val result = withContext(Dispatchers.IO) {
+                    val bs = bootstrap
+                    if (bs == null) {
+                        JSONObject().apply {
+                            put("ok", false)
+                            put("fallbackUrl", DevTools.buildPrefillUrl(title, body, label))
+                        }
+                    } else {
+                        val env = bs.buildRuntimeEnv()
+                        // gh is a Go binary — must be routed through linker64 directly
+                        // (bypasses LD_PRELOAD), same as the other gh invocations here.
+                        val ghPath = File(bs.usrDir, "bin/gh").absolutePath
+                        val (authExit, _) = DevTools.runStreamed(
+                            env,
+                            listOf("/system/bin/linker64", ghPath, "auth", "status"),
+                            bs.homeDir,
+                            onLine = {},
+                        )
+                        if (authExit != 0) {
+                            JSONObject().apply {
+                                put("ok", false)
+                                put("fallbackUrl", DevTools.buildPrefillUrl(title, body, label))
+                            }
+                        } else {
+                            // Write body to a temp file so we avoid shell-escaping issues
+                            // with special characters in the issue body.
+                            val tmp = File.createTempFile("youcoded-issue-", ".md", cacheDir)
+                            try {
+                                tmp.writeText(body)
+                                val (exit, stdout) = DevTools.runStreamed(
+                                    env,
+                                    listOf(
+                                        "/system/bin/linker64", ghPath,
+                                        "issue", "create",
+                                        "--repo", "itsdestin/youcoded",
+                                        "--title", title,
+                                        "--body-file", tmp.absolutePath,
+                                        "--label", label,
+                                        "--label", "youcoded-app:reported",
+                                    ),
+                                    bs.homeDir,
+                                    onLine = {},
+                                )
+                                val url = Regex("https://github\\.com/[^\\s]+").find(stdout)?.value
+                                if (exit == 0 && url != null) {
+                                    JSONObject().apply { put("ok", true); put("url", url) }
+                                } else {
+                                    JSONObject().apply {
+                                        put("ok", false)
+                                        put("fallbackUrl", DevTools.buildPrefillUrl(title, body, label))
+                                    }
+                                }
+                            } finally {
+                                tmp.delete()
+                            }
+                        }
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+
+            "dev:install-workspace" -> {
+                // Concurrency guard: reject a second install if one is already running.
+                if (devInstallInFlight) {
+                    msg.id?.let {
+                        bridgeServer.respond(ws, msg.type, it, JSONObject().apply {
+                            put("error", "Install already in progress")
+                        })
+                    }
+                    return@handleBridgeMessage
+                }
+                devInstallInFlight = true
+                val result = try {
+                    withContext(Dispatchers.IO) {
+                        val bs = bootstrap
+                        if (bs == null) {
+                            JSONObject().apply { put("error", "Bootstrap not initialised") }
+                        } else {
+                            val env = bs.buildRuntimeEnv()
+                            // Clone target: $HOME/youcoded-dev (parallel to user's project folders).
+                            val target = File(bs.homeDir, "youcoded-dev")
+                            // Fix: capture whether the workspace already existed BEFORE the
+                            // if/else so the response accurately reflects clone vs pull.
+                            val wasAlreadyInstalled = target.exists()
+                            val onLine: (String) -> Unit = { line ->
+                                // Stream progress lines to the React UI so the ContributePopup
+                                // can show a live log of the clone/pull. Mirrors the desktop
+                                // ipc-handlers.ts install-workspace progress push.
+                                bridgeServer.broadcast(JSONObject().apply {
+                                    put("type", "dev:install-progress")
+                                    put("payload", line)
+                                })
+                            }
+                            try {
+                                if (wasAlreadyInstalled) {
+                                    // Already present — check whether it's the right repo.
+                                    val (_, remote) = DevTools.runStreamed(
+                                        env,
+                                        listOf("git", "-C", target.absolutePath, "remote", "get-url", "origin"),
+                                        bs.homeDir,
+                                        onLine = {},
+                                    )
+                                    val cls = DevTools.classifyExistingWorkspace(remote.trim())
+                                    if (cls != "workspace") {
+                                        return@withContext JSONObject().apply {
+                                            put("error", "${target.absolutePath} already exists but isn't the YouCoded dev workspace. Move or rename it and try again.")
+                                        }
+                                    }
+                                    onLine("Found existing workspace, pulling latest…")
+                                    DevTools.runStreamed(
+                                        env,
+                                        listOf("git", "-C", target.absolutePath, "pull", "--ff-only"),
+                                        bs.homeDir,
+                                        onLine = onLine,
+                                    )
+                                } else {
+                                    onLine("Cloning workspace…")
+                                    DevTools.runStreamed(
+                                        env,
+                                        listOf("git", "clone", "--depth", "50",
+                                            "https://github.com/itsdestin/youcoded-dev",
+                                            target.absolutePath),
+                                        bs.homeDir,
+                                        onLine = onLine,
+                                    )
+                                }
+                                onLine("Cloning sub-repos (this may take a minute)…")
+                                DevTools.runStreamed(
+                                    env, listOf("bash", "setup.sh"), target, onLine = onLine,
+                                )
+                                // Register as a project folder via the same WorkingDirStore
+                                // that backs the folders:add IPC — this is the Android folder
+                                // picker's persistent store.
+                                val store = com.youcoded.app.config.WorkingDirStore(bs.homeDir)
+                                store.add(com.youcoded.app.config.WorkingDir(
+                                    label = "youcoded-dev",
+                                    path = target.absolutePath,
+                                ))
+                                JSONObject().apply {
+                                    put("path", target.absolutePath)
+                                    put("alreadyInstalled", wasAlreadyInstalled)
+                                }
+                            } catch (e: Exception) {
+                                JSONObject().apply { put("error", e.message ?: "Install failed") }
+                            }
+                        }
+                    }
+                } finally {
+                    devInstallInFlight = false
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+
+            "dev:install-progress" -> {
+                // Fire-and-forget push from server → clients; no handler needed on this side.
+                // Incoming messages of this type are server-originated broadcasts, not client
+                // requests — log and ignore if one arrives unexpectedly.
+                android.util.Log.d("SessionService", "dev:install-progress received (unexpected direction)")
+            }
+
+            "dev:open-session-in" -> {
+                val cwd = msg.payload.optString("cwd", "")
+                val initialInput = msg.payload.optString("initialInput", "").ifEmpty { null }
+                if (cwd.isEmpty()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("cwd is required")) }
+                } else {
+                    val session = withContext(Dispatchers.Main) {
+                        createSession(File(cwd), dangerousMode = false, apiKey = null)
+                    }
+                    val info = MessageRouter.buildSessionInfo(
+                        id = session.id,
+                        name = session.name.value,
+                        cwd = cwd,
+                        status = "active",
+                        permissionMode = "normal",
+                        skipPermissions = false,
+                        createdAt = session.createdAt,
+                    )
+                    val ownerClientId = ws.getAttachment<String>() ?: "unknown"
+                    sessionOwnership[session.id] = ownerClientId
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, info) }
+                    // Broadcast session:created so the React SessionStrip updates — includes
+                    // initialInput so InputBar.tsx can pre-fill the text box on the new session.
+                    bridgeServer.broadcast(JSONObject().apply {
+                        put("type", "session:created")
+                        put("payload", JSONObject(info.toString()).apply {
+                            if (initialInput != null) put("initialInput", initialInput)
+                        })
+                    })
+                }
+            }
+
+            // Privacy analytics opt-in toggle — exposed via window.claude.analytics.
+            // Mirrors desktop's ipc-handlers.ts `analytics:get-opt-in` /
+            // `analytics:set-opt-in`. Both build a fresh AnalyticsService per call
+            // (the service is stateless aside from its JSON file, so reconstruction
+            // is cheap and avoids wiring a long-lived singleton through initBootstrap).
+            "analytics:get-opt-in" -> {
+                val svc = AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                    machineIdReader = {
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                    },
+                )
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, svc.getOptIn()) }
+            }
+
+            "analytics:set-opt-in" -> {
+                val enabled = msg.payload.optBoolean("enabled", true)
+                val svc = AnalyticsService(
+                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
+                    appVersion = BuildConfig.VERSION_NAME,
+                    machineIdReader = {
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                    },
+                )
+                svc.setOptIn(enabled)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, null) }
+            }
+
+            "performance:get-config" -> {
+                // Android has no userland GPU choice. Always return defaults so
+                // the renderer's Performance section stays hidden (it gates on
+                // multiGpuDetected). Keeps IPC parity green without surfacing
+                // a setting that has no effect on Android.
+                val payload = JSONObject().apply {
+                    put("preferPowerSaving", false)
+                    put("appliedAtLaunch", false)
+                    put("multiGpuDetected", false)
+                    put("gpuList", org.json.JSONArray())
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
+            "performance:set-config" -> {
+                // No-op write. We accept the payload silently so the renderer
+                // doesn't see an error if it ever fires this on Android.
+                val payload = JSONObject().apply { put("ok", true) }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
+            "app:restart" -> {
+                // Android session lifecycle differs — a restart equivalent
+                // would be killing and respawning SessionService. Out of scope
+                // for the GPU-toggle feature. Acknowledge so the parity test
+                // stays green; the Performance section is hidden on Android
+                // so this branch is unreachable in normal use anyway.
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject.NULL) }
+            }
+
+            "update:changelog" -> {
+                // Desktop-only feature. Android never renders the version pill, so this
+                // handler should be unreachable — but IPC-parity invariant (docs/PITFALLS.md
+                // "Cross-Platform") requires the type string to exist in all three files.
+                // If Android ever does render the pill, error:true routes the React UI to
+                // the "Open on GitHub" fallback (in UpdatePanel.tsx) rather than a blank
+                // panel. Prefer fail-loud over fail-silent for an unreachable-today path.
+                msg.id?.let {
+                    bridgeServer.respond(ws, msg.type, it, JSONObject()
+                        .put("markdown", JSONObject.NULL)
+                        .put("entries", org.json.JSONArray())
+                        .put("fromCache", false)
+                        .put("error", true))
+                }
+            }
+
+            // Desktop in-app update installer stubs (Android uses Play Store / direct APK sideload)
+            "update:download",
+            "update:cancel",
+            "update:launch",
+            "update:get-cached-download" -> {
+                msg.id?.let {
+                    bridgeServer.respond(ws, msg.type, it, UpdateInstallerStub.unsupported())
+                }
+            }
+            "update:progress" -> {
+                // Push-event channel — no-op on Android. Desktop pushes these; Android
+                // never subscribes because it never downloads desktop installers.
+            }
+
+            "system:notify-stack-state" -> {
+                // React signals dismissal-stack non-emptiness. Cache the
+                // value (so MainActivity rebinds get it replayed) and forward
+                // to the bound callback. Fire-and-forget — no msg.id, no
+                // response. Default to true if payload is missing or malformed
+                // so worst case is "back backgrounds the app" (Android default).
+                val payload = msg.payload as? JSONObject
+                val empty = payload?.optBoolean("empty", true) ?: true
+                lastStackEmpty = empty
+                onStackStateChanged?.invoke(empty)
             }
 
             else -> {
@@ -2919,6 +3463,34 @@ class SessionService : Service() {
     }
 
     /**
+     * Read per-session topic names from ~/.claude/conversation-index.json.
+     * Used as a fallback for the Resume Browser when the ephemeral
+     * ~/.claude/topics/topic-<id> file has been pruned (30-day) or was never
+     * synced from another device — the index keeps the name longer and does
+     * sync. Excludes blank / placeholder names. Mirrors the desktop's
+     * readIndexMeta() topic map in session-browser.ts.
+     */
+    private fun readTopicMap(homeDir: File): Map<String, String> {
+        val indexFile = File(homeDir, ".claude/conversation-index.json")
+        if (!indexFile.exists()) return emptyMap()
+        return try {
+            val root = JSONObject(indexFile.readText())
+            val sessions = root.optJSONObject("sessions") ?: return emptyMap()
+            val out = mutableMapOf<String, String>()
+            val keys = sessions.keys()
+            while (keys.hasNext()) {
+                val sid = keys.next()
+                val entry = sessions.optJSONObject(sid) ?: continue
+                val topic = entry.optString("topic", "").trim()
+                if (topic.isNotBlank() && topic != "New Session" && topic != "Untitled") {
+                    out[sid] = topic
+                }
+            }
+            out
+        } catch (_: Throwable) { emptyMap() }
+    }
+
+    /**
      * Set a named flag on a session in ~/.claude/conversation-index.json.
      * Writes under entry.flags[name] = { value, updatedAt } — mirrors
      * SyncService.setSessionFlag() on desktop so cross-device merge treats
@@ -2955,6 +3527,59 @@ class SessionService : Service() {
             tmp.renameTo(indexFile) || run { indexFile.writeText(root.toString(2)); true }
             true
         } catch (_: Throwable) { false }
+    }
+
+    /**
+     * Broadcast raw PTY bytes over the WebSocket as pty:raw-bytes push events.
+     * Batches to coalesce bursts: flush every 16ms (~1 frame at 60fps) OR
+     * when the pending buffer hits 8KB, whichever comes first. Base64 encodes
+     * the payload so JSON can carry arbitrary bytes (ANSI control chars with
+     * high bits are common). Broadcast recipient: all authenticated clients.
+     *
+     * WHY: The React-side terminal renderer (xterm.js) needs a raw byte feed
+     * rather than a cooked-text snapshot so it can replay ANSI sequences and
+     * render the terminal state faithfully on remote/WebView clients.
+     */
+    private fun launchRawByteBroadcast(sessionId: String, ptyBridge: PtyBridge): Job {
+        return serviceScope.launch {
+            val pending = java.io.ByteArrayOutputStream()
+            var lastFlushNs = System.nanoTime()
+            val flushIntervalNs = 16_000_000L  // 16 ms — ~1 frame at 60fps
+            val maxBufferBytes = 8192           // 8 KB cap prevents unbounded latency on slow connections
+
+            // Note: flush is data-driven — a partial buffer is only flushed when
+            // the next byte arrives or when we hit 8KB. If the PTY goes silent
+            // mid-batch, the tail bytes stay pending until the next emission.
+            // Tier 1 has no render consumer so this is acceptable; Tier 2
+            // xterm.js will need to tolerate up to one-batch lag on shell-idle
+            // or handle it with a timer-driven flush (withTimeoutOrNull around
+            // collect) if frame-accurate rendering matters.
+            ptyBridge.rawByteFlow.collect { bytes ->
+                pending.write(bytes)
+                val now = System.nanoTime()
+                if (pending.size() >= maxBufferBytes || now - lastFlushNs >= flushIntervalNs) {
+                    try {
+                        val payload = JSONObject().apply {
+                            put("sessionId", sessionId)
+                            put("data", android.util.Base64.encodeToString(
+                                pending.toByteArray(), android.util.Base64.NO_WRAP))
+                        }
+                        bridgeServer.broadcast(
+                            JSONObject().apply {
+                                put("type", "pty:raw-bytes")
+                                put("payload", payload)
+                            }
+                        )
+                    } catch (e: Exception) {
+                        // Broadcast failure (e.g. WebSocket gone mid-send) is best-effort;
+                        // log and continue — the flow source (PtyBridge) is unaffected.
+                        android.util.Log.w("SessionService", "pty:raw-bytes broadcast failed for $sessionId: ${e.message}")
+                    }
+                    pending.reset()
+                    lastFlushNs = now
+                }
+            }
+        }
     }
 
     companion object {

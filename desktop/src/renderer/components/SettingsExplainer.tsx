@@ -12,6 +12,7 @@
 
 import React from 'react';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useEscClose } from '../hooks/use-esc-close';
 
 export interface ExplainerBullet {
   /** Optional bold lead-in (e.g. a setting name). */
@@ -41,6 +42,8 @@ interface Props {
 }
 
 export default function SettingsExplainer({ title, intro, sections, onBack, onClose }: Props) {
+  // Always mounted when shown (host swaps this in via a boolean flag) — so open=true is correct here.
+  useEscClose(true, onClose);
   const bodyRef = useScrollFade<HTMLDivElement>();
   return (
     <div className="flex flex-col h-full">
@@ -67,8 +70,10 @@ export default function SettingsExplainer({ title, intro, sections, onBack, onCl
         </button>
       </div>
 
-      {/* Body — intro paragraph, then each section with its own heading. */}
-      <div ref={bodyRef} className="scroll-fade flex-1 px-4 py-4 space-y-5">
+      {/* Body — intro paragraph, then each section with its own heading.
+          Padding on inner wrapper so scroll-fade is unpadded (fade pseudos flush). */}
+      <div ref={bodyRef} className="scroll-fade flex-1">
+        <div className="px-4 py-4 space-y-5">
         <p className="text-xs text-fg-2 leading-relaxed">{intro}</p>
 
         {sections.map((section, i) => (
@@ -92,6 +97,7 @@ export default function SettingsExplainer({ title, intro, sections, onBack, onCl
             )}
           </section>
         ))}
+        </div>
       </div>
     </div>
   );

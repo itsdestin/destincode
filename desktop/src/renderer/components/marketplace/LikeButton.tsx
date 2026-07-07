@@ -8,16 +8,19 @@
 //   initialCount  — like count from useMarketplaceStats().themes[themeId]?.likes ?? 0
 //
 // Behavior:
-//   - Signed out:   shows tooltip on hover; click shows inline toast, skips API call
+//   - Signed out:   click opens SignInPromptModal with "Sign in with GitHub" CTA.
+//                   Used to be a silent inline toast that was easy to miss and had
+//                   no way to actually start the sign-in flow.
 //   - Signed in:    flips state immediately (optimistic), calls window.claude.marketplaceApi.likeTheme()
 //       ok + liked:true   → reconcile, increment count
 //       ok + liked:false  → reconcile, decrement count (backend toggled back)
-//       err 401           → revert, show "Sign in to like themes"
-//       err other         → revert, show "Couldn't like theme — try again"
+//       err 401           → revert, open SignInPromptModal (token was rejected)
+//       err other         → revert, show "Couldn't like theme — try again" toast
 //   - Disables button during in-flight request to prevent double-clicks
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useMarketplaceAuth } from '../../state/marketplace-auth-context';
+import SignInPromptModal from './SignInPromptModal';
 
 // ── Mini local toast (no global toast context available inside the modal) ──────
 
@@ -87,6 +90,9 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
   const [liked, setLiked] = useState(initialLiked);
   const [count, setCount] = useState(initialCount);
   const [inFlight, setInFlight] = useState(false);
+  // Signed-out users get a real modal CTA instead of a fly-by toast — the toast
+  // had no actual sign-in button and was widely missed.
+  const [signInPromptOpen, setSignInPromptOpen] = useState(false);
 
   const { toastMessage, showToast } = useLocalToast();
 
@@ -112,9 +118,11 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
     // Stop click from bubbling up to MarketplaceCard's onClick (which opens detail)
     e.stopPropagation();
 
-    // Signed-out guard: show feedback but don't call the API
+    // Signed-out guard: open the sign-in prompt modal instead of the API call.
+    // The prompt has an actual "Sign in with GitHub" button that kicks off the
+    // device-code OAuth flow.
     if (!signedIn) {
-      showToast('Sign in to like themes');
+      setSignInPromptOpen(true);
       return;
     }
 
@@ -151,7 +159,9 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
         setCount(prevCount);
 
         if (res.status === 401) {
-          showToast('Sign in to like themes');
+          // Server rejected our token (expired/revoked) — surface the prompt
+          // modal so the user can re-auth without hunting for the chip.
+          setSignInPromptOpen(true);
         } else {
           showToast("Couldn't like theme — try again");
         }
@@ -188,7 +198,8 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
         <span>{count > 0 ? count : ''}</span>
       </button>
 
-      {/* Inline toast — shown briefly on error or signed-out click */}
+      {/* Inline toast — shown briefly on non-auth errors only. Auth errors now
+          open the SignInPromptModal below instead of using this toast. */}
       {toastMessage && (
         <div
           role="status"
@@ -204,6 +215,13 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
           {toastMessage}
         </div>
       )}
+
+      <SignInPromptModal
+        open={signInPromptOpen}
+        onClose={() => setSignInPromptOpen(false)}
+        title="Sign in to like themes"
+        message="Liking themes lets the community see what's popular. Sign in with your GitHub account to like this and other themes."
+      />
     </div>
   );
 }

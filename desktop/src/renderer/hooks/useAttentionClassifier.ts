@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { useChatDispatch } from '../state/chat-context';
-import { getScreenText } from './terminal-registry';
 import {
   classifyBuffer,
   BufferClass,
@@ -19,15 +18,10 @@ const STABILITY_TICKS = 5;
 // while the classifier is active (isThinking + no tool running/awaiting),
 // escalate to 'stuck'. The gate conditions already rule out "busy with a
 // tool" and "waiting on user", so sustained spinner-absence really does mean
-// the CLI is silent in a way we should surface.
+// the CLI is silent in a way we should surface. Acts as the safety net for
+// genuine stalls where the spinner has been removed entirely from the buffer
+// (e.g. CC crashed mid-render or output scrolled the spinner off-screen).
 const NO_SPINNER_STUCK_MS = 20_000;
-
-// If "esc to cancel" is continuously present in the buffer for this long
-// (with no tool active in chat view — already enforced by the hook gate),
-// escalate to 'stuck'. Claude Code shows this marker on certain waiting
-// prompts; extended persistence means the CLI is blocked on something the
-// chat view isn't tracking.
-const ESC_TO_CANCEL_STUCK_MS = 25_000;
 
 interface HookArgs {
   /** isThinking from reducer — gates the whole classifier. */
@@ -89,70 +83,91 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
       return;
     }
 
-    // Per-run spinner tracking for active vs. stalled detection.
-    let previousSpinnerSeconds: number | null = null;
-    let previousSpinnerAt: number = Date.now();
-    // When we last saw any spinner (any seconds value) in the buffer. Seeded
-    // to run-start so the 20s no-spinner timer begins counting immediately.
-    let lastSpinnerSeenAt: number = Date.now();
-    // When "esc to cancel" first appeared in a continuous run. Reset to null
-    // whenever the marker disappears from the tail.
-    let escToCancelSince: number | null = null;
+    // Per-run spinner tracking — glyph rotation drives active vs. stalled.
+    let previousSpinnerGlyph: string | null = null;
+    // When the glyph last CHANGED. While the glyph stays the same we measure
+    // age against this timestamp; after ≥30s without rotation AND no counter
+    // advancement the classifier returns thinking-stalled (mapped to 'stuck').
+    let previousSpinnerGlyphAt: number = Date.now();
+    // When we last saw a CC liveness signal in the buffer — either a spinner
+    // glyph OR a paren-wrapped seconds counter that advanced since the prior
+    // tick. Seeded to run-start so the 20s no-spinner-stuck timer begins
+    // counting immediately. Broader than the old "lastSpinnerSeenAt" because
+    // a ticking counter alone is enough to prove CC is alive and rendering;
+    // see attention-classifier.ts header for the full rationale.
+    let lastSignalSeenAt: number = Date.now();
+    // Tracks the highest CC seconds-counter value observed in the prior tick
+    // so the classifier can detect counter advancement across ticks. null when
+    // no counter was visible in the prior tick (very first tick or pre-tool
+    // phase of a turn).
+    let previousCounterSeconds: number | null = null;
     // Debounce: count how many consecutive ticks have mapped to the same
     // non-ok state. Only dispatch once it sticks — transitions back to 'ok'
     // fire immediately so the banner clears fast when Claude resumes.
     let pendingState: AttentionState = 'ok';
     let pendingStreak = 0;
 
-    const tick = () => {
-      const raw = getScreenText(sessionId);
-      if (raw === null) return;
+    // Async: the facade (window.claude.terminal.getScreenText) resolves via IPC
+    // on desktop and via WebSocket on Android — same classifyBuffer call either
+    // way. The original terminal-registry.getScreenText was synchronous and
+    // returned string | null; the facade always resolves to string (empty string
+    // when no terminal is registered, matching null-guard behavior since an empty
+    // buffer produces 'unknown' → 'ok', which is harmless to dispatch).
+    const tick = async () => {
+      let raw: string;
+      try {
+        raw = await window.claude.terminal.getScreenText(sessionId);
+      } catch {
+        // Network/IPC failure (Android WebSocket disconnect, etc.) — treat as
+        // empty buffer rather than crashing the tick. Mirrors the desktop IPC
+        // handler's try/catch defaulting to ''.
+        raw = '';
+      }
       const lines = raw.split('\n');
       const tail = lines.slice(-40);
 
       const ctx: ClassifierContext = {
         bufferTail: tail,
-        previousSpinnerSeconds,
-        secondsSincePreviousSpinner: (Date.now() - previousSpinnerAt) / 1000,
+        previousSpinnerGlyph,
+        secondsSincePreviousGlyph: (Date.now() - previousSpinnerGlyphAt) / 1000,
+        previousCounterSeconds,
       };
       const result = classifyBuffer(ctx);
 
-      // Track spinner progression for the next tick.
-      if (result.spinnerSeconds !== null) {
-        lastSpinnerSeenAt = Date.now();
-        if (result.spinnerSeconds !== previousSpinnerSeconds) {
-          previousSpinnerSeconds = result.spinnerSeconds;
-          previousSpinnerAt = Date.now();
+      // Track spinner glyph for the next tick.
+      if (result.spinnerGlyph !== null) {
+        lastSignalSeenAt = Date.now();
+        if (result.spinnerGlyph !== previousSpinnerGlyph) {
+          previousSpinnerGlyph = result.spinnerGlyph;
+          previousSpinnerGlyphAt = Date.now();
         }
       }
 
-      // Track "esc to cancel" persistence — reset on disappearance so only
-      // continuous presence counts toward the stuck threshold.
-      if (result.escToCancel) {
-        if (escToCancelSince === null) escToCancelSince = Date.now();
-      } else {
-        escToCancelSince = null;
+      // Track counter advancement for the next tick. A counter that ticked up
+      // is itself a CC liveness signal — refresh lastSignalSeenAt so the 20s
+      // no-spinner escalation below doesn't fire while a counter is actively
+      // running. We compare to the value we passed INTO this tick (saved in
+      // a local) before overwriting previousCounterSeconds for the next one.
+      const priorCounterForCompare = previousCounterSeconds;
+      if (
+        result.counterSeconds !== null &&
+        priorCounterForCompare !== null &&
+        result.counterSeconds > priorCounterForCompare
+      ) {
+        lastSignalSeenAt = Date.now();
       }
+      previousCounterSeconds = result.counterSeconds;
 
       let mapped = bufferClassToAttention(result.class);
 
-      // Escalate sustained spinner-absence to 'stuck'. Gate already rules out
-      // running tools / awaiting approval, so a missing spinner for 20s means
-      // the CLI is genuinely quiet while we thought it was thinking.
+      // Escalate sustained signal-absence to 'stuck'. Gate already rules out
+      // running tools / awaiting approval, so 20s without ANY liveness signal
+      // (no glyph, no advancing counter) means the CLI is genuinely quiet
+      // while we thought it was thinking.
       if (
         mapped === 'ok' &&
         result.class === 'unknown' &&
-        Date.now() - lastSpinnerSeenAt >= NO_SPINNER_STUCK_MS
-      ) {
-        mapped = 'stuck';
-      }
-
-      // Escalate persistent "esc to cancel" to 'stuck' — it means Claude Code
-      // is waiting on something the chat view doesn't know about.
-      if (
-        mapped === 'ok' &&
-        escToCancelSince !== null &&
-        Date.now() - escToCancelSince >= ESC_TO_CANCEL_STUCK_MS
+        Date.now() - lastSignalSeenAt >= NO_SPINNER_STUCK_MS
       ) {
         mapped = 'stuck';
       }

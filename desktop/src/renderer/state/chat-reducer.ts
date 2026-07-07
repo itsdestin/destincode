@@ -135,13 +135,22 @@ function injectPlanSegment(
 /**
  * Shared cleanup for turn endings (both normal completion and timeout).
  * Marks orphaned running/awaiting tools as failed and clears turn tracking.
+ *
+ * `errorMessage` lets turn-ending paths attribute the failure accurately.
+ * Interrupt path (TRANSCRIPT_INTERRUPT) passes 'Turn interrupted' so the
+ * tool card distinguishes user-cancelled from normal turn completion; the
+ * default 'Turn ended' preserves behavior for TRANSCRIPT_TURN_COMPLETE
+ * and SESSION_PROCESS_EXITED.
  */
-function endTurn(session: SessionChatState): Partial<SessionChatState> {
+function endTurn(
+  session: SessionChatState,
+  errorMessage: string = 'Turn ended',
+): Partial<SessionChatState> {
   const toolCalls = new Map(session.toolCalls);
   for (const id of session.activeTurnToolIds) {
     const tool = toolCalls.get(id);
     if (tool && (tool.status === 'running' || tool.status === 'awaiting-approval')) {
-      toolCalls.set(id, { ...tool, status: 'failed', error: 'Turn ended' });
+      toolCalls.set(id, { ...tool, status: 'failed', error: errorMessage });
     }
   }
   return {
@@ -384,6 +393,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     // --- Transcript watcher actions ---
 
     case 'TRANSCRIPT_USER_MESSAGE': {
+      // Subagent briefing: Claude Code writes the parent's Task prompt as the
+      // first user-role line of the subagent's JSONL. The SubagentWatcher
+      // stamps those events with parentAgentToolUseId. Drop them here — the
+      // briefing is already visible in the parent Agent card's Briefing
+      // section, so appending it to the main timeline created a duplicate
+      // "message sent by the user" bubble. Mirrors the guard that
+      // TRANSCRIPT_ASSISTANT_TEXT / TOOL_USE / TOOL_RESULT already have.
+      if (action.parentAgentToolUseId) return state;
       const session = next.get(action.sessionId);
       if (!session) return state;
 
@@ -640,6 +657,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'TRANSCRIPT_TURN_COMPLETE': {
+      // A sub-agent's end_turn must NOT reach into parent state. Without
+      // this guard the parent turn's `model` gets overwritten with the
+      // sub-agent's model (the status-bar pill silently flips, and the
+      // drift-reconciliation effect in App.tsx persists it via
+      // setPreference), and endTurn() prematurely tears down the parent's
+      // in-flight turn — flagging the still-running Task tool as failed
+      // and tripping the attention banner. Mirrors the same guard on
+      // TRANSCRIPT_ASSISTANT_TEXT / TOOL_USE / TOOL_RESULT above. We don't
+      // delegate to applySubagentEvent here because a sub-agent's end_turn
+      // produces no visible nested segment — the parent's own tool-result
+      // for the Task tool is what completes the agent in the UI.
+      if (action.parentAgentToolUseId) return state;
       const session = next.get(action.sessionId);
       if (!session) return state;
 
@@ -666,6 +695,36 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
 
       next.set(action.sessionId, { ...session, assistantTurns, ...endTurn(session) });
+      return next;
+    }
+
+    case 'TRANSCRIPT_INTERRUPT': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+
+      // User interrupted (ESC or equivalent): mirror TRANSCRIPT_TURN_COMPLETE
+      // but hardcode stopReason='interrupted' so the AssistantTurnBubble
+      // footer renders "Interrupted" under the affected turn. Then endTurn()
+      // clears turn-scoped state and flips in-flight tools in this turn to
+      // failed with error 'Turn interrupted' (vs. 'Turn ended' for normal
+      // completion) so the tool card distinguishes user-cancelled.
+      const interruptingTurnId = session.currentTurnId;
+      const assistantTurns = new Map(session.assistantTurns);
+      if (interruptingTurnId) {
+        const turn = assistantTurns.get(interruptingTurnId);
+        if (turn) {
+          assistantTurns.set(interruptingTurnId, {
+            ...turn,
+            stopReason: 'interrupted',
+          });
+        }
+      }
+
+      next.set(action.sessionId, {
+        ...session,
+        assistantTurns,
+        ...endTurn(session, 'Turn interrupted'),
+      });
       return next;
     }
 
@@ -936,6 +995,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
               timestamp: Date.now(),
               label,
               variant: 'compact',
+              // Attaches the CC-produced summary text so the otherwise-thin
+              // marker can click-to-expand inline. Absent on aborted/watchdog
+              // completions (no summary available).
+              ...(action.summary ? { summary: action.summary } : {}),
             },
           },
         ],

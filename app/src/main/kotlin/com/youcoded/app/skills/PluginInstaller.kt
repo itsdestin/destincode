@@ -1,6 +1,7 @@
 package com.youcoded.app.skills
 
 import android.util.Log
+import com.youcoded.app.runtime.Bootstrap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -24,7 +25,7 @@ import java.util.concurrent.TimeUnit
  */
 class PluginInstaller(
     private val homeDir: File,
-    private val bootstrap: Any, // Bootstrap instance — used for buildRuntimeEnv()
+    private val bootstrap: Bootstrap,
     private val configStore: SkillConfigStore,
 ) {
     // Marketplace-installed plugins live at
@@ -97,8 +98,17 @@ class PluginInstaller(
             }
 
             // Guard: already installed via YouCoded
+            // Fix: accept the manifest at either ".claude-plugin/plugin.json" OR root
+            // "plugin.json". Some plugins (incl. our bundled wecoded-themes-plugin and
+            // wecoded-marketplace-publisher) ship the manifest at the root, and
+            // ensurePluginJson() does NOT normalize when a root manifest exists ("Claude
+            // Code will find it at root"). Without this dual-path check, every launch
+            // missed the guard, re-ran installFromLocal, returned Success, fired
+            // onPluginsChanged, and typed /reload-plugins into the active session.
             val targetDir = File(pluginsDir, id)
-            if (targetDir.exists() && File(targetDir, ".claude-plugin/plugin.json").exists()) {
+            val hasManifest = File(targetDir, ".claude-plugin/plugin.json").exists() ||
+                File(targetDir, "plugin.json").exists()
+            if (targetDir.exists() && hasManifest) {
                 return@withContext InstallResult.AlreadyInstalled("YouCoded")
             }
 
@@ -404,23 +414,21 @@ class PluginInstaller(
         }
     }
 
-    /** Build environment map for git execution via Bootstrap.buildRuntimeEnv(). */
-    private fun buildEnv(): Map<String, String> {
-        // Use reflection to call bootstrap.buildRuntimeEnv() since we take Any
-        // to avoid a circular dependency on Bootstrap
-        return try {
-            val method = bootstrap.javaClass.getMethod("buildRuntimeEnv")
-            @Suppress("UNCHECKED_CAST")
-            method.invoke(bootstrap) as Map<String, String>
-        } catch (_: Exception) {
-            // Fallback: minimal env. Same layout fix as runGit — usr/ lives at
-            // filesDir/usr, not homeDir/usr (homeDir is filesDir/home).
-            val usrRoot = (homeDir.parentFile ?: homeDir).absolutePath
-            mapOf(
-                "HOME" to homeDir.absolutePath,
-                "PATH" to "$usrRoot/usr/bin:/system/bin",
-                "LD_LIBRARY_PATH" to "$usrRoot/usr/lib",
-            )
-        }
-    }
+    /** Build environment map for git execution via Bootstrap.buildRuntimeEnv().
+     *
+     *  Direct call — NOT reflection. Earlier versions took `bootstrap: Any` and
+     *  used `bootstrap.javaClass.getMethod("buildRuntimeEnv").invoke(...)`,
+     *  motivated by an alleged circular-dep that never actually existed
+     *  (runtime/ does not import skills/). In release builds R8 minification
+     *  obfuscates `buildRuntimeEnv` to a one-letter name, the reflection
+     *  lookup throws NoSuchMethodException, the silent catch falls back to a
+     *  stripped-down env with NO LD_PRELOAD / TERMUX_APP__LEGACY_DATA_DIR /
+     *  GIT_EXEC_PATH, and every git clone — the only marketplace install
+     *  path on Android — fails with `cannot exec 'remote-https': Permission
+     *  denied` because git's HTTPS helper exec isn't routed through linker64.
+     *  The bug shipped silently from 2026-03-25 (e18ab861, R8 enabled) until
+     *  2026-04-30 when a user finally reported "click Install does nothing".
+     *
+     *  Do NOT reintroduce the reflection. */
+    private fun buildEnv(): Map<String, String> = bootstrap.buildRuntimeEnv()
 }

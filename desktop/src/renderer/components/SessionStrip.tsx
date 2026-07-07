@@ -18,8 +18,9 @@ interface SessionEntry {
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 
 interface Props {
@@ -51,6 +52,10 @@ interface Props {
 const DOT_BG: Record<SessionStatusColor, string> = {
   green: 'bg-green-400',
   red: 'bg-red-400',
+  // Amber harmonizes with the buddy AttentionStrip's #f5a623 ("needs
+  // attention" convention). bg-amber-400 (#fbbf24) reads as the same status
+  // across surfaces.
+  amber: 'bg-amber-400',
   blue: 'bg-blue-400',
   gray: 'bg-gray-500',
 };
@@ -58,6 +63,7 @@ const DOT_BG: Record<SessionStatusColor, string> = {
 const GLOW_SHADOW: Record<SessionStatusColor, string> = {
   green: '0 0 6px rgba(76,175,80,0.35)',
   red: '0 0 6px rgba(221,68,68,0.35)',
+  amber: '0 0 6px rgba(245,166,35,0.35)',
   blue: '0 0 6px rgba(96,165,250,0.35)',
   gray: 'none',
 };
@@ -65,6 +71,7 @@ const GLOW_SHADOW: Record<SessionStatusColor, string> = {
 const INDICATOR_COLOR: Record<SessionStatusColor, string> = {
   green: '#4CAF50',
   red: '#DD4444',
+  amber: '#F5A623',
   blue: '#60A5FA',
   gray: '#666666',
 };
@@ -802,7 +809,8 @@ export default function SessionStrip({
             };
           })()}
         >
-          {sessions.length > 0 && (
+          {/* Android only ever has one window, so the "in this window" scoping label is meaningless there */}
+          {sessions.length > 0 && !isAndroid() && (
             <>
               <div className="px-3 pt-1.5 text-[10px] uppercase tracking-wider text-fg-muted">
                 Sessions in this window
@@ -810,7 +818,8 @@ export default function SessionStrip({
             </>
           )}
           {sessions.length > 0 && (
-            <div ref={sessionListRef} className="scroll-fade py-1" style={{ maxHeight: 'min(336px, 50vh)' }}>
+            <div ref={sessionListRef} className="scroll-fade" style={{ maxHeight: 'min(336px, 50vh)' }}>
+              <div className="py-1">
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
                 const isBeingDragged = dragIdx === idx && isDragging.current;
@@ -875,6 +884,7 @@ export default function SessionStrip({
                   </div>
                 );
               })}
+              </div>
             </div>
           )}
 
@@ -882,12 +892,16 @@ export default function SessionStrip({
               reports peer windows owning sessions. Selecting one tells main
               to focus that window and switch its active session. */}
           {(() => {
+            // Defensive: a partial windowDirectory payload (missing `sessions`
+            // on a peer window entry) must not crash SessionStrip — it lives
+            // in the main App tree above the Game ErrorBoundary, so a throw
+            // falls through to RootErrorBoundary and wipes chat state.
             const remoteGroups = (windowDirectory?.windows ?? [])
               .filter((w) => w.window.id !== myWindowId)
               .map((w) => ({
                 label: w.window.label,
                 windowId: w.window.id,
-                sessions: w.sessions,
+                sessions: w.sessions ?? [],
               }))
               .filter((g) => g.sessions.length > 0);
             if (remoteGroups.length === 0) return null;

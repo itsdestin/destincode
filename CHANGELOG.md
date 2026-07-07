@@ -2,6 +2,452 @@
 
 All notable changes to YouCoded are documented in this file.
 
+## [1.2.4] — 2026-05-18
+
+**Claude Code CLI baseline:** v2.1.143
+
+Patch release. The headline change is the analytics redesign: anonymous
+telemetry is now keyed by a device-ID hash instead of a random install ID,
+so reinstalls no longer inflate the user count. The bug-report flow gained
+an environment-diagnostics snapshot, three Linux desktop platform-parity
+gaps were closed, and the first-run installer is more robust on minimal,
+musl, and fish-shell Linux setups.
+
+### Added
+- **Bug-report environment diagnostics** — The Settings → Development issue
+  reporter attaches an environment snapshot (git/claude/gh on PATH, ~/.claude
+  permissions, marketplace cache health, GitHub reachability) to bug reports.
+  Home paths and token patterns are redacted; the snapshot appears in the
+  editable preview before submission. Desktop + Android.
+- **PRIVACY.md, TERMS.md, SECURITY.md** — Public privacy policy, terms of
+  service, and security-disclosure policy for the project.
+
+### Changed
+- **Analytics: device-ID-hash redesign** — Anonymous opt-out telemetry is now
+  keyed by an on-device HMAC hash of a hardware ID — the raw machine ID never
+  leaves the device, and reinstalling no longer creates a new "user". Adds
+  approximate region (derived server-side from request IP) and drops the
+  separate install event. Desktop + Android; opt-out in Settings → About →
+  Privacy.
+
+### Fixed
+- **CC prompt-suggestion auto-submit** — YouCoded force-disables Claude Code's
+  next-prompt ghost-text suggestion on every launch. The ghost text
+  concatenated with chat→PTY writes and auto-submitted on the trailing
+  carriage return, sending text the user never typed. Desktop + Android.
+- **Linux platform parity** — Closed three desktop gaps: the first-run
+  installer auto-installs Node.js on Linux, the custom window caption buttons
+  render on Linux's frameless window, and three smaller parity gaps were fixed.
+- **First-run installer robustness (Linux)** — The Claude Code installer falls
+  back to `wget` when `curl` is absent; the Node.js installer detects musl
+  distros (Alpine) up front with package-manager guidance instead of failing
+  opaquely; and the Node PATH entry is persisted to `config.fish` for fish
+  users.
+- **Bug-report subprocess reliability (Windows)** — dev-tools subprocesses
+  (git/gh/claude) resolve to absolute paths and EINVAL-guard `.cmd` shims, so
+  environment diagnostics and the issue summarizer no longer under-deliver on
+  Windows.
+- **Theme effects** — The particle canvas pauses its animation loop when the
+  window is hidden, and masks out chrome regions so particles no longer render
+  under the header and input bar.
+- **Open Tasks popup** — The popup body is scrollable when the task list is long.
+- **Chat→PTY submit** — The submit-confirmation `\r` retry is suppressed while
+  the terminal view is active, preventing a stray carriage return.
+
+## [1.2.3] — 2026-05-01
+
+**Claude Code CLI baseline:** v2.1.126
+
+Patch release. The headline fix is the Android marketplace install bug: the
+`PluginInstaller` used string-based reflection against `Bootstrap` that R8
+silently obfuscated in release builds, so every marketplace plugin install
+since 2026-03-25 (v1.2.0 onward) shipped with a stripped runtime env and died
+with `cannot exec 'remote-https': Permission denied` on real users while every
+dev build worked fine. Plus the attention banner now correctly handles
+multi-word gerunds and ticking counters (no more spurious "still waiting" mid-
+turn), the drawer no longer flickers when the desktop chat re-renders, long
+URLs/paths wrap inside chat bubbles, and Android marketplace install state
+matches by `pluginName` instead of bare ID.
+
+### Added
+- **Android `releaseTest` build type + CI parity check** — Same R8 / shrinker / proguard config as production release, debug-signed for side-by-side install (`com.youcoded.app.releasetest`, bridge port 9961). `android-ci.yml` and `android-test-build.yml` run `assembleReleaseTest` on every push so R8-induced regressions surface at PR time, not after tagging. Catches the class of bug that shipped v1.2.0 → v1.2.2 invisibly.
+- **ProGuard `-keep` rule for `com.youcoded.app.runtime.Bootstrap`** — Defensive: protects all of Bootstrap's public surface from R8 obfuscation so any future reflection against it can't silently break. Negligible APK size cost.
+
+### Fixed
+- **Android marketplace plugin install (R8 reflection footgun)** — Replaced `bootstrap.javaClass.getMethod("buildRuntimeEnv")` in `PluginInstaller.kt` with a direct strongly-typed call. R8 minification was renaming the target to a one-letter symbol in release builds, so the reflection threw `NoSuchMethodException` and a silent `try/catch` fallback shipped a stripped env without `LD_PRELOAD`, breaking every plugin install with `cannot exec 'remote-https': Permission denied`. Affected v1.2.0 onward.
+- **Marketplace installed-plugin matching by `pluginName`** — `MarketplaceScreen` and `MarketplaceDetailOverlay` now match installed plugins by their declared `pluginName` instead of just the bare ID, so plugins whose published name differs from their install slug correctly show as installed and trigger the right install/uninstall path.
+- **Attention classifier — multi-word gerunds and ticking counters** — `SPINNER_RE` widened from `[A-Za-z]+…` to `[A-Za-z][A-Za-z +\-]*…` so multi-word gerunds like `Installing + verifying on device…` match. New parallel `COUNTER_RE` matches CC's paren-wrapped `(Nm Ns · …)` seconds counter as an OR liveness signal. Active-vs-stalled now requires both same-glyph-for-30s AND counter-not-advancing — fixes spurious "still waiting on Claude" banners during real long thinking turns where CC pauses glyph rotation but keeps the counter live.
+- **Desktop drawer card-flicker on chat re-renders** — `SkillCard` is now `React.memo`-wrapped with a stable comparator, and `FavoriteStar` lost a redundant `bg-panel/80 backdrop-blur-sm` that compositor-thrashed on every parent re-render. Chat re-rendering during a turn no longer makes drawer cards flash.
+- **Long URLs/paths wrap inside chat bubbles** — `AssistantTurnBubble`, `UserMessage`, and the bubble container apply Tailwind `break-words` so unbroken paths and URLs wrap at character boundaries instead of overflowing the bubble width.
+
+## [1.2.2] — 2026-04-29
+
+**Claude Code CLI baseline:** v2.1.123
+
+Wide-scope release. Tier 2 Android terminal rewrite (xterm in WebView replaces
+native Termux TerminalView), opt-out anonymous telemetry, native Claude Code
+installer, new productivity surfaces (Open Tasks, Context popup, Performance
+Settings, Resume Browser filters, AUTO permission mode), mobile marketplace
+polish, hardware back-button navigation on Android, echo-driven PTY submit,
+vendored terminal-emulator at v0.118.1, plus ~50 fixes across desktop and Android.
+
+### Added
+- **Open Tasks tracker** — Status-bar chip + centered popup that surfaces every active TaskCreate/TaskList tool result across the active session. Toggleable, mark-inactive flow, grouped by status. Auto-deduplicates against per-session task IDs.
+- **Context popup** — Status-bar context chip is now a button that opens a popup with `/compact` (split-button main click + chevron-driven focused-compact editor), `/clear` start-over, and an `(i)` explainer of what context window means. ESC / scrim / X all close cleanly.
+- **Performance Settings** — New Performance section in SettingsPanel with discrete-GPU preference toggle, persisted to disk, applied to Chromium at startup; `usePerformanceConfig` renderer hook + `(i)` info explainer. Full `performance:*` IPC parity (desktop + Android stub) plus a new `app:restart` channel for re-applying GPU pref.
+- **Resume Browser filters** — Project, Tag, and Sort pills above the conversation list. Filters persist across sessions.
+- **AUTO permission mode** — New cycle position in the permission-mode toggle for CC v2.1.83+ classifier-backed auto-mode. Opus 4.7 1M only (gated by Anthropic plan/model).
+- **Hardware back button (Android)** — `system:back` IPC + dismiss-stack listeners pop overlays in LIFO order before the activity quits.
+- **Mobile-responsive marketplace** — Drawer keyboard handling, wallpaper backdrop, glass-on-close-X, swipe-to-cycle hero featured slots, rail clip + uncapped explore, real shadow room, no horizontal wiggle, glass toggles.
+- **Local themes in Library** — User-built themes (e.g., from `/theme-builder`) now appear in the Library tab with a "Local" badge. Marketplace entries always win on slug collision. Synthesizer is pure (unit-testable). Android parity tracked separately.
+- **Anonymous opt-out telemetry** — Install + DAU/MAU pings via the marketplace Cloudflare Worker. Random install ID, app version, platform/OS, country (server-side from CF-IPCountry — never sent from client). Opt-out toggle in About popup. Privacy-by-construction: `install_id` never logged outside `count(DISTINCT)` in the six admin SQL queries.
+- **Native Claude Code installer** — `installClaude` now uses Anthropic's `claude.ai/install.{ps1,sh}` bootstrap script instead of `npm i -g`. Eliminates the `.cmd` shim chain entirely on Windows (sidesteps Node CVE-2024-27980 EINVAL on `.cmd`/`.bat` spawn). Android still uses npm — paths intentionally diverge.
+- **Echo-driven PTY submit (desktop)** — `pty-worker.js` no longer relies on a 600ms enter-split for long messages on Windows ConPTY. New 3-path logic: passthrough for non-CR writes, atomic for `body + \r ≤ 56b`, echo-driven (chunk body in 56b pieces, wait for CC's stdout echo, then write a bare `\r`) for longer text. Empirically anchored to a CC-version-pinned snapshot; `cc-snapshot.mjs` baseline preserved in `desktop/test-conpty/snapshots/`.
+- **Tier 2 Android terminal rewrite** — Native Termux `TerminalView` Compose block removed from `ChatScreen.kt`. xterm.js in the WebView is now the sole Android terminal renderer. Vendored `terminal-emulator-vendored/` (Termux v0.118.1, Apache 2.0) owns the PTY + emulator and exposes raw bytes via `pty:raw-bytes` (base64-encoded WebSocket push). xterm is display-only on touch (typing flows through React `InputBar`); custom touch-scroll handler routes to `terminal.scrollLines()`. Single-finger touch-scroll replaces native mouse drag.
+- **In-app issue submission (Settings → Development)** — Tail logs, summarize via `claude -p`, file GitHub issue from inside the app. Six new IPC channels in cross-platform parity. Issue body assembled in main process so version + OS + platform info are correct. Workspace install can be re-run idempotently from the same surface.
+- **Restore UX on Android** — Recent-50 conversations + status chip; Restore Wizard surfaces.
+- **Statusbar widget config popup** — Per-widget reorder/hide controls.
+- **Tool-card dev sandbox** — Standalone Vite mode (`?mode=tool-sandbox`) that renders every `.jsonl` fixture as a real `<ToolCard>`. HMR-driven iteration on `ToolBody.tsx` view designs without a live PTY session.
+- **Worker test harness** — `desktop/test-conpty/test-worker-submit.mjs` runs the actual `pty-worker.js` (forked exactly as production) against real `claude` to verify all three submit paths.
+
+### Changed
+- **AttentionState union narrowed** to `'ok' | 'stuck' | 'session-died'`. The unused `'awaiting-input' | 'shell-idle' | 'error'` branches were removed in the 2026-04-26 audit because nothing dispatched them. `BufferClass` (internal to the classifier) is now distinct from the public `AttentionState`.
+- **Spinner classifier rewritten** for CC v2.1.119+ — drops the obsolete `(Ns · esc to interrupt)` suffix requirement, adds glyph-rotation detection for active-vs-stalled (same glyph for ≥30s = stalled). Anchored to live `cc-snapshot.mjs` capture against CC v2.1.119; verified through v2.1.123. Probes at `desktop/test-conpty/test-spinner-fullcapture.mjs` + `test-attention-states.mjs`.
+- **xterm overlay scrollbar** — Scrollbar now overlays the gutter rather than eating the rightmost terminal column. Per-platform CSS-only.
+- **Project slug encoding** — All four caller sites (desktop transcript-watcher, desktop sync-service, Android TranscriptWatcher, Android SyncService) now encode space → dash, fixing chat view + sync for users with spaces in cwd.
+- **Marketplace rail polish** — Card shadows, gutter alignment, side-edge scroll-out, tighter taglines, scoped shadow override via plain CSS (Tailwind arbitrary-shadow fights specificity in production builds). "Featured picks" filter chip (was "Destin's picks").
+- **Subagent end_turn no longer pollutes parent model pill** — Per-turn `model` reconciliation skips subagent transcript lines.
+- **GPU recovery on xterm WebGL context loss** — Renderer falls back gracefully instead of going blank.
+- **Native installer is the desktop default** — Old npm path removed; Android still uses npm.
+
+### Fixed
+- **Self-heal installed-plugins list on Android** — Drift between `installed_plugins.json` and on-disk plugin dirs is reconciled at startup.
+- **`system:back` dispatch on remote-shim** — Hardware back now reaches all overlay listeners.
+- **Marketplace reviews button label** — "Install to review" when gated.
+- **xterm.js mobile IME conflicts** — Resolved by `disableStdin: true` on touch + dedicated `InputBar` text path.
+- **Personal-sync remote name self-heal** — Recovers from misnamed git remotes on the personal-backup repo.
+- **Subagent end_turn pollution of parent model pill** (PR #83).
+- **Android plugin discovery** (PR #82) — Self-heals from disk after install/uninstall.
+- **Android Tier-A parity** — Status data, exec-resolve, menu navigation.
+
+### Removed
+- **Native Termux `TerminalView`** from `ChatScreen.kt` — superseded by xterm.js in WebView (Tier 2).
+- **600ms enter-split** from desktop `pty-worker.js` — superseded by echo-driven submit. Android still uses 600ms gap.
+- **`terminal-view` Maven dependency** (`com.github.termux.termux-app:terminal-view:v0.118.1`) — no longer needed after Tier 2.
+- **Three legacy AttentionState branches** (`awaiting-input | shell-idle | error`) — never dispatched, removed in audit.
+
+### Internal
+- Vendored Termux `terminal-emulator` at v0.118.1 with a single documented `RawByteListener` patch. Apache 2.0 LICENSE + NOTICE co-located. See `terminal-emulator-vendored/VENDORED.md`.
+- Project bumps `versionCode` 17 → 18.
+
+## [1.2.1] — 2026-04-23
+
+**Claude Code CLI baseline:** v2.1.119
+
+### Added
+- **Separate "YouCoded Dev" Android build** — debug APK now installs side-by-side with the release app (different `applicationIdSuffix`, label, and bridge port 9951). Both variants can coexist on the same device.
+- **Soft-keyboard animation on Android** — chat input bar now smoothly tracks the Android soft keyboard via `visualViewport` + GPU translate, with the viewport meta tag configured so Android WebView fires the resize events reliably.
+- **Bridge bind-failure overlay** — if both YouCoded variants are running, the one that loses the port race now shows a clear "another variant is running" screen instead of silently failing.
+
+### Changed
+- **Android git/gh authenticate like desktop** — OAuth token from `gh auth login` is now mirrored into `~/.netrc` (mode 0600) so `git push` over HTTPS works without `gh auth setup-git` (which can't run under Android's exec model).
+- **Google Drive OAuth opens via Intent** — `rclone config create gdrive drive` now streams stderr, captures the auth URL, and opens it via `Intent.ACTION_VIEW` instead of relying on rclone's built-in browser-open (which rclone's Go runtime can't execute on Android).
+- **Terminal toolbar restyled** — ESC/Tab/Ctrl/arrow keys are now quick chips inside the input bar, consistent with the mobile-first layout.
+- **Floating status bar** — corners align with content, children clip correctly to edges, and there's breathing room below.
+
+### Fixed
+- **Android Resume Browser** slug decoding + missing `size` field — projects with hyphens in their directory name (e.g. `youcoded-dev`) now resolve correctly via greedy filesystem walk instead of collapsing to the wrong path.
+- **Project slug encoding** now matches Claude Code for folders with spaces on Windows (e.g. `PAF 540 Final Data Project`) across both transcript-watcher and sync-service, on desktop and Android.
+- **Chat input focus retention on Android** — the soft keyboard no longer dismisses when you release focus to global shortcuts (there are no global shortcuts on touch devices anyway).
+- **`session:created` payload carries `model` on Android** — status-bar pill shows the correct model alias at session launch instead of defaulting until the first transcript event.
+- **`status:data` broadcast carries `gitBranchMap` on Android** — git-branch widget now renders on Android matching desktop behavior.
+- **Hide desktop-only settings on Android** — buddy floater toggle and "Sessions in this window" label no longer appear.
+- **CI unblock** — removed invalid `@Volatile` on a local variable in `SyncService.authGdriveWithBrowserIntent`.
+
+## [1.2.0] — 2026-04-22
+
+**Claude Code CLI baseline:** v2.1.117
+
+In-app update flow (changelog popup + download/launch installer), ESC stack +
+chat-to-PTY interrupt, sync UX polish, marketplace integration polish, buddy
+mascot drag rewrite, and assorted stability fixes.
+
+### Added
+- **In-app update installer** — Clicking "Update Now" in the version pill now
+  downloads the platform-correct release asset (`.exe` / `.dmg` /
+  `.AppImage`), shows throttled progress with cancel, then launches the
+  installer. Mac DMG asset matching honors `process.arch`. Includes
+  URL validation, safe filename derivation, stale-download sweep,
+  cached-download lookup, platform-specific launch branches, and
+  `YOUCODED_DEV_FAKE_UPDATE` env flag (gated on `!app.isPackaged`) with
+  bundled dummy installers for manual verification. Five new IPC channels
+  added in cross-platform parity (preload, remote-shim, ipc-handlers,
+  Android stub: `UpdateInstallerStub.kt`).
+- **In-app changelog popup** — Version pill click opens the new
+  `UpdatePanel` showing the changelog filtered to versions newer than the
+  installed build (uses CHANGELOG position, not semver, so version resets
+  don't break the filter). Full-changelog mode also available.
+  New `changelog-service` (fetch + cache + capped redirects + atomic write
+  + graceful fallback) and shared `compareSemver` helper. Wired across
+  preload, ipc-handlers, remote-shim, and Android stub via new
+  `update:changelog` IPC.
+- **ESC overlay stack + chat-to-PTY interrupt** — New `useEscClose` stack
+  hook centralizes overlay dismissal so ESC pops the topmost overlay
+  (LIFO). When no overlay is open and chat view has focus, ESC forwards a
+  single byte to the active Claude session as an interrupt. New
+  `TRANSCRIPT_INTERRUPT` reducer event detects `[Request interrupted by
+  user]` markers in the transcript watcher and ends the in-flight turn
+  with `stopReason: 'interrupted'` (renders an "Interrupted" footer on
+  the affected turn bubble). 13 overlays migrated to `useEscClose`.
+- **Ctrl+O expand/collapse all tool cards** — Toggles every tool card in
+  the active chat between expanded and collapsed states.
+- **Settings → Development popup polish** — New icons, centered layout, and
+  follow-on integrations from the v1.1.2 dev panel: `platform:get` and
+  `integrations:connect` IPCs (cross-platform parity) let the panel
+  re-run an integration's `postInstallCommand` for already-installed
+  entries. New `useCurrentPlatform` renderer hook (cached, single IPC
+  per session) and `platform-display` shared helper (e.g. `darwin` →
+  `macOS`) used in user-facing copy.
+- **`platform:get` IPC** — Returns the current OS so renderer code can
+  branch on it without scraping userAgent. Implemented in desktop main +
+  Android `SessionService` for parity.
+- **Marketplace `connect` action for installed integrations** — Re-runs an
+  integration's `postInstallCommand` so users can refresh credentials or
+  reconfigure without uninstall/reinstall. Integration entries now carry
+  an optional `tags` field.
+- **`locked` badge tone + "macOS Only" badge on platform-blocked cards** —
+  Marketplace cards for platform-restricted integrations now show a
+  distinct visual state with a clear platform note.
+
+### Changed
+- **Sync UX unified through `deriveSyncState` helper** — All sync UI surfaces
+  (compact rows, per-backend dots, status-bar pill, syncpanel tiles) now
+  derive their visual state from a single helper with exhaustive switch
+  checks. Status-bar pill is now severity-aware (single pill instead of
+  per-warning fan-out). Vestigial `SKILLS_UNROUTED` warning code removed.
+  Sync setup wizard's per-backend dots include a loading gate so they
+  don't flash an incorrect color before health-check completes.
+- **Buddy mascot drag rewrite** — Anchor-based drag with rAF coalescing
+  eliminates cursor drift and lag on long drag gestures. Replaces the
+  prior pointer-delta model that accumulated rounding error.
+- **Marketplace integration detail overlay rewritten** — Now shares parity
+  with plugin detail overlay; `MarketplaceCard` consolidates rendering
+  for both integrations and plugins (props: `iconUrl`, `accentColor`,
+  `statusBadge`, `suppressCorner`).
+- **Diff viewer line-number gutter collapsed** — Two-column gutter
+  collapsed into a single line-number column for cleaner reading on
+  narrow widths.
+- **Site landing page polish** — Smoother intro (preload backdrops,
+  fonts-ready gate, faster timing, nav clicks fast-forward), tagline
+  updated to "Make Claude Yours", description meta refreshed. Install
+  modal redesigned to show platform-specific install instructions
+  *before* the download starts.
+
+### Fixed
+- **Filter-path crashes that wiped chat state** — Hardened renderer code
+  paths that filter chat entries so a thrown predicate no longer aborts
+  reducer state and silently empties the chat.
+- **`/rate-limit-options` menu surfaces in chat view** — Was previously
+  only routable from terminal view.
+- **Theme picker flicker after install/uninstall** — Reload `userThemes`
+  immediately after install/uninstall instead of waiting for the next
+  poll.
+- **About popup rounded corners + Package Tier popup centering** — Both
+  popups now match the standard overlay surface treatment.
+- **About popup header background** — Dropped opaque background so the
+  header matches peer popups.
+- **Post-install integration setup hint** — Replaces the fragile
+  auto-type-into-PTY behavior with a setup-hint banner that shows the
+  command for the user to run themselves.
+- **CI `partykit-deploy` health check** — Treats the "No onRequest
+  handler" 500 response as healthy (PartyKit returns this when the
+  deployed worker has no HTTP handler — only WebSocket — which is
+  correct for the lobby room).
+- **Scroll-fade quirks** — Flush fades on conditional-mount, hook
+  conditional-mount, rounded-corner clipping. Plus a `useScrollFade`
+  hook lifecycle fix.
+
+### Removed
+- **`SyncService.kt` legacy hook scaffolding** — Drops 43 lines of dead
+  code for the pre-app sync flow. Sync is now owned entirely by the
+  desktop app's `sync-service.ts`.
+
+## [1.1.2] — 2026-04-21
+
+**Claude Code CLI baseline:** v2.1.117
+
+Bundled default plugins, command-drawer commands subsystem, announcement system rebuild,
+marketplace polish, and several stability fixes. Notable: a platform-detection bug was
+silently mis-tagging packaged Windows installs as Android — fixed.
+
+### Added
+- **Settings → Development panel** — New row under Settings → Other opens a
+  three-flow popup: (1) **Report a bug or feature** — three-screen wizard
+  that pulls the last ~200 PTY lines from the active session, runs
+  `claude -p` over stdin to summarize them into a structured issue body,
+  redacts paths/tokens, then submits via `gh issue create` if `gh` is
+  authenticated (auto-falls back to a browser URL-prefill if not). Labels
+  the issue with `bug` or `enhancement` plus `youcoded-app:reported` on
+  `itsdestin/youcoded`. (2) **Contribute to YouCoded** — clones
+  `youcoded-dev` into a user-chosen folder (with progress streaming +
+  idempotent re-install), registers it as a project folder in YouCoded's
+  saved-folders list, and opens a fresh session in it with a prefilled
+  prompt that orients new contributors. (3) **View known issues** —
+  opens the GitHub issues list for `itsdestin/youcoded`. Cross-platform
+  parity: desktop main implementation in `desktop/src/main/dev-tools.ts`,
+  Android implementation in `app/.../runtime/DevTools.kt` and
+  `SessionService.kt` `dev:*` IPC cases, mirrored in `remote-shim.ts` so
+  remote browsers can use the panel too. New `dev:open-session-in`,
+  `dev:install-workspace`, `dev:submit-issue`, `dev:summarize-issue`,
+  `dev:log-tail` IPC channels.
+- **Bundled default plugins** — `wecoded-themes-plugin` (Theme Builder) and
+  `wecoded-marketplace-publisher` are now auto-installed on every desktop and Android
+  launch. Uninstall is blocked at the UI layer (SkillCard / MarketplaceDetailOverlay)
+  AND the IPC layer (`skills:uninstall` defense in both desktop main and Android
+  `SessionService`). Single hardcoded list lives in `desktop/src/shared/bundled-plugins.ts`
+  and `app/.../skills/BundledPlugins.kt` — both must stay in sync.
+- **Commands in the CommandDrawer** — Slash commands now appear alongside skills in the
+  drawer's search and a new dedicated browse mode. Three sources: YouCoded-handled
+  (clickable, dispatched in-app — 9 entries), filesystem-scanned (user `~/.claude/commands`,
+  project `.claude/commands`, plugin `commands/`), and Claude Code built-ins (visible
+  reference list, marked "Run in Terminal View"). New IPC `commands:list` wired across
+  desktop preload + ipc-handlers and Android SessionService + new `CommandProvider.kt`.
+- **Announcement system rebuild** — Source of truth `announcements.txt` moved from
+  `youcoded-core` to this repo (`itsdestin/youcoded/master/announcements.txt`). Single
+  fetcher per platform: desktop `announcement-service.ts` (Electron main, 1h cadence) +
+  Android `AnnouncementService.kt`. Shared `isExpired()` helper at
+  `desktop/src/shared/announcement.ts` gates the StatusBar pill at render time so
+  expired entries disappear at local midnight without waiting for the next fetch.
+  Cleared announcements propagate as explicit `{message: null}` cache writes.
+- **Marketplace install-state corner** — `InstallFavoriteCorner` primitive cycles
+  download → braille spinner → unfavorited FavoriteStar on install complete.
+  `IntegrationCard` retired; integrations now render through `MarketplaceCard` with
+  `iconUrl`, `accentColor`, `statusBadge`, `suppressCorner` props. New
+  `IntegrationDetailOverlay` for click-to-expand on integration tiles.
+- **Plugin-name badge on skill cards** — Each skill card shows a clickable pill with
+  the parent plugin's display name; clicking jumps to the plugin's marketplace
+  detail overlay. Replaces an earlier (reverted) plugin-grouping experiment that
+  showed one card per plugin.
+- **Fix-action buttons in SyncPanel** — Sync warnings now carry actionable next-step
+  buttons specific to each warning code.
+
+### Changed
+- **Sync timeouts bumped** — `RCLONE_TIMEOUT` 60s → 10 min, `GIT_TIMEOUT` 60s → 5 min,
+  plugin-installer `GIT_TIMEOUT` 2 min → 5 min. The 60s rclone timeout was silently
+  SIGTERM'ing mid-upload on large conversation slugs (one user has a 156 MB slug
+  with a 25 MB single .jsonl) and the killed-by-Node case left `e.stderr` empty so
+  the classifier fell through to UNKNOWN with no actionable message.
+- **Sync error classifier expanded** — New `extractStderr()` helper detects
+  `e.killed && e.signal` and injects a `TIMEOUT_SENTINEL` so the classifier can
+  surface a real TIMEOUT diagnosis. Added `UNIVERSAL_PATTERNS` (TIMEOUT,
+  LOCAL_DISK_FULL) that apply to any backend, drive-side
+  RATE_LIMITED / PERMISSION_DENIED, and a full GitHub pattern set
+  (AUTH, REPO_NOT_FOUND, LARGE_FILE, PUSH_REJECTED, NETWORK).
+  11 new classifier tests (28/28 pass).
+- **Sync pull failures surface immediately** — `pullDrive` and `pullGithub` now route
+  through `recordBackendFailure` so first-run pull failures (CONFIG_MISSING,
+  AUTH_EXPIRED) appear in the UI right away instead of waiting up to 15 min for
+  the next push cycle. Pull success does NOT clear warnings — pull working doesn't
+  prove push works.
+- **Multiplayer lobby pong is liveness-only** — `LobbyRoom` no longer broadcasts the
+  full presence list back on every 30s heartbeat. Drift self-heals on reconnect via
+  the existing `presence` message in `onConnect`. Raises the practical lobby
+  ceiling from ~200 to ~5k concurrent users (was O(N²) bandwidth per heartbeat).
+- **Skill-id Uninstalls resolve to parent plugin** — `skill-provider.uninstall(id)`
+  now looks up the skill's `pluginName` from `scanSkills` if the id doesn't match a
+  plugin directly, then uninstalls that plugin. Fixes Library "Uninstall" buttons
+  on bundled skills of legacy-marketplace plugins that were silently no-ops.
+- **No more auto-favoriting on install** — The install-affordance corner now ends in
+  an unfavorited star so the user sees a deliberate favorite click as a separate
+  action.
+
+### Fixed
+- **Packaged desktop mis-tagged as Android** — `platform-bootstrap.ts` was checking
+  `location.protocol === 'file:'` before `window.claude`, so packaged Electron on
+  Windows (which loads via `win.loadFile()` and presents `file:` protocol) got
+  `__PLATFORM__ = 'android'`. SettingsPanel rendered `<AndroidSettings>`, the tier
+  picker appeared, session-switcher was limited to one session, and
+  `html[data-platform="android"]` CSS hid theme backgrounds under the terminal.
+  Now checks `window.claude` first (Electron preload populates it synchronously
+  before any renderer JS runs); Android still falls through to the `file:` branch.
+  Added `platform-bootstrap.test.ts` covering all four scenarios.
+- **Android: remote pairing unblocked** — `network_security_config.xml` was only
+  permitting cleartext WS to localhost and `*.ts.net`, but the desktop pairing URL
+  encodes raw CGNAT IPs (e.g. 100.64.x.x) or LAN IPs. Android's NSC blocked the
+  WebSocket at the OS level before any auth handshake, surfacing as the generic
+  "Connection closed before auth". NSC now permits cleartext broadly per the
+  documented threat model (Tailscale WireGuard underlay, LAN exposure parity with
+  desktop, bcrypt-verified WS handshake regardless). `remote-shim`'s `onclose`
+  also now differentiates reachability failures from post-open closes for a
+  more actionable error message.
+- **Subagent briefings no longer pollute the main chat** — Claude Code writes the
+  parent Task prompt as the first user-role line of the subagent JSONL.
+  `TRANSCRIPT_USER_MESSAGE` was missing the `parentAgentToolUseId` guard at all
+  three layers (action type, dispatchers, reducer), so subagent briefings fell
+  through and got appended to the main timeline as if the user had typed them.
+  Stamped events are now dropped in the reducer; the briefing is already shown
+  in the parent Agent card's Briefing section. Already-polluted sessions need
+  `/clear` to recover.
+- **Buddy floater fixes** — (1) Closing the viewed session in the main window left
+  the floater stuck reading "no session" while the feed froze; BuddyChat now
+  listens for `session:destroyed` and auto-switches. (2) Subagent activity was
+  appearing inline in the main-line buddy feed; BubbleFeed now forwards
+  `parentAgentToolUseId` / `agentId` / `model` so the reducer's subagent router
+  kicks in. (3) Long URLs and unbreakable tokens overflowed the ~220px bubble
+  width; added `overflow-wrap: anywhere` + `word-break: break-all` on anchors,
+  scoped to buddy only.
+- **Duplicate plugin-level placeholder cards in CommandDrawer** —
+  `getInstalled()` was synthesizing a plugin-level `SkillEntry` from `configStore`
+  even when `scanSkills` had already emitted individual skill entries; the dedup
+  only compared skill ids, not pluginName. Now also skips synthesis when any
+  scanned skill's `pluginName` matches the plugin id.
+- **CommandProvider async fix** — `LocalSkillProvider.getInstalled()` is async, so
+  the CommandProvider callback was silently passing a Promise to
+  `mergeCommandSources`. Made `getCommands()` async.
+- **CommandDrawer tile sizing** — Drawer SkillCards uniform-sized again with
+  fixed h-32 + overflow-hidden. Chip rows switched to flex-nowrap; individual
+  chips capped to max-w-[80px].
+- **Marketplace overlay onDetailConsumed callback stabilized** — Memoized with
+  `useCallback` to stop a setState-during-render warning that fired when the
+  parent App re-rendered.
+- **Per-turn metadata reaches buddy turns** — `BubbleFeed`'s
+  `TRANSCRIPT_TURN_COMPLETE` dispatch now forwards `stopReason` / `model` /
+  `anthropicRequestId` / `usage` to match `App.tsx`. (Release-review fix.)
+- **Status badges restored on integration tiles** — Coming soon / Needs auth /
+  Connected / Error / Deprecated labels were lost when `IntegrationCard` was
+  retired. Generic `statusBadge` prop on `MarketplaceCard`.
+- **CommandEntry type restored after merge** — Accidentally dropped during the
+  feat/command-drawer-commands merge resolve.
+- **Android: serviceScope cancelled on shutdown** — Three `serviceScope.launch`
+  sites (bridge dispatcher, end-of-session sync push, bundled-plugin install)
+  weren't cancelled in `onDestroy()`. Hygiene + tidies the bundled-install path
+  on graceful service teardown.
+
+### Removed
+- **Dead UI components** — `ThemeDetail.tsx`, `ThemeCard.tsx`, `SignInButton.tsx`,
+  `RestoreFromBackupButton.tsx`, `sign-in-button.test.tsx`, `IntegrationCard.tsx`,
+  `SkillDetail.tsx`. All zero-import after the marketplace redesign / bundled-
+  plugins consolidation.
+- **`scripts/verify-deps.sh`** — Standalone Android ELF dep checker not invoked by
+  any CI workflow, package.json script, or hook.
+- **Legacy `desktop/hook-scripts/announcement-fetch.js`** + its 6h `setInterval`
+  spawner in `ipc-handlers.ts` — superseded by the new TS announcement-service.
+- **Undeployed glibc-on-Android research artifacts** — `native/execve-interceptor.c`,
+  `native/glibc-loader.c`, `native/hello-glibc.c`, `native/libexec-intercept.so`.
+  The 2026-03 spike concluded the approach was not the right path; the actual
+  exec-routing solution shipped via termux-exec linker variant +
+  linker64-env.sh wrappers.
+- **Retired plan and design docs** — `docs/plans/` Phase 2 era plans + status spec,
+  shipped/superseded plans for model selector, plugin marketplace, skill marketplace,
+  generic menu parser, etc. Canonical specs in `docs/specs/` remain as reference.
+
+### Protocol notes (for custom remote clients / automation)
+- New WebSocket message type: `commands:list` (request) → `commands:list:response`.
+  Returns the merged YouCoded + filesystem + CC-builtin slash command list.
+- `transcript:event` `user-message` events now carry optional
+  `parentAgentToolUseId` + `agentId` for subagent-routed events. Existing
+  consumers can ignore these fields safely.
+
 ## [1.1.1] — 2026-04-20
 
 **Claude Code CLI baseline:** v2.1.116

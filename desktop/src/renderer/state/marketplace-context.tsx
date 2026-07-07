@@ -12,6 +12,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { SkillEntry, PackageInfo, FeaturedData } from '../../shared/types';
 import type { ThemeRegistryEntryWithStatus } from '../../shared/theme-marketplace-types';
+import { useTheme } from './theme-context';
+import { useSkills } from './skill-context';
 
 // window.claude is typed for skills but not for theme.marketplace — cast via any
 const claude = () => (window as any).claude;
@@ -129,6 +131,20 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   // Guard against stale fetchAll responses when rapid install/uninstall triggers concurrent fetches
   const fetchGeneration = useRef(0);
 
+  // Fix: theme install writes files to disk, but ThemeProvider's userThemes
+  // list only updates via the chokidar watcher's debounced theme:reload event
+  // (~200ms after files settle). Without an explicit reload, the user can
+  // click "Apply theme" before the theme is in userThemes — the active-theme
+  // fallback effect then misses the slug and reverts to the default theme,
+  // producing a "briefly applies then unapplies" flicker. Force a reload
+  // synchronously after install/uninstall/update so the lookup always succeeds.
+  const { reloadUserThemes } = useTheme();
+  // SkillContext.installed feeds the CommandDrawer. It's loaded once on
+  // mount and never refreshes — so without this hook, marketplace installs
+  // wouldn't appear in the drawer until app restart. Refresh after each
+  // mutator below.
+  const { refreshInstalled: refreshDrawerSkills } = useSkills();
+
   // Fetch all marketplace data in parallel on mount
   const fetchAll = useCallback(async () => {
     const gen = ++fetchGeneration.current;
@@ -233,17 +249,15 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       } catch (err) {
         console.warn("[marketplace] install telemetry threw (non-fatal):", err);
       }
-      // Auto-favorite on install so newly-added skills appear at the top of
-      // the Command Drawer immediately. User can unstar at any time.
-      try { await window.claude.skills.setFavorite(id, true); } catch {}
       await fetchAll();  // Refresh state BEFORE clearing installing flag
+      await refreshDrawerSkills();  // Keep CommandDrawer in sync after install
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Install failed');
       throw err;
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const uninstallSkill = useCallback(async (id: string) => {
     const key = `skill:${id}`;
@@ -251,13 +265,14 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     try {
       await window.claude.skills.uninstall(id);
       await fetchAll();
+      await refreshDrawerSkills();  // Keep CommandDrawer in sync after uninstall
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Uninstall failed');
       throw err;
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const installTheme = useCallback(async (slug: string) => {
     const key = `theme:${slug}`;
@@ -266,28 +281,39 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       await claude().theme.marketplace.install(slug);
       // Auto-favorite on install (mirrors skills)
       try { await claude().appearance.favoriteTheme(slug, true); } catch {}
+      // Fix: reload ThemeProvider's userThemes BEFORE fetchAll flips the
+      // "Apply theme" button on. Otherwise the user can click Apply before
+      // chokidar's debounced theme:reload event fires (~200ms), and the
+      // active-theme fallback effect reverts to the default theme.
+      await reloadUserThemes();
       await fetchAll();
+      await refreshDrawerSkills();  // Keep CommandDrawer in sync after theme install
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Install failed');
       throw err;
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, reloadUserThemes, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const uninstallTheme = useCallback(async (slug: string) => {
     const key = `theme:${slug}`;
     markInstalling(key);
     try {
       await claude().theme.marketplace.uninstall(slug);
+      // Fix: same reasoning as installTheme — keep userThemes in sync with
+      // disk so the active-theme fallback can correctly detect the removed
+      // slug and revert to the default theme.
+      await reloadUserThemes();
       await fetchAll();
+      await refreshDrawerSkills();  // Keep CommandDrawer in sync after theme uninstall
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Uninstall failed');
       throw err;
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, reloadUserThemes, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   // Phase 3b: update an installed package (skill plugin or theme) by re-downloading
   // from source and overwriting files at the same install path. Config in
@@ -299,7 +325,11 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       const result = type === 'theme'
         ? await claude().theme.marketplace.update(id)
         : await (window as any).claude.skills.update(id);
+      // Fix: theme update overwrites manifest + assets on disk; reload so
+      // the in-memory theme picks up the new tokens/assets immediately.
+      if (type === 'theme') await reloadUserThemes();
       await fetchAll();
+      await refreshDrawerSkills();  // Keep CommandDrawer in sync after update — plugin update can change skill manifest
       return result;
     } catch (err: any) {
       recordInstallError(key, err?.message || 'Update failed');
@@ -307,7 +337,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     } finally {
       clearInstalling(key);
     }
-  }, [fetchAll, markInstalling, clearInstalling, recordInstallError]);
+  }, [fetchAll, reloadUserThemes, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const setFavorite = useCallback(async (id: string, favorited: boolean) => {
     await window.claude.skills.setFavorite(id, favorited);
@@ -372,6 +402,20 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     });
     return () => { try { unsub?.(); } catch {} };
   }, []);
+
+  // Local user themes are surfaced in themeEntries via on-the-fly synthesis
+  // in the main-process listThemes(). When the theme-watcher fires a reload
+  // (chokidar detected a change in ~/.claude/wecoded-themes/), the merged
+  // list may have changed — refetch so the Library reflects new/deleted/
+  // edited user themes immediately rather than at next mount.
+  useEffect(() => {
+    const onReload = (window as any).claude?.theme?.onReload;
+    if (typeof onReload !== 'function') return;
+    const unsub = onReload(() => {
+      fetchAll();
+    });
+    return () => { try { unsub?.(); } catch {} };
+  }, [fetchAll]);
 
   // ── Memoized value ───────────────────────────────────────────────────────
 

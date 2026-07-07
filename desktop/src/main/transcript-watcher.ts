@@ -14,12 +14,19 @@ import { SubagentWatcher } from './subagent-watcher';
  * Converts a filesystem path to Claude Code's project directory slug.
  * e.g. `C:\Users\alice` → `C--Users-alice`
  *      `/home/user/project` → `-home-user-project`
+ *      `C:\Users\alice\PAF 540 Final` → `C--Users-alice-PAF-540-Final`
+ *
+ * Must mirror Claude Code's own encoding exactly — otherwise the watcher points
+ * at a non-existent directory and chat view stays empty. CC replaces spaces
+ * with dashes too; we do the same so cwds like "PAF 540 Final Data Project"
+ * resolve to the right ~/.claude/projects/<slug>/ folder.
  */
 export function cwdToProjectSlug(cwd: string): string {
   return cwd
     .replace(/\\/g, '/')   // backslash → forward slash
     .replace(/:/g, '-')    // colon → dash
-    .replace(/\//g, '-');   // slash → dash
+    .replace(/\//g, '-')   // slash → dash
+    .replace(/ /g, '-');   // space → dash (CC does this too)
 }
 
 // ---------------------------------------------------------------------------
@@ -60,13 +67,18 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
     // isVisibleInTranscriptOnly=true means it's meant to stay hidden from UI —
     // we suppress the user-message event and emit a dedicated signal that
     // App.tsx uses to clear compactionPending and finalize the marker.
+    // Also forward the summary text so the marker can be expanded inline.
     if (parsed.isCompactSummary) {
+      const summaryRaw = typeof content === 'string'
+        ? content
+        : extractTextFromBlocks(content);
+      const summary = stripSystemTags(summaryRaw);
       events.push({
         type: 'compact-summary',
         sessionId,
         uuid,
         timestamp,
-        data: {},
+        data: summary ? { summary } : {},
       });
       return events;
     }
@@ -117,6 +129,33 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
       const text = stripSystemTags(raw);
       // Skip empty messages (e.g. interrupted tool use placeholders)
       if (!text) return [];
+
+      // Claude Code writes these exact strings as user messages when the user
+      // presses ESC mid-turn. Emit a dedicated user-interrupt event (consumed
+      // by the reducer to end the in-flight turn) instead of a user-message,
+      // so the marker does not render as a user bubble. Exact-match only;
+      // embedded text is treated as a normal prompt (accepted edge).
+      if (text === '[Request interrupted by user]') {
+        events.push({
+          type: 'user-interrupt',
+          sessionId,
+          uuid,
+          timestamp,
+          data: { kind: 'plain' },
+        });
+        return events;
+      }
+      if (text === '[Request interrupted by user for tool use]') {
+        events.push({
+          type: 'user-interrupt',
+          sessionId,
+          uuid,
+          timestamp,
+          data: { kind: 'tool-use' },
+        });
+        return events;
+      }
+
       events.push({
         type: 'user-message',
         sessionId,
@@ -241,17 +280,25 @@ function extractTextFromBlocks(content: any): string {
  * the chat timeline. These are injected by Claude Code's harness and
  * aren't part of the assistant's actual response.
  *  - Tags stripped entirely: system-reminder, task-notification, antml_thinking,
- *    command-name, command-message, command-args
- *  - Tags unwrapped (inner text kept): local-command-stdout, local-command-stderr
+ *    command-name, command-message, command-args,
+ *    local-command-stdout, local-command-stderr
+ *
+ * Why local-command-stdout/stderr are stripped (not unwrapped): CC writes
+ * these as dimmed (ANSI [2m) echoes of slash-command output, e.g.
+ * "Compacted (ctrl+o to see full summary)" after /compact. Unwrapping them
+ * surfaced the dim text as a user-typed bubble AND tripped the
+ * TRANSCRIPT_USER_MESSAGE "no pending match" path, which set isThinking: true
+ * with no transcript turn to ever clear it — leaving chat permanently stuck
+ * in "thinking" after every compaction. The chat is the canonical
+ * conversation; the terminal pane already shows raw CC output for users who
+ * want to see slash-command stdout.
  */
-const STRIP_ENTIRELY_RE = /<(task-notification|system-reminder|antml_thinking|command-name|command-message|command-args)>[\s\S]*?<\/\1>/g;
-const UNWRAP_RE = /<(local-command-stdout|local-command-stderr)>([\s\S]*?)<\/\1>/g;
+const STRIP_ENTIRELY_RE = /<(task-notification|system-reminder|antml_thinking|command-name|command-message|command-args|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g;
 const ANSI_RE = /\u001b\[[0-9;]*[a-zA-Z]/g;
 
 function stripSystemTags(text: string): string {
   return text
     .replace(STRIP_ENTIRELY_RE, '')
-    .replace(UNWRAP_RE, (_match, _tag, inner) => inner)
     .replace(ANSI_RE, '')
     .trim();
 }

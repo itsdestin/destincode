@@ -8,14 +8,24 @@ const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const TOPICS_DIR = path.join(CLAUDE_DIR, 'topics');
 const CONVERSATION_INDEX_PATH = path.join(CLAUDE_DIR, 'conversation-index.json');
 
-/** Read the per-session flag map from conversation-index.json. Also lifts v1
- *  legacy `complete` / `completeUpdatedAt` fields into the new flags shape so
- *  older entries (written before the flags generalization) still show up. */
-function readFlagMap(): Record<string, Record<string, boolean>> {
+/** Read per-session metadata from conversation-index.json: the user-set flag
+ *  map AND the topic (display name). Lifts v1 legacy `complete` into the flags
+ *  shape so older entries still show up.
+ *
+ *  The conversation index is the *durable* name store — it keeps a session's
+ *  topic for 30 days (INDEX_PRUNE_DAYS) and syncs across devices. The
+ *  `topics/topic-<id>` files are the *ephemeral* store — pruned by the
+ *  auto-title hook and never synced. The Resume Browser reads the file first
+ *  and falls back to `topics` here when the file is gone (see readTopic). */
+function readIndexMeta(): {
+  flags: Record<string, Record<string, boolean>>;
+  topics: Record<string, string>;
+} {
+  const flags: Record<string, Record<string, boolean>> = {};
+  const topics: Record<string, string> = {};
   try {
     const raw = fs.readFileSync(CONVERSATION_INDEX_PATH, 'utf8');
     const index = JSON.parse(raw);
-    const out: Record<string, Record<string, boolean>> = {};
     for (const [sid, entry] of Object.entries<any>(index?.sessions || {})) {
       if (!entry) continue;
       const on: Record<string, boolean> = {};
@@ -24,10 +34,13 @@ function readFlagMap(): Record<string, Record<string, boolean>> {
       }
       // v1 legacy — tolerated on read until old devices are upgraded.
       if (!on.complete && entry.complete) on.complete = true;
-      if (Object.keys(on).length > 0) out[sid] = on;
+      if (Object.keys(on).length > 0) flags[sid] = on;
+      if (typeof entry.topic === 'string' && entry.topic.trim()) {
+        topics[sid] = entry.topic.trim();
+      }
     }
-    return out;
-  } catch { return {}; }
+  } catch { /* index missing/corrupt — no flags or topic fallback available */ }
+  return { flags, topics };
 }
 
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -58,7 +71,7 @@ function resolveSlugToPath(slug: string): string {
   let parts: string[];
 
   if (/^[A-Z]--/.test(slug)) {
-    // Windows: C--Users-desti-project → root=C:\, parts=[Users, desti, project]
+    // Windows: C--Users-alice-project → root=C:\, parts=[Users, alice, project]
     root = slug[0] + ':\\';
     parts = slug.slice(3).split('-').filter(Boolean);
   } else {
@@ -97,12 +110,122 @@ function walkSlugParts(base: string, parts: string[]): string {
   return path.join(base, parts.join('-'));
 }
 
-async function readTopic(sessionId: string): Promise<string> {
+/** Resolve a session's display name. The auto-title hook writes
+ *  `topics/topic-<id>`, but those files are pruned (30-day) and never sync
+ *  across devices — so when the file is missing, or still holds the pre-title
+ *  "New Session" placeholder, fall back to the conversation index, which keeps
+ *  the name longer and is synced. Without this fallback the Resume Browser
+ *  showed "Untitled" for every session whose topic file had been pruned. */
+async function readTopic(sessionId: string, indexTopics: Record<string, string>): Promise<string> {
   try {
-    const content = await fs.promises.readFile(path.join(TOPICS_DIR, `topic-${sessionId}`), 'utf8');
-    return content.trim() || 'Untitled';
+    const content = (await fs.promises.readFile(path.join(TOPICS_DIR, `topic-${sessionId}`), 'utf8')).trim();
+    // 'Untitled' in a file is a placeholder too (older clients synced such
+    // files) — treating it as a real name would bypass the index fallback
+    // AND the transcript-derived title, so reject it like 'New Session'.
+    if (content && content !== 'New Session' && content !== 'Untitled') return content;
+  } catch { /* topic file pruned or never written — fall through to the index */ }
+  const indexed = indexTopics[sessionId];
+  if (indexed && indexed !== 'New Session' && indexed !== 'Untitled') return indexed;
+  return 'Untitled';
+}
+
+// Bounded reads so a 100MB transcript doesn't blow up the browse call.
+const HEAD_CHUNK_BYTES = 256 * 1024;
+const TAIL_CHUNK_BYTES = 64 * 1024;
+const FALLBACK_TITLE_MAX = 48;
+
+export interface SessionTranscriptMeta {
+  /** Title derived from the first real user prompt, or null. */
+  fallbackTitle: string | null;
+  /** Timestamp (ms) of the last parseable transcript line, or null. */
+  lastTimestampMs: number | null;
+}
+
+/** Collapse whitespace and trim a derived title to a word boundary. */
+function cleanTitle(text: string): string | null {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return null;
+  if (collapsed.length <= FALLBACK_TITLE_MAX) return collapsed;
+  const cut = collapsed.slice(0, FALLBACK_TITLE_MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Trim back to the last word boundary, but only when that leaves a
+  // reasonable stub (>20 chars) — otherwise a long first word would shrink
+  // the title to almost nothing, so we hard-cut mid-word instead.
+  return (lastSpace > 20 ? cut.slice(0, lastSpace) : cut) + '…';
+}
+
+/**
+ * Derive display metadata straight from the transcript JSONL.
+ *
+ * WHY: the topic/index naming pipeline has gaps (the auto-title hook only
+ * fires on PostToolUse, so chat-only sessions are never titled; titles also
+ * depend on the in-session model complying), and file mtimes are clobbered
+ * by sync restores. The transcript content itself is the only source of
+ * truth that survives both. See docs/PITFALLS.md → Resume Browser.
+ *
+ * CC-coupled: relies on the transcript JSONL line shape (`type`, `isMeta`,
+ * `promptId`, `timestamp`, `message.content`) — same contract the
+ * transcript-watcher parses. See youcoded/docs/cc-dependencies.md.
+ */
+export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: boolean): Promise<SessionTranscriptMeta> {
+  let fh: fs.promises.FileHandle | null = null;
+  try {
+    fh = await fs.promises.open(jsonlPath, 'r');
+    const { size } = await fh.stat();
+
+    // --- Tail: last parseable line's timestamp ---
+    let lastTimestampMs: number | null = null;
+    const tailLen = Math.min(TAIL_CHUNK_BYTES, size);
+    if (tailLen > 0) {
+      const tailBuf = Buffer.alloc(tailLen);
+      await fh.read(tailBuf, 0, tailLen, size - tailLen);
+      // First "line" of the chunk is usually a partial JSON line — the
+      // backwards scan just skips anything that doesn't parse.
+      const tailLines = tailBuf.toString('utf8').split('\n');
+      for (let i = tailLines.length - 1; i >= 0; i--) {
+        const line = tailLines[i];
+        if (!line.trim() || line.includes('\x00')) continue;
+        try {
+          const ts = Date.parse(JSON.parse(line).timestamp);
+          if (!Number.isNaN(ts)) { lastTimestampMs = ts; break; }
+        } catch { /* partial or corrupt line — keep scanning backwards */ }
+      }
+    }
+
+    // --- Head: first real user prompt → fallback title ---
+    let fallbackTitle: string | null = null;
+    if (wantTitle) {
+      const headLen = Math.min(HEAD_CHUNK_BYTES, size);
+      const headBuf = Buffer.alloc(headLen);
+      await fh.read(headBuf, 0, headLen, 0);
+      for (const line of headBuf.toString('utf8').split('\n')) {
+        if (!line.trim() || line.includes('\x00')) continue;
+        let parsed: any;
+        try { parsed = JSON.parse(line); } catch { continue; }
+        // Same "real conversational prompt" gate as loadHistory: user-type,
+        // has promptId, not meta.
+        if (parsed.type !== 'user' || parsed.isMeta || !parsed.promptId || !parsed.message) continue;
+        const c = parsed.message.content;
+        const text = typeof c === 'string'
+          ? c
+          : Array.isArray(c)
+            ? c.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
+            : '';
+        // Skip injected wrappers (<command-name>…, <local-command-stdout>…,
+        // <system-reminder>…) — they're plumbing, not what the user said.
+        // Deliberately lossy: a real prompt that starts with '<' (pasted
+        // HTML/XML) is also skipped, and the scan moves to the next prompt.
+        if (!text.trim() || text.trim().startsWith('<')) continue;
+        fallbackTitle = cleanTitle(text);
+        if (fallbackTitle) break;
+      }
+    }
+
+    return { fallbackTitle, lastTimestampMs };
   } catch {
-    return 'Untitled';
+    return { fallbackTitle: null, lastTimestampMs: null };
+  } finally {
+    try { await fh?.close(); } catch {}
   }
 }
 
@@ -130,8 +253,8 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     return [];
   }
 
-  // Join complete-flag metadata from the synced conversation index
-  const flagMap = readFlagMap();
+  // Join flag + topic metadata from the synced conversation index
+  const indexMeta = readIndexMeta();
 
   const allSessions: PastSession[] = [];
 
@@ -152,15 +275,24 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
       try {
         const stat = await withRetry(() => fs.promises.stat(path.join(slugDir, file)));
         if (stat.size < 500) return null;
-        const name = await readTopic(sessionId);
+        const topicName = await readTopic(sessionId, indexMeta.topics);
 
-        const joinedFlags = flagMap[sessionId];
+        // Transcript-derived metadata: content timestamp beats file mtime
+        // (sync restores clobber mtimes), and the first user message names
+        // sessions the title pipeline missed. readSessionTranscriptMeta returns
+        // nulls on any failure, so this can only improve on the defaults.
+        const meta = await readSessionTranscriptMeta(path.join(slugDir, file), topicName === 'Untitled');
+        const name = topicName !== 'Untitled'
+          ? topicName
+          : (meta.fallbackTitle ?? 'Untitled');
+
+        const joinedFlags = indexMeta.flags[sessionId];
         return {
           sessionId,
           name,
           projectSlug: slug,
           projectPath: resolveSlugToPath(slug),
-          lastModified: stat.mtimeMs,
+          lastModified: meta.lastTimestampMs ?? stat.mtimeMs,
           size: stat.size,
           ...(joinedFlags ? { flags: joinedFlags } : {}),
         } as PastSession;

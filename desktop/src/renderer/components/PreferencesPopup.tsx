@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
+import { useEscClose } from '../hooks/use-esc-close';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -51,6 +52,7 @@ const PERMISSION_LABELS: Record<PermissionDefault, { label: string; desc: string
 };
 
 export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Props) {
+  useEscClose(open, onClose);
   const [prefs, setPrefs] = useState<PrefsState>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
   const scrollRef = useScrollFade<HTMLDivElement>();
@@ -137,7 +139,9 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Prop
         {!loaded ? (
           <div className="p-8 text-center text-sm text-fg-muted">Loading…</div>
         ) : (
-          <div ref={scrollRef} className="scroll-fade p-5 space-y-5">
+          // Padding on inner wrapper so scroll-fade is unpadded — sticky fades flush.
+          <div ref={scrollRef} className="scroll-fade">
+            <div className="p-5 space-y-5">
             {/* Permission default */}
             <section>
               <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
@@ -251,6 +255,7 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Prop
                 Switches to terminal view and runs Claude Code's full <code>/config</code>
               </p>
             </section>
+            </div>
           </div>
         )}
       </OverlayPanel>

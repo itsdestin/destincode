@@ -33,7 +33,7 @@ import {
   syncLegacyKeys,
   writeWarnings,
 } from './sync-state';
-import { classifyPushError, truncateStderr } from './sync-error-classifier';
+import { classifyPushError, decidePersonalSyncRemoteAction, extractStderr, truncateStderr } from './sync-error-classifier';
 
 const execFileAsync = promisify(execFile);
 
@@ -106,9 +106,25 @@ const INDEX_PRUNE_DAYS = 30;
 // upload. A full push in flight preempts the index-only push (it will upload
 // the index anyway), so the net cost is at most one extra small upload.
 const INDEX_PUSH_DEBOUNCE_MS = 30_000;
-const RCLONE_TIMEOUT = 60_000;
-const GIT_TIMEOUT = 60_000;
+// 10 min — generous because individual conversation slugs can grow to
+// hundreds of MB (one user has a 25 MB single .jsonl in a 156 MB slug).
+// The previous 60s value silently killed rclone mid-upload on big slugs,
+// producing empty stderr that fell through to UNKNOWN classification.
+const RCLONE_TIMEOUT = 10 * 60 * 1000;
+const GIT_TIMEOUT = 5 * 60 * 1000;
 const SESSION_PUSH_TIMEOUT = 15_000;
+// Recent-conversations strategy: foreground pull only fetches the N most-
+// recently-active sessions (sorted by lastActive in conversation-index.json).
+// The remainder is scheduled as a background pull. Without this, a fresh
+// restore takes 14+ minutes for users with large histories — see the
+// 2026-04-24 restore UX investigation in git log.
+const RECENT_PULL_LIMIT = 50;
+
+// Canonical Claude Code session id. The auto-title flow has the in-session
+// model hand-type `echo "Title" > topics/topic-<id>` — a typo'd id creates a
+// phantom index entry pointing at no transcript (seen in the wild:
+// `3f3a5cccc-…`, nine c's). Gate the topic scan + prune on this shape.
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // --- SyncService ---
 
@@ -136,6 +152,15 @@ export class SyncService extends EventEmitter {
    */
   public restoreInProgress = false;
 
+  /**
+   * Non-null while a background bulk-conversations pull is running. Read by
+   * buildStatusData() so the StatusBar can render a chip. Also serves as a
+   * single-flight guard — scheduleBackgroundConversationsPull skips if non-null
+   * so a re-restore mid-pull doesn't race two background fetches.
+   */
+  private backgroundPullState: { type: string; startedAt: number } | null = null;
+  public getBackgroundPullState() { return this.backgroundPullState; }
+
   constructor() {
     super();
     this.claudeDir = path.join(os.homedir(), '.claude');
@@ -162,7 +187,10 @@ export class SyncService extends EventEmitter {
       if (this.fileExists(this.appSyncMarkerPath)) {
         const stalePid = parseInt(fs.readFileSync(this.appSyncMarkerPath, 'utf8').trim(), 10);
         if (stalePid > 0 && stalePid !== process.pid && !this.isPidAlive(stalePid)) {
-          this.logBackup('WARN', `Cleaned stale .app-sync-active marker (PID ${stalePid} is dead — previous crash?)`, 'sync.lifecycle');
+          // Fix: log at INFO (was WARN). Mirrors Android — see app/.../SyncService.kt.
+          // The SyncPanel log viewer renders WARN entries prominently, making this
+          // benign self-heal look like a persistent error after any system kill.
+          this.logBackup('INFO', `Cleaned stale .app-sync-active marker (PID ${stalePid} is dead — previous crash?)`, 'sync.lifecycle');
         }
       }
     } catch {}
@@ -267,14 +295,22 @@ export class SyncService extends EventEmitter {
    * Record a push-cycle failure for a backend: classify stderr and write a
    * SyncWarning (one per backend per cycle — de-duped by addOrReplaceWarning).
    * Also logs the classified code to backup.log for future diagnosis.
+   *
+   * `op` distinguishes push vs pull failures in the log; both share the same
+   * warning shape because the underlying problem (auth, network, missing
+   * config) is symmetric — fixing it unblocks both directions.
    */
-  private async recordBackendFailure(instance: BackendInstance, stderr: string): Promise<void> {
+  private async recordBackendFailure(
+    instance: BackendInstance,
+    stderr: string,
+    op: 'push' | 'pull' = 'push',
+  ): Promise<void> {
     const warning = classifyPushError(stderr, instance.type, instance);
     await addOrReplaceWarning(warning);
     this.logBackup(
       warning.level === 'danger' ? 'WARN' : 'INFO',
       `${instance.id} classified as ${warning.code}`,
-      'sync.push.classify',
+      `sync.${op}.classify`,
       { code: warning.code, stderr: truncateStderr(stderr) },
     );
   }
@@ -316,15 +352,20 @@ export class SyncService extends EventEmitter {
 
   /**
    * Generate the current device's project slug.
-   * On Windows, os.homedir() returns native path (C:\Users\desti).
+   * On Windows, os.homedir() returns native path (C:\Users\alice).
    * On Unix, uses fs.realpathSync to resolve symlinks.
-   * Replace /, \, : with - to match Claude Code's slug algorithm.
+   * Replace /, \, :, and SPACE with - to match Claude Code's slug algorithm.
+   * MUST match cwdToProjectSlug() in transcript-watcher.ts and the two Android
+   * encoders (TranscriptWatcher.cwdToProjectSlug, SyncService.getCurrentSlug).
+   * Omitting the space replace here means Windows users with spaces in the
+   * home-dir path (e.g. "First Last") write to a different slug than the
+   * watcher reads from, silently splitting sync from transcript.
    */
   getCurrentSlug(): string {
     let homePath: string;
     if (process.platform === 'win32') {
-      // os.homedir() already returns native Windows path (C:\Users\desti)
-      // No cygpath needed — bash uses cygpath because $HOME is /c/Users/desti
+      // os.homedir() already returns native Windows path (C:\Users\alice)
+      // No cygpath needed — bash uses cygpath because $HOME is /c/Users/alice
       homePath = os.homedir();
     } else {
       try {
@@ -333,8 +374,8 @@ export class SyncService extends EventEmitter {
         homePath = os.homedir();
       }
     }
-    // Replace path separators and drive letter colon with dashes
-    return homePath.replace(/[/\\:]/g, '-');
+    // Replace path separators, drive-letter colon, AND spaces with dashes
+    return homePath.replace(/[/\\: ]/g, '-');
   }
 
   // =========================================================================
@@ -466,7 +507,7 @@ export class SyncService extends EventEmitter {
       const { stdout, stderr } = await execFileAsync('rclone', args, { timeout: RCLONE_TIMEOUT });
       return { code: 0, stdout, stderr };
     } catch (e: any) {
-      return { code: e.code || 1, stdout: e.stdout || '', stderr: e.stderr || e.message };
+      return { code: e.code || 1, stdout: e.stdout || '', stderr: extractStderr(e, RCLONE_TIMEOUT) };
     }
   }
 
@@ -476,7 +517,7 @@ export class SyncService extends EventEmitter {
       const { stdout, stderr } = await execFileAsync('git', args, { cwd, timeout: GIT_TIMEOUT });
       return { code: 0, stdout, stderr };
     } catch (e: any) {
-      return { code: e.code || 1, stdout: e.stdout || '', stderr: e.stderr || e.message };
+      return { code: e.code || 1, stdout: e.stdout || '', stderr: extractStderr(e, GIT_TIMEOUT) };
     }
   }
 
@@ -766,8 +807,28 @@ export class SyncService extends EventEmitter {
       }
     }
 
-    // Ensure remote URL is current
-    await this.gitExec(['remote', 'set-url', 'personal-sync', syncRepo], repoDir);
+    // Self-heal the remote name. `git clone` (success path) creates `origin`,
+    // but the rest of this service unconditionally references `personal-sync`.
+    // Without this block, every push/pull fails with "fatal: 'personal-sync'
+    // does not appear to be a git repository" until the user manually renames
+    // the remote. Idempotent — fixes both new installs and existing affected
+    // users on next sync run. See itsdestin/youcoded#74.
+    const remotesResult = await this.gitExec(['remote'], repoDir);
+    if (remotesResult.code === 0) {
+      const action = decidePersonalSyncRemoteAction(remotesResult.stdout || '', syncRepo);
+      if (action) {
+        const r = await this.gitExec(action, repoDir);
+        if (r.code !== 0) {
+          this.logBackup('WARN', `Failed to ${action[1]} personal-sync remote`, 'sync.push.github', { stderr: truncateStderr(r.stderr || '') });
+        }
+      }
+    }
+
+    // Ensure remote URL is current (handles syncRepo config changes)
+    const setUrlResult = await this.gitExec(['remote', 'set-url', 'personal-sync', syncRepo], repoDir);
+    if (setUrlResult.code !== 0) {
+      this.logBackup('WARN', 'Failed to update personal-sync remote URL', 'sync.push.github', { stderr: truncateStderr(setUrlResult.stderr || '') });
+    }
 
     // Copy all data categories into repo structure
     const projectsDir = path.join(this.claudeDir, 'projects');
@@ -1161,14 +1222,28 @@ export class SyncService extends EventEmitter {
     const remoteBase = `${rcloneRemote}:${driveRoot}/Backup/personal`;
     const sysRemote = `${rcloneRemote}:${driveRoot}/Backup/system-backup`;
 
+    // Track first-fail stderr so we can record a SyncWarning at the end of the
+    // pull cycle. Symmetric with pushDrive's failure recording — same backend
+    // problems (CONFIG_MISSING, AUTH_EXPIRED, NETWORK) affect both directions,
+    // and the user needs to see them on first-run before any push has happened.
+    let firstFailStderr = '';
+    const noteFail = (label: string, r: ExecResult) => {
+      if (r.code !== 0) {
+        if (!firstFailStderr) firstFailStderr = r.stderr;
+        this.logBackup('WARN', `Pull ${label} failed`, 'sync.pull.drive', { stderr: truncateStderr(r.stderr || '') });
+      }
+    };
+
     // Memory files — list remote keys, then pull each
     const memResult = await this.rclone(['lsf', `${remoteBase}/memory/`, '--dirs-only']);
+    noteFail('memory/lsf', memResult);
     if (memResult.code === 0) {
       const memKeys = memResult.stdout.split('\n').map(k => k.replace(/\/$/, '').trim()).filter(Boolean);
       for (const key of memKeys) {
         const dest = path.join(this.claudeDir, 'projects', key, 'memory');
         fs.mkdirSync(dest, { recursive: true });
-        await this.rclone(['copy', `${remoteBase}/memory/${key}/`, dest + '/', '--update', '--skip-links', '--exclude', '.DS_Store']);
+        const r = await this.rclone(['copy', `${remoteBase}/memory/${key}/`, dest + '/', '--update', '--skip-links', '--exclude', '.DS_Store']);
+        noteFail(`memory/${key}`, r);
       }
     }
 
@@ -1176,42 +1251,184 @@ export class SyncService extends EventEmitter {
     // Once local config exists, it is authoritative — users configure backends
     // deliberately per-device, and silently overwriting their config could
     // disable sync, change backends, or break machine-specific setups.
-    const configPullPromise = this.fileExists(this.configPath)
+    const configPullPromise: Promise<ExecResult> = this.fileExists(this.configPath)
       ? Promise.resolve({ code: 0, stdout: '', stderr: 'skipped — local config exists' })
       : this.rclone(['copyto', `${sysRemote}/config.json`, this.configPath, '--update']);
 
-    // Parallel pulls for non-dependent resources.
-    // Each wrapped in its own catch so a single rclone failure (network timeout,
-    // DNS error) doesn't abort the entire pull via unhandled rejection.
+    // Pull conversation-index.json FIRST (was last). The recent-50 strategy
+    // reads it to decide which conversations to fetch in the foreground; if it
+    // fails we fall back to the legacy bulk pull. See 2026-04-24 restore UX
+    // investigation in git log for why this matters (was 14+ min foreground
+    // for large accounts).
+    fs.mkdirSync(this.indexStagingDir, { recursive: true });
+    const indexResult = await this.rclone(['copy', `${sysRemote}/conversation-index.json`, this.indexStagingDir + '/', '--checksum']);
+    noteFail('conversation-index', indexResult);
+
+    // Parallel pulls for the small + non-dependent categories. Each wrapped
+    // in its own catch so a single rclone failure (network timeout, DNS error)
+    // doesn't abort the whole pull via unhandled rejection.
+    const projectsDir = path.join(this.claudeDir, 'projects');
     const pullResults = await Promise.allSettled([
       // CLAUDE.md
       this.rclone(['copyto', `${remoteBase}/CLAUDE.md`, path.join(this.claudeDir, 'CLAUDE.md'), '--update']),
       // System config — first-run only (see above)
       configPullPromise,
       // Encyclopedia
-      (async () => {
+      (async (): Promise<ExecResult> => {
         const encDir = path.join(this.claudeDir, 'encyclopedia');
         fs.mkdirSync(encDir, { recursive: true });
-        await this.rclone(['copy', `${remoteBase}/encyclopedia/`, encDir + '/', '--update', '--max-depth', '1', '--include', '*.md']);
-      })(),
-      // Conversations — checksum + ignore-existing (don't overwrite local)
-      (async () => {
-        await this.rclone(['copy', `${remoteBase}/conversations/`, path.join(this.claudeDir, 'projects') + '/', '--checksum', '--include', '*.jsonl', '--ignore-existing']);
-      })(),
-      // Conversation index to staging dir for post-pull merge
-      (async () => {
-        fs.mkdirSync(this.indexStagingDir, { recursive: true });
-        await this.rclone(['copy', `${sysRemote}/conversation-index.json`, this.indexStagingDir + '/', '--checksum']);
+        return this.rclone(['copy', `${remoteBase}/encyclopedia/`, encDir + '/', '--update', '--max-depth', '1', '--include', '*.md']);
       })(),
     ]);
-    // Log any individual failures (rclone() already wraps errors, but the async
-    // IIFEs above can throw on fs.mkdirSync or other Node operations)
-    const pullLabels = ['CLAUDE.md', 'config.json', 'encyclopedia', 'conversations', 'conversation-index'];
+    const pullLabels = ['CLAUDE.md', 'config.json', 'encyclopedia'];
     pullResults.forEach((r, i) => {
       if (r.status === 'rejected') {
-        this.logBackup('WARN', `Pull ${pullLabels[i]} failed: ${r.reason}`, 'sync.pull.drive');
+        const stderr = String(r.reason);
+        if (!firstFailStderr) firstFailStderr = stderr;
+        this.logBackup('WARN', `Pull ${pullLabels[i]} failed: ${stderr}`, 'sync.pull.drive');
+      } else {
+        noteFail(pullLabels[i], r.value);
       }
     });
+
+    // Conversations — recent-50 in foreground, rest in background.
+    // Why split: a fresh restore was taking 14+ minutes because rclone has to
+    // enumerate the entire conversations/ tree. Recent-50 fetches the most
+    // recently-active sessions synchronously (~30s) and lets the user start
+    // working while history syncs in the background.
+    const stagedIndex = path.join(this.indexStagingDir, 'conversation-index.json');
+    let recentCount = -1;
+    if (this.fileExists(stagedIndex) && fs.statSync(stagedIndex).size > 0) {
+      try {
+        recentCount = await this.pullDriveConversationsRecent(remoteBase, stagedIndex, projectsDir, RECENT_PULL_LIMIT);
+      } catch (e) {
+        this.logBackup('WARN', `Recent conversations pull threw: ${e}`, 'sync.pull.drive');
+        if (!firstFailStderr) firstFailStderr = String(e);
+        recentCount = -1;
+      }
+    }
+
+    if (recentCount < 0) {
+      // Fallback: index missing/unreadable. Run the legacy bulk pull synchronously
+      // so the user actually gets their conversations on first-run / index-corrupted
+      // scenarios. No background schedule (the foreground already covered everything).
+      this.logBackup('INFO', 'No conversation index — falling back to legacy bulk pull', 'sync.pull.drive');
+      const r = await this.rclone(['copy', `${remoteBase}/conversations/`, projectsDir + '/', '--checksum', '--include', '*.jsonl', '--ignore-existing']);
+      noteFail('conversations', r);
+    } else {
+      // Recent-50 done; schedule the bulk pull as fire-and-forget so the user
+      // can use the app immediately. Single-flight guarded internally.
+      this.scheduleBackgroundConversationsPull(remoteBase, projectsDir);
+    }
+
+    // Surface the first failure as a SyncWarning so it appears in the UI.
+    // Don't call clearBackendFailures on success — pull alone doesn't prove push
+    // works (e.g. read access without write). Only push success clears warnings.
+    if (firstFailStderr) {
+      await this.recordBackendFailure(instance, firstFailStderr, 'pull');
+    }
+  }
+
+  /**
+   * Foreground: pull only the [limit] most-recently-active conversations
+   * named in the staged conversation-index.json using rclone's --files-from.
+   * One rclone process, --transfers 8 in parallel internally → ~30s for 50
+   * files vs. 14 min for a full bulk copy. Returns the count of file lines
+   * actually pulled, or 0 if the index has no eligible entries.
+   *
+   * --ignore-existing means already-local files are skipped, so this is
+   * cheap to re-run on every startup pull.
+   */
+  private async pullDriveConversationsRecent(
+    remoteBase: string,
+    stagedIndex: string,
+    projectsDir: string,
+    limit: number,
+  ): Promise<number> {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(fs.readFileSync(stagedIndex, 'utf8'));
+    } catch (e) {
+      this.logBackup('WARN', `Failed to parse staged index: ${e}`, 'sync.pull.drive');
+      return 0;
+    }
+    const sessions = parsed?.sessions;
+    if (!sessions || typeof sessions !== 'object') return 0;
+
+    type Entry = { sessionId: string; slug: string; lastActive: string };
+    const entries: Entry[] = [];
+    for (const [sessionId, raw] of Object.entries(sessions)) {
+      const obj = raw as any;
+      const slug = String(obj?.slug ?? '').trim();
+      if (!slug) continue;
+      entries.push({ sessionId, slug, lastActive: String(obj?.lastActive ?? '') });
+    }
+    if (entries.length === 0) return 0;
+    // ISO-8601 lastActive strings sort lexicographically as chronologically.
+    const recent = entries.sort((a, b) => b.lastActive.localeCompare(a.lastActive)).slice(0, limit);
+
+    // Write a files-from list. Paths relative to the rclone source root.
+    const listFile = path.join(this.claudeDir, 'toolkit-state', '.recent-pull-files-from.txt');
+    try {
+      fs.mkdirSync(path.dirname(listFile), { recursive: true });
+      fs.writeFileSync(listFile, recent.map(e => `${e.slug}/${e.sessionId}.jsonl`).join('\n') + '\n');
+
+      const r = await this.rclone([
+        'copy',
+        `${remoteBase}/conversations/`,
+        projectsDir + '/',
+        '--files-from', listFile,
+        '--checksum',
+        '--ignore-existing',
+        '--transfers', '8',
+      ]);
+      if (r.code !== 0) {
+        this.logBackup('WARN', `Recent conversations pull failed: ${truncateStderr(r.stderr || '')}`, 'sync.pull.drive');
+      }
+      return recent.length;
+    } finally {
+      try { fs.unlinkSync(listFile); } catch { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Background: fire-and-forget bulk pull of every remaining conversation.
+   * Reuses the original `--include *.jsonl --ignore-existing` semantics so
+   * the recent-50 just pulled are skipped.
+   *
+   * Single-flight guarded — if a prior background pull is still running we
+   * return immediately. Otherwise the chip would either flicker out when
+   * the first finishes or never appear when a re-restore begins.
+   */
+  private scheduleBackgroundConversationsPull(remoteBase: string, projectsDir: string): void {
+    if (this.backgroundPullState !== null) {
+      this.logBackup('INFO', 'Skipping bg conversations pull — one already running', 'sync.pull.drive');
+      return;
+    }
+    this.backgroundPullState = { type: 'conversations', startedAt: Date.now() };
+    // Fire-and-forget; the .catch keeps an unhandled-rejection from killing the process.
+    (async () => {
+      try {
+        const r = await this.rclone([
+          'copy',
+          `${remoteBase}/conversations/`,
+          projectsDir + '/',
+          '--checksum',
+          '--include', '*.jsonl',
+          '--ignore-existing',
+          '--transfers', '8',
+        ]);
+        if (r.code !== 0) {
+          this.logBackup('WARN', `Background conversations pull failed: ${truncateStderr(r.stderr || '')}`, 'sync.pull.drive');
+        } else {
+          this.logBackup('INFO', 'Background conversations pull complete', 'sync.pull.drive');
+        }
+      } catch (e) {
+        this.logBackup('WARN', `Background conversations pull threw: ${e}`, 'sync.pull.drive');
+      } finally {
+        this.backgroundPullState = null;
+      }
+    })().catch(() => { /* swallowed — already logged inside */ });
   }
 
   // =========================================================================
@@ -1226,7 +1443,11 @@ export class SyncService extends EventEmitter {
 
     const pullResult = await this.gitExec(['pull', 'personal-sync', 'main'], repoDir);
     if (pullResult.code !== 0) {
-      this.logBackup('WARN', 'GitHub personal-sync pull failed', 'sync.pull.github');
+      // Surface as a SyncWarning (auth/network/repo-missing all need user action).
+      // Symmetric with pullDrive — see recordBackendFailure docstring for why we
+      // don't clear on success.
+      this.logBackup('WARN', 'GitHub personal-sync pull failed', 'sync.pull.github', { stderr: truncateStderr(pullResult.stderr || '') });
+      await this.recordBackendFailure(instance, pullResult.stderr || '', 'pull');
       return;
     }
 
@@ -1420,6 +1641,14 @@ export class SyncService extends EventEmitter {
     for (const file of files) {
       if (!file.startsWith('topic-')) continue;
       const sessionId = file.replace(/^topic-/, '');
+      // Phantom-id guard: don't CREATE a new index entry from a topic file
+      // whose id isn't a canonical UUID (these come from auto-title-write
+      // typos and point at no transcript). But still allow updating an entry
+      // that already exists under a non-UUID id — setSessionFlag() can seed
+      // one legitimately (a user tagged the session before its topic file
+      // existed; the flag-bearing entry must get its real topic). The prune
+      // loop below self-heals leftover flagless non-UUID rows.
+      if (!SESSION_UUID_RE.test(sessionId) && !index.sessions[sessionId]) continue;
       const filePath = path.join(topicsDir, file);
 
       try {
@@ -1457,7 +1686,17 @@ export class SyncService extends EventEmitter {
     // setSessionFlag() when a user tags a session before its topic file exists;
     // epoch is older than any prune threshold, so without this guard the
     // pending entry (and its flag) would be deleted immediately on next push.
+    // Also self-heal phantom entries: malformed session ids carry no
+    // transcript and were created by title-write typos — but only delete them
+    // when they hold NO user flags (deleting a user's tag is worse than
+    // carrying a dead row).
     for (const [sid, entry] of Object.entries(index.sessions)) {
+      const migrated = migrateEntry(entry);
+      const hasFlags = Object.keys(migrated.flags || {}).length > 0;
+      if (!SESSION_UUID_RE.test(sid) && !hasFlags) {
+        delete index.sessions[sid];
+        continue;
+      }
       const ts = new Date(entry.lastActive).getTime();
       if (ts === 0) continue;
       if (ts < pruneThreshold) {
@@ -1645,7 +1884,12 @@ export class SyncService extends EventEmitter {
       case 'github': {
         const repoDir = path.join(this.claudeDir, 'toolkit-state', `personal-sync-repo-${instance.id}`);
         if (!this.dirExists(path.join(repoDir, '.git'))) return;
-        await this.gitExec(['pull', 'personal-sync', 'main'], repoDir);
+        // Log non-zero exits so silent remote misconfig (e.g. #74) surfaces
+        // in backup.log even though we don't promote it to a SyncWarning here.
+        const pullR = await this.gitExec(['pull', 'personal-sync', 'main'], repoDir);
+        if (pullR.code !== 0) {
+          this.logBackup('WARN', 'Index-only pull from personal-sync failed', 'sync.pull.github', { stderr: truncateStderr(pullR.stderr || '') });
+        }
         const src = path.join(repoDir, 'system-backup', 'conversation-index.json');
         if (this.fileExists(src)) fs.copyFileSync(src, path.join(stagedDir, 'conversation-index.json'));
         break;
@@ -1682,7 +1926,13 @@ export class SyncService extends EventEmitter {
             fs.copyFileSync(this.conversationIndexPath, path.join(repoDir, 'system-backup', 'conversation-index.json'));
             await this.gitExec(['add', 'system-backup/conversation-index.json'], repoDir);
             await this.gitExec(['commit', '-m', 'sync: conversation-index (tags)'], repoDir);
-            await this.gitExec(['push', 'personal-sync', 'main'], repoDir);
+            // Log non-zero exits so silent remote misconfig (#74) surfaces in
+            // backup.log. Not promoted to SyncWarning — the 15-min pushGithub
+            // owns that surface and would record the same failure there.
+            const idxPushR = await this.gitExec(['push', 'personal-sync', 'main'], repoDir);
+            if (idxPushR.code !== 0) {
+              this.logBackup('WARN', 'Index-only push to personal-sync failed', 'sync.push.index.github', { stderr: truncateStderr(idxPushR.stderr || '') });
+            }
             break;
           }
           case 'icloud': {
@@ -1705,11 +1955,39 @@ export class SyncService extends EventEmitter {
     const topicsDir = path.join(this.claudeDir, 'topics');
     fs.mkdirSync(topicsDir, { recursive: true });
 
+    const pruneThreshold = Date.now() - INDEX_PRUNE_DAYS * 24 * 60 * 60 * 1000;
+
     for (const [sid, entry] of Object.entries(index.sessions || {})) {
+      // Phantom-id symmetry with the topic scan: never materialize a topic
+      // file for a malformed session id (e.g. synced from a device that
+      // predates the scan guard) — it would sit on disk as an inert orphan.
+      if (!SESSION_UUID_RE.test(sid)) continue;
+      // Skip placeholder names — readTopic treats Untitled/New Session/empty as
+      // "no title", so writing them just churns files for no UI gain.
+      if (!entry.topic || entry.topic === 'Untitled' || entry.topic === 'New Session') continue;
+
+      const ts = new Date(entry.lastActive).getTime();
+      // Skip invalid / epoch / pre-prune-window entries. A file created today
+      // for a 45-day-old entry would be deleted by the title hook's daily
+      // `find -mtime +30` prune tomorrow — pure churn. The conversation-index
+      // fallback in session-browser still names these sessions, so dropping the
+      // topic file costs nothing.
+      if (Number.isNaN(ts) || ts <= 0 || ts < pruneThreshold) continue;
+
       const topicFile = path.join(topicsDir, `topic-${sid}`);
       // Only create if local file doesn't exist (local-first)
       if (!this.fileExists(topicFile)) {
-        try { fs.writeFileSync(topicFile, entry.topic); } catch {}
+        try {
+          fs.writeFileSync(topicFile, entry.topic);
+          // Stamp the file with the entry's real lastActive, NOT "now".
+          // updateConversationIndex() treats topic-file mtime AS the entry's
+          // lastActive (it upserts when mtime > existing lastActive). Writing
+          // fresh "now" mtimes here bumped every session's lastActive on each
+          // regenerate, so the 30-day prune never fired (dead entries lived
+          // forever) and the recent-50 backup pull selected the wrong sessions.
+          const d = new Date(ts);
+          fs.utimesSync(topicFile, d, d);
+        } catch {}
       }
     }
   }
@@ -1809,8 +2087,7 @@ export class SyncService extends EventEmitter {
   /**
    * Run sync health checks and write .sync-warnings file.
    * Ports session-start.sh _bg_sync_health() — generates warnings for:
-   *   OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE,
-   *   SKILLS:unrouted:name1,name2, PROJECTS:N
+   *   OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE, PROJECTS:N
    * Called after pull completes and on app startup.
    */
   async runHealthCheck(): Promise<SyncWarning[]> {
@@ -1880,19 +2157,6 @@ export class SyncService extends EventEmitter {
       } catch {}
     }
 
-    // 2. Unrouted user skills
-    const unroutedSkills = this.findUnroutedSkills();
-    if (unroutedSkills.length > 0) {
-      warnings.push({
-        code: 'SKILLS_UNROUTED',
-        level: 'warn',
-        title: 'Unsynced skills',
-        body: `Some skills aren't being backed up: ${unroutedSkills.join(', ')}. Route them through the toolkit to include them.`,
-        dismissible: true,
-        createdEpoch: now,
-      });
-    }
-
     // 3. Unsynced projects
     const discoveredProjects = this.discoverProjects();
     if (discoveredProjects.length > 0) {
@@ -1913,6 +2177,9 @@ export class SyncService extends EventEmitter {
     // Merge with existing push-failure warnings (preserve them; only replace
     // the health-check-owned codes).
     const existing = await readWarnings();
+    // NOTE: 'SKILLS_UNROUTED' is retained here but no longer generated above.
+    // Keeps the filter clearing stale entries from old .sync-warnings.json files.
+    // Safe to remove from this set in a future release once all users have upgraded.
     const healthCodes = new Set(['OFFLINE', 'PERSONAL_NOT_CONFIGURED', 'PERSONAL_STALE', 'SKILLS_UNROUTED', 'PROJECTS_UNSYNCED']);
     const preserved = existing.filter((w) => !healthCodes.has(w.code));
     await writeWarnings([...preserved, ...warnings]);
@@ -1943,62 +2210,6 @@ export class SyncService extends EventEmitter {
     }
 
     return null;
-  }
-
-  /**
-   * Find user-created skills that are not routed in skill-routes.json.
-   * Skips toolkit-owned skills (symlinks into TOOLKIT_ROOT) and toolkit
-   * copies (matching skill name exists in toolkit layers).
-   */
-  private findUnroutedSkills(): string[] {
-    const skillsDir = path.join(this.claudeDir, 'skills');
-    if (!this.dirExists(skillsDir)) return [];
-
-    const routesFile = path.join(this.claudeDir, 'toolkit-state', 'skill-routes.json');
-    const routes = this.readJson(routesFile) || {};
-    const pluginsDir = path.join(this.claudeDir, 'plugins');
-
-    // Decomposition v3 §9.7: after decomposition there are no more core/life/
-    // productivity layers inside the monolith — every youcoded-core-owned skill
-    // lives in its own plugin directory (youcoded-core, youcoded-core-encyclopedia,
-    // youcoded-core-food, etc.). A skill under ~/.claude/skills/ is considered a
-    // toolkit copy if any youcoded-core-prefixed plugin ships the same skill.
-    const youcodedCorePluginDirs: string[] = (() => {
-      try {
-        return fs.readdirSync(pluginsDir, { withFileTypes: true })
-          .filter(d => d.isDirectory() && d.name.startsWith('youcoded'))
-          .map(d => path.join(pluginsDir, d.name));
-      } catch { return []; }
-    })();
-
-    const unrouted: string[] = [];
-
-    for (const skillName of fs.readdirSync(skillsDir)) {
-      const skillDir = path.join(skillsDir, skillName);
-      if (!this.dirExists(skillDir)) continue;
-
-      // Skip symlinks (toolkit-managed — legacy, pre-decomposition)
-      try { if (fs.lstatSync(skillDir).isSymbolicLink()) continue; } catch { continue; }
-
-      // Skip if any youcoded-core-prefixed plugin ships this skill under its
-      // skills/ directory — that means the user's local copy is a mirror of
-      // a toolkit-managed skill, not a user-authored one.
-      let isToolkitCopy = false;
-      for (const pluginDir of youcodedCorePluginDirs) {
-        if (this.dirExists(path.join(pluginDir, 'skills', skillName))) {
-          isToolkitCopy = true;
-          break;
-        }
-      }
-      if (isToolkitCopy) continue;
-
-      // Skip if already routed (any route means it's accounted for)
-      if (routes[skillName]?.route) continue;
-
-      unrouted.push(skillName);
-    }
-
-    return unrouted;
   }
 
   /**
@@ -2110,7 +2321,12 @@ export class SyncService extends EventEmitter {
             const diff = await this.gitExec(['diff', '--cached', '--quiet'], repoDir);
             if (diff.code !== 0) {
               await this.gitExec(['commit', '-m', 'auto: session-end sync', '--no-gpg-sign'], repoDir);
-              await this.gitExec(['push', 'personal-sync', 'main'], repoDir);
+              // Log non-zero exits so silent remote misconfig (#74) surfaces
+              // in backup.log without spamming the SyncWarning surface.
+              const sessPushR = await this.gitExec(['push', 'personal-sync', 'main'], repoDir);
+              if (sessPushR.code !== 0) {
+                this.logBackup('WARN', 'Session-end push to personal-sync failed', 'sync.push.session.github', { stderr: truncateStderr(sessPushR.stderr || '') });
+              }
             }
             break;
           }

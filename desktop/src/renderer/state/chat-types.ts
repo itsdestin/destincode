@@ -73,6 +73,9 @@ export interface SystemMarker {
   timestamp: number;
   label: string;                                // e.g. "Conversation cleared"
   variant?: 'clear' | 'compact' | 'info';       // For styling hooks
+  // Optional long-form text the marker can reveal on click. Currently only
+  // set on compact markers — the actual conversation summary CC produced.
+  summary?: string;
 }
 
 // /copy [N] picker — shown inline when the Nth assistant turn has multiple
@@ -239,6 +242,12 @@ export type ChatAction =
       uuid: string;
       text: string;
       timestamp: number;
+      // Present when this event came from a subagent's JSONL (the briefing
+      // Claude Code writes as the subagent's first user-role line). Reducer
+      // uses these to drop it from the main chat timeline — the briefing is
+      // already shown inside the parent Agent card's Briefing section.
+      parentAgentToolUseId?: string;
+      agentId?: string;
     }
   | {
       type: 'TRANSCRIPT_ASSISTANT_TEXT';
@@ -283,6 +292,22 @@ export type ChatAction =
       model: string | null;
       anthropicRequestId: string | null;
       usage: TurnUsage | null;
+      // Stamped by SubagentWatcher onto turn-complete events that originate
+      // in a sub-agent JSONL. Reducer must drop these so a sub-agent's
+      // end_turn doesn't pollute parent state — see chat-reducer.ts.
+      parentAgentToolUseId?: string;
+      agentId?: string;
+    }
+  // Dispatched when the transcript watcher detects Claude Code's
+  // user-interrupt markers ("[Request interrupted by user]" / "...for tool
+  // use"). Task 5 consumes this in the reducer to end the in-flight turn
+  // without rendering the marker as a user bubble.
+  | {
+      type: 'TRANSCRIPT_INTERRUPT';
+      sessionId: string;
+      uuid: string;
+      timestamp: number;
+      kind: 'plain' | 'tool-use';
     }
   | {
       type: 'HISTORY_LOADED';
@@ -322,6 +347,7 @@ export type ChatAction =
       markerId: string;
       afterContextTokens: number | null;
       aborted?: boolean;       // true when watchdog fires — marker text differs
+      summary?: string;        // Full compaction summary, surfaced as expandable section under the marker
     }
   // /copy picker for multi-block turns
   | {

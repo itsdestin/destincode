@@ -1,7 +1,7 @@
 ---
 paths:
   - "app/**"
-last_verified: 2026-04-20
+last_verified: 2026-04-29
 ---
 
 # Android Runtime Rules
@@ -32,7 +32,7 @@ Runtime fixes must work in both `PtyBridge` (PTY session) and `DirectShellBridge
 ## Canonical sources
 
 - `claude-wrapper.js` at `app/src/main/assets/claude-wrapper.js` — edit this file, not any deployed copy
-- Deployed to `~/.claude-mobile/claude-wrapper.js` by `Bootstrap.deployWrapperJs()` at every launch
+- Deployed inline in `PtyBridge.start()` (`PtyBridge.kt:119-123`) to `~/.claude-mobile/claude-wrapper.js` at every launch. There is no separate `Bootstrap.deployWrapperJs()` method.
 
 ## Per-turn transcript metadata (Android parity)
 
@@ -41,3 +41,9 @@ Runtime fixes must work in both `PtyBridge` (PTY session) and `DirectShellBridge
 ## Native UI Bridge Pattern (Deferred)
 
 When an IPC handler needs native Android UI: SessionService creates a `CompletableDeferred<T>`, calls an Activity callback, MainActivity shows the UI, result calls `deferred.complete()`, SessionService awaits and responds. Used by `dialog:open-file`, `dialog:open-folder`, `android:scan-qr`.
+
+## Terminal rendering (Tier 2)
+
+Android renders the terminal via xterm.js in the WebView, not a native Termux `TerminalView`. The vendored `terminal-emulator-vendored/` module (Termux v0.118.1, headless) owns the PTY fork + JNI waitpid loop + emulator processing. A patched `RawByteListener` on `TerminalEmulator.append()` taps the byte stream and `PtyBridge.rawByteFlow` forwards it via `pty:raw-bytes` WebSocket push events (base64-encoded). See `docs/android-runtime.md → Terminal rendering (Tier 2)` and `terminal-emulator-vendored/VENDORED.md`.
+
+**Threading rule:** `RawByteListener` fires on the terminal thread (same thread as `TerminalEmulator.append()`). Listener implementations MUST copy bytes before any async work — Termux reuses the same `byte[]` across PTY reads. `PtyBridge.rawByteFlow` uses `tryEmit` on a bounded `MutableSharedFlow` so a slow downstream consumer drops bytes rather than blocking the terminal thread.

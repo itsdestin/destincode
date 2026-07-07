@@ -3,7 +3,8 @@
 // content from the same shell; the "What's inside" section only shows for
 // skills with extracted `components` data.
 
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
+import { useEscClose } from "../../hooks/use-esc-close";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
@@ -39,16 +40,7 @@ export default function MarketplaceDetailOverlay({
   // Needed for Apply action and isActive check in ThemeBody
   const { theme: activeThemeSlug, setTheme } = useTheme();
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscClose(true, onClose);
 
   // Lookup the target in the already-fetched context. No per-overlay fetch —
   // keeps the overlay snappy and avoids cache-invalidation questions.
@@ -59,7 +51,15 @@ export default function MarketplaceDetailOverlay({
     if (!entry) {
       content = <NotFound label="Skill" onClose={onClose} />;
     } else {
-      const installed = mp.installedSkills.some((e) => e.id === target.id);
+      // Match by either the bare plugin id OR a scanned skill's pluginName.
+      // The provider drops bare plugin-level entries when individual skills
+      // were scanned (anti-duplicate-card guard for the command drawer), so
+      // for any plugin that ships skills, only namespaced ids appear in
+      // installedSkills and the bare id never matches. See MarketplaceScreen
+      // installedIds memo for the same fix at the grid level.
+      const installed = mp.installedSkills.some(
+        (e) => e.id === target.id || e.pluginName === target.id,
+      );
       const favorited = mp.favorites.includes(target.id);
       const installing = mp.installingIds.has(`skill:${target.id}`);
       const errEntry = mp.installError.get(`skill:${target.id}`);
@@ -106,22 +106,36 @@ export default function MarketplaceDetailOverlay({
   return (
     <>
       <Scrim layer={2} onClick={onClose} />
+      {/* Inset shrinks to 8px on narrow so the popup fills the phone screen
+          (the desktop 32–64px insets crushed the body into a ~290px column). */}
       <OverlayPanel
         layer={2}
-        className="fixed inset-8 md:inset-16 flex flex-col overflow-hidden"
+        className="fixed inset-2 sm:inset-8 md:inset-16 flex flex-col overflow-hidden"
       >
-        <header className="flex items-center justify-between p-4 border-b border-edge-dim">
+        <header className="flex items-center justify-between p-3 sm:p-4 border-b border-edge-dim">
           <h2 className="text-lg font-semibold text-fg">Details</h2>
+          {/* Wide: Esc-text hint. Narrow: bordered close-X matching the marketplace top bar. */}
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-dim hover:text-fg text-sm px-2 py-1"
+            className="hidden sm:inline-block text-fg-dim hover:text-fg text-sm px-2 py-1"
             aria-label="Close"
           >
             Esc · Close
           </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="sm:hidden panel-glass bg-inset p-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-dim hover:text-fg"
+            aria-label="Close"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
         </header>
-        <div className="flex-1 overflow-y-auto p-6">{content}</div>
+        <div className="flex-1 overflow-y-auto p-3 sm:p-6">{content}</div>
       </OverlayPanel>
     </>
   );
@@ -218,13 +232,15 @@ function SkillBody({
 
   return (
     <article className="flex flex-col gap-4 max-w-3xl mx-auto">
-      <header className="flex items-start justify-between gap-4">
+      {/* Header stacks at narrow so the title/tagline get the full row width
+          and the icon cluster drops below — at sm+ they sit side-by-side. */}
+      <header className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold text-fg">{entry.displayName}</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-fg">{entry.displayName}</h1>
           {entry.author && <p className="text-sm text-fg-dim">{entry.author}</p>}
-          {entry.tagline && <p className="mt-2 text-base text-fg-2">{entry.tagline}</p>}
+          {entry.tagline && <p className="mt-2 text-sm sm:text-base text-fg-2">{entry.tagline}</p>}
         </div>
-        <div className="shrink-0 flex items-center gap-2">
+        <div className="shrink-0 flex items-center gap-2 flex-wrap">
           {/* Favorite: only meaningful for installed skills (it drives the
               command drawer starred list). Gated + tooltipped when not. */}
           <IconButton
@@ -322,18 +338,21 @@ function SkillBody({
               <StarRating value={rating} count={reviewCount} size="sm" />
             )}
           </div>
+          {/* Disabled when not installed — the label switches to "Install to
+              review" in that case so touch users can see the gate reason
+              without a hover tooltip (which Android has no way to surface). */}
           <button
             type="button"
             onClick={() => setRatingOpen(true)}
-            disabled={!installed || !auth.signedIn}
+            disabled={!installed}
             className="text-sm px-3 py-1 rounded-md border border-edge-dim hover:border-edge text-fg-2 hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed"
             title={
               !installed ? "Install to review"
-                : !auth.signedIn ? "Sign in to review"
+                : !auth.signedIn ? "Sign in to write a review"
                 : "Write a review"
             }
           >
-            Write a review
+            {installed ? "Write a review" : "Install to review"}
           </button>
         </div>
         <ReviewList pluginId={entry.id} refreshKey={reviewRefresh} />
@@ -478,15 +497,26 @@ function ThemeBody({
   const themeStats = stats.themes[entry.slug];
   const likes = themeStats?.likes ?? 0;
   const installed = !!entry.installed;
+
+  // Confirmation wrapper — locally-built themes are permanent deletes (no marketplace copy to reinstall from)
+  const handleUninstall = () => {
+    const confirmCopy = entry.isLocal
+      ? `Permanently delete "${entry.name}"? This theme was built locally — there's no marketplace copy, so the files will be removed forever and can't be recovered.`
+      : `Uninstall "${entry.name}"? You can reinstall it later from the marketplace.`;
+    if (!window.confirm(confirmCopy)) return;
+    onUninstall();
+  };
+
   return (
     <article className="flex flex-col gap-4 max-w-3xl mx-auto">
-      <header className="flex items-start justify-between gap-4">
+      {/* Header stacks at narrow — see SkillBody for the rationale. */}
+      <header className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold text-fg">{entry.name}</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-fg">{entry.name}</h1>
           {entry.author && <p className="text-sm text-fg-dim">{entry.author}</p>}
-          {entry.description && <p className="mt-2 text-fg-2">{entry.description}</p>}
+          {entry.description && <p className="mt-2 text-sm sm:text-base text-fg-2">{entry.description}</p>}
         </div>
-        <div className="shrink-0 flex items-center gap-2">
+        <div className="shrink-0 flex items-center gap-2 flex-wrap">
           {/* Theme "favorite" = public like on the Worker. No local-only state. */}
           <LikeButton themeId={entry.slug} initialCount={likes} />
           {/* Local favorite (drives Appearance panel). Distinct from LikeButton
@@ -528,7 +558,7 @@ function ThemeBody({
               <button type="button" disabled className="px-4 py-2 rounded-md bg-inset text-fg-dim border border-edge cursor-default">
                 Active
               </button>
-              <button type="button" onClick={onUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
+              <button type="button" onClick={handleUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
                 Uninstall
               </button>
             </>
@@ -537,7 +567,7 @@ function ThemeBody({
               <button type="button" onClick={onApply} className="px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90">
                 Apply theme
               </button>
-              <button type="button" onClick={onUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
+              <button type="button" onClick={handleUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
                 Uninstall
               </button>
             </>

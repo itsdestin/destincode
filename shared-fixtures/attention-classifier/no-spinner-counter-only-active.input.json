@@ -1,0 +1,11 @@
+{
+  "description": "No spinner glyph found in the buffer (e.g. spinner scrolled offscreen, or a future CC version uses a glyph we don't recognize), but a paren-wrapped seconds counter advanced from 5 to 6 since the prior tick. The classifier returns thinking-active on the strength of the counter alone — independent fallback to glyph rotation. Without this rescue, this case would return 'unknown' and the upstream hook's no-spinner-20s timer would eventually escalate to 'stuck' on a healthy turn.",
+  "bufferTail": [
+    "Building project",
+    "  Compiling foo (5/12) (6s · ↑ 0.3k tokens)",
+    "  Compiling bar"
+  ],
+  "previousSpinnerGlyph": null,
+  "secondsSincePreviousGlyph": 0,
+  "previousCounterSeconds": 5
+}

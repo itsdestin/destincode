@@ -54,6 +54,12 @@ class SyncService(
         private const val INDEX_PRUNE_DAYS = 30
         private const val PROCESS_TIMEOUT_S = 60L
         private const val SESSION_PUSH_TIMEOUT_S = 15L
+        // Recent-conversations strategy: foreground pull only fetches the N most-
+        // recently-active sessions (sorted by lastActive in conversation-index.json).
+        // The remainder is scheduled as a background pull. Without this, a fresh
+        // restore takes 14+ minutes for users with large histories — see the
+        // 2026-04-24 restore UX investigation in git log.
+        private const val RECENT_PULL_LIMIT = 50
         private const val TAG = "SyncService"
     }
 
@@ -73,9 +79,21 @@ class SyncService(
     @Volatile
     var restoreInProgress: Boolean = false
 
+    /**
+     * Non-null while a background bulk-conversations pull is running. Read by
+     * the status broadcast (status:data) so the StatusBar can render a chip.
+     * @Volatile so the broadcast thread sees writes from the IO scope. The
+     * field is also a single-flight guard — pullDriveConversationsBackground
+     * skips scheduling if non-null (see #2 in the design audit).
+     */
+    @Volatile
+    var backgroundPullState: BackgroundPullState? = null
+
     // --- Result types ---
     data class PushResult(val success: Boolean, val errors: Int, val backends: List<String>)
     data class ExecResult(val code: Int, val stdout: String, val stderr: String)
+    /** Fields mirror the StatusData.backgroundPull shape on the React side. */
+    data class BackgroundPullState(val type: String, val startedAt: Long)
 
     // =========================================================================
     // Lifecycle
@@ -90,7 +108,14 @@ class SyncService(
                 val stalePid = appSyncMarkerPath.readText().trim().toIntOrNull() ?: 0
                 val myPid = android.os.Process.myPid()
                 if (stalePid > 0 && stalePid != myPid && !isPidAlive(stalePid)) {
-                    logBackup("WARN", "Cleaned stale .app-sync-active marker (PID $stalePid is dead — previous crash?)", "sync.lifecycle")
+                    // Fix: log at INFO (was WARN). The cleanup is a benign self-heal —
+                    // the foreground service's PID dies any time the system reclaims it
+                    // for memory (frequent on aggressive vendors), so this fires on most
+                    // restarts. The SyncPanel's log viewer renders the last 30 backup.log
+                    // lines and styles WARN entries prominently, making routine recovery
+                    // look like a persistent error. INFO keeps the diagnostic trail without
+                    // crying wolf. Mirror in desktop/src/main/sync-service.ts.
+                    logBackup("INFO", "Cleaned stale .app-sync-active marker (PID $stalePid is dead — previous crash?)", "sync.lifecycle")
                 }
             }
         } catch (_: Exception) {}
@@ -204,7 +229,7 @@ class SyncService(
     /**
      * Generate the current device's project slug.
      * Must match TranscriptWatcher.cwdToProjectSlug() and desktop's getCurrentSlug().
-     * Replace /, \, : with - to match Claude Code's slug algorithm.
+     * Replace /, \, :, and space with - to match Claude Code's slug algorithm.
      */
     fun getCurrentSlug(): String {
         // Use canonical path to resolve symlinks (e.g., /data/user/0 → /data/data)
@@ -213,8 +238,9 @@ class SyncService(
         } catch (_: Exception) {
             bootstrap.homeDir.absolutePath
         }
-        // Replace path separators with dashes — same regex as desktop: /[/\\:]/g, '-'
-        return homePath.replace('/', '-').replace('\\', '-').replace(':', '-')
+        // Replace path separators + spaces with dashes — must match desktop exactly.
+        // Space handling is required: CC encodes spaces as dashes too.
+        return homePath.replace('/', '-').replace('\\', '-').replace(':', '-').replace(' ', '-')
     }
 
     // =========================================================================
@@ -340,6 +366,44 @@ class SyncService(
     // Shell-out Wrappers (via Bootstrap.buildRuntimeEnv + linker64)
     // =========================================================================
 
+    /**
+     * Resolve a bare command name ("rclone", "git", "gh") into an executable
+     * path suitable for ProcessBuilder.
+     *
+     * Why this exists: Java's execvp() resolves the command against the
+     * JVM-inherited PATH (system dirs only on Android — /system/bin, /apex/…,
+     * etc.) and completely ignores the PATH we stuff into pb.environment().
+     * That env only affects the child's runtime environment, not command
+     * lookup. Without this helper, every Termux-prefix binary ENOENTs with
+     * "Cannot run program 'rclone': error=2, No such file or directory"
+     * before the subprocess even starts — and because execCommand swallows
+     * the IOException and returns code=1, callers silently degrade to "sync
+     * seems not configured" instead of surfacing a real error.
+     *
+     * Resolution order:
+     *   1. Already-absolute path                   → use as-is
+     *   2. Termux prefix (bootstrap.usrDir/bin/X)  → prefix with
+     *      /system/bin/linker64 for SELinux W^X bypass, matching the
+     *      existing pattern in Bootstrap.runProcess, PluginInstaller, and
+     *      SessionService's direct ProcessBuilder sites
+     *   3. /system/bin/X                           → use that absolute path
+     *   4. Unresolvable                            → return unchanged so the
+     *      exec surfaces the original ENOENT in the returned stderr
+     */
+    private fun resolveBinary(command: List<String>): List<String> {
+        val name = command.firstOrNull() ?: return command
+        if (name.startsWith("/")) return command
+        val termuxBin = File(bootstrap.usrDir, "bin/$name")
+        if (termuxBin.canExecute()) {
+            return listOf("/system/bin/linker64", termuxBin.absolutePath) + command.drop(1)
+        }
+        val systemBin = File("/system/bin/$name")
+        if (systemBin.canExecute()) {
+            return listOf(systemBin.absolutePath) + command.drop(1)
+        }
+        return command
+    }
+
     /** Execute a command with the termux runtime environment.
      *  Internal so SessionService (same package) can call it for sync setup wizard IPC. */
     internal fun execCommand(
@@ -350,7 +414,11 @@ class SyncService(
     ): ExecResult {
         return try {
             val env = bootstrap.buildRuntimeEnv()
-            val pb = ProcessBuilder(command)
+            // Resolve bare binary name → abs path + linker64 wrapper.
+            // See resolveBinary() comment: without this, "rclone"/"git"/"gh"
+            // all ENOENT because Java's execvp doesn't consult our env PATH.
+            val resolved = resolveBinary(command)
+            val pb = ProcessBuilder(resolved)
             pb.environment().putAll(env)
             if (cwd != null) pb.directory(cwd)
             pb.redirectErrorStream(false)
@@ -373,18 +441,124 @@ class SyncService(
                 ExecResult(process.exitValue(), stdout, stderr)
             }
         } catch (e: Exception) {
+            // Log so ENOENT-class regressions are visible in logcat; execCommand
+            // historically swallowed these silently, which hid the "rclone not in
+            // JVM PATH" bug for months (sync UI just showed "no backends").
+            android.util.Log.w(TAG, "execCommand failed for ${command.firstOrNull()}: ${e.message}")
             ExecResult(1, "", e.message ?: "exec failed")
         }
     }
 
-    /** Execute rclone with args. */
+    /** Execute rclone with args.
+     *
+     *  5-minute ceiling matches DriveRestoreAdapter.fetchInto's explicit
+     *  300s — bulk copy/sync of a single category can take minutes over
+     *  cellular, and the 60s default would trip before a real hang. Quick
+     *  rclone calls (listremotes, config show) are invoked through
+     *  execCommand() directly with their own timeout, so this only applies
+     *  to data-transfer calls that go through the helper. */
     private fun rclone(args: List<String>): ExecResult {
-        return execCommand(listOf("rclone") + args)
+        return execCommand(listOf("rclone") + args, timeoutSeconds = 300L)
     }
 
-    /** Execute git with args in a working directory. */
+    /**
+     * Run `rclone config create gdrive drive` for the Google Drive OAuth flow,
+     * streaming stderr so we can extract the auth URL as soon as rclone prints
+     * it and hand it to Android's system browser via Intent.
+     *
+     * Why a custom exec path (and not plain execCommand): rclone is a Go binary;
+     * Go's exec bypasses termux-exec's LD_PRELOAD shim, so rclone cannot
+     * fork/exec the `~/.claude-mobile/xdg-open` script (SELinux denies execve
+     * on scripts in the app's home dir via the raw syscall path that Go uses).
+     * rclone's auto-browser-open always fails on Android; we intercept the
+     * "please go to the following link: <URL>" line rclone prints as its
+     * fallback and open the URL ourselves via PlatformBridge.openUrl, which
+     * uses Intent.ACTION_VIEW (the SELinux-safe path). Once the user signs in,
+     * rclone receives the OAuth callback on its localhost listener and writes
+     * the config as normal.
+     *
+     * @param onAuthUrl called on a background thread the first time the URL
+     *                  regex matches. Open the URL via Intent here.
+     */
+    internal fun authGdriveWithBrowserIntent(
+        timeoutSeconds: Long = 180,
+        onAuthUrl: (String) -> Unit
+    ): ExecResult {
+        return try {
+            val env = bootstrap.buildRuntimeEnv()
+            // Same resolution as execCommand — bare "rclone" fails ENOENT
+            // because Java's execvp ignores the PATH in pb.environment().
+            val resolved = resolveBinary(listOf("rclone", "config", "create", "gdrive", "drive"))
+            val pb = ProcessBuilder(resolved)
+            pb.environment().putAll(env)
+            pb.redirectErrorStream(false)
+            val process = pb.start()
+
+            // rclone prints the OAuth link to stderr. Port defaults to 53682
+            // but rclone picks another if taken — match any port.
+            val urlRegex = Regex("""http://127\.0\.0\.1:\d+/auth\?state=\S+""")
+            // Single-threaded flag — only the stderrThread below reads and writes it.
+            // (@Volatile is field-only in Kotlin and rejected by the compiler on locals.)
+            var urlFired = false
+            val stderrBuf = StringBuilder()
+
+            // Stream stderr line-by-line — we must fire the intent before the
+            // process exits (rclone blocks on the OAuth callback indefinitely
+            // until the user completes sign-in).
+            val stderrThread = Thread {
+                try {
+                    process.errorStream.bufferedReader().useLines { lines ->
+                        for (line in lines) {
+                            synchronized(stderrBuf) { stderrBuf.appendLine(line) }
+                            if (!urlFired) {
+                                urlRegex.find(line)?.let { match ->
+                                    urlFired = true
+                                    try { onAuthUrl(match.value) } catch (_: Exception) { /* callback must not abort the reader */ }
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) { /* stream closed on process exit */ }
+            }
+            stderrThread.isDaemon = true
+            stderrThread.start()
+
+            // Drain stdout in parallel so rclone's write buffer doesn't stall.
+            val stdoutBuf = StringBuilder()
+            val stdoutThread = Thread {
+                try {
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        for (line in lines) synchronized(stdoutBuf) { stdoutBuf.appendLine(line) }
+                    }
+                } catch (_: Exception) { /* stream closed on process exit */ }
+            }
+            stdoutThread.isDaemon = true
+            stdoutThread.start()
+
+            val completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                stderrThread.join(500)
+                stdoutThread.join(500)
+                ExecResult(1, stdoutBuf.toString(), "Google sign-in timed out after ${timeoutSeconds}s")
+            } else {
+                stderrThread.join(500)
+                stdoutThread.join(500)
+                ExecResult(process.exitValue(), stdoutBuf.toString(), stderrBuf.toString())
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "authGdriveWithBrowserIntent failed: ${e.message}")
+            ExecResult(1, "", e.message ?: "exec failed")
+        }
+    }
+
+    /** Execute git with args in a working directory.
+     *
+     *  5-minute ceiling — `git push` of a large personal-sync repo, or a fresh
+     *  `git clone`, can legitimately run minutes over cellular. 60s default
+     *  would cause spurious timeouts on first-time syncs. */
     private fun gitExec(args: List<String>, cwd: File): ExecResult {
-        return execCommand(listOf("git") + args, cwd = cwd)
+        return execCommand(listOf("git") + args, cwd = cwd, timeoutSeconds = 300L)
     }
 
     // =========================================================================
@@ -788,7 +962,20 @@ class SyncService(
         val remoteBase = "gdrive:$driveRoot/Backup/personal"
         val sysRemote = "gdrive:$driveRoot/Backup/system-backup"
 
-        // Memory files — list remote keys, then pull each
+        val projectsDir = File(claudeDir, "projects")
+        projectsDir.mkdirs()
+
+        // === Step 1: pull conversation-index.json FIRST ===
+        // Reordered from last → first because the recent-50 strategy reads it
+        // to decide which conversations to fetch in the foreground. If this
+        // fails (network blip, missing on remote), we fall back to the legacy
+        // bulk pull — see the index-missing fallback below.
+        indexStagingDir.mkdirs()
+        rclone(listOf("copy", "$sysRemote/conversation-index.json", "${indexStagingDir.absolutePath}/", "--checksum")).also {
+            if (it.code != 0) logBackup("WARN", "Pull conversation-index failed: ${it.stderr}", "sync.pull.drive")
+        }
+
+        // === Step 2: small categories (memory, CLAUDE.md, config, encyclopedia) ===
         val memResult = rclone(listOf("lsf", "$remoteBase/memory/", "--dirs-only"))
         if (memResult.code == 0) {
             val memKeys = memResult.stdout.split("\n").map { it.trimEnd('/').trim() }.filter { it.isNotEmpty() }
@@ -799,7 +986,6 @@ class SyncService(
             }
         }
 
-        // CLAUDE.md
         rclone(listOf("copyto", "$remoteBase/CLAUDE.md", File(claudeDir, "CLAUDE.md").absolutePath, "--update")).also {
             if (it.code != 0) logBackup("WARN", "Pull CLAUDE.md failed: ${it.stderr}", "sync.pull.drive")
         }
@@ -813,23 +999,140 @@ class SyncService(
             }
         }
 
-        // Encyclopedia
         val encDir = File(claudeDir, "encyclopedia").also { it.mkdirs() }
         rclone(listOf("copy", "$remoteBase/encyclopedia/", "${encDir.absolutePath}/", "--update", "--max-depth", "1", "--include", "*.md")).also {
             if (it.code != 0) logBackup("WARN", "Pull encyclopedia failed: ${it.stderr}", "sync.pull.drive")
         }
 
-        // Conversations — checksum + ignore-existing (don't overwrite local)
-        val projectsDir = File(claudeDir, "projects")
-        projectsDir.mkdirs()
-        rclone(listOf("copy", "$remoteBase/conversations/", "${projectsDir.absolutePath}/", "--checksum", "--include", "*.jsonl", "--ignore-existing")).also {
-            if (it.code != 0) logBackup("WARN", "Pull conversations failed: ${it.stderr}", "sync.pull.drive")
+        // === Step 3: conversations — recent-50 in foreground, rest in background ===
+        // Why: a fresh restore was taking 14+ minutes for accounts with large
+        // histories because rclone has to enumerate the entire conversations/
+        // tree. Splitting fetches the recent few synchronously (~30s) and lets
+        // the user start working while history syncs in the background.
+        val stagedIndex = File(indexStagingDir, "conversation-index.json")
+        val recentCount = if (stagedIndex.exists() && stagedIndex.length() > 0) {
+            pullDriveConversationsRecent(remoteBase, stagedIndex, projectsDir, RECENT_PULL_LIMIT)
+        } else {
+            -1  // sentinel: no index → fall through to legacy bulk pull below
         }
 
-        // Conversation index to staging dir for post-pull merge
-        indexStagingDir.mkdirs()
-        rclone(listOf("copy", "$sysRemote/conversation-index.json", "${indexStagingDir.absolutePath}/", "--checksum")).also {
-            if (it.code != 0) logBackup("WARN", "Pull conversation-index failed: ${it.stderr}", "sync.pull.drive")
+        if (recentCount < 0) {
+            // Fallback: index missing or unreadable. Run the legacy bulk copy
+            // synchronously so the user actually gets their conversations on
+            // first-run / index-corrupted scenarios. No background schedule.
+            logBackup("INFO", "No conversation index — falling back to legacy bulk pull", "sync.pull.drive")
+            rclone(listOf("copy", "$remoteBase/conversations/", "${projectsDir.absolutePath}/", "--checksum", "--include", "*.jsonl", "--ignore-existing")).also {
+                if (it.code != 0) logBackup("WARN", "Pull conversations failed: ${it.stderr}", "sync.pull.drive")
+            }
+        } else {
+            // Recent-50 done. Schedule the bulk pull as fire-and-forget so the
+            // user can use the app immediately. The single-flight guard inside
+            // skips if a previous background pull is still running.
+            scheduleBackgroundConversationsPull(remoteBase, projectsDir)
+        }
+    }
+
+    /**
+     * Foreground: pull only the [limit] most-recently-active conversations
+     * named in [stagedIndex] using rclone's --files-from. One rclone process,
+     * --transfers 8 in parallel internally → ~30s for 50 files vs. 14 min for
+     * a full bulk copy. Returns the count of file lines actually pulled, or 0
+     * if the index has no eligible entries.
+     *
+     * `--ignore-existing` means already-local files are skipped, so this is
+     * cheap to re-run on every startup pull.
+     */
+    private fun pullDriveConversationsRecent(
+        remoteBase: String,
+        stagedIndex: File,
+        projectsDir: File,
+        limit: Int,
+    ): Int {
+        val parsed = try { JSONObject(stagedIndex.readText()) } catch (e: Exception) {
+            logBackup("WARN", "Failed to parse staged index: $e", "sync.pull.drive")
+            return 0
+        }
+        val sessions = parsed.optJSONObject("sessions") ?: return 0
+
+        // Sort entries by lastActive desc, take top N. lastActive is an ISO
+        // string like "2026-04-24T16:48:45.000Z" — string sort works because
+        // ISO-8601 is lexicographically chronological.
+        data class Entry(val sessionId: String, val slug: String, val lastActive: String)
+        val entries = mutableListOf<Entry>()
+        sessions.keys().forEach { sid ->
+            val obj = sessions.optJSONObject(sid) ?: return@forEach
+            val slug = obj.optString("slug").trim()
+            if (slug.isEmpty()) return@forEach
+            entries.add(Entry(sid, slug, obj.optString("lastActive", "")))
+        }
+        if (entries.isEmpty()) return 0
+        val recent = entries.sortedByDescending { it.lastActive }.take(limit)
+
+        // Write a files-from list. Paths are relative to the rclone source
+        // root ($remoteBase/conversations/). One file per line.
+        val listFile = File(claudeDir, "toolkit-state/.recent-pull-files-from.txt")
+        try {
+            listFile.parentFile?.mkdirs()
+            listFile.bufferedWriter().use { w ->
+                for (e in recent) w.appendLine("${e.slug}/${e.sessionId}.jsonl")
+            }
+
+            val r = rclone(listOf(
+                "copy",
+                "$remoteBase/conversations/",
+                "${projectsDir.absolutePath}/",
+                "--files-from", listFile.absolutePath,
+                "--checksum",
+                "--ignore-existing",
+                "--transfers", "8",
+            ))
+            if (r.code != 0) {
+                logBackup("WARN", "Recent conversations pull failed: ${r.stderr}", "sync.pull.drive")
+            }
+            return recent.size
+        } finally {
+            // Best-effort cleanup. A leftover list file isn't dangerous —
+            // it'd just be re-overwritten on the next pull — but tidying anyway.
+            runCatching { listFile.delete() }
+        }
+    }
+
+    /**
+     * Background: fire-and-forget bulk pull of every remaining conversation.
+     * Reuses the original `--include *.jsonl --ignore-existing` semantics so
+     * already-local files (i.e. the recent-50 just pulled) are skipped.
+     *
+     * Single-flight guarded — if a prior background pull is still running we
+     * return immediately. Otherwise the chip would either flicker out when
+     * the first finishes or never appear when a re-restore begins.
+     */
+    private fun scheduleBackgroundConversationsPull(remoteBase: String, projectsDir: File) {
+        if (backgroundPullState != null) {
+            logBackup("INFO", "Skipping bg conversations pull — one already running", "sync.pull.drive")
+            return
+        }
+        backgroundPullState = BackgroundPullState("conversations", System.currentTimeMillis())
+        scope.launch {
+            try {
+                val r = rclone(listOf(
+                    "copy",
+                    "$remoteBase/conversations/",
+                    "${projectsDir.absolutePath}/",
+                    "--checksum",
+                    "--include", "*.jsonl",
+                    "--ignore-existing",
+                    "--transfers", "8",
+                ))
+                if (r.code != 0) {
+                    logBackup("WARN", "Background conversations pull failed: ${r.stderr}", "sync.pull.drive")
+                } else {
+                    logBackup("INFO", "Background conversations pull complete", "sync.pull.drive")
+                }
+            } catch (e: Exception) {
+                logBackup("WARN", "Background conversations pull threw: $e", "sync.pull.drive")
+            } finally {
+                backgroundPullState = null
+            }
         }
     }
 
@@ -1148,8 +1451,7 @@ class SyncService(
 
     /**
      * Run sync health checks and write .sync-warnings file.
-     * Generates: OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE,
-     *            SKILLS:unrouted:name1,name2
+     * Generates: OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE
      * Note: PROJECTS:N is omitted on Android (discoverProjects not relevant on phones).
      */
     fun runHealthCheck(): List<String> {
@@ -1183,12 +1485,6 @@ class SyncService(
             }
         }
 
-        // 2. Unrouted user skills
-        val unroutedSkills = findUnroutedSkills()
-        if (unroutedSkills.isNotEmpty()) {
-            warnings.add("SKILLS:unrouted:${unroutedSkills.joinToString(",")}")
-        }
-
         // Write warnings file (or remove if empty)
         if (warnings.isNotEmpty()) {
             warningsFile.writeText(warnings.joinToString("\n") + "\n")
@@ -1197,41 +1493,6 @@ class SyncService(
         }
 
         return warnings
-    }
-
-    /** Find user-created skills that are not routed in skill-routes.json. */
-    private fun findUnroutedSkills(): List<String> {
-        val skillsDir = File(claudeDir, "skills")
-        if (!skillsDir.isDirectory) return emptyList()
-
-        val routesFile = File(claudeDir, "toolkit-state/skill-routes.json")
-        val routes = readJson(routesFile) ?: JSONObject()
-        val toolkitRoot = configGet("toolkit_root")
-        val toolkitLayers = listOf("core/skills", "productivity/skills", "life/skills")
-
-        val unrouted = mutableListOf<String>()
-
-        skillsDir.listFiles()?.forEach { skillDir ->
-            if (!skillDir.isDirectory) return@forEach
-            // Skip symlinks (toolkit-managed)
-            try { if (java.nio.file.Files.isSymbolicLink(skillDir.toPath())) return@forEach } catch (_: Exception) {}
-
-            // Skip toolkit copies
-            if (toolkitRoot.isNotEmpty()) {
-                val isToolkitCopy = toolkitLayers.any { layer ->
-                    File(toolkitRoot, "$layer/${skillDir.name}").isDirectory
-                }
-                if (isToolkitCopy) return@forEach
-            }
-
-            // Skip if already routed
-            val route = routes.optJSONObject(skillDir.name)
-            if (route?.optString("route")?.isNotEmpty() == true) return@forEach
-
-            unrouted.add(skillDir.name)
-        }
-
-        return unrouted
     }
 
     // =========================================================================

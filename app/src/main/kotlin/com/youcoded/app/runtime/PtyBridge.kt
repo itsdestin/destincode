@@ -2,6 +2,7 @@ package com.youcoded.app.runtime
 
 import android.content.Context
 import com.youcoded.app.parser.EventBridge
+import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +37,18 @@ class PtyBridge(
     /** Timestamp of last PTY output — used by activity indicator */
     private val _lastPtyOutputTime = MutableStateFlow(0L)
     val lastPtyOutputTime: StateFlow<Long> = _lastPtyOutputTime
+
+    /**
+     * Raw bytes from the PTY, emitted before the Termux emulator parses
+     * them. Fed by a RawByteListener attached to the emulator. Consumers
+     * (SessionService broadcast) must not block — tryEmit drops on overflow
+     * to keep the terminal thread free.
+     */
+    private val _rawByteFlow = MutableSharedFlow<ByteArray>(
+        replay = 0,
+        extraBufferCapacity = 64,
+    )
+    val rawByteFlow: SharedFlow<ByteArray> = _rawByteFlow
 
     private val _rawBuffer = StringBuffer()  // Thread-safe; capped to prevent OOM
     val rawBuffer: String get() = _rawBuffer.toString()
@@ -159,26 +172,70 @@ class PtyBridge(
         // resize to actual dimensions when attached, but this ensures the setup
         // screens (theme, auth, trust) render their full content before that.
         session?.initializeEmulator(80, 60)
+
+        // Route raw PTY bytes to rawByteFlow. The listener fires on the
+        // terminal thread, so copy bytes before emitting — Termux reuses
+        // the buffer across reads.
+        val emulator = session?.emulator
+        emulator?.addRawByteListener(TerminalEmulator.RawByteListener { buffer, length ->
+            val copy = buffer.copyOfRange(0, length)
+            _rawByteFlow.tryEmit(copy)
+        })
     }
 
     fun writeInput(text: String) {
-        // Atomic-write-then-Enter bug: Claude Code's Ink framework has a 500ms
-        // PASTE_TIMEOUT that treats bulk writes as paste events, which can
-        // swallow a trailing \r. Split any write of "content + trailing \r"
-        // into two writes with a 600ms gap so the preamble commits as paste
-        // first, then \r arrives as a distinct keystroke that submits.
-        // Matches pty-worker.js on desktop so both platforms behave identically.
+        // Submit strategy mirrors desktop pty-worker.js: paste classification in
+        // CC's Ink framework triggers when a single read is ≥64 bytes ending in
+        // `\r` (empirically bisected for CC v2.1.119 — see
+        // youcoded/desktop/test-conpty/snapshots/cc-2.1.119.json). Above that
+        // threshold `\r` becomes a literal newline; below, `\r` is a fresh
+        // keystroke that submits.
         //
-        // Single-char writes (\r alone, one letter), escape sequences without
-        // trailing \r, and raw terminal keystrokes all pass through untouched.
-        if (text.length > 1 && text.endsWith("\r")) {
-            val preamble = text.dropLast(1)
-            session?.write(preamble)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                session?.write("\r")
-            }, 600)
-        } else {
-            session?.write(text)
+        // Three paths:
+        //
+        //  1. Passthrough — text doesn't end in `\r` (escape sequences, raw
+        //     keystrokes, in-progress typing). Single write, no special
+        //     handling.
+        //  2. Atomic submit — text ends in `\r` AND total length ≤ 56 bytes
+        //     (8-byte margin under the threshold). One write; `\r` is
+        //     unambiguously a keystroke regardless of how the kernel reads it.
+        //     The common case for short chat messages.
+        //  3. Split submit — text ends in `\r` AND total length > 56 bytes.
+        //     Send the body, then `\r` 600 ms later. Linux PTY (Termux) does
+        //     not exhibit the ConPTY gap-collapse issue that affects Windows,
+        //     so the timing gap is reliable here. (Desktop uses echo-driven
+        //     `\r` for the same case to handle ConPTY backpressure; Android
+        //     could mirror that for full robustness — see the TODO below.)
+        //
+        // TODO: Mirror desktop's echo-driven path for >SAFE_ATOMIC_LEN messages.
+        // Would observe the body's tail in `_rawByteFlow` (the PTY echo) before
+        // sending `\r`, eliminating the 600 ms timing assumption entirely. Not
+        // urgent on Android because Linux PTY scheduling is more predictable
+        // than ConPTY, but desirable for parity with desktop's design.
+        //
+        // Special case — payloads containing ESC bytes (0x1b) MUST take the
+        // split path even when short. ManagedSession.detectPrompts and
+        // InkSelectParser.toPromptButtons build menu-navigation payloads of
+        // the form `<UPs><DOWNs>\r` (sign-in, theme, trust-folder, bypass).
+        // These are 13–25 bytes — well under SAFE_ATOMIC_LEN — but writing
+        // arrows + Enter atomically causes Ink's Select component to either
+        // miss the navigation or commit Enter on the wrong row. The 600 ms
+        // gap was the original mechanism (pre-cc007084) that made multi-arrow
+        // nav work; the atomic fast-path silently broke all four pre-session
+        // menus. Splitting only escape-containing payloads preserves the
+        // chat-message fast path while fixing menu navigation.
+        val SAFE_ATOMIC_LEN = 56
+        val hasEscape = text.any { it.code == 0x1b }
+        when {
+            !text.endsWith("\r") -> session?.write(text)
+            !hasEscape && text.length <= SAFE_ATOMIC_LEN -> session?.write(text)
+            else -> {
+                val preamble = text.dropLast(1)
+                session?.write(preamble)
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    session?.write("\r")
+                }, 600)
+            }
         }
     }
 

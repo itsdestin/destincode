@@ -33,16 +33,30 @@ It's designed for students, professionals, and anyone who uses AI regularly — 
 - Browse and install skills from 150+ available options
 - Create your own prompt skills and share them via deep links
 - Quick-launch chips for your most-used skills
+- Theme Builder and Marketplace Publisher ship pre-installed (auto-installed on every launch and not removable) so `/theme-builder` and plugin-publishing flows work out of the box
+
+**Commands**
+- Browse and search slash commands directly in the command drawer
+- Three sources: YouCoded-handled (clickable, dispatched in-app), filesystem-scanned user/project/plugin commands (forwarded to the terminal), and Claude Code built-ins (visible reference, run in Terminal View)
 
 **Themes**
 - 4 built-in themes (Light, Dark, Midnight, Creme) + community theme packs
 - Custom wallpapers, particle effects, mascot characters, and icon overrides
 - Build your own themes with `/theme-builder`
 
+**Announcements**
+- Maintainer announcements (release notices, status updates) are fetched hourly and shown in the status bar
+- Source: [`announcements.txt`](https://github.com/itsdestin/youcoded/blob/master/announcements.txt) in this repo
+
 **Remote Access**
 - Access YouCoded from any web browser on your network
 - Use it from your phone, tablet, or another computer
 - Same full UI — just open a URL
+- The Android app permits cleartext WebSocket connections to paired desktop hosts on your LAN or Tailscale network. Use Tailscale (WireGuard encryption) for sensitive traffic — every connection is still gated by a bcrypt password handshake regardless
+
+**Multiplayer Lobby (Privacy Note)**
+- The multiplayer game lobby (powered by [PartyKit](https://www.partykit.io/) on Cloudflare Durable Objects) shares your GitHub username and idle/in-game status with other signed-in YouCoded users so they can challenge you
+- Toggle **Incognito** in the multiplayer settings to stay hidden — no presence is broadcast in incognito mode
 
 **Powered by YouCoded**
 - Optional [YouCoded toolkit](https://github.com/itsdestin/youcoded-core) adds journaling, a personal encyclopedia, task inbox processing, text messaging, and cross-device sync

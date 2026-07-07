@@ -621,4 +621,64 @@ describe('Subagent threading', () => {
     const parent = session.toolCalls.get('toolu_parent')!;
     expect(parent.subagentSegments!.length).toBe(1);
   });
+
+  // Regression: a sub-agent's end_turn was reaching into parent state because
+  // TRANSCRIPT_TURN_COMPLETE lacked the parentAgentToolUseId guard that the
+  // other three transcript handlers have. The visible symptom was the
+  // status-bar model pill flipping to the sub-agent's model mid-turn (and the
+  // drift-reconciliation effect persisting it via setPreference).
+  it('subagent TRANSCRIPT_TURN_COMPLETE does not pollute parent turn.model or call endTurn', () => {
+    // User sent a prompt — isThinking flips to true.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE',
+      sessionId: SESSION,
+      uuid: 'uuid-user',
+      text: 'Run an agent for me',
+      timestamp: 999,
+    });
+    // Parent emits assistant text on its own turn so turn.model is set to the
+    // parent's model (opus), then dispatches the Agent tool_use.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT',
+      sessionId: SESSION,
+      uuid: 'uuid-parent-text',
+      text: 'Dispatching an agent…',
+      timestamp: 1000,
+      model: 'claude-opus-4-7',
+    });
+    state = emitParentAgentToolUse();
+
+    const parentTurnId = state.get(SESSION)!.currentTurnId!;
+    expect(parentTurnId).not.toBeNull();
+    expect(state.get(SESSION)!.assistantTurns.get(parentTurnId)!.model).toBe('claude-opus-4-7');
+    expect(state.get(SESSION)!.isThinking).toBe(true);
+
+    // Sub-agent's final assistant message: parseTranscriptLine emits a
+    // turn-complete event, SubagentWatcher stamps it with parentAgentToolUseId.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE',
+      sessionId: SESSION,
+      uuid: 'uuid-subagent-done',
+      timestamp: 2000,
+      stopReason: 'end_turn',
+      model: 'claude-haiku-4-5-20251001',
+      anthropicRequestId: 'req_subagent',
+      usage: null,
+      parentAgentToolUseId: 'toolu_parent',
+      agentId: 'abc',
+    });
+
+    const session = state.get(SESSION)!;
+    // Parent turn.model must remain the parent's model — the drift-reconciliation
+    // effect in App.tsx walks back to find this value and would silently flip
+    // (and persist) the status-bar pill if the sub-agent's model leaked through.
+    expect(session.assistantTurns.get(parentTurnId)!.model).toBe('claude-opus-4-7');
+    expect(session.assistantTurns.get(parentTurnId)!.stopReason).toBeNull();
+    expect(session.assistantTurns.get(parentTurnId)!.anthropicRequestId).toBeNull();
+    // endTurn() must NOT have run — parent is still in-flight running the agent.
+    expect(session.currentTurnId).toBe(parentTurnId);
+    expect(session.isThinking).toBe(true);
+    // The parent's Task tool must not have been flipped to 'failed: Turn ended'.
+    expect(session.toolCalls.get('toolu_parent')!.status).not.toBe('failed');
+  });
 });

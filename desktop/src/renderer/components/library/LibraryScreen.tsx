@@ -4,7 +4,9 @@
 
 import React, { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
+import { useEscClose } from "../../hooks/use-esc-close";
 import MarketplaceCard from "../marketplace/MarketplaceCard";
+import WallpaperBackdrop from "../WallpaperBackdrop";
 import MarketplaceGrid from "../marketplace/MarketplaceGrid";
 import MarketplaceDetailOverlay, {
   type DetailTarget,
@@ -31,15 +33,10 @@ export default function LibraryScreen({
   // Tab state — defaults to 'skills' if no initialTab provided.
   const [tab, setTab] = useState<'skills' | 'themes' | 'updates'>(initialTab ?? 'skills');
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || detail) return;
-      e.stopPropagation();
-      onExit();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [detail, onExit]);
+  // Register with the dismissal stack — ESC (desktop) and hardware back
+  // (Android) both call onExit. LIFO with any nested overlay so the overlay
+  // closes first (detail popup), then the screen.
+  useEscClose(true, onExit);
 
   const favSet = useMemo(() => new Set(mp.favorites), [mp.favorites]);
   const themeFavSet = useMemo(() => new Set(mp.themeFavorites), [mp.themeFavorites]);
@@ -57,13 +54,31 @@ export default function LibraryScreen({
 
   // ── per-item render helpers ────────────────────────────────────────────────
 
+  // Plugin-name lookup for the skill-card badge. Skills whose pluginName
+  // resolves to a marketplace entry get a clickable pill that jumps to
+  // that plugin's detail overlay. Skills without a matching registry
+  // entry fall back to MarketplaceCard's generic source tag.
+  const pluginDisplayNames = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const entry of mp.skillEntries) {
+      m.set(entry.id, entry.displayName);
+    }
+    return m;
+  }, [mp.skillEntries]);
+
   function renderSkillCard(s: SkillEntry) {
+    const pluginId = s.pluginName;
+    const pluginName = pluginId ? pluginDisplayNames.get(pluginId) : undefined;
+    const pluginBadge = pluginId && pluginName
+      ? { name: pluginName, onClick: () => setDetail({ kind: "skill", id: pluginId }) }
+      : undefined;
     return (
       <MarketplaceCard
         key={s.id}
         item={{ kind: "skill", entry: s }}
         installed
         updateAvailable={!!mp.updateAvailable[s.id]}
+        pluginBadge={pluginBadge}
         onOpen={() => setDetail({ kind: "skill", id: s.id })}
       />
     );
@@ -107,27 +122,52 @@ export default function LibraryScreen({
   }
 
   return (
-    <div className="fixed inset-0 z-40 overflow-y-auto flex flex-col">
-      <div className="flex items-center justify-between p-3">
-        <h1 className="text-xl font-semibold text-fg pl-2">Your Library</h1>
-        <div className="flex items-center gap-2">
+    <div className="fixed inset-0 z-40">
+      {/* Pre-blurred wallpaper as a non-scrolling backdrop — pinned to the
+          fixed outer wrapper so it stays put as content scrolls. */}
+      <WallpaperBackdrop />
+      <div className="absolute inset-0 overflow-y-auto overflow-x-hidden flex flex-col [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex items-center justify-between gap-2 p-3">
+        <h1 className="text-xl font-semibold text-fg pl-2 truncate min-w-0">Your Library</h1>
+        <div className="flex items-center gap-2 shrink-0">
           {onOpenMarketplace && (
             <button
               type="button"
               onClick={onOpenMarketplace}
-              className="text-fg-2 hover:text-fg text-sm px-3 py-1 rounded-md border border-edge-dim hover:border-edge"
+              className="panel-glass bg-inset text-fg-2 hover:text-fg text-sm rounded-md border border-edge-dim hover:border-edge px-3 py-1 inline-flex items-center justify-center"
               aria-label="Open marketplace"
+              title="Marketplace"
             >
-              Marketplace
+              {/* Wide: text. Narrow: storefront icon — symmetric with MarketplaceScreen's library bookmark. */}
+              <span className="hidden sm:inline">Marketplace</span>
+              <span className="sm:hidden inline-flex p-0.5" aria-hidden>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 9l1-5h16l1 5" />
+                  <path d="M5 9v11h14V9" />
+                  <path d="M9 13h6" />
+                </svg>
+              </span>
             </button>
           )}
+          {/* Wide: Esc text. Narrow: bordered close-X — matches the marketplace top bar. */}
           <button
             type="button"
             onClick={onExit}
-            className="text-fg-dim hover:text-fg text-sm px-2 py-1"
+            className="hidden sm:inline-block text-fg-dim hover:text-fg text-sm px-2 py-1"
             aria-label="Exit library"
           >
             Esc · Back to chat
+          </button>
+          <button
+            type="button"
+            onClick={onExit}
+            className="sm:hidden panel-glass bg-inset p-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-dim hover:text-fg"
+            aria-label="Exit library"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
           </button>
         </div>
       </div>
@@ -162,7 +202,9 @@ export default function LibraryScreen({
 
       <div className="px-4 flex flex-col gap-8 pb-12 pt-4">
 
-        {/* Skills tab — starred favorites first, then the rest. */}
+        {/* Skills tab — starred favorites first, then the rest. Each skill
+             card carries a plugin-name badge that jumps to the parent
+             plugin's marketplace detail overlay. */}
         {tab === 'skills' && (
           <>
             <Section title="Favorites" empty="No favorites yet — tap the star on any installed skill.">
@@ -228,6 +270,7 @@ export default function LibraryScreen({
           onOpenThemeShare={onOpenThemeShare}
         />
       )}
+      </div>
     </div>
   );
 }

@@ -26,19 +26,44 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # Build the full React UI so the APK has a working WebView
+      # build-web-ui.sh runs `npm run build` in desktop/, which invokes
+      # electron-builder for all configured Linux targets. Pacman needs
+      # bsdtar (libarchive-tools); rpm target needs the rpm package. See
+      # android-ci.yml for the full backstory on the PR #98 regression.
+      - name: Install Linux build deps
+        # `apt-get update` prefix: the cached package index on ubuntu-latest
+        # often points to .deb versions that have rolled off the mirror, so
+        # a bare install hits HTTP 404 / exit 100. Refresh the index first.
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
+
+      # Build the full React UI so the APK has a working WebView.
+      # bundleWebUi (Gradle preBuild dep) would do this too, but running
+      # it explicitly here keeps this workflow's intent self-documenting.
       - name: Build React UI
         run: ./scripts/build-web-ui.sh
 
       - name: Run unit tests
         run: ./gradlew test
 
+      # Build BOTH flavors so manual artifact downloads cover the same
+      # parity surface as the per-push CI. See android-ci.yml for the
+      # rationale on why releaseTest belongs alongside debug.
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
-      - name: Upload APK
+      - name: Build releaseTest APK (R8 minified, debug-signed)
+        run: ./gradlew assembleReleaseTest
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: youcoded-test-apk
           path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+
+      - name: Upload releaseTest APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: youcoded-test-apk-releasetest
+          path: app/build/outputs/apk/releaseTest/*.apk
           retention-days: 7

@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { isAndroid } from '../platform';
 import { useSkills } from '../state/skill-context';
 import type { ChipConfig } from '../../shared/types';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useEscClose } from '../hooks/use-esc-close';
 
 // Pencil SVG icon — matches the one used in StatusBar.tsx
 function PencilIcon({ size = 10 }: { size?: number }) {
@@ -59,15 +60,12 @@ export default function QuickChips({ onChipTap }: Props) {
 
   // Outside-click dismissal now handled by the <Scrim> inside ChipEditorPopup.
 
-  // Close on Escape
-  useEffect(() => {
-    if (!editorOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setEditorOpen(false); e.stopPropagation(); }
-    };
-    window.addEventListener('keydown', handler, true); // capture to beat other Escape handlers
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [editorOpen]);
+  // Close on Escape — routed through the central useEscClose LIFO stack. The
+  // EscCloseProvider runs in capture phase and calls stopPropagation itself,
+  // so the previous capture-phase + stopPropagation workaround is no longer
+  // needed; LIFO stack ordering ensures the editor pops first when topmost.
+  const handleEditorClose = useCallback(() => setEditorOpen(false), [setEditorOpen]);
+  useEscClose(editorOpen, handleEditorClose);
 
   const android = isAndroid();
   const chipHeight = android ? 'h-8' : 'h-6';
@@ -286,7 +284,8 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
           </button>
         </div>
 
-        <div ref={bodyRef} className="scroll-fade px-4 py-3 space-y-4">
+        <div ref={bodyRef} className="scroll-fade">
+          <div className="px-4 py-3 space-y-4">
             {/* Chip list — drag-to-reorder via pointer events (mirrors
                 SessionStrip dropdown). Grip icon appears on hover; drop
                 splices the row into the target position. */}
@@ -392,6 +391,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
             {chips.length >= 10 && (
               <p className="text-[10px] text-fg-faint text-center">Maximum 10 chips reached</p>
             )}
+          </div>
         </div>
       </OverlayPanel>
 

@@ -77,7 +77,21 @@ export class FirstRunManager extends EventEmitter {
 
   /** Start (or resume) the first-run flow. */
   async run(): Promise<void> {
+    // Re-entrancy guard. run() auto-fires on launch AND is reachable from the
+    // "Try Again" button (retry() → run()). Without this guard, a retry click
+    // landing while the auto-run is mid-install spawns a SECOND installClaude(),
+    // and the two native installers race on the same ~/.claude/downloads file →
+    // "being used by another process". The `running` flag existed but was never
+    // checked; this is the fix. (Root cause from a real failed install, 2026-05-30.)
+    if (this.running) {
+      log('INFO', 'first-run', 'run() ignored — flow already in progress');
+      return;
+    }
     this.running = true;
+    // Clear a stale error from a prior attempt so the renderer doesn't render a
+    // live (lastError-gated) "Try Again" button while this run is already
+    // installing — second line of defense against the concurrent-install race.
+    if (this.state.lastError) this.updateState({ lastError: undefined });
     try {
       // Check disk space first
       const disk = checkDiskSpace();
@@ -209,6 +223,20 @@ export class FirstRunManager extends EventEmitter {
     for (const { name, install, detect, label } of installable) {
       const prereq = this.state.prerequisites.find((p) => p.name === name);
       if (prereq?.status === 'installed') continue;
+
+      // Re-detect before installing. The prerequisite may have appeared on
+      // disk since detectAll() ran — the user installed it manually, or a
+      // previous attempt partially succeeded. Without this, a retry blindly
+      // re-runs install() and can fail again even though the tool is now
+      // present. (This is exactly how a Linux user got permanently stuck on
+      // the setup screen: installNode() had no Linux branch, so every retry
+      // re-failed even after Node was installed out-of-band.)
+      const preCheck = await detect();
+      if (preCheck.installed) {
+        this.updatePrereq(name, { status: 'installed', version: preCheck.version });
+        log('INFO', 'first-run', `${label} already present — skipping install`);
+        continue;
+      }
 
       this.updatePrereq(name, { status: 'installing' });
       this.updateState({

@@ -5,6 +5,7 @@ import { useChatState } from '../../state/chat-context';
 import { buildTasksById, TASK_LIFECYCLE, TaskState, TaskStatus } from '../../state/task-state';
 import { SubagentTimeline } from './SubagentTimeline';
 import { ChevronIcon } from '../Icons';
+import { useExpandAllToggle, getInitialExpanded, isExpandModeActive } from '../../hooks/useExpandAllToggle';
 
 // Parsed views for expanded tool cards. One dispatcher + inline view functions;
 // splitting per-file only becomes worthwhile if a single view grows past ~80
@@ -38,7 +39,8 @@ function stripCarriageReturns(s: string): string {
 }
 
 function CollapsibleBlock({ children, maxLines = 20, className = '' }: { children: string; maxLines?: number; className?: string }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
   const lines = children.split('\n');
   const overflow = lines.length > maxLines;
   const shown = open || !overflow ? children : lines.slice(0, maxLines).join('\n');
@@ -240,15 +242,17 @@ function DiffView({
   }, [oldStr, newStr, structuredPatch]);
 
   const total = rows.length;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
   const overflow = total > DIFF_PREVIEW_LINES;
   const containerStyle = open || !overflow
     ? undefined
     : { maxHeight: `${DIFF_PREVIEW_LINES * DIFF_ROW_PX}px` };
 
-  // Pad the two line-number gutters to the widest number present so columns
-  // stay aligned. With structuredPatch, numbers can be large (line 2854) so
-  // we size to the actual maximum rather than the row count.
+  // Single line-number gutter matching Claude Code's native diff convention:
+  // deleted rows show the old-file number, context + added rows show the
+  // new-file number. Pad to the widest number so the column stays aligned —
+  // with structuredPatch, numbers can be large (e.g. line 2854).
   const gutterWidth = Math.max(2, String(maxLineNum).length);
   const gutterCh = `${gutterWidth}ch`;
 
@@ -260,8 +264,9 @@ function DiffView({
       >
         {rows.map((row, idx) => {
           const showSeparator = hunkBoundaries.has(idx);
-          const oldN = row.kind === 'add' ? '' : String(row.oldN);
-          const newN = row.kind === 'del' ? '' : String(row.newN);
+          // Single-number gutter: del → old-file number (the line being removed),
+          // add/ctx → new-file number (what the file will look like post-edit).
+          const lineNum = row.kind === 'del' ? String(row.oldN) : String(row.newN);
           const rowClass =
             row.kind === 'del'
               ? 'bg-red-600/10 border-l-[3px] border-red-500'
@@ -288,13 +293,7 @@ function DiffView({
                   className="text-right px-1.5 py-0.5 text-fg-muted select-none shrink-0"
                   style={{ width: gutterCh }}
                 >
-                  {oldN}
-                </span>
-                <span
-                  className="text-right px-1.5 py-0.5 text-fg-muted select-none shrink-0"
-                  style={{ width: gutterCh }}
-                >
-                  {newN}
+                  {lineNum}
                 </span>
                 <span className={`w-4 select-none shrink-0 ${glyphClass}`}>{glyph}</span>
                 <span className={`py-0.5 pr-2 whitespace-pre-wrap break-all flex-1 ${textClass}`}>{row.text || ' '}</span>
@@ -582,7 +581,8 @@ function ReadView({ tool }: { tool: ToolCallState }) {
   const offset = tool.input.offset as number | undefined;
   const limit = tool.input.limit as number | undefined;
   const rows = tool.response ? parseCatN(tool.response) : [];
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
   const overflow = rows.length > READ_PREVIEW_LINES;
 
   let rangeLabel = '';
@@ -655,8 +655,10 @@ function AgentView({ tool }: { tool: ToolCallState }) {
   // Auto-expand the activity section while running; auto-collapse once the
   // parent Agent tool has a response (subagent completed). User toggles
   // stick for the rest of the session.
-  const [showTimeline, setShowTimeline] = useState(() => !tool.response);
-  const [userToggled, setUserToggled] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(() => getInitialExpanded(!tool.response));
+  // Start userToggled=true when the shortcut is already in effect so the
+  // auto-collapse-on-response effect below doesn't fight the user's intent.
+  const [userToggled, setUserToggled] = useState(() => isExpandModeActive());
   const prevHadResponse = useRef(!!tool.response);
   useEffect(() => {
     if (userToggled) return;
@@ -664,6 +666,12 @@ function AgentView({ tool }: { tool: ToolCallState }) {
     if (!prevHadResponse.current && hasResponse) setShowTimeline(false);
     prevHadResponse.current = hasResponse;
   }, [tool.response, userToggled]);
+  // Ctrl+O: mark userToggled so the auto-collapse-on-response effect doesn't
+  // fight the shortcut back closed as soon as the subagent completes.
+  useExpandAllToggle(
+    () => { setShowTimeline(true); setUserToggled(true); },
+    () => { setShowTimeline(false); setUserToggled(true); },
+  );
 
   const tone = SUBAGENT_TONE[subagent] || 'neutral';
 
@@ -717,7 +725,11 @@ function AgentSection({
   open?: boolean;
   onToggle?: () => void;
 }) {
-  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const [internalOpen, setInternalOpen] = useState(() => getInitialExpanded(defaultOpen));
+  // Uncontrolled AgentSections (Briefing, Response) respond to Ctrl+O; the
+  // controlled Activity section reflects whatever AgentView's showTimeline
+  // says — isOpen prefers the `open` prop, so this is a harmless no-op there.
+  useExpandAllToggle(() => setInternalOpen(true), () => setInternalOpen(false));
   const isOpen = open ?? internalOpen;
   const handleToggle = () => {
     if (onToggle) onToggle();

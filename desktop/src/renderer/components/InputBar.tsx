@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
+import TerminalToolbar from './TerminalToolbar';
 import { AttachIcon, CompassIcon } from './Icons';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
@@ -9,6 +10,7 @@ import FlowingKeywordsText from './FlowingKeywords';
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
 import type { UsageSnapshot } from '../state/chat-types';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { isAndroid } from '../platform';
 
 export interface InputBarHandle {
   clear: () => void;
@@ -34,6 +36,10 @@ interface Props {
   getSessionState?: (sessionId: string) => import('../state/chat-types').SessionChatState | undefined;
   // Bare /model, /fast, /effort open the unified ModelPickerPopup
   onOpenModelPicker?: () => void;
+  /** Optional text to prefill when this session is first selected.
+   *  Consumed exactly once per session ID via a consumed-set ref — safe to
+   *  receive as a prop without triggering repeated fills on re-renders. */
+  initialInput?: string;
 }
 
 interface Attachment {
@@ -53,7 +59,7 @@ function fileNameFromPath(p: string): string {
   return p.replace(/\\/g, '/').split('/').pop() || p;
 }
 
-const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker }, ref) {
+const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -88,6 +94,32 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     setAttachments(restored?.attachments ?? []);
     prevSessionRef.current = sessionId;
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps — intentionally reads text/attachments from refs
+
+  // Prefill support — used by dev:open-session-in (and any other caller that
+  // supplies initialInput on a SessionInfo).  We track consumed session IDs in
+  // a ref so the fill fires exactly once per session, never on re-renders.
+  // The consumed-set approach avoids mutating the SessionInfo object directly
+  // (which would be a side-effect against shared state).
+  const consumedPrefillIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!initialInput?.trim() || consumedPrefillIds.current.has(sessionId)) return;
+    consumedPrefillIds.current.add(sessionId);
+    // Bound the set to prevent unbounded growth over long app lifetimes.
+    // Oldest entries can't be re-triggered because their session IDs are
+    // no longer active in the session list.
+    if (consumedPrefillIds.current.size > 200) {
+      const oldest = consumedPrefillIds.current.values().next().value;
+      if (oldest !== undefined) consumedPrefillIds.current.delete(oldest);
+    }
+    setText(initialInput);
+    // Focus the textarea so the user can review / edit / submit immediately.
+    requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(initialInput.length, initialInput.length);
+      }
+    });
+  }, [sessionId, initialInput]);
 
   // Ref to always-current send function so the global keydown handler
   // (which only depends on [disabled]) can call it without stale closures
@@ -130,11 +162,15 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   }, [disabled]);
 
   // Unfocus textarea after idle so global shortcuts (e.g. Shift to open
-  // session switcher, Shift+Space to cycle model) work without conflicting
+  // session switcher, Shift+Space to cycle model) work without conflicting.
+  // Skip on Android: blurring the textarea dismisses the soft keyboard, so
+  // the user would have to re-tap the field after every brief pause. Those
+  // global shortcuts are desktop-only (Shift-hold, Shift+Space, Shift+Tab)
+  // and have no Android equivalent, so keeping focus here costs nothing.
   const idleBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const el = inputRef.current;
-    if (!el) return;
+    if (!el || isAndroid()) return;
     const resetTimer = () => {
       if (idleBlurTimer.current) clearTimeout(idleBlurTimer.current);
       idleBlurTimer.current = setTimeout(() => {
@@ -371,6 +407,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
+      {/* Terminal view (minimal) renders the Esc/Tab/Ctrl/arrow helper row in
+          the same slot QuickChips occupies in chat view, so both modes share
+          the same "pill row above input bar" visual inside one container. */}
+      {minimal && <TerminalToolbar sessionId={sessionId} />}
       {!minimal && !compact && <QuickChips onChipTap={handleChip} />}
 
       {attachments.length > 0 && (

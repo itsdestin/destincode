@@ -14,6 +14,7 @@ import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
 import { TranscriptWatcher } from './transcript-watcher';
+import { resolveMappingAction } from './session-id-mapping';
 import { listPastSessions, loadHistory } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
@@ -27,9 +28,20 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 import { getRestoreService } from './restore-service';
 import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
+import { readLogTail, gatherDiagnostics, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
+import { createUpdateInstaller, findCachedDownload, makeLaunchInstaller, UpdateInstallError } from './update-installer';
+import type { UpdateProgressEvent } from '../shared/update-install-types';
+import { getChangelog } from './changelog-service';
+// Analytics opt-out — Phase 6. The two exported functions read/write
+// ~/.claude/youcoded-analytics.json; runAnalyticsOnLaunch (wired in main.ts)
+// short-circuits when optIn is false.
+import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
+import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
+import type { PerformanceConfigSnapshot } from '../shared/types';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
+
 
 export function registerIpcHandlers(
   ipcMain: IpcMain,
@@ -227,6 +239,37 @@ export function registerIpcHandlers(
     return zoomLevelToPercent(mainWindow.webContents.getZoomLevel());
   });
 
+  // --- Performance / GPU pref ---
+  // The Settings → Performance section reads/writes ~/.claude/youcoded-performance.json
+  // through these handlers. The Chromium force-{high,low}-power-gpu switch is
+  // applied at module load in main.ts (cannot be changed at runtime), so set-config
+  // only persists the value — the renderer is responsible for prompting a restart.
+  ipcMain.handle(IPC.PERFORMANCE_GET_CONFIG, (): PerformanceConfigSnapshot => {
+    const cfg = loadConfigSync();
+    const gpu = getCachedGpu();
+    return {
+      preferPowerSaving: cfg.preferPowerSaving,
+      appliedAtLaunch: getAppliedAtLaunch(),
+      multiGpuDetected: gpu.multiGpuDetected,
+      gpuList: gpu.gpuList,
+    };
+  });
+
+  ipcMain.handle(IPC.PERFORMANCE_SET_CONFIG, (_event, payload: { preferPowerSaving: boolean }) => {
+    // Validate the payload — IPC inputs are untrusted (a remote browser
+    // client could send anything). We coerce to a strict boolean.
+    const next = payload?.preferPowerSaving === true;
+    writeConfig({ preferPowerSaving: next });
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IPC.APP_RESTART, () => {
+    // Generic restart channel — reused by any future setting that needs a
+    // restart to apply. relaunch() schedules the restart for after exit().
+    app.relaunch();
+    app.exit(0);
+  });
+
   // --- Theme marketplace ---
   // Phase 3a: pass the shared config store so theme installs also record into
   // the unified youcoded-skills.json packages map used for update tracking.
@@ -308,6 +351,20 @@ export function registerIpcHandlers(
   // sessions still fall back to mainWindow since no renderer owns them yet.
   sessionManager.on('session-created', (info) => {
     process.nextTick(() => sendForSession(info.id, IPC.SESSION_CREATED, info));
+  });
+
+  // window.claude.terminal.getScreenText — reads the visible xterm buffer
+  // for the given session. The actual read happens in the renderer (xterm
+  // lives there), so main calls back via executeJavaScript. ~1s cadence
+  // under the classifier; round-trip overhead is negligible.
+  ipcMain.handle('terminal:get-screen-text', async (event, sessionId: string) => {
+    try {
+      return await event.sender.executeJavaScript(
+        `window.__terminalRegistry?.getScreenText(${JSON.stringify(sessionId)}) ?? ''`
+      );
+    } catch {
+      return '';
+    }
   });
 
   // Session CRUD
@@ -450,6 +507,12 @@ export function registerIpcHandlers(
   // Open the YouCoded CHANGELOG on GitHub in the default browser
   ipcMain.handle(IPC.OPEN_CHANGELOG, async () => {
     await shell.openExternal('https://github.com/itsdestin/youcoded/blob/master/CHANGELOG.md');
+  });
+
+  // Update panel fetches CHANGELOG.md via this handler. Cached in main;
+  // forceRefresh is true only when the popup opens in the update-available path.
+  ipcMain.handle(IPC.UPDATE_CHANGELOG, async (_event, opts: { forceRefresh?: boolean } = { forceRefresh: false }) => {
+    return getChangelog({ forceRefresh: !!opts.forceRefresh });
   });
 
   // Open any URL in the default browser (allowlisted to https only)
@@ -667,6 +730,16 @@ export function registerIpcHandlers(
     }
   });
 
+  // --- Anonymous analytics opt-out (Phase 6) ---------------------------------
+  // Getters and setters for the boolean gate analytics-service reads on launch.
+  // The About → Privacy section's toggle drives these; renderer handles the
+  // optimistic flip with revert-on-failure, so we don't need to return a bool
+  // from the setter.
+  ipcMain.handle('analytics:get-opt-in', () => getAnalyticsOptIn());
+  ipcMain.handle('analytics:set-opt-in', (_event, enabled: boolean) => {
+    setAnalyticsOptIn(Boolean(enabled));
+  });
+
   // --- Folder switcher persistence ---
   const foldersPrefPath = path.join(os.homedir(), '.claude', 'youcoded-folders.json');
 
@@ -879,6 +952,16 @@ export function registerIpcHandlers(
   });
   ipcMain.handle(IPC.INTEGRATIONS_CONFIGURE, async (_e, slug: string, settings: Record<string, unknown>) => {
     return integrationInstaller.configure(slug, settings);
+  });
+  ipcMain.handle(IPC.INTEGRATIONS_CONNECT, async (_e, slug: string) => {
+    return integrationInstaller.connect(slug);
+  });
+
+  // Reports process.platform so the renderer can gate UI (e.g. hide Install
+  // buttons on macOS-only integrations when running on Windows). Returns the
+  // raw Node code — the renderer uses platform-display.ts to humanize.
+  ipcMain.handle(IPC.PLATFORM_GET, () => {
+    return process.platform;
   });
 
   // Phase 4 — user-initiated cache bust. Next fetchIndex/getFeatured refetches.
@@ -1119,6 +1202,13 @@ export function registerIpcHandlers(
     }
   });
 
+  // No-op: Electron has no hardware back button. Registered for shape
+  // parity with SessionService.kt's handleBridgeMessage() so the
+  // 'system:notify-stack-state' string exists in ipc-handlers.ts too.
+  ipcMain.on(IPC.SYSTEM_NOTIFY_STACK_STATE, () => {
+    // intentionally empty
+  });
+
   // Forward session exit events — exitCode is piped through to the renderer
   // so the reducer can distinguish clean shutdowns from 'session-died' cases.
   sessionManager.on('session-exit', (sessionId: string, exitCode: number) => {
@@ -1195,9 +1285,16 @@ export function registerIpcHandlers(
         const exe = assets.find(a => a.name.endsWith('.exe'));
         downloadUrl = exe?.browser_download_url || null;
       } else if (platform === 'darwin') {
-        // Prefer .dmg
-        const dmg = assets.find(a => a.name.endsWith('.dmg'));
-        downloadUrl = dmg?.browser_download_url || null;
+        // Prefer .dmg matching the current arch. electron-builder produces both
+        // `YouCoded-<ver>-arm64.dmg` and `YouCoded-<ver>.dmg` (x64, no suffix),
+        // and GitHub returns them in non-deterministic order — so a plain
+        // `.endsWith('.dmg')` would hand Intel Macs the arm64 DMG (or vice
+        // versa), which Gatekeeper refuses to mount. Match by arch first, then
+        // fall back to any .dmg if a matching one isn't in the release.
+        const wantArm = process.arch === 'arm64';
+        const archDmg = assets.find(a => a.name.endsWith('.dmg') && a.name.includes('arm64') === wantArm);
+        const anyDmg = assets.find(a => a.name.endsWith('.dmg'));
+        downloadUrl = archDmg?.browser_download_url || anyDmg?.browser_download_url || null;
       } else {
         // Linux — prefer .AppImage, fallback to .deb
         const appImage = assets.find(a => a.name.endsWith('.AppImage'));
@@ -1234,8 +1331,120 @@ export function registerIpcHandlers(
     if (Date.now() - lastReleaseCheck > RELEASE_CHECK_INTERVAL) {
       fetchLatestRelease().catch(() => {});
     }
-    return cachedUpdateStatus || { current: app.getVersion(), latest: app.getVersion(), update_available: false, download_url: null };
+    const status = cachedUpdateStatus || { current: app.getVersion(), latest: app.getVersion(), update_available: false, download_url: null };
+
+    // Dev-only: force update_available=true for manual UpdatePanel verification without waiting for a real release.
+    // Set YOUCODED_DEV_FAKE_UPDATE=1 to simulate a new release one patch ahead of the current version.
+    // Note: the download_url points at the real GitHub releases page, so clicking Update Now opens the browser
+    // to the actual latest release — not the fake +1 version. That's fine for UI verification; no real installer
+    // exists for the fake version. No-op unless the env var is exactly '1'.
+    // `!app.isPackaged` gate: belt-and-suspenders so a stray env var in a user's
+    // shell can't flip the update pill on in a packaged build. Dev-only by design.
+    if (!app.isPackaged && process.env.YOUCODED_DEV_FAKE_UPDATE === '1') {
+      const currentVersion = app.getVersion();
+      const parts = currentVersion.split('.').map(n => parseInt(n, 10));
+      const maj = parts[0] || 0;
+      const min = parts[1] || 0;
+      const patch = parts[2] || 0;
+      return {
+        current: currentVersion,
+        latest: `${maj}.${min}.${patch + 1}`,
+        update_available: true,
+        download_url: 'https://github.com/itsdestin/youcoded/releases/latest',
+      };
+    }
+
+    return status;
   }
+
+  // -------------------------------------------------------------------------
+  // In-app update installer — download + launch the platform installer.
+  // Spec: docs/superpowers/specs/2026-04-22-in-app-update-installer-design.md
+  // -------------------------------------------------------------------------
+  const updateCacheDir = path.join(app.getPath('userData'), 'update-cache');
+
+  const installer = createUpdateInstaller({
+    cacheDir: updateCacheDir,
+    onProgress: (ev: UpdateProgressEvent) => {
+      // Broadcast to every live renderer. Renderers filter by jobId (single-job
+      // invariant in the engine means only one is in flight, but filtering keeps
+      // UI state correct if a prior job's final tick arrives after the popup closed).
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('update:progress', ev);
+      }
+    },
+  });
+
+  const launchInstaller = makeLaunchInstaller({
+    shellOpenExternal: (url: string) => shell.openExternal(url),
+    appRelaunch: () => app.relaunch(),
+    fallbackDownloadUrl: () => cachedUpdateStatus?.download_url ?? '',
+    // production reads process.env.APPIMAGE (Linux only); tests pass an override.
+  });
+
+  // Dev-only fake-update flag: when set AND running from source (unpackaged),
+  // short-circuit the download/launch to use a bundled 1 MB dummy installer.
+  // Lets us exercise the popup flow end-to-end without a real release. Gated on
+  // !app.isPackaged so production builds can never enter this path even if the
+  // env var is somehow set.
+  const devFakeUpdate = !app.isPackaged && process.env.YOUCODED_DEV_FAKE_UPDATE === '1';
+
+  ipcMain.handle('update:download', async () => {
+    if (devFakeUpdate) {
+      // Copy the bundled dummy installer into the cache dir so the launch path
+      // exercises the same file-move logic it would hit in prod. Emits one
+      // synchronous 100% progress event so the renderer sees the full arc.
+      const ext = process.platform === 'win32' ? '.exe'
+               : process.platform === 'darwin' ? '.dmg'
+               : '.AppImage';
+      // app.getAppPath() resolves to the desktop/ root (where package.json lives),
+      // which is where dev-assets/ sits. More robust than __dirname across dev
+      // build variations (tsc watch vs esbuild output).
+      const srcPath = path.join(app.getAppPath(), 'dev-assets', `fake-installer${ext}`);
+      if (!fs.existsSync(updateCacheDir)) fs.mkdirSync(updateCacheDir, { recursive: true });
+      const dstPath = path.join(updateCacheDir, `YouCoded-fake-dev${ext}`);
+      fs.copyFileSync(srcPath, dstPath);
+      const bytesTotal = fs.statSync(dstPath).size;
+      const jobId = `dev-${Date.now()}`;
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('update:progress', { jobId, bytesReceived: bytesTotal, bytesTotal, percent: 100 });
+      }
+      return { jobId, filePath: dstPath, bytesTotal };
+    }
+    // Renderer never passes a URL — we resolve main-side from the trusted cache
+    // populated by the GitHub Releases check. Prevents renderer from spoofing
+    // the download target.
+    const status = getUpdateStatus();
+    const url = status?.download_url;
+    if (!url) throw new UpdateInstallError('url-rejected', 'no download URL available');
+    return await installer.startDownload(url);
+  });
+
+  ipcMain.handle('update:cancel', async (_event, payload: { jobId: string }) => {
+    installer.cancelDownload(payload.jobId);
+    return { success: true };
+  });
+
+  ipcMain.handle('update:launch', async (_event, payload: { jobId: string; filePath: string }) => {
+    if (devFakeUpdate) {
+      // Never actually launch anything in dev — just surface the cached file in
+      // the OS file manager so Destin can confirm it exists.
+      shell.showItemInFolder(payload.filePath);
+      // Return the fallback: 'browser' shape so the renderer flips out of launching
+      // state and calls onClose() — do NOT schedule app.quit() (that would kill the dev session).
+      return { success: true, quitPending: false, fallback: 'browser' as const };
+    }
+    const result = await launchInstaller({ jobId: payload.jobId, filePath: payload.filePath });
+    if (result.success && result.quitPending) {
+      // 500ms grace so the child installer process has detached cleanly before we exit.
+      setTimeout(() => app.quit(), 500);
+    }
+    return result;
+  });
+
+  ipcMain.handle('update:get-cached-download', async (_event, payload: { version: string }) => {
+    return findCachedDownload(updateCacheDir, payload.version, process.platform);
+  });
 
   // Initial fetch on startup
   fetchLatestRelease().catch(() => {});
@@ -1358,7 +1567,12 @@ export function registerIpcHandlers(
       if (state) attentionMap[desktopId] = state;
     }
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
+    // Background bulk-conversations pull — non-null while a recent-restore
+    // is still fetching older history in the background. UI shows a chip
+    // explaining why conversations are still appearing after restore "Done".
+    const backgroundPull = getSyncService()?.getBackgroundPullState() ?? null;
+
+    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap, backgroundPull };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -1534,13 +1748,57 @@ export function registerIpcHandlers(
     topicWatchers.set(desktopId, interval);
   }
 
+  // Tear down the topic + transcript watchers for a desktop session. Shared
+  // by the remap path (CC rotated its session id on /clear) and the
+  // session-exit cleanup — the close()-vs-clearInterval discriminator is
+  // subtle enough that two drifting copies would be a bug factory.
+  function teardownSessionWatchers(desktopId: string): void {
+    const watcher = topicWatchers.get(desktopId);
+    if (watcher) {
+      if (typeof (watcher as fs.FSWatcher).close === 'function') {
+        (watcher as fs.FSWatcher).close();
+      } else {
+        clearInterval(watcher as NodeJS.Timeout);
+      }
+      topicWatchers.delete(desktopId);
+      lastTopics.delete(desktopId);
+    }
+    transcriptWatcher.stopWatching(desktopId);
+  }
+
   // Listen for hook events to extract the desktop→claude session ID mapping
   if (hookRelay) {
     hookRelay.on('hook-event', (event: { sessionId: string; payload: Record<string, unknown> }) => {
       const desktopId = event.sessionId; // _desktop_session_id (set by parseHookPayload)
       const claudeId = event.payload?.session_id as string;
       if (!desktopId || !claudeId) return;
-      if (sessionIdMap.has(desktopId)) return;
+
+      // Decide whether to (re)map this desktop session to a Claude session id.
+      // Not set-once: Claude Code rotates its session id mid-PTY on `/clear`, so
+      // we must follow that rotation — but ONLY from SessionStart events, since
+      // subagent/tool hooks carry child session ids that would poison the map.
+      // (payload.hook_event_name is CC's raw field, distinct from the
+      // normalized event.type which coerces missing names to 'unknown'.)
+      // /compact is safe here: it rewrites the SAME transcript file without
+      // rotating the id (the transcript-shrink machinery depends on that), so
+      // its SessionStart arrives with a matching id and resolves to 'ignore'.
+      const current = sessionIdMap.get(desktopId);
+      if (resolveMappingAction(current, claudeId, event.payload?.hook_event_name as string) !== 'adopt') return;
+
+      // Remap (e.g. /clear rotated the CC session id): tear down the old
+      // topic + transcript watchers before starting new ones. startWatching
+      // OVERWRITES the topicWatchers entry, so without closing the old watcher
+      // first we'd leak its FSWatcher/interval and keep broadcasting renames
+      // from the stale topic file.
+      // INVARIANT: this remap assumes the rotated transcript starts EMPTY
+      // (true for /clear). If a future CC change rotates onto a non-empty
+      // file, the offset-0 replay would append into an already-populated
+      // chat timeline — the renderer would need a CLEAR_TIMELINE-equivalent
+      // coupled to the remap.
+      if (current) {
+        teardownSessionWatchers(desktopId);
+      }
+
       sessionIdMap.set(desktopId, claudeId);
       startWatching(desktopId, claudeId);
 
@@ -1554,17 +1812,7 @@ export function registerIpcHandlers(
 
   // Stop watching when a session is destroyed
   sessionManager.on('session-exit', (sessionId: string) => {
-    transcriptWatcher.stopWatching(sessionId);
-    const watcher = topicWatchers.get(sessionId);
-    if (watcher) {
-      if (typeof (watcher as fs.FSWatcher).close === 'function') {
-        (watcher as fs.FSWatcher).close();
-      } else {
-        clearInterval(watcher as NodeJS.Timeout);
-      }
-      topicWatchers.delete(sessionId);
-      lastTopics.delete(sessionId);
-    }
+    teardownSessionWatchers(sessionId);
     // Clean up context + session stats cache files
     const claudeId = sessionIdMap.get(sessionId);
     if (claudeId) {
@@ -1747,6 +1995,67 @@ export function registerIpcHandlers(
       return hookRelay.respond(requestId, decision);
     });
   }
+
+  // --- Settings → Development feature handlers (see dev-tools.ts) ---
+
+  ipcMain.handle(IPC.DEV_LOG_TAIL, async (_event, maxLines: number) => {
+    // Return the last N lines of the app log, redacted, for the bug-report flow.
+    return readLogTail(typeof maxLines === 'number' ? maxLines : 200);
+  });
+
+  ipcMain.handle(IPC.DEV_DIAGNOSTICS, async () => {
+    // Environment snapshot (git/claude paths, ~/.claude perms, marketplace
+    // cache state, network reachability) prepended to the log tail in the
+    // bug-report flow. Captures the most common Mac/Linux install-failure
+    // signals that the plain log doesn't cover.
+    return gatherDiagnostics();
+  });
+
+  ipcMain.handle(IPC.DEV_SUMMARIZE_ISSUE, async (_event, args) => {
+    // Shell out to claude -p to produce a structured summary; falls back gracefully.
+    return summarizeIssue(args);
+  });
+
+  ipcMain.handle(IPC.DEV_SUBMIT_ISSUE, async (_event, args) => {
+    // Use gh CLI when authed; otherwise return a prefilled GitHub URL for browser fallback.
+    return submitIssue(args);
+  });
+
+  ipcMain.handle(IPC.DEV_INSTALL_WORKSPACE, async (event) => {
+    // Clone (or update) ~/youcoded-dev, stream progress lines back to the renderer,
+    // and register the path as a project folder on success.
+    const send = (line: string) => {
+      event.sender.send(IPC.DEV_INSTALL_PROGRESS, line);
+    };
+    try {
+      const result = await installWorkspace(send);
+      // Register the workspace as a known project folder.
+      // readFolders / writeFolders / SavedFolder are already in scope above.
+      try {
+        const normalized = path.resolve(result.path);
+        const folders = readFolders();
+        if (!folders.some((f) => path.resolve(f.path) === normalized)) {
+          const entry: SavedFolder = {
+            path: normalized,
+            nickname: path.basename(normalized),
+            addedAt: Date.now(),
+          };
+          folders.unshift(entry);
+          writeFolders(folders);
+        }
+      } catch (e) {
+        log('WARN', 'dev', 'folders.add post-install failed', { error: String(e) });
+      }
+      return result;
+    } catch (e: any) {
+      return { error: String(e?.message || e) };
+    }
+  });
+
+  ipcMain.handle(IPC.DEV_OPEN_SESSION_IN, async (_event, args: { cwd: string; initialInput?: string }) => {
+    // Delegate to the exported helper so the logic is independently testable.
+    return openDevSessionIn(args, { defaultsPrefPath, sessionManager, homedir: os.homedir });
+  });
 
   // Return cleanup function for use during app shutdown
   return function cleanup() {

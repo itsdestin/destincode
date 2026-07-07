@@ -42,6 +42,15 @@ let targetUrl: string | null = null;
 /** Whether to preserve __PLATFORM__ on next auth:ok (prevents desktop overwriting 'android') */
 let preservePlatform = false;
 
+// Fix: queue application messages sent before the WS auth handshake completes,
+// then flush on auth:ok. Without this, first-mount fetches (skills.list etc.)
+// that race the auth handshake silently disappeared, leaving contexts empty
+// for the app's lifetime. Visible on Android as "installed plugins never
+// appear in the command drawer." Bound at MAX_QUEUE to prevent unbounded
+// growth if a real flow ever fans out faster than the auth handshake.
+const MAX_QUEUE = 256;
+let pendingSendQueue: string[] = [];
+
 function setConnectionState(state: RemoteConnectionState) {
   connectionState = state;
   stateChangeCallback?.(state);
@@ -58,21 +67,56 @@ export function onConnectionStateChange(cb: (state: RemoteConnectionState) => vo
 function getWsUrl(): string {
   // If a remote host override is set, use it (connectToHost sets this)
   if (targetUrl) return targetUrl;
-  // Android WebView loads from file:// — connect to local bridge server
+  // Android WebView loads from file:// — connect to local bridge server.
+  // Port comes from the `bridgePort` query param injected by WebViewHost.kt
+  // so dev (9951) and release (9901) APKs can run side-by-side without
+  // colliding on the same localhost socket. Default 9901 keeps the legacy
+  // wiring working if a host forgets to inject the param.
   if (location.protocol === 'file:') {
-    return 'ws://localhost:9901';
+    const port = new URLSearchParams(location.search).get('bridgePort') || '9901';
+    return `ws://localhost:${port}`;
   }
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${location.host}/ws`;
 }
 
 function send(msg: any): void {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
+  const data = JSON.stringify(msg);
+  // Only send directly when both the socket is OPEN AND auth has completed.
+  // If OPEN but still 'authenticating', the auth message has been sent but
+  // 'auth:ok' hasn't arrived — the bridge rejects application messages here,
+  // so we still queue.
+  if (ws?.readyState === WebSocket.OPEN && connectionState === 'connected') {
+    ws.send(data);
+    return;
+  }
+  if (pendingSendQueue.length >= MAX_QUEUE) {
+    console.warn('[remote-shim] send queue overflow — dropping oldest');
+    pendingSendQueue.shift();
+  }
+  pendingSendQueue.push(data);
+}
+
+// Flush queued application messages once auth:ok has resolved.
+// Called ONLY from inside the auth:ok branch — never from ws.onopen, since
+// the bridge rejects application traffic before auth completes.
+function flushSendQueue(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const queued = pendingSendQueue;
+  pendingSendQueue = [];
+  for (const data of queued) {
+    try { ws.send(data); } catch (e) {
+      console.error('[remote-shim] flush failed:', e);
+    }
   }
 }
 
-function invoke(type: string, payload?: any): Promise<any> {
+// Default 30s is fine for anything interactive, but long-running sync/restore
+// operations (rclone copy of 100s of files over cellular, git push of a large
+// repo, etc.) can legitimately take minutes. Callers pass a larger timeoutMs
+// for those — see `sync.force` and `sync.restore.execute` below.
+function invoke(type: string, payload?: any, opts?: { timeoutMs?: number }): Promise<any> {
+  const timeoutMs = opts?.timeoutMs ?? 30_000;
   return new Promise((resolve, reject) => {
     const id = `msg-${++messageId}`;
     const timeout = setTimeout(() => {
@@ -80,7 +124,7 @@ function invoke(type: string, payload?: any): Promise<any> {
         pending.delete(id);
         reject(new Error(`Request ${type} timed out`));
       }
-    }, 30_000);
+    }, timeoutMs);
     pending.set(id, { resolve, reject, timeout });
     send({ type, id, payload });
   });
@@ -144,6 +188,12 @@ function handleMessage(data: string): void {
     case 'pty:output':
       dispatchEvent('pty:output', payload.sessionId, payload.data);              // global (App.tsx mode detection)
       dispatchEvent(`pty:output:${payload.sessionId}`, payload.data);            // per-session (TerminalView)
+      break;
+    case 'pty:raw-bytes':
+      // Per-session dispatch only — no global consumer (xterm is per-session).
+      // Payload data is base64-encoded raw PTY bytes from Android's
+      // RawByteListener (Tier 1). usePtyRawBytes decodes to Uint8Array.
+      dispatchEvent(`pty:raw-bytes:${payload.sessionId}`, payload.data);
       break;
     case 'hook:event':
       dispatchEvent('hook:event', payload);
@@ -210,6 +260,18 @@ function handleMessage(data: string): void {
       // slug to match theme-context's onReload(slug) signature.
       dispatchEvent('theme:reload', payload?.slug);
       break;
+    case 'dev:install-progress':
+      // WHY: dev.onInstallProgress subscribers listen on this channel.
+      // The server emits one line at a time (string payload) while cloning
+      // the workspace. We forward the raw payload so the cb receives a string.
+      dispatchEvent('dev:install-progress', payload);
+      break;
+    case 'system:back':
+      // Android hardware back press → routed to useDismissTop via the
+      // window.claude.system.onBack subscriber registered in App.tsx. No
+      // payload is used — the event itself is the signal.
+      dispatchEvent('system:back', payload);
+      break;
   }
 }
 
@@ -266,6 +328,10 @@ export function connect(passwordOrToken: string, isToken = false): Promise<strin
           reconnectAttempts = 0;
           console.log('[remote-shim] auth:ok from', getWsUrl());
           setConnectionState('connected');
+          // Fix: drain any messages queued during the cold-start window
+          // (mount-time fetches that fired before auth completed). Must be
+          // here, not in ws.onopen — the bridge rejects pre-auth traffic.
+          flushSendQueue();
           // Store token for reconnection
           const token = msg.token;
           localStorage.setItem('youcoded-remote-token', token);
@@ -340,6 +406,15 @@ export function connect(passwordOrToken: string, isToken = false): Promise<strin
 function scheduleReconnect(token: string): void {
   // After too many failures, give up and fall back to local mode
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    // Reconnect-fallback: switching to local bridge means any messages
+    // queued for the prior remote host are wrong-destination. Drop them
+    // here — disconnect() isn't on this path (ws.onclose only schedules
+    // the retry, doesn't disconnect).
+    if (pendingSendQueue.length > 0) {
+      console.warn('[remote-shim] discarding', pendingSendQueue.length,
+        'queued messages on reconnect fallback to local bridge');
+      pendingSendQueue = [];
+    }
     reconnectAttempts = 0;
     reconnectDelay = 1000;
     targetUrl = null;
@@ -402,6 +477,20 @@ export function disconnect(): void {
   if (ws) { ws.close(); ws = null; }
   setConnectionState('disconnected');
   localStorage.removeItem('youcoded-remote-token');
+  // Drop any pre-auth queued messages on every disconnect() path. Covered
+  // paths: explicit disconnect() calls, connectToHost (calls disconnect
+  // first), and disconnectFromHost. In all cases the queue would otherwise
+  // leak across hosts and flush to the wrong server on the next auth:ok.
+  // Brief reconnect to the SAME host also loses the queue, but caller-side
+  // invoke() 30s timeout still surfaces a clean error, and renderer
+  // mount-time fetches re-issue idempotently on retry.
+  // (MAX_RECONNECT_ATTEMPTS fallback in scheduleReconnect AND the
+  //  catch block in connectToHost both clear the queue inline.)
+  if (pendingSendQueue.length > 0) {
+    console.warn('[remote-shim] discarding', pendingSendQueue.length,
+      'queued messages on disconnect');
+    pendingSendQueue = [];
+  }
 }
 
 /**
@@ -445,6 +534,7 @@ export async function connectToHost(host: string, port: number, password: string
     entry.reject(new Error('Server switched'));
   }
   pending.clear();
+  // Note: pre-auth send queue was already cleared inside disconnect() above.
 
   // Point at the desktop server (defer localStorage until auth succeeds)
   targetUrl = `ws://${host}:${port}/ws`;
@@ -458,6 +548,18 @@ export async function connectToHost(host: string, port: number, password: string
     setConnectionMode('remote');
   } catch (err) {
     console.error('[remote-shim] connectToHost failed:', (err as Error)?.message);
+    // Same leak class as scheduleReconnect's MAX_RECONNECT branch:
+    // queue may hold messages bound for the failed remote target. They
+    // were enqueued during the 'authenticating' window after disconnect()
+    // already cleared the queue at the top of connectToHost. ws.onclose's
+    // pre-auth path doesn't call disconnect(), so we must clear here
+    // before falling back to the local bridge — otherwise stale messages
+    // would flush to the local bridge on its auth:ok.
+    if (pendingSendQueue.length > 0) {
+      console.warn('[remote-shim] discarding', pendingSendQueue.length,
+        'queued messages on connectToHost failure fallback');
+      pendingSendQueue = [];
+    }
     // Reset remote state and reconnect to local bridge
     targetUrl = null;
     preservePlatform = false;
@@ -480,6 +582,7 @@ export async function disconnectFromHost(): Promise<void> {
     entry.reject(new Error('Server switched'));
   }
   pending.clear();
+  // Note: pre-auth send queue was already cleared inside disconnect() above.
 
   // Clear remote target — getWsUrl() falls back to localhost:9901
   targetUrl = null;
@@ -594,6 +697,11 @@ export function installShim(): void {
         const handler = addListener(channel, cb);
         return () => removeListener(channel, handler);
       },
+      ptyRawBytesForSession: (sessionId: string, cb: (data: string) => void) => {
+        const channel = `pty:raw-bytes:${sessionId}`;
+        const handler = addListener(channel, cb);
+        return () => removeListener(channel, handler);
+      },
       hookEvent: (cb: Callback) => addListener('hook:event', cb),
       statusData: (cb: Callback) => addListener('status:data', cb),
       sessionRenamed: (cb: Callback) => addListener('session:renamed', cb),
@@ -648,6 +756,18 @@ export function installShim(): void {
       status: (slug: string) => invoke('integrations:status', { slug }),
       configure: (slug: string, settings: Record<string, any>) =>
         invoke('integrations:configure', { slug, settings }),
+      connect: (slug: string) => invoke('integrations:connect', { slug }),
+    },
+    // Platform detection for renderer-level UI gating. Desktop returns the
+    // raw string; Android wraps in {platform}. Normalize both here so callers
+    // see a consistent union type.
+    getPlatform: async (): Promise<'darwin' | 'win32' | 'linux' | 'android'> => {
+      const result = await invoke('platform:get');
+      if (typeof result === 'string') return result as any;
+      if (result && typeof result === 'object' && 'platform' in result) {
+        return (result as any).platform;
+      }
+      return 'linux'; // degenerate fallback; shouldn't hit in practice
     },
     // Phase 3: unified marketplace (packages map + per-entry config)
     marketplace: {
@@ -741,6 +861,29 @@ export function installShim(): void {
       },
       openExternal: async (url: string) => { window.open(url, '_blank'); },
     },
+    update: {
+      changelog: async (opts: { forceRefresh: boolean }) =>
+        invoke('update:changelog', opts),
+      // Mirrors main-side IPC channels for parity (see tests/update-install-ipc.test.ts):
+      //   'update:download'           — stub below (throws remote-unsupported)
+      //   'update:cancel'             — stub below (returns { success: false })
+      //   'update:launch'             — stub below (returns remote-unsupported)
+      //   'update:get-cached-download'— stub below (returns null)
+      //   'update:progress'           — never fires on remote (no-op subscribe)
+      download: async () => {
+        throw new Error('remote-unsupported');
+      },
+      cancel: async (_jobId: string) => ({ success: false }),
+      launch: async (_jobId: string, _filePath: string) => ({
+        success: false as const,
+        error: 'remote-unsupported' as const,
+      }),
+      getCachedDownload: async (_version: string) => null,
+      onProgress: (_handler: (ev: any) => void) => {
+        // No-op on remote browsers — they never emit progress.
+        return () => {};
+      },
+    },
     remote: {
       getConfig: () => invoke('remote:get-config'),
       setPassword: (password: string) => invoke('remote:set-password', password),
@@ -777,6 +920,14 @@ export function installShim(): void {
       get: () => invoke('defaults:get'),
       set: (updates: Record<string, any>) => invoke('defaults:set', updates),
     },
+    // Anonymous analytics opt-out — mirror of preload.ts. Android handlers
+    // land in Phase 7; until then the remote-shim path resolves via the
+    // WebSocket once the Kotlin side dispatches these types.
+    analytics: {
+      getOptIn: (): Promise<boolean> => invoke('analytics:get-opt-in'),
+      setOptIn: (enabled: boolean): Promise<void> =>
+        invoke('analytics:set-opt-in', { enabled }),
+    },
     // Parity with preload.ts — Preferences panel uses this over remote too
     settings: {
       get: (field: string) => invoke('settings:get', { field }),
@@ -790,7 +941,8 @@ export function installShim(): void {
       getStatus: () => invoke('sync:get-status'),
       getConfig: () => invoke('sync:get-config'),
       setConfig: (updates: any) => invoke('sync:set-config', { updates }),
-      force: () => invoke('sync:force'),
+      // Full sync can transfer megabytes across slow cellular — 10 min ceiling.
+      force: () => invoke('sync:force', undefined, { timeoutMs: 10 * 60_000 }),
       getLog: (lines?: number) => invoke('sync:get-log', { lines }),
       dismissWarning: (warning: string) => invoke('sync:dismiss-warning', { warning }),
       // V2: Per-instance backend management
@@ -805,8 +957,11 @@ export function installShim(): void {
         checkPrereqs: (backend: string) => invoke('sync:setup:check-prereqs', { backend }),
         installRclone: () => invoke('sync:setup:install-rclone'),
         checkGdrive: () => invoke('sync:setup:check-gdrive'),
-        authGdrive: () => invoke('sync:setup:auth-gdrive'),
-        authGithub: () => invoke('sync:setup:auth-github'),
+        // OAuth waits on the user completing sign-in in a browser tab; Android
+        // side has a 180s rclone wait, gh device flow can poll longer — give a
+        // 4 min ceiling so the shim doesn't cut the kotlin timeout short.
+        authGdrive: () => invoke('sync:setup:auth-gdrive', undefined, { timeoutMs: 4 * 60_000 }),
+        authGithub: () => invoke('sync:setup:auth-github', undefined, { timeoutMs: 4 * 60_000 }),
         createRepo: (repoName: string) => invoke('sync:setup:create-repo', { repoName }),
       },
       // Restore from backup — directional, user-initiated pull. Mirrors the
@@ -815,8 +970,13 @@ export function installShim(): void {
       restore: {
         listVersions: (backendId: string) =>
           invoke('sync:restore:list-versions', { backendId }),
-        preview: (opts: any) => invoke('sync:restore:preview', { opts }),
-        execute: (opts: any) => invoke('sync:restore:execute', { opts }),
+        // Preview walks the whole remote via `rclone lsjson --recursive`; for a
+        // large backup over cellular that can take a couple minutes. 3 min.
+        preview: (opts: any) => invoke('sync:restore:preview', { opts }, { timeoutMs: 3 * 60_000 }),
+        // Execute actually transfers files — can run 10+ min on slow links.
+        // 15 min ceiling; the kotlin side emits progress events during the
+        // transfer, so the UI stays alive even on multi-minute restores.
+        execute: (opts: any) => invoke('sync:restore:execute', { opts }, { timeoutMs: 15 * 60_000 }),
         listSnapshots: () => invoke('sync:restore:list-snapshots'),
         undo: (snapshotId: string) => invoke('sync:restore:undo', { snapshotId }),
         deleteSnapshot: (snapshotId: string) =>
@@ -836,6 +996,50 @@ export function installShim(): void {
       add: (folderPath: string, nickname?: string) => invoke('folders:add', { folderPath, nickname }),
       remove: (folderPath: string) => invoke('folders:remove', { folderPath }),
       rename: (folderPath: string, nickname: string) => invoke('folders:rename', { folderPath, nickname }),
+    },
+    // System namespace — hardware back button bridge for Android.
+    // notifyStackState: React tells Android whether the dismissal stack is
+    //   non-empty. Android sets OnBackPressedCallback.isEnabled accordingly
+    //   (true when at least one overlay/full-screen view is open, false to
+    //   let Android default = background the app take over).
+    // onBack: subscribe to "user pressed hardware back" push events from
+    //   Android. Returns an unsubscribe function (same pattern as
+    //   dev.onInstallProgress).
+    system: {
+      notifyStackState: (empty: boolean) => {
+        fire('system:notify-stack-state', { empty });
+      },
+      onBack: (cb: () => void) => {
+        const handler: Callback = () => cb();
+        addListener('system:back', handler);
+        return () => removeListener('system:back', handler);
+      },
+    },
+    // Settings → Development feature — mirrors preload.ts dev namespace.
+    // WHY: remote-browser users (and Android WebView) load remote-shim instead
+    // of preload.ts. Without this, DevelopmentPopup crashes when it calls
+    // window.claude.dev.logTail (parity invariant from PITFALLS.md).
+    dev: {
+      logTail: (maxLines: number) =>
+        invoke('dev:log-tail', maxLines),
+      diagnostics: (): Promise<string> =>
+        invoke('dev:diagnostics') as Promise<string>,
+      summarizeIssue: (args: { kind: 'bug' | 'feature'; description: string; log?: string }) =>
+        invoke('dev:summarize-issue', args),
+      submitIssue: (args: { kind: 'bug' | 'feature'; title: string; summary: string; description: string; log?: string; label: 'bug' | 'enhancement' }) =>
+        invoke('dev:submit-issue', args),
+      installWorkspace: () =>
+        invoke('dev:install-workspace'),
+      onInstallProgress: (cb: (line: string) => void) => {
+        // WHY: Server pushes 'dev:install-progress' events via the existing
+        // WebSocket push dispatcher (handleMessage switch). Register a listener
+        // using addListener/removeListener — same pattern as sync.restore.onProgress.
+        const handler: Callback = (payload: any) => cb(String(payload));
+        addListener('dev:install-progress', handler);
+        return () => removeListener('dev:install-progress', handler);
+      },
+      openSessionIn: (args: { cwd: string; initialInput?: string }) =>
+        invoke('dev:open-session-in', args),
     },
     // First-run is desktop-only — return COMPLETE so the renderer never enters first-run mode
     firstRun: {
@@ -862,7 +1066,6 @@ export function installShim(): void {
     },
     off: (channel: string, handler: Callback) => removeListener(channel, handler),
     removeAllListeners: (channel: string) => removeAllListeners(channel),
-    getGitHubAuth: () => invoke('github:auth'),
     getHomePath: () => invoke('get-home-path'),
     getFavorites: () => invoke('favorites:get'),
     setFavorites: (favorites: string[]) => invoke('favorites:set', favorites),
@@ -951,13 +1154,38 @@ export function installShim(): void {
       // the pointer; throwing would spam the console on any platform where
       // the buddy mascot window somehow loaded remote-shim (shouldn't happen,
       // but the cost of being defensive is one line).
-      moveMascot: (_d: { dx: number; dy: number }) => { /* desktop-only */ },
+      moveMascot: (_t: { targetX: number; targetY: number }) => { /* desktop-only */ },
       onAttentionSummary: () => () => { /* no-op unsubscribe */ },
     },
     // Remote clients do not participate in buddy attention aggregation —
     // main-process aggregation is desktop-Electron only.
     attention: {
       report: () => { /* no-op: buddy attention summary is desktop-only */ },
+    },
+    // WHY: useAttentionClassifier calls window.claude.terminal.getScreenText
+    // every 1s on Electron to read the xterm PTY buffer for attention state
+    // classification. On Android the PTY buffer lives in Kotlin (TerminalView /
+    // ScreenBufferTracker), so we route through the existing WebSocket invoke
+    // helper to the terminal:get-screen-text handler added in SessionService.kt
+    // (Task 7). Response shape is {text: string}; normalize to Promise<string>
+    // with a '' fallback for safety.
+    terminal: {
+      getScreenText: async (sessionId: string): Promise<string> => {
+        const response = await invoke('terminal:get-screen-text', { sessionId });
+        return response?.text ?? '';
+      },
+    },
+    // GPU / performance preference — mirrors preload.ts performance namespace.
+    // multiGpuDetected: false in the response means the UI section stays hidden.
+    performance: {
+      get: () => invoke('performance:get-config'),
+      set: (preferPowerSaving: boolean) =>
+        invoke('performance:set-config', { preferPowerSaving }),
+    },
+    // WHY: named 'app:restart' (not 'performance:restart') so any future
+    // restart-required setting can reuse this single generic channel.
+    app: {
+      restart: () => invoke('app:restart'),
     },
   };
 }

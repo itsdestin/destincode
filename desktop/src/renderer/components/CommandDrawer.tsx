@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { SkillEntry, CommandEntry } from '../../shared/types';
 import SkillCard from './SkillCard';
-import FavoriteStar from './marketplace/FavoriteStar';
 import { useSkills } from '../state/skill-context';
+import { useMarketplace } from '../state/marketplace-context';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useEscClose } from '../hooks/use-esc-close';
+import { isAndroid } from '../platform';
 
 interface Props {
   open: boolean;
@@ -17,13 +19,17 @@ interface Props {
   // Marketplace redesign Phase 2 — optional Library entry; only rendered
   // when provided so pre-redesign code paths stay unchanged.
   onOpenLibrary?: () => void;
+  // Jumps to the marketplace with a specific plugin's detail overlay
+  // already open. Wired from the plugin-name badge on each SkillCard.
+  onOpenMarketplaceDetail?: (pluginId: string) => void;
 }
 
 const categoryChips = ['personal', 'work', 'development', 'admin', 'other'] as const;
 type CategoryChip = typeof categoryChips[number];
 
-export default function CommandDrawer({ open, searchMode, externalFilter, onSelect, onSelectCommand, onClose, onOpenManager, onOpenMarketplace, onOpenLibrary }: Props) {
+export default function CommandDrawer({ open, searchMode, externalFilter, onSelect, onSelectCommand, onClose, onOpenManager, onOpenMarketplace, onOpenLibrary, onOpenMarketplaceDetail }: Props) {
   const { drawerSkills, drawerCommands, favorites, setFavorite } = useSkills();
+  const mp = useMarketplace();
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CategoryChip | null>(null);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
@@ -33,6 +39,18 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
   // Derive favorite id set for O(1) lookups
   const skillFavSet = useMemo(() => new Set(favorites), [favorites]);
 
+  // Marketplace plugin lookup: maps pluginId → displayName for the plugin-
+  // name badge on each skill card. Built from mp.skillEntries (which is the
+  // plugin-granular marketplace registry). A skill whose pluginName isn't
+  // in the registry gets no badge and falls back to the source tag.
+  const pluginDisplayNames = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const entry of mp.skillEntries) {
+      m.set(entry.id, entry.displayName);
+    }
+    return m;
+  }, [mp.skillEntries]);
+
   // Effective query: in search mode (slash-triggered), the InputBar drives
   // the filter via externalFilter; in browse mode, the drawer's own input does
   const effectiveQuery = searchMode ? (externalFilter ?? '') : search;
@@ -40,26 +58,22 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
 
   // Focus internal search on open — only in browse mode (compass button).
   // In search mode the InputBar keeps focus so the user sees the "/" prefix.
+  // On Android (and remote-browser touch devices), focusing the search input
+  // pops the soft keyboard, which collides with the drawer animation and
+  // looks janky. Touch users can tap the search field if they want to type;
+  // the auto-focus is desktop ergonomics only.
   useEffect(() => {
-    if (open && !searchMode) {
-      setSearch('');
-      // Small delay to let the transition start before focusing
-      const t = setTimeout(() => searchRef.current?.focus(), 50);
-      return () => clearTimeout(t);
-    }
+    if (!open || searchMode) return;
+    setSearch('');
+    if (isAndroid()) return;
+    // Small delay to let the transition start before focusing
+    const t = setTimeout(() => searchRef.current?.focus(), 50);
+    return () => clearTimeout(t);
   }, [open, searchMode]);
 
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [open, onClose]);
+  useEscClose(open, onClose);
 
-  // Search mode: flat list matching the query (preserves original behavior)
+  // Search mode: flat list matching the query (preserves original behavior).
   const searchFiltered = useMemo(() => {
     if (!isSearching) return drawerSkills;
     const q = effectiveQuery.toLowerCase();
@@ -71,6 +85,8 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
     );
   }, [drawerSkills, effectiveQuery, isSearching]);
 
+  // Search mode: slash-command matches (native YC commands + filesystem-
+  // scanned commands + CC built-ins). Rendered alongside skill matches.
   const commandSearchFiltered = useMemo(() => {
     if (!isSearching) return [] as CommandEntry[];
     const q = effectiveQuery.toLowerCase();
@@ -79,14 +95,12 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [drawerCommands, effectiveQuery, isSearching]);
 
-  // Browse mode: apply category chip filter, then split into favorites / others
+  // Browse mode: apply category chip filter, then split into favorites / others.
   const categoryFiltered = useMemo(() => {
-    if (isSearching) return drawerSkills;
     if (!categoryFilter) return drawerSkills;
     return drawerSkills.filter((s) => (s.category ?? 'other') === categoryFilter);
-  }, [drawerSkills, categoryFilter, isSearching]);
+  }, [drawerSkills, categoryFilter]);
 
-  // Favorites section — skills whose id or pluginName is in the favorites set
   const favsSorted = useMemo(() =>
     categoryFiltered
       .filter((s) => skillFavSet.has(s.id) || (s.pluginName != null && skillFavSet.has(s.pluginName)))
@@ -94,7 +108,6 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
     [categoryFiltered, skillFavSet],
   );
 
-  // All-installed section — skills not in favorites
   const othersSorted = useMemo(() =>
     categoryFiltered
       .filter((s) => !skillFavSet.has(s.id) && !(s.pluginName != null && skillFavSet.has(s.pluginName)))
@@ -102,12 +115,8 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
     [categoryFiltered, skillFavSet],
   );
 
-  // Helper: render a single drawer card with a FavoriteStar corner overlay.
-  // FavoriteStar is a <button>, so it cannot be placed inside SkillCard's
-  // drawer <button>. Instead, a relative-positioned wrapper div sits around
-  // SkillCard and the star is absolutely positioned over the card corner.
-  // FavoriteStar already calls e.stopPropagation(), so clicks on the star
-  // never bubble into the SkillCard click handler.
+  // Render a slash-command card in search results. Unclickable CC built-ins
+  // show greyed-out with a "run in terminal view" style disabledReason.
   const renderCommandCard = (entry: CommandEntry) => {
     const clickable = entry.clickable;
     return (
@@ -131,19 +140,36 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
     );
   };
 
-  const renderDrawerCard = (skill: SkillEntry) => {
+  // Render a single skill card with favorite star + plugin-name badge.
+  // The badge replaces the generic source tag (YC/Plugin/Prompt) with the
+  // real marketplace displayName when the skill's pluginName resolves to a
+  // registry entry; clicking the badge navigates to that plugin's detail
+  // page in the marketplace. Skills whose plugin isn't in the registry
+  // (user-authored, youcoded-core non-plugin skills) keep the source tag.
+  const renderSkillCard = (skill: SkillEntry) => {
     const isFav = skillFavSet.has(skill.id) || (skill.pluginName != null && skillFavSet.has(skill.pluginName));
     const favId = skill.pluginName && skillFavSet.has(skill.pluginName) ? skill.pluginName : skill.id;
+
+    const pluginId = skill.pluginName;
+    const pluginName = pluginId ? pluginDisplayNames.get(pluginId) : undefined;
+    const pluginBadge = pluginId && pluginName && onOpenMarketplaceDetail
+      ? {
+          name: pluginName,
+          onClick: () => {
+            onClose();
+            onOpenMarketplaceDetail(pluginId);
+          },
+        }
+      : undefined;
+
     return (
-      <div key={skill.id} className="relative">
-        <SkillCard skill={skill} onClick={onSelect} />
-        <FavoriteStar
-          corner
-          size="sm"
-          filled={isFav}
-          onToggle={() => setFavorite(favId, !isFav)}
-        />
-      </div>
+      <SkillCard
+        key={skill.id}
+        skill={skill}
+        onClick={onSelect}
+        favorite={{ filled: isFav, onToggle: () => setFavorite(favId, !isFav) }}
+        pluginBadge={pluginBadge}
+      />
     );
   };
 
@@ -159,9 +185,10 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
         onClick={onClose}
       />
 
-      {/* Drawer */}
+      {/* Drawer — overflow-hidden clips the scroll-fade pseudos to the rounded-t-xl
+          corners so fades don't paint into the square corners above. */}
       <div
-        className={`fixed bottom-0 left-0 right-0 z-50 bg-panel border-t border-edge-dim rounded-t-xl transition-transform duration-300 ease-out ${
+        className={`fixed bottom-0 left-0 right-0 z-50 bg-panel border-t border-edge-dim rounded-t-xl overflow-hidden transition-transform duration-300 ease-out ${
           open ? 'translate-y-0' : 'translate-y-full'
         }`}
         style={{ maxHeight: '45vh' }}
@@ -227,12 +254,16 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
              "Add Skills +" is always the last box in the drawer so the marketplace
              is always one click away. When a search has zero matches, it stands
              alone as the empty-state affordance. */}
-        <div ref={scrollRef} className="scroll-fade pb-4" style={{ maxHeight: 'calc(45vh - 80px)' }}>
+        {/* Padding lives on an inner wrapper so the scroll-fade element itself has
+            no padding — sticky fade pseudos sit flush with the drawer's outer edges.
+            The drawer's own overflow:hidden + rounded-t-xl clips the top corners. */}
+        <div ref={scrollRef} className="scroll-fade" style={{ maxHeight: 'calc(45vh - 80px)' }}>
+          <div className="pb-4">
           {isSearching ? (
-            // Search mode: flat filtered list, no chip row (preserves original behavior)
+            // Search mode: flat filtered list of skills + commands, no chip row
             <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {searchFiltered.map((skill) => renderDrawerCard(skill))}
-              {commandSearchFiltered.map((entry) => renderCommandCard(entry))}
+              {searchFiltered.map(renderSkillCard)}
+              {commandSearchFiltered.map(renderCommandCard)}
               <AddSkillsCard onClick={() => { onClose(); onOpenMarketplace(); }} />
             </div>
           ) : (
@@ -272,7 +303,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
                 <section className="px-2 pt-2">
                   <h3 className="text-[10px] uppercase tracking-wide text-fg-dim mb-1 px-1">Favorites</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                    {favsSorted.map((skill) => renderDrawerCard(skill))}
+                    {favsSorted.map(renderSkillCard)}
                   </div>
                 </section>
               )}
@@ -282,7 +313,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
                 <section className="px-2 pt-3">
                   <h3 className="text-[10px] uppercase tracking-wide text-fg-dim mb-1 px-1">All installed</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                    {othersSorted.map((skill) => renderDrawerCard(skill))}
+                    {othersSorted.map(renderSkillCard)}
                   </div>
                 </section>
               )}
@@ -293,6 +324,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
     </>

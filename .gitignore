@@ -22,6 +22,9 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+# Exception: debug keystore is publicly known (password "android") and is
+# intentionally committed so every dev build shares one signing key.
+!app/debug.keystore
 
 # Drafts and temp files
 icon-drafts/
@@ -32,7 +35,9 @@ screenshot.png
 .worktrees/
 
 # Desktop app (Electron)
-node_modules/
+# No trailing slash: also ignores a `node_modules` symlink (a dev worktree
+# pointing its deps at a sibling checkout), not just a real directory.
+node_modules
 desktop/dist/
 desktop/build/
 desktop/release/

@@ -9,7 +9,8 @@ import type {
   ThemeMarketplaceFilters,
   ThemeRegistryEntryWithStatus,
 } from '../shared/theme-marketplace-types';
-import { THEMES_DIR } from './theme-watcher';
+import { THEMES_DIR, listUserThemes, userThemeManifest } from './theme-watcher';
+import { synthesizeLocalThemeEntries, type LocalThemeRecord } from './local-theme-synthesizer';
 import { generateThemePreview } from './theme-preview-generator';
 import { SkillConfigStore } from './skill-config-store';
 
@@ -62,6 +63,24 @@ function ghApiWithBody(ghBin: string, args: string[], body: string, timeoutMs = 
 
 // Slug must be kebab-case: lowercase letters, digits, hyphens only
 const SAFE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** True when the theme's preview.png exists and was last modified at or
+ * after the manifest.json was last modified. Used by publishTheme() to
+ * avoid regenerating a preview that the /theme-builder skill (or a
+ * previous publisher run) just produced. The mtime comparison is `>=`
+ * not `>` because manifest and preview can be written close enough in
+ * time to land on the same millisecond — strict greater-than would
+ * needlessly regenerate in that case. */
+export function isPreviewFresh(themeDir: string): boolean {
+  const previewPath = path.join(themeDir, 'preview.png');
+  const manifestPath = path.join(themeDir, 'manifest.json');
+  try {
+    if (!fs.existsSync(previewPath) || !fs.existsSync(manifestPath)) return false;
+    return fs.statSync(previewPath).mtimeMs >= fs.statSync(manifestPath).mtimeMs;
+  } catch {
+    return false;
+  }
+}
 
 export class ThemeMarketplaceProvider {
   private cachedIndex: ThemeRegistryIndex | null = null;
@@ -118,10 +137,35 @@ export class ThemeMarketplaceProvider {
     }
 
     // Annotate with install status
-    return themes.map(t => ({
+    const marketplaceEntries = themes.map(t => ({
       ...t,
       installed: this.isInstalled(t.slug),
     }));
+
+    // Merge in local user themes (built via /theme-builder, never published).
+    // Any on-disk theme not in the marketplace list becomes a synthesized local entry.
+    // listUserThemes() returns slug strings only — we read each manifest here.
+    const localRecords: LocalThemeRecord[] = [];
+    try {
+      for (const slug of listUserThemes()) {
+        try {
+          const manifestPath = userThemeManifest(slug);
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          const previewPath = path.join(THEMES_DIR, slug, 'preview.png');
+          localRecords.push({
+            slug,
+            manifest,
+            hasPreview: fs.existsSync(previewPath),
+          });
+        } catch (err) {
+          console.warn(`[ThemeMarketplace] Skipping local theme ${slug}: failed to read manifest:`, err);
+        }
+      }
+    } catch (err) {
+      console.warn('[ThemeMarketplace] Failed to enumerate local themes:', err);
+    }
+
+    return synthesizeLocalThemeEntries(marketplaceEntries, localRecords);
   }
 
   /** Get a single theme's detail from the registry. */
@@ -379,11 +423,19 @@ export class ThemeMarketplaceProvider {
       }
     }
 
-    // 4. Generate preview image
-    try {
-      await generateThemePreview(themeDir, manifest);
-    } catch (err: any) {
-      console.warn('[ThemeMarketplace] Preview generation failed (continuing without):', err.message);
+    // 4. Use the local preview.png if it's already fresh (theme-builder generates
+    //    it via wecoded-themes/scripts/generate-previews.js at finalize). Falling
+    //    back to BrowserWindow capture only when the local file is missing or
+    //    stale keeps the canonical Playwright-rendered preview as the source
+    //    of truth instead of letting the publisher's variant overwrite it.
+    if (!isPreviewFresh(themeDir)) {
+      try {
+        await generateThemePreview(themeDir, manifest);
+      } catch (err: any) {
+        console.warn('[ThemeMarketplace] Preview generation failed (continuing without):', err.message);
+      }
+    } else {
+      console.log('[ThemeMarketplace] Using existing fresh preview.png from theme-builder');
     }
 
     // 5. Collect all theme files (manifest + assets + preview)

@@ -56,6 +56,9 @@ declare global {
         // onChatExportSnapshot instead). Remote browsers receive chat:hydrate on
         // connect so remote-shim subscribes this to dispatch HYDRATE_CHAT_STATE.
         chatHydrate?: (cb: (payload: any) => void) => () => void;
+        // Optional — desktop stub returns no-op unsubscribe; Android remote-shim
+        // dispatches base64-encoded raw PTY bytes for xterm.js consumption (Tier 2).
+        ptyRawBytesForSession?: (sessionId: string, cb: (data: string) => void) => () => void;
       };
       dialog: {
         openFile: () => Promise<string[]>;
@@ -67,6 +70,29 @@ declare global {
       shell: {
         openChangelog: () => Promise<void>;
         openExternal: (url: string) => Promise<void>;
+      };
+      // Task 9: preload bridge for reading the xterm screen buffer from the main
+      // process (used by useAttentionClassifier and the Android terminal-data parity
+      // refactor). Shape mirrors the handler in preload.ts (commit 0a7594a).
+      terminal: {
+        getScreenText: (sessionId: string) => Promise<string>;
+      };
+      // Mirrors ChangelogIpcResult in preload.ts (which mirrors ChangelogResult in
+      // main/changelog-service.ts). When you edit one, edit all three — this copy
+      // isn't covered by the ipc-channels.test.ts parity test and will drift silently.
+      update: {
+        changelog: (opts: { forceRefresh: boolean }) => Promise<{
+          markdown: string | null;
+          entries: Array<{ version: string; date?: string; body: string }>;
+          fromCache: boolean;
+          error?: boolean;
+        }>;
+        // In-app update installer (Task 7). Mirrors preload.ts + remote-shim.ts.
+        download: () => Promise<import('../../shared/update-install-types').UpdateDownloadResult>;
+        cancel: (jobId: string) => Promise<{ success: boolean }>;
+        launch: (jobId: string, filePath: string) => Promise<import('../../shared/update-install-types').UpdateLaunchResult>;
+        getCachedDownload: (version: string) => Promise<import('../../shared/update-install-types').UpdateCachedDownload | null>;
+        onProgress: (handler: (ev: import('../../shared/update-install-types').UpdateProgressEvent) => void) => () => void;
       };
       remote: {
         getConfig: () => Promise<any>;
@@ -80,7 +106,6 @@ declare global {
       };
       off: (channel: string, handler: (...args: any[]) => void) => void;
       removeAllListeners: (channel: string) => void;
-      getGitHubAuth: () => Promise<{ username: string } | null>;
       getHomePath: () => Promise<string>;
       getFavorites: () => Promise<any>;
       setFavorites: (favorites: any) => Promise<void>;
@@ -135,6 +160,45 @@ declare global {
       defaults: {
         get: () => Promise<{ skipPermissions: boolean; model: string; projectFolder: string }>;
         set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>) => Promise<any>;
+      };
+      // Anonymous analytics opt-out — read/write the gate the analytics-service
+      // checks on launch. Shape mirrors preload.ts + remote-shim.ts (Phase 6).
+      analytics: {
+        getOptIn: () => Promise<boolean>;
+        setOptIn: (enabled: boolean) => Promise<void>;
+      };
+      // Settings → Development feature (bug report, contribute, known issues).
+      // Shape mirrors preload.ts dev namespace and remote-shim.ts dev namespace.
+      dev: {
+        logTail: (maxLines?: number) => Promise<string>;
+        // Environment snapshot (git/claude/network/perms) prepended to log
+        // tail by the bug-report flow. See dev-tools.ts gatherDiagnostics().
+        diagnostics: () => Promise<string>;
+        summarizeIssue: (args: { kind: string; description: string; log?: string }) => Promise<{ title: string; summary: string; flagged_strings: string[] }>;
+        // WHY: body is now assembled in the main process; renderer passes raw fields (Fix 2).
+        submitIssue: (args: { kind: 'bug' | 'feature'; title: string; summary: string; description: string; log?: string; label: string }) => Promise<{ ok: boolean; url?: string; fallbackUrl?: string }>;
+        installWorkspace: () => Promise<{ path: string; alreadyInstalled: boolean } | { error: string }>;
+        onInstallProgress: (handler: (line: string) => void) => () => void;
+        openSessionIn: (args: { cwd: string; initialInput?: string }) => Promise<{ id: string }>;
+      };
+      // GPU / performance preference — multiGpuDetected: false means the
+      // Performance section in Settings hides itself (no hardware to toggle).
+      performance: {
+        get: () => Promise<import('../../shared/types').PerformanceConfigSnapshot>;
+        set: (preferPowerSaving: boolean) => Promise<{ ok: true }>;
+      };
+      // WHY: named 'app' (not 'performance') so future restart-required settings
+      // can reuse the same generic restart channel.
+      app: {
+        restart: () => Promise<void>;
+      };
+      // Platform integration for hardware back button (Android). On desktop,
+      // both methods are no-op stubs (preload.ts). On Android, notifyStackState
+      // enables/disables OnBackPressedCallback and onBack subscribes to
+      // system:back push events from MainActivity.
+      system?: {
+        notifyStackState: (empty: boolean) => void;
+        onBack: (cb: () => void) => () => void;
       };
     };
   }

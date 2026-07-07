@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useEscClose } from '../hooks/use-esc-close';
 import { createPortal } from 'react-dom';
 import { useTheme } from '../state/theme-context';
 import type { PermissionMode } from '../../shared/types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
+import { deriveWarningSeverity } from '../state/sync-display-state';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
+import UpdatePanel from './UpdatePanel';
+import ContextPopup from './ContextPopup';
+import OpenTasksChip from './OpenTasksChip';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -40,21 +45,36 @@ interface StatusData {
   sessionStats: SessionStats | null;
   syncStatus: string | null;
   syncWarnings: SyncWarning[] | null;
+  // Non-null while a recent restore is still pulling older conversations in
+  // the background. Drives the 'restore-progress' chip.
+  backgroundPull?: { type: 'conversations'; startedAt: number } | null;
 }
 
-const MODELS = ['haiku', 'sonnet', 'opus[1m]'] as const;
+// Model aliases sent to the CC CLI via `/model <alias>`. `opus[1m]` keeps the
+// bracket form so CC selects Opus's 1M-context variant; the alias→transcript
+// matcher (App.tsx) strips the `[...]` before substring-matching the raw model
+// id (`'claude-fable-5'.includes('fable')`), so a bare `fable` alias slots in
+// with no collision. Labels are model-class only (no version numbers) by design.
+const MODELS = ['haiku', 'sonnet', 'opus[1m]', 'fable'] as const;
 type ModelAlias = typeof MODELS[number];
 
 const MODEL_DISPLAY: Record<ModelAlias, { label: string; color: string; bg: string; border: string }> = {
-  sonnet:      { label: 'Sonnet 4.6', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
-  'opus[1m]':  { label: 'Opus 4.7',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
-  haiku:       { label: 'Haiku 4.5',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
+  sonnet:      { label: 'Sonnet', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
+  'opus[1m]':  { label: 'Opus',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
+  haiku:       { label: 'Haiku',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
+  // Fable 5 — most capable. Fuchsia pill reads as the top/premium tier, distinct
+  // from Opus's indigo and the amber reserved for AUTO permission mode.
+  fable:       { label: 'Fable',  color: '#E879F9', bg: 'rgba(232,121,249,0.15)', border: 'rgba(232,121,249,0.25)' },
 };
 
+// Amber (#F2B33D) for AUTO matches CC's own banner color and visually sits
+// between 'auto-accept' (theme accent, mostly safe) and 'bypass' (salmon, no
+// safety checks) — increasing autonomy = warmer color.
 const PERMISSION_DISPLAY: Record<PermissionMode, { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
   normal:        { label: 'NORMAL',             shortLabel: 'NORMAL',  color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
   'auto-accept': { label: 'ACCEPT CHANGES',     shortLabel: 'ACCEPT',  color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
   plan:          { label: 'PLAN MODE',           shortLabel: 'PLAN',    color: 'var(--fg-2)',     bg: 'var(--inset)',  border: 'var(--edge)' },
+  auto:          { label: 'AUTO MODE',           shortLabel: 'AUTO',    color: '#F2B33D', bg: 'rgba(242,179,61,0.15)',  border: 'rgba(242,179,61,0.25)' },
   bypass:        { label: 'BYPASS PERMISSIONS',  shortLabel: 'BYPASS',  color: '#FA8072', bg: 'rgba(250,128,114,0.15)', border: 'rgba(250,128,114,0.25)' },
 };
 
@@ -129,6 +149,14 @@ interface Props {
   fast?: boolean;
   effort?: string;
   onOpenModelPicker?: () => void;
+  // Context popup: session and a dispatcher wrapper threaded from App.tsx.
+  sessionId?: string | null;
+  onDispatch?: (input: string) => void;
+  /** Open-tasks counts for the chip — derived at App root from a single
+   *  useSessionTasks instance so the chip and popup share inactiveMap state. */
+  openTasksCounts?: { running: number; pending: number };
+  /** Fired when the user clicks the Open Tasks chip. */
+  onOpenOpenTasks?: () => void;
 }
 
 
@@ -143,7 +171,9 @@ type WidgetId =
   | 'usage-5h' | 'usage-7d' | 'context' | 'git-branch' | 'sync-warnings' | 'theme' | 'version'
   | 'session-cost' | 'tokens-in' | 'tokens-out' | 'cache-stats' | 'code-changes' | 'session-time'
   | 'cache-hit-rate' | 'active-ratio' | 'output-speed'
-  | 'announcement';
+  | 'announcement'
+  | 'open-tasks'
+  | 'restore-progress';
 
 // Widget categories and definitions with info tooltips
 // defaultVisible: true = shown for new installs, false = opt-in only
@@ -273,6 +303,18 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
     ],
   },
   {
+    name: 'Tasks',
+    widgets: [
+      {
+        id: 'open-tasks',
+        label: 'Open Tasks',
+        defaultVisible: true,
+        description: 'Chip showing tasks Claude is tracking in the current session (running + pending counts). Hides when there are no open tasks. Click to see the full list.',
+        bestFor: 'Everyone who uses sessions where Claude juggles multiple tasks. Lets you see what\'s in flight without scrolling the chat.',
+      },
+    ],
+  },
+  {
     name: 'App',
     widgets: [
       {
@@ -281,6 +323,13 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
         defaultVisible: true,
         description: 'Alerts when sync isn\'t working (no internet, stale data, unsynced skills).',
         bestFor: 'YouCoded toolkit users. Keeps you aware of sync issues that could cause data loss.',
+      },
+      {
+        id: 'restore-progress',
+        label: 'Restore Progress',
+        defaultVisible: true,
+        description: 'Shows when YouCoded is still pulling older conversations from your backup in the background after a restore. Auto-hides when complete.',
+        bestFor: 'Anyone who has just restored from a backup — explains why older conversations are still appearing minutes after the restore wizard closed.',
       },
       {
         id: 'theme',
@@ -383,6 +432,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
   visible: Set<WidgetId>;
   toggle: (id: WidgetId) => void;
 }) {
+  useEscClose(open, onClose);
   // Track which widget's (i) tooltip is expanded
   const [expandedInfo, setExpandedInfo] = useState<WidgetId | null>(null);
   // Track whether the Theme widget's cycle editor is expanded. Separate from
@@ -434,8 +484,16 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
             </button>
           </div>
 
-          {/* Widget list grouped by category — scrolls within the panel */}
-          <div ref={widgetListRef} className="scroll-fade flex-1 px-4 py-3 space-y-4">
+          {/* Widget list grouped by category — scrolls within the panel.
+              No flex-1: OverlayPanel only has max-h (indefinite height), which breaks
+              flex-grow in Chromium. Using default flex: 0 1 auto lets flex-shrink
+              clamp this div when content exceeds max-h so overflow-y: auto engages
+              and the scroll-fade hook sees a real scroll. */}
+          {/* Padding lives on an inner wrapper so the scroll-fade element itself has
+              no padding — sticky fade pseudos then sit flush with the scroll-fade's
+              outer edge. Rounded corners are clipped via overflow:hidden on .layer-surface. */}
+          <div ref={widgetListRef} className="scroll-fade">
+            <div className="px-4 py-3 space-y-4">
             {WIDGET_CATEGORIES.map((cat) => (
               <section key={cat.name}>
                 <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">
@@ -566,6 +624,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                 </div>
               </section>
             ))}
+            </div>
           </div>
         </OverlayPanel>
       </div>
@@ -576,13 +635,19 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
 // --- Main StatusBar component ---
 
-export default function StatusBar({ statusData, onRunSync, onOpenSync, model, onCycleModel, permissionMode, onCyclePermission, fast, effort, onOpenModelPicker }: Props) {
+export default function StatusBar({
+  statusData, onRunSync, onOpenSync, model, onCycleModel,
+  permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
+  sessionId, onDispatch,
+  openTasksCounts, onOpenOpenTasks,
+}: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
-  // SyncWarning[] comes pre-typed; render title + level directly.
-  const warnings = (syncWarnings ?? []).map((w) => ({ text: w.title, level: w.level }));
   const { activeTheme, cycleTheme } = useTheme();
   const { visible, toggle } = useWidgetVisibility();
   const [popupOpen, setPopupOpen] = useState(false);
+  // Version pill now opens the in-app UpdatePanel (changelog + update action) instead of firing external URLs.
+  const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
+  const [contextPopupOpen, setContextPopupOpen] = useState(false);
 
   const show = (id: WidgetId) => visible.has(id);
   const ss = sessionStats; // shorthand
@@ -637,6 +702,18 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </button>
       )}
 
+      {/* Open Tasks chip — hidden when 0 open OR when widget is toggled off.
+          Counts are derived at App root to share one useSessionTasks instance
+          with the popup; two instances would have separate inactiveMap state
+          that don't sync within the same page. */}
+      {show('open-tasks') && openTasksCounts && onOpenOpenTasks && (
+        <OpenTasksChip
+          running={openTasksCounts.running}
+          pending={openTasksCounts.pending}
+          onOpen={onOpenOpenTasks}
+        />
+      )}
+
       {/* Rate limits */}
       {show('usage-5h') && usage?.five_hour != null && (
         <button
@@ -665,15 +742,18 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </button>
       )}
 
-      {/* Context remaining */}
+      {/* Context remaining — clickable opens ContextPopup (compact/clear actions + explainer). */}
       {show('context') && contextPercent != null && (
-        <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim">
+        <button
+          onClick={() => setContextPopupOpen(true)}
+          aria-haspopup="dialog"
+          aria-label={`Context: ${contextPercent}% remaining. Click to manage context.`}
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
+        >
           <span>Context:</span>
-          <span className={contextColor(contextPercent)}>
-            {contextPercent}%
-          </span>
+          <span className={contextColor(contextPercent)}>{contextPercent}%</span>
           <span>Remaining</span>
-        </span>
+        </button>
       )}
 
       {/* Session cost — estimated USD cost for this session */}
@@ -816,19 +896,51 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </span>
       )}
 
-      {/* Sync warnings */}
-      {show('sync-warnings') && warnings.map((w, i) => {
+      {/* Background restore-pull chip — green pulse, no count. Visible only
+          while pull-recent-50 + bg-bulk strategy is mid-flight (started by
+          SyncService.scheduleBackgroundConversationsPull). Auto-hides when
+          backgroundPull becomes null. Click opens the same SyncPanel the
+          sync-warnings chip uses. */}
+      {show('restore-progress') && statusData.backgroundPull && (
+        <button
+          onClick={onOpenSync || onRunSync}
+          className="px-1.5 py-0.5 rounded-sm border text-[9px] sm:text-[10px] flex items-center gap-1.5 cursor-pointer hover:brightness-125 transition-all"
+          style={{
+            backgroundColor: 'rgba(34,197,94,0.12)',
+            borderColor: 'rgba(34,197,94,0.35)',
+            color: '#22C55E',
+          }}
+          title="Older conversations from your backup are still syncing in the background"
+        >
+          <span
+            className="w-1.5 h-1.5 rounded-full animate-pulse"
+            style={{ backgroundColor: '#22C55E' }}
+          />
+          Syncing older conversations…
+        </button>
+      )}
+
+      {/* Sync status pill — at most one badge total.
+          Red "Sync Failing" for any danger-level warning,
+          orange "Sync Warning" for warn-only,
+          nothing when synced. Click opens the panel where the descriptive copy lives. */}
+      {show('sync-warnings') && (() => {
         const handler = onOpenSync || onRunSync;
+        const severity = deriveWarningSeverity(syncWarnings ?? []);
+        if (severity === null) return null;
+        const isFailing = severity === 'failing';
+        const label = isFailing ? 'Sync Failing' : 'Sync Warning';
+        const styleClass = isFailing ? warnStyles.danger : warnStyles.warn;
         return (
           <button
-            key={i}
             onClick={handler}
-            className={`px-1.5 py-0.5 rounded-sm border text-[9px] sm:text-[10px] ${warnStyles[w.level]} ${handler ? 'cursor-pointer hover:brightness-125 transition-all' : ''}`}
+            className={`px-1.5 py-0.5 rounded-sm border text-[9px] sm:text-[10px] ${styleClass} ${handler ? 'cursor-pointer hover:brightness-125 transition-all' : ''}`}
+            title={isFailing ? 'Sync is failing — click for details' : 'Sync warnings — click for details'}
           >
-            {w.text}
+            {label}
           </button>
         );
-      })}
+      })()}
 
       {/* Theme pill */}
       {show('theme') && (
@@ -863,16 +975,11 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         </span>
       )}
 
-      {/* Version pill — shows YouCoded app version, glows yellow when update available */}
+      {/* Version pill — shows YouCoded app version, glows yellow when update available.
+         Click opens the in-app UpdatePanel (changelog + Update Now) — no more raw URL jumps. */}
       {show('version') && updateStatus && (
         <button
-          onClick={() => {
-            if (updateStatus.update_available && updateStatus.download_url) {
-              window.claude.shell.openExternal(updateStatus.download_url);
-            } else {
-              window.claude.shell.openChangelog();
-            }
-          }}
+          onClick={() => setUpdatePanelOpen(true)}
           className={`px-1.5 py-0.5 rounded-sm border cursor-pointer transition-colors hidden sm:inline-flex ${
             updateStatus.update_available
               ? 'bg-[rgba(234,179,8,0.12)] border-[rgba(234,179,8,0.5)] hover:bg-[rgba(234,179,8,0.22)] animate-[version-glow_2s_ease-in-out_infinite]'
@@ -905,6 +1012,26 @@ export default function StatusBar({ statusData, onRunSync, onOpenSync, model, on
         onClose={() => setPopupOpen(false)}
         visible={visible}
         toggle={toggle}
+      />
+
+      {/* Update panel — opened from the version pill. Guard on updateStatus
+         since the pill is only rendered when it exists, but the mount lives outside that gate. */}
+      {updateStatus && (
+        <UpdatePanel
+          open={updatePanelOpen}
+          onClose={() => setUpdatePanelOpen(false)}
+          updateStatus={updateStatus}
+        />
+      )}
+
+      {/* Context popup — portal-rendered; position in tree is cosmetic. */}
+      <ContextPopup
+        open={contextPopupOpen}
+        onClose={() => setContextPopupOpen(false)}
+        sessionId={sessionId ?? null}
+        contextPercent={contextPercent}
+        contextTokens={sessionStats?.contextTokens ?? null}
+        onDispatch={onDispatch ?? (() => {})}
       />
     </div>
   );

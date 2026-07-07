@@ -12,7 +12,12 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useEscClose } from '../hooks/use-esc-close';
 import AboutPopup from './AboutPopup';
+import { DevelopmentPopup } from './development/DevelopmentPopup';
+import { BugReportPopup } from './development/BugReportPopup';
+import { ContributePopup } from './development/ContributePopup';
+import PerformanceButton from './PerformanceButton';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -105,6 +110,7 @@ function timeAgo(timestamp: number): string {
 
 const SHORTCUTS: { keys: string; description: string }[] = [
   { keys: 'Ctrl + `', description: 'Toggle between chat and terminal view' },
+  { keys: 'Ctrl + O', description: 'Expand / collapse all tool cards' },
   { keys: 'Shift (hold)', description: 'Open session switcher' },
   { keys: 'Shift + Arrow Up/Down', description: 'Navigate between sessions' },
   { keys: 'Shift (release)', description: 'Switch to highlighted session' },
@@ -119,6 +125,7 @@ const SHORTCUTS: { keys: string; description: string }[] = [
 ];
 
 function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void }) {
+  useEscClose(open, onClose);
   if (!open) return null;
   return createPortal(
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel.
@@ -154,6 +161,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
 }
 
 export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: Props) {
+  useEscClose(open, onClose);
   // Slide polish: track animation window so CSS can reduce backdrop-filter cost
   // and suppress scrollbar-thumb while the 300ms transform is running. Also
   // keeps the Scrim mounted during the close animation so it can fade out
@@ -248,8 +256,10 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
 }
 
 // ─── Toggle component (shared) ──────────────────────────────────────────────
+// Exported so AboutPopup's analytics opt-out toggle can reuse the same pill
+// styling — matches the skip-permissions / approve-all toggles in this file.
 
-function Toggle({ enabled, onToggle, color = 'green' }: { enabled: boolean; onToggle: () => void; color?: 'green' | 'red' }) {
+export function Toggle({ enabled, onToggle, color = 'green' }: { enabled: boolean; onToggle: () => void; color?: 'green' | 'red' }) {
   const bg = enabled
     ? color === 'red' ? 'bg-red-600' : 'bg-green-600'
     : 'bg-inset';
@@ -517,7 +527,8 @@ function SoundButton() {
                 <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
               </div>
 
-              <div ref={scrollRef} className="scroll-fade px-4 py-4 space-y-5">
+              <div ref={scrollRef} className="scroll-fade">
+                <div className="px-4 py-4 space-y-5">
                 {/* Master volume */}
                 <section>
                   <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Volume</h3>
@@ -571,6 +582,7 @@ function SoundButton() {
                   description="Plays when a background session has a new response"
                   dotColor="bg-blue-400"
                 />
+                </div>
               </div>
             </div>
           </div>
@@ -815,7 +827,8 @@ function RemoteButton({
               </div>
 
               {/* Scrollable content */}
-              <div ref={scrollRef} className="scroll-fade flex-1 px-4 py-4 space-y-6">
+              <div ref={scrollRef} className="scroll-fade flex-1">
+                <div className="px-4 py-4 space-y-6">
                 {loading ? (
                   <div className="flex items-center justify-center py-8 text-fg-muted text-sm">Loading...</div>
                 ) : (
@@ -1082,6 +1095,7 @@ function RemoteButton({
                     </section>
                   </>
                 )}
+                </div>
               </div>
             </div>
             )}
@@ -1097,8 +1111,9 @@ function RemoteButton({
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 
 interface PermissionOverrides {
@@ -1346,7 +1361,8 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                 <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
               </div>
 
-              <div ref={scrollRef} className="scroll-fade px-4 py-4 space-y-5">
+              <div ref={scrollRef} className="scroll-fade">
+                <div className="px-4 py-4 space-y-5">
                 {/* Default Model */}
                 <section>
                   <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Default Model</h3>
@@ -1433,6 +1449,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                     </button>
                   </div>
                 </section>
+                </div>
               </div>
             </div>
           </div>
@@ -1490,8 +1507,13 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
         </svg>
       </button>
 
-      {/* Popup overlay */}
-      {open && (
+      {/* Popup overlay — portaled to document.body so position:fixed centers
+          against the viewport, not the SettingsPanel drawer. The drawer (and
+          its glass ancestors) establishes a containing block for fixed children
+          via transform/backdrop-filter, which is why an inline-rendered popup
+          ends up centered inside the panel instead of the viewport. ThemeButton
+          above uses the same portal pattern for the same reason. */}
+      {open && createPortal(
         <>
           <Scrim layer={2} onClick={() => setOpen(false)} />
           <div
@@ -1511,7 +1533,8 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
               <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
             </div>
 
-            <div ref={scrollRef} className="scroll-fade p-3 space-y-2" style={{ maxHeight: 'calc(80vh - 52px)' }}>
+            <div ref={scrollRef} className="scroll-fade" style={{ maxHeight: 'calc(80vh - 52px)' }}>
+              <div className="p-3 space-y-2">
               {TIER_OPTIONS.map(t => {
                 const isActive = tier === t.id;
                 return (
@@ -1535,9 +1558,11 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
                   </button>
                 );
               })}
+              </div>
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </section>
   );
@@ -1713,7 +1738,8 @@ function ConnectToDesktopButton() {
               <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
             </div>
 
-            <div ref={scrollRef} className="scroll-fade px-4 py-4 space-y-4">
+            <div ref={scrollRef} className="scroll-fade">
+              <div className="px-4 py-4 space-y-4">
 
               {/* Tailscale warning */}
               {!tailscaleLoading && tailscaleStatus !== null && !tailscaleStatus.connected && (
@@ -1875,6 +1901,7 @@ function ConnectToDesktopButton() {
               <p className="text-[10px] text-fg-faint">
                 Connect to the YouCoded desktop app on your computer. Set up remote access in the desktop app's settings first.
               </p>
+              </div>
             </div>
           </div>
         </>,
@@ -1892,6 +1919,9 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);
+  const [showDevMenu, setShowDevMenu] = useState(false);
+  const [showBugReport, setShowBugReport] = useState(false);
+  const [showContribute, setShowContribute] = useState(false);
 
   const claude = (window as any).claude;
 
@@ -1954,7 +1984,9 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
-        <BuddyToggle />
+        {/* No <BuddyToggle /> on Android — the floater relies on an Electron always-on-top window that Android doesn't support yet */}
+
+        <PerformanceButton />
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
@@ -1972,6 +2004,39 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
           <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Other</h3>
           <div className="space-y-2">
             <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
+
+            {/* Development — bug reports, contributions, known issues */}
+            <button
+              onClick={() => setShowDevMenu(true)}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+            >
+              <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
+                {/* {YC} — curly braces with YC monogram in Cascadia Mono (matches the */}
+                {/* "Development" label's font size). Wider viewBox/icon (32×24 → 24×16) */}
+                {/* than the other Other-section icons because monospace YC at the */}
+                {/* requested size won't fit alongside brackets in a 16×16 box. */}
+                <svg className="w-6 h-4 text-fg-muted" viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 4 C 3 4 3 7 3 9 C 3 11 2 12 1 12 C 2 12 3 13 3 15 C 3 17 3 20 5 20" />
+                  <path d="M27 4 C 29 4 29 7 29 9 C 29 11 30 12 31 12 C 30 12 29 13 29 15 C 29 17 29 20 27 20" />
+                  <text x="16" y="17" textAnchor="middle" fontFamily="'Cascadia Code', 'Cascadia Mono', Consolas, monospace" fontSize="16" fontWeight="500" fill="currentColor" stroke="none">YC</text>
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs text-fg font-medium">Development</span>
+                <p className="text-[10px] text-fg-muted">Report a bug, contribute, or browse known issues</p>
+              </div>
+              <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            <DevelopmentPopup
+              open={showDevMenu}
+              onClose={() => setShowDevMenu(false)}
+              onOpenBug={() => { setShowDevMenu(false); setShowBugReport(true); }}
+              onOpenContribute={() => { setShowDevMenu(false); setShowContribute(true); }}
+            />
+            <BugReportPopup open={showBugReport} onClose={() => setShowBugReport(false)} />
+            <ContributePopup open={showContribute} onClose={() => setShowContribute(false)} />
 
             {/* Keyboard shortcuts intentionally omitted on Android — no physical keyboard. */}
 
@@ -2098,6 +2163,9 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [showDevMenu, setShowDevMenu] = useState(false);
+  const [showBugReport, setShowBugReport] = useState(false);
+  const [showContribute, setShowContribute] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -2229,6 +2297,8 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
 
         <SoundButton />
 
+        <PerformanceButton />
+
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
         <RemoteButton
@@ -2263,6 +2333,39 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
           <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Other</h3>
           <div className="space-y-2">
             <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
+
+            {/* Development — bug reports, contributions, known issues */}
+            <button
+              onClick={() => setShowDevMenu(true)}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+            >
+              <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
+                {/* {YC} — curly braces with YC monogram in Cascadia Mono (matches the */}
+                {/* "Development" label's font size). Wider viewBox/icon (32×24 → 24×16) */}
+                {/* than the other Other-section icons because monospace YC at the */}
+                {/* requested size won't fit alongside brackets in a 16×16 box. */}
+                <svg className="w-6 h-4 text-fg-muted" viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 4 C 3 4 3 7 3 9 C 3 11 2 12 1 12 C 2 12 3 13 3 15 C 3 17 3 20 5 20" />
+                  <path d="M27 4 C 29 4 29 7 29 9 C 29 11 30 12 31 12 C 30 12 29 13 29 15 C 29 17 29 20 27 20" />
+                  <text x="16" y="17" textAnchor="middle" fontFamily="'Cascadia Code', 'Cascadia Mono', Consolas, monospace" fontSize="16" fontWeight="500" fill="currentColor" stroke="none">YC</text>
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs text-fg font-medium">Development</span>
+                <p className="text-[10px] text-fg-muted">Report a bug, contribute, or browse known issues</p>
+              </div>
+              <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            <DevelopmentPopup
+              open={showDevMenu}
+              onClose={() => setShowDevMenu(false)}
+              onOpenBug={() => { setShowDevMenu(false); setShowBugReport(true); }}
+              onOpenContribute={() => { setShowDevMenu(false); setShowContribute(true); }}
+            />
+            <BugReportPopup open={showBugReport} onClose={() => setShowBugReport(false)} />
+            <ContributePopup open={showContribute} onClose={() => setShowContribute(false)} />
 
             {/* Keyboard Shortcuts */}
             <button

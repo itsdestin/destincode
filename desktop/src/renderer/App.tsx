@@ -1,3 +1,7 @@
+// Registers window.__terminalRegistry so main-process executeJavaScript
+// can call getScreenText for the attention classifier's ~1s buffer reads.
+// Must run before any TerminalView mounts (which call registerTerminal).
+import './bootstrap/terminal-bridge';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import TerminalView from './components/TerminalView';
 import ChatView from './components/ChatView';
@@ -10,8 +14,9 @@ import FolderSwitcher from './components/FolderSwitcher';
 // Labels for the welcome-screen model picker (mirrors SessionStrip)
 const WELCOME_MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
-  'opus[1m]': 'Opus 1M',
+  'opus[1m]': 'Opus',
   haiku: 'Haiku',
+  fable: 'Fable',
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import GamePanel from './components/game/GamePanel';
@@ -23,18 +28,23 @@ import { GameProvider, useGameState, useGameDispatch } from './state/game-contex
 import { hookEventToAction } from './state/hook-dispatcher';
 import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
+import { useVisualViewport } from './hooks/useVisualViewport';
 import { usePartyLobby } from './hooks/usePartyLobby';
 import { usePartyGame } from './hooks/usePartyGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
+import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
+import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
 import { AppIcon, WelcomeAppIcon, ThemeMascot } from './components/Icons';
 import CommandDrawer from './components/CommandDrawer';
-import TerminalToolbar, { TerminalScrollButtons } from './components/TerminalToolbar';
+import { TerminalScrollButtons } from './components/TerminalToolbar';
 import TrustGate, { useTrustGateActive } from './components/TrustGate';
 import SettingsPanel from './components/SettingsPanel';
 import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
 import ModelPickerPopup from './components/ModelPickerPopup';
+import OpenTasksPopup from './components/OpenTasksPopup';
+import { useSessionTasks } from './hooks/useSessionTasks';
 import MarketplaceScreen from './components/marketplace/MarketplaceScreen';
 import LibraryScreen from './components/library/LibraryScreen';
 import { MarketplaceProvider } from './state/marketplace-context';
@@ -57,6 +67,37 @@ import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
 import { BuddyCaptureApp } from './components/buddy/BuddyCaptureApp';
+
+// Dev-only ToolCard fixture sandbox wrapper. The React.lazy + dynamic
+// import() live inside a `import.meta.env.DEV` ternary so Vite statically
+// replaces the prod branch with `null` and tree-shakes the entire sandbox
+// module (plus its fixture glob) out of production bundles. A bare
+// module-scope `React.lazy(() => import(...))` would keep the chunk
+// reachable — Vite emits a chunk for every reachable dynamic import
+// regardless of whether the call site is dead code at the CALL SITE.
+// By making the lazy itself conditional on DEV, the whole dependency edge
+// disappears in prod.
+// Named-export unwrap: ToolSandbox is a named export, not default.
+// @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+const ToolSandboxRoute: React.ComponentType = import.meta.env.DEV
+  ? (() => {
+      const Lazy = React.lazy(() =>
+        import('./dev/ToolSandbox').then((m) => ({ default: m.ToolSandbox }))
+      );
+      return function ToolSandboxRouteDev() {
+        return (
+          <React.Suspense fallback={null}>
+            <Lazy />
+          </React.Suspense>
+        );
+      };
+    })()
+  : () => null;
+// ESC-passthrough: provider owns capture-phase ESC routing for overlays.
+// Mounted at app root so every overlay component is a descendant.
+import { EscCloseProvider, useEscStackEmpty, useDismissTop } from './hooks/use-esc-close';
+// Pure guard for the chat-focused ESC -> PTY forwarding listener below.
+import { shouldForwardEscToPty } from './state/should-forward-esc-to-pty';
 
 type ViewMode = 'chat' | 'terminal';
 
@@ -94,6 +135,9 @@ interface StatusDataState {
   lastSyncEpoch: number | null;
   syncInProgress: boolean;
   backupMeta: any;
+  // Non-null while a recent restore is still pulling older conversations in
+  // the background. Drives the StatusBar 'restore-progress' chip.
+  backgroundPull: { type: 'conversations'; startedAt: number } | null;
 }
 
 function AppInner() {
@@ -113,6 +157,7 @@ function AppInner() {
     model: null, contextMap: {}, gitBranchMap: {}, sessionStatsMap: {},
     syncStatus: null, syncWarnings: [],
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
+    backgroundPull: null,
   });
 
   const [permissionModes, setPermissionModes] = useState<Map<string, PermissionMode>>(new Map());
@@ -141,6 +186,15 @@ function AppInner() {
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   // Model/effort/fast picker — opened by bare /model, /fast, /effort (and future status-bar chip clicks)
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // Open Tasks popup — opened by the OpenTasksChip in the StatusBar
+  const [openTasksPopupOpen, setOpenTasksPopupOpen] = useState(false);
+  // SINGLE useSessionTasks instance for the whole page. The chip (in StatusBar)
+  // and the popup both read from this one derivation so their inactiveMap state
+  // stays in sync — two independent useSessionTasks calls would each keep their
+  // own localStorage-backed state, and the `storage` event doesn't fire within
+  // the same page (only across tabs). Fallback '' when there's no session gives
+  // an empty task list via useChatState's singleton EMPTY_SESSION_STATE.
+  const openTasks = useSessionTasks(sessionId ?? '');
   // Fast + effort state — surfaced via status bar chips. Persisted to ~/.claude/youcoded-model-modes.json.
   const [fastMode, setFastMode] = useState(false);
   const [effortLevel, setEffortLevel] = useState<string>('auto');
@@ -160,6 +214,11 @@ function AppInner() {
   // Preferred type chip when the marketplace is opened from a legacy entry
   // point (e.g. SettingsPanel theme picker). Cleared after the screen reads it.
   const [marketplaceInitialType, setMarketplaceInitialType] = useState<'skill' | 'theme' | undefined>(undefined);
+  // When the CommandDrawer's plugin-name badge is clicked, we navigate to
+  // the marketplace AND immediately open that plugin's detail overlay.
+  // MarketplaceScreen reads this, opens the overlay on mount, then calls
+  // the passed clearing callback so subsequent manual navigations start fresh.
+  const [marketplaceInitialDetailId, setMarketplaceInitialDetailId] = useState<string | undefined>(undefined);
   // Tab to show when Library opens — consumed by LibraryScreen (Task 5.2 wires
   // the prop; this state is lifted here so the event listener below can set it).
   const [libraryInitialTab, setLibraryInitialTab] = useState<'skills' | 'themes' | 'updates' | undefined>(undefined);
@@ -178,6 +237,23 @@ function AppInner() {
     else setMarketplaceInitialType(undefined);
     setActiveView('marketplace');
   }, []);
+
+  // Navigate to the marketplace AND open a specific plugin's detail
+  // overlay. Called from the plugin-name badge on skill cards.
+  const openMarketplaceDetail = useCallback((pluginId: string) => {
+    setMarketplaceInitialType(undefined);
+    setMarketplaceInitialDetailId(pluginId);
+    setActiveView('marketplace');
+  }, []);
+
+  // Stable callback so MarketplaceScreen's useEffect doesn't re-fire every
+  // render. Prior inline lambda recreated every parent render → the child's
+  // effect saw a new dep identity → re-ran → caused a setState-during-render
+  // React warning.
+  const clearMarketplaceInitialDetail = useCallback(
+    () => setMarketplaceInitialDetailId(undefined),
+    [],
+  );
 
   // Listen for the global "open library" event dispatched by ThemeScreen's
   // "Browse all themes" button. Opens Library to the requested tab and closes
@@ -257,6 +333,18 @@ function AppInner() {
   }, [settingsOpen]);
 
   usePromptDetector();
+  // Recovers chat→PTY submits that get lost on Windows ConPTY when Claude is
+  // busy — see useSubmitConfirmation for the full mechanism. Pass active
+  // session + its view mode so the hook can suppress the `\r` retry while the
+  // user is actively in terminal view (xterm routes keystrokes straight to
+  // PTY, so an injected `\r` would commit the partial line they're typing).
+  useSubmitConfirmation({
+    activeSessionId: sessionId,
+    activeViewMode: sessionId ? viewModes.get(sessionId) ?? 'chat' : 'chat',
+  });
+  // Drives --vvp-offset from window.visualViewport so the input bar stays glued
+  // to the top of the soft keyboard on Android / mobile browsers.
+  useVisualViewport();
   useRemoteAttentionSync();
   const dispatch = useChatDispatch();
   const chatStateMap = useChatStateMap();
@@ -367,13 +455,22 @@ function AppInner() {
           if (hasAwaiting) break;
         }
 
+        // Priority: red (awaiting-approval) → amber (attention banner showing —
+        // stuck or session-died) → green (working) → blue (unseen activity) →
+        // gray (idle). Amber is between red and green: the session needs the
+        // user's eyes but it's not as urgent as a permission prompt, and it's
+        // not "all good, just working" either. Overrides green so a stuck
+        // session doesn't appear identical to a healthy thinking session.
+        const needsAttention = chatState.attentionState !== 'ok';
         const status: SessionStatusColor = hasAwaiting
           ? 'red'
-          : (chatState.isThinking || hasRunning)
-            ? 'green'
-            : (chatState.timeline.length > 0 && !viewedSessions.has(s.id) && s.id !== sessionId)
-              ? 'blue'
-              : 'gray';
+          : needsAttention
+            ? 'amber'
+            : (chatState.isThinking || hasRunning)
+              ? 'green'
+              : (chatState.timeline.length > 0 && !viewedSessions.has(s.id) && s.id !== sessionId)
+                ? 'blue'
+                : 'gray';
         newStatuses.set(s.id, status);
       }
 
@@ -471,6 +568,30 @@ function AppInner() {
       }
     }
   }, [chatStateMap, sessionStatuses]);
+
+  // Push stack-state changes to the host. On Android, MainActivity uses this
+  // to flip OnBackPressedCallback.isEnabled so hardware back is intercepted
+  // when an overlay is open and falls through to Android default (background)
+  // when nothing is dismissable. On desktop this call is a no-op (preload.ts's
+  // window.claude.system.notifyStackState is a stub).
+  const escStackEmpty = useEscStackEmpty();
+  useEffect(() => {
+    window.claude.system?.notifyStackState?.(escStackEmpty);
+  }, [escStackEmpty]);
+
+  // Hardware back button (Android) → dismiss top of stack. dismissTop is a
+  // hook so we capture it in a ref the WS listener (which lives outside
+  // React's render cycle) can read. Re-subscribing the listener on every
+  // dismissTop change would churn the WebSocket subscription needlessly.
+  const dismissTop = useDismissTop();
+  const dismissTopRef = useRef(dismissTop);
+  useEffect(() => { dismissTopRef.current = dismissTop; }, [dismissTop]);
+
+  useEffect(() => {
+    const handler = () => dismissTopRef.current();
+    const unsubscribe = window.claude.system?.onBack?.(handler);
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     const createdHandler = window.claude.on.sessionCreated((info) => {
@@ -594,6 +715,23 @@ function AppInner() {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Forward the subagent stamp so the reducer can tell "briefing
+            // written into a subagent's JSONL" apart from a real user prompt
+            // and drop the former (it's already shown on the Agent card).
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
+          });
+          break;
+        case 'user-interrupt':
+          // ESC-passthrough: transcript-watcher detected a user-initiated
+          // interrupt (ESC sent to the PTY). Reducer records it so we can
+          // tag the next assistant turn as interrupted.
+          batchTranscriptDispatch({
+            type: 'TRANSCRIPT_INTERRUPT',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            kind: event.data.kind,
           });
           break;
         case 'assistant-text':
@@ -648,6 +786,12 @@ function AppInner() {
             model: event.data.model ?? null,
             anthropicRequestId: event.data.anthropicRequestId ?? null,
             usage: event.data.usage ?? null,
+            // Forward the subagent stamp so the reducer can drop a sub-agent's
+            // end_turn instead of overwriting parent turn.model and tearing down
+            // the parent's in-flight state via endTurn(). Mirrors assistant-text /
+            // tool-use / tool-result dispatches above.
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
           });
           break;
         case 'assistant-thinking':
@@ -671,6 +815,10 @@ function AppInner() {
               sessionId: event.sessionId,
               markerId: `compact-done-${Date.now()}`,
               afterContextTokens: contextTokens,
+              // Forward CC's summary text so the SystemMarker can offer
+              // click-to-expand (replaces the dead "ctrl+o to see full summary"
+              // affordance from CC's TUI, which never worked inside YouCoded).
+              ...(event.data.summary ? { summary: event.data.summary } : {}),
             });
           }
           break;
@@ -721,6 +869,11 @@ function AppInner() {
         contextMap: data.contextMap || prev.contextMap,
         gitBranchMap: data.gitBranchMap || prev.gitBranchMap,
         sessionStatsMap: data.sessionStatsMap || prev.sessionStatsMap,
+        // backgroundPull intentionally trusts the server payload (no `?? prev`):
+        // the server's `null` is meaningful — it signals "background pull just
+        // completed, hide the chip." Falling back to prev would keep the chip
+        // visible forever after the bg-pull finishes.
+        backgroundPull: data.backgroundPull ?? null,
       }));
 
       // Diff attentionMap and dispatch per-session when state flips.
@@ -860,10 +1013,15 @@ function AppInner() {
       const remove = claudeOn.ptyOutputForSession(s.id, (data: string) => {
         const lower = data.toLowerCase();
         let mode: PermissionMode | null = null;
+        // CC v2.1.83+ auto mode banner reads "auto mode on (shift+tab to cycle)" —
+        // checked before "accept edits on" because the substring "auto mode" doesn't
+        // overlap, but order is preserved for symmetry with the off-list below.
         if (lower.includes('bypass permissions on')) mode = 'bypass';
+        else if (lower.includes('auto mode on')) mode = 'auto';
         else if (lower.includes('accept edits on')) mode = 'auto-accept';
         else if (lower.includes('plan mode on')) mode = 'plan';
         else if (lower.includes('bypass permissions off')
+              || lower.includes('auto mode off')
               || lower.includes('accept edits off')
               || lower.includes('plan mode off')) mode = 'normal';
         if (mode) {
@@ -1495,6 +1653,67 @@ function AppInner() {
     return () => window.removeEventListener('keydown', handler, true);
   }, [handleToggleView, currentViewMode]);
 
+  // ESC-passthrough: forward ESC to the active session's PTY when chat is
+  // focused and no overlay consumed the event. Single \x1b byte — Claude Code
+  // treats it as an interrupt. See
+  // docs/superpowers/specs/2026-04-21-esc-chat-passthrough-design.md and
+  // docs/PITFALLS.md -> "PTY Writes". Reactive state is read via a ref so the
+  // listener isn't re-registered on every sessionId/viewMode change.
+  const escPassthroughStateRef = useRef<{
+    activeSessionId: string;
+    viewMode: 'chat' | 'terminal';
+  }>({ activeSessionId: '', viewMode: 'chat' });
+  escPassthroughStateRef.current = {
+    activeSessionId: sessionId ?? '',
+    viewMode: currentViewMode,
+  };
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const s = escPassthroughStateRef.current;
+      const forward = shouldForwardEscToPty({
+        defaultPrevented: e.defaultPrevented,
+        viewMode: s.viewMode,
+        hasActiveSession: !!s.activeSessionId,
+      });
+      if (!forward) return;
+      // One byte to the PTY — Claude Code treats it as an interrupt.
+      // Single-byte writes do NOT trigger Ink's 500ms paste-mode coalescing,
+      // so no chunking or pacing is needed. See docs/PITFALLS.md -> "PTY Writes".
+      window.claude.session.sendInput(s.activeSessionId, '\x1b');
+    };
+    // Bubble phase on purpose — EscCloseProvider owns capture phase, and we
+    // need to read e.defaultPrevented AFTER capture-phase overlay handlers run.
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Ctrl+O toggles expand-all / collapse-all across every collapsible tool
+  // card, tool group, and agent section in the chat view. The hook module
+  // persists the current mode so child ToolCards that mount AFTER the
+  // shortcut fires (e.g. inside a tool group that just opened) read the mode
+  // via getInitialExpanded() and come up in the right state. Terminal view
+  // ignores the shortcut so the keystroke passes to the PTY.
+  const viewModeRef = useRef(currentViewMode);
+  viewModeRef.current = currentViewMode;
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key !== 'o' && e.key !== 'O') return;
+      if (viewModeRef.current !== 'chat') return;
+      e.preventDefault();
+      if (isInExpandAllMode()) {
+        broadcastCollapseAll();
+      } else {
+        broadcastExpandAll();
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, []);
+
   const currentSession = sessions.find((s) => s.id === sessionId);
   const canBypass = currentSession?.skipPermissions ?? false;
   const currentPermissionMode = sessionId ? (permissionModes.get(sessionId) || 'normal') : 'normal';
@@ -1504,15 +1723,25 @@ function AppInner() {
   const cyclePermissionRef = useRef<(() => void) | null>(null);
   const cyclePermission = useCallback(() => {
     if (!sessionId) return;
-    const cycle: PermissionMode[] = canBypass
-      ? ['normal', 'auto-accept', 'plan', 'bypass']
-      : ['normal', 'auto-accept', 'plan'];
+    // 'auto' is plan-gated by Anthropic — only included in the optimistic cycle
+    // when the active session is on Opus 4.7 1M (the only model in our
+    // ModelAlias union that has access). On other models, CC's Shift+Tab won't
+    // surface auto, so showing it would create a click-but-nothing-happens
+    // state. The PTY watcher above corrects mismatches within ~1 tick anyway.
+    const canAuto = currentModel === 'opus[1m]';
+    const cycle: PermissionMode[] = [
+      'normal',
+      'auto-accept',
+      'plan',
+      ...(canAuto ? ['auto' as PermissionMode] : []),
+      ...(canBypass ? ['bypass' as PermissionMode] : []),
+    ];
     const idx = cycle.indexOf(currentPermissionMode);
     const next = cycle[(idx + 1) % cycle.length];
     setPermissionModes((prev) => new Map(prev).set(sessionId, next));
     // Send Shift+Tab to the PTY to cycle Claude Code's permission mode
     window.claude.session.sendInput(sessionId, '\x1b[Z');
-  }, [sessionId, canBypass, currentPermissionMode]);
+  }, [sessionId, canBypass, currentPermissionMode, currentModel]);
   cyclePermissionRef.current = cyclePermission;
 
   useEffect(() => {
@@ -1769,8 +1998,17 @@ function AppInner() {
             </div>
             <div
               className="flex-1 overflow-hidden relative"
-              style={getPlatform() === 'android' && currentViewMode === 'terminal' ? { backgroundColor: 'transparent', pointerEvents: 'none' } : undefined}
             >
+              {/* Tier 2 of android-terminal-data-parity: xterm.js is the sole
+                  terminal renderer on every platform. The Android-only style
+                  (backgroundColor transparent + pointerEvents none) and the
+                  `getPlatform() !== 'android'` gate around <TerminalView /> are
+                  gone — they existed so touches/visibility passed through the
+                  WebView to the native Termux TerminalView underneath. xterm
+                  now lives in the WebView, so the WebView itself is the
+                  terminal surface. The native Compose TerminalView is still
+                  rendering during this intermediate task; xterm's opaque
+                  background covers it. Task 5 deletes the native renderer. */}
               {sessions.map((s) => (
                 <React.Fragment key={s.id}>
                   <ErrorBoundary name="Chat">
@@ -1780,15 +2018,12 @@ function AppInner() {
                       resumeInfo={resumeInfo}
                     />
                   </ErrorBoundary>
-                  {/* On Android, native Termux handles terminal — don't mount xterm.js */}
-                  {getPlatform() !== 'android' && (
-                    <ErrorBoundary name="Terminal">
-                      <TerminalView
-                        sessionId={s.id}
-                        visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'terminal'}
-                      />
-                    </ErrorBoundary>
-                  )}
+                  <ErrorBoundary name="Terminal">
+                    <TerminalView
+                      sessionId={s.id}
+                      visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'terminal'}
+                    />
+                  </ErrorBoundary>
                 </React.Fragment>
               ))}
               {/* Initializing overlay — shown before Claude is ready, but only in chat view.
@@ -1818,6 +2053,7 @@ function AppInner() {
                   onOpenManager={() => openMarketplace('installed')}
                   onOpenMarketplace={() => openMarketplace()}
                   onOpenLibrary={() => setActiveView('library')}
+                  onOpenMarketplaceDetail={openMarketplaceDetail}
                 />
               )}
               {isTerminalTouch && sessionId && (
@@ -1828,10 +2064,10 @@ function AppInner() {
                inert disables focus/keyboard/paste when hidden so keystrokes
                reach xterm instead of the buried textarea. */}
               <div ref={bottomBarRef} className={`chrome-wrapper chrome-wrapper--bottom bg-canvas${currentViewMode === 'chat' ? ' bottom-float' : ''}`} {...(currentViewMode !== 'chat' && getPlatform() === 'electron' ? { inert: true, style: { position: 'absolute', width: 0, height: 0, overflow: 'hidden' } as React.CSSProperties } : {})}>
-                {isTerminalTouch && sessionId && (
-                  <TerminalToolbar sessionId={sessionId} />
-                )}
-                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} />
+                {/* TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
+                    ChatInputBar when minimal={isTerminalTouch}, slotted in
+                    the QuickChips position so both modes share one container. */}
+                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} />
                 <StatusBar
                   statusData={{
                     usage: statusData.usage,
@@ -1842,6 +2078,7 @@ function AppInner() {
                     sessionStats: sessionId ? (statusData.sessionStatsMap[sessionId] ?? null) : null,
                     syncStatus: statusData.syncStatus,
                     syncWarnings: statusData.syncWarnings,
+                    backgroundPull: statusData.backgroundPull,
                   }}
                   onOpenSync={() => {
                     // Open settings panel with sync popup auto-opened
@@ -1859,6 +2096,38 @@ function AppInner() {
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}
+                  sessionId={sessionId}
+                  onDispatch={(input: string) => {
+                    if (!sessionId) return;
+                    // Pass live timeline (drawer paths pass []) so future popup-dispatched commands
+                    // that inspect history can read it without rewiring this wrapper.
+                    const timeline = chatStateMapRef.current.get(sessionId)?.timeline ?? [];
+                    const result = dispatchSlashCommand({
+                      raw: input,
+                      sessionId,
+                      view: currentViewMode,
+                      files: [],
+                      dispatch,
+                      timeline,
+                      callbacks: {
+                        onResumeCommand: () => setResumeRequested(true),
+                        getUsageSnapshot,
+                        onOpenPreferences: () => setPreferencesOpen(true),
+                        onToast: (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); },
+                        getSessionState: (sid: string) => chatStateMapRef.current.get(sid),
+                        onOpenModelPicker: () => setModelPickerOpen(true),
+                      },
+                    });
+                    // Forward alsoSendToPty so Claude Code itself runs the command. We deliberately skip the
+                    // USER_PROMPT optimistic bubble that InputBar dispatches — for /compact and /clear, the
+                    // COMPACTION_PENDING / CLEAR_TIMELINE reducer actions already update the timeline, so a
+                    // USER_PROMPT bubble would render redundantly alongside them.
+                    if (result.handled && result.alsoSendToPty) {
+                      window.claude.session.sendInput(sessionId, result.alsoSendToPty);
+                    }
+                  }}
+                  openTasksCounts={sessionId ? { running: openTasks.counts.running, pending: openTasks.counts.pending } : undefined}
+                  onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
                 />
               </div>
           </>
@@ -2030,6 +2299,17 @@ function AppInner() {
           window.claude.session.sendInput(sessionId, `/model ${m}\r`);
         }}
       />
+      {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
+          Reads from the single `openTasks` useSessionTasks instance declared in AppInner. */}
+      {sessionId && (
+        <OpenTasksPopup
+          open={openTasksPopupOpen}
+          tasks={openTasks.tasks}
+          onClose={() => setOpenTasksPopupOpen(false)}
+          onMarkInactive={openTasks.markInactive}
+          onUnhide={openTasks.unhide}
+        />
+      )}
       {/* Full-screen glass marketplace + library destinations. MarketplaceProvider
           is now app-wide (root provider tree) so ThemeScreen can also consume it.
           libraryInitialTab is lifted state set by the youcoded:open-library event
@@ -2038,11 +2318,13 @@ function AppInner() {
       {(activeView === 'marketplace' || activeView === 'library') && (
         activeView === 'marketplace' ? (
           <MarketplaceScreen
-            onExit={() => { setActiveView('chat'); setMarketplaceInitialType(undefined); }}
-            onOpenLibrary={() => { setActiveView('library'); setMarketplaceInitialType(undefined); }}
+            onExit={() => { setActiveView('chat'); setMarketplaceInitialType(undefined); setMarketplaceInitialDetailId(undefined); }}
+            onOpenLibrary={() => { setActiveView('library'); setMarketplaceInitialType(undefined); setMarketplaceInitialDetailId(undefined); }}
             onOpenShareSheet={(id) => setShareSkillId(id)}
             onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
             initialTypeChip={marketplaceInitialType}
+            initialDetailId={marketplaceInitialDetailId}
+            onDetailConsumed={clearMarketplaceInitialDetail}
           />
         ) : (
           <LibraryScreen
@@ -2085,9 +2367,9 @@ function AppInner() {
 // getUsageSnapshot lets /cost and /usage snapshot live stats from App state.
 import type { UsageSnapshot } from './state/chat-types';
 import type { SessionChatState } from './state/chat-types';
-const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?: ViewMode; onOpenDrawer: (searchMode: boolean) => void; onCloseDrawer?: () => void; onDrawerSearch?: (query: string) => void; disabled?: boolean; minimal?: boolean; onResumeCommand?: () => void; getUsageSnapshot?: (sessionId: string) => UsageSnapshot | null; onOpenPreferences?: () => void; onToast?: (msg: string) => void; getSessionState?: (sessionId: string) => SessionChatState | undefined; onOpenModelPicker?: () => void }>(
-  function ChatInputBar({ sessionId, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, disabled, minimal, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker }, ref) {
-    return <InputBar ref={ref} sessionId={sessionId} view={view} onOpenDrawer={onOpenDrawer} onCloseDrawer={onCloseDrawer} onDrawerSearch={onDrawerSearch} disabled={disabled} minimal={minimal} onResumeCommand={onResumeCommand} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={onOpenPreferences} onToast={onToast} getSessionState={getSessionState} onOpenModelPicker={onOpenModelPicker} />;
+const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?: ViewMode; onOpenDrawer: (searchMode: boolean) => void; onCloseDrawer?: () => void; onDrawerSearch?: (query: string) => void; disabled?: boolean; minimal?: boolean; onResumeCommand?: () => void; getUsageSnapshot?: (sessionId: string) => UsageSnapshot | null; onOpenPreferences?: () => void; onToast?: (msg: string) => void; getSessionState?: (sessionId: string) => SessionChatState | undefined; onOpenModelPicker?: () => void; initialInput?: string }>(
+  function ChatInputBar({ sessionId, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, disabled, minimal, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput }, ref) {
+    return <InputBar ref={ref} sessionId={sessionId} view={view} onOpenDrawer={onOpenDrawer} onCloseDrawer={onCloseDrawer} onDrawerSearch={onDrawerSearch} disabled={disabled} minimal={minimal} onResumeCommand={onResumeCommand} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={onOpenPreferences} onToast={onToast} getSessionState={getSessionState} onOpenModelPicker={onOpenModelPicker} initialInput={initialInput} />;
   },
 );
 
@@ -2124,6 +2406,16 @@ export default function App() {
     }
   }, []);
 
+  // Dev-only ToolCard sandbox route. Gated on import.meta.env.DEV so the
+  // entire branch (including the dynamic import() below) is statically
+  // dead code in production builds and tree-shaken out by Vite. Follows
+  // the same ?mode= query-param convention as buddy windows above.
+  // Named-export unwrap: ToolSandbox is a named export, not default.
+  // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+  if (import.meta.env.DEV && buddyMode === 'tool-sandbox') {
+    return <ToolSandboxRoute />;
+  }
+
   // Buddy windows render as isolated placeholders without main-app providers
   if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
   if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
@@ -2135,6 +2427,10 @@ export default function App() {
     // Uses inline styles only — no theme tokens, no context — so it renders even
     // when ThemeProvider itself is the thing that crashed.
     <RootErrorBoundary>
+      {/* EscCloseProvider owns capture-phase ESC routing — must wrap all
+          overlay-bearing providers so every overlay is a descendant. Buddy
+          windows (early-returned above) don't need it. */}
+      <EscCloseProvider>
       <ThemeProvider>
         <ThemeBg />
         <ThemeEffects />
@@ -2164,6 +2460,7 @@ export default function App() {
           </WorkerHealthProvider>
         </MarketplaceAuthProvider>
       </ThemeProvider>
+      </EscCloseProvider>
     </RootErrorBoundary>
   );
 }

@@ -6,6 +6,7 @@ import { computeOnAccent } from '../themes/theme-validator';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import type { LoadedTheme } from '../themes/theme-types';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useEscClose } from '../hooks/use-esc-close';
 
 // Plain-language explainer for the Appearance popup. Shown when the user taps
 // the (i) icon in the popup header — see ThemeScreen's `showInfo` state.
@@ -66,6 +67,8 @@ const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
 );
 
 export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, onPublishTheme }: Props) {
+  // Always mounted when open (parent conditionally renders) — so open=true is correct here.
+  useEscClose(true, onClose);
   const { allThemes, activeTheme, theme: activeSlug, setTheme, reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps, setGlassOverride } = useTheme();
   // MarketplaceContext supplies favorites and the toggle action.
   const mp = useMarketplace();
@@ -139,7 +142,8 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         </div>
       </div>
 
-      <div ref={listScrollRef} className="scroll-fade flex-1 p-3 space-y-4">
+      <div ref={listScrollRef} className="scroll-fade flex-1">
+        <div className="p-3 space-y-4">
         {/* Theme grid — pencil on each card opens the per-theme edit view.
             Cycle membership moved to the status bar widget editor. */}
         <div>
@@ -259,6 +263,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
             <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${showTimestamps ? 'left-[18px]' : 'left-0.5'}`} />
           </button>
         </div>
+        </div>
       </div>
     </div>
   );
@@ -353,7 +358,8 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
         <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-6 h-6 flex items-center justify-center shrink-0">✕</button>
       </div>
 
-      <div ref={editScrollRef} className="scroll-fade flex-1 p-3 space-y-4">
+      <div ref={editScrollRef} className="scroll-fade flex-1">
+        <div className="p-3 space-y-4">
         {/* Locked banner for non-user themes so it's clear why most controls are absent */}
         {!isUserTheme && (
           <p className="text-[10px] text-fg-faint bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 leading-relaxed">
@@ -512,6 +518,7 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
             Publish to Marketplace
           </button>
         )}
+        </div>
       </div>
     </div>
   );

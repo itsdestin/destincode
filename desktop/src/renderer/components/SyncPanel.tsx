@@ -11,11 +11,13 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { SyncWarning } from '../../main/sync-state';
+import { deriveSyncState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import SyncSetupWizard from './SyncSetupWizard';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { useEscClose } from '../hooks/use-esc-close';
 import { RestoreWizard } from './restore/RestoreWizard';
 import { SnapshotsPanel } from './restore/SnapshotsPanel';
 
@@ -107,6 +109,77 @@ function timeAgo(epoch: number): string {
   return `${days}d ago`;
 }
 
+// Map the derived sync display state to a status-dot tailwind class.
+// All three helpers keep the dot, label, and badge in lock-step — the old
+// time-only derivation could read "Synced 3m ago" while the popup showed
+// red warnings; routing everything through deriveSyncState prevents that.
+function dotColorForState(state: SyncDisplayState): string {
+  switch (state.kind) {
+    case 'unconfigured': return 'bg-fg-muted/40';
+    case 'syncing':      return 'bg-blue-400 animate-pulse';
+    case 'failing':      return 'bg-red-500';
+    case 'attention':    return 'bg-green-500';
+    case 'synced':       return 'bg-green-500';
+    case 'stale':        return 'bg-yellow-500';
+    // Exhaustiveness: if a new SyncDisplayState kind is added, this assignment
+    // fails at compile time — forces us to handle it here instead of silently
+    // returning undefined at runtime.
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
+  }
+}
+
+function primaryLabelForState(state: SyncDisplayState, loading: boolean): string {
+  if (loading) return 'Loading...';
+  switch (state.kind) {
+    case 'unconfigured': return 'Not configured';
+    case 'syncing':      return 'Syncing...';
+    case 'failing':      return 'Sync Failing';
+    case 'attention':    return state.lastSyncEpoch ? `Last synced ${timeAgo(state.lastSyncEpoch)}` : 'Never synced';
+    case 'synced':       return `Last synced ${timeAgo(state.lastSyncEpoch)}`;
+    case 'stale':        return state.lastSyncEpoch ? `Last synced ${timeAgo(state.lastSyncEpoch)}` : 'Never synced';
+    // Exhaustiveness: same guarantee as dotColorForState — adding a new
+    // SyncDisplayState kind without updating this switch is a TS error.
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
+  }
+}
+
+function badgeForState(state: SyncDisplayState): React.ReactNode {
+  if (state.kind === 'failing') {
+    return (
+      <span className="px-1.5 py-0.5 rounded-full bg-[#DD4444]/15 text-[#DD4444] text-[9px] font-medium shrink-0">
+        {state.warningCount}
+      </span>
+    );
+  }
+  if (state.kind === 'attention') {
+    return (
+      <span className="px-1.5 py-0.5 rounded-full bg-[#FF9800]/15 text-[#FF9800] text-[9px] font-medium shrink-0">
+        {state.warningCount}
+      </span>
+    );
+  }
+  // Every other current kind has no badge — enumerate them explicitly so a
+  // new variant can't silently fall through to "no badge" without review.
+  if (
+    state.kind === 'unconfigured' ||
+    state.kind === 'syncing' ||
+    state.kind === 'synced' ||
+    state.kind === 'stale'
+  ) {
+    return null;
+  }
+  // Exhaustiveness: if we reach here, SyncDisplayState grew a kind we forgot.
+  // The `never` assignment fails at compile time — forces an update above.
+  const _exhaustive: never = state;
+  return _exhaustive;
+}
+
 const BACKEND_LABELS: Record<string, string> = {
   drive: 'Google Drive',
   github: 'GitHub',
@@ -130,7 +203,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   specs: 'Specs',
 };
 
-// Hover descriptions — shown via title attribute on the badge spans
+// Hover descriptions — shown via title attribute on each inline category label
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   memory: 'Your Claude memory files and preferences',
   conversations: 'Chat history and conversation logs',
@@ -211,21 +284,28 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
     }
   }, [autoOpen, open, onAutoOpenHandled]);
 
-  // Derive summary for compact row
-  const syncCount = status?.backends.filter(b => b.syncEnabled).length ?? 0;
-  const storageCount = status?.backends.filter(b => !b.syncEnabled).length ?? 0;
-  const warningCount = status?.warnings.length ?? 0;
-  const lastSyncText = status?.lastSyncEpoch ? timeAgo(status.lastSyncEpoch) : 'Never';
+  // Backend counts kept for the secondary "X synced / Y paused" caption.
+  // Defensive ?. on inner fields: a malformed status payload without
+  // `backends`/`warnings` must degrade to zero counts, not crash the panel.
+  const syncCount = status?.backends?.filter(b => b.syncEnabled).length ?? 0;
+  const storageCount = status?.backends?.filter(b => !b.syncEnabled).length ?? 0;
 
-  // Status dot: only considers sync-enabled backends
-  const syncBackends = status?.backends.filter(b => b.syncEnabled) ?? [];
-  const dotColor = !status || syncBackends.length === 0
-    ? 'bg-fg-muted/40'
-    : status.syncInProgress
-      ? 'bg-blue-400 animate-pulse'
-      : status.lastSyncEpoch && (Date.now() / 1000 - status.lastSyncEpoch) < 86400
-        ? 'bg-green-500'
-        : 'bg-yellow-500';
+  // Single derivation: compact row dot + label + badge all flow from this state.
+  // Severity-aware so the row can never read "Synced" while warnings are active.
+  const display: SyncDisplayState = deriveSyncState({
+    hasBackends: (status?.backends?.length ?? 0) > 0,
+    syncInProgress: status?.syncInProgress ?? false,
+    lastSyncEpoch: status?.lastSyncEpoch ?? null,
+    warnings: status?.warnings ?? [],
+  });
+
+  // Gate dot color on `loading` to keep it in sync with the "Loading..." label.
+  // Without this gate, once `status` arrived the dot could flip to a real
+  // color during the brief render window before `setLoading(false)` fires,
+  // while `primaryLabelForState` was still returning "Loading...".
+  const dotColor = loading ? 'bg-fg-muted/40' : dotColorForState(display);
+  const primaryLabel = primaryLabelForState(display, loading);
+  const badge = badgeForState(display);
 
   return (
     <section>
@@ -239,13 +319,8 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
           <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
         </div>
         <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">
-            {loading ? 'Loading...' :
-             (syncCount + storageCount) === 0 ? 'Not configured' :
-             status?.syncInProgress ? 'Syncing...' :
-             `Last synced ${lastSyncText}`}
-          </span>
-          {(syncCount + storageCount) > 0 && (
+          <span className="text-xs text-fg font-medium">{primaryLabel}</span>
+          {(syncCount + storageCount) > 0 && display.kind !== 'failing' && (
             <span className="text-[10px] text-fg-muted ml-2">
               {syncCount > 0 ? `${syncCount} synced` : ''}
               {syncCount > 0 && storageCount > 0 ? ' \u00B7 ' : ''}
@@ -253,11 +328,7 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
             </span>
           )}
         </div>
-        {warningCount > 0 && (
-          <span className="px-1.5 py-0.5 rounded-full bg-[#DD4444]/15 text-[#DD4444] text-[9px] font-medium shrink-0">
-            {warningCount}
-          </span>
-        )}
+        {badge}
         <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
         </svg>
@@ -286,6 +357,8 @@ interface SyncPopupProps {
 }
 
 function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupProps) {
+  // Always mounted when open (parent uses {open && <SyncPopup>}) — so open=true is correct here.
+  useEscClose(true, onClose);
   const [status, setStatus] = useState<SyncStatus | null>(initialStatus);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(!initialStatus);
@@ -555,14 +628,15 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             </div>
           </div>
 
-          {/* Scrollable content */}
-          <div ref={mainScrollRef} className="scroll-fade flex-1 px-4 py-4 space-y-5">
+          {/* Scrollable content — padding on inner wrapper so sticky fades sit flush. */}
+          <div ref={mainScrollRef} className="scroll-fade flex-1">
+            <div className="px-4 py-4 space-y-5">
 
             {/* 1. Backend instances list */}
             <div>
               <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Your Backups</h3>
 
-              {status && status.backends.length > 0 ? (
+              {status?.backends && status.backends.length > 0 ? (
                 <div className="space-y-2">
                   {(() => {
                     // Fix: warnings are now SyncWarning objects, not strings — check by .code.
@@ -613,18 +687,26 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         )}
                       </div>
 
-                      {/* Status dot — color derived from scoped warnings for this backend. */}
+                      {/* Status dot — same severity logic as the panel-wide row, scoped to this backend.
+                          Action-feedback "uploading/downloading" overlays the helper-derived color. */}
                       {(() => {
-                        const scoped = status.warnings.filter(w => w.backendId === b.id);
-                        const hasDanger = scoped.some(w => w.level === 'danger');
-                        const hasWarn = scoped.some(w => w.level === 'warn');
-                        const dotClass =
-                          hasDanger ? 'bg-red-500'
-                          : hasWarn ? 'bg-amber-500'
-                          : actionFeedback[b.id]?.includes('ing') ? 'bg-blue-400 animate-pulse'
-                          : b.syncEnabled && b.connected && b.lastPushEpoch && (Date.now() / 1000 - b.lastPushEpoch) < 86400 ? 'bg-green-500'
-                          : b.syncEnabled && b.connected ? 'bg-yellow-500'
-                          : 'bg-fg-muted/40';
+                        const scopedDisplay = deriveSyncState({
+                          hasBackends: true,
+                          // syncInProgress is global; per-backend "syncing" comes from per-backend action feedback below.
+                          syncInProgress: false,
+                          lastSyncEpoch: b.lastPushEpoch,
+                          warnings: status.warnings,
+                          scope: { backendId: b.id },
+                        });
+                        const inFlight = actionFeedback[b.id]?.includes('ing');
+                        const baseClass = dotColorForState(scopedDisplay);
+                        // When the backend isn't connected/sync-enabled at all, dim the dot regardless of warnings.
+                        const offline = !b.syncEnabled || !b.connected;
+                        const dotClass = inFlight
+                          ? 'bg-blue-400 animate-pulse'
+                          : offline && scopedDisplay.kind !== 'failing'
+                            ? 'bg-fg-muted/40'
+                            : baseClass;
                         return <div className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />;
                       })()}
 
@@ -711,11 +793,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                       ? `Last synced ${timeAgo(status.lastSyncEpoch)}`
                       : 'Never synced'}
                 </div>
-                {status?.backupMeta?.platform && (
-                  <div className="text-[10px] text-fg-faint mt-0.5">
-                    from {status.backupMeta.platform} {'\u00B7'} toolkit {status.backupMeta.toolkit_version}
-                  </div>
-                )}
               </div>
               <button
                 onClick={handleForceSync}
@@ -736,7 +813,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             </div>
 
             {/* 3. Warnings — typed SyncWarning objects with title/body/fix-action/stderr */}
-            {status && status.warnings.length > 0 && (
+            {status?.warnings && status.warnings.length > 0 && (
               <div>
                 <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Warnings</h3>
                 <div className="space-y-2">
@@ -786,21 +863,22 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               </div>
             )}
 
-            {/* 4. Synced Data Categories */}
+            {/* 4. Synced Data Categories — read-only inline list.
+                Tiles used to look like buttons (border + cursor-help) but did nothing.
+                Now passive text with per-item hover tooltips on the default cursor. */}
             {status && status.syncedCategories.length > 0 && (
               <div>
-                <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Synced Data</h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {status.syncedCategories.map(cat => (
-                    <span
-                      key={cat}
-                      title={CATEGORY_DESCRIPTIONS[cat] || ''}
-                      className="px-2 py-1 rounded-md bg-inset/60 border border-edge-dim text-[10px] text-fg-dim cursor-help"
-                    >
-                      {CATEGORY_LABELS[cat] || cat}
-                    </span>
-                  ))}
-                </div>
+                <span className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Includes </span>
+                <span className="text-[11px] text-fg-dim">
+                  {status.syncedCategories.flatMap((cat, i) => {
+                    const label = (
+                      <span key={cat} title={CATEGORY_DESCRIPTIONS[cat] || ''}>
+                        {CATEGORY_LABELS[cat] || cat}
+                      </span>
+                    );
+                    return i === 0 ? [label] : [<span key={`sep-${cat}`} aria-hidden="true"> {'·'} </span>, label];
+                  })}
+                </span>
               </div>
             )}
 
@@ -865,6 +943,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 <div className="text-fg-faint text-[11px]">Install the YouCoded toolkit to enable sync.</div>
               </div>
             )}
+            </div>
           </div>
         </div>
         )}
@@ -1035,7 +1114,8 @@ function EditBackendForm({
   return (
     <div className="flex flex-col h-full">
       <SubViewHeader title={`Edit ${backend.label}`} onBack={onBack} onClose={onClose} />
-      <div ref={actionsScrollRef} className="scroll-fade flex-1 px-4 py-4 space-y-4">
+      <div ref={actionsScrollRef} className="scroll-fade flex-1">
+        <div className="px-4 py-4 space-y-4">
         <div>
           <label className="block text-[10px] text-fg-muted mb-1">Name</label>
           <input
@@ -1068,6 +1148,7 @@ function EditBackendForm({
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
+        </div>
       </div>
     </div>
   );

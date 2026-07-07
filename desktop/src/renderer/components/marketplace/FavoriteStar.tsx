@@ -15,8 +15,17 @@ export default function FavoriteStar({
   filled, disabled = false, disabledReason, onToggle, size = 'md', corner = false,
 }: Props) {
   const px = size === 'sm' ? 14 : 16;
+  // Fix: dropped `bg-panel/80 backdrop-blur-sm`. The card behind is already
+  // opaque `bg-panel`, so the translucent panel + 4px backdrop-filter were
+  // visually invisible — but each instance still spawned a Chromium
+  // compositing layer. With ~20 SkillCards in the open drawer, that was 20
+  // backdrop-filter regions inside an animating, overflow-hidden parent;
+  // on Windows Electron under the v1.2.2 chat-store re-render churn that
+  // caused the drawer body to drop paint frames (cards + bottom half of
+  // drawer disappearing). Solid bg-panel keeps the star readable on the
+  // card and eliminates the per-star compositing layer.
   const positioning = corner
-    ? 'absolute top-1.5 right-1.5 bg-panel/80 backdrop-blur-sm'
+    ? 'absolute top-1.5 right-1.5 bg-panel'
     : '';
   return (
     <button

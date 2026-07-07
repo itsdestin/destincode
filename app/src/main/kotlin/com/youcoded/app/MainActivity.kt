@@ -3,6 +3,7 @@ package com.youcoded.app
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +16,12 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.youcoded.app.bridge.LocalBridgeServer
 import com.youcoded.app.config.TierStore
 import com.youcoded.app.runtime.Bootstrap
 import com.youcoded.app.runtime.ServiceBinder
@@ -27,6 +34,7 @@ import com.youcoded.app.ui.theme.AppTheme
 import android.net.Uri
 import android.widget.Toast
 import java.io.File
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
 
@@ -68,6 +76,30 @@ class MainActivity : ComponentActivity() {
 
     private var boundService: com.youcoded.app.runtime.SessionService? = null
 
+    /**
+     * Hardware back button → broadcast system:back to React, which calls
+     * useDismissTop() to pop the topmost overlay/full-screen view.
+     *
+     * `isEnabled` is driven by SessionService.onStackStateChanged below
+     * (bound in the LaunchedEffect that fires when the service connects):
+     * when the React stack is empty, isEnabled = false and Android default
+     * (background the app) takes over. When non-empty, this callback fires.
+     *
+     * Defaults to false so during the brief moment between Activity creation
+     * and React mounting, hardware back behaves as Android default —
+     * no regression vs. pre-feature behavior.
+     */
+    private val backCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            val svc = boundService ?: return
+            val msg = JSONObject().apply {
+                put("type", "system:back")
+                put("payload", JSONObject())
+            }
+            svc.bridgeServer.broadcast(msg)
+        }
+    }
+
     /** Compose-observable state for showing the QR scanner overlay. */
     private val _showQrScanner = mutableStateOf(false)
 
@@ -76,6 +108,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Wire the hardware back button. The callback is disabled by default;
+        // SessionService.onStackStateChanged below (set in the LaunchedEffect
+        // that fires when the service binds) flips isEnabled based on
+        // whether the React dismissal stack is non-empty.
+        onBackPressedDispatcher.addCallback(this, backCallback)
 
         // Catch Termux TerminalBuffer crashes (row/column out of bounds during resize race).
         // These are internal Termux bugs triggered when PTY output arrives during a resize.
@@ -206,6 +244,15 @@ class MainActivity : ComponentActivity() {
                                                 android.util.Log.w("MainActivity", "marketplace auth browser open failed: ${e.message}")
                                             }
                                         }
+                                        svc.onStackStateChanged = { empty ->
+                                            // Must run on the main thread —
+                                            // OnBackPressedCallback is UI-thread
+                                            // bound. SessionService dispatches
+                                            // bridge messages from the WS thread.
+                                            runOnUiThread {
+                                                backCallback.isEnabled = !empty
+                                            }
+                                        }
                                     }
 
                                     // Handle intent session_id from notification tap
@@ -220,6 +267,20 @@ class MainActivity : ComponentActivity() {
 
                                     Box(modifier = Modifier.fillMaxSize()) {
                                         ChatScreen(svc)
+
+                                        // Bridge bind-failure overlay. Without this, a port collision
+                                        // (e.g. dev APK launched while the released app is running and
+                                        // already owns 9901) would silently leave the WebView stuck on
+                                        // "Connecting..." forever — the React side just times out its
+                                        // retries with no UI signal. We surface the actual error here
+                                        // along with the action the user needs to take.
+                                        val bridgeState by svc.bridgeServer.state.collectAsStateWithLifecycle()
+                                        (bridgeState as? LocalBridgeServer.State.BindFailed)?.let { failed ->
+                                            BridgeBindFailedOverlay(
+                                                port = svc.bridgeServer.port,
+                                                detail = failed.message,
+                                            )
+                                        }
 
                                         // Folder picker dialog
                                         if (_showFolderPicker.value) {
@@ -334,5 +395,55 @@ class MainActivity : ComponentActivity() {
         }
         // Clear the intent data so re-creation doesn't re-import
         intent?.data = null
+    }
+}
+
+/**
+ * Full-screen actionable error shown when LocalBridgeServer fails to bind.
+ * The most common cause is two YouCoded apps installed on the same device
+ * (released `com.youcoded.app` + dev `com.youcoded.app.dev`) both trying to
+ * bind the same localhost port. We tell the user exactly how to recover.
+ */
+@Composable
+private fun BridgeBindFailedOverlay(port: Int, detail: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC000000)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 24.dp)
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                .padding(24.dp),
+            horizontalAlignment = Alignment.Start,
+        ) {
+            Text(
+                "Couldn't start the local bridge",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Port $port is already in use on this device. This usually " +
+                    "means another YouCoded app (release or dev variant) is " +
+                    "running in the background.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Open Android Settings → Apps, find the other YouCoded app, " +
+                    "tap Force stop, then re-launch this app.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

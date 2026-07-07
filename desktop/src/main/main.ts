@@ -2,8 +2,6 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, scree
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { WindowRegistry } from './window-registry';
@@ -25,13 +23,29 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
+import { cleanupStaleDownloads } from './update-installer';
+import { runAnalyticsOnLaunch } from './analytics-service';
+import { loadConfigSync, setAppliedAtLaunch, setCachedGpu } from './performance-config';
 
 // macOS and Linux Electron apps may inherit a minimal PATH that's missing
 // common tool locations (Homebrew, nvm, Volta, pipx, cargo). macOS Finder/Dock
 // only provides /usr/bin:/bin:/usr/sbin:/sbin. Linux Snap/Flatpak/some DEs may
 // also strip user paths. Prepend common locations on both platforms.
-// Windows is not affected — which.sync() resolves executables independently.
-if (process.platform === 'darwin' || process.platform === 'linux') {
+if (process.platform === 'win32') {
+  // Windows IS affected too (the old comment here claimed otherwise). The Claude
+  // Code native installer drops claude.exe in %USERPROFILE%\.local\bin and does
+  // NOT always register that dir on the user PATH — verified 2026-05-30: a real
+  // first-run install printed "Native installation exists but
+  // C:\Users\...\.local\bin is not in your PATH". which.sync('claude') only
+  // resolves what's on process.env.PATH, so without this, both prereq detection
+  // AND session launch fail (pty-worker forks inherit this process's PATH).
+  // Prepend the dir so YouCoded finds Claude with zero user PATH edits.
+  const localBin = path.join(os.homedir(), '.local', 'bin');
+  const parts = (process.env.PATH ?? '').split(path.delimiter);
+  if (!parts.includes(localBin)) {
+    process.env.PATH = `${localBin}${path.delimiter}${process.env.PATH ?? ''}`;
+  }
+} else if (process.platform === 'darwin' || process.platform === 'linux') {
   const home = os.homedir();
   const extraPaths = [
     `${home}/.local/bin`,         // pipx, cargo, etc.
@@ -52,10 +66,6 @@ if (process.platform === 'darwin' || process.platform === 'linux') {
   process.env.PATH = `${extraPaths.join(path.delimiter)}${path.delimiter}${process.env.PATH}`;
 }
 
-const execFileAsync = promisify(execFile);
-// Resolve 'gh' path for Windows where Electron's PATH may not include it
-let ghPath = 'gh';
-try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
 let mainWindow: BrowserWindow | null = null;
 // Module-level ref so createAppWindow's 'closed' handler can reach the
@@ -491,7 +501,14 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
   // Append mode query param for buddy windows so React can branch on the mode
   const modeQuery = opts?.buddy ? `?mode=buddy-${opts.buddy}` : '';
   if (!app.isPackaged) {
-    win.loadURL(`${DEV_SERVER_URL}${modeQuery}`);
+    // YOUCODED_DEV_URL lets dev launchers (e.g. scripts/run-sandbox.sh in the
+    // youcoded-dev workspace) boot the MAIN window straight into a specific
+    // path like ?mode=tool-sandbox — avoids the DevTools location.href dance.
+    // Only applies to the main window: buddy windows keep their own
+    // ?mode=buddy-* routing so the override can't hijack them. Prod (file://)
+    // is untouched because this whole branch runs under `!app.isPackaged`.
+    const devUrlOverride = !opts?.buddy ? process.env.YOUCODED_DEV_URL : undefined;
+    win.loadURL(devUrlOverride || `${DEV_SERVER_URL}${modeQuery}`);
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'), {
       // loadFile expects search string WITHOUT the leading '?'
@@ -982,8 +999,58 @@ function registerDetachIpc() {
   });
 }
 
+// Apply GPU preference. Reads ~/.claude/youcoded-performance.json synchronously.
+// Default (file missing OR preferPowerSaving=false) → request the discrete GPU.
+// preferPowerSaving=true → request the integrated GPU.
+// These are hints to Chromium; the OS may still override (Windows Settings →
+// Graphics, NVIDIA Control Panel). The "Restart to apply" notice in
+// SettingsPanel uses appliedAtLaunch — set here — to know whether the running
+// process matches the on-disk config.
+{
+  const perf = loadConfigSync();
+  if (perf.preferPowerSaving) {
+    app.commandLine.appendSwitch('force-low-power-gpu');
+  } else {
+    app.commandLine.appendSwitch('force-high-performance-gpu');
+  }
+  setAppliedAtLaunch(perf.preferPowerSaving);
+}
+
 app.whenReady().then(async () => {
   await rotateLog();
+
+  // Fire-and-forget: never await. Respects the opt-out in About → Privacy
+  // internally and fails silently on any network issue.
+  void runAnalyticsOnLaunch();
+
+  // Cache the GPU device list once. Used by the Performance section in
+  // SettingsPanel to decide whether to render (hidden on single-GPU systems)
+  // and to surface a "Detected GPUs: ..." line under the toggle. Async
+  // because getGPUInfo can take 1-2s on first call; the IPC handler returns
+  // multiGpuDetected:false until this resolves.
+  app.getGPUInfo('complete').then((info: unknown) => {
+    const list: string[] = [];
+    // Electron's GPUInfo shape uses `gpuDevice` (singular array). Names live
+    // in auxAttributes.glRenderer for the active device, but device-level
+    // names are not always populated — fall back to a vendor/device-id hint.
+    if (info && typeof info === 'object') {
+      const gpuDevice = (info as { gpuDevice?: Array<Record<string, unknown>> }).gpuDevice;
+      const aux = (info as { auxAttributes?: Record<string, unknown> }).auxAttributes;
+      if (Array.isArray(gpuDevice)) {
+        for (const d of gpuDevice) {
+          const renderer = typeof aux?.glRenderer === 'string' && d.active === true
+            ? (aux.glRenderer as string)
+            : null;
+          const fallback = `GPU vendor=${d.vendorId ?? '?'} device=${d.deviceId ?? '?'}`;
+          list.push(renderer ?? fallback);
+        }
+      }
+    }
+    setCachedGpu(list);
+  }).catch((err: unknown) => {
+    log('WARN', 'Main', 'getGPUInfo failed — GPU list unavailable', { error: String(err) });
+    setCachedGpu([]);
+  });
 
   // --- First-run detection (wrapped in try/catch — never breaks the app) ---
   let firstRunManager: FirstRunManager | undefined;
@@ -1070,6 +1137,31 @@ app.whenReady().then(async () => {
     log('ERROR', 'Main', 'Failed to reconcile plugin hooks', { error: String(e) });
   }
 
+  // Force CC's prompt-suggestion feature off in ~/.claude/settings.json on
+  // every launch. CC pre-fills the input bar with a generated next-prompt
+  // suggestion that interacts badly with our chat→PTY write path (the body
+  // gets concatenated with the ghost text and submitted on the trailing CR).
+  // See `docs/PITFALLS.md → PTY Writes` and `docs/cc-dependencies.md` →
+  // "Prompt suggestion (force-disabled by app)".
+  try {
+    const { enforcePromptSuggestionDisabled } = require('./disable-prompt-suggestion');
+    const r = enforcePromptSuggestionDisabled();
+    if (r.changed) log('INFO', 'Main', 'Prompt suggestion force-disabled', { prior: r.prior });
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to force-disable prompt suggestion', { error: String(e) });
+  }
+
+  // Seed a transcript-retention default so Claude Code's 30-day cleanup
+  // doesn't silently delete Resume Browser history. Only writes when the
+  // user hasn't set cleanupPeriodDays themselves. See retention-default.ts.
+  try {
+    const { seedCleanupPeriodDefault } = require('./retention-default');
+    const r = seedCleanupPeriodDefault();
+    if (r.changed) log('INFO', 'Main', 'Seeded cleanupPeriodDays default', { effective: r.effective });
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to seed cleanupPeriodDays', { error: String(e) });
+  }
+
   // Clean up orphan symlinks left by pre-decomposition post-update.sh —
   // entries under ~/.claude/{hooks,commands,skills}/ that point into now-deleted
   // core/life/productivity subtrees of the toolkit. No replacement mechanism
@@ -1083,6 +1175,15 @@ app.whenReady().then(async () => {
     }
   } catch (e) {
     log('ERROR', 'Main', 'Failed to clean up orphan symlinks', { error: String(e) });
+  }
+
+  // Sweep abandoned .partial files and downloads older than 24h from the
+  // in-app update cache. Runs at every startup so stale downloads (e.g. from
+  // a cancelled update on a prior session) don't accumulate on disk.
+  try {
+    cleanupStaleDownloads(path.join(app.getPath('userData'), 'update-cache'));
+  } catch (e) {
+    log('ERROR', 'Main', 'Failed to clean up stale update downloads', { error: String(e) });
   }
 
   // Decomposition v3 §9.3: reconcile plugin mcp-manifest.json into
@@ -1134,23 +1235,6 @@ app.whenReady().then(async () => {
     const data = readGamePrefs();
     data.incognito = incognito;
     return writeGamePrefs(data);
-  });
-
-  ipcMain.handle('github:auth', async () => {
-    try {
-      const { stdout: username } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login']);
-      return { username: username.trim() };
-    } catch (err: any) {
-      // Log specific failure reason for debugging
-      if (err.code === 'ENOENT') {
-        log('WARN', 'GitHubAuth', 'gh CLI not found on PATH');
-      } else if (err.stderr?.includes('not logged in')) {
-        log('WARN', 'GitHubAuth', 'gh CLI not authenticated');
-      } else {
-        log('WARN', 'GitHubAuth', 'Failed', { error: String(err.message || err) });
-      }
-      return null;
-    }
   });
 
   // Expose the system home directory to the renderer (async to avoid blocking)
@@ -1219,8 +1303,8 @@ app.whenReady().then(async () => {
   // Windows Electron implements it via WM_NCHITTEST → HTCAPTION, which makes
   // the OS consume all pointer events for window dragging — the renderer
   // never gets pointerup, so click-to-toggle-chat never fires.
-  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, delta: { dx: number; dy: number }) => {
-    buddyManager.moveMascot(delta.dx, delta.dy);
+  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, target: { targetX: number; targetY: number }) => {
+    buddyManager.moveMascot(target.targetX, target.targetY);
   });
 
   // Desktop-capture action: screenshot the display the mascot sits on,
