@@ -17,8 +17,10 @@ export type ApiResult<T> = { ok: true; value: T } | { ok: false; status: number;
 
 // Worker may return avatar_url: null (theoretical — GitHub always sets one);
 // the store type uses a plain string, so normalize at this boundary.
-function toStoredUser(me: { id: string; login: string; avatar_url: string | null }) {
-  return { id: me.id, login: me.login, avatar_url: me.avatar_url ?? "" };
+// Accounts Phase 1: also carry display_name/handle so the stored profile reflects
+// the account-native fields (both optional — pre-Phase-1 /auth/me omits them).
+function toStoredUser(me: { id: string; login: string; avatar_url: string | null; display_name?: string; handle?: string | null }) {
+  return { id: me.id, login: me.login, avatar_url: me.avatar_url ?? "", display_name: me.display_name, handle: me.handle ?? null };
 }
 
 async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
@@ -33,11 +35,14 @@ async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
 
 // ── Channel list for double-registration guard ────────────────────────────────
 const CHANNELS = [
-  "marketplace:auth:start",
-  "marketplace:auth:poll",
-  "marketplace:auth:signed-in",
-  "marketplace:auth:user",
-  "marketplace:auth:sign-out",
+  "account:start",
+  "account:poll",
+  "account:signed-in",
+  "account:user",
+  "account:sign-out",
+  "account:update-profile",
+  "account:set-handle",
+  "account:delete",
   "marketplace:install",
   "marketplace:rate",
   "marketplace:rate:delete",
@@ -61,7 +66,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
   // Renderer calls authStart to receive a user_code + auth_url. Main process
   // opens the URL in the system browser (renderer cannot call shell.openExternal).
   // Renderer then polls authPoll until status === "complete".
-  ipcMain.handle("marketplace:auth:start", (): Promise<ApiResult<AuthStartResponse>> =>
+  ipcMain.handle("account:start", (): Promise<ApiResult<AuthStartResponse>> =>
     wrap(async () => {
       const out = await client.authStart();
       // Fix: openExternal can fail on some Linux sandboxes (Flatpak, no URL handler).
@@ -73,7 +78,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     })
   );
 
-  ipcMain.handle("marketplace:auth:poll", (_e, deviceCode: string): Promise<ApiResult<AuthPollResponse>> =>
+  ipcMain.handle("account:poll", (_e, deviceCode: string): Promise<ApiResult<AuthPollResponse>> =>
     wrap(async () => {
       const res = await client.authPoll(deviceCode);
       if (res.status === "complete") {
@@ -92,8 +97,8 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
   );
 
   // Auth state queries — local reads, plus a one-time lazy heal for `user`.
-  ipcMain.handle("marketplace:auth:signed-in", () => !!store.getToken());
-  ipcMain.handle("marketplace:auth:user", async () => {
+  ipcMain.handle("account:signed-in", () => !!store.getToken());
+  ipcMain.handle("account:user", async () => {
     const cached = store.getUser();
     if (cached) return cached;
     // Heal path: a token stored before profile storage existed (pre-2026-07
@@ -110,7 +115,43 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       return null;
     }
   });
-  ipcMain.handle("marketplace:auth:sign-out", () => store.signOut());
+  // Sign-out now revokes server-side too (spec §1) — best-effort: if the
+  // Worker is unreachable, the local clear still wins (never trap the user
+  // signed-in). The 90-day expiry + prune cron mop up the orphaned row.
+  ipcMain.handle("account:sign-out", async () => {
+    try { await client.logout(); } catch { /* offline sign-out is fine */ }
+    store.signOut();
+  });
+
+  // Update the account display name, then mirror the new value into the stored
+  // profile so `account:user` reflects it without a round-trip to /auth/me.
+  ipcMain.handle("account:update-profile", (_e, displayName: string): Promise<ApiResult<{ display_name: string }>> =>
+    wrap(async () => {
+      const out = await client.updateProfile(displayName);
+      const user = store.getUser();
+      if (user) store.setSession(store.getToken()!, { ...user, display_name: out.display_name });
+      return out;
+    })
+  );
+
+  // Claim/change the unique @handle, then mirror it into the stored profile.
+  ipcMain.handle("account:set-handle", (_e, handle: string): Promise<ApiResult<{ handle: string }>> =>
+    wrap(async () => {
+      const out = await client.setHandle(handle);
+      const user = store.getUser();
+      if (user) store.setSession(store.getToken()!, { ...user, handle: out.handle });
+      return out;
+    })
+  );
+
+  // Permanent hard-delete (Worker cascades all rows). Clear the local session
+  // too — the token is dead server-side, so keeping it would only confuse the UI.
+  ipcMain.handle("account:delete", (): Promise<ApiResult<void>> =>
+    wrap(async () => {
+      await client.deleteAccount();
+      store.signOut();
+    })
+  );
 
   // ── Write endpoints ───────────────────────────────────────────────────────
   // Wrapped in ApiResult so the renderer preserves HTTP status across the

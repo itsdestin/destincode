@@ -118,8 +118,11 @@ export function createMarketplaceApiClient(opts: {
       const raw = await res.text().catch(() => "");
       let message = "";
       try {
-        const parsed = JSON.parse(raw) as { message?: unknown };
+        const parsed = JSON.parse(raw) as { message?: unknown; error?: unknown };
         if (typeof parsed?.message === "string") message = parsed.message;
+        // Fix: the Worker's JSON 500s use `{ ok: false, error }` (app.onError),
+        // not `{ message }` — extract `error` so those don't reach the UI blank.
+        else if (typeof parsed?.error === "string") message = parsed.error;
       } catch {
         // Not JSON — plain-text body; the raw text fallback below covers it.
       }

@@ -163,6 +163,22 @@ describe("MarketplaceApiClient", () => {
       );
     });
 
+    it("surfaces the JSON `{ error }` shape (Worker app.onError 500)", async () => {
+      // Worker JSON 500s use { ok: false, error } (app.onError), not { message }.
+      // Regression guard so those don't reach the UI with a blank message.
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, error: "AE SQL failed" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        })
+      );
+      const client = createMarketplaceApiClient({ host: HOST, getToken: () => "TOKEN" });
+      await expect(client.updateProfile("x")).rejects.toMatchObject({
+        status: 500,
+        message: "AE SQL failed",
+      });
+    });
+
     it("surfaces text/plain error bodies (Hono HTTPException shape)", async () => {
       // The Worker's 400/409s are plain-text bodies, not JSON {message}.
       // Regression guard for the blank-error-message bug: res.statusText is empty
