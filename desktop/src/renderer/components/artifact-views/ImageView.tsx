@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ArtifactViewProps } from './types';
-import { useArtifactBytes } from './useArtifactBytes';
+import { BinaryContent, CenterNote } from './BinaryContent';
 
 const MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -9,13 +9,20 @@ const MIME: Record<string, string> = {
 };
 
 export function ImageView({ absolutePath }: ArtifactViewProps) {
-  const { bytes, loading, error } = useArtifactBytes(absolutePath);
+  // BinaryContent owns loading/error for the byte read.
+  return (
+    <BinaryContent absolutePath={absolutePath} noun="image">
+      {(bytes) => <ImageContent bytes={bytes} absolutePath={absolutePath} />}
+    </BinaryContent>
+  );
+}
+
+function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath: string }) {
   const [url, setUrl] = useState<string | null>(null);
 
   // Build a blob: URL from the bytes (same-origin, works everywhere) instead of
   // an <img src="file://…">, which the renderer origin can't load.
   useEffect(() => {
-    if (!bytes) { setUrl(null); return; }
     const ext = absolutePath.split('.').pop()?.toLowerCase() ?? '';
     // base64ToBytes allocates an exact-size buffer, so .buffer is the full data.
     // Cast narrows ArrayBufferLike → ArrayBuffer for the strict BlobPart type.
@@ -25,8 +32,7 @@ export function ImageView({ absolutePath }: ArtifactViewProps) {
     return () => URL.revokeObjectURL(objUrl);
   }, [bytes, absolutePath]);
 
-  if (loading) return <div className="flex items-center justify-center h-full text-fg-muted text-sm">Loading image…</div>;
-  if (error || !url) return <div className="flex items-center justify-center h-full text-fg-muted text-sm p-4">Couldn’t open this image.</div>;
+  if (!url) return <CenterNote>Loading image…</CenterNote>;
 
   return (
     <div className="flex items-center justify-center h-full p-4 overflow-auto">

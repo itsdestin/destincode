@@ -45,6 +45,7 @@ import { buildSavedFolderProjects } from './artifacts/saved-folder-projects';
 import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/project-file-discovery';
 import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
+import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { PROJECT_IPC } from './project/ipc-channels';
 import { listProjectConversations, projectConversationHistory } from './project-conversations';
 import { getRepoInfo } from './project-repo';
@@ -2334,13 +2335,51 @@ export function registerIpcHandlers(
 
   // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image). The
   // renderer can't fetch a file:// URL from the http(dev)/app(prod) origin, so
-  // bytes come through IPC. Takes an absolute path (the viewer already resolved
-  // it from the artifact record); same desktop-local trust level as openPath.
+  // bytes come through IPC.
+  //
+  // SECURITY: unlike openPath (which only launches a local app and returns
+  // nothing), this IPC RETURNS file contents — and on remote-access setups it is
+  // reachable over the WebSocket from a remote browser. So reads are restricted
+  // to (a) the user's known project roots (saved folders + central-index
+  // projects) and (b) tracked external artifact paths (temp-dir files the
+  // session drawer legitimately shows), with well-known secret locations
+  // (.ssh, .netrc, .credentials.json, …) refused even inside those roots.
+  // Pure decision logic + tests live in artifacts/read-binary-access.ts.
+  const READ_BINARY_MAX_BYTES = 50 * 1024 * 1024; // 50 MB — base64 inflates 33%, and it all transits IPC/WS
   ipcMain.handle(ARTIFACT_IPC.READ_BINARY, async (_e, absolutePath: string) => {
     if (typeof absolutePath !== 'string' || absolutePath.length === 0) {
       return { ok: false, error: 'no path' };
     }
     try {
+      const canon = canonicalize(absolutePath, null);
+      // Known roots: saved folders (the session-creation picker) + every
+      // central-index project path.
+      const roots = [
+        ...readFolders().map((f) => canonicalize(f.path, null)),
+        ...(await listProjects(CLAUDE_DIR)).map((p) => canonicalize(p.path, null)),
+      ];
+      let verdict = evaluateBinaryRead(canon, roots, new Set());
+      if (verdict === 'outside-roots') {
+        // Second pass (rare): collect tracked EXTERNAL artifact paths + manual
+        // includes from each root's sidecar — covers e.g. a temp-dir xlsx.
+        const tracked = new Set<string>();
+        for (const root of roots) {
+          const sidecar = await readSidecar(root).catch(() => null);
+          if (!sidecar || 'corrupted' in sidecar) continue;
+          for (const a of sidecar.artifacts) {
+            if (a.kind === 'external' && a.absolutePath) tracked.add(canonicalize(a.absolutePath, null));
+          }
+          for (const inc of sidecar.manualIncludes) tracked.add(canonicalize(inc.path, null));
+        }
+        verdict = evaluateBinaryRead(canon, roots, tracked);
+      }
+      if (verdict !== 'allowed') return { ok: false, error: 'not-allowed' };
+
+      // Size gate before reading — a huge file would freeze the renderer (and
+      // the WS transport) long before the viewer could reject it.
+      const st = await fs.promises.stat(absolutePath);
+      if (st.size > READ_BINARY_MAX_BYTES) return { ok: false, error: 'too-large' };
+
       const buf = await fs.promises.readFile(absolutePath);
       return { ok: true, base64: buf.toString('base64') };
     } catch (e: any) {

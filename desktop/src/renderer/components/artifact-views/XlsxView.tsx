@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, CSSProperties } from 'react';
 import { Workbook } from 'exceljs';
 import type { ArtifactViewProps } from './types';
-import { useArtifactBytes } from './useArtifactBytes';
+import { BinaryContent } from './BinaryContent';
 import {
   colLetter, formatCellNumber, cellRawValue, cellStyleToCss, colWidthToPx, parseMerges,
 } from './exceljs-cell';
@@ -140,21 +140,33 @@ function buildSheet(ws: any): SheetVM {
 }
 
 export function XlsxView({ absolutePath }: ArtifactViewProps) {
-  const { bytes, loading, error } = useArtifactBytes(absolutePath);
+  // BinaryContent owns loading/error for the byte read and remounts the inner
+  // component per file, so sheets/selection/parse errors reset on switch.
+  return (
+    <BinaryContent absolutePath={absolutePath} noun="spreadsheet">
+      {(bytes) => <XlsxSheets bytes={bytes} />}
+    </BinaryContent>
+  );
+}
+
+function XlsxSheets({ bytes }: { bytes: Uint8Array }) {
   const [sheets, setSheets] = useState<SheetVM[] | null>(null);
   const [active, setActive] = useState(0);
   const [sel, setSel] = useState<{ r: number; c: number } | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!bytes) return;
     let cancelled = false;
     (async () => {
       try {
         const wb = new Workbook();
         await wb.xlsx.load(bytes.buffer as any);
         if (cancelled) return;
-        const built = wb.worksheets.map(buildSheet);
+        // Skip hidden/veryHidden worksheets like real Excel does (openpyxl
+        // scratch sheets etc.). If EVERY sheet is hidden, fall back to showing
+        // them all rather than an empty viewer.
+        const visible = wb.worksheets.filter((ws: any) => ws.state !== 'hidden' && ws.state !== 'veryHidden');
+        const built = (visible.length ? visible : wb.worksheets).map(buildSheet);
         setSheets(built.length ? built : null);
         setActive(0);
         setSel(null);
@@ -178,8 +190,8 @@ export function XlsxView({ absolutePath }: ArtifactViewProps) {
     };
   }, [sheet, sel]);
 
-  if (loading) return <Center>Loading spreadsheet…</Center>;
-  if (error || parseError || !sheets || !sheet) return <Center>Couldn’t open this spreadsheet.</Center>;
+  if (parseError || (sheets && !sheet)) return <Center>Couldn’t open this spreadsheet.</Center>;
+  if (!sheets || !sheet) return <Center>Loading spreadsheet…</Center>;
 
   return (
     <div className="flex flex-col h-full" style={{ background: PAPER, color: '#1d1d1d' }}>

@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { useArtifactBytes } from './useArtifactBytes';
+import { useEffect, useRef, useState } from 'react';
+import { BinaryContent, CenterNote } from './BinaryContent';
 import * as pdfjs from 'pdfjs-dist';
 // Fix: pdfjs-dist v5+ ships ESM-only workers (.mjs, not .js). Import via Vite's
 // `?url` suffix so it's treated as a static asset URL rather than a bundled
@@ -11,24 +11,36 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl as string;
 import type { ArtifactViewProps } from './types';
 
 export function PdfView({ absolutePath }: ArtifactViewProps) {
+  // BinaryContent owns loading/error for the byte read; PdfPages only ever
+  // mounts with real bytes (and is remounted per file, resetting its state).
+  return (
+    <BinaryContent absolutePath={absolutePath} noun="PDF">
+      {(bytes) => <PdfPages bytes={bytes} />}
+    </BinaryContent>
+  );
+}
+
+function PdfPages({ bytes }: { bytes: Uint8Array }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  // Bytes come through IPC (renderer can't fetch file:// from its origin).
-  const { bytes } = useArtifactBytes(absolutePath);
+  const [parseError, setParseError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!bytes) return;
     let cancelled = false;
+    // Copy into a fresh Uint8Array — pdfjs takes ownership of (detaches) the
+    // buffer it's handed, which would break a re-render off the same bytes.
+    const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
     (async () => {
-      // Copy into a fresh Uint8Array — pdfjs takes ownership of (detaches) the
-      // buffer it's handed, which would break a re-render off the same bytes.
-      const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
       const pdf = await loadingTask.promise;
       if (cancelled) return;
       const container = containerRef.current;
       if (!container) return;
       container.innerHTML = '';
       for (let i = 1; i <= pdf.numPages; i++) {
+        // Re-check per page — an unmount mid-render must not keep rasterizing
+        // every remaining page into an orphaned DOM (heavy on large PDFs).
+        if (cancelled) return;
         const page = await pdf.getPage(i);
+        if (cancelled) return;
         const viewport = page.getViewport({ scale: 1.5 });
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
@@ -38,9 +50,20 @@ export function PdfView({ absolutePath }: ArtifactViewProps) {
         container.appendChild(canvas);
         await page.render({ canvasContext: canvas.getContext('2d')!, viewport, canvas }).promise;
       }
-    })();
-    return () => { cancelled = true; };
+    })().catch((e: any) => {
+      // Corrupt/encrypted PDFs reject here — surface a message instead of an
+      // unhandled rejection + permanently blank pane.
+      if (!cancelled) setParseError(String(e?.message ?? e));
+    });
+    return () => {
+      cancelled = true;
+      // destroy() aborts an in-flight load AND frees the worker transport for a
+      // finished one — without it every file switch leaked the previous
+      // document's memory in the pdf.js worker.
+      loadingTask.destroy().catch(() => {});
+    };
   }, [bytes]);
 
+  if (parseError) return <CenterNote>Couldn’t open this PDF. It may be corrupt or password-protected.</CenterNote>;
   return <div ref={containerRef} className="overflow-auto h-full p-4" />;
 }

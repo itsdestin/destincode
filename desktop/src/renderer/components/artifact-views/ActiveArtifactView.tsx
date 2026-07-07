@@ -3,6 +3,7 @@
 // can use it identically without duplicating the edit state + conflict-detection logic.
 import React, { useCallback, useEffect, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
 import { getViewer } from './RendererRegistry';
+import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 
 // Imperative handle so an external chrome (the SessionDrawer header toolbar) can
@@ -171,6 +172,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         </div>
       )}
       <div className="flex-1 overflow-hidden">
+        {/* Boundary catches lazy chunk-load failures + viewer render crashes
+            (Suspense alone can't — lazy() THROWS its rejection). Keyed by
+            artifact so switching files retries with a clean slate. */}
+        <ViewerErrorBoundary key={artifact.id} path={artifact.path}>
         <Suspense fallback={<div className="flex items-center justify-center h-full text-fg-muted text-sm">Loading viewer…</div>}>
           <ViewerComponent
             path={artifact.path}
@@ -186,6 +191,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
             hideControls={controlsInHeader}
           />
         </Suspense>
+        </ViewerErrorBoundary>
       </div>
     </div>
   );
