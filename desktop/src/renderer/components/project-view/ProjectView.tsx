@@ -122,6 +122,11 @@ export function ProjectView(props: ProjectViewProps) {
   // Bumped after "Add external file" so FilesTab re-loads its list without
   // owning the add flow (the toolbar lives up here now).
   const [refreshKey, setRefreshKey] = useState(0);
+  // Bumped by FilesTab after an in-tab sidecar mutation (exclude) so the hero
+  // counts refetch WITHOUT forcing a FilesTab reload (which would reset the
+  // breadcrumb + selection). refreshKey and countsKey both feed the hero
+  // effect; only refreshKey feeds FilesTab.
+  const [countsKey, setCountsKey] = useState(0);
 
   // Hero data (recomputed when the active project changes).
   const [heroStats, setHeroStats] = useState<HeroStats>({
@@ -135,6 +140,9 @@ export function ProjectView(props: ProjectViewProps) {
   // toggling tabs is instant. null = still loading for the active project.
   const convCache = useRef<Map<string, ConversationSummary[]>>(new Map());
   const ctxCache = useRef<Map<string, ContextGroup[]>>(new Map());
+  // Which project the hero effect last ran for — lets a counts refresh (same
+  // project) skip the reset-to-zero that a real project switch needs.
+  const prevHeroProjectRef = useRef<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [context, setContext] = useState<ContextGroup[] | null>(null);
 
@@ -209,13 +217,20 @@ export function ProjectView(props: ProjectViewProps) {
     }
     let cancelled = false;
     const { id, path } = activeProject;
-    // Reset immediately so the PREVIOUS project's repo/stats don't linger while
-    // the new project's data loads. Seed tab data from cache (instant) or null
-    // (shows the tab's "Loading…" until the fetch resolves).
-    setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
-    setHeroRepo(null);
-    setConversations(convCache.current.get(id) ?? null);
-    setContext(ctxCache.current.get(id) ?? null);
+    // Reset ONLY when the project actually changed — a refreshKey/countsKey
+    // bump (Add file, exclude) refetches the counts in place without flashing
+    // the hero back to zeros or re-seeding the tab data.
+    const projectChanged = prevHeroProjectRef.current !== id;
+    prevHeroProjectRef.current = id;
+    if (projectChanged) {
+      // Reset immediately so the PREVIOUS project's repo/stats don't linger while
+      // the new project's data loads. Seed tab data from cache (instant) or null
+      // (shows the tab's "Loading…" until the fetch resolves).
+      setHeroStats({ artifacts: 0, files: 0, conversations: 0, contextFiles: 0, activeLabel: '…' });
+      setHeroRepo(null);
+      setConversations(convCache.current.get(id) ?? null);
+      setContext(ctxCache.current.get(id) ?? null);
+    }
 
     // Cache-or-fetch helpers — the cache makes re-selecting a project / toggling
     // tabs instant; the bounded head-read in listProjectConversations keeps the
@@ -295,7 +310,10 @@ export function ProjectView(props: ProjectViewProps) {
       setHeroRepo(repo);
     })();
     return () => { cancelled = true; };
-  }, [activeProject?.id, activeProject?.path]);
+    // refreshKey (Add file) + countsKey (in-tab exclude) re-run this to keep the
+    // hero/segment counts LIVE — the redesign's core promise. Conversations and
+    // context come back from the per-project cache on those refreshes (instant).
+  }, [activeProject?.id, activeProject?.path, refreshKey, countsKey]);
 
   if (!state.projectViewOpen) return null;
 
@@ -478,10 +496,10 @@ export function ProjectView(props: ProjectViewProps) {
           {/* Tab routing — shares the centered max-width with the chrome above. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto">
             {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="artifacts" />
+              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
             )}
             {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="allfiles" />
+              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />

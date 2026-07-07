@@ -46,6 +46,7 @@ import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/proj
 import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
+import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { PROJECT_IPC } from './project/ipc-channels';
 import { listProjectConversations, projectConversationHistory } from './project-conversations';
 import { getRepoInfo } from './project-repo';
@@ -2203,14 +2204,11 @@ export function registerIpcHandlers(
   async function countArtifacts(projectRoot: string): Promise<number> {
     const sidecar = await readSidecar(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return 0;
-    const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
-    // Visible-with-deleted-OFF tracked set: non-deleted, internal or included-external.
-    const visible = sidecar.artifacts.filter((a: any) =>
-      a.status !== 'deleted' && (
-        a.kind === 'internal' ||
-        (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
-      )
-    );
+    // Visible-with-deleted-OFF tracked set: non-deleted, internal or included-
+    // external. trackedArtifacts canonicalizes the include comparison (raw
+    // uppercase-drive absolutePath vs canonical manualIncludes on Windows).
+    const visible = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes)
+      .filter((a: any) => a.status !== 'deleted');
     // Drop orphans — files marked 'active' but bash-rm'd off disk (CC has no
     // Delete tool, so this is the common case). fs.access in parallel is cheap.
     const alive = await Promise.all(visible.map(async (a: any) => {
@@ -2273,11 +2271,8 @@ export function registerIpcHandlers(
 
     let tracked: any[] = [];
     if (sidecar && !('corrupted' in sidecar)) {
-      const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
-      tracked = sidecar.artifacts.filter((a: any) =>
-        a.kind === 'internal' ||
-        (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
-      );
+      // Shared canonicalizing predicate — see visible-artifacts.ts for WHY.
+      tracked = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes);
     }
 
     const visibleCount = opts?.withCount ? await countArtifacts(projectRoot) : undefined;
@@ -2530,13 +2525,9 @@ export function registerIpcHandlers(
         const sidecar = await readSidecar(p.path);
         let trackedCount = 0;
         if (sidecar && !('corrupted' in sidecar)) {
-          const includedExternal = new Set(sidecar.manualIncludes.map((i: any) => i.path));
-          trackedCount = sidecar.artifacts.filter((a: any) =>
-            a.status !== 'deleted' && (
-              a.kind === 'internal' ||
-              (a.kind === 'external' && a.absolutePath && includedExternal.has(a.absolutePath))
-            )
-          ).length;
+          // Shared canonicalizing predicate — see visible-artifacts.ts for WHY.
+          trackedCount = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes)
+            .filter((a: any) => a.status !== 'deleted').length;
         }
         artifactCount = trackedCount;
       }

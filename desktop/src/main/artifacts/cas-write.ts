@@ -31,23 +31,17 @@ const LOCK_STALE_MS = 30_000;
  *                        Optional — when undefined, CAS check is skipped
  *                        (use for non-CAS atomic writes like .gitignore).
  */
-export async function casWrite(
-  target: string,
-  expectedUpdatedAt: string | null,
-  content: string,
-  extractUpdatedAt?: (json: string) => string
-): Promise<CasResult> {
-  const lock = target + '.lock';
-  await fs.mkdir(dirname(target), { recursive: true });
-
-  // Acquire lock: fs.mkdir is atomic on POSIX and NTFS; fails with EEXIST if
-  // another writer already holds it. Retry up to LOCK_MAX_WAIT_MS before
-  // giving up with committed: false.
+/**
+ * Acquire the mkdir lock for `target`. Returns false on timeout. Shared by
+ * casWrite and mutateFileUnderLock so both use identical lock semantics
+ * (atomic mkdir on POSIX + NTFS, 30s stale-lock breaking).
+ */
+async function acquireLock(lock: string): Promise<boolean> {
   const start = Date.now();
   while (true) {
     try {
       await fs.mkdir(lock);
-      break; // Lock acquired
+      return true; // Lock acquired
     } catch (e: any) {
       if (e.code !== 'EEXIST') throw e;
       // Stale-lock heuristic: if the lock dir is older than LOCK_STALE_MS,
@@ -62,10 +56,69 @@ export async function casWrite(
         // Ignore stat errors (lock may have just been released)
       }
       if (Date.now() - start > LOCK_MAX_WAIT_MS) {
-        return { committed: false, actualUpdatedAt: null };
+        return false;
       }
       await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
     }
+  }
+}
+
+/** Atomic tmp-write + fsync + rename onto `target`. */
+async function atomicWrite(target: string, content: string): Promise<void> {
+  const tmp = target + '.tmp';
+  await fs.writeFile(tmp, content, 'utf8');
+  const fh = await fs.open(tmp, 'r+');
+  await fh.sync();
+  await fh.close();
+  await fs.rename(tmp, target);
+}
+
+/**
+ * Read-modify-write a file entirely INSIDE the mkdir lock. This is the
+ * primitive for files without their own CAS version field (e.g. the central
+ * projects index): a caller that reads outside the lock and then writes loses
+ * updates when two writers interleave (both read v0, both write, second
+ * clobbers the first). Both YouCoded instances (dev + built app) share
+ * ~/.claude, so cross-process interleaving is a normal state, not a rarity.
+ *
+ * @param mutate receives the current on-disk content (null when the file
+ *               doesn't exist) and returns the new content, or null to skip
+ *               the write.
+ * @returns false when the lock couldn't be acquired within the timeout.
+ */
+export async function mutateFileUnderLock(
+  target: string,
+  mutate: (onDisk: string | null) => string | null
+): Promise<boolean> {
+  await fs.mkdir(dirname(target), { recursive: true });
+  const lock = target + '.lock';
+  if (!(await acquireLock(lock))) return false;
+  try {
+    let onDisk: string | null = null;
+    try {
+      onDisk = await fs.readFile(target, 'utf8');
+    } catch (e: any) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+    const next = mutate(onDisk);
+    if (next !== null) await atomicWrite(target, next);
+    return true;
+  } finally {
+    await fs.rm(lock, { recursive: true, force: true });
+  }
+}
+
+export async function casWrite(
+  target: string,
+  expectedUpdatedAt: string | null,
+  content: string,
+  extractUpdatedAt?: (json: string) => string
+): Promise<CasResult> {
+  const lock = target + '.lock';
+  await fs.mkdir(dirname(target), { recursive: true });
+
+  if (!(await acquireLock(lock))) {
+    return { committed: false, actualUpdatedAt: null };
   }
 
   try {
@@ -86,12 +139,7 @@ export async function casWrite(
     }
 
     // Atomic write inside the lock
-    const tmp = target + '.tmp';
-    await fs.writeFile(tmp, content, 'utf8');
-    const fh = await fs.open(tmp, 'r+');
-    await fh.sync();
-    await fh.close();
-    await fs.rename(tmp, target);
+    await atomicWrite(target, content);
 
     return { committed: true, actualUpdatedAt: null };
   } finally {

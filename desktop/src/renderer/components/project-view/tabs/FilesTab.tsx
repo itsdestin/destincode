@@ -113,11 +113,16 @@ export function FilesTab({
   search,
   refreshKey,
   mode,
+  onMutated,
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
   mode: 'artifacts' | 'allfiles';
+  // Called after an in-tab sidecar mutation (exclude) so ProjectView can refetch
+  // the hero/segment counts without forcing this tab to reload (which would
+  // reset the breadcrumb + selection).
+  onMutated?: () => void;
 }) {
   // Root breadcrumb label + empty-state wording follow the mode.
   const rootLabel = mode === 'allfiles' ? 'All files' : 'Artifacts';
@@ -378,7 +383,7 @@ export function FilesTab({
         <ArtifactDetail
           artifact={activeArtifact}
           project={project}
-          onRefreshArtifacts={refreshArtifacts}
+          onRefreshArtifacts={() => { refreshArtifacts(); onMutated?.(); }}
         />
       )}
     </div>
