@@ -23,8 +23,10 @@ export interface AuthStartResponse {
 // Optional because a Worker deployed before 2026-07 omits it.
 export interface AuthMeResponse {
   id: string;
-  login: string;
+  login: string;              // GitHub login (player-tag continuity)
+  display_name: string;       // account-native display name (Worker accounts Phase 1)
   avatar_url: string | null;
+  handle: string | null;      // unique @handle, null until the user claims one
 }
 
 export type AuthPollResponse =
@@ -67,6 +69,14 @@ export interface MarketplaceApiClient {
   authPoll(deviceCode: string): Promise<AuthPollResponse>;
   /** Resolve the current session token to the signed-in user's profile. */
   authMe(): Promise<AuthMeResponse>;
+  /** Update the account display name. Returns the stored value. */
+  updateProfile(displayName: string): Promise<{ display_name: string }>;
+  /** Claim/change the unique @handle. Returns the normalized handle. Throws MarketplaceApiError (400 invalid / 409 taken). */
+  setHandle(handle: string): Promise<{ handle: string }>;
+  /** Permanently delete the account (hard delete + cascade on the Worker). */
+  deleteAccount(): Promise<void>;
+  /** Invalidate the current session token server-side. */
+  logout(): Promise<void>;
   postInstall(pluginId: string): Promise<void>;
   postRating(input: PostRatingInput): Promise<{ hidden: boolean }>;
   deleteRating(pluginId: string): Promise<void>;
@@ -112,6 +122,26 @@ export function createMarketplaceApiClient(opts: {
         body: JSON.stringify({ device_code }),
       }),
     authMe: () => request<AuthMeResponse>("/auth/me", { method: "GET", auth: true }),
+    updateProfile: (display_name) =>
+      request<{ display_name: string }>("/auth/profile", {
+        method: "PATCH",
+        body: JSON.stringify({ display_name }),
+        auth: true,
+      }),
+    setHandle: (handle) =>
+      request<{ handle: string }>("/auth/handle", {
+        method: "PUT",
+        body: JSON.stringify({ handle }),
+        auth: true,
+      }),
+    // Void endpoints: 204 No Content. request() tolerates empty bodies (res.json().catch → {}),
+    // so the same pattern as postInstall/deleteRating works — discard the return.
+    deleteAccount: async () => {
+      await request("/auth/account", { method: "DELETE", auth: true });
+    },
+    logout: async () => {
+      await request("/auth/logout", { method: "POST", auth: true });
+    },
     postInstall: async (plugin_id) => {
       await request("/installs", { method: "POST", body: JSON.stringify({ plugin_id }), auth: true });
     },
