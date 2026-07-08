@@ -6,6 +6,8 @@ import {
   colLetter, formatCellNumber, cellRawValue, cellStyleToCss, colWidthToPx, parseMerges,
 } from './exceljs-cell';
 import { evalFormula, type CellValue } from './xlsx-formula';
+// Theme-tinted "paper" constants shared with CsvView — see sheet-theme.ts.
+import { PAPER, GUTTER_BG, FBAR_BG, TAB_BG, GRID, GUTTER_FG, SEL } from './sheet-theme';
 
 // Safety caps — agent sheets are small, but guard against a pathological file
 // producing a million-cell DOM. Truncation is surfaced to the user.
@@ -17,18 +19,6 @@ const MAX_COLS = 100;
 const MIN_ROWS = 50;
 const MIN_COLS = 26; // A … Z
 
-// The spreadsheet "paper" stays LIGHT (cell fills + dark cell text assume a light
-// sheet, like real Excel) but takes on a subtle tint from the active theme's
-// accent hue instead of pure white — so it reads as part of the themed app, not a
-// stark white rectangle. color-mix is already used elsewhere in the app's CSS and
-// is supported in Electron + the Android WebView.
-const PAPER = 'color-mix(in srgb, var(--accent) 4%, #ffffff)';     // cell area
-const GUTTER_BG = 'color-mix(in srgb, var(--accent) 13%, #ffffff)'; // A/B/C + row gutters
-const FBAR_BG = 'color-mix(in srgb, var(--accent) 7%, #ffffff)';    // formula bar
-const TAB_BG = 'color-mix(in srgb, var(--accent) 10%, #ffffff)';    // sheet-tab strip
-const GRID = 'color-mix(in srgb, var(--accent) 16%, #d2d2d2)';      // gridlines (faintly tinted)
-const GUTTER_FG = '#5f5f5f';
-const SEL = '#217346'; // Excel green — kept for guaranteed-visible cell selection
 
 interface CellVM {
   r: number; c: number;

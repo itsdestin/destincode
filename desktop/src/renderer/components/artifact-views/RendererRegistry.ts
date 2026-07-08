@@ -2,6 +2,7 @@
 import { ComponentType, lazy } from 'react';
 import { MarkdownView } from './MarkdownView';
 import { CodeView } from './CodeView';
+import { CsvView } from './CsvView';
 import { ImageView } from './ImageView';
 import { HtmlView } from './HtmlView';
 import { BinaryFallback } from './BinaryFallback';
@@ -46,6 +47,10 @@ const REGISTRY: Record<string, ViewSpec> = {
   pdf: PdfView,
   docx: DocxView,
   xlsx: XlsxView,
+  // CSV/TSV are extremely common agent output — a spreadsheet-style grid, not
+  // a code dump. (Text path: content prop, no binary IPC.)
+  csv: CsvView,
+  tsv: CsvView,
 };
 
 export function getViewer(path: string): ViewSpec {

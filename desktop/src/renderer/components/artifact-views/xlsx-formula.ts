@@ -88,7 +88,11 @@ function evaluate(toks: Tok[], resolve: RefResolver): CellValue {
       const op = next().v;
       const right = parseAdd();
       const a = left, b = right;
-      const cmp = (typeof a === 'number' || typeof a === 'boolean') && (typeof b === 'number' || typeof b === 'boolean')
+      // Numeric compare when both sides are number/boolean/EMPTY — Excel
+      // coerces an empty cell to 0 in numeric comparisons (Z9=0 is TRUE for a
+      // blank Z9). Strings compare as strings.
+      const numish = (x: CellValue) => typeof x === 'number' || typeof x === 'boolean' || x == null;
+      const cmp = numish(a) && numish(b)
         ? [toNum(a), toNum(b)] as const
         : [String(a ?? ''), String(b ?? '')] as const;
       switch (op) {
@@ -117,7 +121,15 @@ function evaluate(toks: Tok[], resolve: RefResolver): CellValue {
     while (peek()?.t === 'op' && (peek().v === '*' || peek().v === '/')) {
       const op = next().v;
       const right = parsePow();
-      left = op === '*' ? toNum(left) * toNum(right) : toNum(left) / toNum(right);
+      if (op === '/') {
+        const d = toNum(right);
+        // Excel shows #DIV/0!; our documented degrade is blank-on-error, so
+        // throw rather than let Infinity/NaN render as cell text.
+        if (d === 0) throw new FormulaError('division by zero');
+        left = toNum(left) / d;
+      } else {
+        left = toNum(left) * toNum(right);
+      }
     }
     return left;
   }
@@ -181,8 +193,48 @@ function evaluate(toks: Tok[], resolve: RefResolver): CellValue {
     next();
     return { values, flat };
   }
+  // Consume the tokens of one argument WITHOUT evaluating it — used by IF to
+  // short-circuit the untaken branch. Tracks paren depth so nested calls and
+  // grouped expressions skip correctly; stops at a top-level comma or ')'.
+  function skipArg(): void {
+    let depth = 0;
+    while (pos < toks.length) {
+      const tk = peek();
+      if (tk.t === 'lp') depth++;
+      else if (tk.t === 'rp') { if (depth === 0) return; depth--; }
+      else if (tk.t === 'comma' && depth === 0) return;
+      next();
+    }
+  }
+
+  // IF evaluates lazily like real Excel: only the TAKEN branch runs, so an
+  // unsupported function or a division-by-zero in the untaken branch can't
+  // blank an otherwise-computable cell (that was a real rendering bug —
+  // IF(cond, SUM(...), VLOOKUP(...)) always went blank).
+  function parseIf(): CellValue {
+    if (peek()?.t !== 'lp') throw new FormulaError('expected (');
+    next();
+    const cond = parseComparison();
+    const truthy = typeof cond === 'string' ? cond.length > 0 : !!cond;
+    // Defaults match Excel-ish behavior when a branch is omitted:
+    // truthy with no value arg → 0; falsy with no else arg → FALSE.
+    let result: CellValue = truthy ? 0 : false;
+    if (peek()?.t === 'comma') {
+      next();
+      if (truthy) result = parseComparison(); else skipArg();
+      if (peek()?.t === 'comma') {
+        next();
+        if (!truthy) result = parseComparison(); else skipArg();
+      }
+    }
+    if (peek()?.t !== 'rp') throw new FormulaError('expected )');
+    next();
+    return result;
+  }
+
   function parseFunc(): CellValue {
     const name = next().v;
+    if (name === 'IF') return parseIf();
     const { values, flat } = collectArgs();
     switch (name) {
       case 'SUM': return flat.reduce((a, b) => a + b, 0);
@@ -197,7 +249,6 @@ function evaluate(toks: Tok[], resolve: RefResolver): CellValue {
       case 'SQRT': return Math.sqrt(toNum(values[0]));
       case 'POWER': return Math.pow(toNum(values[0]), toNum(values[1]));
       case 'INT': return Math.floor(toNum(values[0]));
-      case 'IF': return values[0] ? (values[1] ?? 0) : (values[2] ?? false);
       case 'CONCATENATE': case 'CONCAT': return values.map((v) => String(v ?? '')).join('');
       default: throw new FormulaError('unsupported function: ' + name);
     }
@@ -213,5 +264,11 @@ function evaluate(toks: Tok[], resolve: RefResolver): CellValue {
 export function evalFormula(formula: string, resolve: RefResolver): CellValue {
   const src = formula.replace(/^=/, '').trim();
   if (!src) return '';
-  return evaluate(tokenize(src), resolve);
+  const result = evaluate(tokenize(src), resolve);
+  // A non-finite number (overflow via ^, residual Infinity from resolved cell
+  // values) must not render as "Infinity"/"NaN" text — blank instead.
+  if (typeof result === 'number' && !Number.isFinite(result)) {
+    throw new FormulaError('non-finite result');
+  }
+  return result;
 }

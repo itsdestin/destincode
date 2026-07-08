@@ -1,7 +1,9 @@
 const WHITELIST = new Set([
   'md', 'markdown', 'txt',
   'pdf', 'docx', 'xlsx',
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg',
+  // Tabular data — rendered by CsvView as a spreadsheet-style grid.
+  'csv', 'tsv',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif',
   'ts', 'tsx', 'js', 'jsx', 'py', 'css', 'json', 'yaml', 'yml',
   // Web docs: agent-generated mockups/pages. categorizeArtifact() already
   // treats html/htm/svg as 'document' — whitelist them here too so a path like

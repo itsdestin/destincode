@@ -18,7 +18,7 @@ const DOCUMENT_EXTENSIONS: ReadonlySet<string> = new Set([
   // Prose
   'md', 'markdown', 'txt', 'rtf',
   // Office
-  'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx',
+  'doc', 'docx', 'xls', 'xlsx', 'csv', 'tsv', 'ppt', 'pptx',
   // Print
   'pdf',
   // Images (rendered)

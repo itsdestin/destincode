@@ -46,4 +46,23 @@ describe('evalFormula', () => {
   it('throws on unsupported function so caller can fall back', () => {
     expect(() => evalFormula('=VLOOKUP(A1,B:C,2)', resolve)).toThrow();
   });
+  it('IF short-circuits — unsupported function in the UNTAKEN branch is fine', () => {
+    // Real Excel only evaluates the taken branch. B4=5 so cond is true and the
+    // VLOOKUP in the else-branch must never run (previously it threw and the
+    // whole cell went blank). (Args must still TOKENIZE — column ranges like
+    // B:C fail at the lexer, before short-circuiting can help.)
+    expect(evalFormula('=IF(B4>3,SUM(B2:B6),VLOOKUP(A1,B2,2))', resolve)).toBe(59);
+    expect(evalFormula('=IF(B4>99,VLOOKUP(A1,B2,2),SUM(B2:B6))', resolve)).toBe(59);
+  });
+  it('IF short-circuits division by zero in the untaken branch', () => {
+    // Also exercises empty-cell-as-0 numeric comparison (Z9 is blank → Z9=0 TRUE).
+    expect(evalFormula('=IF(Z9=0,0,1/Z9)', resolve)).toBe(0);
+  });
+  it('nested IF branches skip correctly (paren depth tracking)', () => {
+    expect(evalFormula('=IF(B4>3,IF(B2>5,"both","one"),VLOOKUP(A1,B2,2))', resolve)).toBe('both');
+  });
+  it('division by zero throws (renders blank, not Infinity)', () => {
+    expect(() => evalFormula('=1/0', resolve)).toThrow();
+    expect(() => evalFormula('=B2/Z9', resolve)).toThrow();
+  });
 });
