@@ -17,13 +17,26 @@ export function repoNameForSpace(space: SyncSpace): string {
 }
 
 /** Creates a private repo via gh and returns its clone URL. Mirrors the
- *  createGithubRepo pattern in sync-setup-handlers.ts. */
+ *  createGithubRepo pattern in sync-setup-handlers.ts. An ALREADY-EXISTING
+ *  repo is success, not failure — the state file recording provisioned URLs
+ *  is per-device, so the user's second device re-runs this for repos the
+ *  first device already created. Without the recovery path, sync could
+ *  never start on any device but the first. */
 export async function provisionGithubRemote(repoName: string): Promise<string> {
-  // `gh repo create` prints the repo URL on success; --private is mandatory (spec §14).
-  const { stdout } = await execFileAsync('gh', ['repo', 'create', repoName, '--private'], { timeout: 60_000 });
-  const url = stdout.trim();
-  if (!/^https:\/\/github\.com\//.test(url)) throw new Error(`unexpected gh output: ${stdout}`);
-  return `${url}.git`;
+  try {
+    // `gh repo create` prints the repo URL on success; --private is mandatory (spec §14).
+    const { stdout } = await execFileAsync('gh', ['repo', 'create', repoName, '--private'], { timeout: 60_000 });
+    const url = stdout.trim();
+    if (!/^https:\/\/github\.com\//.test(url)) throw new Error(`unexpected gh output: ${stdout}`);
+    return `${url}.git`;
+  } catch (e: any) {
+    // Recovery: if the repo already exists (created by another device), reuse it.
+    const view = await execFileAsync('gh', ['repo', 'view', repoName, '--json', 'url', '-q', '.url'], { timeout: 60_000 })
+      .catch(() => null);
+    const url = view?.stdout.trim();
+    if (url && /^https:\/\/github\.com\//.test(url)) return `${url}.git`;
+    throw e; // genuinely failed (offline, not authed, invalid name) — surface the original error
+  }
 }
 
 interface SpaceManagerOpts {

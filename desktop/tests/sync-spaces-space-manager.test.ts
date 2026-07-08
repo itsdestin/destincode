@@ -38,4 +38,21 @@ describe('SpaceManager state', () => {
     expect(url2).toBe(url1);
     expect(provisionRemote).toHaveBeenCalledTimes(1);
   });
+
+  it('a failed provision propagates and does not record a remote', async () => {
+    const stateFile = path.join(tmp, 'sync-spaces.json');
+    // First call fails (e.g. offline / not authed); second succeeds. The failure
+    // must NOT poison the state file — remoteFor stays null so a retry can provision.
+    const provisionRemote = vi.fn()
+      .mockRejectedValueOnce(new Error('gh: not signed in'))
+      .mockResolvedValueOnce('https://github.com/u/youcoded-sync-personal.git');
+    const m = new SpaceManager({ stateFile, provisionRemote });
+    const space: SyncSpace = { id: 'personal', kind: 'personal', root: tmp };
+    await expect(m.ensureRemote(space)).rejects.toThrow('gh: not signed in');
+    expect(m.remoteFor('personal')).toBe(null);
+    // Retry after the transient failure provisions and records normally.
+    await expect(m.ensureRemote(space)).resolves.toBe('https://github.com/u/youcoded-sync-personal.git');
+    expect(m.remoteFor('personal')).toBe('https://github.com/u/youcoded-sync-personal.git');
+    expect(provisionRemote).toHaveBeenCalledTimes(2);
+  });
 });
