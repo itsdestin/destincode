@@ -209,10 +209,16 @@ export function MarketplaceAuthProvider({
   // renderer state immediately so the UI reflects the signed-out state at once.
   const deleteAccount = useCallback(async () => {
     const res = await window.claude.account.deleteAccount();
-    if (!res.ok) throw new Error(res.message ?? "couldn't delete account");
+    if (!res.ok) {
+      // Same 401 escape hatch as updateProfile/setHandle: a dead token makes
+      // main clear the local session, so refresh() flips the UI to signed-out
+      // instead of stranding the user retrying delete against "invalid token".
+      await refresh();
+      throw new Error(res.message ?? "couldn't delete account");
+    }
     setSignedIn(false);
     setUser(null);
-  }, []);
+  }, [refresh]);
 
   // Fix: memoize context value so consumers only re-render when signedIn / user /
   // signInPending actually change. Action fns (startSignIn, signOut, updateProfile,
