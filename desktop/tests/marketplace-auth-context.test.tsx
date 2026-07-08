@@ -251,6 +251,45 @@ describe("MarketplaceAuthProvider", () => {
     expect(getByTestId("user").textContent).toBe("");
   });
 
+  it("setHandle 401 clears the session — context flips signed-out AND surfaces the error", async () => {
+    // Regression: a pre-migration (or 90-day-idle-expired) token leaves the client
+    // locally "signed in" but every auth'd call 401s. The main process now clears
+    // the session on a 401, so signedIn()/user() read false/null on the refresh the
+    // context runs BEFORE re-throwing. Assert the UI both flips signed-out and still
+    // shows the error message.
+    (globalThis as any).window.claude = {
+      account: {
+        // Mount → signed in; post-401 refresh → signed out (main cleared it).
+        signedIn: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
+        user: vi
+          .fn()
+          .mockResolvedValueOnce({ id: "github:1", login: "u", avatar_url: "http://a" })
+          .mockResolvedValue(null),
+        updateProfile: vi.fn(),
+        setHandle: vi.fn().mockResolvedValue({ ok: false, status: 401, message: "invalid token" }),
+        deleteAccount: vi.fn(),
+      },
+    };
+    const { getByTestId } = render(
+      <MarketplaceAuthProvider pollIntervalMs={10}>
+        <ActionsProbe />
+      </MarketplaceAuthProvider>
+    );
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(getByTestId("state").textContent).toBe("in");
+
+    await act(async () => {
+      getByTestId("seth").click();
+      await vi.runAllTimersAsync();
+    });
+
+    // The error still surfaces to the caller (the popup shows it)...
+    expect(getByTestId("err").textContent).toBe("invalid token");
+    // ...and the app has flipped to signed-out so sign-in prompts return.
+    expect(getByTestId("state").textContent).toBe("out");
+    expect(getByTestId("user").textContent).toBe("");
+  });
+
   it("deleteAccount failure throws and leaves state unchanged", async () => {
     (globalThis as any).window.claude = {
       account: {

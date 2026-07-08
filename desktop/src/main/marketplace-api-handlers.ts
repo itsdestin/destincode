@@ -62,6 +62,18 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     getToken: () => store.getToken(),
   });
 
+  // Fix: a 401 from an auth'd account endpoint means the server no longer
+  // recognizes this session (identity-migration row drop, 90-day idle expiry,
+  // revocation). Keeping the local token would strand the user "signed in" with
+  // every call failing (the exact bug: post-migration users saw the handle
+  // prompt, typed a handle, got "invalid token" and no way out). Clear the local
+  // session so the UI flips to signed-out and offers a fresh sign-in. This only
+  // REACTS to a 401 that already happened — it never proactively validates.
+  const clearSessionOn401 = <T>(result: ApiResult<T>): ApiResult<T> => {
+    if (!result.ok && result.status === 401) store.signOut();
+    return result;
+  };
+
   // ── Auth: device-code flow ────────────────────────────────────────────────
   // Renderer calls authStart to receive a user_code + auth_url. Main process
   // opens the URL in the system browser (renderer cannot call shell.openExternal).
@@ -111,7 +123,12 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       const stored = toStoredUser(await client.authMe());
       store.setSession(token, stored);
       return stored;
-    } catch {
+    } catch (e) {
+      // Fix: a 401 here means the stored token is dead server-side — clear the
+      // local session so the UI flips to signed-out (same rationale as
+      // clearSessionOn401 above). Any other failure (offline, parse) leaves the
+      // token untouched and just returns null for this read.
+      if (e instanceof MarketplaceApiError && e.status === 401) store.signOut();
       return null;
     }
   });
@@ -132,7 +149,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       // user-present implies token-present: setSession writes both, signOut clears both atomically
       if (user) store.setSession(store.getToken()!, { ...user, display_name: out.display_name });
       return out;
-    })
+    }).then(clearSessionOn401)
   );
 
   // Claim/change the unique @handle, then mirror it into the stored profile.
@@ -143,7 +160,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       // user-present implies token-present: setSession writes both, signOut clears both atomically
       if (user) store.setSession(store.getToken()!, { ...user, handle: out.handle });
       return out;
-    })
+    }).then(clearSessionOn401)
   );
 
   // Permanent hard-delete (Worker cascades all rows). Clear the local session
@@ -152,7 +169,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     wrap(async () => {
       await client.deleteAccount();
       store.signOut();
-    })
+    }).then(clearSessionOn401)
   );
 
   // ── Write endpoints ───────────────────────────────────────────────────────

@@ -177,7 +177,15 @@ export function MarketplaceAuthProvider({
   // the new name renders without a manual reload.
   const updateProfile = useCallback(async (displayName: string) => {
     const res = await window.claude.account.updateProfile(displayName);
-    if (!res.ok) throw new Error(res.message ?? "couldn't update name");
+    if (!res.ok) {
+      // Fix: on failure ALSO refresh before re-throwing. A 401 makes the main
+      // process clear the local session (dead/expired token); refresh() re-reads
+      // signedIn()/user() so the UI flips to signed-out promptly instead of
+      // staying stranded "signed in" while every call fails. Non-401 failures
+      // (e.g. validation) leave the session intact, so refresh is a cheap no-op.
+      await refresh();
+      throw new Error(res.message ?? "couldn't update name");
+    }
     await refresh();
   }, [refresh]);
 
@@ -185,7 +193,15 @@ export function MarketplaceAuthProvider({
   // taken" on 409) so the Settings UI can surface it verbatim; refreshes on success.
   const setHandle = useCallback(async (handle: string) => {
     const res = await window.claude.account.setHandle(handle);
-    if (!res.ok) throw new Error(res.message ?? "couldn't set handle");
+    if (!res.ok) {
+      // Fix: on failure ALSO refresh before re-throwing — a 401 cleared the local
+      // session in the main process, so refresh() flips the UI to signed-out
+      // instead of leaving the post-sign-in handle prompt stuck showing "invalid
+      // token" with no way out (the exact migration bug). Non-401 failures (e.g.
+      // "handle taken") keep the session, so refresh is a cheap no-op there.
+      await refresh();
+      throw new Error(res.message ?? "couldn't set handle");
+    }
     await refresh();
   }, [refresh]);
 

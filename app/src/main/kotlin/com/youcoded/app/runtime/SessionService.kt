@@ -128,6 +128,18 @@ class SessionService : Service() {
     private val marketplaceApiClient: MarketplaceApiClient by lazy {
         MarketplaceApiClient(marketplaceAuthStore)
     }
+
+    /**
+     * A 401 from an auth'd account endpoint means the Worker no longer recognizes
+     * this session (identity-migration row drop, 90-day idle expiry, revocation).
+     * Keeping the local token would strand the user "signed in" with every call
+     * failing, so clear it — the UI then flips to signed-out and offers a fresh
+     * sign-in. Only reacts to a 401 that already happened; never proactively
+     * validates. Desktop parity: marketplace-api-handlers.ts clearSessionOn401.
+     */
+    private fun clearSessionOn401(result: ApiResult<*>) {
+        if (result is ApiResult.Err && result.status == 401) marketplaceAuthStore.signOut()
+    }
     /**
      * Callback for the Activity to open the device's browser at the given URL.
      * Follows the same deferred-callback pattern as onFilePickerRequested and
@@ -2466,6 +2478,11 @@ class SessionService : Service() {
                         )
                         marketplaceAuthStore.setSession(healToken, healed)
                         user = healed
+                    } else if (me is ApiResult.Err && me.status == 401) {
+                        // Fix: the stored token is dead server-side — clear the local
+                        // session so the UI flips to signed-out (desktop parity with the
+                        // account:user heal path). Leave `user` null; we respond null below.
+                        marketplaceAuthStore.signOut()
                     }
                 }
                 val result: Any = if (user != null) {
@@ -2511,6 +2528,11 @@ class SessionService : Service() {
                         marketplaceAuthStore.setSession(token, user.copy(displayName = echoed))
                     }
                 }
+                // Fix: a 401 means the token is dead server-side (migration drop, 90-day
+                // idle expiry, revocation). Clear the local session so the UI flips to
+                // signed-out instead of stranding the user "signed in" with every call
+                // failing. Still respond with the Err so the renderer shows the message.
+                clearSessionOn401(result)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
@@ -2527,6 +2549,10 @@ class SessionService : Service() {
                         marketplaceAuthStore.setSession(token, user.copy(handle = echoed))
                     }
                 }
+                // Fix: 401 → clear local session (dead/expired token) so the UI flips to
+                // signed-out. This is the exact migration bug: the post-sign-in handle
+                // prompt returned "invalid token" with no way out. Still respond with Err.
+                clearSessionOn401(result)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
@@ -2534,6 +2560,10 @@ class SessionService : Service() {
                 // Permanent hard-delete (Worker cascades all rows). Clear the local session only on success.
                 val result = marketplaceApiClient.deleteAccount()
                 if (result is ApiResult.Ok) marketplaceAuthStore.signOut()
+                // Fix: a 401 also means the session is dead (already deleted / expired) —
+                // clear locally so the UI flips to signed-out rather than looping on a
+                // delete that can never authenticate. Still respond with the Err.
+                clearSessionOn401(result)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
