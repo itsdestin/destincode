@@ -130,14 +130,16 @@ export function FilesTab({
   search,
   typeFilter,
   sortBy,
+  hideCode,
   refreshKey,
   mode,
   onMutated,
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
-  typeFilter: 'all' | FileTypeGroup; // seg-row type dropdown (both file tabs)
-  sortBy: FileSortKey;               // seg-row sort dropdown (files only)
+  typeFilter: 'all' | FileTypeGroup; // filter popover: type (both file tabs)
+  sortBy: FileSortKey;               // filter popover: sort (files only)
+  hideCode: boolean;                 // filter popover: hide code & configs (default ON)
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
   mode: 'artifacts' | 'allfiles';
   // Called after an in-tab sidecar mutation (exclude) so ProjectView can refetch
@@ -212,16 +214,23 @@ export function FilesTab({
     return () => { cancelled = true; };
   }, [project.path, artifacts]);
 
-  // Filter the artifact grid (deleted-state, search, and the seg-row type filter).
+  // Filter the artifact grid (deleted-state, search, type filter, hide-code).
+  // Search matches the FILE NAME only — a query matching a folder name should
+  // not surface every file inside that folder. Hide-code is suspended while the
+  // "Code & configs" TYPE filter is selected (the two together would always
+  // show nothing — an explicit type pick wins over the default hide).
+  const effectiveHideCode = hideCode && typeFilter !== 'code';
   const filtered = useMemo(
     () => artifacts.filter((a) => {
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
       if (isDeleted && !showDeletedArtifacts) return false;
-      if (search && !a.path.toLowerCase().includes(search.toLowerCase())) return false;
+      const filename = a.path.split('/').pop() ?? a.path;
+      if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
       if (typeFilter !== 'all' && fileTypeGroup(a.path) !== typeFilter) return false;
+      if (effectiveHideCode && fileTypeGroup(a.path) === 'code') return false;
       return true;
     }),
-    [artifacts, showDeletedArtifacts, orphanIds, search, typeFilter],
+    [artifacts, showDeletedArtifacts, orphanIds, search, typeFilter, effectiveHideCode],
   );
   const refreshArtifacts = () => {
     const load = mode === 'allfiles'
@@ -234,13 +243,18 @@ export function FilesTab({
 
   const activeArtifact = pvActiveId ? artifacts.find((a) => a.id === pvActiveId) : undefined;
 
-  // Search flattens the tree (find a file anywhere); otherwise browse by folder.
+  // Searching OR an active type filter flattens the tree to matching FILES only
+  // — no folder cards. When you're looking for something, folders are noise;
+  // each flat card shows its parent folder for context instead. Plain browsing
+  // (no search, no type filter) keeps the navigable folder tree; the visibility
+  // toggles (hide-code, show-deleted) don't flatten — they only prune it.
   const searching = !!search.trim();
+  const flat = searching || typeFilter !== 'all';
   const dirView = useMemo(() => listDir(filtered, currentDir, sortBy), [filtered, currentDir, sortBy]);
-  // Flat search results honor the same sort as the folder view.
-  const searchResults = useMemo(
-    () => (searching ? [...filtered].sort(fileComparator(sortBy)) : filtered),
-    [filtered, searching, sortBy],
+  // Flat results honor the same sort as the folder view.
+  const flatResults = useMemo(
+    () => (flat ? [...filtered].sort(fileComparator(sortBy)) : filtered),
+    [filtered, flat, sortBy],
   );
   const segments = currentDir ? currentDir.split('/') : [];
 
@@ -278,10 +292,11 @@ export function FilesTab({
         <span className={`px-2.5 pt-2 pb-0.5 text-[12px] font-mono truncate w-full text-fg-2 shrink-0 ${isDeleted ? 'line-through' : ''}`}>
           {filename}
         </span>
-        {/* In search mode show the file's folder for context; in folder view the
-            breadcrumb already gives location, so show the kind instead. */}
+        {/* In flat mode (search / type filter) show the file's folder for
+            context; in folder view the breadcrumb already gives location, so
+            show the kind instead. */}
         <span className="px-2.5 pb-2.5 text-[10.5px] text-fg-muted shrink-0 truncate">
-          {searching && a.path.includes('/')
+          {flat && a.path.includes('/')
             ? a.path.slice(0, a.path.lastIndexOf('/'))
             : kindLabel(a.path)}
         </span>
@@ -289,12 +304,12 @@ export function FilesTab({
     );
   };
 
-  const emptyHere = !searching && dirView.folders.length === 0 && dirView.files.length === 0;
+  const emptyHere = !flat && dirView.folders.length === 0 && dirView.files.length === 0;
 
   return (
     <div className="relative flex flex-col h-full overflow-hidden px-4 pt-4 pb-4 gap-3 min-w-0">
-      {/* Breadcrumb — folder-browse mode only (search flattens the whole tree). */}
-      {!searching && (
+      {/* Breadcrumb — folder-browse mode only (search/type-filter flatten the tree). */}
+      {!flat && (
         <div className="flex items-center gap-1 text-[12px] shrink-0 flex-wrap min-w-0">
           <button
             type="button"
@@ -345,22 +360,23 @@ export function FilesTab({
           </button>
         </div>
       )}
-      {!loading && !gated && searching && filtered.length === 0 && (
+      {!loading && !gated && flat && flatResults.length === 0 && (
         <p className="text-sm text-fg-muted">
-          No {noun} match your search{typeFilter !== 'all' ? ' and type filter' : ''}.
+          {searching ? `No ${noun} match your search.` : 'Nothing matches the current filters.'}
         </p>
       )}
       {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
-          {/* When files EXIST but the type filter hid them all, say so — the
-              bare "no artifacts yet" empty state would lie about the project. */}
-          {typeFilter !== 'all' && artifacts.length > 0
-            ? 'Nothing here matches the type filter.'
-            : currentDir
+          {/* When files EXIST but the visibility filters (hide-code / deleted)
+              hid them all, say so — the bare "no artifacts yet" empty state
+              would lie about the project. */}
+          {artifacts.length > 0
+            ? currentDir
               ? 'This folder is empty under the current filters.'
-              : mode === 'allfiles'
-                ? 'No files found in this project folder.'
-                : 'No artifacts yet — files Claude creates or edits in this project will show up here. Check "All files" to browse everything in the folder.'}
+              : 'Nothing matches the current filters.'
+            : mode === 'allfiles'
+              ? 'No files found in this project folder.'
+              : 'No artifacts yet — files Claude creates or edits in this project will show up here. Check "All files" to browse everything in the folder.'}
         </p>
       )}
 
@@ -369,8 +385,8 @@ export function FilesTab({
           cards still line up with the breadcrumb above (the 8px sits in the parent's
           px-4/pt-4 gutter, well inside its clip). */}
       <div className="flex-1 overflow-auto grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
-        {searching
-          ? searchResults.map(renderFileCard)
+        {flat
+          ? flatResults.map(renderFileCard)
           : (
             <>
               {/* Files directly in this folder FIRST, then subfolders (per request:

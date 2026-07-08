@@ -61,6 +61,7 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
 export function FileFilterPopover({
   typeFilter, onTypeFilter,
   sortBy, onSortBy,
+  hideCode, onHideCode,
   showDeleted, onShowDeleted,
   showDeletedAvailable,
   onClose,
@@ -69,6 +70,10 @@ export function FileFilterPopover({
   onTypeFilter(v: 'all' | FileTypeGroup): void;
   sortBy: FileSortKey;
   onSortBy(v: FileSortKey): void;
+  // Hide code & configs — ON by default (the default view is documents-first;
+  // non-developers shouldn't wade through source files to find their docs).
+  hideCode: boolean;
+  onHideCode(v: boolean): void;
   showDeleted: boolean;
   onShowDeleted(v: boolean): void;
   // "Show deleted" only makes sense for the tracked Artifacts tab (All files
@@ -80,10 +85,13 @@ export function FileFilterPopover({
   // registered later, so the shared LIFO stack handles the ordering.
   useEscClose(true, onClose);
 
-  // Sort is a preference, not a filter, so "Clear" only resets the filters.
-  const filtersActive = typeFilter !== 'all' || (showDeletedAvailable && showDeleted);
+  // Sort is a preference, not a filter, so "Clear" only resets the filters —
+  // back to their DEFAULTS, which for hideCode is ON.
+  const filtersActive =
+    typeFilter !== 'all' || !hideCode || (showDeletedAvailable && showDeleted);
   const clear = () => {
     onTypeFilter('all');
+    onHideCode(true);
     if (showDeletedAvailable) onShowDeleted(false);
   };
 
@@ -119,13 +127,18 @@ export function FileFilterPopover({
           </Chip>
         ))}
       </Group>
-      {showDeletedAvailable && (
-        <Group label="Visibility">
+      <Group label="Visibility">
+        {/* Default-ON. When the "Code & configs" TYPE filter is selected the
+            parent suspends this (the two together would always show nothing). */}
+        <Chip active={hideCode} onClick={() => onHideCode(!hideCode)}>
+          Hide code & configs
+        </Chip>
+        {showDeletedAvailable && (
           <Chip active={showDeleted} onClick={() => onShowDeleted(!showDeleted)}>
             Show deleted
           </Chip>
-        </Group>
-      )}
+        )}
+      </Group>
     </div>
   );
 }

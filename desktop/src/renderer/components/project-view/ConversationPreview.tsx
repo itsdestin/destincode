@@ -7,7 +7,7 @@
 // "Resume in Claude" button leads to a live session, and that is handled entirely
 // by the parent via the `onResume` prop. "Open full transcript" just re-fetches
 // the same read-only history with `all: true`.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { PastSession, HistoryMessage } from '../../../shared/types';
 import { ProjectDetailOverlay } from './ProjectDetailOverlay';
 import { TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PlayIcon } from './detail-tool-icons';
@@ -27,6 +27,15 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
   // `all` flips to true once the user clicks "Open full transcript"; we re-fetch
   // with count=0/all=true and disable the button so a second click is a no-op.
   const [all, setAll] = useState(false);
+  // Bottom anchor — the preview opens at the LATEST message (like the real chat
+  // view) and scrolls UPWARD through history, so we jump here after each load.
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!loading && messages.length > 0) {
+      // 'auto' (instant) — a smooth scroll from the top on open reads as janky.
+      endRef.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [loading, messages]);
 
   // Load the (preview-length) history on mount and whenever the session changes.
   // A `cancelled` flag guards against a late response from a previous session
@@ -75,8 +84,8 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
   // transcript). So until "Open full transcript", the meta labels what's shown
   // as a preview slice rather than implying the loaded count is the total.
   const shownCount = messages.length;
-  // Footer hint under a preview slice: the full transcript may have more.
-  const showFooter = !all && shownCount > 0;
+  // Top-of-list hint on a preview slice: older messages exist above the cut.
+  const showOlderHint = !all && shownCount > 0;
 
   // Header tools: Resume (accent) + Open full transcript (neutral).
   const tools = (
@@ -113,31 +122,34 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
           <p className="text-sm text-fg-muted">No messages to preview.</p>
         ) : (
           <div className="max-w-[680px] mx-auto">
+            {/* The "there's more above" hint sits at the TOP — that's the OLDER
+                side now that the preview anchors to the latest message. */}
+            {showOlderHint && (
+              <div className="text-center text-[11.5px] text-fg-muted py-2">
+                — showing the last {shownCount} messages — use “Open full transcript” for everything —
+              </div>
+            )}
+            {/* Bubbles mirror the real chat view: user on the RIGHT in accent
+                (UserMessage.tsx), Claude on the LEFT in inset
+                (AssistantTurnBubble.tsx) — same rounding + max-widths, so the
+                preview reads as the same conversation the user remembers. No
+                role captions; the sides carry that, like the live chat. */}
             {messages.map((m, i) => (
-              <div key={i} className="mb-4">
-                <div className={`text-[10px] font-medium tracking-wider uppercase mb-1.5 ${
-                  m.role === 'user' ? 'text-fg-2' : 'text-fg-muted'
-                }`}>
-                  {m.role === 'user' ? 'You' : 'Claude'}
-                </div>
+              <div key={i} className={`mb-3 flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 {/* Plain text only — whitespace-pre-wrap + break-words. We do NOT
                     execute markdown/HTML here; this is a lightweight read-only preview. */}
                 <div
-                  className={`text-[13px] text-fg-2 rounded-lg px-3.5 py-2.5 whitespace-pre-wrap break-words border ${
+                  className={`break-words whitespace-pre-wrap rounded-2xl px-5 py-3 text-sm ${
                     m.role === 'user'
-                      ? 'bg-inset border-edge'
-                      : 'bg-canvas border-edge-dim'
+                      ? 'max-w-[80%] rounded-br-sm bg-accent text-on-accent'
+                      : 'max-w-[85%] rounded-bl-sm bg-inset text-fg'
                   }`}
                 >
                   {m.content}
                 </div>
               </div>
             ))}
-            {showFooter && (
-              <div className="text-center text-[11.5px] text-fg-muted py-2">
-                — showing the last {shownCount} messages — use “Open full transcript” for everything —
-              </div>
-            )}
+            <div ref={endRef} />
           </div>
         )}
       </div>

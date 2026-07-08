@@ -145,6 +145,10 @@ export function ProjectView(props: ProjectViewProps) {
   // totals, so a filtered grid never silently redefines what "N files" means.
   const [typeFilter, setTypeFilter] = useState<'all' | FileTypeGroup>('all');
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
+  // Hide code & configs — ON by default (documents-first default view), local
+  // to the Project View so the default always wins on a fresh look. Resets to
+  // ON on project switch alongside the other filters.
+  const [hideCode, setHideCode] = useState(true);
   // Filter popover (behind the sliders icon in the search pill). Click-outside
   // is handled HERE with a wrapper ref that contains both the trigger and the
   // popover — putting it inside the popover would race the trigger's own click
@@ -287,6 +291,7 @@ export function ProjectView(props: ProjectViewProps) {
       // Sort is a preference, not a filter, so it persists.
       setArtifactSearch('');
       setTypeFilter('all');
+      setHideCode(true); // default ON — see the state declaration
       setFilterOpen(false);
     }
 
@@ -553,10 +558,12 @@ export function ProjectView(props: ProjectViewProps) {
                         onChange={(e) => setArtifactSearch(e.target.value)}
                         className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
                       />
-                      {/* Filter trigger. Accent badge = number of ACTIVE filters
-                          (type + Show deleted; sort is a preference, not counted)
-                          so a filtered grid is never mistaken for the full list
-                          even with the popover closed. */}
+                      {/* Filter trigger. Accent badge = number of filters active
+                          BEYOND the default view (type + Show deleted; sort is a
+                          preference; hideCode is ON by default so its default
+                          state isn't counted, and turning it OFF reveals more —
+                          also not counted) so a narrowed grid is never mistaken
+                          for the full list even with the popover closed. */}
                       {(() => {
                         const activeFilters =
                           (typeFilter !== 'all' ? 1 : 0) +
@@ -590,6 +597,8 @@ export function ProjectView(props: ProjectViewProps) {
                         onTypeFilter={setTypeFilter}
                         sortBy={fileSort}
                         onSortBy={setFileSort}
+                        hideCode={hideCode}
+                        onHideCode={setHideCode}
                         showDeleted={showDeletedArtifacts}
                         onShowDeleted={setShowDeletedArtifacts}
                         showDeletedAvailable={tab === 'artifacts'}
@@ -615,10 +624,10 @@ export function ProjectView(props: ProjectViewProps) {
           {/* Tab routing — shares the centered max-width with the chrome above. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto">
             {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
+              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
             )}
             {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} />
+              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />
