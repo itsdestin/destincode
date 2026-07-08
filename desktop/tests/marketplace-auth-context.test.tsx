@@ -6,7 +6,7 @@
 // Uses a small pollIntervalMs (10ms) + real Promise.resolve() flushing via
 // vi.runAllTimersAsync() to advance through the polling loop without sleeping.
 
-import React from "react";
+import React, { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act, cleanup } from "@testing-library/react";
 import {
@@ -61,8 +61,38 @@ function makeMock() {
         .mockResolvedValueOnce(null)  // initial refresh on mount
         .mockResolvedValue({ id: "github:1", login: "u", avatar_url: "http://a" }),
       signOut: vi.fn().mockResolvedValue(undefined),
+      // Account-mutation methods (accounts Phase 1). ApiResult-shaped returns.
+      updateProfile: vi.fn().mockResolvedValue({ ok: true }),
+      setHandle: vi.fn().mockResolvedValue({ ok: true }),
+      deleteAccount: vi.fn().mockResolvedValue({ ok: true }),
     },
   };
+}
+
+// Probe that exposes the three account-mutation actions plus current state, so
+// tests can drive updateProfile / setHandle / deleteAccount and observe the
+// resulting state + surfaced error message.
+function ActionsProbe() {
+  const { signedIn, user, updateProfile, setHandle, deleteAccount } =
+    useMarketplaceAuth();
+  const [err, setErr] = useState("");
+  return (
+    <div>
+      <span data-testid="state">{signedIn ? "in" : "out"}</span>
+      <span data-testid="user">{user?.login ?? ""}</span>
+      <span data-testid="handle">{user?.handle ?? ""}</span>
+      <span data-testid="err">{err}</span>
+      <button data-testid="upd" onClick={() => void updateProfile("X").catch((e) => setErr(e.message))}>
+        upd
+      </button>
+      <button data-testid="seth" onClick={() => void setHandle("newhandle").catch((e) => setErr(e.message))}>
+        seth
+      </button>
+      <button data-testid="del" onClick={() => void deleteAccount().catch((e) => setErr(e.message))}>
+        del
+      </button>
+    </div>
+  );
 }
 
 describe("MarketplaceAuthProvider", () => {
@@ -131,6 +161,120 @@ describe("MarketplaceAuthProvider", () => {
     });
 
     // After "complete", refresh() called signedIn() → true and user() → user obj
+    expect(getByTestId("state").textContent).toBe("in");
+    expect(getByTestId("user").textContent).toBe("u");
+  });
+
+  // ── Account-mutation actions (accounts Phase 1) ─────────────────────────────
+
+  it("updateProfile throws with the server message when !res.ok", async () => {
+    (globalThis as any).window.claude = {
+      account: {
+        signedIn: vi.fn().mockResolvedValue(true),
+        user: vi.fn().mockResolvedValue({ id: "github:1", login: "u", avatar_url: "http://a" }),
+        updateProfile: vi.fn().mockResolvedValue({ ok: false, message: "name too long" }),
+        setHandle: vi.fn(),
+        deleteAccount: vi.fn(),
+      },
+    };
+    const { getByTestId } = render(
+      <MarketplaceAuthProvider pollIntervalMs={10}>
+        <ActionsProbe />
+      </MarketplaceAuthProvider>
+    );
+    await act(async () => { await vi.runAllTimersAsync(); });
+
+    await act(async () => {
+      getByTestId("upd").click();
+      await vi.runAllTimersAsync();
+    });
+
+    // The context rethrows new Error(res.message); the probe surfaces it.
+    expect(getByTestId("err").textContent).toBe("name too long");
+  });
+
+  it("setHandle success refreshes user so the new handle renders", async () => {
+    (globalThis as any).window.claude = {
+      account: {
+        signedIn: vi.fn().mockResolvedValue(true),
+        // Mount → handle null; after setHandle refresh → handle "newhandle".
+        user: vi
+          .fn()
+          .mockResolvedValueOnce({ id: "github:1", login: "u", avatar_url: "http://a", handle: null })
+          .mockResolvedValue({ id: "github:1", login: "u", avatar_url: "http://a", handle: "newhandle" }),
+        updateProfile: vi.fn(),
+        setHandle: vi.fn().mockResolvedValue({ ok: true }),
+        deleteAccount: vi.fn(),
+      },
+    };
+    const { getByTestId } = render(
+      <MarketplaceAuthProvider pollIntervalMs={10}>
+        <ActionsProbe />
+      </MarketplaceAuthProvider>
+    );
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(getByTestId("handle").textContent).toBe("");
+
+    await act(async () => {
+      getByTestId("seth").click();
+      await vi.runAllTimersAsync();
+    });
+
+    // refresh() re-read user() → new handle now rendered.
+    expect(getByTestId("handle").textContent).toBe("newhandle");
+  });
+
+  it("deleteAccount success clears signedIn + user", async () => {
+    (globalThis as any).window.claude = {
+      account: {
+        signedIn: vi.fn().mockResolvedValue(true),
+        user: vi.fn().mockResolvedValue({ id: "github:1", login: "u", avatar_url: "http://a" }),
+        updateProfile: vi.fn(),
+        setHandle: vi.fn(),
+        deleteAccount: vi.fn().mockResolvedValue({ ok: true }),
+      },
+    };
+    const { getByTestId } = render(
+      <MarketplaceAuthProvider pollIntervalMs={10}>
+        <ActionsProbe />
+      </MarketplaceAuthProvider>
+    );
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(getByTestId("state").textContent).toBe("in");
+
+    await act(async () => {
+      getByTestId("del").click();
+      await vi.runAllTimersAsync();
+    });
+
+    expect(getByTestId("state").textContent).toBe("out");
+    expect(getByTestId("user").textContent).toBe("");
+  });
+
+  it("deleteAccount failure throws and leaves state unchanged", async () => {
+    (globalThis as any).window.claude = {
+      account: {
+        signedIn: vi.fn().mockResolvedValue(true),
+        user: vi.fn().mockResolvedValue({ id: "github:1", login: "u", avatar_url: "http://a" }),
+        updateProfile: vi.fn(),
+        setHandle: vi.fn(),
+        deleteAccount: vi.fn().mockResolvedValue({ ok: false, message: "server error" }),
+      },
+    };
+    const { getByTestId } = render(
+      <MarketplaceAuthProvider pollIntervalMs={10}>
+        <ActionsProbe />
+      </MarketplaceAuthProvider>
+    );
+    await act(async () => { await vi.runAllTimersAsync(); });
+
+    await act(async () => {
+      getByTestId("del").click();
+      await vi.runAllTimersAsync();
+    });
+
+    // Error surfaced; signed-in state untouched (no optimistic clear on failure).
+    expect(getByTestId("err").textContent).toBe("server error");
     expect(getByTestId("state").textContent).toBe("in");
     expect(getByTestId("user").textContent).toBe("u");
   });

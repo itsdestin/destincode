@@ -163,7 +163,9 @@ export function createMarketplaceApiClient(opts: {
     logout: async () => {
       // WHY: best-effort revoke must not hang sign-out for minutes on a blackholed
       // connection — bound it to 5s so a dead endpoint can't freeze the UI. The
-      // handler already swallows the resulting AbortError (offline sign-out is fine).
+      // handler already swallows the resulting timeout/abort rejection —
+      // AbortSignal.timeout() rejects with a TimeoutError DOMException, not an
+      // AbortError — so offline sign-out is fine.
       await request("/auth/logout", { method: "POST", auth: true, signal: AbortSignal.timeout(5000) });
     },
     postInstall: async (plugin_id) => {

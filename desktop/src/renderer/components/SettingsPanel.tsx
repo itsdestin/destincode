@@ -18,6 +18,7 @@ import { DevelopmentPopup } from './development/DevelopmentPopup';
 import { BugReportPopup } from './development/BugReportPopup';
 import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
+import AccountSection from './AccountSection';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -1988,6 +1989,8 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
         <PerformanceButton />
 
+        <AccountSection />
+
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
         {/* Tier & directories are local-only — hide when connected to remote desktop */}
@@ -2298,6 +2301,8 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
         <SoundButton />
 
         <PerformanceButton />
+
+        <AccountSection />
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
