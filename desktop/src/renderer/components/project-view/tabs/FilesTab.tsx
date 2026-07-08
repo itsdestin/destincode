@@ -20,20 +20,8 @@ import {
   TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PencilIcon, CheckIcon, FolderIcon, LinkIcon, ExternalLinkIcon,
 } from '../detail-tool-icons';
 
-// Compact relative-time for the detail meta strip (matches ConversationsTab).
-function relTime(iso: string): string {
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return '';
-  const diff = Date.now() - ms;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(ms).toLocaleDateString();
-}
+// Compact relative-time for the detail meta strip (shared util).
+import { formatRelativeTime as relTime } from '../../../utils/format-time';
 
 // Absolute on-disk path for an artifact (internal = project.path + rel path).
 function artifactAbsPath(projectPath: string, a: ArtifactRecord): string {

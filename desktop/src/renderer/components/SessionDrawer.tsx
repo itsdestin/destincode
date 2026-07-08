@@ -15,6 +15,7 @@ import { ContentFindBar } from './ContentFindBar';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
+import { formatRelativeTime } from '../utils/format-time';
 
 type SortKey = 'recent' | 'name' | 'type';
 
@@ -635,12 +636,3 @@ function formatSize(content: string): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatRelativeTime(iso: string): string {
-  if (!iso) return '';
-  const date = new Date(iso);
-  const diff = (Date.now() - date.getTime()) / 1000; // seconds
-  if (diff < 60) return `${Math.floor(diff)}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}

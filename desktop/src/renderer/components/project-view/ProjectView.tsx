@@ -13,6 +13,7 @@ import { useArtifact } from '../../state/ArtifactContext';
 import { useTheme } from '../../state/theme-context';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
+import { formatRelativeTime } from '../../utils/format-time';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
 import type { ContextFile, ContextGroup, ContextScope } from '../../../shared/project-context-types';
@@ -44,20 +45,6 @@ interface HeroStats {
 }
 interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 
-// Relative-time formatter for the hero "active <when>" stat. Mirrors the
-// epoch-ms formatter in ResumeBrowser.tsx (kept inline to avoid coupling the
-// project-view subtree to a chat component's internal helper).
-function formatRelativeTime(epochMs: number): string {
-  const diff = Date.now() - epochMs;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(epochMs).toLocaleDateString();
-}
 
 // Inline lucide-style tab icons (stroke currentColor) for the segmented control.
 function GridIcon({ size = 15 }: { size?: number }) {

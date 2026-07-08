@@ -18,6 +18,8 @@ import MarkdownContent from '../MarkdownContent';
 import {
   TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PencilIcon, CheckIcon, FolderIcon, LinkIcon,
 } from './detail-tool-icons';
+// Plain-text load-timing label — shared with ContextTab (context-labels.ts).
+import { timingLabel } from './context-labels';
 
 interface ContextEditorOverlayProps {
   project: { path: string };
@@ -31,19 +33,6 @@ const SCOPE_LABEL: Record<ContextScope, string> = {
   global: 'Global',
   memory: 'Memory',
 };
-
-// Plain-text load-timing label — spelled out in words, never a glyph
-// (mirrors ContextTab.timingLabel).
-function timingLabel(f: ContextFile): string {
-  switch (f.timing) {
-    case 'always': return 'Always';
-    case 'always-everywhere': return 'Always · everywhere';
-    case 'conditional': return f.glob ? `When editing ${f.glob}` : 'Conditional';
-    case 'on-recall': return 'On recall';
-    case 'index': return 'Index';
-    default: return '';
-  }
-}
 
 export function ContextEditorOverlay({ project, file, onClose }: ContextEditorOverlayProps) {
   // content = the on-disk text (the "saved" baseline); draft = the editable copy.

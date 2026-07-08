@@ -43,7 +43,7 @@ import { appendVersion, readSidecar, writeSidecar, renameArtifact } from './arti
 import { listProjects, removeProject } from './artifacts/central-index';
 import { buildSavedFolderProjects } from './artifacts/saved-folder-projects';
 import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/project-file-discovery';
-import { ensureProject, applyGitTreatment, detectOrphan } from './artifacts/project-manager';
+import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { trackedArtifacts } from './artifacts/visible-artifacts';

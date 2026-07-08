@@ -98,10 +98,12 @@ export async function discoverProjectFiles(projectRoot: string): Promise<Discove
         // clones plus a worktree — that crawl is what made the count balloon to
         // ~1209 and, because it hit the time budget at a different spot each run,
         // disagree between the hero and the switcher). Stopping at the nested
-        // .git keeps the scan bounded AND DETERMINISTIC, so the file count is
-        // stable and identical everywhere it's shown. The root is always walked
-        // (we start at it directly), so a project that is itself a repo still
-        // lists its files.
+        // .git keeps the scan bounded and deterministic FOR TYPICAL PROJECTS —
+        // note the wall-clock budget can still truncate a huge non-repo tree at
+        // a different spot per run, so determinism is only guaranteed when
+        // `truncated` is false (the UI surfaces a truncation note). The root is
+        // always walked (we start at it directly), so a project that is itself
+        // a repo still lists its files.
         if (await isGitRepo(full)) continue;
         await walk(full, depth + 1);
       } else if (e.isFile()) {

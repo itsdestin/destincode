@@ -4,6 +4,7 @@ import path from 'path';
 import { discoverContext, RuleEntry } from './project/context-discovery';
 import { cwdToProjectSlug } from './transcript-watcher';
 import { RECOGNIZED_INSTRUCTION_FILES, ContextGroup, ContextFile } from '../shared/project-context-types';
+import { canonicalize } from '../shared/artifacts/canonicalize';
 
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, '.claude');
@@ -57,7 +58,11 @@ async function readRules(rulesDir: string): Promise<RuleEntry[]> {
   return out;
 }
 
-export async function listContext(projectPath: string): Promise<ContextGroup[]> {
+// Discovery WITHOUT the per-file stat+head-read enrichment — used by both
+// listContext (which enriches for display) and the isAllowed guard (which only
+// needs the path set; enriching there made every single context-file read do a
+// full stat+read sweep of the project's context files).
+async function discoverContextGroups(projectPath: string): Promise<ContextGroup[]> {
   const slug = ccProjectSlug(projectPath);
   const projInstr = await findInstructionFiles([projectPath, path.join(projectPath, '.claude')]);
   const globalInstr = await findInstructionFiles([CLAUDE_DIR]);
@@ -80,7 +85,11 @@ export async function listContext(projectPath: string): Promise<ContextGroup[]> 
     globalRules,
     memoryFiles, memoryPaths,
   });
+  return groups;
+}
 
+export async function listContext(projectPath: string): Promise<ContextGroup[]> {
+  const groups = await discoverContextGroups(projectPath);
   // Enrich each file with a one-line description + formatted size for the rows
   // (the prototype's ctxRow shows both). Cheap — a handful of files per project.
   await Promise.all(groups.flatMap((g) => g.files).map(enrichContextFile));
@@ -126,9 +135,13 @@ async function enrichContextFile(f: ContextFile): Promise<void> {
 
 // Allow-list guard: only paths that appear in the discovered set for this
 // project may be read or written. Prevents arbitrary-path I/O via these IPCs.
+// Uses the enrichment-free discovery (no per-file stat/read sweep per guard
+// call) and compares CANONICAL paths so a renderer-side normalization (slash
+// direction, drive case) can't silently break the allow-list.
 async function isAllowed(projectPath: string, absolutePath: string): Promise<boolean> {
-  const groups = await listContext(projectPath);
-  return groups.some(g => g.files.some(f => f.absolutePath === absolutePath));
+  const groups = await discoverContextGroups(projectPath);
+  const target = canonicalize(absolutePath, null);
+  return groups.some(g => g.files.some(f => canonicalize(f.absolutePath, null) === target));
 }
 
 export async function readContextFile(projectPath: string, absolutePath: string): Promise<{ ok: boolean; content?: string; error?: string }> {

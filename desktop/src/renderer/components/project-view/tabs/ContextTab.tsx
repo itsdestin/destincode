@@ -18,6 +18,9 @@ import type {
   ContextScope,
 } from '../../../../shared/project-context-types';
 import { ContextIntroBanner } from '../ContextIntroBanner';
+// Plain-text load-timing label — shared with ContextEditorOverlay
+// (context-labels.ts); spelled out in words, never a glyph.
+import { timingLabel } from '../context-labels';
 
 interface ContextTabProps {
   // Lifted, cached groups from ProjectView. null = still loading for this project.
@@ -33,17 +36,6 @@ const GROUP_META: Record<ContextScope, { label: string; desc: string }> = {
   global: { label: 'Global', desc: 'Loaded before every conversation on this device' },
   memory: { label: 'Memory', desc: 'Recalled when relevant to a conversation' },
 };
-
-// Plain-text load-timing label — spelled out in words, never a glyph.
-function timingLabel(f: ContextFile): string {
-  switch (f.timing) {
-    case 'always': return 'Always';
-    case 'always-everywhere': return 'Always · everywhere';
-    case 'conditional': return f.glob ? `When editing ${f.glob}` : 'Conditional';
-    case 'on-recall': return 'On recall';
-    case 'index': return 'Index';
-  }
-}
 
 // Per-file row icon, by scope (matches the prototype: global→globe, memory→brain,
 // project files→doc).
