@@ -15,6 +15,9 @@ import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory } from './session-browser';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend } from './sync-state';
 import { getRestoreService } from './restore-service';
+// Cross-device sync spaces (spec 2026-07-03) — same service functions the
+// Electron IPC handlers call, so remote browsers get identical behavior.
+import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject } from './sync-spaces/service';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
@@ -1104,6 +1107,27 @@ export class RemoteServer {
         // falling back to the whole object (which would be a silent no-op).
         await dismissWarning(payload?.warning ?? '');
         this.respond(client.ws, type, id, { ok: true });
+        break;
+      }
+
+      // Cross-device sync spaces (spec 2026-07-03). Remote-shim sends payloads
+      // wrapped as { enabled } / { name }; unwrap the same way the sync:* cases
+      // above do. The syncspaces:event push reaches remote clients via the
+      // broadcast in service.ts (see broadcastToRenderers wiring below).
+      case 'syncspaces:status': {
+        this.respond(client.ws, type, id, await syncSpacesStatus());
+        break;
+      }
+      case 'syncspaces:enable': {
+        this.respond(client.ws, type, id, await syncSpacesEnable(!!payload?.enabled));
+        break;
+      }
+      case 'syncspaces:sync-now': {
+        this.respond(client.ws, type, id, await syncSpacesSyncNow());
+        break;
+      }
+      case 'syncspaces:create-project': {
+        this.respond(client.ws, type, id, await syncSpacesCreateProject(String(payload?.name ?? '')));
         break;
       }
 

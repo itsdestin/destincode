@@ -216,6 +216,16 @@ declare global {
         notifyStackState: (empty: boolean) => void;
         onBack: (cb: () => void) => () => void;
       };
+      // Cross-device sync spaces (spec 2026-07-03). Optional so remote/Android
+      // builds that predate the shim member don't break typecheck; the Task 9
+      // sync panel consumes these. onEvent returns an unsubscribe function.
+      syncSpaces?: {
+        status: () => Promise<any>;
+        enable: (enabled: boolean) => Promise<any>;
+        syncNow: () => Promise<{ ok: boolean }>;
+        createProject: (name: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
+        onEvent: (cb: (e: unknown) => void) => () => void;
+      };
     };
   }
 }

@@ -16,7 +16,9 @@ import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
 import { FirstRunManager } from './first-run';
 import { SyncService } from './sync-service';
-import { setSyncService } from './sync-state';
+import { setSyncService, getSyncConfig } from './sync-state';
+// Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
+import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster } from './sync-spaces/service';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
@@ -1432,6 +1434,30 @@ app.whenReady().then(async () => {
   // Initialize restore service after sync is live — it needs SyncService to
   // flip restoreInProgress, which pauses the push loop during restore/undo.
   initRestoreService(syncService, app.getPath('userData'));
+
+  // Cross-device sync spaces (spec 2026-07-03). Roots always ensured (the
+  // session picker lists them); the engine runs only when the user enabled
+  // sync. Wire the remote broadcaster first so engine events fired during the
+  // initial reconcile still reach any already-connected remote clients.
+  setSyncSpacesRemoteBroadcaster((e) => remoteServer.broadcast({ type: 'syncspaces:event', payload: e }));
+  startSyncSpaces(
+    async () => {
+      // Daily dated backup targets come from the SAME backend config the legacy
+      // system uses — drive + iCloud only (GitHub is sync, not backup; spec §11).
+      // getSyncConfig is async and exposes the backends array as `.backends`
+      // (each BackendInstance carries type-specific fields in `.config`).
+      const cfg = await getSyncConfig();
+      return (cfg?.backends ?? [])
+        .filter((b) => b.type === 'drive' || b.type === 'icloud')
+        .map((b) => b.type === 'drive'
+          ? { type: 'drive' as const, base: `${b.config?.rcloneRemote ?? 'gdrive'}:${b.config?.DRIVE_ROOT ?? 'Claude'}` }
+          // iCloud base is a local folder path — drop backends that never set one.
+          : { type: 'icloud' as const, base: b.config?.ICLOUD_PATH ?? '' })
+        .filter((t) => t.base.length > 0);
+    },
+    (m) => log('INFO', 'SyncSpaces', m),
+  ).catch(e => log('ERROR', 'Main', 'SyncSpaces start failed', { error: String(e) }));
+
   // Push session JSONL on session close (replaces session-end-sync.sh)
   sessionManager.on('session-exit', (sessionId: string) => {
     syncService.pushSession(sessionId).catch(e =>
@@ -1445,6 +1471,8 @@ app.on('window-all-closed', () => {
   sessionManager.destroyAll();
   hookRelay.stop();
   remoteServer.stop();
+  // Stop the cross-device sync-spaces engine (clears its backup timer + watchers).
+  try { void stopSyncSpaces(); } catch {}
   // Stop sync service — clears timer, releases locks, removes .app-sync-active marker
   try { setSyncService(null); } catch {}
   app.quit();
