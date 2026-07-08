@@ -17,6 +17,8 @@ import { formatRelativeTime } from '../../utils/format-time';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
 import type { ContextFile, ContextGroup, ContextScope } from '../../../shared/project-context-types';
+import type { FileTypeGroup } from '../../../shared/artifacts/categorization';
+import type { FileSortKey } from './tabs/FilesTab';
 
 // Enriched session shape returned by project:list-conversations (preview only —
 // see project-conversations.ts for why there's no message count).
@@ -122,6 +124,12 @@ export function ProjectView(props: ProjectViewProps) {
   // Artifacts search query (lifted out of FilesTab so it can sit on the
   // shared seg-row next to the segmented control, matching the design).
   const [artifactSearch, setArtifactSearch] = useState('');
+  // Type filter + sort for the two file tabs — lifted here (like search) so they
+  // live on the seg-row and survive Artifacts ↔ All files toggles. These are
+  // EXPLICIT, visible controls the user sets — the badge counts stay folder
+  // totals, so a filtered grid never silently redefines what "N files" means.
+  const [typeFilter, setTypeFilter] = useState<'all' | FileTypeGroup>('all');
+  const [fileSort, setFileSort] = useState<FileSortKey>('name');
   // Bumped after "Add external file" so FilesTab re-loads its list without
   // owning the add flow (the toolbar lives up here now).
   const [refreshKey, setRefreshKey] = useState(0);
@@ -240,6 +248,11 @@ export function ProjectView(props: ProjectViewProps) {
       setHeroRepo(null);
       setConversations(convCache.current.get(id) ?? null);
       setContext(ctxCache.current.get(id) ?? null);
+      // Filters describe ONE project's grid — a stale query/type from the last
+      // project silently hiding the new project's files is a confusion trap.
+      // Sort is a preference, not a filter, so it persists.
+      setArtifactSearch('');
+      setTypeFilter('all');
     }
 
     // Cache-or-fetch helpers — the cache makes re-selecting a project / toggling
@@ -451,6 +464,7 @@ export function ProjectView(props: ProjectViewProps) {
               >
                 {SEGMENTS.map((s) => {
                   const active = tab === s.id;
+                  const isFileTab = s.id === 'artifacts' || s.id === 'allfiles';
                   return (
                     <button
                       key={s.id}
@@ -467,24 +481,24 @@ export function ProjectView(props: ProjectViewProps) {
                       <span className={`text-[11px] ${active ? 'opacity-80' : 'text-fg-muted'}`}>
                         {s.count}
                       </span>
+                      {/* (i) hover explainer for the Artifacts vs All files split —
+                          rendered INSIDE the active file-tab segment (next to the
+                          label + count, per the design) so the answer to "why is
+                          this file in both tabs?" lives right where the question
+                          arises. Hover icon per the app's (i) convention. */}
+                      {active && isFileTab && (
+                        <span
+                          className="opacity-75 hover:opacity-100 inline-flex items-center cursor-help transition-opacity"
+                          title={'Artifacts are files Claude created or edited in this project (plus any you pin with “+ Add file”). All files shows everything in the folder — Claude’s files included, so a file can appear in both.'}
+                          aria-label="What is the difference between Artifacts and All files?"
+                        >
+                          <InfoGlyph size={13} />
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </div>
-
-              {/* (i) hover explainer for the Artifacts vs All files split — the
-                  two file tabs share a look and overlap by design (All files ⊇
-                  Artifacts), so the tooltip answers "why is this file in both?"
-                  right where the question arises. Hover icon per the app's (i)
-                  convention (ContextTab group headers) instead of a persistent
-                  caption. */}
-              <span
-                className="w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg transition-colors cursor-help shrink-0"
-                title={'Artifacts are files Claude created or edited in this project (plus any you pin with “+ Add file”). All files shows everything in the folder — Claude’s files included, so a file can appear in both.'}
-                aria-label="What is the difference between Artifacts and All files?"
-              >
-                <InfoGlyph />
-              </span>
 
               {/* Right controls for the two file sections. Search applies to both.
                   Mode-specific chips: "Show deleted" + "Add file" belong to the
@@ -503,6 +517,36 @@ export function ProjectView(props: ProjectViewProps) {
                       className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
                     />
                   </div>
+                  {/* Type filter + sort — native selects (same pattern as the
+                      SessionDrawer's sort control), applying to BOTH file tabs.
+                      An active type filter is visible right here, so a filtered
+                      grid can't read as "that's all the files there are". */}
+                  <select
+                    value={typeFilter}
+                    onChange={(e) => setTypeFilter(e.target.value as 'all' | FileTypeGroup)}
+                    title="Filter by file type"
+                    className={`border rounded-md text-[12.5px] px-2 py-1.5 outline-none cursor-pointer transition-colors ${
+                      typeFilter !== 'all'
+                        ? 'bg-accent text-on-accent border-transparent'
+                        : 'bg-inset text-fg-2 border-edge hover:text-fg'
+                    }`}
+                  >
+                    <option value="all">All types</option>
+                    <option value="document">Documents</option>
+                    <option value="image">Images</option>
+                    <option value="sheet">Spreadsheets</option>
+                    <option value="code">Code & configs</option>
+                  </select>
+                  <select
+                    value={fileSort}
+                    onChange={(e) => setFileSort(e.target.value as FileSortKey)}
+                    title="Sort files"
+                    className="bg-inset border border-edge rounded-md text-[12.5px] text-fg-2 px-2 py-1.5 outline-none cursor-pointer hover:text-fg transition-colors"
+                  >
+                    <option value="name">Name</option>
+                    <option value="recent">Recent</option>
+                    <option value="type">Type</option>
+                  </select>
                   {/* Show deleted + Add file — Artifacts (tracked) section only.
                       All files has no filter chips: it shows every file, so its
                       badge count always matches what's on screen (and is always a
@@ -541,10 +585,10 @@ export function ProjectView(props: ProjectViewProps) {
           {/* Tab routing — shares the centered max-width with the chrome above. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto">
             {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
+              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
             )}
             {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} />
+              <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />

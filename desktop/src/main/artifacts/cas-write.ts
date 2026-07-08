@@ -43,7 +43,14 @@ async function acquireLock(lock: string): Promise<boolean> {
       await fs.mkdir(lock);
       return true; // Lock acquired
     } catch (e: any) {
-      if (e.code !== 'EEXIST') throw e;
+      // EEXIST = normal contention (another writer holds the lock). On Windows
+      // NTFS, mkdir racing another writer's in-flight lock REMOVAL surfaces
+      // EPERM / EACCES / EBUSY instead (the dir sits in a "delete pending"
+      // state until the rmdir completes) — same meaning, so retry rather than
+      // throw. Anything else (e.g. ENOENT parent missing) is a real error.
+      const contention =
+        e.code === 'EEXIST' || e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY';
+      if (!contention) throw e;
       // Stale-lock heuristic: if the lock dir is older than LOCK_STALE_MS,
       // the holding process likely crashed — break the lock and retry.
       try {

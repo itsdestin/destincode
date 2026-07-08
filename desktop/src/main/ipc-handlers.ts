@@ -2248,12 +2248,21 @@ export function registerIpcHandlers(
     const sidecar = await readSidecar(projectRoot);
     const extra: any[] = [];
     if (sidecar && !('corrupted' in sidecar)) {
-      for (const a of sidecar.artifacts) {
-        if (a.kind !== 'internal' || a.status === 'deleted') continue;
+      const candidates = sidecar.artifacts.filter((a) => {
+        if (a.kind !== 'internal' || a.status === 'deleted') return false;
+        return !seen.has(canonicalize(a.path, projectRoot));
+      });
+      // Orphan check (skip artifacts bash-rm'd off disk) in PARALLEL — same
+      // pattern as countArtifacts above; the serial version added a round-trip
+      // of latency per artifact on sidecars with many entries.
+      const alive = await Promise.all(candidates.map(async (a) => {
+        try { await fs.promises.access(path.join(projectRoot, a.path)); return true; }
+        catch { return false; }
+      }));
+      candidates.forEach((a, i) => {
+        if (!alive[i]) return;
         const rel = canonicalize(a.path, projectRoot);
-        if (seen.has(rel)) continue;
-        // Only include artifacts that still exist on disk (skip orphans).
-        try { await fs.promises.access(path.join(projectRoot, a.path)); } catch { continue; }
+        if (seen.has(rel)) return; // two sidecar entries can canonicalize to one path
         seen.add(rel);
         // Present as a browser entry (discovered shape) so the All files tab treats
         // it uniformly (no existence re-check; opens via the path-fallback GET).
@@ -2262,7 +2271,7 @@ export function registerIpcHandlers(
           lastModified: a.lastModified ?? '', status: 'active',
           versions: [], comments: [], tags: [], discovered: true,
         });
-      }
+      });
     }
     return { files: [...scan.files, ...extra], truncated: scan.truncated };
   }

@@ -3,8 +3,11 @@
 //   mode='artifacts' → ARTIFACTS: files Claude directly created/edited (LIST_PROJECT,
 //                      sidecar-tracked). Honors "Show deleted"/orphan state.
 //   mode='allfiles'  → ALL FILES: every real file in the project folder
-//                      (LIST_ALL_FILES, full-browser discovery). NO filter chips —
-//                      the badge count always equals what's on screen.
+//                      (LIST_ALL_FILES, full-browser discovery). No "Show deleted"
+//                      chip (nothing tracked to un-hide); the seg-row search +
+//                      type filter + sort apply to BOTH modes. Badge counts stay
+//                      folder TOTALS — the filters are explicit, visible controls,
+//                      so a filtered grid never redefines what "N files" means.
 // Cards use .layer-surface; the deleted badge is a plain word "deleted" (the ●◐○ / ✕
 // glyph language is disliked — plain words instead).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -14,7 +17,8 @@ import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/art
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
 import type { ActiveArtifactHandle } from '../../artifact-views/ActiveArtifactView';
 import { ArtifactThumbnail } from '../../ArtifactThumbnail';
-import { categorizeArtifact } from '../../../../shared/artifacts/categorization';
+import { fileTypeGroup, fileTypeLabel } from '../../../../shared/artifacts/categorization';
+import type { FileTypeGroup } from '../../../../shared/artifacts/categorization';
 import { ProjectDetailOverlay } from '../ProjectDetailOverlay';
 import {
   TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PencilIcon, CheckIcon, FolderIcon, LinkIcon, ExternalLinkIcon,
@@ -41,11 +45,26 @@ function artifactAbsPath(projectPath: string, a: ArtifactRecord): string {
 // drawer, keyed under this reserved sessionId in activeArtifactBySession.
 const PV_SESSION = 'project-view';
 
-// Human "kind" label for a card (Document / Image / Code / Config), derived from
-// the shared categorizer — matches the prototype's artCard second line.
-function kindLabel(p: string): string {
-  const c = categorizeArtifact(p);
-  return c ? c.charAt(0).toUpperCase() + c.slice(1) : 'File';
+// Human "kind" label for a card (Document / Image / Spreadsheet / Code), from the
+// shared fine-grained type groups — the same groups the type filter uses, so the
+// card label always agrees with which filter option surfaces it.
+const kindLabel = fileTypeLabel;
+
+// Sort order for the file cards (folders always sort by name). Shared with the
+// seg-row sort <select> in ProjectView via this exported key type.
+export type FileSortKey = 'name' | 'recent' | 'type';
+const fileNameOf = (a: ArtifactRecord) => a.path.split('/').pop() ?? a.path;
+const extOf = (n: string) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
+function fileComparator(sortBy: FileSortKey) {
+  return (a: ArtifactRecord, b: ArtifactRecord): number => {
+    // lastModified is an ISO string — lexicographic compare IS chronological.
+    if (sortBy === 'recent') return (b.lastModified || '').localeCompare(a.lastModified || '');
+    if (sortBy === 'type') {
+      return extOf(fileNameOf(a)).localeCompare(extOf(fileNameOf(b)))
+        || fileNameOf(a).localeCompare(fileNameOf(b));
+    }
+    return fileNameOf(a).localeCompare(fileNameOf(b));
+  };
 }
 
 // One level of a virtual folder tree built from the flat artifact paths.
@@ -58,7 +77,9 @@ const FOLDER_PREVIEW_TILES = 4;
 // Split the (already-filtered) artifacts into the immediate subfolders + the
 // files that live directly in `dir` ('' = project root). Counts on a folder are
 // the total files anywhere beneath it (recursive), so the card reads "N files".
-function listDir(artifacts: ArtifactRecord[], dir: string): { folders: DirFolder[]; files: ArtifactRecord[] } {
+// Files sort per the user's sort key; folders always sort by name (a folder has
+// no single mtime/type, and a stable folder order keeps navigation predictable).
+function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey): { folders: DirFolder[]; files: ArtifactRecord[] } {
   const prefix = dir ? dir + '/' : '';
   const folderCounts = new Map<string, number>();
   const folderSamples = new Map<string, ArtifactRecord[]>();
@@ -86,7 +107,7 @@ function listDir(artifacts: ArtifactRecord[], dir: string): { folders: DirFolder
       samples: folderSamples.get(name) ?? [],
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  files.sort((a, b) => (a.path.split('/').pop() || '').localeCompare(b.path.split('/').pop() || ''));
+  files.sort(fileComparator(sortBy));
   return { folders, files };
 }
 
@@ -107,12 +128,16 @@ function FolderGlyph({ size = 40 }: { size?: number }) {
 export function FilesTab({
   project,
   search,
+  typeFilter,
+  sortBy,
   refreshKey,
   mode,
   onMutated,
 }: {
   project: CentralIndexProject;
   search: string;     // lifted to ProjectView — lives on the shared seg-row now
+  typeFilter: 'all' | FileTypeGroup; // seg-row type dropdown (both file tabs)
+  sortBy: FileSortKey;               // seg-row sort dropdown (files only)
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
   mode: 'artifacts' | 'allfiles';
   // Called after an in-tab sidecar mutation (exclude) so ProjectView can refetch
@@ -187,15 +212,16 @@ export function FilesTab({
     return () => { cancelled = true; };
   }, [project.path, artifacts]);
 
-  // Filter the artifact grid.
+  // Filter the artifact grid (deleted-state, search, and the seg-row type filter).
   const filtered = useMemo(
     () => artifacts.filter((a) => {
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
       if (isDeleted && !showDeletedArtifacts) return false;
       if (search && !a.path.toLowerCase().includes(search.toLowerCase())) return false;
+      if (typeFilter !== 'all' && fileTypeGroup(a.path) !== typeFilter) return false;
       return true;
     }),
-    [artifacts, showDeletedArtifacts, orphanIds, search],
+    [artifacts, showDeletedArtifacts, orphanIds, search, typeFilter],
   );
   const refreshArtifacts = () => {
     const load = mode === 'allfiles'
@@ -210,7 +236,12 @@ export function FilesTab({
 
   // Search flattens the tree (find a file anywhere); otherwise browse by folder.
   const searching = !!search.trim();
-  const dirView = useMemo(() => listDir(filtered, currentDir), [filtered, currentDir]);
+  const dirView = useMemo(() => listDir(filtered, currentDir, sortBy), [filtered, currentDir, sortBy]);
+  // Flat search results honor the same sort as the folder view.
+  const searchResults = useMemo(
+    () => (searching ? [...filtered].sort(fileComparator(sortBy)) : filtered),
+    [filtered, searching, sortBy],
+  );
   const segments = currentDir ? currentDir.split('/') : [];
 
   // One file card — reused by both the flat search results and the folder view.
@@ -315,15 +346,21 @@ export function FilesTab({
         </div>
       )}
       {!loading && !gated && searching && filtered.length === 0 && (
-        <p className="text-sm text-fg-muted">No {noun} match your search.</p>
+        <p className="text-sm text-fg-muted">
+          No {noun} match your search{typeFilter !== 'all' ? ' and type filter' : ''}.
+        </p>
       )}
       {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
-          {currentDir
-            ? 'This folder is empty under the current filters.'
-            : mode === 'allfiles'
-              ? 'No files found in this project folder.'
-              : 'No artifacts yet — files Claude creates or edits in this project will show up here. Check "All files" to browse everything in the folder.'}
+          {/* When files EXIST but the type filter hid them all, say so — the
+              bare "no artifacts yet" empty state would lie about the project. */}
+          {typeFilter !== 'all' && artifacts.length > 0
+            ? 'Nothing here matches the type filter.'
+            : currentDir
+              ? 'This folder is empty under the current filters.'
+              : mode === 'allfiles'
+                ? 'No files found in this project folder.'
+                : 'No artifacts yet — files Claude creates or edits in this project will show up here. Check "All files" to browse everything in the folder.'}
         </p>
       )}
 
@@ -333,7 +370,7 @@ export function FilesTab({
           px-4/pt-4 gutter, well inside its clip). */}
       <div className="flex-1 overflow-auto grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
         {searching
-          ? filtered.map(renderFileCard)
+          ? searchResults.map(renderFileCard)
           : (
             <>
               {/* Files directly in this folder FIRST, then subfolders (per request:

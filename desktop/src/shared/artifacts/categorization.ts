@@ -37,3 +37,37 @@ export function categorizeArtifact(path: string): ArtifactCategory {
   const ext = filename.slice(lastDot + 1).toLowerCase();
   return DOCUMENT_EXTENSIONS.has(ext) ? 'document' : 'code';
 }
+
+// ── Fine-grained type groups ─────────────────────────────────────────────────
+// A finer split of the binary categorizer, used by the Project View type filter
+// and card labels. Every path lands in exactly ONE group, so filtering by each
+// group in turn always covers the whole list:
+//   'image'    — rendered image formats
+//   'sheet'    — tabular data (spreadsheets, csv)
+//   'document' — remaining prose / office / mockup formats
+//   'code'     — everything categorizeArtifact calls code (source, configs, logs)
+export type FileTypeGroup = 'document' | 'image' | 'sheet' | 'code';
+
+const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif',
+]);
+const SHEET_EXTENSIONS: ReadonlySet<string> = new Set(['xls', 'xlsx', 'csv', 'tsv']);
+
+export function fileTypeGroup(path: string): FileTypeGroup {
+  if (categorizeArtifact(path) === 'code') return 'code';
+  // Document per the binary categorizer — refine by extension.
+  const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const filename = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
+  const ext = filename.slice(filename.lastIndexOf('.') + 1).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image';
+  if (SHEET_EXTENSIONS.has(ext)) return 'sheet';
+  return 'document';
+}
+
+// Human label for a file card's second line ("Document" / "Image" / …).
+const GROUP_LABELS: Record<FileTypeGroup, string> = {
+  document: 'Document', image: 'Image', sheet: 'Spreadsheet', code: 'Code',
+};
+export function fileTypeLabel(path: string): string {
+  return GROUP_LABELS[fileTypeGroup(path)];
+}
