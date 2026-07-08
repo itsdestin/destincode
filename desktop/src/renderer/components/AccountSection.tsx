@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useMarketplaceAuth } from '../state/marketplace-auth-context';
+import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Reads all state and actions from
@@ -137,32 +138,33 @@ function SignedOutBody({
   signInPending: boolean;
   startSignIn: () => Promise<void>;
 }) {
+  // Surface sign-in failures (poll timeout, network) inline — previously the
+  // void startSignIn() swallowed them and the user saw nothing happen.
+  const [signInError, setSignInError] = useState<string | null>(null);
   return (
     <div className="flex flex-col items-center gap-4 py-2 text-center">
       <p className="text-[11px] text-fg-dim leading-relaxed">
         One sign-in for the marketplace and games — GitHub only sees your public profile.
       </p>
       <button
-        onClick={() => void startSignIn()}
+        onClick={() => {
+          setSignInError(null);
+          startSignIn().catch((e) =>
+            setSignInError(e instanceof Error ? e.message : 'sign-in failed'),
+          );
+        }}
         disabled={signInPending}
         className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
       >
         <GitHubIcon />
         {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
       </button>
+      {signInError && <p className="text-[10px] text-red-500">{signInError}</p>}
     </div>
   );
 }
 
 // ── Signed-in ───────────────────────────────────────────────────────────────
-
-interface SignedInUser {
-  id: string;
-  login: string;
-  avatar_url: string;
-  display_name?: string;
-  handle?: string | null;
-}
 
 function SignedInBody({
   user,
@@ -172,7 +174,8 @@ function SignedInBody({
   deleteAccount,
   onClose,
 }: {
-  user: SignedInUser;
+  // Reuse the canonical profile type instead of a duplicate local interface.
+  user: MarketplaceUser;
   signOut: () => Promise<void>;
   updateProfile: (name: string) => Promise<void>;
   setHandle: (handle: string) => Promise<void>;
