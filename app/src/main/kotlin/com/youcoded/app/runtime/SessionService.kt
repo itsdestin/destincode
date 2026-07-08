@@ -2369,10 +2369,12 @@ class SessionService : Service() {
                 }
             }
 
-            // ── Marketplace auth (device-code OAuth) ────────────────────────────
-            // These 5 types mirror the desktop marketplace-auth-handlers.ts exactly.
+            // ── Account (device-code OAuth + profile) ───────────────────────────
+            // These account:* types mirror the desktop marketplace-api-handlers.ts
+            // account:* channels exactly. Renamed from marketplace:auth:* in the
+            // accounts Phase 1 rework; wire shapes (ApiResult.toJson) are unchanged.
 
-            "marketplace:auth:start" -> {
+            "account:start" -> {
                 // Calls the Worker to start device-code flow, then opens the browser
                 // via the Activity callback so the user can authorize on GitHub.
                 // WHY Activity callback: Service cannot startActivity() with FLAG_ACTIVITY_NEW_TASK
@@ -2388,7 +2390,7 @@ class SessionService : Service() {
                                 onMarketplaceAuthUrlRequested?.invoke(authUrl)
                             }
                         } catch (e: Exception) {
-                            android.util.Log.w("SessionService", "marketplace:auth:start — browser open failed: ${e.message}")
+                            android.util.Log.w("SessionService", "account:start — browser open failed: ${e.message}")
                         }
                     }
                 }
@@ -2397,7 +2399,7 @@ class SessionService : Service() {
                 }
             }
 
-            "marketplace:auth:poll" -> {
+            "account:poll" -> {
                 // payload: { deviceCode } (camelCase — matches remote-shim.ts invoke call)
                 val deviceCode = msg.payload.optString("deviceCode", "")
                 val result = marketplaceApiClient.authPoll(deviceCode)
@@ -2408,15 +2410,20 @@ class SessionService : Service() {
                         val token = pollBody.optString("token", "")
                         if (token.isNotEmpty()) {
                             // WHY: token not logged — only status logged
-                            android.util.Log.i("SessionService", "marketplace:auth:poll — complete, saving token")
+                            android.util.Log.i("SessionService", "account:poll — complete, saving token")
                             marketplaceAuthStore.setToken(token)
-                            // Persist user info if returned alongside token
+                            // Persist user info if returned alongside token. The Worker now
+                            // returns the full account profile (display_name/handle) so the
+                            // account:user query works immediately without a /auth/me round-trip.
                             val userObj = pollBody.optJSONObject("user")
                             if (userObj != null) {
                                 val user = MarketplaceUser(
                                     id        = userObj.optString("id", ""),
                                     login     = userObj.optString("login", ""),
                                     avatarUrl = userObj.optString("avatar_url", ""),
+                                    // isNull() guards: optString(name, null) returns the Java "null" string, not real null.
+                                    displayName = if (userObj.isNull("display_name")) null else userObj.optString("display_name"),
+                                    handle      = if (userObj.isNull("handle")) null else userObj.optString("handle"),
                                 )
                                 marketplaceAuthStore.setSession(token, user)
                             }
@@ -2428,20 +2435,41 @@ class SessionService : Service() {
                 }
             }
 
-            "marketplace:auth:signed-in" -> {
+            "account:signed-in" -> {
                 // Plain boolean — no HTTP call, reads local store only
                 val signedIn = marketplaceAuthStore.getToken() != null
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, signedIn) }
             }
 
-            "marketplace:auth:user" -> {
-                // Returns the stored MarketplaceUser as a JSONObject, or null
-                val user = marketplaceAuthStore.getUser()
+            "account:user" -> {
+                // Returns the stored MarketplaceUser as a JSONObject, or null.
+                var user = marketplaceAuthStore.getUser()
+                if (user == null && marketplaceAuthStore.getToken() != null) {
+                    // Heal (desktop parity): a token stored before profile storage existed
+                    // (pre-2026-07 sign-ins) has no cached user — fetch /auth/me once and persist.
+                    // On any failure (offline, revoked) leave user null; the token stays untouched.
+                    val me = marketplaceApiClient.authMe()
+                    if (me is ApiResult.Ok) {
+                        val healed = MarketplaceUser(
+                            id        = me.value.optString("id"),
+                            login     = me.value.optString("login"),
+                            avatarUrl = me.value.optString("avatar_url", ""),
+                            // isNull() checks — optString(name, null) is a Java-null trap.
+                            displayName = if (me.value.isNull("display_name")) null else me.value.optString("display_name"),
+                            handle      = if (me.value.isNull("handle")) null else me.value.optString("handle"),
+                        )
+                        marketplaceAuthStore.setSession(marketplaceAuthStore.getToken()!!, healed)
+                        user = healed
+                    }
+                }
                 val result: Any = if (user != null) {
                     JSONObject().apply {
-                        put("id",         user.id)
-                        put("login",      user.login)
-                        put("avatar_url", user.avatarUrl)
+                        // Wire format is snake_case (matches desktop's stored MarketplaceUser + what React reads).
+                        put("id",           user.id)
+                        put("login",        user.login)
+                        put("avatar_url",   user.avatarUrl)
+                        put("display_name", user.displayName ?: JSONObject.NULL)
+                        put("handle",       user.handle ?: JSONObject.NULL)
                     }
                 } else {
                     JSONObject.NULL
@@ -2449,11 +2477,47 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
 
-            "marketplace:auth:sign-out" -> {
-                // Fire-and-forget: clears local credentials, no HTTP call needed
+            "account:sign-out" -> {
+                // Best-effort server-side revocation first (desktop parity), then clear locally.
+                // Offline sign-out still clears local credentials — never trap the user signed in.
+                runCatching { marketplaceApiClient.logout() }
                 marketplaceAuthStore.signOut()
-                // Respond with void (true as success indicator, matching desktop convention)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+
+            "account:update-profile" -> {
+                // payload: { displayName } (camelCase — matches remote-shim.ts)
+                val result = marketplaceApiClient.updateProfile(msg.payload.optString("displayName", ""))
+                // Mirror the new display name into the stored profile so account:user reflects it without a /auth/me round-trip.
+                if (result is ApiResult.Ok) {
+                    val user = marketplaceAuthStore.getUser()
+                    val token = marketplaceAuthStore.getToken()
+                    if (user != null && token != null) {
+                        marketplaceAuthStore.setSession(token, user.copy(displayName = result.value.optString("display_name")))
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "account:set-handle" -> {
+                // payload: { handle } (camelCase — matches remote-shim.ts)
+                val result = marketplaceApiClient.setHandle(msg.payload.optString("handle", ""))
+                // Mirror the claimed handle into the stored profile.
+                if (result is ApiResult.Ok) {
+                    val user = marketplaceAuthStore.getUser()
+                    val token = marketplaceAuthStore.getToken()
+                    if (user != null && token != null) {
+                        marketplaceAuthStore.setSession(token, user.copy(handle = result.value.optString("handle")))
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "account:delete" -> {
+                // Permanent hard-delete (Worker cascades all rows). Clear the local session only on success.
+                val result = marketplaceApiClient.deleteAccount()
+                if (result is ApiResult.Ok) marketplaceAuthStore.signOut()
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
             // ── Marketplace write endpoints ───────────────────────────────────

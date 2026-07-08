@@ -18,6 +18,10 @@ data class MarketplaceUser(
     val id: String,        // "github:<numeric id>"
     val login: String,
     val avatarUrl: String,
+    // Account-native fields (Worker accounts Phase 1). Nullable + default null so
+    // JSON written by older app versions (id/login/avatarUrl only) still parses.
+    val displayName: String? = null,
+    val handle: String? = null,
 )
 
 class MarketplaceAuthStore(private val prefs: SharedPreferences) {
@@ -44,6 +48,9 @@ class MarketplaceAuthStore(private val prefs: SharedPreferences) {
                 id        = obj.getString("id"),
                 login     = obj.getString("login"),
                 avatarUrl = obj.getString("avatarUrl"),
+                // isNull() guards against both a missing key (older JSON) and a stored JSON null.
+                displayName = if (obj.isNull("displayName")) null else obj.optString("displayName"),
+                handle      = if (obj.isNull("handle")) null else obj.optString("handle"),
             )
         } catch (_: Exception) { null }
     }
@@ -60,9 +67,12 @@ class MarketplaceAuthStore(private val prefs: SharedPreferences) {
             put("login",     user.login)
             // WHY: internal storage format uses camelCase because Kotlin property names
             // match. The wire format to the React renderer uses snake_case avatar_url
-            // (see SessionService's marketplace:auth:user handler). Never read this JSON
+            // (see SessionService's account:user handler). Never read this JSON
             // externally — the getUser() reader is the only consumer.
             put("avatarUrl", user.avatarUrl)
+            // Account-native fields — stored as JSON null when absent so getUser()'s isNull() reads them back as Kotlin null.
+            put("displayName", user.displayName ?: JSONObject.NULL)
+            put("handle",      user.handle ?: JSONObject.NULL)
         }.toString()
         prefs.edit()
             .putString(KEY_TOKEN, token)

@@ -170,6 +170,51 @@ class MarketplaceApiClient(
         return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
     }
 
+    // ── Account endpoints (Worker accounts Phase 1) — all auth'd, small JSON bodies ──
+    // These mirror the desktop MarketplaceApiClient account methods. The wire shape
+    // returned to React (via ApiResult.toJson) is identical to marketplace:rate etc.
+
+    /** GET /auth/me — full account profile. Used by the account:user lazy heal. */
+    suspend fun authMe(): ApiResult<JSONObject> {
+        val (code, body) = request("/auth/me", method = "GET", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** PATCH /auth/profile — update display name. Returns { display_name }. */
+    suspend fun updateProfile(displayName: String): ApiResult<JSONObject> {
+        val (code, body) = request(
+            "/auth/profile",
+            method = "PATCH",
+            body = JSONObject().put("display_name", displayName),
+            auth = true,
+        )
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** PUT /auth/handle — claim/change unique @handle. Returns { handle }. */
+    suspend fun setHandle(handle: String): ApiResult<JSONObject> {
+        val (code, body) = request(
+            "/auth/handle",
+            method = "PUT",
+            body = JSONObject().put("handle", handle),
+            auth = true,
+        )
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** DELETE /auth/account — permanent hard-delete (Worker cascades all rows). */
+    suspend fun deleteAccount(): ApiResult<JSONObject> {
+        // 204/empty body comes back as JSONObject() from request() → Ok (2xx). Caller clears local session.
+        val (code, body) = request("/auth/account", method = "DELETE", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** POST /auth/logout — server-side session revocation (best-effort on sign-out). */
+    suspend fun logout(): ApiResult<JSONObject> {
+        val (code, body) = request("/auth/logout", method = "POST", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
     /** POST /reports — report a rating. Requires token. */
     suspend fun postReport(
         ratingUserId: String,
