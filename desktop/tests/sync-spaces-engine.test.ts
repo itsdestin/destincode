@@ -59,6 +59,37 @@ describe('SpaceSyncEngine', () => {
     await engine.stop();
   });
 
+  it('single-flight: overlapping sync requests coalesce into exactly one rerun', async () => {
+    const t = fakeTransport();
+    // Make the FIRST pull hang until we release it, so we can pile up sync
+    // requests while a sync is genuinely in flight.
+    let releaseFirstPull: () => void = () => {};
+    let firstPull = true;
+    (t.pull as any).mockImplementation(async (s: SyncSpace) => {
+      t.pulls.push(s.id);
+      if (firstPull) {
+        firstPull = false;
+        await new Promise<void>(r => { releaseFirstPull = r; });
+      }
+      return { updated: false, conflictCopies: [] };
+    });
+    const engine = new SpaceSyncEngine(t, { debounceMs: 60_000, pollMs: 0, onEvent: () => {} });
+    const space: SyncSpace = { id: 'project:x', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    const first = engine.syncSpace(space);                       // starts, blocks inside pull
+    await vi.waitFor(() => expect(t.pulls.length).toBe(1), { timeout: 5000 });
+    void engine.syncSpace(space);                                // mid-sync: sets the rerun flag
+    void engine.syncSpace(space);                                // mid-sync again: must NOT queue a second rerun
+    releaseFirstPull();
+    await first;
+    // Exactly two syncs total: the original + one coalesced rerun.
+    await vi.waitFor(() => expect(t.pushes.length).toBe(2), { timeout: 5000 });
+    await new Promise(r => setTimeout(r, 300));                  // settle: no third sync sneaks in
+    expect(t.pushes.length).toBe(2);
+    expect(t.pulls.length).toBe(2);
+    await engine.stop();
+  });
+
   it('emits error events instead of throwing (never-block, spec §13)', async () => {
     const t = fakeTransport();
     (t.push as any).mockImplementation(async () => { throw new Error('boom'); });

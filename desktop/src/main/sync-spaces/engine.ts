@@ -20,6 +20,10 @@ interface SpaceState {
   rerun: boolean;
 }
 
+// Coarse watcher-level filter only — intentionally narrower than the git layer's
+// DEFAULT_IGNORES, which stays authoritative about what actually syncs. Each
+// regex means: "this directory name appears anywhere in the path, with either
+// slash style" (Windows \ or POSIX /).
 const WATCH_IGNORED = [/(^|[\\/])\.youcoded([\\/]|$)/, /(^|[\\/])node_modules([\\/]|$)/, /(^|[\\/])\.git([\\/]|$)/];
 
 export class SpaceSyncEngine {
@@ -62,6 +66,10 @@ export class SpaceSyncEngine {
     });
     const st: SpaceState = { space, watcher, debounce: null, syncing: false, rerun: false };
     watcher.on('all', () => this.schedule(st));
+    // A watcher that dies after startup (inotify exhaustion, permissions) must
+    // surface as a sync error, not crash the app — an unhandled 'error' on a
+    // Node EventEmitter throws. 'all' does NOT receive error events.
+    watcher.on('error', (e: any) => this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e) }));
     this.states.set(space.id, st);
   }
 
@@ -74,6 +82,8 @@ export class SpaceSyncEngine {
   async syncSpace(space: SyncSpace): Promise<void> {
     const st = this.states.get(space.id);
     if (!st) return;
+    // Single-flight: if a sync is already running, flag exactly ONE follow-up
+    // rerun (the finally block below fires it) — extra requests coalesce.
     if (st.syncing) { st.rerun = true; return; }
     st.syncing = true;
     try {
