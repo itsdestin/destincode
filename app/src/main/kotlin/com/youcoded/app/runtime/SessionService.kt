@@ -2444,7 +2444,13 @@ class SessionService : Service() {
             "account:user" -> {
                 // Returns the stored MarketplaceUser as a JSONObject, or null.
                 var user = marketplaceAuthStore.getUser()
-                if (user == null && marketplaceAuthStore.getToken() != null) {
+                // WHY capture the token BEFORE the suspend: authMe() can take up to 30s;
+                // a sign-out processed during that window would make a re-read + `!!` throw
+                // NPE and crash the service scope. Capturing matches desktop, which reads
+                // the token before its await. Worst case we re-persist a session the user
+                // just cleared — the next sign-out clears it again; no crash path.
+                val healToken = marketplaceAuthStore.getToken()
+                if (user == null && healToken != null) {
                     // Heal (desktop parity): a token stored before profile storage existed
                     // (pre-2026-07 sign-ins) has no cached user — fetch /auth/me once and persist.
                     // On any failure (offline, revoked) leave user null; the token stays untouched.
@@ -2458,7 +2464,7 @@ class SessionService : Service() {
                             displayName = if (me.value.isNull("display_name")) null else me.value.optString("display_name"),
                             handle      = if (me.value.isNull("handle")) null else me.value.optString("handle"),
                         )
-                        marketplaceAuthStore.setSession(marketplaceAuthStore.getToken()!!, healed)
+                        marketplaceAuthStore.setSession(healToken, healed)
                         user = healed
                     }
                 }
@@ -2480,7 +2486,14 @@ class SessionService : Service() {
             "account:sign-out" -> {
                 // Best-effort server-side revocation first (desktop parity), then clear locally.
                 // Offline sign-out still clears local credentials — never trap the user signed in.
-                runCatching { marketplaceApiClient.logout() }
+                // WHY no runCatching: request() already catches I/O errors internally and returns
+                // Err, so wrapping here could only swallow CancellationException (a coroutine
+                // anti-pattern) or real programming bugs. Log Err so orphaned server-side
+                // session rows are debuggable (the 90-day expiry + prune cron mop them up).
+                val revoke = marketplaceApiClient.logout()
+                if (revoke is ApiResult.Err) {
+                    android.util.Log.w("SessionService", "account:sign-out — server logout failed (${revoke.status}): ${revoke.message}")
+                }
                 marketplaceAuthStore.signOut()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
@@ -2493,7 +2506,9 @@ class SessionService : Service() {
                     val user = marketplaceAuthStore.getUser()
                     val token = marketplaceAuthStore.getToken()
                     if (user != null && token != null) {
-                        marketplaceAuthStore.setSession(token, user.copy(displayName = result.value.optString("display_name")))
+                        // isNull() guard — same Java-null-trap convention as the heal path above.
+                        val echoed = if (result.value.isNull("display_name")) null else result.value.optString("display_name")
+                        marketplaceAuthStore.setSession(token, user.copy(displayName = echoed))
                     }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
@@ -2507,7 +2522,9 @@ class SessionService : Service() {
                     val user = marketplaceAuthStore.getUser()
                     val token = marketplaceAuthStore.getToken()
                     if (user != null && token != null) {
-                        marketplaceAuthStore.setSession(token, user.copy(handle = result.value.optString("handle")))
+                        // isNull() guard — same Java-null-trap convention as the heal path above.
+                        val echoed = if (result.value.isNull("handle")) null else result.value.optString("handle")
+                        marketplaceAuthStore.setSession(token, user.copy(handle = echoed))
                     }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
