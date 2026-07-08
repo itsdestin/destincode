@@ -2267,9 +2267,25 @@ export function registerIpcHandlers(
     return { files: [...scan.files, ...extra], truncated: scan.truncated };
   }
 
-  async function countAllFiles(projectRoot: string): Promise<number> {
-    try { return (await projectAllFiles(projectRoot)).files.length; }
-    catch { return 0; }
+  // A "gated" root is the user's whole home directory or a drive/filesystem
+  // root — trees so large that discovery ALWAYS hits its caps, making the
+  // resulting list/count an arbitrary, run-to-run-varying sample. Rather than
+  // show garbage numbers by default (and burn ~1.5s of directory I/O every
+  // time the switcher computes counts — "Home" is always in the list), the All
+  // files section shows a "Browse anyway?" gate and counts show "—". The gate
+  // is about honesty, not safety: the scan itself is hard-bounded either way.
+  function isGatedRoot(projectRoot: string): boolean {
+    const canon = canonicalize(projectRoot, null);
+    if (canon === canonicalize(os.homedir(), null)) return true;
+    return /^[a-z]:?$/.test(canon) || canon === '/' || /^[a-z]:\/$/.test(canon);
+  }
+
+  async function countAllFiles(projectRoot: string): Promise<{ count: number; truncated: boolean } | null> {
+    if (isGatedRoot(projectRoot)) return null; // gated — no scan, no fake number
+    try {
+      const r = await projectAllFiles(projectRoot);
+      return { count: r.files.length, truncated: r.truncated };
+    } catch { return { count: 0, truncated: false }; }
   }
 
   // LIST_PROJECT → ARTIFACTS ONLY. Returns the tracked sidecar artifacts (internal
@@ -2305,10 +2321,16 @@ export function registerIpcHandlers(
   // full-browser view). Pure discovery — bounded, deterministic (stops at nested
   // git repos), cached. Independent of the sidecar / what Claude touched, so a
   // Claude-authored doc legitimately appears in BOTH Artifacts and All files.
-  ipcMain.handle(ARTIFACT_IPC.LIST_ALL_FILES, async (_e, projectId: string) => {
+  // Gated roots (home dir / drive root) return { gated: true } with no scan
+  // unless opts.force — the tab renders a "Browse anyway?" gate (see
+  // isGatedRoot above for WHY).
+  ipcMain.handle(ARTIFACT_IPC.LIST_ALL_FILES, async (_e, projectId: string, opts?: { force?: boolean }) => {
     const projects = await listProjects(CLAUDE_DIR);
     const p = projects.find((x) => x.id === projectId);
     const projectRoot = p ? p.path : projectId;
+    if (isGatedRoot(projectRoot) && !opts?.force) {
+      return { ok: true, files: [], truncated: false, gated: true };
+    }
     const r = await projectAllFiles(projectRoot);
     return { ok: true, files: r.files, truncated: r.truncated };
   });
@@ -2576,12 +2598,20 @@ export function registerIpcHandlers(
       // core principle — the hero/segments/switcher each read the right one.
       let artifactCount: number;
       let fileCount: number | undefined;
+      let fileCountTruncated: boolean | undefined;
       let conversationCount: number | undefined;
       if (opts?.withCounts) {
         // Authoritative counts via the SAME helpers the hero/segments use, so the
-        // switcher row never disagrees with the open project's header.
+        // switcher row never disagrees with the open project's header. Gated
+        // roots (home dir / drive root) return null — no scan, no fake number;
+        // the switcher falls back to the artifact count. Truncated counts are
+        // flagged so the UI can render "N+" instead of posing as exact.
         artifactCount = await countArtifacts(p.path);
-        fileCount = await countAllFiles(p.path);
+        const allFiles = await countAllFiles(p.path);
+        if (allFiles !== null) {
+          fileCount = allFiles.count;
+          fileCountTruncated = allFiles.truncated || undefined;
+        }
         conversationCount = convBySlug!.get(ccSlug(p.path)) ?? 0;
       } else {
         // Fast path for ChatView's frequent cwd-resolution calls: cheap sidecar-
@@ -2600,6 +2630,7 @@ export function registerIpcHandlers(
         ...p,
         stats: { ...p.stats, artifactCount },
         ...(fileCount !== undefined ? { fileCount } : {}),
+        ...(fileCountTruncated ? { fileCountTruncated } : {}),
         ...(conversationCount !== undefined ? { conversationCount } : {}),
       };
     }));

@@ -25,7 +25,7 @@ import { FilesTab } from './tabs/FilesTab';
 import { ConversationsTab } from './tabs/ConversationsTab';
 import { ContextTab } from './tabs/ContextTab';
 import { ConversationPreview } from './ConversationPreview';
-import { ProjectHero } from './ProjectHero';
+import { ProjectHero, formatFileCount } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { HowContextWorksPopup } from './HowContextWorksPopup';
 import { ContextEditorOverlay } from './ContextEditorOverlay';
@@ -38,7 +38,10 @@ type TabId = 'artifacts' | 'allfiles' | 'conversations' | 'context';
 // are DISTINCT counts — never the same number.
 interface HeroStats {
   artifacts: number;
-  files: number;
+  // null = gated root (home dir / drive root — no scan runs, no number).
+  files: number | null;
+  // Discovery hit a cap — render "N+" so a sample never poses as exact.
+  filesTruncated?: boolean;
   conversations: number;
   contextFiles: number;
   activeLabel: string;
@@ -274,14 +277,18 @@ export function ProjectView(props: ProjectViewProps) {
         return typeof res?.visibleCount === 'number' ? res.visibleCount : 0;
       } catch { return 0; }
     };
-    // ALL FILES count — the project folder's on-disk documents (DISTINCT from the
+    // ALL FILES count — the project folder's on-disk files (DISTINCT from the
     // artifact count). Shares main's discovery cache with the All files tab, so
-    // this and the tab don't double-scan.
-    const getAllFilesCount = async (): Promise<number> => {
+    // this and the tab don't double-scan. Gated roots (home dir / drive root)
+    // return { gated } with NO scan → null here → the stat renders "—".
+    const getAllFilesCount = async (): Promise<{ count: number | null; truncated: boolean }> => {
       try {
         const res = await (window.claude as any).artifacts.listAllFiles(id);
-        return res?.ok && Array.isArray(res.files) ? res.files.length : 0;
-      } catch { return 0; }
+        if (res?.gated) return { count: null, truncated: false };
+        return res?.ok && Array.isArray(res.files)
+          ? { count: res.files.length, truncated: !!res.truncated }
+          : { count: 0, truncated: false };
+      } catch { return { count: 0, truncated: false }; }
     };
 
     (async () => {
@@ -309,7 +316,8 @@ export function ProjectView(props: ProjectViewProps) {
 
       setHeroStats({
         artifacts: artifactCount,
-        files: fileCount,
+        files: fileCount.count,
+        filesTruncated: fileCount.truncated || undefined,
         conversations: conversationCount,
         contextFiles,
         activeLabel,
@@ -384,12 +392,13 @@ export function ProjectView(props: ProjectViewProps) {
 
   // Unified segmented control: icon + label + live count per tab.
   // CORE PRINCIPLE: Artifacts (Claude-authored) and All files (everything on disk)
-  // are separate sections with separate counts.
-  const SEGMENTS: { id: TabId; label: string; icon: React.ReactNode; count: number }[] = [
-    { id: 'artifacts', label: 'Artifacts', icon: <GridIcon />, count: heroStats.artifacts },
-    { id: 'allfiles', label: 'All files', icon: <FolderTabIcon />, count: heroStats.files },
-    { id: 'conversations', label: 'Conversations', icon: <ChatIcon />, count: heroStats.conversations },
-    { id: 'context', label: 'Context', icon: <DocIcon />, count: heroStats.contextFiles },
+  // are separate sections with separate counts. All-files renders via
+  // formatFileCount: "N", "N+" (truncated sample), or "—" (gated root, no scan).
+  const SEGMENTS: { id: TabId; label: string; icon: React.ReactNode; count: string }[] = [
+    { id: 'artifacts', label: 'Artifacts', icon: <GridIcon />, count: String(heroStats.artifacts) },
+    { id: 'allfiles', label: 'All files', icon: <FolderTabIcon />, count: formatFileCount(heroStats.files, heroStats.filesTruncated) },
+    { id: 'conversations', label: 'Conversations', icon: <ChatIcon />, count: String(heroStats.conversations) },
+    { id: 'context', label: 'Context', icon: <DocIcon />, count: String(heroStats.contextFiles) },
   ];
 
   return (

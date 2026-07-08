@@ -23,6 +23,13 @@ import {
 // Compact relative-time for the detail meta strip (shared util).
 import { formatRelativeTime as relTime } from '../../../utils/format-time';
 
+// Is the project path a bare drive/filesystem root (vs. the home folder)?
+// Only used to pick the right word in the gated-folder message.
+function rootLooksLikeDrive(p: string): boolean {
+  const fwd = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-zA-Z]:$/.test(fwd) || fwd === '';
+}
+
 // Absolute on-disk path for an artifact (internal = project.path + rel path).
 function artifactAbsPath(projectPath: string, a: ArtifactRecord): string {
   if (a.kind !== 'internal') return a.absolutePath ?? a.path;
@@ -127,6 +134,12 @@ export function FilesTab({
   // True when on-disk discovery hit a cap (folder too large) — surfaced as a note
   // so a partial list never silently reads as complete.
   const [truncated, setTruncated] = useState(false);
+  // Gated root (home dir / drive root): main returns { gated } WITHOUT scanning
+  // — the tree is so large the list/count would be an arbitrary sample. The tab
+  // renders a "Browse anyway?" gate; forceScan re-requests with { force: true }.
+  const [gated, setGated] = useState(false);
+  const [forceScan, setForceScan] = useState(false);
+  useEffect(() => { setForceScan(false); }, [project.id]); // per-project consent
   // Current folder being browsed ('' = project root). Files are organized into a
   // virtual tree from their relative paths so a 1000-file project is navigable.
   const [currentDir, setCurrentDir] = useState('');
@@ -139,11 +152,12 @@ export function FilesTab({
     // ARTIFACTS → tracked sidecar files; ALL FILES → on-disk discovery. Normalize
     // both response shapes (artifacts vs files) into one list.
     const load = mode === 'allfiles'
-      ? (window.claude as any).artifacts.listAllFiles(project.id)
+      ? (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined)
       : (window.claude as any).artifacts.listProject(project.id);
     load.then((res: any) => {
       if (cancelled) return;
       setLoading(false);
+      setGated(!!res?.gated);
       if (res && res.ok) { setArtifacts(res.files ?? res.artifacts ?? []); setTruncated(!!res.truncated); }
       else { setArtifacts([]); setTruncated(false); }
     });
@@ -152,7 +166,7 @@ export function FilesTab({
     dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
     setCurrentDir(''); // back to the project root on switch
     return () => { cancelled = true; };
-  }, [project.id, refreshKey, mode]);
+  }, [project.id, refreshKey, mode, forceScan]);
 
   // Existence check: fold "file not on disk" into the deleted UI state alongside
   // sidecar-tracked delete versions. Re-runs whenever the artifact list changes.
@@ -185,10 +199,10 @@ export function FilesTab({
   );
   const refreshArtifacts = () => {
     const load = mode === 'allfiles'
-      ? (window.claude as any).artifacts.listAllFiles(project.id)
+      ? (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined)
       : (window.claude as any).artifacts.listProject(project.id);
     load.then((r: any) => {
-      if (r && r.ok) { setArtifacts(r.files ?? r.artifacts ?? []); setTruncated(!!r.truncated); }
+      if (r && r.ok) { setArtifacts(r.files ?? r.artifacts ?? []); setTruncated(!!r.truncated); setGated(!!r.gated); }
     });
   };
 
@@ -280,10 +294,30 @@ export function FilesTab({
       {loading && (
         <p className="text-sm text-fg-muted">Loading {noun}…</p>
       )}
-      {!loading && searching && filtered.length === 0 && (
+      {/* Gated root (home dir / drive root): no scan ran. Explain WHY and offer
+          an explicit opt-in — showing an arbitrary truncated sample by default
+          would read as "here are your files" when it isn't. */}
+      {!loading && gated && (
+        <div className="max-w-md mt-4 mx-auto text-center">
+          <p className="text-sm text-fg mb-1.5">This folder is very large.</p>
+          <p className="text-[13px] text-fg-muted mb-3">
+            It covers your whole {rootLooksLikeDrive(project.path) ? 'drive' : 'home folder'}, so
+            browsing shows only a partial list and can be slow. Conversations and
+            Artifacts work normally either way.
+          </p>
+          <button
+            type="button"
+            className="px-3.5 py-1.5 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors"
+            onClick={() => setForceScan(true)}
+          >
+            Browse anyway
+          </button>
+        </div>
+      )}
+      {!loading && !gated && searching && filtered.length === 0 && (
         <p className="text-sm text-fg-muted">No {noun} match your search.</p>
       )}
-      {!loading && emptyHere && (
+      {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
           {currentDir
             ? 'This folder is empty under the current filters.'

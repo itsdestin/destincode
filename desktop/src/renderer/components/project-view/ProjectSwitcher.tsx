@@ -227,14 +227,18 @@ export function ProjectSwitcher({
                     </span>
                   </span>
                   {/* Files · chats hint. "files" = ALL FILES (fileCount) — the
-                      folder's on-disk documents — falling back to the artifact
-                      count until the withCounts pass resolves both. Chat count also
-                      appears only after that pass (undefined on the fast first paint). */}
+                      folder's on-disk files — falling back to the artifact
+                      count until the withCounts pass resolves both (and for
+                      GATED roots like Home, which get no fileCount at all —
+                      no scan runs there). Truncated counts render "N+" so a
+                      capped sample never poses as exact. Chat count appears
+                      only after the withCounts pass. */}
                   {(() => {
                     const files = p.fileCount ?? p.stats.artifactCount;
+                    const filesLabel = p.fileCountTruncated ? `${files.toLocaleString()}+` : String(files);
                     return (
                       <span className="text-[11px] text-fg-faint shrink-0 whitespace-nowrap">
-                        {files} file{files === 1 ? '' : 's'}
+                        {filesLabel} file{files === 1 ? '' : 's'}
                         {typeof p.conversationCount === 'number' && (
                           <> · {p.conversationCount} chat{p.conversationCount === 1 ? '' : 's'}</>
                         )}

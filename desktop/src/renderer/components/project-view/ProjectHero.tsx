@@ -16,10 +16,22 @@ import type { CentralIndexProject } from '../../../shared/artifacts/types';
 // Live, computed-in-ProjectView stats (NOT the stale stats.artifactCount).
 interface HeroStats {
   artifacts: number;  // Claude-authored (tracked)
-  files: number;      // all on-disk documents (the All files section)
+  // All on-disk files (the All files section). null = gated root (home dir /
+  // drive root — no scan runs, so there is no number to show).
+  files: number | null;
+  // True when discovery hit a cap — render "N+" so a truncated sample never
+  // poses as an exact total.
+  filesTruncated?: boolean;
   conversations: number;
   contextFiles: number;
   activeLabel: string;
+}
+
+// "N", "N+" (truncated), or "—" (gated — no scan ran). Shared by the hero
+// stat line and ProjectView's segment badges so the two can't disagree.
+export function formatFileCount(files: number | null, truncated?: boolean): string {
+  if (files === null) return '—';
+  return truncated ? `${files.toLocaleString()}+` : String(files);
 }
 // null when the project folder has no git remote.
 interface HeroRepo {
@@ -125,7 +137,7 @@ export function ProjectHero({
         {/* Stat row — dot-separated. */}
         <div className="flex flex-wrap gap-4 mt-3 text-xs text-fg-muted">
           <span><b className="text-fg-2 font-semibold">{stats.artifacts}</b> artifacts</span>
-          <span><b className="text-fg-2 font-semibold">{stats.files}</b> files</span>
+          <span><b className="text-fg-2 font-semibold">{formatFileCount(stats.files, stats.filesTruncated)}</b> files</span>
           <span><b className="text-fg-2 font-semibold">{stats.conversations}</b> conversations</span>
           <span><b className="text-fg-2 font-semibold">{stats.contextFiles}</b> context files</span>
           <span>active <b className="text-fg-2 font-semibold">{stats.activeLabel}</b></span>

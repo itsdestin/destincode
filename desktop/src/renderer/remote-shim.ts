@@ -1014,8 +1014,8 @@ export function installShim(): void {
         invoke('artifacts:list-session', { sessionId, projectRoot }),
       listProject: (projectId: string, opts?: { withCount?: boolean }) =>
         invoke('artifacts:list-project', { projectId, opts }),
-      listAllFiles: (projectId: string) =>
-        invoke('artifacts:list-all-files', { projectId }),
+      listAllFiles: (projectId: string, opts?: { force?: boolean }) =>
+        invoke('artifacts:list-all-files', { projectId, opts }),
       listProjectsIndex: (opts?: { withCounts?: boolean }) =>
         invoke('artifacts:list-projects-index', opts ?? {}),
       get: (projectRoot: string, artifactId: string) =>

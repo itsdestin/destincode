@@ -71,6 +71,10 @@ export interface CentralIndexProject {
   // count), distinct from stats.artifactCount above. conversationCount = number of
   // past sessions in the folder.
   fileCount?: number;
+  // True when discovery hit a cap computing fileCount — the UI renders "N+"
+  // instead of letting a truncated sample pose as an exact total. Gated roots
+  // (home dir / drive root) get NO fileCount at all (no scan runs there).
+  fileCountTruncated?: boolean;
   conversationCount?: number;
 }
 
