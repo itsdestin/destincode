@@ -24,6 +24,29 @@ export const DEFAULT_IGNORES: string[] = [
   '.env', '.env.*', '*.pem', '*.key', 'id_rsa*', 'id_ed25519*', '*.credentials.json',
 ];
 
+/** True when a relative path matches the DEFAULT_IGNORES set. Interprets the
+ *  gitignore-style entries for non-git consumers (the iCloud backup filter):
+ *  'name/' matches a path segment anywhere; 'name' matches a basename exactly;
+ *  simple '*' globs match against the basename. Why: backups must scrub the
+ *  same secrets/junk the sync layer scrubs — a narrower filter here would leak
+ *  keys into backups that sync deliberately never transports. */
+export function isIgnoredPath(relPath: string): boolean {
+  const segments = relPath.split(/[\\/]/).filter(Boolean);
+  const base = segments[segments.length - 1] ?? '';
+  for (const pattern of DEFAULT_IGNORES) {
+    if (pattern.endsWith('/')) {
+      const dir = pattern.slice(0, -1);
+      if (segments.slice(0, -1).includes(dir) || base === dir) return true;
+    } else if (pattern.includes('*')) {
+      const re = new RegExp(`^${pattern.split('*').map(s => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+      if (re.test(base)) return true;
+    } else if (base === pattern) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Spec §7: files over this cap don't live-sync (daily backup covers them). */
 export const MAX_SYNC_FILE_BYTES = 50 * 1024 * 1024;
 

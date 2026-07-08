@@ -6,7 +6,7 @@ import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { DEFAULT_IGNORES } from './guards';
+import { DEFAULT_IGNORES, isIgnoredPath } from './guards';
 import type { SyncSpace } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -66,7 +66,9 @@ export class DailyBackup {
       fs.mkdirSync(dest, { recursive: true });
       fs.cpSync(space.root, dest, {
         recursive: true,
-        filter: (src) => !/([\\/])(node_modules|\.youcoded|\.git)([\\/]|$)/.test(src) && !path.basename(src).startsWith('.env'),
+        // Backups scrub exactly what sync scrubs (DEFAULT_IGNORES) — secrets
+        // like *.pem / id_rsa* must not land in iCloud any more than in a repo.
+        filter: (src) => !isIgnoredPath(path.relative(space.root, src)),
       });
     }
   }

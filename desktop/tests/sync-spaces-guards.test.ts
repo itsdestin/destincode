@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateSyncName, DEFAULT_IGNORES, MAX_SYNC_FILE_BYTES,
-  conflictCopyName, findCaseCollisions,
+  conflictCopyName, findCaseCollisions, isIgnoredPath,
 } from '../src/main/sync-spaces/guards';
 
 describe('validateSyncName', () => {
@@ -32,6 +32,38 @@ describe('DEFAULT_IGNORES', () => {
     for (const p of ['node_modules/', '.youcoded/', '.git/', '.env', '*.pem', '.DS_Store']) {
       expect(DEFAULT_IGNORES).toContain(p);
     }
+  });
+});
+
+describe('isIgnoredPath', () => {
+  it('matches directory patterns anywhere in the path', () => {
+    expect(isIgnoredPath('node_modules/x/i.js')).toBe(true);
+    expect(isIgnoredPath('dist/bundle.js')).toBe(true);
+    expect(isIgnoredPath('sub/__pycache__/mod.pyc')).toBe(true);
+    // The directory itself (no children yet) is also ignored.
+    expect(isIgnoredPath('node_modules')).toBe(true);
+  });
+  it('matches exact-basename patterns at any depth', () => {
+    expect(isIgnoredPath('.env')).toBe(true);
+    expect(isIgnoredPath('sub/dir/.env')).toBe(true);
+    expect(isIgnoredPath('.DS_Store')).toBe(true);
+  });
+  it('matches * glob patterns against the basename (secrets)', () => {
+    expect(isIgnoredPath('secrets/server.pem')).toBe(true);
+    expect(isIgnoredPath('id_rsa')).toBe(true);
+    expect(isIgnoredPath('id_rsa.pub')).toBe(true);
+    expect(isIgnoredPath('.env.local')).toBe(true);
+    expect(isIgnoredPath('app/gcp.credentials.json')).toBe(true);
+  });
+  it('does not match ordinary project files', () => {
+    expect(isIgnoredPath('docs/notes.md')).toBe(false);
+    expect(isIgnoredPath('src/main.ts')).toBe(false);
+    // '.environment' is NOT '.env' (exact) nor '.env.*' (needs a dot after
+    // env) — same as gitignore semantics, so backups match sync exactly.
+    expect(isIgnoredPath('.environment')).toBe(false);
+  });
+  it('never ignores the space root itself (relative path is empty)', () => {
+    expect(isIgnoredPath('')).toBe(false);
   });
 });
 
