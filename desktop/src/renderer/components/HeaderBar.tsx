@@ -210,11 +210,12 @@ function ProjectsButton() {
   );
 }
 
-/** Artifact drawer button — isolated so it can safely call useArtifact().
+/** Files-drawer button — isolated so it can safely call useArtifact().
  *  Placed inside <ArtifactContext.Provider> (mounted in App.tsx), so the hook
  *  is always in-context when the main app is rendering HeaderBar.
- *  Hidden entirely when there are no artifacts for the active session
- *  (per plan: "Hidden completely if the session has zero artifacts"). */
+ *  Always rendered (so the drawer is reachable before any files exist); only
+ *  the count badge is conditional. (An earlier plan hid the whole button at
+ *  zero — that changed; this comment used to say so and was stale.) */
 function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionId: string | null; projectRoot?: string }) {
   const { state, dispatch } = useArtifact();
   const sessionArtifacts = activeSessionId ? (state.sessionArtifacts[activeSessionId] ?? []) : [];
@@ -259,7 +260,11 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
         if (!activeSessionId) return;
         dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
       }}
-      title="Session Artifacts"
+      // "Files", not "Artifacts": the drawer is a session activity log (it
+      // includes files the user merely VIEWED via pills), so the claude.ai-
+      // style "Artifacts" word would be wrong here — that term is reserved for
+      // the Project View tab that shows only what Claude made + pinned files.
+      title="Files in this chat"
     >
       {/* Document icon — SVG matches the style of the settings gear above */}
       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

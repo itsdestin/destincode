@@ -46,6 +46,17 @@ interface HeroStats {
 interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 
 
+// (i) glyph for the Artifacts/All-files hover explainer (matches ContextTab's).
+function InfoGlyph({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" />
+      <line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+  );
+}
+
 // Inline lucide-style tab icons (stroke currentColor) for the segmented control.
 function GridIcon({ size = 15 }: { size?: number }) {
   return (
@@ -451,6 +462,20 @@ export function ProjectView(props: ProjectViewProps) {
                   );
                 })}
               </div>
+
+              {/* (i) hover explainer for the Artifacts vs All files split — the
+                  two file tabs share a look and overlap by design (All files ⊇
+                  Artifacts), so the tooltip answers "why is this file in both?"
+                  right where the question arises. Hover icon per the app's (i)
+                  convention (ContextTab group headers) instead of a persistent
+                  caption. */}
+              <span
+                className="w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg transition-colors cursor-help shrink-0"
+                title={'Artifacts are files Claude created or edited in this project (plus any you pin with “+ Add file”). All files shows everything in the folder — Claude’s files included, so a file can appear in both.'}
+                aria-label="What is the difference between Artifacts and All files?"
+              >
+                <InfoGlyph />
+              </span>
 
               {/* Right controls for the two file sections. Search applies to both.
                   Mode-specific chips: "Show deleted" + "Add file" belong to the

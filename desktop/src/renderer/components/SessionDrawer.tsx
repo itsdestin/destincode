@@ -333,7 +333,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const listInner = (
     <>
       <div className="flex items-center justify-between px-3 py-2 border-b border-edge shrink-0">
-        <span className="font-semibold text-sm">Artifacts ({listedArtifacts.length})</span>
+        {/* "Files", not "Artifacts": this drawer is a session activity log
+            (created/edited/viewed all appear), so the claude.ai-style
+            "Artifacts" word is reserved for the Project View tab that shows
+            only what Claude made + pinned files. */}
+        <span className="font-semibold text-sm">Files ({listedArtifacts.length})</span>
         {!active && (
           <button
             className="text-fg-muted hover:text-fg px-1 text-base leading-none"
@@ -353,7 +357,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value as SortKey)}
-          title="Sort artifacts"
+          title="Sort files"
           className="bg-canvas border border-edge rounded text-[11px] text-fg-2 px-1 py-1 outline-none cursor-pointer"
         >
           <option value="recent">Recent</option>
@@ -384,7 +388,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 ? null /* the note above already explains the state */
                 : hideCodeAndConfigs && hiddenCount > 0
                   ? <>No documents yet — {hiddenCount} code/config file{hiddenCount === 1 ? '' : 's'} hidden. Toggle off above to view all.</>
-                  : <>No artifacts yet. Files Claude writes or edits in this session will appear here.</>}
+                  : <>Nothing here yet. Files Claude writes or edits in this chat will appear here.</>}
           </div>
         ) : (
           listedArtifacts.map((a) => (
