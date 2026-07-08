@@ -782,7 +782,8 @@ export function installShim(): void {
     // YouCoded account (device-code OAuth) — same shape as preload.ts. Android
     // handlers live in SessionService.kt (Task 4). The shim wraps args in objects
     // (Kotlin reads with optString); start/poll/updateProfile/setHandle/deleteAccount
-    // return ApiResult, signedIn/user/signOut have no HTTP call, no ApiResult wrapper.
+    // return ApiResult. signedIn is a pure local read; user may lazily heal via
+    // /auth/me; signOut best-effort revokes server-side. No ApiResult wrapper on those.
     account: {
       start: (): Promise<ApiResult<unknown>> => invoke('account:start'),
       poll: (deviceCode: string): Promise<ApiResult<unknown>> =>

@@ -430,8 +430,9 @@ contextBridge.exposeInMainWorld('claude', {
   // YouCoded account (device-code OAuth) — token stays in main process.
   // start/poll/updateProfile/setHandle/deleteAccount wrap API calls and return
   // ApiResult so the renderer can inspect HTTP status codes across the contextBridge
-  // (structuredClone drops Error fields). signedIn / user / signOut are pure local
-  // reads — no API call, no ApiResult wrapper.
+  // (structuredClone drops Error fields). signedIn is a pure local read; user may
+  // lazily heal via /auth/me; signOut best-effort revokes the session server-side
+  // before the local clear. None of those three wrap in ApiResult.
   account: {
     start: (): Promise<ApiResult<AuthStartResponse>> =>
       ipcRenderer.invoke(IPC.ACCOUNT_START),
