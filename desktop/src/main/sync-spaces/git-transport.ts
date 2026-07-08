@@ -34,10 +34,36 @@ export class GitTransport implements SyncTransport {
   private async git(space: SyncSpace, args: string[]): Promise<ExecResult> {
     const env = { ...process.env, GIT_DIR: this.gitDir(space), GIT_WORK_TREE: space.root };
     try {
-      const { stdout, stderr } = await execFileAsync('git', args, { cwd: space.root, env, timeout: GIT_TIMEOUT });
+      // Why maxBuffer 64MB: Node's default is only 1MB and it KILLS the child
+      // when output exceeds it — on a big space that silently breaks history()
+      // and the name-only file listings this class depends on.
+      const { stdout, stderr } = await execFileAsync('git', args,
+        { cwd: space.root, env, timeout: GIT_TIMEOUT, maxBuffer: 64 * 1024 * 1024 });
       return { code: 0, stdout, stderr };
     } catch (e: any) {
       return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout || '', stderr: e.stderr || String(e) };
+    }
+  }
+
+  /** Read one side of a conflicted file (stage 2 = ours, 3 = theirs) as raw
+   *  BYTES. The string-returning git() helper must never be used for file
+   *  CONTENT: utf8 decoding mangles binary files, and a too-small buffer cap
+   *  rejects large ones. Returns null when the stage doesn't exist (e.g. the
+   *  file is a remote-only add). WHY the maxBuffer must stay ≥ maxFileBytes:
+   *  the conflict loop treats null as "no local version to preserve" and lets
+   *  checkout --theirs overwrite the file — if this buffer were smaller than
+   *  the sync size cap, a big-but-legal local edit would come back null and be
+   *  silently DROPPED with no conflict copy. */
+  private async showStage(space: SyncSpace, stage: 2 | 3, rel: string): Promise<Buffer | null> {
+    const env = { ...process.env, GIT_DIR: this.gitDir(space), GIT_WORK_TREE: space.root };
+    try {
+      const { stdout } = await execFileAsync('git', ['show', `:${stage}:${rel}`], {
+        cwd: space.root, env, timeout: GIT_TIMEOUT,
+        encoding: 'buffer', maxBuffer: this.maxFileBytes + 1024 * 1024,
+      });
+      return stdout as unknown as Buffer;
+    } catch {
+      return null;
     }
   }
 
@@ -154,16 +180,21 @@ export class GitTransport implements SyncTransport {
       .split('\0').filter(Boolean);
     const copies: string[] = [];
     for (const rel of conflicted) {
-      // Stage 2 = ours (this device), stage 3 = theirs (remote).
-      const ours = await this.git(space, ['show', `:2:${rel}`]);
-      const theirs = await this.git(space, ['show', `:3:${rel}`]);
-      if (ours.code === 0) {
+      // Stage 2 = ours (this device), stage 3 = theirs (remote). Content is
+      // read as raw bytes via showStage so binary and >1MB files survive the
+      // copy intact (utf8 strings would corrupt bytes; Node's 1MB default
+      // buffer would reject big files and silently skip the copy).
+      const ours = await this.showStage(space, 2, rel);
+      if (ours !== null) {
         const copyRel = this.freeCopyName(space, rel);
         fs.mkdirSync(path.dirname(path.join(space.root, copyRel)), { recursive: true });
-        fs.writeFileSync(path.join(space.root, copyRel), ours.stdout);
+        fs.writeFileSync(path.join(space.root, copyRel), ours);
         await this.git(space, ['add', copyRel]);
         copies.push(copyRel);
       }
+      // Cheap existence probe — the canonical restore stays checkout --theirs
+      // (git writes the content itself, so it's already byte-faithful).
+      const theirs = await this.git(space, ['cat-file', '-e', `:3:${rel}`]);
       if (theirs.code === 0) {
         await this.git(space, ['checkout', '--theirs', '--', rel]);
         await this.git(space, ['add', rel]);

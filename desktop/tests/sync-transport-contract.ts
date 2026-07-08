@@ -1,7 +1,7 @@
 // desktop/tests/sync-transport-contract.ts
 // Contract every SyncTransport implementation must satisfy (spec §15).
 // Called from a concrete transport's .test.ts with a factory.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -16,6 +16,12 @@ export interface TransportHarness {
 
 export function describeTransportContract(name: string, makeHarness: () => Promise<TransportHarness>) {
   describe(`SyncTransport contract: ${name}`, () => {
+    // Real transports are I/O-bound (git spawns today, network later) — the
+    // slowest contract test does ~6 sequential git round-trips (~8s on Windows).
+    // Own a generous timeout here so bare `vitest run` stays green while the
+    // global default stays tight for fast unit tests.
+    vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
     let h: TransportHarness;
     beforeEach(async () => { h = await makeHarness(); });
     afterEach(async () => { await h.cleanup(); });
@@ -126,6 +132,43 @@ export function describeTransportContract(name: string, makeHarness: () => Promi
       const aPull = await h.transport.pull(a);
       expect(fs.readFileSync(path.join(a.root, 'shared.md'), 'utf8')).toBe('A content\n');
       expect(fs.existsSync(path.join(a.root, 'b-only.md'))).toBe(true);
-    }, 30000);
+    });
+
+    it('conflict copies preserve >1MB content byte-for-byte', async () => {
+      const a = await h.makeDeviceSpace();
+      const b = await h.makeDeviceSpace();
+      await h.transport.init(a); await h.transport.init(b);
+      fs.writeFileSync(path.join(a.root, 'big.txt'), 'base\n');
+      await h.transport.push(a, 'base');
+      await h.transport.pull(b);
+      const aContent = `A${'x'.repeat(2 * 1024 * 1024)}\n`;
+      const bContent = `B${'y'.repeat(2 * 1024 * 1024)}\n`;
+      fs.writeFileSync(path.join(a.root, 'big.txt'), aContent);
+      await h.transport.push(a, 'A big edit');
+      fs.writeFileSync(path.join(b.root, 'big.txt'), bContent);
+      const pull = await h.transport.pull(b);
+      expect(pull.conflictCopies.length).toBe(1);
+      expect(fs.readFileSync(path.join(b.root, 'big.txt'), 'utf8')).toBe(aContent);
+      expect(fs.readFileSync(path.join(b.root, pull.conflictCopies[0]), 'utf8')).toBe(bContent);
+    });
+
+    it('conflict copies preserve binary content exactly', async () => {
+      const a = await h.makeDeviceSpace();
+      const b = await h.makeDeviceSpace();
+      await h.transport.init(a); await h.transport.init(b);
+      const base = Buffer.from([0, 1, 2, 3, 255, 254, 10, 13, 0, 42]);
+      fs.writeFileSync(path.join(a.root, 'data.bin'), base);
+      await h.transport.push(a, 'base');
+      await h.transport.pull(b);
+      const aBytes = Buffer.from([9, 8, 7, 0, 200, 201, 13, 10, 0, 1]);
+      const bBytes = Buffer.from([5, 5, 5, 0, 128, 129, 10, 0, 2, 3]);
+      fs.writeFileSync(path.join(a.root, 'data.bin'), aBytes);
+      await h.transport.push(a, 'A bin edit');
+      fs.writeFileSync(path.join(b.root, 'data.bin'), bBytes);
+      const pull = await h.transport.pull(b);
+      expect(pull.conflictCopies.length).toBe(1);
+      expect(Buffer.compare(fs.readFileSync(path.join(b.root, 'data.bin')), aBytes)).toBe(0);
+      expect(Buffer.compare(fs.readFileSync(path.join(b.root, pull.conflictCopies[0])), bBytes)).toBe(0);
+    });
   });
 }
