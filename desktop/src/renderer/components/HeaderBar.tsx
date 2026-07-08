@@ -585,8 +585,9 @@ export default function HeaderBar({
         </button>
         {/* Projects button — always visible; opens the persistent project browser. */}
         <ProjectsButton />
-        {/* Artifact drawer trigger — hidden when session has zero artifacts
-            (plan: "Hidden completely if the session has zero artifacts"). */}
+        {/* Files-drawer trigger — always visible; only the count badge is
+            conditional (the original hide-at-zero plan was dropped — see the
+            ArtifactDrawerButton docblock). */}
         <ArtifactDrawerButton
           activeSessionId={activeSessionId}
           projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}

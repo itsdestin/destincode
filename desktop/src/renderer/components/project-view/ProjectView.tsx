@@ -52,56 +52,17 @@ interface HeroStats {
 interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 
 
-// (i) glyph for the Artifacts/All-files hover explainer (matches ContextTab's).
-function InfoGlyph({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" />
-      <line x1="12" y1="8" x2="12.01" y2="8" />
-    </svg>
-  );
-}
+// Shared lucide-style glyphs live in ./icons.tsx (previously each file carried
+// its own copies of the same paths). GridIcon is the one glyph unique to this
+// file — the Artifacts segment icon.
+import { InfoIcon, ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
 
-// Inline lucide-style tab icons (stroke currentColor) for the segmented control.
 function GridIcon({ size = 15 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
       <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
-function ChatIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
-function FolderTabIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
-    </svg>
-  );
-}
-function DocIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" />
-    </svg>
-  );
-}
-function SearchGlyph({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
     </svg>
   );
 }
@@ -195,12 +156,11 @@ export function ProjectView(props: ProjectViewProps) {
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [context, setContext] = useState<ContextGroup[] | null>(null);
 
-  // Project switcher palette state. Nothing renders it yet — wired in Task 2.3.
+  // Project switcher palette state (rendered at the bottom of this component).
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
-  // Selected conversation for the preview overlay. Stored here so the
-  // ConversationsTab can bubble a click up; the actual <ConversationPreview>
-  // overlay is built in Task 3.2.
+  // Selected conversation for the preview overlay — the ConversationsTab
+  // bubbles a click up; <ConversationPreview> renders it below.
   const [previewSession, setPreviewSession] = useState<PastSession | null>(null);
 
   // Project deletion modal state.
@@ -449,7 +409,7 @@ export function ProjectView(props: ProjectViewProps) {
   // formatFileCount: "N", "N+" (truncated sample), or "—" (gated root, no scan).
   const SEGMENTS: { id: TabId; label: string; icon: React.ReactNode; count: string }[] = [
     { id: 'artifacts', label: 'Artifacts', icon: <GridIcon />, count: String(heroStats.artifacts) },
-    { id: 'allfiles', label: 'All files', icon: <FolderTabIcon />, count: formatFileCount(heroStats.files, heroStats.filesTruncated) },
+    { id: 'allfiles', label: 'All files', icon: <FolderIcon />, count: formatFileCount(heroStats.files, heroStats.filesTruncated) },
     { id: 'conversations', label: 'Conversations', icon: <ChatIcon />, count: String(heroStats.conversations) },
     { id: 'context', label: 'Context', icon: <DocIcon />, count: String(heroStats.contextFiles) },
   ];
@@ -462,7 +422,7 @@ export function ProjectView(props: ProjectViewProps) {
         <div className="flex-1" />
         <button
           type="button"
-          className="flex items-center gap-1.5 px-2 py-1 rounded-sm text-xs text-fg-muted hover:text-fg hover:bg-inset transition-colors shrink-0"
+          className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-fg-muted hover:text-fg hover:bg-inset transition-colors shrink-0"
           onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
           title="Close Projects"
           aria-label="Close Projects"
@@ -532,7 +492,7 @@ export function ProjectView(props: ProjectViewProps) {
                           title={'Artifacts are files Claude created or edited in this project (plus any you pin with “+ Add file”). All files shows everything in the folder — Claude’s files included, so a file can appear in both.'}
                           aria-label="What is the difference between Artifacts and All files?"
                         >
-                          <InfoGlyph size={13} />
+                          <InfoIcon size={13} />
                         </span>
                       )}
                     </button>
@@ -550,7 +510,7 @@ export function ProjectView(props: ProjectViewProps) {
                 <div className="flex items-center gap-2">
                   <div className="relative" ref={filterWrapRef}>
                     <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-[260px] focus-within:border-edge-dim">
-                      <span className="text-fg-muted shrink-0"><SearchGlyph size={15} /></span>
+                      <span className="text-fg-muted shrink-0"><SearchIcon size={15} /></span>
                       <input
                         type="text"
                         placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
@@ -721,14 +681,14 @@ export function ProjectView(props: ProjectViewProps) {
             <div className="flex gap-2 justify-end">
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-sm border border-edge hover:bg-inset text-sm transition-colors"
+                className="px-3 py-1.5 rounded-md border border-edge hover:bg-inset text-sm transition-colors"
                 onClick={() => { setDeletingProject(null); setAlsoDeleteSidecar(false); }}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-sm bg-red-600 text-white hover:bg-red-700 text-sm transition-colors"
+                className="px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700 text-sm transition-colors"
                 onClick={confirmDelete}
               >
                 Remove

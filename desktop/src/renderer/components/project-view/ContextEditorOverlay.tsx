@@ -20,6 +20,7 @@ import {
 } from './detail-tool-icons';
 // Plain-text load-timing label — shared with ContextTab (context-labels.ts).
 import { timingLabel } from './context-labels';
+import { getPlatform } from '../../platform';
 
 interface ContextEditorOverlayProps {
   project: { path: string };
@@ -183,10 +184,14 @@ export function ContextEditorOverlay({ project, file, onClose }: ContextEditorOv
           </button>
         </>
       )}
-      <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleReveal}>
-        <FolderIcon size={13} />
-        Reveal
-      </button>
+      {/* Desktop-only (shell.showItemInFolder) — gate so it can't render dead
+          on remote/Android, matching SessionDrawer + FilesTab. */}
+      {getPlatform() === 'electron' && (
+        <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleReveal}>
+          <FolderIcon size={13} />
+          Reveal
+        </button>
+      )}
       <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleCopyPath}>
         <LinkIcon size={13} />
         {copied ? 'Copied' : 'Copy path'}

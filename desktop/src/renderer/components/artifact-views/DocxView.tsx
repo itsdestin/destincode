@@ -33,8 +33,13 @@ function DocxContent({ bytes }: { bytes: Uint8Array }) {
   if (html === null) return <CenterNote>Loading document…</CenterNote>;
 
   return (
+    // .doc-html (globals.css) styles the converted headings/lists/tables with
+    // theme tokens. The previous `prose dark:prose-invert` classes were inert —
+    // the Tailwind typography plugin isn't installed, and `dark:` follows the OS
+    // scheme rather than the active YouCoded theme — so docx bodies rendered as
+    // flat unstyled text under the preflight reset.
     <div
-      className="overflow-auto h-full p-4 prose dark:prose-invert max-w-none"
+      className="doc-html overflow-auto h-full p-4 max-w-none"
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

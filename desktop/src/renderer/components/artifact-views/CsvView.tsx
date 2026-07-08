@@ -8,7 +8,7 @@ import { useMemo, useState, CSSProperties } from 'react';
 import type { ArtifactViewProps } from './types';
 import { colLetter } from './exceljs-cell';
 import { detectDelimiter, parseDelimited } from './csv-parse';
-import { PAPER, GUTTER_BG, GRID, GUTTER_FG, SEL } from './sheet-theme';
+import { PAPER, GUTTER_BG, GRID, GUTTER_FG, SEL, NOTE_FG, NOTE_BG } from './sheet-theme';
 
 const MAX_ROWS = 2000;
 const MIN_ROWS = 50;
@@ -86,7 +86,7 @@ export function CsvView({ path, content }: ArtifactViewProps) {
           </tbody>
         </table>
         {grid.truncated && (
-          <div style={{ padding: '8px 12px', fontSize: 12, color: '#8a6d3b', background: '#fcf8e3' }}>
+          <div style={{ padding: '8px 12px', fontSize: 12, color: NOTE_FG, background: NOTE_BG }}>
             Large file — showing the first {MAX_ROWS.toLocaleString()} rows. Use “Open externally” for the full file.
           </div>
         )}

@@ -7,7 +7,7 @@ import {
 } from './exceljs-cell';
 import { evalFormula, type CellValue } from './xlsx-formula';
 // Theme-tinted "paper" constants shared with CsvView — see sheet-theme.ts.
-import { PAPER, GUTTER_BG, FBAR_BG, TAB_BG, GRID, GUTTER_FG, SEL } from './sheet-theme';
+import { PAPER, GUTTER_BG, FBAR_BG, TAB_BG, GRID, GUTTER_FG, SEL, NOTE_FG, NOTE_BG } from './sheet-theme';
 
 // Safety caps — agent sheets are small, but guard against a pathological file
 // producing a million-cell DOM. Truncation is surfaced to the user.
@@ -244,7 +244,7 @@ function XlsxSheets({ bytes }: { bytes: Uint8Array }) {
           </tbody>
         </table>
         {sheet.truncated && (
-          <div style={{ padding: '8px 12px', fontSize: 12, color: '#8a6d3b', background: '#fcf8e3' }}>
+          <div style={{ padding: '8px 12px', fontSize: 12, color: NOTE_FG, background: NOTE_BG }}>
             Large sheet — showing the first {MAX_ROWS.toLocaleString()} rows × {MAX_COLS} columns. Use “Open externally” for the full file.
           </div>
         )}

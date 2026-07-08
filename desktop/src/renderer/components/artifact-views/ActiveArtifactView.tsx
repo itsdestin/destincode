@@ -144,8 +144,16 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           a side-by-side diff. The diff is a simple two-column pre layout; a proper
           diff library (e.g. diff2html) is left for a later refinement pass. */}
       {conflict && (
-        <div className="bg-yellow-100 dark:bg-yellow-900/30 text-yellow-900 dark:text-yellow-100 p-3 text-sm flex flex-wrap gap-x-3 gap-y-1 items-center border-b border-yellow-700/30 shrink-0">
-          <span className="flex-1 min-w-0">⚠ Claude also edited this file.</span>
+        // Theme-independent amber (matches ContextEditorOverlay's blast-radius
+        // banner — the house pattern for warnings). The previous `dark:` variants
+        // followed the OS color scheme, NOT the active YouCoded theme (the app
+        // themes via data-theme, not a .dark class), so the banner could render
+        // light-mode colors under a dark theme.
+        <div
+          className="p-3 text-sm flex flex-wrap gap-x-3 gap-y-1 items-center border-b shrink-0"
+          style={{ color: '#9a6a00', background: '#FFF6E5', borderColor: '#E8C170' }}
+        >
+          <span className="flex-1 min-w-0 font-medium">Claude also edited this file.</span>
           <button className="underline hover:no-underline whitespace-nowrap" onClick={resolveKeepMine}>
             Keep mine
           </button>

@@ -23,51 +23,9 @@ interface ProjectSwitcherProps {
   onDeleteProject?: (project: CentralIndexProject) => void;
 }
 
-// lucide-style search glyph (matches prototype IC.search).
-function SearchGlyph({ size = 17 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8" />
-      <path d="m21 21-4.3-4.3" />
-    </svg>
-  );
-}
-
-// lucide-style check glyph (the active-project indicator — NOT a status glyph).
-function CheckGlyph({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
-  );
-}
-
-// lucide-style git-branch glyph (matches ProjectHero GitGlyph / prototype IC.git).
-function GitGlyph({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-      <path d="M6 9v6" />
-      <path d="M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-      <path d="M18 6a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-      <path d="M18 9a9 9 0 0 1-9 9" />
-    </svg>
-  );
-}
-
-// lucide-style plus glyph (the "Add a project" footer).
-function PlusGlyph({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 12h14" />
-      <path d="M12 5v14" />
-    </svg>
-  );
-}
+// Shared glyphs — see ./icons.tsx. (The check is the active-project indicator,
+// NOT a status glyph.)
+import { SearchIcon, CheckIcon, PlusIcon, CloseIcon } from './icons';
 
 export function ProjectSwitcher({
   projects,
@@ -109,12 +67,10 @@ export function ProjectSwitcher({
     setHighlightIndex(0);
   }, [query]);
 
+  // NOTE: no Escape branch here — the useEscClose registration above already
+  // closes the palette via the shared LIFO stack; a second path would be
+  // redundant. This handler owns only the list-navigation keys.
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onClose();
-      return;
-    }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (filtered.length === 0) return;
@@ -155,7 +111,7 @@ export function ProjectSwitcher({
         {/* Search row */}
         <div className="p-2.5 border-b border-edge-dim flex items-center gap-2">
           <span className="text-fg-muted pl-1">
-            <SearchGlyph size={17} />
+            <SearchIcon size={17} />
           </span>
           {/* Keydown lives on the input so ↑/↓/Enter/Esc work while it's focused
               (it autofocuses on open). OverlayPanel's typed props don't surface
@@ -248,7 +204,7 @@ export function ProjectSwitcher({
                   {/* Active check (NOT a status glyph). */}
                   {isActive && (
                     <span className="text-fg shrink-0 ml-1">
-                      <CheckGlyph size={15} />
+                      <CheckIcon size={15} />
                     </span>
                   )}
                 </button>
@@ -262,11 +218,7 @@ export function ProjectSwitcher({
                     aria-label={`Remove ${p.name} from YouCoded`}
                     onClick={(e) => { e.stopPropagation(); onDeleteProject(p); }}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
+                    <CloseIcon size={14} />
                   </button>
                 )}
               </div>
@@ -280,7 +232,7 @@ export function ProjectSwitcher({
           className="flex items-center gap-2 px-4 py-3 border-t border-edge-dim text-[13px] text-fg-2 hover:bg-inset hover:text-fg transition-colors rounded-b-[inherit]"
           onClick={handleAdd}
         >
-          <PlusGlyph size={15} />
+          <PlusIcon size={15} />
           Add a project
         </button>
       </OverlayPanel>

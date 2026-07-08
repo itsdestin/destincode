@@ -11,3 +11,7 @@ export const TAB_BG = 'color-mix(in srgb, var(--accent) 10%, #ffffff)';    // sh
 export const GRID = 'color-mix(in srgb, var(--accent) 16%, #d2d2d2)';      // gridlines (faintly tinted)
 export const GUTTER_FG = '#5f5f5f';
 export const SEL = '#217346'; // Excel green — kept for guaranteed-visible cell selection
+// Truncation-note strip ("Showing first N rows…") — amber warning text on a pale
+// amber field, shared so CsvView and XlsxView can't drift apart.
+export const NOTE_FG = '#8a6d3b';
+export const NOTE_BG = '#fcf8e3';

@@ -70,19 +70,8 @@ function ExternalLink({ size = 14 }: { size?: number }) {
   );
 }
 
-// lucide-style git-branch glyph (matches prototype IC.git).
-function GitGlyph({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-      <path d="M6 9v6" />
-      <path d="M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-      <path d="M18 6a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-      <path d="M18 9a9 9 0 0 1-9 9" />
-    </svg>
-  );
-}
+// Git-branch glyph shared with ProjectSwitcher — lives in ./icons.tsx.
+import { GitBranchIcon } from './icons';
 
 export function ProjectHero({
   project,
@@ -127,7 +116,7 @@ export function ProjectHero({
             <>
               <span className="text-fg-faint shrink-0">·</span>
               <span className="inline-flex items-center gap-1 text-xs text-fg-dim shrink-0">
-                <GitGlyph size={13} />
+                <GitBranchIcon size={13} />
                 {repo!.owner}/{repo!.name}
               </span>
             </>

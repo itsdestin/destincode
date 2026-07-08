@@ -16,15 +16,8 @@ interface ConversationSummary extends PastSession {
   preview?: string;
 }
 
-// Inline lucide-style chat glyph for the row avatar (matches the prototype).
-function ChatGlyph({ size = 17 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
+// Chat glyph for the row avatar — shared with the segmented control (../icons).
+import { ChatIcon } from '../icons';
 
 interface ConversationsTabProps {
   // Lifted, cached list from ProjectView. null = still loading for this project.
@@ -57,7 +50,7 @@ export function ConversationsTab({ conversations, onOpenPreview }: Conversations
                 title={title}
               >
                 <span className="w-9 h-9 rounded-md shrink-0 inline-flex items-center justify-center bg-inset text-fg-dim mt-0.5">
-                  <ChatGlyph size={17} />
+                  <ChatIcon size={17} />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline gap-2 justify-between">

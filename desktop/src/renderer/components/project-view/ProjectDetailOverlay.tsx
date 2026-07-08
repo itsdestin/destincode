@@ -10,6 +10,7 @@
 import React from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
+import { CloseIcon } from './icons';
 
 interface ProjectDetailOverlayProps {
   title: React.ReactNode;
@@ -51,9 +52,7 @@ export function ProjectDetailOverlay({ title, onClose, tools, meta, children }: 
               title="Close"
               aria-label="Close"
             >
-              <svg className="w-[17px] h-[17px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              <CloseIcon size={17} />
             </button>
           </div>
         </header>

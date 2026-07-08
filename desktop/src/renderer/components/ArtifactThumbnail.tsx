@@ -1,15 +1,18 @@
 // ArtifactThumbnail — mini pre-render for an artifact card in Project View.
 // Strategy by file type:
-//   - Images (png/jpg/gif/webp/svg/bmp/ico/avif) → <img src="file://…">
-//     (Electron loads local files directly; no IPC needed.)
+//   - Images (png/jpg/gif/webp/svg/bmp/ico/avif) → artifacts.read-binary IPC →
+//     blob: URL, the same path ImageView uses. NOT <img src="file://…"> — the
+//     renderer origin (http in dev, app/asset in prod/Android) blocks file://
+//     subresources, so file:// thumbnails silently fell back to the letter
+//     glyph everywhere except a packaged file://-origin build.
 //   - Markdown / plain text → fetch content via artifacts.get, render first
 //     ~8 lines as tiny monospace text.
 //   - HTML / htm → sandboxed <iframe srcDoc> with pointer-events: none so the
 //     parent card stays clickable. The empty sandbox attribute blocks scripts.
 //   - Everything else → fall back to the original ext-letter glyph.
-// Content-fetching is gated by an IntersectionObserver so a project with
-// hundreds of artifacts doesn't issue hundreds of IPC reads on mount.
-// Images render eagerly (Chromium handles lazy decoding via loading="lazy").
+// ALL content-fetching (images included, now that they go through IPC) is gated
+// by an IntersectionObserver so a project with hundreds of artifacts doesn't
+// issue hundreds of IPC reads on mount.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 
@@ -46,10 +49,13 @@ function joinPath(projectPath: string, relPath: string): string {
   return `${cleanProject}${sep}${cleanRel}`;
 }
 
-// Match ImageView's existing pattern: file://<absolutePath>. Forward-slash
-// normalization avoids a mix of \ and / in the URL on Windows.
-function toFileUrl(absPath: string): string {
-  return `file://${absPath.replace(/\\/g, '/')}`;
+// MIME by extension for the image blob URL (a wrong subtype still decodes —
+// Chromium sniffs image bytes — but svg genuinely needs its correct type).
+function imageMime(ext: string): string {
+  if (ext === 'svg') return 'image/svg+xml';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'ico') return 'image/x-icon';
+  return `image/${ext}`;
 }
 
 export function ArtifactThumbnail({ artifact, projectPath, className = '', bgClass = 'bg-inset' }: Props) {
@@ -65,6 +71,8 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
   const [inView, setInView] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
+  // blob: URL for image thumbnails (read-binary → Blob). Revoked on change/unmount.
+  const [imgUrl, setImgUrl] = useState<string | null>(null);
   // Measured container size, used to scale the HTML iframe preview down so the
   // whole page (rendered at a desktop logical width) fits the small card.
   const [boxSize, setBoxSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -74,10 +82,10 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
     : artifact.absolutePath;
 
   // IntersectionObserver gate: only fetch content once the card scrolls into
-  // view (or close to it). Images skip this — Chromium's loading="lazy" plus
-  // file:// reads are already cheap and don't go through IPC.
+  // view (or close to it). Images go through the same gate now that they read
+  // via IPC — a grid of hundreds must not fire hundreds of reads on mount.
   useEffect(() => {
-    if (kind === 'image' || kind === 'fallback') return;
+    if (kind === 'fallback') return;
     const node = containerRef.current;
     if (!node) return;
     const obs = new IntersectionObserver(
@@ -92,6 +100,38 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
     obs.observe(node);
     return () => obs.disconnect();
   }, [kind]);
+
+  // Image thumbnails: read bytes over the artifacts:read-binary IPC and show a
+  // blob: URL (mirrors useArtifactBytes / ImageView — see the header comment for
+  // why file:// doesn't work). Any failure (guarded path, too-large, orphan)
+  // falls back to the ext-letter glyph via imgFailed.
+  useEffect(() => {
+    if (kind !== 'image' || !inView || !absolutePath) return;
+    let cancelled = false;
+    let url: string | null = null;
+    const readBinary = (window.claude as any)?.artifacts?.readBinary;
+    if (typeof readBinary !== 'function') { setImgFailed(true); return; }
+    readBinary(absolutePath)
+      .then((res: any) => {
+        if (cancelled) return;
+        if (res?.ok && typeof res.base64 === 'string') {
+          const bin = atob(res.base64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          url = URL.createObjectURL(new Blob([bytes], { type: imageMime(ext) }));
+          setImgUrl(url);
+        } else {
+          setImgFailed(true);
+        }
+      })
+      .catch(() => { if (!cancelled) setImgFailed(true); });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+      setImgUrl(null);
+      setImgFailed(false);
+    };
+  }, [kind, inView, absolutePath, ext, artifact.lastModified]);
 
   // Fetch content once visible. Refetch when the artifact's lastModified
   // changes so an edit in another window updates the thumbnail.
@@ -139,11 +179,10 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
         <span className="text-2xl font-mono text-fg-muted">{ext ? ext.toUpperCase() : '—'}</span>
       )}
 
-      {kind === 'image' && absolutePath && !imgFailed && (
+      {kind === 'image' && imgUrl && !imgFailed && (
         <img
-          src={toFileUrl(absolutePath)}
+          src={imgUrl}
           alt=""
-          loading="lazy"
           decoding="async"
           className="w-full h-full object-cover"
           onError={() => setImgFailed(true)}

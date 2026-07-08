@@ -31,27 +31,8 @@ function persistDismissed(): void {
   }
 }
 
-// Inline info-circle glyph (an "i", matching ContextTab's InfoIcon). Inline so
-// the banner doesn't add a lucide import to the project-view subtree.
-function InfoIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="16" x2="12" y2="12" />
-      <line x1="12" y1="8" x2="12.01" y2="8" />
-    </svg>
-  );
-}
+// Info-circle + close glyphs — shared module (./icons.tsx).
+import { InfoIcon, CloseIcon } from './icons';
 
 export function ContextIntroBanner() {
   // Initialize from localStorage so a previously-dismissed banner never flashes
@@ -66,7 +47,7 @@ export function ContextIntroBanner() {
     // overflow:hidden clips the paragraph down to the eyebrow line.
     <div className="layer-surface relative flex gap-3 p-3.5 pr-9 mb-4 shrink-0">
       <span className="shrink-0 text-fg-dim mt-px">
-        <InfoIcon />
+        <InfoIcon size={18} />
       </span>
       <div className="min-w-0">
         {/* Uppercase micro-label / eyebrow, consistent with the design language. */}
@@ -89,20 +70,7 @@ export function ContextIntroBanner() {
           setDismissed(true);
         }}
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <line x1="18" y1="6" x2="6" y2="18" />
-          <line x1="6" y1="6" x2="18" y2="18" />
-        </svg>
+        <CloseIcon size={14} />
       </button>
     </div>
   );

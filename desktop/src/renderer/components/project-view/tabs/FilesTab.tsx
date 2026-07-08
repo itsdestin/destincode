@@ -26,6 +26,7 @@ import {
 
 // Compact relative-time for the detail meta strip (shared util).
 import { formatRelativeTime as relTime } from '../../../utils/format-time';
+import { getPlatform } from '../../../platform';
 
 // Is the project path a bare drive/filesystem root (vs. the home folder)?
 // Only used to pick the right word in the gated-folder message.
@@ -111,15 +112,11 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
   return { folders, files };
 }
 
-// lucide-style folder glyph for the folder cards (matches the app's iconography).
-function FolderGlyph({ size = 40 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
-    </svg>
-  );
-}
+// Folder glyph for the folder cards — shared module (../icons); strokeWidth 1.5
+// reads better at the card sizes than the segmented control's default 2.
+// Aliased: detail-tool-icons also exports a (different) FolderIcon used by the
+// Reveal button above.
+import { FolderIcon as FolderCardIcon } from '../icons';
 
 // Shared browser for BOTH project-view file sections (the split is the core
 // principle): mode='artifacts' lists Claude-authored tracked files (LIST_PROJECT);
@@ -429,14 +426,14 @@ export function FilesTab({
                         ) : (
                           // No previewable files (a folder of subfolders) — folder glyph.
                           <div className="h-full w-full flex items-center justify-center bg-well text-accent">
-                            <FolderGlyph size={40} />
+                            <FolderCardIcon size={40} strokeWidth={1.5} />
                           </div>
                         )}
                       </div>
                       {/* Footer inside the folder: name (with accent folder glyph) + count. */}
                       <div className="shrink-0 border-t border-edge-dim px-2.5 py-1.5">
                         <div className="text-[12.5px] font-semibold text-fg flex items-center gap-1.5">
-                          <span className="text-accent shrink-0"><FolderGlyph size={13} /></span>
+                          <span className="text-accent shrink-0"><FolderCardIcon size={13} strokeWidth={1.5} /></span>
                           <span className="truncate">{f.name}</span>
                         </div>
                         <div className="text-[10.5px] text-fg-muted pl-[20px]">
@@ -523,6 +520,7 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
     onRefreshArtifacts();
   };
 
+  const isElectron = getPlatform() === 'electron';
   const handleReveal = () => (window.claude as any).shell?.showItemInFolder?.(absPath);
   // Open the file with the OS default app (HTML→browser, .docx→Word, etc.) —
   // the right action for formats the in-app viewer can't render (html) or only
@@ -554,14 +552,21 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
           Edit
         </button>
       ))}
-      <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleOpenExternal} title="Open with the default app">
-        <ExternalLinkIcon size={13} />
-        Open
-      </button>
-      <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleReveal}>
-        <FolderIcon size={13} />
-        Reveal
-      </button>
+      {/* shell.openPath / showItemInFolder are desktop-only — remote stubs them
+          as no-ops and Android has no handler. Gate on isElectron so the
+          buttons can't render dead, matching SessionDrawer's toolbar. */}
+      {isElectron && (
+        <>
+          <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleOpenExternal} title="Open with the default app">
+            <ExternalLinkIcon size={13} />
+            Open
+          </button>
+          <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleReveal}>
+            <FolderIcon size={13} />
+            Reveal
+          </button>
+        </>
+      )}
       <button type="button" className={TOOL_BTN_NEUTRAL} onClick={handleCopyPath}>
         <LinkIcon size={13} />
         {copied ? 'Copied' : 'Copy path'}

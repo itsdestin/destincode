@@ -16,10 +16,14 @@ export function BinaryFallback({ path, absolutePath }: ArtifactViewProps) {
       <p className="mb-4 font-mono text-sm">{path}</p>
       {isElectron && (
         <button
-          className="px-4 py-2 rounded bg-accent text-on-accent"
+          type="button"
+          // rounded-md + the same accent-primary language as the detail-overlay
+          // tool buttons, and the same title wording as the other "Open" actions.
+          className="px-4 py-2 rounded-md bg-accent text-on-accent text-[13px] hover:opacity-90 transition-opacity"
           onClick={openExternally}
+          title="Open with the default app"
         >
-          Open Externally
+          Open in default app
         </button>
       )}
     </div>
