@@ -1983,13 +1983,14 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
     <>
       <div className="flex-1 px-4 py-4 space-y-6">
 
+        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
+        <AccountSection />
+
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
         {/* No <BuddyToggle /> on Android — the floater relies on an Electron always-on-top window that Android doesn't support yet */}
 
         <PerformanceButton />
-
-        <AccountSection />
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
@@ -2294,6 +2295,9 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
     <>
       <div className="flex-1 px-4 py-4 space-y-6">
 
+        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
+        <AccountSection />
+
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
         <BuddyToggle />
@@ -2301,8 +2305,6 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
         <SoundButton />
 
         <PerformanceButton />
-
-        <AccountSection />
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
