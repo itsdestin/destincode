@@ -139,7 +139,14 @@ export class GitTransport implements SyncTransport {
     const behind = await this.git(space, ['rev-list', '--count', 'main..origin/main']);
     if (behind.code !== 0 || behind.stdout.trim() === '0') return { updated: false, conflictCopies: [] };
 
-    const merge = await this.git(space, ['merge', '--no-edit', 'origin/main']);
+    // Fix: --allow-unrelated-histories covers the mainline "second device" case —
+    // a device that enables sync on a space that ALREADY has content (e.g. the
+    // Personal space in use on two machines) commits its own unrelated root, and
+    // without this flag git refuses the merge ("refusing to merge unrelated
+    // histories"), leaving both devices silently stuck forever. Conflicting files
+    // still route through the convergent conflict-copy resolution below;
+    // non-overlapping files simply union.
+    const merge = await this.git(space, ['merge', '--no-edit', '--allow-unrelated-histories', 'origin/main']);
     if (merge.code === 0) return { updated: true, conflictCopies: [] };
 
     // Conflicts: resolve each convergently.

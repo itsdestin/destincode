@@ -101,5 +101,31 @@ export function describeTransportContract(name: string, makeHarness: () => Promi
       expect(hist.length).toBeGreaterThanOrEqual(2);
       expect(hist[0].message).toBe('second');
     });
+
+    it('two devices with pre-existing unrelated content converge on first sync', async () => {
+      const a = await h.makeDeviceSpace();
+      const b = await h.makeDeviceSpace();
+      await h.transport.init(a); await h.transport.init(b);
+      // Both devices have content BEFORE ever syncing (e.g. Personal space in use
+      // on two machines) — histories are unrelated at first contact.
+      fs.writeFileSync(path.join(a.root, 'a-only.md'), 'from A\n');
+      fs.writeFileSync(path.join(b.root, 'b-only.md'), 'from B\n');
+      fs.writeFileSync(path.join(a.root, 'shared.md'), 'A content\n');
+      fs.writeFileSync(path.join(b.root, 'shared.md'), 'B content\n');
+      await h.transport.push(a, 'A initial');
+      const bPull = await h.transport.pull(b);
+      expect(bPull.updated).toBe(true);
+      // Non-overlapping files union; overlapping file resolves convergently
+      // (remote/A wins canonical, B's content preserved as a conflict copy).
+      expect(fs.readFileSync(path.join(b.root, 'a-only.md'), 'utf8')).toBe('from A\n');
+      expect(fs.existsSync(path.join(b.root, 'b-only.md'))).toBe(true);
+      expect(fs.readFileSync(path.join(b.root, 'shared.md'), 'utf8')).toBe('A content\n');
+      expect(bPull.conflictCopies.length).toBe(1);
+      // After B pushes, A converges to the identical tree.
+      await h.transport.push(b, 'B merge');
+      const aPull = await h.transport.pull(a);
+      expect(fs.readFileSync(path.join(a.root, 'shared.md'), 'utf8')).toBe('A content\n');
+      expect(fs.existsSync(path.join(a.root, 'b-only.md'))).toBe(true);
+    }, 30000);
   });
 }
