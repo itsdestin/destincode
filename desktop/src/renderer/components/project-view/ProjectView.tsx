@@ -29,6 +29,7 @@ import { ContextTab } from './tabs/ContextTab';
 import { ConversationPreview } from './ConversationPreview';
 import { ProjectHero, formatFileCount } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
+import { FileFilterPopover } from './FileFilterPopover';
 import { HowContextWorksPopup } from './HowContextWorksPopup';
 import { ContextEditorOverlay } from './ContextEditorOverlay';
 
@@ -104,6 +105,20 @@ function SearchGlyph({ size = 15 }: { size?: number }) {
     </svg>
   );
 }
+// lucide-style sliders-horizontal — the standard "filters" icon (three lines
+// with knobs), the trigger for the FileFilterPopover.
+function SlidersGlyph({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="21" y1="4" x2="14" y2="4" /><line x1="10" y1="4" x2="3" y2="4" />
+      <line x1="21" y1="12" x2="12" y2="12" /><line x1="8" y1="12" x2="3" y2="12" />
+      <line x1="21" y1="20" x2="16" y2="20" /><line x1="12" y1="20" x2="3" y2="20" />
+      <line x1="14" y1="2" x2="14" y2="6" /><line x1="8" y1="10" x2="8" y2="14" />
+      <line x1="16" y1="18" x2="16" y2="22" />
+    </svg>
+  );
+}
 
 interface ProjectViewProps {
   // Threaded from App: starts a new conversation in the given cwd.
@@ -130,6 +145,25 @@ export function ProjectView(props: ProjectViewProps) {
   // totals, so a filtered grid never silently redefines what "N files" means.
   const [typeFilter, setTypeFilter] = useState<'all' | FileTypeGroup>('all');
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
+  // Filter popover (behind the sliders icon in the search pill). Click-outside
+  // is handled HERE with a wrapper ref that contains both the trigger and the
+  // popover — putting it inside the popover would race the trigger's own click
+  // (mousedown-close then click-reopen).
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (filterWrapRef.current && !filterWrapRef.current.contains(e.target as Node)) {
+        setFilterOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [filterOpen]);
+  // Close the popover when the active tab changes — its trigger belongs to the
+  // file tabs, and leaving it open across a tab switch would strand it.
+  useEffect(() => { setFilterOpen(false); }, [tab]);
   // Bumped after "Add external file" so FilesTab re-loads its list without
   // owning the add flow (the toolbar lives up here now).
   const [refreshKey, setRefreshKey] = useState(0);
@@ -253,6 +287,7 @@ export function ProjectView(props: ProjectViewProps) {
       // Sort is a preference, not a filter, so it persists.
       setArtifactSearch('');
       setTypeFilter('all');
+      setFilterOpen(false);
     }
 
     // Cache-or-fetch helpers — the cache makes re-selecting a project / toggling
@@ -500,82 +535,77 @@ export function ProjectView(props: ProjectViewProps) {
                 })}
               </div>
 
-              {/* Right controls for the two file sections. Search applies to both.
-                  Mode-specific chips: "Show deleted" + "Add file" belong to the
-                  Artifacts (tracked) section; "Hide code & configs" declutters the
-                  All files browser. Conversations/Context have no toolbar in v1. */}
+              {/* Right controls for the two file sections. ONE rounded-full search
+                  pill (same shape language as the segmented control) with the
+                  sliders icon inside its right edge — ALL filter/sort options
+                  (type, sort, Show deleted) live behind it in FileFilterPopover.
+                  Only "+ Add file" (an action, not a filter) stays visible.
+                  Conversations/Context have no toolbar in v1. */}
               {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
                 <div className="flex items-center gap-2">
-                  {/* Compact search field (theme rounded-md), matches the prototype. */}
-                  <div className="flex items-center gap-2 bg-inset border border-edge rounded-md px-3 py-1.5 w-[220px]">
-                    <span className="text-fg-muted shrink-0"><SearchGlyph size={15} /></span>
-                    <input
-                      type="text"
-                      placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
-                      value={artifactSearch}
-                      onChange={(e) => setArtifactSearch(e.target.value)}
-                      className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
-                    />
+                  <div className="relative" ref={filterWrapRef}>
+                    <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-[260px] focus-within:border-edge-dim">
+                      <span className="text-fg-muted shrink-0"><SearchGlyph size={15} /></span>
+                      <input
+                        type="text"
+                        placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
+                        value={artifactSearch}
+                        onChange={(e) => setArtifactSearch(e.target.value)}
+                        className="bg-transparent outline-none text-[13px] text-fg w-full placeholder:text-fg-muted"
+                      />
+                      {/* Filter trigger. Accent badge = number of ACTIVE filters
+                          (type + Show deleted; sort is a preference, not counted)
+                          so a filtered grid is never mistaken for the full list
+                          even with the popover closed. */}
+                      {(() => {
+                        const activeFilters =
+                          (typeFilter !== 'all' ? 1 : 0) +
+                          (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0);
+                        return (
+                          <button
+                            type="button"
+                            className={`shrink-0 relative w-7 h-7 rounded-full inline-flex items-center justify-center transition-colors ${
+                              filterOpen || activeFilters > 0
+                                ? 'text-fg bg-well'
+                                : 'text-fg-muted hover:text-fg hover:bg-well'
+                            }`}
+                            onClick={() => setFilterOpen((o) => !o)}
+                            aria-expanded={filterOpen}
+                            aria-label={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filters'}
+                            title={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filter and sort'}
+                          >
+                            <SlidersGlyph size={15} />
+                            {activeFilters > 0 && (
+                              <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-accent text-on-accent text-[9.5px] font-medium leading-[15px] text-center">
+                                {activeFilters}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })()}
+                    </div>
+                    {filterOpen && (
+                      <FileFilterPopover
+                        typeFilter={typeFilter}
+                        onTypeFilter={setTypeFilter}
+                        sortBy={fileSort}
+                        onSortBy={setFileSort}
+                        showDeleted={showDeletedArtifacts}
+                        onShowDeleted={setShowDeletedArtifacts}
+                        showDeletedAvailable={tab === 'artifacts'}
+                        onClose={() => setFilterOpen(false)}
+                      />
+                    )}
                   </div>
-                  {/* Type filter + sort — native selects (same pattern as the
-                      SessionDrawer's sort control), applying to BOTH file tabs.
-                      An active type filter is visible right here, so a filtered
-                      grid can't read as "that's all the files there are". */}
-                  <select
-                    value={typeFilter}
-                    onChange={(e) => setTypeFilter(e.target.value as 'all' | FileTypeGroup)}
-                    title="Filter by file type"
-                    className={`border rounded-md text-[12.5px] px-2 py-1.5 outline-none cursor-pointer transition-colors ${
-                      typeFilter !== 'all'
-                        ? 'bg-accent text-on-accent border-transparent'
-                        : 'bg-inset text-fg-2 border-edge hover:text-fg'
-                    }`}
-                  >
-                    <option value="all">All types</option>
-                    <option value="document">Documents</option>
-                    <option value="image">Images</option>
-                    <option value="sheet">Spreadsheets</option>
-                    <option value="code">Code & configs</option>
-                  </select>
-                  <select
-                    value={fileSort}
-                    onChange={(e) => setFileSort(e.target.value as FileSortKey)}
-                    title="Sort files"
-                    className="bg-inset border border-edge rounded-md text-[12.5px] text-fg-2 px-2 py-1.5 outline-none cursor-pointer hover:text-fg transition-colors"
-                  >
-                    <option value="name">Name</option>
-                    <option value="recent">Recent</option>
-                    <option value="type">Type</option>
-                  </select>
-                  {/* Show deleted + Add file — Artifacts (tracked) section only.
-                      All files has no filter chips: it shows every file, so its
-                      badge count always matches what's on screen (and is always a
-                      superset of Artifacts). */}
                   {tab === 'artifacts' && (
-                    <>
-                      <button
-                        type="button"
-                        className={`px-3 py-1 rounded-full text-[12.5px] transition-colors ${
-                          showDeletedArtifacts
-                            ? 'bg-accent text-on-accent'
-                            : 'bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim'
-                        }`}
-                        onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
-                        title={showDeletedArtifacts
-                          ? 'Including deleted files in the grid. Click to hide them.'
-                          : 'Hiding deleted files. Click to include them.'}
-                      >
-                        Show deleted
-                      </button>
-                      <button
-                        type="button"
-                        className="px-3 py-1 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors"
-                        onClick={addExternal}
-                        title="Add an external file to this project"
-                      >
-                        + Add file
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors shrink-0"
+                      onClick={addExternal}
+                      title="Add an external file to this project"
+                    >
+                      + Add file
+                    </button>
                   )}
                 </div>
               )}
