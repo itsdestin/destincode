@@ -406,7 +406,6 @@ export function FilesTab({
               {dirView.files.map(renderFileCard)}
               {dirView.folders.map((f) => {
                 const previewFiles = f.samples.slice(0, FOLDER_PREVIEW_FILES);
-                const overflow = f.count - previewFiles.length;
                 return (
                   // Folder cards have a distinct FOLDER SHAPE — a tab on the top-left
                   // plus a body that previews the contents as a FILENAME LIST (the
@@ -422,8 +421,12 @@ export function FilesTab({
                     onClick={() => setCurrentDir(f.path)}
                     title={f.path}
                   >
-                    {/* Folder tab. */}
-                    <div className="ml-2 h-3 w-14 rounded-t-md bg-inset border border-edge border-b-0 group-hover:border-accent/60 transition-colors" />
+                    {/* Folder tab (nub). ml-4 clears the body's rounded top-left
+                        corner (at ml-2 it floated over the curve and looked
+                        detached); relative + -mb-px tucks it 1px INTO the body so
+                        the nub's inset fill paints over the body's top border and
+                        the two read as one connected folder shape. */}
+                    <div className="relative -mb-px ml-4 h-3 w-14 rounded-t-md bg-inset border border-edge border-b-0 group-hover:border-accent/60 transition-colors" />
                     {/* Folder body — preview AND the name/count footer, all inside one
                         bordered, rounded container so they read as the same folder.
                         All four corners rounded — the old rounded-tl-none square
@@ -432,17 +435,14 @@ export function FilesTab({
                       <div className="flex-1 min-h-0 overflow-hidden">
                         {previewFiles.length > 0 ? (
                           <div className="flex flex-col gap-1.5 p-2.5">
+                            {/* First few filenames only — no overflow line (the
+                                footer's "N files" count already tells the rest). */}
                             {previewFiles.map((s) => (
                               <div key={s.id} className="flex items-center gap-1.5 min-w-0">
                                 <span className="text-fg-muted shrink-0"><MiniTypeIcon path={s.path} /></span>
                                 <span className="text-[11px] text-fg-2 truncate">{fileNameOf(s)}</span>
                               </div>
                             ))}
-                            {overflow > 0 && (
-                              <span className="text-[10.5px] text-fg-muted pl-[19px]">
-                                …and {overflow} more
-                              </span>
-                            )}
                           </div>
                         ) : (
                           // No previewable files (a folder of subfolders) — folder glyph.
