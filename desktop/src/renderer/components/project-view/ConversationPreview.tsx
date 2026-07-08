@@ -81,13 +81,13 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
     }
   };
 
-  // Total message count: the enriched ConversationSummary carries messageCount
-  // (untyped on PastSession); fall back to however many we've loaded.
-  const totalMessages = (session as any).messageCount as number | undefined;
+  // project:list-conversations deliberately carries NO total message count (the
+  // preview is a bounded head-read — counting would mean parsing every
+  // transcript). So until "Open full transcript", the meta labels what's shown
+  // as a preview slice rather than implying the loaded count is the total.
   const shownCount = messages.length;
-  const metaCount = all ? shownCount : (totalMessages ?? shownCount);
-  // Footer only when we know there are more than the preview slice shows.
-  const showFooter = !all && typeof totalMessages === 'number' && totalMessages > shownCount;
+  // Footer hint under a preview slice: the full transcript may have more.
+  const showFooter = !all && shownCount > 0;
 
   // Header tools: Resume (accent) + Open full transcript (neutral).
   const tools = (
@@ -102,10 +102,11 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
     </>
   );
 
-  // Meta strip: "N messages · 2d ago · read-only preview".
+  // Meta strip: "last N messages · 2d ago · read-only preview" (labelled as a
+  // slice until the full transcript is loaded — the true total isn't known).
   const meta = (
     <>
-      <span>{metaCount} messages</span>
+      <span>{all ? `${shownCount} messages` : `last ${shownCount} messages`}</span>
       <span className="text-fg-faint">·</span>
       <span>{relTime(session.lastModified)}</span>
       <span className="text-fg-faint">·</span>
@@ -145,7 +146,7 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
             ))}
             {showFooter && (
               <div className="text-center text-[11.5px] text-fg-muted py-2">
-                — showing last {shownCount} of {totalMessages} messages —
+                — showing the last {shownCount} messages — use “Open full transcript” for everything —
               </div>
             )}
           </div>

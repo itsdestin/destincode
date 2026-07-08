@@ -36,9 +36,11 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   artifact, content, projectRoot, projectId, projectName, sessionId, onContentChange,
   controlsInHeader = false, onEditStateChange,
 }, ref) {
-  // Resolve the absolute path depending on artifact kind.
+  // Resolve the absolute path depending on artifact kind. Forward slashes
+  // throughout — a backslash projectRoot + '/' + relative path yields a mixed-
+  // separator string that looks broken in copy-path/reveal on Windows.
   const absolutePath = artifact.kind === 'internal'
-    ? `${projectRoot}/${artifact.path}`
+    ? `${projectRoot.replace(/\\/g, '/').replace(/\/+$/, '')}/${artifact.path.replace(/\\/g, '/')}`
     : (artifact.absolutePath ?? artifact.path);
 
   const ext = artifact.path.split('.').pop()?.toLowerCase() ?? '';

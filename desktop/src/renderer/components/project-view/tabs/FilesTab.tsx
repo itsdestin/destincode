@@ -2,8 +2,9 @@
 // the core Artifacts/All-files split (see ipc-channels.ts):
 //   mode='artifacts' → ARTIFACTS: files Claude directly created/edited (LIST_PROJECT,
 //                      sidecar-tracked). Honors "Show deleted"/orphan state.
-//   mode='allfiles'  → ALL FILES: the project folder's on-disk documents
-//                      (LIST_ALL_FILES, full-browser discovery). Honors "Hide code".
+//   mode='allfiles'  → ALL FILES: every real file in the project folder
+//                      (LIST_ALL_FILES, full-browser discovery). NO filter chips —
+//                      the badge count always equals what's on screen.
 // Cards use .layer-surface; the deleted badge is a plain word "deleted" (the ●◐○ / ✕
 // glyph language is disliked — plain words instead).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -132,6 +133,9 @@ export function FilesTab({
   // Read-only here: the toggle chips that SET these live on the ProjectView seg-row.
   const { showDeletedArtifacts } = useTheme();
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
+  // True until the first load for the current project/mode resolves — gates the
+  // empty-state message so "No artifacts yet" can't flash before data arrives.
+  const [loading, setLoading] = useState(true);
   // True when on-disk discovery hit a cap (folder too large) — surfaced as a note
   // so a partial list never silently reads as complete.
   const [truncated, setTruncated] = useState(false);
@@ -143,6 +147,7 @@ export function FilesTab({
   // (refreshKey bump from ProjectView).
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     // ARTIFACTS → tracked sidecar files; ALL FILES → on-disk discovery. Normalize
     // both response shapes (artifacts vs files) into one list.
     const load = mode === 'allfiles'
@@ -150,6 +155,7 @@ export function FilesTab({
       : (window.claude as any).artifacts.listProject(project.id);
     load.then((res: any) => {
       if (cancelled) return;
+      setLoading(false);
       if (res && res.ok) { setArtifacts(res.files ?? res.artifacts ?? []); setTruncated(!!res.truncated); }
       else { setArtifacts([]); setTruncated(false); }
     });
@@ -283,15 +289,18 @@ export function FilesTab({
         </div>
       )}
 
-      {searching && filtered.length === 0 && (
+      {loading && (
+        <p className="text-sm text-fg-muted">Loading {noun}…</p>
+      )}
+      {!loading && searching && filtered.length === 0 && (
         <p className="text-sm text-fg-muted">No {noun} match your search.</p>
       )}
-      {emptyHere && (
+      {!loading && emptyHere && (
         <p className="text-sm text-fg-muted">
           {currentDir
             ? 'This folder is empty under the current filters.'
             : mode === 'allfiles'
-              ? 'No documents found in this project folder. Try toggling "Hide code & configs" above.'
+              ? 'No files found in this project folder.'
               : 'No artifacts yet — files Claude creates or edits in this project will show up here. Check "All files" to browse everything in the folder.'}
         </p>
       )}

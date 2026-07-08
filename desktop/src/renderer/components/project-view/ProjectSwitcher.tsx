@@ -8,6 +8,7 @@
 // stroke currentColor.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
+import { useEscClose } from '../../hooks/use-esc-close';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 
 interface ProjectSwitcherProps {
@@ -78,11 +79,12 @@ export function ProjectSwitcher({
 }: ProjectSwitcherProps) {
   const [query, setQuery] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
-  // Inline feedback shown after "Add a project" — a project can only enter the
-  // index once a session runs in its folder, so there's no folder-register flow
-  // here (v1). We surface that as a brief inline hint instead of a toast/alert.
-  const [hint, setHint] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ESC closes via the shared LIFO stack too — the input's own onKeyDown only
+  // fires while the field is FOCUSED, and clicking a row blurs it. The palette
+  // is only mounted while open, so `open` is simply true here.
+  useEscClose(true, onClose);
 
   // Focus the search field on open. WHY: autoFocus inside an overlay can race
   // the mount/scrim; the ref pattern is reliable. (See task notes.)
@@ -135,9 +137,8 @@ export function ProjectSwitcher({
   };
 
   const handleAdd = () => {
-    // v1: a project only materializes in the index once a session runs in its
-    // folder, so there's nothing to register here. Show a brief inline hint.
-    setHint('Start a session in a folder to add it as a project.');
+    // The parent owns the flow now: it closes this palette, opens the OS folder
+    // picker, saves the folder (folders.add) and selects the new project.
     onAddProject();
   };
 
@@ -269,14 +270,7 @@ export function ProjectSwitcher({
           })}
         </div>
 
-        {/* Inline hint (after "Add a project") — replaces a toast/alert in v1. */}
-        {hint && (
-          <div className="px-4 py-2 text-[12px] text-fg-muted border-t border-edge-dim">
-            {hint}
-          </div>
-        )}
-
-        {/* Footer: Add a project. */}
+        {/* Footer: Add a project (opens the OS folder picker via the parent). */}
         <button
           type="button"
           className="flex items-center gap-2 px-4 py-3 border-t border-edge-dim text-[13px] text-fg-2 hover:bg-inset hover:text-fg transition-colors rounded-b-[inherit]"

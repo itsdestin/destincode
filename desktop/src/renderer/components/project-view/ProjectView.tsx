@@ -11,6 +11,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useArtifact } from '../../state/ArtifactContext';
 import { useTheme } from '../../state/theme-context';
+import { useEscClose } from '../../hooks/use-esc-close';
+import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
 import type { PastSession } from '../../../shared/types';
 import type { ContextFile, ContextGroup, ContextScope } from '../../../shared/project-context-types';
@@ -159,11 +161,18 @@ export function ProjectView(props: ProjectViewProps) {
   const [alsoDeleteSidecar, setAlsoDeleteSidecar] = useState(false);
 
   // Context tab selection state. The ContextTab bubbles a clicked file (to edit)
-  // or a clicked group's (i) info button (to explain the scope) up to here. The
-  // editor + info popup themselves are built by Tasks 4.4 / 4.3 — these setters
-  // are stored-but-not-yet-rendered for now (intentional; noUnusedLocals is off).
+  // or a clicked group's (i) info button (to explain the scope) up to here;
+  // ContextEditorOverlay / HowContextWorksPopup render them below.
   const [editingContext, setEditingContext] = useState<ContextFile | null>(null);
   const [infoScope, setInfoScope] = useState<ContextScope | null>(null);
+
+  // ESC closes the browser via the shared LIFO stack — the header button is
+  // labeled "Esc / Close", so the key must actually work. Child overlays
+  // (detail, switcher, editor, delete modal) register later → they pop first.
+  useEscClose(state.projectViewOpen, () => dispatch({ type: 'PROJECT_VIEW_CLOSED' }));
+  // The delete-confirm modal takes Esc priority while open (registered after
+  // the browser's own handler because it mounts later — LIFO).
+  useEscClose(!!deletingProject, () => { setDeletingProject(null); setAlsoDeleteSidecar(false); });
 
   // Load the projects index whenever the view is opened. Hooks MUST run before
   // any early return — Rules of Hooks. Don't move below the projectViewOpen guard
@@ -317,13 +326,28 @@ export function ProjectView(props: ProjectViewProps) {
 
   if (!state.projectViewOpen) return null;
 
-  // Add-a-project (v1): a project only enters the index once a session runs in
-  // its folder, so there's no folder-register flow to kick off here. The switcher
-  // shows its own inline "start a session in a folder to add it" hint on click,
-  // so this is intentionally a no-op (closing the palette would hide the hint).
-  // Don't invent a folder-registration path.
-  const handleAddProject = () => {
-    /* no-op — ProjectSwitcher surfaces the inline hint itself */
+  // Add a project = add a saved folder. The project list IS the saved-folders
+  // store (youcoded-folders.json) now, so a real add flow exists: browse for a
+  // folder → folders.add → refresh the list and select it. (An earlier v1
+  // comment said no register flow existed — that predated the saved-folders
+  // refactor.)
+  const handleAddProject = async () => {
+    setSwitcherOpen(false);
+    try {
+      const folder: string | null = await (window.claude as any).dialog.openFolder();
+      if (!folder) return;
+      await (window.claude as any).folders.add(folder);
+      const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
+      if (res?.ok) {
+        setProjects(res.projects);
+        // Select the newly-added folder (match by path suffix-insensitively via
+        // the canonical path the index builder stores).
+        const added = res.projects.find(
+          (p: CentralIndexProject) => p.path.replace(/\\/g, '/').toLowerCase() === folder.replace(/\\/g, '/').toLowerCase()
+        );
+        if (added) setActiveProject(added);
+      }
+    } catch { /* dialog unavailable (remote/Android) — leave the list as-is */ }
   };
 
   const confirmDelete = async () => {
@@ -559,15 +583,19 @@ export function ProjectView(props: ProjectViewProps) {
         />
       )}
 
-      {/* Project deletion confirmation modal */}
+      {/* Project deletion confirmation modal — L3 (destructive confirmation)
+          via the shared overlay primitives so scrim/surface/z-index come from
+          theme tokens; Esc is handled by the useEscClose above. */}
       {deletingProject && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9000]"
-          onClick={() => setDeletingProject(null)}
-        >
-          <div
-            className="layer-surface p-6 max-w-md w-full mx-4"
-            onClick={(e) => e.stopPropagation()}
+        <>
+          <Scrim layer={3} onClick={() => { setDeletingProject(null); setAlsoDeleteSidecar(false); }} />
+          <OverlayPanel
+            layer={3}
+            destructive
+            role="dialog"
+            aria-modal={true}
+            aria-label="Remove project"
+            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 p-6 max-w-md w-[calc(100%-2rem)]"
           >
             <h3 className="text-lg font-semibold mb-2 text-fg">Remove project</h3>
             <p className="mb-3 text-sm text-fg">
@@ -576,7 +604,7 @@ export function ProjectView(props: ProjectViewProps) {
             <p className="text-sm text-fg-muted mb-3">
               The folder and its files are NOT deleted — this only removes it from your
               YouCoded folders, so it also disappears from the new-session folder picker.
-              You can add it back anytime with "Browse for folder."
+              You can add it back anytime with "Add a project" in the project switcher.
             </p>
             <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer text-fg">
               <input
@@ -602,8 +630,8 @@ export function ProjectView(props: ProjectViewProps) {
                 Remove
               </button>
             </div>
-          </div>
-        </div>
+          </OverlayPanel>
+        </>
       )}
     </div>
   );

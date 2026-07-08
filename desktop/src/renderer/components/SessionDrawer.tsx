@@ -109,7 +109,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [drawerOpen, allArtifacts.length, projectRoot]);
+    // Dep is the ARRAY, not its length — a rename/status flip changes members
+    // without changing the count, and orphan detection must re-run then too.
+  }, [drawerOpen, allArtifacts, projectRoot]);
 
   const artifacts = useMemo(() => {
     return allArtifacts.filter((a) => {
@@ -124,7 +126,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     () => allArtifacts.filter((a) => a.status === 'deleted' || orphanIds.has(a.id)).length,
     [allArtifacts, orphanIds],
   );
-  const active = artifacts.find((a) => a.id === activeArtifactId);
+  // Look up the open document in the UNFILTERED list — toggling "Hide code" /
+  // "Show deleted" while viewing a now-filtered-out file must not blank the
+  // content pane (the file is still open; only the LIST hides it).
+  const active = allArtifacts.find((a) => a.id === activeArtifactId);
   const [content, setContent] = useState<string | null>(null);
 
   useEffect(() => {
@@ -217,8 +222,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   }, [active, renameDraft, projectRoot, sessionId, dispatch]);
 
   // Absolute on-disk path of the active artifact (for copy-path + reveal).
+  // Forward slashes throughout — mixing a backslash projectRoot with '/' joins
+  // reads broken in the clipboard on Windows.
   const absolutePath = active
-    ? (active.kind === 'internal' ? `${projectRoot}/${active.path}` : (active.absolutePath ?? active.path))
+    ? (active.kind === 'internal'
+        ? `${projectRoot.replace(/\\/g, '/').replace(/\/+$/, '')}/${active.path.replace(/\\/g, '/')}`
+        : (active.absolutePath ?? active.path))
     : '';
 
   // ── Toolbar actions ──
@@ -505,6 +514,19 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 
 // ─── Filter toggles (extracted so both layouts share them) ───────────────────
 
+// Real checkbox visual (lucide-style square + check) instead of the ☑/☐
+// unicode glyphs — consistent with the app's SVG iconography and crisper at
+// small sizes.
+function CheckboxGlyph({ checked }: { checked: boolean }) {
+  return (
+    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      {checked && <path d="m8 12.5 3 3 5.5-6.5" />}
+    </svg>
+  );
+}
+
 function FilterToggles({
   hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts, deletedCount,
 }: {
@@ -523,7 +545,7 @@ function FilterToggles({
         title={hideCodeAndConfigs ? 'Showing Documents and Mockups only. Click to show all.' : 'Showing all files. Click to hide code & configs.'}
       >
         <span className="flex items-center gap-1.5">
-          <span className="text-sm leading-none">{hideCodeAndConfigs ? '☑' : '☐'}</span>
+          <CheckboxGlyph checked={hideCodeAndConfigs} />
           <span>Hide code &amp; configs</span>
         </span>
       </button>
@@ -536,7 +558,7 @@ function FilterToggles({
         title={showDeletedArtifacts ? 'Including deleted files in the list. Click to hide them.' : `Hiding deleted files${deletedCount > 0 ? ` — ${deletedCount} hidden` : ''}. Click to include them.`}
       >
         <span className="flex items-center gap-1.5">
-          <span className="text-sm leading-none">{showDeletedArtifacts ? '☑' : '☐'}</span>
+          <CheckboxGlyph checked={showDeletedArtifacts} />
           <span>Show deleted</span>
         </span>
         {!showDeletedArtifacts && deletedCount > 0 && <span className="text-fg-muted">+{deletedCount}</span>}
