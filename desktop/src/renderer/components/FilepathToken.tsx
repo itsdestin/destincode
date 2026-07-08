@@ -1,5 +1,6 @@
 import { useArtifactOptional } from '../state/ArtifactContext';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
+import { findBestMatch, buildArtifactifyArgs } from './filepath-match';
 
 interface Props {
   path: string;
@@ -34,31 +35,6 @@ function FileGlyph({ ext }: { ext: string }) {
   );
 }
 
-// Build the appendVersion args for "artifactifying" a clicked path that isn't
-// tracked or discovered anywhere (e.g. a file Claude created via a Bash/python
-// script, or one in a temp dir outside the project). Mirrors the internal-vs-
-// external logic the App.tsx artifact tracker uses for tool-use events: a path
-// under cwd is internal (relative path); anything else is external (basename +
-// absolute path). Relative clicked paths are resolved against cwd first.
-function buildArtifactifyArgs(clickedPath: string, cwd: string): {
-  path: string; kind: 'internal' | 'external'; absolutePath: string | null;
-  type: 'read'; author: 'user';
-} {
-  const norm = clickedPath.replace(/\\/g, '/');
-  const isAbs = /^[a-zA-Z]:\//.test(norm) || norm.startsWith('/');
-  const cwdFwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
-  const absFwd = isAbs ? norm : `${cwdFwd}/${norm.replace(/^\.\//, '')}`;
-  const absLower = absFwd.toLowerCase();
-  const rootLower = cwdFwd.toLowerCase();
-  const isInternal = absLower === rootLower || absLower.startsWith(rootLower + '/');
-  if (isInternal) {
-    const rel = absLower === rootLower ? '' : absFwd.slice(cwdFwd.length + 1);
-    return { path: rel, kind: 'internal', absolutePath: null, type: 'read', author: 'user' };
-  }
-  const basename = absFwd.split('/').pop() || absFwd;
-  return { path: basename, kind: 'external', absolutePath: absFwd, type: 'read', author: 'user' };
-}
-
 export function FilepathToken({ path, sessionId }: Props) {
   // Optional: the buddy window / sandbox render this without ArtifactProvider.
   // When absent, the pill still renders (so prose isn't disrupted) but the
@@ -68,20 +44,6 @@ export function FilepathToken({ path, sessionId }: Props) {
   // Basename only inline — the full path lives in the title tooltip. Keeps prose
   // calm when Claude references deep paths mid-sentence.
   const name = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path;
-
-  // Suffix-tolerant path match: Claude may reference a file relative to a
-  // subdirectory (`desktop/src/x.ts`) while the artifact is stored relative to the
-  // project root (`youcoded/desktop/src/x.ts`), so match either direction's tail.
-  const normalised = path.replace(/\\/g, '/');
-  const matches = (a: ArtifactRecord) => {
-    const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
-    const aPathNorm = aPath.replace(/\\/g, '/');
-    return (
-      aPathNorm === normalised ||
-      normalised.endsWith('/' + aPathNorm) ||
-      aPathNorm.endsWith('/' + normalised)
-    );
-  };
 
   const onClick = async () => {
     // No provider (buddy window / sandbox) → nothing to open. Bail quietly.
@@ -93,8 +55,10 @@ export function FilepathToken({ path, sessionId }: Props) {
     // how the lookup below resolves.
     dispatch({ type: 'DRAWER_OPENED', sessionId });
 
-    // 1. Already in this session's live list? Select it.
-    const sessMatch = (state.sessionArtifacts[sessionId] ?? []).find(matches);
+    // 1. Already in this session's live list? Select it. findBestMatch prefers
+    //    an exact path match over the suffix-tolerant fallback (see
+    //    filepath-match.ts) so a same-named file elsewhere can't shadow it.
+    const sessMatch = findBestMatch(state.sessionArtifacts[sessionId] ?? [], path);
     if (sessMatch) {
       dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: sessMatch.id });
       return;
@@ -116,9 +80,10 @@ export function FilepathToken({ path, sessionId }: Props) {
         (window.claude as any).artifacts.listProject(cwd),
         (window.claude as any).artifacts.listAllFiles(cwd),
       ]);
+      const trackedList: ArtifactRecord[] = projRes?.ok ? (projRes.artifacts ?? []) : [];
+      const filesList: ArtifactRecord[] = filesRes?.ok ? (filesRes.files ?? []) : [];
       const projMatch: ArtifactRecord | undefined =
-        (projRes?.ok ? (projRes.artifacts ?? []) : []).find(matches)
-        ?? (filesRes?.ok ? (filesRes.files ?? []) : []).find(matches);
+        findBestMatch(trackedList, path) ?? findBestMatch(filesList, path);
       if (projMatch) {
         dispatch({ type: 'SESSION_ARTIFACT_UPSERTED', sessionId, artifact: projMatch });
         dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: projMatch.id });
@@ -133,11 +98,12 @@ export function FilepathToken({ path, sessionId }: Props) {
       //    and select the new entry. This is the only path that PERSISTS a brand-
       //    new artifact, so the file also appears in the Session Drawer afterward.
       const args = buildArtifactifyArgs(path, cwd);
+      if (!args) return; // e.g. a ~/ path the renderer can't expand — leave the drawer on its list
       await (window.claude as any).artifacts.appendVersion(cwd, sessionId, args);
       const refreshed = await (window.claude as any).artifacts.listSession(sessionId, cwd);
       if (refreshed?.ok && Array.isArray(refreshed.artifacts)) {
         dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: refreshed.artifacts });
-        const added = (refreshed.artifacts as ArtifactRecord[]).find(matches);
+        const added = findBestMatch(refreshed.artifacts as ArtifactRecord[], path);
         if (added) dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: added.id });
       }
     } catch { /* leave the drawer on its list */ }

@@ -46,4 +46,31 @@ describe('detectFilepaths', () => {
     const matches = detectFilepaths('see src/main/foo.ts');
     expect(matches[0].path).toBe('src/main/foo.ts');
   });
+
+  it('matches a path followed by sentence-final punctuation', () => {
+    // "The file is /docs/plan.md." — the trailing period is prose, not path.
+    expect(detectFilepaths('The file is /docs/plan.md.')[0].path).toBe('/docs/plan.md');
+    expect(detectFilepaths('Did you mean src/app.tsx?')[0].path).toBe('src/app.tsx');
+    expect(detectFilepaths('Done — see docs/notes.md!')[0].path).toBe('docs/notes.md');
+    expect(detectFilepaths('See /docs/plan.md. Then continue.')[0].path).toBe('/docs/plan.md');
+  });
+
+  it('is not cut short by an interior dot that looks like an extension', () => {
+    // `.md` here is mid-path (followed by `.html`, not whitespace) — the match
+    // must be the FULL path, not a premature stop at `.md`.
+    const matches = detectFilepaths('see src/x.md.html now');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].path).toBe('src/x.md.html');
+  });
+
+  it('rejects protocol-less domains that look like bare relative paths', () => {
+    expect(detectFilepaths('per w3.org/intro.html the spec says')).toEqual([]);
+    expect(detectFilepaths('see example.com/page.html')).toEqual([]);
+  });
+
+  it('keeps dotted directory names that are not domains', () => {
+    const matches = detectFilepaths('open docs.old/file.md');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].path).toBe('docs.old/file.md');
+  });
 });

@@ -20,7 +20,17 @@ const WHITELIST = new Set([
 // The bare-relative case (last alternative) requires at least one directory
 // segment + separator before the filename, so we don't false-match standalone
 // filenames like "plan.md".
-const PATH_RE = /(?:^|(?<=\s|[\(\[\{,'"\`>]))((?:[a-zA-Z]:[\\/]|~[\\/]|\.{1,2}[\\/]|\/|[\w\-.]+[\\/])[^\s\)\]\},'"\`<:;]*?\.([a-zA-Z0-9]+))(?=$|[\s\)\]\},'"\`<:;])/g;
+// The trailing lookahead also accepts sentence-final punctuation (./!/?) but
+// ONLY when followed by whitespace or end-of-text — so "see /docs/plan.md."
+// still pills, while `a/b.min.js` isn't cut short at `.min` (the `.` there is
+// followed by a letter, not whitespace).
+const PATH_RE = /(?:^|(?<=\s|[\(\[\{,'"\`>]))((?:[a-zA-Z]:[\\/]|~[\\/]|\.{1,2}[\\/]|\/|[\w\-.]+[\\/])[^\s\)\]\},'"\`<:;]*?\.([a-zA-Z0-9]+))(?=$|[\s\)\]\},'"\`<:;]|[.!?](?:\s|$))/g;
+
+// Protocol-less domains ("see w3.org/intro.html") match the bare-relative
+// alternative and would become dead pills. Reject when the FIRST segment looks
+// like a hostname ending in a common TLD. Deliberately a short list — a dotted
+// directory name like `docs.old/file.md` must keep working.
+const DOMAIN_FIRST_SEGMENT_RE = /^(?:[\w-]+\.)+(?:com|org|net|io|dev|ai|co|app|edu|gov|me|us|uk)$/i;
 
 export interface FilepathMatch {
   path: string;
@@ -35,7 +45,14 @@ export function detectFilepaths(text: string): FilepathMatch[] {
   while ((m = PATH_RE.exec(text))) {
     const ext = m[2].toLowerCase();
     if (!WHITELIST.has(ext)) continue;
-    out.push({ path: m[1], start: m.index + (m[0].length - m[1].length), end: m.index + m[0].length });
+    const p = m[1];
+    // Bare-relative candidates only: absolute/tilde/drive/dot-relative paths
+    // can't be domains.
+    if (/^[\w\-.]/.test(p) && !/^[a-zA-Z]:[\\/]/.test(p) && !p.startsWith('.')) {
+      const firstSeg = p.split(/[\\/]/, 1)[0];
+      if (DOMAIN_FIRST_SEGMENT_RE.test(firstSeg)) continue;
+    }
+    out.push({ path: p, start: m.index, end: m.index + m[0].length });
   }
   return out;
 }

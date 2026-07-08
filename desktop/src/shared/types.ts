@@ -198,6 +198,12 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  // Exact file paths the user attached with this message (from InputBar's file
+  // picker). Carried alongside content — which space-joins them — so
+  // UserMessage can render each as a clickable pill even when the path
+  // contains spaces (regex detection can't recover those from the joined
+  // string). Live-bubble only: transcript-confirmed entries don't carry it.
+  attachments?: string[];
 }
 
 // --- Command drawer / marketplace types ---

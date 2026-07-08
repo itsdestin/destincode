@@ -26,27 +26,46 @@ function renderTextRun(text: string, keyPrefix: string): React.ReactNode[] {
 
 export default React.memo(function UserMessage({ message, sessionId, showTimestamps }: Props) {
   const content = message.content;
-  // Detect filepaths (incl. attached files/images — their paths are joined into
-  // the sent message text by InputBar) and render each as a clickable pill that
-  // opens in the artifact viewer, same as assistant messages. Non-path spans keep
-  // the flowing-keyword + URL-link treatment. NOTE: this covers the LIVE bubble;
-  // a reloaded-from-transcript message loses attachment paths (the transcript
-  // stores images as blocks, not paths), so pills there fall back to plain text.
-  const matches = detectFilepaths(content);
+
+  // Attached files: message.attachments carries the EXACT picker paths (which
+  // routinely contain spaces the joined content string can't be split back out
+  // of). By construction (InputBar), content = attachments space-joined + the
+  // typed text — strip the known prefix so the remainder is just the text.
+  // Falls back gracefully: if the prefix doesn't line up, everything renders
+  // through the regex path like before.
+  const attachments = message.attachments ?? [];
+  let text = content;
+  const attachmentPills: React.ReactNode[] = [];
+  for (let i = 0; i < attachments.length; i++) {
+    const p = attachments[i];
+    if (!text.startsWith(p)) break;
+    text = text.slice(p.length).replace(/^ /, '');
+    attachmentPills.push(<FilepathToken key={`a${i}`} path={p} sessionId={sessionId} />);
+    if (i < attachments.length - 1 || text.length > 0) attachmentPills.push(' ');
+  }
+
+  // Detect filepaths in the (remaining) typed text and render each as a
+  // clickable pill that opens in the artifact viewer, same as assistant
+  // messages. Non-path spans keep the flowing-keyword + URL-link treatment.
+  // NOTE: this covers the LIVE bubble; a reloaded-from-transcript message
+  // loses attachment paths (the transcript stores images as blocks, not
+  // paths), so pills there fall back to plain text.
+  const matches = detectFilepaths(text);
 
   let body: React.ReactNode[];
   if (matches.length === 0) {
-    body = renderTextRun(content, 't');
+    body = renderTextRun(text, 't');
   } else {
     body = [];
     let cursor = 0;
     matches.forEach((m, mi) => {
-      if (m.start > cursor) body.push(...renderTextRun(content.slice(cursor, m.start), `t${mi}`));
+      if (m.start > cursor) body.push(...renderTextRun(text.slice(cursor, m.start), `t${mi}`));
       body.push(<FilepathToken key={`p${mi}`} path={m.path} sessionId={sessionId} />);
       cursor = m.end;
     });
-    if (cursor < content.length) body.push(...renderTextRun(content.slice(cursor), 'tend'));
+    if (cursor < text.length) body.push(...renderTextRun(text.slice(cursor), 'tend'));
   }
+  body = [...attachmentPills, ...body];
 
   return (
     <div className="flex justify-end px-4 py-2">

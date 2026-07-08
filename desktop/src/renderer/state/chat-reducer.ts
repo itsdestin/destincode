@@ -286,6 +286,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         role: 'user' as const,
         content: action.content,
         timestamp: action.timestamp,
+        // Exact attachment paths (when provided) so the bubble can pill them
+        // even when a path contains spaces. Content stays the space-joined
+        // string — the transcript dedup matches on content, don't change it.
+        ...(action.attachments?.length ? { attachments: action.attachments } : {}),
       };
 
       next.set(action.sessionId, {
