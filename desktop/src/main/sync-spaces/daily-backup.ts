@@ -52,7 +52,10 @@ export class DailyBackup {
       }
       try { await this.prune(target, now, log); } catch { /* prune is best-effort */ }
     }
-    fs.writeFileSync(this.markerPath, dated);
+    // Guarded so runIfDue honors its "never throws" contract — a missing or
+    // read-only ~/.claude must not become an unhandled rejection in the timer.
+    try { fs.writeFileSync(this.markerPath, dated); }
+    catch (e: any) { log(`spaces-backup: could not write marker: ${String(e?.message ?? e)}`); }
     log(`spaces-backup completed for ${dated} (${spaces.length} spaces, ${targets.length} targets)`);
   }
 
@@ -63,8 +66,11 @@ export class DailyBackup {
       await execFileAsync('rclone', ['copy', space.root, dest, ...excludes], { timeout: RCLONE_TIMEOUT });
     } else {
       const dest = path.join(target.base, 'Backup', 'spaces', dated, space.id.replace(':', '-'));
-      fs.mkdirSync(dest, { recursive: true });
-      fs.cpSync(space.root, dest, {
+      // Why async fs: this runs in the Electron main process — a synchronous
+      // deep copy would freeze UI/IPC/PTY for the duration of a large space
+      // copy. The Drive path is already async via rclone.
+      await fs.promises.mkdir(dest, { recursive: true });
+      await fs.promises.cp(space.root, dest, {
         recursive: true,
         // Backups scrub exactly what sync scrubs (DEFAULT_IGNORES) — secrets
         // like *.pem / id_rsa* must not land in iCloud any more than in a repo.
@@ -84,9 +90,10 @@ export class DailyBackup {
     } else {
       const dir = path.join(target.base, 'Backup', 'spaces');
       let names: string[] = [];
-      try { names = fs.readdirSync(dir); } catch { return; }
+      // Async fs for the same main-process reason as the copy above.
+      try { names = await fs.promises.readdir(dir); } catch { return; }
       for (const name of foldersToPrune(names, now, 30)) {
-        fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+        await fs.promises.rm(path.join(dir, name), { recursive: true, force: true });
         log(`spaces-backup pruned ${name}`);
       }
     }
