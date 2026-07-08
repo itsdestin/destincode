@@ -2,13 +2,81 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { SpaceManager, repoNameForSpace } from '../src/main/sync-spaces/space-manager';
+import { SpaceManager, repoNameForSpace, provisionGithubRemote } from '../src/main/sync-spaces/space-manager';
 import type { SyncSpace } from '../src/main/sync-spaces/types';
 
 describe('repoNameForSpace', () => {
   it('maps personal and project spaces to stable private repo names', () => {
     expect(repoNameForSpace({ id: 'personal', kind: 'personal', root: '/x' })).toBe('youcoded-sync-personal');
-    expect(repoNameForSpace({ id: 'project:My App', kind: 'project', root: '/x' })).toBe('youcoded-sync-project-my-app');
+    // Project names carry a short hash of the lowercased id for uniqueness.
+    expect(repoNameForSpace({ id: 'project:My App', kind: 'project', root: '/x' }))
+      .toMatch(/^youcoded-sync-project-my-app-[0-9a-f]{8}$/);
+  });
+
+  it('is case-insensitive: the same folder name in different case maps to the SAME repo', () => {
+    const a = repoNameForSpace({ id: 'project:My App', kind: 'project', root: '/x' });
+    const b = repoNameForSpace({ id: 'project:my app', kind: 'project', root: '/x' });
+    expect(a).toBe(b);
+  });
+
+  it('distinct folder names that slug identically get DIFFERENT repos', () => {
+    const a = repoNameForSpace({ id: 'project:My App', kind: 'project', root: '/x' });
+    const b = repoNameForSpace({ id: 'project:My-App', kind: 'project', root: '/x' });
+    expect(a).not.toBe(b);
+  });
+
+  it('all-symbol names still produce a valid, unique repo name', () => {
+    expect(repoNameForSpace({ id: 'project:###', kind: 'project', root: '/x' }))
+      .toMatch(/^youcoded-sync-project-x-[0-9a-f]{8}$/);
+  });
+});
+
+describe('provisionGithubRemote (injected exec)', () => {
+  it('returns the created repo URL with .git suffix', async () => {
+    const exec = vi.fn(async () => ({ stdout: 'https://github.com/u/youcoded-sync-personal\n' }));
+    await expect(provisionGithubRemote('youcoded-sync-personal', exec))
+      .resolves.toBe('https://github.com/u/youcoded-sync-personal.git');
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec.mock.calls[0][1]).toEqual(['repo', 'create', 'youcoded-sync-personal', '--private']);
+  });
+
+  it('recovers when create fails but the repo already exists (second device)', async () => {
+    const exec = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('create failed'), { stderr: 'Name already exists on this account' }))
+      .mockResolvedValueOnce({ stdout: 'https://github.com/u/youcoded-sync-personal\n' });
+    await expect(provisionGithubRemote('youcoded-sync-personal', exec))
+      .resolves.toBe('https://github.com/u/youcoded-sync-personal.git');
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(exec.mock.calls[1][1].slice(0, 3)).toEqual(['repo', 'view', 'youcoded-sync-personal']);
+  });
+
+  it('propagates the ORIGINAL create error when view also fails', async () => {
+    const original = new Error('network trouble');
+    const exec = vi.fn()
+      .mockRejectedValueOnce(original)
+      .mockRejectedValueOnce(new Error('view also failed'));
+    await expect(provisionGithubRemote('r', exec)).rejects.toBe(original);
+  });
+
+  it('throws "unexpected gh output" when create prints garbage and view fails', async () => {
+    const exec = vi.fn()
+      .mockResolvedValueOnce({ stdout: 'something weird\n' })
+      .mockRejectedValueOnce(new Error('view failed'));
+    await expect(provisionGithubRemote('r', exec)).rejects.toThrow('unexpected gh output');
+  });
+
+  it('maps a missing gh binary (ENOENT) to a plain-language error', async () => {
+    const enoent = Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+    const exec = vi.fn().mockRejectedValue(enoent);
+    await expect(provisionGithubRemote('r', exec))
+      .rejects.toThrow('GitHub CLI (gh) is not installed');
+  });
+
+  it('maps a gh auth failure to a plain-language error', async () => {
+    const authErr = Object.assign(new Error('exit 4'), { stderr: 'To get started with GitHub CLI, please run: gh auth login' });
+    const exec = vi.fn().mockRejectedValue(authErr);
+    await expect(provisionGithubRemote('r', exec))
+      .rejects.toThrow('Not signed in to GitHub');
   });
 });
 
@@ -54,5 +122,15 @@ describe('SpaceManager state', () => {
     await expect(m.ensureRemote(space)).resolves.toBe('https://github.com/u/youcoded-sync-personal.git');
     expect(m.remoteFor('personal')).toBe('https://github.com/u/youcoded-sync-personal.git');
     expect(provisionRemote).toHaveBeenCalledTimes(2);
+  });
+
+  it('degrades to defaults when the state file is corrupt, and self-heals on write', () => {
+    const stateFile = path.join(tmp, 'sync-spaces.json');
+    fs.writeFileSync(stateFile, '{not json!!');
+    const m = new SpaceManager({ stateFile, provisionRemote: vi.fn() });
+    expect(m.isEnabled()).toBe(false);
+    expect(m.remoteFor('personal')).toBe(null);
+    m.setEnabled(true);
+    expect(new SpaceManager({ stateFile, provisionRemote: vi.fn() }).isEnabled()).toBe(true);
   });
 });
