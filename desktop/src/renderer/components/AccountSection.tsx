@@ -110,7 +110,11 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
         <div className="scroll-fade">
           <div className="p-5 space-y-5">
             {signedIn && user ? (
+              // key on the canonical handle so SignedInBody remounts (re-seeding
+              // its useState draft initializers) if HandlePrompt saves a handle
+              // while this popup is open — otherwise handleDraft goes stale.
               <SignedInBody
+                key={user.handle ?? ''}
                 user={user}
                 signOut={signOut}
                 updateProfile={updateProfile}

@@ -13,8 +13,8 @@ import HandlePrompt from "../src/renderer/components/HandlePrompt";
 
 const DISMISS_KEY = "youcoded-handle-prompt-dismissed";
 
-// jsdom's built-in Storage in this toolchain is incomplete (no .clear), so we
-// install a deterministic Map-backed localStorage stub the component reads.
+// Install a deterministic, dependency-free Map-backed localStorage stub the
+// component reads — so these tests don't couple to jsdom's Storage internals.
 function installLocalStorageStub() {
   const store = new Map<string, string>();
   const stub = {

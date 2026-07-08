@@ -158,15 +158,18 @@ export function MarketplaceAuthProvider({
   // is worse than the edge-case inconsistency. Do NOT add error propagation here
   // unless the design explicitly requires rollback on failure.
   const signOut = useCallback(async () => {
-    // try/finally so local state clears even if the IPC call rejects — matches
-    // the stated optimistic-sign-out intent above (previously the await threw
-    // before the setStates ran, leaving the user "stuck signed in").
+    // Fix: try/CATCH (not try/finally) so the IPC rejection is SWALLOWED, not
+    // re-thrown. void-callers (the "Sign out" button) would otherwise get an
+    // unhandled promise rejection — contradicting the "do NOT propagate" contract
+    // above. Local state is cleared after the try either way, so a failed
+    // main-process signOut still leaves the UI signed out (optimistic).
     try {
       await window.claude.account.signOut();
-    } finally {
-      setSignedIn(false);
-      setUser(null);
+    } catch (err) {
+      console.warn("account.signOut() failed; clearing local state anyway", err);
     }
+    setSignedIn(false);
+    setUser(null);
   }, []);
 
   // Update the display name. Unlike signOut, this propagates failure to the caller
