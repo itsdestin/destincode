@@ -18,6 +18,7 @@ import { DevelopmentPopup } from './development/DevelopmentPopup';
 import { BugReportPopup } from './development/BugReportPopup';
 import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
+import AccountSection from './AccountSection';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -1982,6 +1983,9 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
     <>
       <div className="flex-1 px-4 py-4 space-y-6">
 
+        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
+        <AccountSection />
+
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
         {/* No <BuddyToggle /> on Android — the floater relies on an Electron always-on-top window that Android doesn't support yet */}
@@ -2290,6 +2294,9 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   return (
     <>
       <div className="flex-1 px-4 py-4 space-y-6">
+
+        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
+        <AccountSection />
 
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 

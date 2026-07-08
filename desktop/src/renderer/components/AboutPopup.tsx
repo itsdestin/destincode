@@ -149,6 +149,9 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
                   Your Claude Pro/Max sign-in is stored locally on your device. It is never transmitted to or collected by YouCoded. All Claude Code interactions happen directly between the on-device CLI and Anthropic's servers. YouCoded does not collect any personal data or message content.
                 </p>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
+                  <strong className="text-fg-2 font-semibold">Your account (optional).</strong> Signing in with GitHub creates a YouCoded account. We store: your GitHub username, display name, avatar, and handle; your theme likes, plugin reviews, and install records. We never see your GitHub password or private repos — sign-in uses read-only access to your public profile. Delete your account any time in Settings → Account; deletion removes everything above immediately. Analytics stays separate: your account is never linked to the anonymous device statistics described below.
+                </p>
+                <p className="text-[11px] text-fg-dim leading-relaxed">
                   By default, your device may send anonymous usage data to YouCoded once per day, including:
                 </p>
                 <ul className="text-[11px] text-fg-dim leading-relaxed list-disc pl-5 space-y-0.5">
@@ -172,6 +175,9 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
               <>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
                   Your Claude Pro/Max sign-in is stored locally on your device. It is never transmitted to or collected by YouCoded. All Claude Code interactions happen directly between the on-device CLI and Anthropic's servers. YouCoded does not collect any personal data or message content.
+                </p>
+                <p className="text-[11px] text-fg-dim leading-relaxed">
+                  <strong className="text-fg-2 font-semibold">Your account (optional).</strong> Signing in with GitHub creates a YouCoded account. We store: your GitHub username, display name, avatar, and handle; your theme likes, plugin reviews, and install records. We never see your GitHub password or private repos — sign-in uses read-only access to your public profile. Delete your account any time in Settings → Account; deletion removes everything above immediately. Analytics stays separate: your account is never linked to the anonymous device statistics described below.
                 </p>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
                   By default, your device may send anonymous usage data to YouCoded once per day, including:

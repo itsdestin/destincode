@@ -10,6 +10,10 @@ export interface MarketplaceUser {
   id: string;         // github:<id>
   login: string;
   avatar_url: string;
+  // Account-native fields (Worker accounts Phase 1). Optional so marketplace-auth.json
+  // written by older app versions (login/avatar only) still parses without migration.
+  display_name?: string;
+  handle?: string | null;
 }
 
 // Injected backing interface so tests can supply a plain Map (no Electron needed).

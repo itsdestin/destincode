@@ -37,7 +37,7 @@ describe('MarketplaceContext refreshes SkillContext after install/uninstall', ()
       },
       commands: { list: vi.fn(async () => []) },
       marketplace: { getPackages: vi.fn(async () => ({})) },
-      marketplaceAuth: { signedIn: vi.fn(async () => false) },
+      account: { signedIn: vi.fn(async () => false) },
       marketplaceApi: { install: vi.fn(async () => ({ ok: true, value: {} })) },
       theme: {
         marketplace: {

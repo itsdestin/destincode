@@ -194,12 +194,16 @@ const IPC = {
   APPEARANCE_SYNC: 'appearance:sync',
   APPEARANCE_GET_FAVORITE_THEMES: 'appearance:get-favorite-themes',
   APPEARANCE_FAVORITE_THEME: 'appearance:favorite-theme',
-  // Marketplace auth + write APIs (Task 4 — byte-identical to marketplace-api-handlers.ts CHANNELS)
-  MARKETPLACE_AUTH_START: 'marketplace:auth:start',
-  MARKETPLACE_AUTH_POLL: 'marketplace:auth:poll',
-  MARKETPLACE_AUTH_SIGNED_IN: 'marketplace:auth:signed-in',
-  MARKETPLACE_AUTH_USER: 'marketplace:auth:user',
-  MARKETPLACE_AUTH_SIGN_OUT: 'marketplace:auth:sign-out',
+  // Account (formerly marketplace auth) — byte-identical to marketplace-api-handlers.ts CHANNELS
+  ACCOUNT_START: 'account:start',
+  ACCOUNT_POLL: 'account:poll',
+  ACCOUNT_SIGNED_IN: 'account:signed-in',
+  ACCOUNT_USER: 'account:user',
+  ACCOUNT_SIGN_OUT: 'account:sign-out',
+  ACCOUNT_UPDATE_PROFILE: 'account:update-profile',
+  ACCOUNT_SET_HANDLE: 'account:set-handle',
+  ACCOUNT_DELETE: 'account:delete',
+  // Marketplace write APIs — byte-identical to marketplace-api-handlers.ts CHANNELS
   MARKETPLACE_INSTALL: 'marketplace:install',
   MARKETPLACE_RATE: 'marketplace:rate',
   MARKETPLACE_RATE_DELETE: 'marketplace:rate:delete',
@@ -423,21 +427,29 @@ contextBridge.exposeInMainWorld('claude', {
   // hide Install buttons on macOS-only integrations when running on Windows).
   getPlatform: (): Promise<'darwin' | 'win32' | 'linux' | 'android'> =>
     ipcRenderer.invoke(IPC.PLATFORM_GET),
-  // Marketplace sign-in (device-code OAuth flow) — token stays in main process.
-  // start/poll wrap API calls and return ApiResult so the renderer can inspect
-  // HTTP status codes across the contextBridge (structuredClone drops Error fields).
-  // signedIn / user / signOut are pure local reads — no API call, no ApiResult wrapper.
-  marketplaceAuth: {
+  // YouCoded account (device-code OAuth) — token stays in main process.
+  // start/poll/updateProfile/setHandle/deleteAccount wrap API calls and return
+  // ApiResult so the renderer can inspect HTTP status codes across the contextBridge
+  // (structuredClone drops Error fields). signedIn is a pure local read; user may
+  // lazily heal via /auth/me; signOut best-effort revokes the session server-side
+  // before the local clear. None of those three wrap in ApiResult.
+  account: {
     start: (): Promise<ApiResult<AuthStartResponse>> =>
-      ipcRenderer.invoke(IPC.MARKETPLACE_AUTH_START),
+      ipcRenderer.invoke(IPC.ACCOUNT_START),
     poll: (deviceCode: string): Promise<ApiResult<AuthPollResponse>> =>
-      ipcRenderer.invoke(IPC.MARKETPLACE_AUTH_POLL, deviceCode),
+      ipcRenderer.invoke(IPC.ACCOUNT_POLL, deviceCode),
     signedIn: (): Promise<boolean> =>
-      ipcRenderer.invoke(IPC.MARKETPLACE_AUTH_SIGNED_IN),
+      ipcRenderer.invoke(IPC.ACCOUNT_SIGNED_IN),
     user: (): Promise<MarketplaceUser | null> =>
-      ipcRenderer.invoke(IPC.MARKETPLACE_AUTH_USER),
+      ipcRenderer.invoke(IPC.ACCOUNT_USER),
     signOut: (): Promise<void> =>
-      ipcRenderer.invoke(IPC.MARKETPLACE_AUTH_SIGN_OUT),
+      ipcRenderer.invoke(IPC.ACCOUNT_SIGN_OUT),
+    updateProfile: (displayName: string): Promise<ApiResult<{ display_name: string }>> =>
+      ipcRenderer.invoke(IPC.ACCOUNT_UPDATE_PROFILE, displayName),
+    setHandle: (handle: string): Promise<ApiResult<{ handle: string }>> =>
+      ipcRenderer.invoke(IPC.ACCOUNT_SET_HANDLE, handle),
+    deleteAccount: (): Promise<ApiResult<void>> =>
+      ipcRenderer.invoke(IPC.ACCOUNT_DELETE),
   },
   // Marketplace write endpoints — all return ApiResult so the renderer can
   // surface install-gate (403) vs. generic errors (Task 7+).

@@ -128,6 +128,18 @@ class SessionService : Service() {
     private val marketplaceApiClient: MarketplaceApiClient by lazy {
         MarketplaceApiClient(marketplaceAuthStore)
     }
+
+    /**
+     * A 401 from an auth'd account endpoint means the Worker no longer recognizes
+     * this session (identity-migration row drop, 90-day idle expiry, revocation).
+     * Keeping the local token would strand the user "signed in" with every call
+     * failing, so clear it — the UI then flips to signed-out and offers a fresh
+     * sign-in. Only reacts to a 401 that already happened; never proactively
+     * validates. Desktop parity: marketplace-api-handlers.ts clearSessionOn401.
+     */
+    private fun clearSessionOn401(result: ApiResult<*>) {
+        if (result is ApiResult.Err && result.status == 401) marketplaceAuthStore.signOut()
+    }
     /**
      * Callback for the Activity to open the device's browser at the given URL.
      * Follows the same deferred-callback pattern as onFilePickerRequested and
@@ -2369,10 +2381,12 @@ class SessionService : Service() {
                 }
             }
 
-            // ── Marketplace auth (device-code OAuth) ────────────────────────────
-            // These 5 types mirror the desktop marketplace-auth-handlers.ts exactly.
+            // ── Account (device-code OAuth + profile) ───────────────────────────
+            // These account:* types mirror the desktop marketplace-api-handlers.ts
+            // account:* channels exactly. Renamed from marketplace:auth:* in the
+            // accounts Phase 1 rework; wire shapes (ApiResult.toJson) are unchanged.
 
-            "marketplace:auth:start" -> {
+            "account:start" -> {
                 // Calls the Worker to start device-code flow, then opens the browser
                 // via the Activity callback so the user can authorize on GitHub.
                 // WHY Activity callback: Service cannot startActivity() with FLAG_ACTIVITY_NEW_TASK
@@ -2388,7 +2402,7 @@ class SessionService : Service() {
                                 onMarketplaceAuthUrlRequested?.invoke(authUrl)
                             }
                         } catch (e: Exception) {
-                            android.util.Log.w("SessionService", "marketplace:auth:start — browser open failed: ${e.message}")
+                            android.util.Log.w("SessionService", "account:start — browser open failed: ${e.message}")
                         }
                     }
                 }
@@ -2397,7 +2411,7 @@ class SessionService : Service() {
                 }
             }
 
-            "marketplace:auth:poll" -> {
+            "account:poll" -> {
                 // payload: { deviceCode } (camelCase — matches remote-shim.ts invoke call)
                 val deviceCode = msg.payload.optString("deviceCode", "")
                 val result = marketplaceApiClient.authPoll(deviceCode)
@@ -2408,15 +2422,20 @@ class SessionService : Service() {
                         val token = pollBody.optString("token", "")
                         if (token.isNotEmpty()) {
                             // WHY: token not logged — only status logged
-                            android.util.Log.i("SessionService", "marketplace:auth:poll — complete, saving token")
+                            android.util.Log.i("SessionService", "account:poll — complete, saving token")
                             marketplaceAuthStore.setToken(token)
-                            // Persist user info if returned alongside token
+                            // Persist user info if returned alongside token. The Worker now
+                            // returns the full account profile (display_name/handle) so the
+                            // account:user query works immediately without a /auth/me round-trip.
                             val userObj = pollBody.optJSONObject("user")
                             if (userObj != null) {
                                 val user = MarketplaceUser(
                                     id        = userObj.optString("id", ""),
                                     login     = userObj.optString("login", ""),
                                     avatarUrl = userObj.optString("avatar_url", ""),
+                                    // isNull() guards: optString(name, null) returns the Java "null" string, not real null.
+                                    displayName = if (userObj.isNull("display_name")) null else userObj.optString("display_name"),
+                                    handle      = if (userObj.isNull("handle")) null else userObj.optString("handle"),
                                 )
                                 marketplaceAuthStore.setSession(token, user)
                             }
@@ -2428,20 +2447,52 @@ class SessionService : Service() {
                 }
             }
 
-            "marketplace:auth:signed-in" -> {
+            "account:signed-in" -> {
                 // Plain boolean — no HTTP call, reads local store only
                 val signedIn = marketplaceAuthStore.getToken() != null
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, signedIn) }
             }
 
-            "marketplace:auth:user" -> {
-                // Returns the stored MarketplaceUser as a JSONObject, or null
-                val user = marketplaceAuthStore.getUser()
+            "account:user" -> {
+                // Returns the stored MarketplaceUser as a JSONObject, or null.
+                var user = marketplaceAuthStore.getUser()
+                // WHY capture the token BEFORE the suspend: authMe() can take up to 30s;
+                // a sign-out processed during that window would make a re-read + `!!` throw
+                // NPE and crash the service scope. Capturing matches desktop, which reads
+                // the token before its await. Worst case we re-persist a session the user
+                // just cleared — the next sign-out clears it again; no crash path.
+                val healToken = marketplaceAuthStore.getToken()
+                if (user == null && healToken != null) {
+                    // Heal (desktop parity): a token stored before profile storage existed
+                    // (pre-2026-07 sign-ins) has no cached user — fetch /auth/me once and persist.
+                    // On any failure (offline, revoked) leave user null; the token stays untouched.
+                    val me = marketplaceApiClient.authMe()
+                    if (me is ApiResult.Ok) {
+                        val healed = MarketplaceUser(
+                            id        = me.value.optString("id"),
+                            login     = me.value.optString("login"),
+                            avatarUrl = me.value.optString("avatar_url", ""),
+                            // isNull() checks — optString(name, null) is a Java-null trap.
+                            displayName = if (me.value.isNull("display_name")) null else me.value.optString("display_name"),
+                            handle      = if (me.value.isNull("handle")) null else me.value.optString("handle"),
+                        )
+                        marketplaceAuthStore.setSession(healToken, healed)
+                        user = healed
+                    } else if (me is ApiResult.Err && me.status == 401) {
+                        // Fix: the stored token is dead server-side — clear the local
+                        // session so the UI flips to signed-out (desktop parity with the
+                        // account:user heal path). Leave `user` null; we respond null below.
+                        marketplaceAuthStore.signOut()
+                    }
+                }
                 val result: Any = if (user != null) {
                     JSONObject().apply {
-                        put("id",         user.id)
-                        put("login",      user.login)
-                        put("avatar_url", user.avatarUrl)
+                        // Wire format is snake_case (matches desktop's stored MarketplaceUser + what React reads).
+                        put("id",           user.id)
+                        put("login",        user.login)
+                        put("avatar_url",   user.avatarUrl)
+                        put("display_name", user.displayName ?: JSONObject.NULL)
+                        put("handle",       user.handle ?: JSONObject.NULL)
                     }
                 } else {
                     JSONObject.NULL
@@ -2449,11 +2500,71 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
 
-            "marketplace:auth:sign-out" -> {
-                // Fire-and-forget: clears local credentials, no HTTP call needed
+            "account:sign-out" -> {
+                // Best-effort server-side revocation first (desktop parity), then clear locally.
+                // Offline sign-out still clears local credentials — never trap the user signed in.
+                // WHY no runCatching: request() already catches I/O errors internally and returns
+                // Err, so wrapping here could only swallow CancellationException (a coroutine
+                // anti-pattern) or real programming bugs. Log Err so orphaned server-side
+                // session rows are debuggable (the 90-day expiry + prune cron mop them up).
+                val revoke = marketplaceApiClient.logout()
+                if (revoke is ApiResult.Err) {
+                    android.util.Log.w("SessionService", "account:sign-out — server logout failed (${revoke.status}): ${revoke.message}")
+                }
                 marketplaceAuthStore.signOut()
-                // Respond with void (true as success indicator, matching desktop convention)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
+            }
+
+            "account:update-profile" -> {
+                // payload: { displayName } (camelCase — matches remote-shim.ts)
+                val result = marketplaceApiClient.updateProfile(msg.payload.optString("displayName", ""))
+                // Mirror the new display name into the stored profile so account:user reflects it without a /auth/me round-trip.
+                if (result is ApiResult.Ok) {
+                    val user = marketplaceAuthStore.getUser()
+                    val token = marketplaceAuthStore.getToken()
+                    if (user != null && token != null) {
+                        // isNull() guard — same Java-null-trap convention as the heal path above.
+                        val echoed = if (result.value.isNull("display_name")) null else result.value.optString("display_name")
+                        marketplaceAuthStore.setSession(token, user.copy(displayName = echoed))
+                    }
+                }
+                // Fix: a 401 means the token is dead server-side (migration drop, 90-day
+                // idle expiry, revocation). Clear the local session so the UI flips to
+                // signed-out instead of stranding the user "signed in" with every call
+                // failing. Still respond with the Err so the renderer shows the message.
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "account:set-handle" -> {
+                // payload: { handle } (camelCase — matches remote-shim.ts)
+                val result = marketplaceApiClient.setHandle(msg.payload.optString("handle", ""))
+                // Mirror the claimed handle into the stored profile.
+                if (result is ApiResult.Ok) {
+                    val user = marketplaceAuthStore.getUser()
+                    val token = marketplaceAuthStore.getToken()
+                    if (user != null && token != null) {
+                        // isNull() guard — same Java-null-trap convention as the heal path above.
+                        val echoed = if (result.value.isNull("handle")) null else result.value.optString("handle")
+                        marketplaceAuthStore.setSession(token, user.copy(handle = echoed))
+                    }
+                }
+                // Fix: 401 → clear local session (dead/expired token) so the UI flips to
+                // signed-out. This is the exact migration bug: the post-sign-in handle
+                // prompt returned "invalid token" with no way out. Still respond with Err.
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "account:delete" -> {
+                // Permanent hard-delete (Worker cascades all rows). Clear the local session only on success.
+                val result = marketplaceApiClient.deleteAccount()
+                if (result is ApiResult.Ok) marketplaceAuthStore.signOut()
+                // Fix: a 401 also means the session is dead (already deleted / expired) —
+                // clear locally so the UI flips to signed-out rather than looping on a
+                // delete that can never authenticate. Still respond with the Err.
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
             // ── Marketplace write endpoints ───────────────────────────────────

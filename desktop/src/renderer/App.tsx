@@ -59,6 +59,7 @@ import type { SessionStatusColor } from './components/StatusDot';
 import { ThemeProvider, useTheme } from './state/theme-context';
 import { SkillProvider } from './state/skill-context';
 import { MarketplaceAuthProvider } from './state/marketplace-auth-context';
+import HandlePrompt from './components/HandlePrompt';
 import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
 import { WorkerHealthProvider, useWorkerHealth } from './state/worker-health-context';
 import ThemeEffects from './components/ThemeEffects';
@@ -2440,6 +2441,10 @@ export default function App() {
             state, but outside SkillProvider/GameProvider/ChatProvider which may
             eventually consume live stats via useMarketplaceStats(). */}
         <MarketplaceAuthProvider>
+          {/* Always-mounted, self-driven overlay: shows a one-time handle prompt
+              right after sign-in (renders nothing when not applicable). Lives here
+              so it can consume useMarketplaceAuth() regardless of the active view. */}
+          <HandlePrompt />
           {/* WorkerHealthProvider wraps stats so the stats provider can report
               network results to the health indicator via the onNetworkResult prop. */}
           <WorkerHealthProvider>

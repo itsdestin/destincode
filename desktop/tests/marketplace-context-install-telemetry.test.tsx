@@ -56,7 +56,7 @@ function makeMock({
     getPackages: vi.fn().mockResolvedValue({}),
   };
 
-  const marketplaceAuth = {
+  const account = {
     signedIn: vi.fn().mockResolvedValue(signedIn),
   };
 
@@ -75,7 +75,7 @@ function makeMock({
     },
   };
 
-  return { skills, marketplace, marketplaceAuth, marketplaceApi, theme };
+  return { skills, marketplace, account, marketplaceApi, theme };
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ describe("installSkill telemetry", () => {
     });
 
     expect(mock.skills.install).toHaveBeenCalledWith("my-plugin");
-    expect(mock.marketplaceAuth.signedIn).toHaveBeenCalled();
+    expect(mock.account.signedIn).toHaveBeenCalled();
     expect(mock.marketplaceApi.install).toHaveBeenCalledWith("my-plugin");
   });
 

@@ -124,6 +124,41 @@ describe('dev:* channel parity', () => {
   });
 });
 
+// Regression net for the account:* IPC channels introduced by the
+// Accounts Phase 1 (client account surface) plan. All four surfaces must
+// carry identical type strings — drift would silently break sign-in / profile
+// on one platform. Also guards against any leftover marketplace:auth:* strings
+// (the pre-rename prefix) in the three desktop TS sources.
+describe('account:* channel parity', () => {
+  const NEW_TYPES = [
+    'account:start', 'account:poll', 'account:signed-in', 'account:user',
+    'account:sign-out', 'account:update-profile', 'account:set-handle', 'account:delete',
+  ];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('all account:* types are declared in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('all account:* types are referenced in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('all account:* types are handled in marketplace-api-handlers.ts', () => {
+    const src = read('src', 'main', 'marketplace-api-handlers.ts');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
+  });
+  it('all account:* types are handled by SessionService.kt (Android)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
+  });
+  it('no marketplace:auth:* strings remain anywhere', () => {
+    for (const p of [['src','main','preload.ts'],['src','renderer','remote-shim.ts'],['src','main','marketplace-api-handlers.ts']] as const) {
+      expect(read(...p)).not.toContain('marketplace:auth:');
+    }
+  });
+});
+
 // Regression net for terminal:get-screen-text, introduced by the
 // android-terminal-data-parity plan (Task 7/9/10). All four surfaces
 // (preload.ts, remote-shim.ts, ipc-handlers.ts, SessionService.kt) must

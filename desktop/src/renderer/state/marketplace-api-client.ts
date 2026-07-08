@@ -18,15 +18,18 @@ export interface AuthStartResponse {
   expires_in: number;
 }
 
+// Signed-in user's profile as returned by GET /auth/me (Worker accounts Phase 1 shape).
+export interface AuthMeResponse {
+  id: string;
+  login: string;              // GitHub login (player-tag continuity)
+  display_name: string;       // account-native display name (Worker accounts Phase 1)
+  avatar_url: string | null;
+  handle: string | null;      // unique @handle, null until the user claims one
+}
+
 // `user` on completion: the Worker returns the profile alongside the token so
 // clients can store both atomically (games player tag needs `login`).
 // Optional because a Worker deployed before 2026-07 omits it.
-export interface AuthMeResponse {
-  id: string;
-  login: string;
-  avatar_url: string | null;
-}
-
 export type AuthPollResponse =
   | { status: "pending" }
   | { status: "complete"; token: string; user?: AuthMeResponse };
@@ -67,6 +70,14 @@ export interface MarketplaceApiClient {
   authPoll(deviceCode: string): Promise<AuthPollResponse>;
   /** Resolve the current session token to the signed-in user's profile. */
   authMe(): Promise<AuthMeResponse>;
+  /** Update the account display name. Returns the stored value. */
+  updateProfile(displayName: string): Promise<{ display_name: string }>;
+  /** Claim/change the unique @handle. Returns the normalized handle. Throws MarketplaceApiError (400 invalid / 409 taken). */
+  setHandle(handle: string): Promise<{ handle: string }>;
+  /** Permanently delete the account (hard delete + cascade on the Worker). */
+  deleteAccount(): Promise<void>;
+  /** Invalidate the current session token server-side. */
+  logout(): Promise<void>;
   postInstall(pluginId: string): Promise<void>;
   postRating(input: PostRatingInput): Promise<{ hidden: boolean }>;
   deleteRating(pluginId: string): Promise<void>;
@@ -96,11 +107,31 @@ export function createMarketplaceApiClient(opts: {
     const { auth: _auth, ...fetchInit } = init;
     const res = await fetch(`${host}${path}`, { ...fetchInit, headers });
     // 202 Accepted is used for poll-pending responses — treat as success with { status: "pending" }
-    const body = res.status === 202 ? { status: "pending" as const } : await res.json().catch(() => ({}));
-    if (!res.ok && res.status !== 202) {
-      throw new MarketplaceApiError(res.status, (body as { message?: string })?.message ?? res.statusText);
+    if (res.status === 202) return { status: "pending" } as T;
+    if (!res.ok) {
+      // Fix: the Worker's 400/409 errors (Hono HTTPException, e.g. "that handle is
+      // taken") arrive as text/plain with the message as the raw body — NOT JSON
+      // {message}. The old res.json() path threw on those and fell back to
+      // res.statusText, which is EMPTY over HTTP/2 on Cloudflare, so every such
+      // error reached the UI with a blank message. Read the body as text once,
+      // then accept either shape: JSON {message} or the raw text itself.
+      const raw = await res.text().catch(() => "");
+      let message = "";
+      try {
+        const parsed = JSON.parse(raw) as { message?: unknown; error?: unknown };
+        if (typeof parsed?.message === "string") message = parsed.message;
+        // Fix: the Worker's JSON 500s use `{ ok: false, error }` (app.onError),
+        // not `{ message }` — extract `error` so those don't reach the UI blank.
+        else if (typeof parsed?.error === "string") message = parsed.error;
+      } catch {
+        // Not JSON — plain-text body; the raw text fallback below covers it.
+      }
+      if (!message) message = raw.trim();
+      if (!message) message = `request failed (status ${res.status})`;
+      throw new MarketplaceApiError(res.status, message);
     }
-    return body as T;
+    // Success path: tolerate empty bodies (204 No Content endpoints) by returning {}
+    return (await res.json().catch(() => ({}))) as T;
   }
 
   return {
@@ -112,6 +143,31 @@ export function createMarketplaceApiClient(opts: {
         body: JSON.stringify({ device_code }),
       }),
     authMe: () => request<AuthMeResponse>("/auth/me", { method: "GET", auth: true }),
+    updateProfile: (display_name) =>
+      request<{ display_name: string }>("/auth/profile", {
+        method: "PATCH",
+        body: JSON.stringify({ display_name }),
+        auth: true,
+      }),
+    setHandle: (handle) =>
+      request<{ handle: string }>("/auth/handle", {
+        method: "PUT",
+        body: JSON.stringify({ handle }),
+        auth: true,
+      }),
+    // Void endpoints: 204 No Content. request() tolerates empty bodies (res.json().catch → {}),
+    // so the same pattern as postInstall/deleteRating works — discard the return.
+    deleteAccount: async () => {
+      await request("/auth/account", { method: "DELETE", auth: true });
+    },
+    logout: async () => {
+      // WHY: best-effort revoke must not hang sign-out for minutes on a blackholed
+      // connection — bound it to 5s so a dead endpoint can't freeze the UI. The
+      // handler already swallows the resulting timeout/abort rejection —
+      // AbortSignal.timeout() rejects with a TimeoutError DOMException, not an
+      // AbortError — so offline sign-out is fine.
+      await request("/auth/logout", { method: "POST", auth: true, signal: AbortSignal.timeout(5000) });
+    },
     postInstall: async (plugin_id) => {
       await request("/installs", { method: "POST", body: JSON.stringify({ plugin_id }), auth: true });
     },
