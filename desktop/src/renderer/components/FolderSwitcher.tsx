@@ -7,6 +7,9 @@ interface SavedFolder {
   nickname: string;
   addedAt: number;
   exists: boolean;
+  // Set by FOLDERS_LIST for YouCoded-managed sync projects (~/YouCoded/Projects/*),
+  // which appear here automatically. Drives the "synced project" badge below.
+  managed?: boolean;
 }
 
 interface Props {
@@ -26,6 +29,11 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
   const editRef = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const listRef = useScrollFade<HTMLDivElement>();
+
+  // New managed project (spec §3): creates ~/YouCoded/Projects/<name>, which
+  // then appears in this picker automatically via the FOLDERS_LIST merge.
+  const [newProjectName, setNewProjectName] = useState('');
+  const [projectError, setProjectError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -81,6 +89,16 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
       onChange(folder);
     } catch {}
   }, [onChange, load]);
+
+  const createProject = useCallback(async () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    const r = await (window as any).claude.syncSpaces.createProject(name);
+    // On success: clear the field, reload the folder list (reuses `load`, the
+    // existing folders.list() refresh) so the new project shows up, and select it.
+    if (r?.ok) { setNewProjectName(''); setProjectError(null); await load(); onChange(r.path); }
+    else setProjectError(r?.error ?? 'Could not create project');
+  }, [newProjectName, load, onChange]);
 
   const handleSelect = useCallback((path: string) => {
     onChange(path);
@@ -192,7 +210,11 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
                         />
                       ) : (
                         <>
-                          <div className="text-xs truncate">{f.nickname}</div>
+                          <div className="text-xs truncate">
+                            {f.nickname}
+                            {/* Plain-word badge for YouCoded-managed sync projects — no status glyphs. */}
+                            {f.managed && <span className="text-xs text-fg-muted ml-1">synced project</span>}
+                          </div>
                           <div className="text-[10px] text-fg-faint truncate" title={f.path}>
                             {f.path}
                           </div>
@@ -255,6 +277,23 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
               <span className="text-sm leading-none">+</span>
               <span>Browse for folder</span>
             </button>
+
+            {/* New managed sync project — creates ~/YouCoded/Projects/<name>. */}
+            <div className="px-2.5 pb-2">
+              <div className="flex items-center gap-2 mt-2">
+                <input
+                  value={newProjectName}
+                  onChange={e => setNewProjectName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') void createProject(); }}
+                  placeholder="New project name…"
+                  className="flex-1 bg-inset text-fg text-sm rounded px-2 py-1 border border-edge-dim"
+                />
+                <button onClick={() => void createProject()} className="text-sm px-2 py-1 rounded bg-accent text-on-accent">
+                  Create
+                </button>
+              </div>
+              {projectError && <div className="text-xs text-red-500 mt-1">{projectError}</div>}
+            </div>
           </div>
         </div>
       )}

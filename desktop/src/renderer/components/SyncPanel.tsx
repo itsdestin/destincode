@@ -381,6 +381,10 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // Restore flow: stash the backend the user picked so RestoreWizard can open.
   const [restoreTarget, setRestoreTarget] = useState<{ id: string; label: string; type: 'drive' | 'github' | 'icloud' } | null>(null);
   const [showSnapshots, setShowSnapshots] = useState(false);
+  // Cross-device sync spaces (spec 2026-07-03) — separate from the backend backups
+  // above. Status refetches whenever the engine emits an event so the list and
+  // per-space connected/local state stay live.
+  const [spacesStatus, setSpacesStatus] = useState<any>(null);
 
   const claude = (window as any).claude;
 
@@ -546,6 +550,16 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     const timer = setTimeout(() => document.addEventListener('click', handler), 0);
     return () => { clearTimeout(timer); document.removeEventListener('click', handler); };
   }, [menuOpenId]);
+
+  // Load synced-spaces status now, and re-load on every engine event so the
+  // section reflects sync activity (conflicts, connect/disconnect) live.
+  useEffect(() => {
+    void (async () => setSpacesStatus(await (window as any).claude.syncSpaces.status()))();
+    const off = (window as any).claude.syncSpaces.onEvent?.(() => {
+      void (async () => setSpacesStatus(await (window as any).claude.syncSpaces.status()))();
+    });
+    return () => { off?.(); };
+  }, []);
 
   if (loading) {
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).
@@ -782,6 +796,41 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 </div>
               )}
             </div>
+
+            {/* 1b. Synced spaces (spec 2026-07-03) — folder-based cross-device sync,
+                distinct from the cloud backups above. */}
+            <section>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-fg">Synced spaces</h3>
+                <label className="flex items-center gap-2 text-sm text-fg-2">
+                  <input
+                    type="checkbox"
+                    checked={!!spacesStatus?.enabled}
+                    onChange={async e => setSpacesStatus(await (window as any).claude.syncSpaces.enable(e.target.checked))}
+                  />
+                  Sync across devices
+                </label>
+              </div>
+              {spacesStatus?.enabled && (
+                <ul className="mt-2 space-y-1">
+                  {spacesStatus.spaces.map((s: any) => (
+                    <li key={s.id} className="text-sm text-fg-2 flex items-center justify-between">
+                      <span>{s.id === 'personal' ? 'Personal' : s.id.replace('project:', '')}</span>
+                      <span className="text-xs text-fg-muted">{s.remote ? 'connected' : 'local only'}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {spacesStatus?.recentEvents?.some((e: any) => e.type === 'conflict') && (
+                <p className="text-xs text-amber-600 mt-2">
+                  Some files had conflicting edits — the other device's copy was kept alongside yours
+                  (look for "(from …)" files).
+                </p>
+              )}
+              <button onClick={() => void (window as any).claude.syncSpaces.syncNow()} className="text-xs mt-2 underline text-fg-muted">
+                Sync now
+              </button>
+            </section>
 
             {/* 2. Sync Now bar */}
             <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-inset/50">
