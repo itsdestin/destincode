@@ -1472,7 +1472,9 @@ app.on('window-all-closed', () => {
   hookRelay.stop();
   remoteServer.stop();
   // Stop the cross-device sync-spaces engine (clears its backup timer + watchers).
-  try { void stopSyncSpaces(); } catch {}
+  // .catch, not try/catch: it's an async fn, so a failure arrives as a rejected
+  // promise — the old `void` call left that rejection unhandled at quit.
+  stopSyncSpaces().catch(() => {});
   // Stop sync service — clears timer, releases locks, removes .app-sync-active marker
   try { setSyncService(null); } catch {}
   app.quit();
