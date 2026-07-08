@@ -27,13 +27,27 @@ describe('artifactReducer', () => {
     expect(next.sessionArtifacts['s1']).toEqual([sampleArtifact]);
   });
 
-  it('ARTIFACT_CHANGED triggers re-fetch flag', () => {
-    const next = artifactReducer(initialArtifactState, {
-      type: 'ARTIFACT_CHANGED',
-      projectRoot: '/p',
-      artifactId: 'art_1',
+  it('PILL_RESOLVE_FAILED stores a per-session note; cleared on selection', () => {
+    let s = artifactReducer(initialArtifactState, {
+      type: 'PILL_RESOLVE_FAILED',
+      sessionId: 's1',
+      message: 'Couldn’t open x.md',
     });
-    expect(next.pendingRefresh['/p']).toBe(true);
+    expect(s.pillError['s1']).toBe('Couldn’t open x.md');
+    // A successful open supersedes the failure note.
+    s = artifactReducer(s, { type: 'ACTIVE_ARTIFACT_SET', sessionId: 's1', artifactId: 'a1' });
+    expect(s.pillError['s1']).toBeNull();
+  });
+
+  it('PILL_ERROR_CLEARED and DRAWER_CLOSED clear the note', () => {
+    let s = artifactReducer(initialArtifactState, {
+      type: 'PILL_RESOLVE_FAILED', sessionId: 's1', message: 'nope',
+    });
+    s = artifactReducer(s, { type: 'PILL_ERROR_CLEARED', sessionId: 's1' });
+    expect(s.pillError['s1']).toBeNull();
+    s = artifactReducer(s, { type: 'PILL_RESOLVE_FAILED', sessionId: 's1', message: 'nope' });
+    s = artifactReducer(s, { type: 'DRAWER_CLOSED', sessionId: 's1' });
+    expect(s.pillError['s1']).toBeNull();
   });
 
   it('DRAWER_OPENED sets the per-session open flag', () => {

@@ -88,6 +88,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // across switches). This drawer instance belongs to `sessionId`.
   const drawerOpen = state.drawerOpenBySession[sessionId] ?? false;
   const activeArtifactId = state.activeArtifactBySession[sessionId] ?? null;
+  // Set when a pill click couldn't resolve; cleared on next click/selection/close.
+  const pillError = state.pillError?.[sessionId] ?? null;
 
   // Existence check (unchanged): mark artifacts whose file is gone as orphans,
   // folded into the "deleted" UI state alongside explicit delete versions.
@@ -299,6 +301,19 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     return () => window.removeEventListener('keydown', onKey, true);
   }, [drawerOpen, active]);
 
+  // Remove a tracking RECORD (never the file on disk). If the removal fails
+  // (Android stub, write conflict) it quietly no-ops — same graceful-degrade
+  // contract as rename on mobile.
+  const handleRemoveRecord = useCallback(async (artifactId: string) => {
+    const res = await (window.claude as any).artifacts.removeRecord?.(projectRoot, artifactId);
+    if (!res?.ok) return;
+    if (activeArtifactId === artifactId) dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId });
+    const refreshed = await (window.claude as any).artifacts.listSession(sessionId, projectRoot);
+    if (refreshed?.ok && Array.isArray(refreshed.artifacts)) {
+      dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: refreshed.artifacts });
+    }
+  }, [projectRoot, sessionId, activeArtifactId, dispatch]);
+
   // ── ESC / back: rename → find → edit → expand → list → active → drawer ──
   const handleBack = useCallback(() => {
     if (renameActiveRef.current) { cancelRename(); return; }
@@ -354,13 +369,22 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         deletedCount={deletedCount}
       />
       <div className="flex-1 overflow-y-auto">
+        {/* A pill click that couldn't resolve — shown INSTEAD of letting the
+            generic empty state contradict the file the user just clicked. */}
+        {pillError && (
+          <div className="mx-2 mt-2 px-2.5 py-2 text-[11px] text-fg rounded-md border border-edge bg-well">
+            {pillError}
+          </div>
+        )}
         {listedArtifacts.length === 0 ? (
           <div className="p-3 text-xs text-fg-muted">
             {searchQuery.trim()
               ? <>No files match “{searchQuery.trim()}”.</>
-              : hideCodeAndConfigs && hiddenCount > 0
-                ? <>No documents yet — {hiddenCount} code/config file{hiddenCount === 1 ? '' : 's'} hidden. Toggle off above to view all.</>
-                : <>No artifacts yet. Files Claude writes or edits in this session will appear here.</>}
+              : pillError
+                ? null /* the note above already explains the state */
+                : hideCodeAndConfigs && hiddenCount > 0
+                  ? <>No documents yet — {hiddenCount} code/config file{hiddenCount === 1 ? '' : 's'} hidden. Toggle off above to view all.</>
+                  : <>No artifacts yet. Files Claude writes or edits in this session will appear here.</>}
           </div>
         ) : (
           listedArtifacts.map((a) => (
@@ -380,6 +404,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: a.id });
                 setListOpen(true);
               }}
+              // Discovered records have no sidecar entry to remove.
+              onRemove={(a as any).discovered ? undefined : () => handleRemoveRecord(a.id)}
             />
           ))
         )}
@@ -575,27 +601,45 @@ interface ListItemProps {
   isActive: boolean;
   isDeleted: boolean;
   onSelect: () => void;
+  // Remove the tracking RECORD (never the file). Clears accidental pill-click
+  // tracks and dead deleted rows; Claude editing the file again re-adds it.
+  onRemove?: () => void;
 }
 
-function ArtifactListItem({ artifact, isActive, isDeleted, onSelect }: ListItemProps) {
+function ArtifactListItem({ artifact, isActive, isDeleted, onSelect, onRemove }: ListItemProps) {
   const statusWord = statusInfo(artifact, isDeleted);
   const relTime = formatRelativeTime(artifact.lastModified);
   const fileName = artifact.path.split('/').pop() ?? artifact.path;
 
   return (
-    <button
-      className={`w-full text-left px-2 py-2 hover:bg-inset border-b border-edge-dim transition-colors ${
-        isActive ? 'bg-inset' : ''
-      } ${isDeleted ? 'opacity-50' : ''}`}
-      onClick={onSelect}
-      title={isDeleted ? 'Deleted (file is no longer on disk)' : undefined}
-    >
-      <div className="flex items-center gap-1 min-w-0">
-        <span className={`font-mono text-xs truncate flex-1 ${isDeleted ? 'line-through' : ''}`}>{fileName}</span>
-      </div>
-      {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
-      <div className="text-[10px] text-fg-muted ml-0.5">{statusWord} · {relTime}</div>
-    </button>
+    // group/relative wrapper hosts the hover-revealed remove × (a button can't
+    // nest inside the select button) — same pattern as ProjectSwitcher rows.
+    <div className="group relative">
+      <button
+        className={`w-full text-left px-2 py-2 ${onRemove ? 'pr-8' : ''} hover:bg-inset border-b border-edge-dim transition-colors ${
+          isActive ? 'bg-inset' : ''
+        } ${isDeleted ? 'opacity-50' : ''}`}
+        onClick={onSelect}
+        title={isDeleted ? 'Deleted (file is no longer on disk)' : undefined}
+      >
+        <div className="flex items-center gap-1 min-w-0">
+          <span className={`font-mono text-xs truncate flex-1 ${isDeleted ? 'line-through' : ''}`}>{fileName}</span>
+        </div>
+        {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
+        <div className="text-[10px] text-fg-muted ml-0.5">{statusWord} · {relTime}</div>
+      </button>
+      {onRemove && (
+        <button
+          type="button"
+          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-well"
+          title={`Remove ${fileName} from this list (the file itself is not deleted)`}
+          aria-label={`Remove ${fileName} from this list`}
+          onClick={(e) => { e.stopPropagation(); onRemove(); }}
+        >
+          <Ic name="close" size={12} />
+        </button>
+      )}
+    </div>
   );
 }
 

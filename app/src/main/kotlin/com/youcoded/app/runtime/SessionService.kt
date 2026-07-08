@@ -3147,6 +3147,13 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
+            // Stub: removing a tracking record is desktop-only for now (same v2
+            // mobile artifact work as rename). The Session Drawer remove button
+            // no-ops gracefully on the error response.
+            "artifacts:remove-record" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
             // artifacts:changed is a server-push event only — no inbound handler needed.
 
             // Project View hub (conversations, repo, context) is desktop-only in v1

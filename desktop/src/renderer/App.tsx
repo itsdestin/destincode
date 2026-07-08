@@ -1128,17 +1128,10 @@ function AppInner() {
         });
     });
 
-    // Artifact tracker: listen for push events from the main process when
-    // any artifact is added, updated, or removed (e.g. from another session
-    // or an external file change picked up by the watcher).
-    const artifactChangedUnsubscribe = (window.claude as any).artifacts?.onChanged?.((evt: any) => {
-      if (!evt?.projectRoot || !evt?.artifactId) return;
-      dispatchArtifact({
-        type: 'ARTIFACT_CHANGED',
-        projectRoot: evt.projectRoot,
-        artifactId: evt.artifactId,
-      });
-    });
+    // NOTE: the artifacts:changed push event is consumed directly by
+    // ActiveArtifactView (edit-conflict banner). An earlier App-level
+    // subscription here only set a pendingRefresh flag that nothing read —
+    // removed as dead state.
 
     return () => {
       transcriptBatchCancelled = true;
@@ -1157,7 +1150,6 @@ function AppInner() {
       if (sessionPermissionModeHandler) window.claude.off('session:permission-mode', sessionPermissionModeHandler);
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
       if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
-      if (typeof artifactChangedUnsubscribe === 'function') artifactChangedUnsubscribe();
     };
   }, [dispatch]);
 

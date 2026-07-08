@@ -52,8 +52,16 @@ export function FilepathToken({ path, sessionId }: Props) {
 
     // Clicking a file in chat ALWAYS opens the artifact viewer — NEVER Project
     // View. Open the drawer first so there's an immediate response regardless of
-    // how the lookup below resolves.
+    // how the lookup below resolves. If resolution fails below, we set a
+    // pill-error note — otherwise the drawer's generic "no files yet" empty
+    // state would directly contradict the file the user just clicked.
     dispatch({ type: 'DRAWER_OPENED', sessionId });
+    dispatch({ type: 'PILL_ERROR_CLEARED', sessionId });
+    const failed = () => dispatch({
+      type: 'PILL_RESOLVE_FAILED',
+      sessionId,
+      message: `Couldn’t open ${name} — the file wasn’t found in this project.`,
+    });
 
     // 1. Already in this session's live list? Select it. findBestMatch prefers
     //    an exact path match over the suffix-tolerant fallback (see
@@ -70,7 +78,7 @@ export function FilepathToken({ path, sessionId }: Props) {
     //    a file Claude edited in a prior session — or one that's just on disk —
     //    still opens instead of dead-ending.
     const cwd = state.sessionCwd?.[sessionId];
-    if (!cwd) return; // drawer stays on the list; nothing to resolve without a root
+    if (!cwd) { failed(); return; } // nothing to resolve without a root — say so
     try {
       // Try ARTIFACTS first (tracked, the common case — Claude edited the file).
       // listProject is artifacts-only now, so fall back to ALL FILES (on-disk docs)
@@ -98,15 +106,20 @@ export function FilepathToken({ path, sessionId }: Props) {
       //    and select the new entry. This is the only path that PERSISTS a brand-
       //    new artifact, so the file also appears in the Session Drawer afterward.
       const args = buildArtifactifyArgs(path, cwd);
-      if (!args) return; // e.g. a ~/ path the renderer can't expand — leave the drawer on its list
+      if (!args) { failed(); return; } // e.g. a ~/ path the renderer can't expand
       await (window.claude as any).artifacts.appendVersion(cwd, sessionId, args);
       const refreshed = await (window.claude as any).artifacts.listSession(sessionId, cwd);
+      let selected = false;
       if (refreshed?.ok && Array.isArray(refreshed.artifacts)) {
         dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: refreshed.artifacts });
         const added = findBestMatch(refreshed.artifacts as ArtifactRecord[], path);
-        if (added) dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: added.id });
+        if (added) {
+          dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: added.id });
+          selected = true;
+        }
       }
-    } catch { /* leave the drawer on its list */ }
+      if (!selected) failed();
+    } catch { failed(); }
   };
 
   return (

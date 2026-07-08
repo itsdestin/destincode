@@ -11,7 +11,15 @@ export type ArtifactAction =
   // (the inline filepath pills, rendered deep in markdown) can resolve a clicked
   // path against the project's full artifact set.
   | { type: 'SET_SESSION_CWD'; sessionId: string; cwd: string }
-  | { type: 'ARTIFACT_CHANGED'; projectRoot: string; artifactId: string }
+  // A pill click that couldn't resolve to an openable file (unknown cwd, an
+  // unexpandable ~/ path, artifactify failure). The drawer shows the message
+  // instead of the generic "no files yet" empty state — which would directly
+  // contradict the file the user just clicked.
+  // (The old ARTIFACT_CHANGED action was removed: it only set a pendingRefresh
+  // flag nothing ever read. The artifacts:changed push event's real consumer is
+  // ActiveArtifactView's own onChanged subscription for the conflict banner.)
+  | { type: 'PILL_RESOLVE_FAILED'; sessionId: string; message: string }
+  | { type: 'PILL_ERROR_CLEARED'; sessionId: string }
   // Open/close is per-session (remembered across session switches), so both
   // carry the sessionId whose drawer is being toggled.
   | { type: 'DRAWER_OPENED'; sessionId: string }

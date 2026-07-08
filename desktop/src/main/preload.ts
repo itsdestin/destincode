@@ -887,6 +887,9 @@ contextBridge.exposeInMainWorld('claude', {
     // Rename an artifact's file on disk; newName is the basename without extension.
     rename: (projectRoot: string, artifactId: string, newName: string) =>
       ipcRenderer.invoke('artifacts:rename', projectRoot, artifactId, newName),
+    // Remove a tracking RECORD from the sidecar (never the file on disk).
+    removeRecord: (projectRoot: string, artifactId: string) =>
+      ipcRenderer.invoke('artifacts:remove-record', projectRoot, artifactId),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);

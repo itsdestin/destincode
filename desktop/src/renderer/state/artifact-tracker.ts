@@ -5,7 +5,10 @@ export interface ArtifactState {
   sessionArtifacts: Record<string, ArtifactRecord[]>; // by sessionId
   sessionCwd: Record<string, string>;                 // sessionId → working dir
   projectArtifacts: Record<string, ArtifactRecord[]>; // by projectRoot
-  pendingRefresh: Record<string, boolean>;            // by projectRoot
+  // A pill click that couldn't resolve (per session). SessionDrawer shows this
+  // instead of the "no files yet" empty state; cleared on the next pill click,
+  // a successful selection, or drawer close.
+  pillError: Record<string, string | null>;
   // Drawer open/closed is scoped per session and remembered across switches.
   // A new/unseen session has no entry → closed by default. Consumers read the
   // ACTIVE session's flag; the open/close actions carry the sessionId.
@@ -22,7 +25,7 @@ export const initialArtifactState: ArtifactState = {
   sessionArtifacts: {},
   sessionCwd: {},
   projectArtifacts: {},
-  pendingRefresh: {},
+  pillError: {},
   drawerOpenBySession: {},
   drawerExpanded: false,
   projectViewOpen: false,
@@ -43,23 +46,31 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
     }
     case 'SET_SESSION_CWD':
       return { ...s, sessionCwd: { ...s.sessionCwd, [a.sessionId]: a.cwd } };
-    case 'ARTIFACT_CHANGED':
-      return { ...s, pendingRefresh: { ...s.pendingRefresh, [a.projectRoot]: true } };
+    case 'PILL_RESOLVE_FAILED':
+      return { ...s, pillError: { ...s.pillError, [a.sessionId]: a.message } };
+    case 'PILL_ERROR_CLEARED':
+      return { ...s, pillError: { ...s.pillError, [a.sessionId]: null } };
     case 'DRAWER_OPENED':
       return { ...s, drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: true } };
     case 'DRAWER_CLOSED':
-      // Reset expand + clear this session's selection so a re-opened drawer
-      // starts at its normal width on the list.
+      // Reset expand + clear this session's selection (and any pill-error note)
+      // so a re-opened drawer starts at its normal width on the list.
       return {
         ...s,
         drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: false },
         drawerExpanded: false,
         activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: null },
+        pillError: { ...s.pillError, [a.sessionId]: null },
       };
     case 'DRAWER_EXPAND_TOGGLED':
       return { ...s, drawerExpanded: !s.drawerExpanded };
     case 'ACTIVE_ARTIFACT_SET':
-      return { ...s, activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: a.artifactId } };
+      return {
+        ...s,
+        activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: a.artifactId },
+        // A successful open supersedes any earlier failure note.
+        pillError: { ...s.pillError, [a.sessionId]: null },
+      };
     // Back gesture in detail view: return to list without closing the drawer.
     case 'ACTIVE_ARTIFACT_CLEARED':
       return { ...s, activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: null } };

@@ -60,7 +60,7 @@ export async function appendVersion(
   projectId: string,
   projectName: string,
   input: AppendVersionInput
-): Promise<{ committed: boolean }> {
+): Promise<{ committed: boolean; artifactId: string | null }> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const current = await readSidecar(projectRoot);
     let sidecar: ProjectSidecar;
@@ -107,13 +107,20 @@ export async function appendVersion(
       type: input.type,
       author: input.author,
     };
+    let artifactId: string;
     if (existing) {
       existing.versions.push(versionEvent);
-      existing.lastModified = now;
+      // A 'read' is not a modification — bumping lastModified for a view
+      // reordered "recently modified" sorting every time a pill was clicked.
+      // (New records below still get lastModified = now: that's record
+      // creation, and the UI labels read-only records "viewed".)
+      if (input.type !== 'read') existing.lastModified = now;
       existing.status = input.type === 'delete' ? 'deleted' : 'active';
+      artifactId = existing.id;
     } else {
+      artifactId = newArtifactId();
       sidecar.artifacts.push({
-        id: newArtifactId(),
+        id: artifactId,
         path: input.path,
         kind: input.kind,
         absolutePath: input.absolutePath,
@@ -127,10 +134,36 @@ export async function appendVersion(
     sidecar.updatedAt = now;
 
     const result = await writeSidecar(projectRoot, expectedUpdatedAt, sidecar);
-    if (result.committed) return { committed: true };
+    if (result.committed) return { committed: true, artifactId };
     await sleep(10 * (attempt + 1));
   }
-  return { committed: false };
+  return { committed: false, artifactId: null };
+}
+
+/**
+ * Remove an artifact RECORD from the sidecar (the tracking entry, never the
+ * file on disk). Powers the Session Drawer's per-row remove: clears accidental
+ * pill-click "artifactifies" and dead orphan rows. If Claude edits the file
+ * again a fresh record is created — removal is not a permanent opt-out (that's
+ * what manualExcludes is for).
+ */
+export async function removeArtifactRecord(
+  projectRoot: string,
+  artifactId: string
+): Promise<{ ok: boolean; error?: string }> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const current = await readSidecar(projectRoot);
+    if (current === null || 'corrupted' in current) return { ok: false, error: 'sidecar-missing' };
+    const idx = current.artifacts.findIndex((a) => a.id === artifactId);
+    if (idx === -1) return { ok: false, error: 'artifact-not-found' };
+    const expectedUpdatedAt = current.updatedAt;
+    current.artifacts.splice(idx, 1);
+    current.updatedAt = new Date().toISOString();
+    const result = await writeSidecar(projectRoot, expectedUpdatedAt, current);
+    if (result.committed) return { ok: true };
+    await sleep(10 * (attempt + 1));
+  }
+  return { ok: false, error: 'write-conflict' };
 }
 
 function sleep(ms: number) {

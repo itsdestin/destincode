@@ -36,6 +36,11 @@ export const ARTIFACT_IPC = {
   // updates the sidecar record so version history follows the file. The new
   // name is a basename without extension; collisions are rejected.
   RENAME: 'artifacts:rename',
+  // Remove an artifact RECORD from the sidecar — the tracking entry only,
+  // never the file on disk. Powers the Session Drawer per-row remove (clears
+  // accidental pill-click tracks and dead orphan rows). Claude editing the
+  // file again re-creates a fresh record.
+  REMOVE_RECORD: 'artifacts:remove-record',
 } as const;
 
 export type ArtifactIpcChannel = typeof ARTIFACT_IPC[keyof typeof ARTIFACT_IPC];

@@ -479,15 +479,17 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
         <LinkIcon size={13} />
         {copied ? 'Copied' : 'Copy path'}
       </button>
-      {/* Exclude only applies to TRACKED artifacts (it writes the sidecar's
-          manualExcludes). Discovered files have no sidecar entry, so hide it
-          rather than silently no-op / create a sidecar just to exclude a doc. */}
+      {/* Exclude = hide from the Artifacts tab: un-pins the file AND writes a
+          sticky manualExcludes entry so Claude re-editing it doesn't resurface
+          it. Recovery: "+ Add file" re-pins it (includes win over excludes).
+          Discovered files have no sidecar entry and aren't in Artifacts anyway,
+          so the button is hidden for them. */}
       {!artifact.discovered && (
         <button
           type="button"
           className={TOOL_BTN_NEUTRAL}
           onClick={handleExclude}
-          title="Exclude this file from artifact tracking"
+          title="Hide this file from Artifacts (bring it back with + Add file)"
         >
           Exclude
         </button>

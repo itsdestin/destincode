@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readSidecar, writeSidecar, appendVersion } from '../../src/main/artifacts/artifact-store';
+import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord } from '../../src/main/artifacts/artifact-store';
 import type { ProjectSidecar } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
 
@@ -114,5 +114,71 @@ describe('appendVersion', () => {
     expect(r2.committed).toBe(true);
     const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
     expect(sidecar.artifacts).toHaveLength(3);
+  });
+});
+
+describe('appendVersion — read semantics + artifact id', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-read-sem-'));
+  });
+
+  it('returns the artifact id (new and existing records)', async () => {
+    const first = await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+    expect(first.artifactId).toBeTruthy();
+    const second = await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'edit', author: 'agent',
+    });
+    // Same record → same id (this id feeds the artifacts:changed broadcast the
+    // edit-conflict banner matches on).
+    expect(second.artifactId).toBe(first.artifactId);
+  });
+
+  it("a 'read' version does NOT bump lastModified on an existing record", async () => {
+    await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'edit', author: 'agent',
+    });
+    const before = (await readSidecar(projectRoot)) as ProjectSidecar;
+    const stamp = before.artifacts[0].lastModified;
+    await new Promise((r) => setTimeout(r, 5));
+    await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's2', type: 'read', author: 'user',
+    });
+    const after = (await readSidecar(projectRoot)) as ProjectSidecar;
+    expect(after.artifacts[0].lastModified).toBe(stamp);   // unchanged — a view is not a modification
+    expect(after.artifacts[0].versions).toHaveLength(2);   // the read IS still recorded
+  });
+});
+
+describe('removeArtifactRecord', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-remove-'));
+  });
+
+  it('removes the tracking record (never touches disk files)', async () => {
+    const { artifactId } = await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+    const res = await removeArtifactRecord(projectRoot, artifactId!);
+    expect(res.ok).toBe(true);
+    const sidecar = (await readSidecar(projectRoot)) as ProjectSidecar;
+    expect(sidecar.artifacts).toHaveLength(0);
+  });
+
+  it('reports artifact-not-found for unknown ids', async () => {
+    await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+    const res = await removeArtifactRecord(projectRoot, 'nope');
+    expect(res).toEqual({ ok: false, error: 'artifact-not-found' });
   });
 });

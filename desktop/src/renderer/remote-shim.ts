@@ -1045,6 +1045,9 @@ export function installShim(): void {
         invoke('artifacts:check-existence', { projectRoot, artifactIds }),
       rename: (projectRoot: string, artifactId: string, newName: string) =>
         invoke('artifacts:rename', { projectRoot, artifactId, newName }),
+      // Remove a tracking RECORD from the sidecar (never the file on disk).
+      removeRecord: (projectRoot: string, artifactId: string) =>
+        invoke('artifacts:remove-record', { projectRoot, artifactId }),
       onChanged: (cb: (event: any) => void) => {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);

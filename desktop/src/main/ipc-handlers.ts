@@ -39,7 +39,7 @@ import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
-import { appendVersion, readSidecar, writeSidecar, renameArtifact } from './artifacts/artifact-store';
+import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
 import { buildSavedFolderProjects } from './artifacts/saved-folder-projects';
 import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/project-file-discovery';
@@ -2130,11 +2130,14 @@ export function registerIpcHandlers(
     // A newly created/edited file may also be a discovered doc — drop the cached
     // disk scan so it shows up on the next LIST_PROJECT without waiting for TTL.
     invalidateDiscoveryCache(projectRoot);
-    // Broadcast so every open window's artifact UI refreshes
+    // Broadcast the REAL artifact id so listeners can match it — the previous
+    // artifactId: null was dropped by every consumer, which meant the
+    // ActiveArtifactView "Claude also edited this file" conflict banner could
+    // never fire for agent edits (its entire purpose).
     webContents.getAllWebContents().forEach((wc) =>
       wc.send(ARTIFACT_IPC.CHANGED, {
         projectRoot,
-        artifactId: null,
+        artifactId: result.artifactId,
         kind: args.type,
         by: args.author,
       })
@@ -2153,6 +2156,22 @@ export function registerIpcHandlers(
       // Broadcast so every open window's artifact UI re-lists with the new name.
       webContents.getAllWebContents().forEach((wc) =>
         wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'rename', by: 'user' })
+      );
+    }
+    return result;
+  });
+
+  // Remove a tracking RECORD (never the file). See removeArtifactRecord for
+  // semantics — Session Drawer per-row remove.
+  ipcMain.handle(ARTIFACT_IPC.REMOVE_RECORD, async (
+    _e,
+    projectRoot: string,
+    artifactId: string
+  ) => {
+    const result = await removeArtifactRecord(projectRoot, artifactId);
+    if (result.ok) {
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'remove', by: 'user' })
       );
     }
     return result;
@@ -2204,10 +2223,9 @@ export function registerIpcHandlers(
   async function countArtifacts(projectRoot: string): Promise<number> {
     const sidecar = await readSidecar(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return 0;
-    // Visible-with-deleted-OFF tracked set: non-deleted, internal or included-
-    // external. trackedArtifacts canonicalizes the include comparison (raw
-    // uppercase-drive absolutePath vs canonical manualIncludes on Windows).
-    const visible = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes)
+    // Visible-with-deleted-OFF tracked set (see visible-artifacts.ts for the
+    // full rules: Claude's work + pinned, minus excluded).
+    const visible = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, projectRoot)
       .filter((a: any) => a.status !== 'deleted');
     // Drop orphans — files marked 'active' but bash-rm'd off disk (CC has no
     // Delete tool, so this is the common case). fs.access in parallel is cheap.
@@ -2271,8 +2289,8 @@ export function registerIpcHandlers(
 
     let tracked: any[] = [];
     if (sidecar && !('corrupted' in sidecar)) {
-      // Shared canonicalizing predicate — see visible-artifacts.ts for WHY.
-      tracked = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes);
+      // Shared predicate — see visible-artifacts.ts for the full rules.
+      tracked = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, projectRoot);
     }
 
     const visibleCount = opts?.withCount ? await countArtifacts(projectRoot) : undefined;
@@ -2435,40 +2453,86 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
+  // Normalize an include/exclude entry to a canonical ABSOLUTE path. FilesTab
+  // passes a relative path for internal artifacts and an absolute one for
+  // externals; storing one uniform shape keeps trackedArtifacts' comparisons
+  // trivial.
+  const toCanonicalAbs = (projectRoot: string, p: string): string => {
+    const fwd = p.replace(/\\/g, '/');
+    const isAbs = /^[a-zA-Z]:\//.test(fwd) || fwd.startsWith('/');
+    return canonicalize(isAbs ? fwd : `${projectRoot.replace(/\\/g, '/')}/${fwd}`, null);
+  };
+
+  // "+ Add file" = PIN a file into the Artifacts tab (any kind — external temp
+  // files or in-project files Claude never edited). Three steps:
+  //   1. Ensure an artifact RECORD exists (appendVersion dedups by path+kind and
+  //      creates the sidecar if missing) — a pin with no record would show
+  //      nothing, which was a real bug on fresh projects.
+  //   2. Add to manualIncludes (idempotent).
+  //   3. Remove from manualExcludes — re-adding is the RECOVERY path for a
+  //      mistaken Exclude (includes also win over excludes in trackedArtifacts,
+  //      so this is belt-and-suspenders).
   ipcMain.handle(ARTIFACT_IPC.INCLUDE_EXTERNAL, async (
     _e, projectRoot: string, absolutePath: string
   ) => {
-    const canonical = canonicalize(absolutePath, null);
-    const sidecar = await readSidecar(projectRoot);
-    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
-    if (sidecar.manualIncludes.some((i) => i.path === canonical)) {
-      return { ok: true }; // idempotent — already included
-    }
-    // Capture the original updatedAt BEFORE mutation so writeSidecar's CAS
-    // check compares against the version we actually read, not the new timestamp.
-    const originalUpdatedAt = sidecar.updatedAt;
-    sidecar.manualIncludes.push({
-      path: canonical,
-      addedAt: new Date().toISOString(),
-      addedBy: 'user',
+    const canonical = toCanonicalAbs(projectRoot, absolutePath);
+    const rootCanon = canonicalize(projectRoot, null);
+    const isInternal = canonical === rootCanon || canonical.startsWith(rootCanon + '/');
+
+    // 1. Ensure a record exists (author 'user', type 'read' — a pin, not an edit).
+    const { project } = await ensureProject(CLAUDE_DIR, projectRoot, 'manual-include');
+    const appendResult = await appendVersion(projectRoot, project.id, project.name, {
+      path: isInternal ? canonical.slice(rootCanon.length + 1) : (canonical.split('/').pop() ?? canonical),
+      kind: isInternal ? 'internal' : 'external',
+      absolutePath: isInternal ? null : canonical,
+      sessionId: 'manual-include',
+      type: 'read',
+      author: 'user',
     });
-    sidecar.updatedAt = new Date().toISOString();
-    await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+
+    // 2 + 3. Pin it and clear any standing exclude (CAS-retried).
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const sidecar = await readSidecar(projectRoot);
+      if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
+      const originalUpdatedAt = sidecar.updatedAt;
+      const alreadyIncluded = sidecar.manualIncludes.some((i) => i.path === canonical);
+      const hadExclude = sidecar.manualExcludes.includes(canonical);
+      if (alreadyIncluded && !hadExclude) break; // nothing to change
+      if (!alreadyIncluded) {
+        sidecar.manualIncludes.push({ path: canonical, addedAt: new Date().toISOString(), addedBy: 'user' });
+      }
+      sidecar.manualExcludes = sidecar.manualExcludes.filter((p) => p !== canonical);
+      sidecar.updatedAt = new Date().toISOString();
+      const w = await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+      if (w.committed) break;
+    }
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId: appendResult.artifactId, kind: 'include', by: 'user' })
+    );
     return { ok: true };
   });
 
+  // Exclude = HIDE a file from the Artifacts tab: un-pin it (remove from
+  // manualIncludes) AND add a sticky manualExcludes entry so Claude re-editing
+  // the file doesn't resurface it. Recovery: "+ Add file" (see above). Never
+  // touches the file on disk or the session drawer's activity log.
   ipcMain.handle(ARTIFACT_IPC.EXCLUDE, async (
     _e, projectRoot: string, canonicalPath: string
   ) => {
-    const sidecar = await readSidecar(projectRoot);
-    if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
-    if (!sidecar.manualExcludes.includes(canonicalPath)) {
-      // Capture the original updatedAt BEFORE mutation (same CAS safety as INCLUDE_EXTERNAL)
+    const canonical = toCanonicalAbs(projectRoot, canonicalPath);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const sidecar = await readSidecar(projectRoot);
+      if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
       const originalUpdatedAt = sidecar.updatedAt;
-      sidecar.manualExcludes.push(canonicalPath);
+      sidecar.manualIncludes = sidecar.manualIncludes.filter((i) => i.path !== canonical);
+      if (!sidecar.manualExcludes.includes(canonical)) sidecar.manualExcludes.push(canonical);
       sidecar.updatedAt = new Date().toISOString();
-      await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+      const w = await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+      if (w.committed) break;
     }
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId: null, kind: 'exclude', by: 'user' })
+    );
     return { ok: true };
   });
 
@@ -2525,8 +2589,8 @@ export function registerIpcHandlers(
         const sidecar = await readSidecar(p.path);
         let trackedCount = 0;
         if (sidecar && !('corrupted' in sidecar)) {
-          // Shared canonicalizing predicate — see visible-artifacts.ts for WHY.
-          trackedCount = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes)
+          // Shared predicate — see visible-artifacts.ts for the full rules.
+          trackedCount = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, p.path)
             .filter((a: any) => a.status !== 'deleted').length;
         }
         artifactCount = trackedCount;
