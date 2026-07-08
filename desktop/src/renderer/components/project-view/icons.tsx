@@ -71,6 +71,35 @@ export function FolderIcon({ size = 15, strokeWidth = 2 }: IconProps) {
   );
 }
 
+// Type glyphs for the folder-card filename list (image / spreadsheet / code;
+// documents use DocIcon above). One per fileTypeGroup.
+export function ImageIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+    </svg>
+  );
+}
+
+export function SheetIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M3 9h18" /><path d="M3 15h18" /><path d="M12 3v18" />
+    </svg>
+  );
+}
+
+export function CodeGlyphIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <path d="m16 18 6-6-6-6" /><path d="m8 6-6 6 6 6" />
+    </svg>
+  );
+}
+
 export function CheckIcon({ size = 15, strokeWidth = 2 }: IconProps) {
   return (
     <svg {...base(size, strokeWidth)}>

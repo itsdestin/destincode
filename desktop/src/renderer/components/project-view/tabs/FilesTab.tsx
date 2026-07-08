@@ -69,11 +69,12 @@ function fileComparator(sortBy: FileSortKey) {
 }
 
 // One level of a virtual folder tree built from the flat artifact paths.
-// `samples` holds up to 4 files found beneath the folder, used to render a 2x2
-// contents preview on the folder card.
+// `samples` holds the first few files found beneath the folder, used to render
+// the filename-list contents preview on the folder card.
 interface DirFolder { name: string; path: string; count: number; samples: ArtifactRecord[] }
 
-const FOLDER_PREVIEW_TILES = 4;
+// Filenames shown on a folder card before the "…and N more" overflow line.
+const FOLDER_PREVIEW_FILES = 3;
 
 // Split the (already-filtered) artifacts into the immediate subfolders + the
 // files that live directly in `dir` ('' = project root). Counts on a folder are
@@ -98,7 +99,7 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
       folderCounts.set(name, (folderCounts.get(name) ?? 0) + 1);
       // Collect a few sample files for the folder-card contents preview.
       const s = folderSamples.get(name);
-      if (s) { if (s.length < FOLDER_PREVIEW_TILES) s.push(a); }
+      if (s) { if (s.length < FOLDER_PREVIEW_FILES) s.push(a); }
       else folderSamples.set(name, [a]);
     }
   }
@@ -116,7 +117,17 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
 // reads better at the card sizes than the segmented control's default 2.
 // Aliased: detail-tool-icons also exports a (different) FolderIcon used by the
 // Reveal button above.
-import { FolderIcon as FolderCardIcon } from '../icons';
+import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon } from '../icons';
+
+// Tiny per-type glyph for the folder-card filename list — one icon per
+// fileTypeGroup, so the list rows read like a miniature file listing.
+function MiniTypeIcon({ path }: { path: string }) {
+  const group = fileTypeGroup(path);
+  if (group === 'image') return <ImageIcon size={12} />;
+  if (group === 'sheet') return <SheetIcon size={12} />;
+  if (group === 'code') return <CodeGlyphIcon size={12} />;
+  return <DocIcon size={12} />;
+}
 
 // Shared browser for BOTH project-view file sections (the split is the core
 // principle): mode='artifacts' lists Claude-authored tracked files (LIST_PROJECT);
@@ -270,6 +281,10 @@ export function FilesTab({
         className={`layer-surface !rounded-lg relative flex flex-col h-44 overflow-hidden text-left transition-transform duration-200 hover:scale-[1.02] ${
           isActive ? 'border-accent' : ''
         } ${isDeleted ? 'opacity-60' : ''}`}
+        // No shadow: folder cards are flat, and mixed elevation in one grid read
+        // as inconsistent (user feedback 2026-07-08). Same override the seg
+        // control uses on its .layer-surface.
+        style={{ boxShadow: 'none' }}
         onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId: PV_SESSION, artifactId: a.id })}
         title={isDeleted ? `${a.path}\nDeleted (file is no longer on disk)` : a.path}
       >
@@ -390,13 +405,16 @@ export function FilesTab({
                   single files sort before folders). */}
               {dirView.files.map(renderFileCard)}
               {dirView.folders.map((f) => {
-                const tiles = f.samples.slice(0, FOLDER_PREVIEW_TILES);
+                const previewFiles = f.samples.slice(0, FOLDER_PREVIEW_FILES);
+                const overflow = f.count - previewFiles.length;
                 return (
                   // Folder cards have a distinct FOLDER SHAPE — a tab on the top-left
-                  // plus a body that previews the contents as a 2x2 grid of the first
-                  // files inside (macOS/Drive style). The name + count live INSIDE the
-                  // folder body (a footer below the preview), so they read as part of
-                  // the folder, not a caption floating beneath it.
+                  // plus a body that previews the contents as a FILENAME LIST (the
+                  // first few files inside, tiny type icon + name — user-picked over
+                  // the old 2x2 thumbnail grid, which read as clutter). The name +
+                  // count live INSIDE the folder body (a footer below the preview),
+                  // so they read as part of the folder, not a caption floating
+                  // beneath it.
                   <button
                     key={'dir:' + f.path}
                     type="button"
@@ -407,21 +425,24 @@ export function FilesTab({
                     {/* Folder tab. */}
                     <div className="ml-2 h-3 w-14 rounded-t-md bg-inset border border-edge border-b-0 group-hover:border-accent/60 transition-colors" />
                     {/* Folder body — preview AND the name/count footer, all inside one
-                        bordered, rounded container so they read as the same folder. */}
-                    <div className="flex-1 min-h-0 flex flex-col rounded-lg rounded-tl-none border border-edge bg-inset overflow-hidden group-hover:border-accent/60 transition-colors">
-                      <div className="flex-1 min-h-0">
-                        {tiles.length > 0 ? (
-                          // 2x2 contents preview. gap-px over a bg-edge-dim parent draws
-                          // hairline dividers between the mini thumbnails.
-                          <div className="grid grid-cols-2 grid-rows-2 gap-px h-full w-full bg-edge-dim">
-                            {tiles.map((s) => (
-                              <div key={s.id} className="overflow-hidden bg-canvas">
-                                <ArtifactThumbnail artifact={s} projectPath={project.path} className="w-full h-full" />
+                        bordered, rounded container so they read as the same folder.
+                        All four corners rounded — the old rounded-tl-none square
+                        corner under the tab read as a glitch, not a folder. */}
+                    <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-edge bg-inset overflow-hidden group-hover:border-accent/60 transition-colors">
+                      <div className="flex-1 min-h-0 overflow-hidden">
+                        {previewFiles.length > 0 ? (
+                          <div className="flex flex-col gap-1.5 p-2.5">
+                            {previewFiles.map((s) => (
+                              <div key={s.id} className="flex items-center gap-1.5 min-w-0">
+                                <span className="text-fg-muted shrink-0"><MiniTypeIcon path={s.path} /></span>
+                                <span className="text-[11px] text-fg-2 truncate">{fileNameOf(s)}</span>
                               </div>
                             ))}
-                            {Array.from({ length: FOLDER_PREVIEW_TILES - tiles.length }).map((_, i) => (
-                              <div key={'empty' + i} className="bg-well" />
-                            ))}
+                            {overflow > 0 && (
+                              <span className="text-[10.5px] text-fg-muted pl-[19px]">
+                                …and {overflow} more
+                              </span>
+                            )}
                           </div>
                         ) : (
                           // No previewable files (a folder of subfolders) — folder glyph.
