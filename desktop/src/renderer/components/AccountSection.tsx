@@ -170,6 +170,20 @@ function SignedOutBody({
 
 // ── Signed-in ───────────────────────────────────────────────────────────────
 
+// Pencil glyph for the Edit account affordance — same stroke style as the
+// app's other inline icons. Always paired with a text label (never icon-only).
+function PencilIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+    </svg>
+  );
+}
+
+// UX rework (Destin, 2026-07-08): the signed-in popup is read-only by default.
+// A single "Edit account" button toggles into edit mode, where the display-name /
+// handle editors and the delete danger zone live. Keeps the common case (glance
+// at who I am, sign out) free of inputs and destructive controls.
 function SignedInBody({
   user,
   signOut,
@@ -186,8 +200,85 @@ function SignedInBody({
   deleteAccount: () => Promise<void>;
   onClose: () => void;
 }) {
-  // Seed drafts from the current profile. Component is remounted each time the
-  // popup opens, so these initializers always reflect the latest user.
+  // 'view' is the default on every mount. A successful handle change refreshes
+  // the profile, which changes this component's key (AccountPopup keys on
+  // user.handle) → remount → back to view mode showing the new handle. That
+  // remount is the intended "exit edit mode after a handle change" path.
+  const [mode, setMode] = useState<'view' | 'edit'>('view');
+
+  return mode === 'view' ? (
+    <>
+      {/* Identity summary — avatar + display name + @handle, all read-only. */}
+      <section className="flex items-center gap-3">
+        {user.avatar_url ? (
+          <img src={user.avatar_url} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />
+        ) : (
+          <div className="w-10 h-10 rounded-full bg-inset flex items-center justify-center shrink-0">
+            <PersonIcon />
+          </div>
+        )}
+        <div className="min-w-0">
+          <p className="text-sm text-fg font-medium truncate">{user.display_name ?? user.login}</p>
+          {/* Plain words when there's no handle yet — no placeholder glyphs. */}
+          <p className="text-[11px] text-fg-muted truncate">
+            {user.handle ? `@${user.handle}` : 'No handle yet'}
+          </p>
+        </div>
+      </section>
+
+      {/* Linked-provider list — single provider in Phase 1, non-editable. */}
+      <section className="flex items-center gap-1.5 text-xs text-fg-2">
+        <GitHubIcon className="w-3.5 h-3.5" />
+        <span>Connected: GitHub (@{user.login})</span>
+      </section>
+
+      <hr className="border-edge-dim" />
+
+      {/* The single edit affordance — pencil icon + label, per the rework spec. */}
+      <button
+        onClick={() => setMode('edit')}
+        className="w-full flex items-center justify-center gap-2 text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+      >
+        <PencilIcon />
+        Edit account
+      </button>
+
+      <button
+        onClick={() => void signOut()}
+        className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+      >
+        Sign out
+      </button>
+    </>
+  ) : (
+    // Mounted fresh on each entry into edit mode, so the draft useState
+    // initializers re-seed from the CURRENT profile every time.
+    <EditAccountBody
+      user={user}
+      updateProfile={updateProfile}
+      setHandle={setHandle}
+      deleteAccount={deleteAccount}
+      onClose={onClose}
+      onDone={() => setMode('view')}
+    />
+  );
+}
+
+function EditAccountBody({
+  user,
+  updateProfile,
+  setHandle,
+  deleteAccount,
+  onClose,
+  onDone,
+}: {
+  user: MarketplaceUser;
+  updateProfile: (name: string) => Promise<void>;
+  setHandle: (handle: string) => Promise<void>;
+  deleteAccount: () => Promise<void>;
+  onClose: () => void;
+  onDone: () => void;
+}) {
   const [nameDraft, setNameDraft] = useState(user.display_name ?? user.login);
   const [nameSaving, setNameSaving] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
@@ -197,11 +288,21 @@ function SignedInBody({
   const [handleSaving, setHandleSaving] = useState(false);
   const [handleError, setHandleError] = useState<string | null>(null);
   const [handleSaved, setHandleSaved] = useState(false);
+  // Inline handle-change confirm step (no browser confirm() dialogs). Only armed
+  // when the user already HAS a handle — first-time setting has no consequences
+  // worth a warning, so it commits directly.
+  const [handleConfirming, setHandleConfirming] = useState(false);
 
   const [deleteExpanded, setDeleteExpanded] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const currentHandle = user.handle ?? '';
+  const trimmedHandle = handleDraft.trim();
+  // Saving the same handle back is a no-op — keep Save disabled so the scary
+  // change warning can never appear for a non-change.
+  const handleUnchanged = currentHandle.length > 0 && trimmedHandle === currentHandle;
 
   const saveName = async () => {
     setNameSaving(true);
@@ -218,16 +319,32 @@ function SignedInBody({
     }
   };
 
-  const saveHandle = async () => {
+  // Save click: existing handle → arm the inline confirm step; no existing
+  // handle → commit directly (nothing is being given up).
+  const onSaveHandleClick = () => {
+    if (currentHandle.length > 0 && !handleConfirming) {
+      setHandleConfirming(true);
+      return;
+    }
+    void commitHandle();
+  };
+
+  const commitHandle = async () => {
     setHandleSaving(true);
     setHandleError(null);
     setHandleSaved(false);
     try {
-      await setHandle(handleDraft.trim());
+      await setHandle(trimmedHandle);
+      // On success the context refresh() updates user.handle → AccountPopup's
+      // key changes → SignedInBody remounts in view mode. These setters are
+      // effectively unreachable then, but kept for the no-refresh edge (tests,
+      // server returning the same handle).
+      setHandleConfirming(false);
       setHandleSaved(true);
     } catch (err) {
       // 400/409 (taken / reserved / cooldown) all arrive as the server's message.
       setHandleError(err instanceof Error ? err.message : 'Could not set handle');
+      setHandleConfirming(false);
     } finally {
       setHandleSaving(false);
     }
@@ -247,25 +364,16 @@ function SignedInBody({
 
   return (
     <>
-      {/* Linked-provider list — single provider in Phase 1, non-editable. */}
-      <section className="flex items-center gap-3">
-        {user.avatar_url ? (
-          <img src={user.avatar_url} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />
-        ) : (
-          <div className="w-10 h-10 rounded-full bg-inset flex items-center justify-center shrink-0">
-            <PersonIcon />
-          </div>
-        )}
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs text-fg font-medium">
-            <GitHubIcon className="w-3.5 h-3.5" />
-            <span>Connected: GitHub (@{user.login})</span>
-          </div>
-          <p className="text-[10px] text-fg-muted">Your linked sign-in provider.</p>
-        </div>
-      </section>
-
-      <hr className="border-edge-dim" />
+      {/* Edit-mode header: label + the way back to view mode. */}
+      <div className="flex items-center justify-between">
+        <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Edit account</h4>
+        <button
+          onClick={onDone}
+          className="text-xs font-medium px-3 py-1.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+        >
+          Done
+        </button>
+      </div>
 
       {/* Display name */}
       <section className="space-y-1.5">
@@ -282,6 +390,7 @@ function SignedInBody({
           />
           <button
             onClick={() => void saveName()}
+            aria-label="Save display name"
             disabled={nameSaving || nameDraft.trim().length === 0}
             className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
           >
@@ -304,18 +413,55 @@ function SignedInBody({
               id="account-handle"
               aria-label="Handle"
               value={handleDraft}
-              onChange={(e) => { setHandleDraft(e.target.value); setHandleSaved(false); }}
+              onChange={(e) => {
+                setHandleDraft(e.target.value);
+                setHandleSaved(false);
+                // Editing the draft invalidates an armed confirm — the warning
+                // refers to committing a specific value.
+                setHandleConfirming(false);
+              }}
               className="flex-1 text-xs bg-transparent text-fg focus:outline-none ml-0.5"
             />
           </div>
-          <button
-            onClick={() => void saveHandle()}
-            disabled={handleSaving || handleDraft.trim().length === 0}
-            className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {handleSaving ? 'Saving…' : 'Save'}
-          </button>
+          {!handleConfirming && (
+            <button
+              onClick={onSaveHandleClick}
+              aria-label="Save handle"
+              disabled={handleSaving || trimmedHandle.length === 0 || handleUnchanged}
+              className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {handleSaving ? 'Saving…' : 'Save'}
+            </button>
+          )}
         </div>
+
+        {/* Handle-change consequences + explicit confirm (existing handle only). */}
+        {handleConfirming && (
+          <div className="space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
+            <p className="text-[11px] text-fg-dim leading-relaxed">
+              Changing your handle frees @{currentHandle} for anyone else to claim after 30 days — and
+              you can't take it back during those 30 days. Friends who know you by @{currentHandle} will
+              need your new handle.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setHandleConfirming(false)}
+                aria-label="Cancel handle change"
+                className="flex-1 text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void commitHandle()}
+                disabled={handleSaving}
+                className="flex-1 text-xs font-medium py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {handleSaving ? 'Saving…' : 'Confirm change'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Plain words for status, never glyphs. */}
         {handleError && <p className="text-[10px] text-red-500">{handleError}</p>}
         {handleSaved && !handleError && <p className="text-[10px] text-fg-muted">Saved</p>}
@@ -323,17 +469,7 @@ function SignedInBody({
 
       <hr className="border-edge-dim" />
 
-      {/* Sign out */}
-      <button
-        onClick={() => void signOut()}
-        className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-      >
-        Sign out
-      </button>
-
-      <hr className="border-edge-dim" />
-
-      {/* Danger zone */}
+      {/* Danger zone — 2-step: expand, then typed confirm + explicit button. */}
       <section className="space-y-2">
         <h4 className="text-[10px] font-medium text-red-500 uppercase tracking-wider">Danger zone</h4>
         {!deleteExpanded ? (
@@ -346,8 +482,16 @@ function SignedInBody({
         ) : (
           <div className="space-y-2">
             <p className="text-[11px] text-fg-dim leading-relaxed">
-              Deletes your account and everything attached to it — likes, reviews, install history. This cannot be undone.
+              Deleting your account removes everything attached to it immediately — your likes,
+              reviews, and install history are all gone. This cannot be undone.
             </p>
+            {/* The freed-handle lock only applies when there IS a handle to free. */}
+            {currentHandle.length > 0 && (
+              <p className="text-[11px] text-fg-dim leading-relaxed">
+                Your handle @{currentHandle} is freed, but locked for 30 days before anyone else can
+                claim it.
+              </p>
+            )}
             <label htmlFor="account-delete-confirm" className="block text-[10px] text-fg-muted">
               Type <span className="font-semibold text-fg">delete</span> to confirm
             </label>
