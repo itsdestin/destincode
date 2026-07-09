@@ -1,11 +1,75 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
+import type { Plugin } from 'unified';
+import type { Root, Element, Text, RootContent } from 'hast';
+import { visitParents } from 'unist-util-visit-parents';
+import { detectFilepaths } from '../hooks/useInlineFilepathDetector';
+import { FilepathToken } from './FilepathToken';
 
-// Stable plugin arrays — avoids re-creating on every render
+// Stable plugin arrays — avoids re-creating on every render when sessionId
+// is absent (non-artifact contexts). When filepath detection is active,
+// the rehype plugin array is memoized per-sessionId in the component below.
 const remarkPluginsStable = [remarkGfm];
 const rehypePluginsStable = [rehypeHighlight];
+
+/**
+ * Rehype plugin: walks hast text nodes that are NOT inside <code> or <pre>
+ * elements and splits detected file paths into filepath-token elements.
+ *
+ * Filepath detection runs in the hast (HTML AST) pass — after the markdown is
+ * already parsed — so we get correct element context (inline code vs. block code)
+ * for free by checking the ancestor chain. No regex pre-processing of the source.
+ */
+const rehypeFilepathTokens: Plugin<[], Root> = () => (tree: Root) => {
+  // visitParents provides the full ancestor chain so we can correctly detect
+  // whether the text node is inside a <code> or <pre> element.
+  visitParents(tree, 'text', (node, ancestors) => {
+    const parent = ancestors[ancestors.length - 1];
+    if (!parent) return;
+    const index = (parent as Element | Root).children.indexOf(node as Text);
+    if (index === -1) return;
+
+    // Fix: skip ONLY when inside a <pre> element (fenced code block).
+    // Inline <code> spans are intentionally NOT excluded — Claude commonly formats
+    // file paths as backtick-wrapped inline code (e.g. `foo.md`) and users expect
+    // those to be clickable. Multi-line fenced blocks still get no detection because
+    // the <pre> ancestor check correctly catches them.
+    const inPreBlock = ancestors.some(
+      (a) => a.type === 'element' && (a as Element).tagName === 'pre',
+    );
+    if (inPreBlock) return;
+
+    const textNode = node as Text;
+    const matches = detectFilepaths(textNode.value);
+    if (matches.length === 0) return;
+
+    // Split the text node into a sequence of text + filepath-token elements.
+    const replacements: RootContent[] = [];
+    let cursor = 0;
+    for (const m of matches) {
+      if (m.start > cursor) {
+        replacements.push({ type: 'text', value: textNode.value.slice(cursor, m.start) });
+      }
+      replacements.push({
+        type: 'element',
+        tagName: 'filepath-token',
+        properties: { 'data-path': m.path },
+        children: [],
+      } as Element);
+      cursor = m.end;
+    }
+    if (cursor < textNode.value.length) {
+      replacements.push({ type: 'text', value: textNode.value.slice(cursor) });
+    }
+
+    // Replace the original text node with our sequence in the parent's children array.
+    (parent as Element | Root).children.splice(index as number, 1, ...replacements);
+    // Skip past the newly-inserted nodes — they're already processed.
+    return index + replacements.length;
+  });
+};
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -148,14 +212,45 @@ const mdComponents = {
 
 interface Props {
   content: string;
+  /** When provided, file paths detected in text are rendered as FilepathToken chips. */
+  sessionId?: string;
 }
 
-export default React.memo(function MarkdownContent({ content }: Props) {
+export default React.memo(function MarkdownContent({ content, sessionId }: Props) {
+  // Memoize the rehype plugin array and the component map by sessionId so that:
+  // (a) When sessionId is absent, we use the stable module-scope arrays (no allocation).
+  // (b) When sessionId is present, the filepath-token component is added once and
+  //     remains stable across re-renders for the same session.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rehypePlugins = useMemo(
+    () => sessionId ? [rehypeHighlight, rehypeFilepathTokens] : rehypePluginsStable,
+    // Intentionally omitting rehypeFilepathTokens from deps — it's stable (module-level function).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId],
+  );
+
+  const components = useMemo(() => {
+    if (!sessionId) return mdComponents;
+    // Extend the base component map with a handler for our custom <filepath-token> hast element.
+    // react-markdown lowercases custom element names, so 'filepath-token' matches the tagName.
+    return {
+      ...mdComponents,
+      // react-markdown v10 passes custom hast element props directly.
+      // 'data-path' becomes 'data-path' in props (React preserves data-* attrs).
+      'filepath-token': ({ node, ...props }: any) => {
+        const path: string = (node as Element)?.properties?.['data-path'] as string ?? props['data-path'] ?? '';
+        if (!path) return null;
+        return <FilepathToken path={path} sessionId={sessionId} />;
+      },
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   return (
     <ReactMarkdown
       remarkPlugins={remarkPluginsStable}
-      rehypePlugins={rehypePluginsStable}
-      components={mdComponents}
+      rehypePlugins={rehypePlugins}
+      components={components}
     >
       {content}
     </ReactMarkdown>

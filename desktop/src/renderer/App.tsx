@@ -2,7 +2,7 @@
 // can call getScreenText for the attention classifier's ~1s buffer reads.
 // Must run before any TerminalView mounts (which call registerTerminal).
 import './bootstrap/terminal-bridge';
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import TerminalView from './components/TerminalView';
 import ChatView from './components/ChatView';
 import HeaderBar from './components/HeaderBar';
@@ -21,6 +21,9 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 import ErrorBoundary from './components/ErrorBoundary';
 import GamePanel from './components/game/GamePanel';
 import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './state/chat-context';
+import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
+import { ArtifactProvider } from './state/ArtifactContext';
+import { categorizeArtifact } from '../shared/artifacts/categorization';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
@@ -51,6 +54,7 @@ import { MarketplaceProvider } from './state/marketplace-context';
 import ThemeShareSheet from './components/ThemeShareSheet';
 import SkillEditor from './components/SkillEditor';
 import ShareSheet from './components/ShareSheet';
+import { ProjectView } from './components/project-view/ProjectView';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import FirstRunView from './components/FirstRunView';
@@ -144,6 +148,11 @@ interface StatusDataState {
 function AppInner() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
+  // Ref mirror of `sessions` for handlers that need to read the latest list
+  // without re-subscribing on every change (e.g. the artifact tool-use handler
+  // which needs to resolve cwd by sessionId).
+  const sessionsRef = useRef<any[]>([]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   // Multi-window detach state (desktop-only; remote-shim stubs these as no-ops).
   // `myWindowId` identifies this renderer's BrowserWindow so the switcher can
   // distinguish local sessions from sessions owned by peer windows. `directory`
@@ -347,8 +356,21 @@ function AppInner() {
   // to the top of the soft keyboard on Android / mobile browsers.
   useVisualViewport();
   useRemoteAttentionSync();
+
+  // Removed: data-theme-layout effect. The chrome-glass refactor replaced
+  // the data-theme-layout gating with data-chrome-style / data-input-style,
+  // which are already published by theme-engine.ts. No CSS consumes
+  // data-theme-layout anymore, so the effect was dead code.
+
   const dispatch = useChatDispatch();
   const chatStateMap = useChatStateMap();
+  // Artifact tracker — global reducer for session/project artifact state.
+  const [artifactState, dispatchArtifact] = useReducer(artifactReducer, initialArtifactState);
+  // Ref mirror of artifact state so the (once-registered) tool-use handler can
+  // dedup Read-tracking against the session's already-known artifacts without
+  // re-subscribing on every reducer tick.
+  const artifactStateRef = useRef(artifactState);
+  useEffect(() => { artifactStateRef.current = artifactState; }, [artifactState]);
   // Latest-value ref so transcript-shrink and turn-complete handlers see
   // up-to-date compactionPending state without re-subscribing on every reducer tick.
   const chatStateMapRef = useRef(chatStateMap);
@@ -411,6 +433,27 @@ function AppInner() {
 
   const gameState = useGameState();
   const gameDispatch = useGameDispatch();
+  // The game pane and the artifact drawer share the framed-shell's single right
+  // slot, so they're mutually exclusive: opening one closes the other. Two
+  // transition-gated effects (each keyed on only the OTHER pane's open flag)
+  // enforce this without ping-ponging — closing one pane never re-opens the
+  // other. Covers every open path, including the game panel auto-opening on an
+  // incoming challenge (CHALLENGE_RECEIVED sets panelOpen) and the artifact
+  // drawer opening from a file-pill / tool-card click.
+  // Drawer open/closed is per-session; exclusivity acts on the ACTIVE session.
+  const activeDrawerOpen = sessionId ? (artifactState.drawerOpenBySession[sessionId] ?? false) : false;
+  useEffect(() => {
+    if (gameState.panelOpen && activeDrawerOpen && sessionId) {
+      dispatchArtifact({ type: 'DRAWER_CLOSED', sessionId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState.panelOpen]);
+  useEffect(() => {
+    if (activeDrawerOpen && gameState.panelOpen) {
+      gameDispatch({ type: 'TOGGLE_PANEL' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDrawerOpen]);
   // Gate on isLeader so only the first-launched window opens the lobby
   // socket — avoids duplicate presence for the same GitHub identity when
   // multiple peer windows are open. When detach isn't available (remote
@@ -977,6 +1020,120 @@ function AppInner() {
       dispatch({ type: 'HYDRATE_CHAT_STATE', sessions: payload });
     });
 
+    // Artifact tracker: when Claude writes/edits a file inside the active project
+    // root, call appendVersion so the central index is populated, then refresh the
+    // session drawer from disk. We piggyback on the existing transcriptEvent
+    // subscription — filtering to Write/Edit/MultiEdit tool-use events and only
+    // paths inside the session's working directory (external files are never
+    // auto-tracked). appendVersion + ensureProject (called inside the IPC handler)
+    // are both idempotent, so duplicate events are safe.
+    //
+    // Note: the transcript event payload does NOT include cwd — only sessionId.
+    // We resolve cwd by looking up the session in the sessions state. Because
+    // the handler is registered in a useEffect that doesn't re-subscribe on
+    // sessions changes, we read via sessionsRef.current to always see fresh data.
+    const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
+      if (!event?.type || !event?.sessionId) return;
+      if (event.type !== 'tool-use') return;
+      const toolName: string = event.data?.toolName ?? '';
+      const isRead = toolName === 'Read';
+      if (!['Write', 'Edit', 'MultiEdit', 'Read'].includes(toolName)) return;
+      const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
+      if (!targetPath) return;
+
+      // Reads are tracked for DOCUMENTS only (plans, notes, mockups, images) so
+      // the tool card becomes openable — code/config reads would flood the
+      // drawer and aren't what the artifact viewer is for. Writes/Edits track
+      // everything (they're genuine changes Claude made).
+      if (isRead && categorizeArtifact(targetPath) !== 'document') return;
+
+      // Resolve cwd by looking up the session — transcript events don't carry cwd.
+      const session = sessionsRef.current?.find?.((s: any) => s.id === event.sessionId);
+      const projectRoot: string = session?.cwd ?? '';
+      if (!projectRoot) return;
+
+      // Dedup reads: only the FIRST read of a doc this session appends a 'read'
+      // version. Skip if the file is already a known session artifact (already
+      // written/edited/read this session) so repeated reads don't stack version
+      // noise or bump lastModified on a real artifact. appendVersion has no
+      // dedup of its own.
+      if (isRead) {
+        const known = artifactStateRef.current.sessionArtifacts[event.sessionId] ?? [];
+        const tnorm = targetPath.replace(/\\/g, '/');
+        const already = known.some((a: any) => {
+          const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
+          const an = aPath.replace(/\\/g, '/');
+          return an === tnorm || tnorm.endsWith('/' + an) || an.endsWith('/' + tnorm);
+        });
+        if (already) return;
+      }
+
+      // Determine internal vs external by path comparison. The Session Drawer
+      // shows BOTH (a session's activity log includes anything Claude touched).
+      // The Project View filters externals out unless they're in manualIncludes.
+      const normPath = targetPath.replace(/\\/g, '/').toLowerCase();
+      const normRoot = projectRoot.replace(/\\/g, '/').toLowerCase();
+      const isInternal = normPath.startsWith(normRoot + '/') || normPath === normRoot;
+
+      // Read → 'read' (viewed, not modified); Write → 'create'; Edit/MultiEdit → 'edit'.
+      const versionType: 'create' | 'edit' | 'read' =
+        isRead ? 'read' : toolName === 'Write' ? 'create' : 'edit';
+
+      let appendArgs: {
+        path: string;
+        kind: 'internal' | 'external';
+        absolutePath: string | null;
+        type: 'create' | 'edit' | 'read';
+        author: 'agent';
+      };
+      if (isInternal) {
+        // Compute the relative path using the forward-slash forms (same length
+        // as the originals, so the index is correct regardless of case).
+        const fwdPath = targetPath.replace(/\\/g, '/');
+        const fwdRoot = projectRoot.replace(/\\/g, '/');
+        const relativePath = normPath === normRoot ? '' : fwdPath.slice(fwdRoot.length + 1);
+        appendArgs = {
+          path: relativePath,
+          kind: 'internal',
+          absolutePath: null,
+          type: versionType,
+          author: 'agent',
+        };
+      } else {
+        // External: store absolute path canonical, use basename as display path.
+        const fwdPath = targetPath.replace(/\\/g, '/');
+        const basename = fwdPath.split('/').pop() || fwdPath;
+        appendArgs = {
+          path: basename,
+          kind: 'external',
+          absolutePath: fwdPath,
+          type: versionType,
+          author: 'agent',
+        };
+      }
+      ((window.claude as any).artifacts?.appendVersion?.(projectRoot, event.sessionId, appendArgs) ?? Promise.resolve())
+        .catch((e: any) => console.error('[artifact-tracker] appendVersion failed', e))
+        .finally(() => {
+          // Then refresh the session view from the now-updated sidecar.
+          (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
+            .then((res: any) => {
+              if (res && res.ok && Array.isArray(res.artifacts)) {
+                dispatchArtifact({
+                  type: 'SESSION_ARTIFACTS_LOADED',
+                  sessionId: event.sessionId,
+                  artifacts: res.artifacts,
+                });
+              }
+            })
+            .catch((e: any) => console.error('[artifact-tracker] listSession failed', e));
+        });
+    });
+
+    // NOTE: the artifacts:changed push event is consumed directly by
+    // ActiveArtifactView (edit-conflict banner). An earlier App-level
+    // subscription here only set a pendingRefresh flag that nothing read —
+    // removed as dead state.
+
     return () => {
       transcriptBatchCancelled = true;
       if (transcriptRafId !== null) cancelAnimationFrame(transcriptRafId);
@@ -993,6 +1150,7 @@ function AppInner() {
       if (promptCompleteHandler) window.claude.off('prompt:complete', promptCompleteHandler);
       if (sessionPermissionModeHandler) window.claude.off('session:permission-mode', sessionPermissionModeHandler);
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
+      if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
     };
   }, [dispatch]);
 
@@ -1890,6 +2048,45 @@ function AppInner() {
     };
   }, [sessionId, currentViewMode]);
 
+  // Track top chrome (HeaderBar) bottom edge for the artifact drawer.
+  // The drawer-pane sits inside .framed-shell beneath the absolute HeaderBar,
+  // so its content needs to clear the rendered bottom of the header. Two vars
+  // are published:
+  //   --top-chrome-height — the header element's own height. Used by
+  //     .chat-scroll padding-top so chat content scrolls behind the chrome.
+  //   --top-chrome-bottom — the y-coordinate of the header's BOTTOM in the
+  //     window. Used by .drawer-pane to position itself just below the
+  //     header. The distinction matters for floating-chrome themes where
+  //     the header pill carries its own margin-top — the header's
+  //     bottom is then at `margin + height`, not just `height`, so
+  //     drawer.margin-top must use the rect's bottom value or the drawer
+  //     ends up flush against the floating header with no gap.
+  // Both vars track ResizeObserver updates on the .header-bar element.
+  //
+  // NOTE: we measure the inner .header-bar element, NOT the chrome-wrapper at
+  // headerRef. The wrapper has no specified height and its only child is the
+  // position: absolute .header-bar (no flow content) — measuring the wrapper
+  // returns 0, which is what made the first attempt at this observer ineffective.
+  useEffect(() => {
+    const wrapper = headerRef.current;
+    if (!wrapper) return;
+    const headerBar = wrapper.querySelector('.header-bar');
+    if (!headerBar) return;
+    const update = () => {
+      const rect = (headerBar as HTMLElement).getBoundingClientRect();
+      document.documentElement.style.setProperty('--top-chrome-height', `${Math.ceil(rect.height)}px`);
+      document.documentElement.style.setProperty('--top-chrome-bottom', `${Math.ceil(rect.bottom)}px`);
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(headerBar);
+    update();
+    return () => {
+      observer.disconnect();
+      document.documentElement.style.removeProperty('--top-chrome-height');
+      document.documentElement.style.removeProperty('--top-chrome-bottom');
+    };
+  }, [sessionId, currentViewMode]);
+
   // Report header/bottom bar heights to native Android side for terminal overlay sizing.
   // Must be before early returns to maintain consistent hook ordering across renders.
   useEffect(() => {
@@ -1931,6 +2128,10 @@ function AppInner() {
   }
 
   return (
+    // ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
+    // subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
+    // etc.) because artifact operations may eventually consume chat/theme context.
+    <ArtifactProvider value={{ state: artifactState, dispatch: dispatchArtifact }}>
     <div className={`app-shell flex w-screen h-full text-fg ${getPlatform() === 'android' && currentViewMode === 'terminal' ? '' : 'bg-canvas'}`}>
       {/* Mount-only: listens for chat:export-snapshot from main, serializes
           ChatState, and sends the snapshot back for remote-browser hydration. */}
@@ -1943,9 +2144,25 @@ function AppInner() {
       <div
         className="flex-1 flex flex-col overflow-hidden relative"
         hidden={activeView === 'marketplace' || activeView === 'library'}
+        // --right-pane-width drives BOTH the framed-shell drawer-pane width and
+        // the chrome-glass cutout offset (both descend from here). The game pane
+        // is narrower than the artifact drawer's 480px default.
+        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? '400px' : '480px' }}
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
+            {/* Chrome-glass: single backdrop-filter layer for the entire
+                frame chrome. Replaces the per-element backdrop-filters on
+                HeaderBar, frame-edges, frame-divider, drawer-pane, and the
+                rounded-corner pseudos. Subpixel boundaries between those
+                elements at non-100% zoom levels caused either tiny gaps
+                (sharp wallpaper bleed through) or tiny overlaps (darker
+                tone from double translucent-panel + double backdrop-filter).
+                A single chrome-glass element clipped to the donut shape via
+                clip-path: polygon() has only ONE backdrop-filter sampling the
+                wallpaper directly, so the whole chrome reads as one
+                continuous tone. */}
+            <div className={`chrome-glass${(activeDrawerOpen || gameState.panelOpen) ? ' chrome-glass--drawer-open' : ''}`} />
             <div ref={headerRef} className="chrome-wrapper bg-canvas">
               <HeaderBar
                 sessions={sessions}
@@ -2017,6 +2234,15 @@ function AppInner() {
                       sessionId={s.id}
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
                       resumeInfo={resumeInfo}
+                      cwd={s.cwd}
+                      // Game pane lives in the active session's framed-shell
+                      // right slot. Only the active session renders it (others
+                      // get null) so there's a single GamePanel instance.
+                      gamePane={s.id === sessionId && gameState.panelOpen ? (
+                        <ErrorBoundary name="Game">
+                          <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
+                        </ErrorBoundary>
+                      ) : null}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">
@@ -2227,12 +2453,9 @@ function AppInner() {
         )}
       </div>
 
-      {/* Game panel (conditional) */}
-      {gameState.panelOpen && (
-        <ErrorBoundary name="Game">
-          <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
-        </ErrorBoundary>
-      )}
+      {/* The game panel now renders inside the active session's framed-shell
+          right slot (passed as ChatView's gamePane prop above), so it shares the
+          artifact drawer's framed chrome instead of being a separate slide-out. */}
       <SettingsPanel
         open={settingsOpen}
         onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); }}
@@ -2358,7 +2581,16 @@ function AppInner() {
         onZoomOut={handleZoomOut}
         onZoomReset={handleZoomReset}
       />
+      {/* ProjectView — full-screen artifact browser across all projects.
+          Renders null when projectViewOpen === false so no DOM overhead when closed.
+          z-[8000]: sits below the SessionStrip dropdown (9000) but above all
+          L1–L4 overlays, the same tier used by similar full-screen views. */}
+      <ProjectView
+        onNewConversation={(cwd) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); createSession(cwd, false); }}
+        onResumeConversation={(sid, slug, path) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path); }}
+      />
     </div>
+    </ArtifactProvider>
   );
 }
 

@@ -4,6 +4,8 @@ import SessionStrip from './SessionStrip';
 import type { SessionStatusColor } from './StatusDot';
 import type { PermissionMode } from '../../shared/types';
 import { isAndroid, isRemoteMode } from '../platform';
+// Artifact drawer trigger — reads session artifact count for the badge.
+import { useArtifact } from '../state/ArtifactContext';
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
 
@@ -183,6 +185,100 @@ interface Props {
   geminiEnabled?: boolean;
   windowDirectory?: any;
   myWindowId?: number | null;
+}
+
+/** Projects button — always visible (projects are persistent, not session-local).
+ *  Opens ProjectView as a full-screen overlay via PROJECT_VIEW_OPENED dispatch.
+ *  Isolated into its own component so it can safely call useArtifact() without
+ *  requiring the parent HeaderBar to be inside an ArtifactContext. */
+function ProjectsButton() {
+  const { dispatch } = useArtifact();
+  return (
+    <button
+      type="button"
+      className="relative p-1 rounded-sm hover:bg-inset transition-colors shrink-0 text-fg-muted hover:text-fg"
+      onClick={() => dispatch({ type: 'PROJECT_VIEW_OPENED' })}
+      title="Projects"
+      aria-label="Open Projects"
+    >
+      {/* Folder icon — matches the document icon style used by ArtifactDrawerButton */}
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+      </svg>
+    </button>
+  );
+}
+
+/** Files-drawer button — isolated so it can safely call useArtifact().
+ *  Placed inside <ArtifactContext.Provider> (mounted in App.tsx), so the hook
+ *  is always in-context when the main app is rendering HeaderBar.
+ *  Always rendered (so the drawer is reachable before any files exist); only
+ *  the count badge is conditional. (An earlier plan hid the whole button at
+ *  zero — that changed; this comment used to say so and was stale.) */
+function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionId: string | null; projectRoot?: string }) {
+  const { state, dispatch } = useArtifact();
+  const sessionArtifacts = activeSessionId ? (state.sessionArtifacts[activeSessionId] ?? []) : [];
+  // Open/closed is per-session — reflect (and toggle) the ACTIVE session's flag.
+  const drawerOpen = activeSessionId ? (state.drawerOpenBySession[activeSessionId] ?? false) : false;
+
+  // Count only still-present artifacts. Two ways a file stops being present:
+  //  1. status === 'deleted' — an explicit Delete tool version (rare; CC has no
+  //     Delete tool, so this mostly never happens).
+  //  2. "orphan" — the file was removed via `bash rm` (which produces NO
+  //     artifact event), so the record stays status:'active' but the file is
+  //     gone from disk. The drawer detects these with checkExistence; we mirror
+  //     that here so the badge reflects what's actually on disk, not the full
+  //     session activity log. Re-checks when the list changes or the drawer
+  //     toggles (same triggers the drawer uses).
+  const [missingIds, setMissingIds] = useState<Set<string>>(() => new Set());
+  const liveIds = sessionArtifacts.filter((a) => a.status !== 'deleted').map((a) => a.id);
+  const idsKey = liveIds.join(',');
+  useEffect(() => {
+    if (!projectRoot || liveIds.length === 0) { setMissingIds(new Set()); return; }
+    let cancelled = false;
+    (window.claude as any).artifacts.checkExistence(projectRoot, liveIds)
+      .then((res: any) => { if (!cancelled && res?.ok) setMissingIds(new Set(res.missingIds ?? [])); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectRoot, idsKey, drawerOpen]);
+
+  const artifactCount = sessionArtifacts.filter(
+    (a) => a.status !== 'deleted' && !missingIds.has(a.id)
+  ).length;
+
+  // Fix: always show the button so users can open the drawer even before any
+  // artifacts exist. The count badge is conditional — hidden when count is 0.
+  return (
+    <button
+      type="button"
+      className={`relative p-1 rounded-sm hover:bg-inset transition-colors shrink-0 flex items-center gap-0.5 ${
+        drawerOpen ? 'text-fg' : 'text-fg-muted'
+      }`}
+      onClick={() => {
+        if (!activeSessionId) return;
+        dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
+      }}
+      // "Files", not "Artifacts": the drawer is a session activity log (it
+      // includes files the user merely VIEWED via pills), so the claude.ai-
+      // style "Artifacts" word would be wrong here — that term is reserved for
+      // the Project View tab that shows only what Claude made + pinned files.
+      title="Files in this chat"
+    >
+      {/* Document icon — SVG matches the style of the settings gear above */}
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      </svg>
+      {/* Count badge — only shown when there are tracked artifacts */}
+      {artifactCount > 0 && (
+        <span className="text-[10px] bg-accent text-on-accent rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5">
+          {artifactCount}
+        </span>
+      )}
+    </button>
+  );
 }
 
 export default function HeaderBar({
@@ -456,7 +552,7 @@ export default function HeaderBar({
   );
 
   return (
-    <div ref={headerRef} className="header-bar flex items-center h-10 px-2 sm:px-3 border-b border-edge shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+    <div ref={headerRef} className="header-bar flex items-center h-10 px-2 sm:px-3 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
       {/* Mac-only decorative pill under the native traffic lights. Mirrors the
           bg-inset rounded-md look of <CaptionButtons> on Windows/Linux. */}
       <MacTrafficLights headerRef={headerRef} />
@@ -487,6 +583,15 @@ export default function HeaderBar({
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500" />
           ) : null}
         </button>
+        {/* Projects button — always visible; opens the persistent project browser. */}
+        <ProjectsButton />
+        {/* Files-drawer trigger — always visible; only the count badge is
+            conditional (the original hide-at-zero plan was dropped — see the
+            ArtifactDrawerButton docblock). */}
+        <ArtifactDrawerButton
+          activeSessionId={activeSessionId}
+          projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}
+        />
         {isRemoteMode() && (
           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 border border-blue-500/25 shrink-0">
             REMOTE

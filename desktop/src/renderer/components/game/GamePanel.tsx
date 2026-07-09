@@ -18,7 +18,13 @@ export default function GamePanel({ connection, incognito, onToggleIncognito }: 
   const isPlaying = state.screen === 'playing' || state.screen === 'game-over';
 
   return (
-    <div className="w-80 bg-panel border-l border-edge flex flex-col h-full shrink-0 overflow-hidden">
+    // Fills the framed-shell's drawer-pane slot (see ChatView). The pane's own
+    // chrome — width, rounded corners, top/bottom chrome-height margins, and the
+    // chrome-glass frame around it — comes from .drawer-pane in globals.css, so
+    // this root only sets the interior surface (bg-inset, matching the artifact
+    // drawer's aside) and fills its container. It no longer carries the old
+    // w-80 / border-l / bg-panel slide-out styling.
+    <div className="h-full flex flex-col overflow-hidden bg-inset">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-edge">
         <span className="text-sm font-semibold text-fg">Connect 4</span>

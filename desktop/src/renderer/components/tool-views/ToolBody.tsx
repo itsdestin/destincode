@@ -6,6 +6,9 @@ import { buildTasksById, TASK_LIFECYCLE, TaskState, TaskStatus } from '../../sta
 import { SubagentTimeline } from './SubagentTimeline';
 import { ChevronIcon } from '../Icons';
 import { useExpandAllToggle, getInitialExpanded, isExpandModeActive } from '../../hooks/useExpandAllToggle';
+import { useArtifactOptional } from '../../state/ArtifactContext';
+import { ArtifactThumbnail } from '../ArtifactThumbnail';
+import type { ArtifactRecord } from '../../../shared/artifacts/types';
 
 // Parsed views for expanded tool cards. One dispatcher + inline view functions;
 // splitting per-file only becomes worthwhile if a single view grows past ~80
@@ -69,6 +72,105 @@ function PathHeader({ fp, extra }: { fp: string; extra?: React.ReactNode }) {
       {dir && <span className="text-fg-muted">{dir}/</span>}
       <span className="text-fg-2 font-medium">{basename(fp)}</span>
       {extra}
+    </div>
+  );
+}
+
+// Match a tool's absolute file_path to one of the session's tracked artifacts.
+// Mirrors FilepathToken's suffix matching: internal artifacts store a
+// project-relative path, so the tool's absolute path ends with it.
+function matchSessionArtifact(arts: ArtifactRecord[], absPath: string): ArtifactRecord | undefined {
+  if (!absPath) return undefined;
+  const norm = absPath.replace(/\\/g, '/');
+  return arts.find((a) => {
+    const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
+    const an = aPath.replace(/\\/g, '/');
+    return an === norm || norm.endsWith('/' + an) || an.endsWith('/' + norm);
+  });
+}
+
+// Derive the project root for the thumbnail's content fetch by stripping the
+// artifact's relative path off the tool's absolute file_path. Only internal
+// artifacts can be derived this way; external ones return '' (the thumbnail
+// then falls back to its ext-letter glyph — fine, since opening only needs the
+// artifact id, which the drawer resolves against its own project root).
+function deriveProjectRoot(absPath: string, artifact: ArtifactRecord): string {
+  if (artifact.kind !== 'internal') return '';
+  const abs = absPath.replace(/\\/g, '/');
+  const rel = artifact.path.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (abs.endsWith('/' + rel)) return abs.slice(0, abs.length - rel.length - 1);
+  if (abs.endsWith(rel)) return abs.slice(0, abs.length - rel.length).replace(/\/+$/, '');
+  return '';
+}
+
+// M2 preview card for Edit / Write / Read. Replaces the plain PathHeader with a
+// clickable card — thumbnail + filename + folder + Open — so the user can open
+// the artifact in the session drawer while still seeing how the tool changed it
+// (the diff / content renders below). Falls back to the lightweight PathHeader
+// when the file isn't a tracked session artifact (e.g. a Read of an untracked
+// file): only tracked artifacts can be opened in the drawer, so we don't show a
+// misleading Open affordance otherwise.
+function ToolFilePreview({ fp, sessionId, chips }: { fp: string; sessionId?: string; chips?: React.ReactNode }) {
+  // Optional: the buddy window / sandbox / tests render ToolCard without
+  // ArtifactProvider. When absent, sessionArts is undefined → no match → we
+  // fall back to the plain PathHeader below (no crash).
+  const artifactCtx = useArtifactOptional();
+  const sessionArts = artifactCtx?.state.sessionArtifacts;
+  const artifact = useMemo(
+    () => matchSessionArtifact(sessionArts?.[sessionId ?? ''] ?? [], fp),
+    [sessionArts, sessionId, fp],
+  );
+
+  if (!artifact) {
+    return (
+      <div className="flex items-center gap-2 flex-wrap">
+        <PathHeader fp={fp} />
+        {chips}
+      </div>
+    );
+  }
+
+  // For internal artifacts, prefer the project-relative path for the labels so
+  // the folder line stays short (e.g. "docs/specs/") instead of the full
+  // absolute path. External artifacts use the absolute path as-is.
+  const labelPath = artifact.kind === 'internal' ? artifact.path : fp;
+  const name = basename(labelPath);
+  const dir = parentDir(labelPath);
+  const projectRoot = deriveProjectRoot(fp, artifact);
+
+  const open = () => {
+    if (!sessionId) return; // per-session drawer needs a session to scope to
+    artifactCtx?.dispatch({ type: 'DRAWER_OPENED', sessionId });
+    artifactCtx?.dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: artifact.id });
+  };
+
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={open}
+        title={`Open ${name}`}
+        className="group flex items-center gap-3 w-full p-2 rounded-lg bg-inset border border-edge hover:border-fg-muted text-left transition-colors"
+      >
+        <ArtifactThumbnail
+          artifact={artifact}
+          projectPath={projectRoot}
+          bgClass="bg-canvas"
+          className="w-11 h-11 rounded-md border border-edge shrink-0"
+        />
+        <span className="flex-1 min-w-0">
+          <span className="block text-[13px] font-semibold text-fg truncate">{name}</span>
+          {dir && <span className="block text-[11px] font-mono text-fg-muted truncate">{dir}/</span>}
+        </span>
+        <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md px-2 py-1 transition-colors">
+          Open
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7 7h10v10" />
+            <path d="M7 17 17 7" />
+          </svg>
+        </span>
+      </button>
+      {chips && <div className="flex items-center gap-2 flex-wrap">{chips}</div>}
     </div>
   );
 }
@@ -314,7 +416,7 @@ function DiffView({
   );
 }
 
-function EditView({ tool }: { tool: ToolCallState }) {
+function EditView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
   const fp = (tool.input.file_path as string) || '';
   const oldStr = (tool.input.old_string as string) || '';
   const newStr = (tool.input.new_string as string) || '';
@@ -322,10 +424,11 @@ function EditView({ tool }: { tool: ToolCallState }) {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap">
-        <PathHeader fp={fp} />
-        {replaceAll && <Chip tone="warn">Replace all</Chip>}
-      </div>
+      <ToolFilePreview
+        fp={fp}
+        sessionId={sessionId}
+        chips={replaceAll ? <Chip tone="warn">Replace all</Chip> : null}
+      />
       {(oldStr || newStr) ? (
         <DiffView oldStr={oldStr} newStr={newStr} structuredPatch={tool.structuredPatch} />
       ) : (
@@ -336,18 +439,23 @@ function EditView({ tool }: { tool: ToolCallState }) {
   );
 }
 
-function WriteView({ tool }: { tool: ToolCallState }) {
+function WriteView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
   const fp = (tool.input.file_path as string) || '';
   const content = (tool.input.content as string) || '';
   const lineCount = content ? content.split('\n').length : 0;
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap">
-        <PathHeader fp={fp} />
-        <Chip tone="add">New file</Chip>
-        {lineCount > 0 && <span className="text-[10px] text-fg-muted">{lineCount} lines</span>}
-      </div>
+      <ToolFilePreview
+        fp={fp}
+        sessionId={sessionId}
+        chips={
+          <>
+            <Chip tone="add">New file</Chip>
+            {lineCount > 0 && <span className="text-[10px] text-fg-muted">{lineCount} lines</span>}
+          </>
+        }
+      />
       {content ? (
         <div className="rounded-sm overflow-hidden border border-green-600/30 bg-green-600/10">
           <CollapsibleBlock maxLines={20}>{content}</CollapsibleBlock>
@@ -576,7 +684,7 @@ function parseCatN(resp: string): { lineNo: number; text: string }[] {
 const READ_ROW_PX = 20;
 const READ_PREVIEW_LINES = 15;
 
-function ReadView({ tool }: { tool: ToolCallState }) {
+function ReadView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
   const fp = (tool.input.file_path as string) || '';
   const offset = tool.input.offset as number | undefined;
   const limit = tool.input.limit as number | undefined;
@@ -602,10 +710,11 @@ function ReadView({ tool }: { tool: ToolCallState }) {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap">
-        <PathHeader fp={fp} />
-        {rangeLabel && <Chip>{rangeLabel}</Chip>}
-      </div>
+      <ToolFilePreview
+        fp={fp}
+        sessionId={sessionId}
+        chips={rangeLabel ? <Chip>{rangeLabel}</Chip> : null}
+      />
       {rows.length > 0 ? (
         <>
           <div
@@ -939,9 +1048,9 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
   const inner = (() => {
     switch (tool.toolName) {
       case 'Edit':
-        return <EditView tool={tool} />;
+        return <EditView tool={tool} sessionId={sessionId} />;
       case 'Write':
-        return <WriteView tool={tool} />;
+        return <WriteView tool={tool} sessionId={sessionId} />;
       case 'Bash':
         return <ShellView tool={tool} commandField="command" />;
       case 'TodoWrite':
@@ -953,7 +1062,7 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <TaskUpdateView tool={tool} task={tid ? tasksById.get(tid) : undefined} />;
       }
       case 'Read':
-        return <ReadView tool={tool} />;
+        return <ReadView tool={tool} sessionId={sessionId} />;
       case 'Agent':
       case 'Task':
         return <AgentView tool={tool} />;

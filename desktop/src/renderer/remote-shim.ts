@@ -272,6 +272,11 @@ function handleMessage(data: string): void {
       // payload is used — the event itself is the signal.
       dispatchEvent('system:back', payload);
       break;
+    case 'artifacts:changed':
+      // Artifact viewer update event — dispatched when artifacts are added,
+      // modified, or excluded. The payload contains change metadata.
+      dispatchEvent('artifacts:changed', payload);
+      break;
   }
 }
 
@@ -866,6 +871,13 @@ export function installShim(): void {
         window.open('https://github.com/itsdestin/youcoded/blob/master/CHANGELOG.md', '_blank');
       },
       openExternal: async (url: string) => { window.open(url, '_blank'); },
+      // No-op on remote/Android — a browser can't reveal a file in the host's
+      // file manager. The artifact panel hides the button on touch anyway.
+      showItemInFolder: async () => {},
+      // No-op on remote/Android — a browser can't launch the host's default app
+      // for a local path. The "Open externally" button is desktop-gated, so this
+      // only exists to keep the window.claude shape symmetric.
+      openPath: async () => '',
     },
     update: {
       changelog: async (opts: { forceRefresh: boolean }) =>
@@ -1002,6 +1014,68 @@ export function installShim(): void {
       add: (folderPath: string, nickname?: string) => invoke('folders:add', { folderPath, nickname }),
       remove: (folderPath: string) => invoke('folders:remove', { folderPath }),
       rename: (folderPath: string, nickname: string) => invoke('folders:rename', { folderPath, nickname }),
+    },
+    artifacts: {
+      listSession: (sessionId: string, projectRoot: string) =>
+        invoke('artifacts:list-session', { sessionId, projectRoot }),
+      listProject: (projectId: string, opts?: { withCount?: boolean }) =>
+        invoke('artifacts:list-project', { projectId, opts }),
+      listAllFiles: (projectId: string, opts?: { force?: boolean }) =>
+        invoke('artifacts:list-all-files', { projectId, opts }),
+      listProjectsIndex: (opts?: { withCounts?: boolean }) =>
+        invoke('artifacts:list-projects-index', opts ?? {}),
+      get: (projectRoot: string, artifactId: string) =>
+        invoke('artifacts:get', { projectRoot, artifactId }),
+      // Routed to the host (desktop/Android) over WS — the host has filesystem
+      // access, so binary viewers work for remote browsers too.
+      readBinary: (absolutePath: string) =>
+        invoke('artifacts:read-binary', { absolutePath }),
+      save: (projectRoot: string, projectId: string, projectName: string,
+             artifactId: string, content: string, sessionId: string) =>
+        invoke('artifacts:save', { projectRoot, projectId, projectName, artifactId, content, sessionId }),
+      // Fix: data-flow gap — renderer Tracker calls this on Write/Edit/MultiEdit
+      // transcript events so the central index is populated automatically on Android.
+      appendVersion: (projectRoot: string, sessionId: string, args: any) =>
+        invoke('artifacts:append-version', { projectRoot, sessionId, args }),
+      includeExternal: (projectRoot: string, absolutePath: string) =>
+        invoke('artifacts:include-external', { projectRoot, absolutePath }),
+      exclude: (projectRoot: string, canonicalPath: string) =>
+        invoke('artifacts:exclude', { projectRoot, canonicalPath }),
+      // Task 7.3: remove a project from the central index (files untouched)
+      deleteProject: (projectId: string, deleteSidecar: boolean) =>
+        invoke('artifacts:delete-project', { projectId, deleteSidecar }),
+      // Returns the subset of artifactIds whose underlying file is missing from
+      // disk. Android stub returns empty missingIds (existence check is desktop-only
+      // until Project View ships on mobile).
+      checkExistence: (projectRoot: string, artifactIds: string[]) =>
+        invoke('artifacts:check-existence', { projectRoot, artifactIds }),
+      rename: (projectRoot: string, artifactId: string, newName: string) =>
+        invoke('artifacts:rename', { projectRoot, artifactId, newName }),
+      // Remove a tracking RECORD from the sidecar (never the file on disk).
+      removeRecord: (projectRoot: string, artifactId: string) =>
+        invoke('artifacts:remove-record', { projectRoot, artifactId }),
+      onChanged: (cb: (event: any) => void) => {
+        const handler: Callback = (evt: any) => cb(evt);
+        addListener('artifacts:changed', handler);
+        return () => removeListener('artifacts:changed', handler);
+      },
+    },
+    // Project View IPC — sibling to artifacts. Object-payload invoke style
+    // mirrors the artifacts namespace above; the literal 'project:*' channel
+    // strings are required by the IPC parity test.
+    project: {
+      listConversations: (projectPath: string) =>
+        invoke('project:list-conversations', { projectPath }),
+      conversationHistory: (projectPath: string, sessionId: string, count: number, all: boolean) =>
+        invoke('project:conversation-history', { projectPath, sessionId, count, all }),
+      repoInfo: (projectPath: string) =>
+        invoke('project:repo-info', { projectPath }),
+      listContext: (projectPath: string) =>
+        invoke('project:list-context', { projectPath }),
+      readContextFile: (projectPath: string, absolutePath: string) =>
+        invoke('project:read-context-file', { projectPath, absolutePath }),
+      writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
+        invoke('project:write-context-file', { projectPath, absolutePath, content }),
     },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is

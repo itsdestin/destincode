@@ -73,6 +73,8 @@ const IPC = {
   UPDATE_PROGRESS: 'update:progress',
   UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
+  SHOW_ITEM_IN_FOLDER: 'shell:show-item-in-folder',
+  OPEN_PATH: 'shell:open-path',
   TERMINAL_READY: 'session:terminal-ready',
   PERMISSION_RESPOND: 'permission:respond',
   REMOTE_GET_CONFIG: 'remote:get-config',
@@ -482,6 +484,13 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.OPEN_CHANGELOG),
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.OPEN_EXTERNAL, url),
+    // Reveal a file in the OS file manager (Finder / Explorer / Files).
+    showItemInFolder: (filePath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.SHOW_ITEM_IN_FOLDER, filePath),
+    // Open a local file with the OS default app (HTML→browser, .docx→Word, …).
+    // Returns the empty string on success, or an error message on failure.
+    openPath: (filePath: string): Promise<string> =>
+      ipcRenderer.invoke(IPC.OPEN_PATH, filePath),
   },
   update: {
     changelog: (opts: { forceRefresh: boolean }): Promise<ChangelogIpcResult> =>
@@ -852,5 +861,66 @@ contextBridge.exposeInMainWorld('claude', {
       // can call it unconditionally without platform branching.
       return () => {};
     },
+  },
+  artifacts: {
+    listSession: (sessionId: string, projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:list-session', sessionId, projectRoot),
+    listProject: (projectId: string, opts?: { withCount?: boolean }) =>
+      ipcRenderer.invoke('artifacts:list-project', projectId, opts),
+    listAllFiles: (projectId: string, opts?: { force?: boolean }) =>
+      ipcRenderer.invoke('artifacts:list-all-files', projectId, opts),
+    listProjectsIndex: (opts?: { withCounts?: boolean }) =>
+      ipcRenderer.invoke('artifacts:list-projects-index', opts),
+    get: (projectRoot: string, artifactId: string) =>
+      ipcRenderer.invoke('artifacts:get', projectRoot, artifactId),
+    // Read a file as base64 — binary viewers (xlsx/docx/pdf/image) decode this
+    // to bytes (renderer can't fetch a file:// URL from the http/app origin).
+    readBinary: (absolutePath: string) =>
+      ipcRenderer.invoke('artifacts:read-binary', absolutePath),
+    save: (projectRoot: string, projectId: string, projectName: string,
+           artifactId: string, content: string, sessionId: string) =>
+      ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId),
+    // Fix: data-flow gap — renderer Tracker calls this on Write/Edit/MultiEdit
+    // transcript events so the central index is populated automatically.
+    appendVersion: (projectRoot: string, sessionId: string, args: any) =>
+      ipcRenderer.invoke('artifacts:append-version', projectRoot, sessionId, args),
+    includeExternal: (projectRoot: string, absolutePath: string) =>
+      ipcRenderer.invoke('artifacts:include-external', projectRoot, absolutePath),
+    exclude: (projectRoot: string, canonicalPath: string) =>
+      ipcRenderer.invoke('artifacts:exclude', projectRoot, canonicalPath),
+    // Task 7.3: remove a project from the central index (files untouched)
+    deleteProject: (projectId: string, deleteSidecar: boolean) =>
+      ipcRenderer.invoke('artifacts:delete-project', projectId, deleteSidecar),
+    // Returns the subset of artifactIds whose underlying file is missing from
+    // disk. Used to fold "file not on disk" into the deleted UI state.
+    checkExistence: (projectRoot: string, artifactIds: string[]) =>
+      ipcRenderer.invoke('artifacts:check-existence', projectRoot, artifactIds),
+    // Rename an artifact's file on disk; newName is the basename without extension.
+    rename: (projectRoot: string, artifactId: string, newName: string) =>
+      ipcRenderer.invoke('artifacts:rename', projectRoot, artifactId, newName),
+    // Remove a tracking RECORD from the sidecar (never the file on disk).
+    removeRecord: (projectRoot: string, artifactId: string) =>
+      ipcRenderer.invoke('artifacts:remove-record', projectRoot, artifactId),
+    onChanged: (cb: (event: any) => void) => {
+      const handler = (_e: any, payload: any) => cb(payload);
+      ipcRenderer.on('artifacts:changed', handler);
+      return () => ipcRenderer.removeListener('artifacts:changed', handler);
+    },
+  },
+  // Project View IPC — sibling to artifacts. Backs the project overlay's
+  // conversations / repo / context tabs.
+  project: {
+    listConversations: (projectPath: string) =>
+      ipcRenderer.invoke('project:list-conversations', projectPath),
+    conversationHistory: (projectPath: string, sessionId: string, count: number, all: boolean) =>
+      ipcRenderer.invoke('project:conversation-history', projectPath, sessionId, count, all),
+    repoInfo: (projectPath: string) =>
+      ipcRenderer.invoke('project:repo-info', projectPath),
+    listContext: (projectPath: string) =>
+      ipcRenderer.invoke('project:list-context', projectPath),
+    readContextFile: (projectPath: string, absolutePath: string) =>
+      ipcRenderer.invoke('project:read-context-file', projectPath, absolutePath),
+    writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
+      ipcRenderer.invoke('project:write-context-file', projectPath, absolutePath, content),
   },
 });

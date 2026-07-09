@@ -359,3 +359,127 @@ describe('performance:* and app:restart parity', () => {
     }
   });
 });
+
+// Regression net for artifact:* IPC channels introduced by the artifact-viewer
+// subsystem (Phase 2). All four surfaces (preload.ts, remote-shim.ts,
+// ipc-handlers.ts, SessionService.kt) must carry identical type strings for
+// request-response channels. The push event 'artifacts:changed' does NOT need
+// an ipcMain.handle — it broadcasts from main to renderer only. Phase 8 will
+// add SessionService.kt handlers; until then, those assertions are expected to
+// fail as a tracker for when Android parity lands.
+describe('artifact IPC parity', () => {
+  // Dynamically read the ipc-channels.ts file and extract the channel values
+  const ipcChannelsSource = fs.readFileSync(
+    path.join(__dirname, '../src/main/artifacts/ipc-channels.ts'), 'utf8'
+  );
+  // Extract all string values from ARTIFACT_IPC object (pattern: : 'channel-name')
+  const channelMatches = [...ipcChannelsSource.matchAll(/'([^']+)'/g)];
+  const channels = channelMatches
+    .map(m => m[1])
+    .filter((v, i, a) => a.indexOf(v) === i); // deduplicate
+
+  // Build a reverse lookup mapping channel string → constant name
+  // for recognizing constant references (e.g., ARTIFACT_IPC.LIST_SESSION) in ipc-handlers.ts
+  const CHANNEL_TO_CONST = Object.entries({
+    LIST_SESSION: 'artifacts:list-session',
+    LIST_PROJECT: 'artifacts:list-project',
+    LIST_ALL_FILES: 'artifacts:list-all-files',
+    LIST_PROJECTS_INDEX: 'artifacts:list-projects-index',
+    GET: 'artifacts:get',
+    READ_BINARY: 'artifacts:read-binary',
+    SAVE: 'artifacts:save',
+    // Fix: data-flow gap — new channel that wires renderer Tracker → central index
+    APPEND_VERSION: 'artifacts:append-version',
+    INCLUDE_EXTERNAL: 'artifacts:include-external',
+    EXCLUDE: 'artifacts:exclude',
+    CHANGED: 'artifacts:changed',
+    // Task 7.3: project deletion
+    DELETE_PROJECT: 'artifacts:delete-project',
+    // Existence check folds "file not on disk" into the deleted UI state.
+    CHECK_EXISTENCE: 'artifacts:check-existence',
+    // Rename a file on disk + update the sidecar record.
+    RENAME: 'artifacts:rename',
+  }).reduce<Record<string, string>>((acc, [name, value]) => {
+    acc[value] = `ARTIFACT_IPC.${name}`;
+    return acc;
+  }, {});
+
+  // Resolve paths relative to the desktop directory (where vitest is invoked from)
+  const preload = fs.readFileSync('src/main/preload.ts', 'utf8');
+  const shim = fs.readFileSync('src/renderer/remote-shim.ts', 'utf8');
+  const handlers = fs.readFileSync('src/main/ipc-handlers.ts', 'utf8');
+
+  // Kotlin file lives in the sibling app/ directory of the youcoded sub-repo
+  const kotlinPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  const kotlinExists = fs.existsSync(kotlinPath);
+  const kotlin = kotlinExists ? fs.readFileSync(kotlinPath, 'utf8') : '';
+
+  for (const channel of channels) {
+    it(`channel ${channel} is referenced in preload.ts`, () => {
+      expect(preload, `${channel} missing from preload.ts`).toContain(channel);
+    });
+
+    it(`channel ${channel} is referenced in remote-shim.ts`, () => {
+      expect(shim, `${channel} missing from remote-shim.ts`).toContain(channel);
+    });
+
+    if (channel !== 'artifacts:changed') {
+      // Push events don't need an ipcMain.handle — only request/response channels do
+      it(`channel ${channel} is registered in ipc-handlers.ts`, () => {
+        // ipc-handlers.ts may use the channel as a literal string OR as a constant reference
+        // (e.g., ARTIFACT_IPC.LIST_SESSION), so accept either form
+        const literalForm = handlers.includes(channel);
+        const constForm = handlers.includes(CHANNEL_TO_CONST[channel]);
+        expect(literalForm || constForm, `${channel} missing from ipc-handlers.ts`).toBe(true);
+      });
+    }
+
+    // Phase 8: Expected to fail until Android handlers land; left in place as a tracker
+    it(`channel ${channel} is registered in SessionService.kt`, () => {
+      if (kotlinExists) {
+        expect(kotlin, `${channel} missing from SessionService.kt`).toContain(channel);
+      } else {
+        // App directory not present in this worktree yet (Phase 8 pending)
+        console.warn(`SessionService.kt not found at ${kotlinPath} — skipping Android parity check`);
+      }
+    });
+  }
+});
+
+// Regression net for the project:* IPC channels (Project View redesign).
+// Desktop is authoritative in v1; SessionService.kt carries stub cases so the
+// type strings stay in parity (handlers return not-implemented-on-mobile).
+// ipc-handlers.ts references PROJECT_IPC.* constants rather than literal
+// strings (same convention as ARTIFACT_IPC), so that assertion accepts either.
+describe('project:* channel parity', () => {
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'project:list-conversations': 'PROJECT_IPC.LIST_CONVERSATIONS',
+    'project:conversation-history': 'PROJECT_IPC.CONVERSATION_HISTORY',
+    'project:repo-info': 'PROJECT_IPC.REPO_INFO',
+    'project:list-context': 'PROJECT_IPC.LIST_CONTEXT',
+    'project:read-context-file': 'PROJECT_IPC.READ_CONTEXT_FILE',
+    'project:write-context-file': 'PROJECT_IPC.WRITE_CONTEXT_FILE',
+  };
+  const NEW_TYPES = Object.keys(CHANNEL_TO_CONST);
+
+  it('declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts (literal or PROJECT_IPC constant)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts'), 'utf8');
+    for (const t of NEW_TYPES) {
+      const literal = src.includes(`'${t}'`);
+      const constRef = src.includes(CHANNEL_TO_CONST[t]);
+      expect(literal || constRef, `${t} missing from ipc-handlers.ts`).toBe(true);
+    }
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt).toContain(`"${t}"`);
+  });
+});

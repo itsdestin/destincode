@@ -1,0 +1,30 @@
+{
+  "$schema": 1,
+  "projectId": "01HXAB000000000000000000",
+  "name": "test-project",
+  "createdAt": "2026-05-21T14:00:00.000Z",
+  "updatedAt": "2026-05-21T14:30:00.000Z",
+  "artifacts": [
+    {
+      "id": "art_01HXAB000000000000000001",
+      "path": "docs/feature.md",
+      "kind": "internal",
+      "absolutePath": null,
+      "lastModified": "2026-05-21T14:30:00.000Z",
+      "status": "active",
+      "versions": [
+        {
+          "id": "ver_01HXAB000000000000000001",
+          "ts": "2026-05-21T14:05:00.000Z",
+          "sessionId": "test-session",
+          "type": "create",
+          "author": "agent"
+        }
+      ],
+      "comments": [],
+      "tags": []
+    }
+  ],
+  "manualExcludes": [],
+  "manualIncludes": []
+}

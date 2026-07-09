@@ -254,6 +254,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         sessionId,
         content: displayCombined,
         timestamp: Date.now(),
+        // Exact attachment paths so UserMessage can render each as a clickable
+        // pill — file-picker paths routinely contain spaces, which the joined
+        // content string can't be split back out of.
+        attachments: files.map((f) => f.path),
       });
 
       // Sending strategy:
@@ -403,7 +407,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
 
   return (
     <div
-      className="input-bar-container border-t border-edge shrink-0"
+      className="input-bar-container shrink-0"
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >

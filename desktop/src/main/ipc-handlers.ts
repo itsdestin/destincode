@@ -13,7 +13,7 @@ import { CommandProvider } from './command-provider';
 import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
-import { TranscriptWatcher } from './transcript-watcher';
+import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
 import { resolveMappingAction } from './session-id-mapping';
 import { listPastSessions, loadHistory } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
@@ -38,9 +38,25 @@ import { getChangelog } from './changelog-service';
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
+import { ARTIFACT_IPC } from './artifacts/ipc-channels';
+import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord } from './artifacts/artifact-store';
+import { listProjects, removeProject } from './artifacts/central-index';
+import { buildSavedFolderProjects } from './artifacts/saved-folder-projects';
+import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/project-file-discovery';
+import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
+import { canonicalize } from '../shared/artifacts/canonicalize';
+import { evaluateBinaryRead } from './artifacts/read-binary-access';
+import { trackedArtifacts } from './artifacts/visible-artifacts';
+import { PROJECT_IPC } from './project/ipc-channels';
+import { listProjectConversations, projectConversationHistory } from './project-conversations';
+import { getRepoInfo } from './project-repo';
+import { listContext, readContextFile, writeContextFile } from './project-context';
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
+
+// Root of ~/.claude — used by artifact handlers to locate the central index.
+const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
 
 export function registerIpcHandlers(
@@ -522,6 +538,21 @@ export function registerIpcHandlers(
     }
   });
 
+  // Reveal a local file in the OS file manager. Used by the artifact panel's
+  // "Reveal in folder" action. No-op for empty / non-string paths.
+  ipcMain.handle(IPC.SHOW_ITEM_IN_FOLDER, async (_event, filePath: string) => {
+    if (typeof filePath === 'string' && filePath.length > 0) {
+      shell.showItemInFolder(filePath);
+    }
+  });
+
+  // Open a local file with the OS default app (HTML→browser, .docx→Word, etc.).
+  // shell.openPath resolves with '' on success or an error string on failure.
+  ipcMain.handle(IPC.OPEN_PATH, async (_event, filePath: string) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) return 'no path';
+    return shell.openPath(filePath);
+  });
+
   // Read model + context from a transcript JSONL file (async, first/last byte-range reads)
   ipcMain.handle(IPC.READ_TRANSCRIPT_META, async (_event, transcriptPath: string) => {
     try {
@@ -798,8 +829,16 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IPC.FOLDERS_REMOVE, async (_event, folderPath: string) => {
     const folders = readFolders();
+    // Compare case-insensitively on Windows (paths are case-insensitive there).
+    // WHY: Project View passes the project's CANONICAL path (lowercase drive,
+    // e.g. c:\…) while the store holds the path.resolve form (uppercase drive,
+    // C:\…). A case-sensitive compare would silently fail to remove the entry.
+    const samePath = (a: string, b: string) =>
+      process.platform === 'win32'
+        ? a.toLowerCase() === b.toLowerCase()
+        : a === b;
     const normalized = path.resolve(folderPath);
-    const filtered = folders.filter(f => path.resolve(f.path) !== normalized);
+    const filtered = folders.filter(f => !samePath(path.resolve(f.path), normalized));
     if (filtered.length === folders.length) return false;
     writeFolders(filtered);
     return true;
@@ -2055,6 +2094,611 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.DEV_OPEN_SESSION_IN, async (_event, args: { cwd: string; initialInput?: string }) => {
     // Delegate to the exported helper so the logic is independently testable.
     return openDevSessionIn(args, { defaultsPrefPath, sessionManager, homedir: os.homedir });
+  });
+
+  // --- Artifact viewer IPC handlers ---
+  // All request-response handlers plus the CHANGED push event (emitted via
+  // webContents.send() inside SAVE and APPEND_VERSION — no ipcMain.handle needed
+  // for push events).
+
+  // Fix: data-flow gap — the renderer Tracker calls this when it observes a
+  // Write/Edit/MultiEdit transcript event so the central index is populated and
+  // artifacts appear in the Session Drawer even before the user opens it.
+  // ensureProject and applyGitTreatment are both idempotent.
+  ipcMain.handle(ARTIFACT_IPC.APPEND_VERSION, async (
+    _e,
+    projectRoot: string,
+    sessionId: string,
+    args: {
+      path: string;
+      kind: 'internal' | 'external';
+      absolutePath: string | null;
+      type: 'create' | 'edit' | 'delete' | 'read';
+      author: 'agent' | 'user';
+    }
+  ) => {
+    const { project } = await ensureProject(CLAUDE_DIR, projectRoot, sessionId);
+    await applyGitTreatment(projectRoot);
+    const result = await appendVersion(projectRoot, project.id, project.name, {
+      path: args.path,
+      kind: args.kind,
+      absolutePath: args.absolutePath,
+      sessionId,
+      type: args.type,
+      author: args.author,
+    });
+    // A newly created/edited file may also be a discovered doc — drop the cached
+    // disk scan so it shows up on the next LIST_PROJECT without waiting for TTL.
+    invalidateDiscoveryCache(projectRoot);
+    // Broadcast the REAL artifact id so listeners can match it — the previous
+    // artifactId: null was dropped by every consumer, which meant the
+    // ActiveArtifactView "Claude also edited this file" conflict banner could
+    // never fire for agent edits (its entire purpose).
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, {
+        projectRoot,
+        artifactId: result.artifactId,
+        kind: args.type,
+        by: args.author,
+      })
+    );
+    return { ok: result.committed, project };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.RENAME, async (
+    _e,
+    projectRoot: string,
+    artifactId: string,
+    newName: string
+  ) => {
+    const result = await renameArtifact(projectRoot, artifactId, newName);
+    if (result.ok) {
+      // Broadcast so every open window's artifact UI re-lists with the new name.
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'rename', by: 'user' })
+      );
+    }
+    return result;
+  });
+
+  // Remove a tracking RECORD (never the file). See removeArtifactRecord for
+  // semantics — Session Drawer per-row remove.
+  ipcMain.handle(ARTIFACT_IPC.REMOVE_RECORD, async (
+    _e,
+    projectRoot: string,
+    artifactId: string
+  ) => {
+    const result = await removeArtifactRecord(projectRoot, artifactId);
+    if (result.ok) {
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'remove', by: 'user' })
+      );
+    }
+    return result;
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.LIST_SESSION, async (_e, sessionId: string, projectRoot: string) => {
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
+    // Filter to artifacts touched by this session
+    const result = sidecar.artifacts.filter((a) =>
+      a.versions.some((v) => v.sessionId === sessionId)
+    );
+    return { ok: true, artifacts: result };
+  });
+
+  // Project View IPC — list project-scoped conversations, their history, git
+  // repo info, and the discovered context files (CLAUDE.md, rules, etc.).
+  // Main-process modules already exist; these handlers just wire them to IPC.
+  ipcMain.handle(PROJECT_IPC.LIST_CONVERSATIONS, async (_e, projectPath: string) => {
+    return { ok: true, conversations: await listProjectConversations(projectPath) };
+  });
+  ipcMain.handle(PROJECT_IPC.CONVERSATION_HISTORY, async (_e, projectPath: string, sessionId: string, count: number, all: boolean) => {
+    return { ok: true, messages: await projectConversationHistory(projectPath, sessionId, count ?? 20, !!all) };
+  });
+  ipcMain.handle(PROJECT_IPC.REPO_INFO, async (_e, projectPath: string) => {
+    return { ok: true, ...(await getRepoInfo(projectPath)) };
+  });
+  ipcMain.handle(PROJECT_IPC.LIST_CONTEXT, async (_e, projectPath: string) => {
+    return { ok: true, groups: await listContext(projectPath) };
+  });
+  ipcMain.handle(PROJECT_IPC.READ_CONTEXT_FILE, async (_e, projectPath: string, absolutePath: string) => {
+    return readContextFile(projectPath, absolutePath);
+  });
+  ipcMain.handle(PROJECT_IPC.WRITE_CONTEXT_FILE, async (_e, projectPath: string, absolutePath: string, content: string) => {
+    return writeContextFile(projectPath, absolutePath, content);
+  });
+
+  // CORE PRINCIPLE helpers — TWO distinct counts, never conflated:
+  //
+  //   countArtifacts → ARTIFACTS: files Claude directly created/edited (sidecar
+  //     tracked, internal or included-external), non-deleted AND still on disk
+  //     (orphans excluded). This is what the Artifacts tab shows with "Show
+  //     deleted" OFF. NO on-disk discovery is mixed in here.
+  //   countAllFiles → ALL FILES: the count of the project folder's real documents
+  //     on disk (the full-browser view), independent of what Claude touched.
+  //
+  // Each is the single source of truth for its number, read identically by the
+  // hero, the segment badges, and the switcher row.
+  async function countArtifacts(projectRoot: string): Promise<number> {
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return 0;
+    // Visible-with-deleted-OFF tracked set (see visible-artifacts.ts for the
+    // full rules: Claude's work + pinned, minus excluded).
+    const visible = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, projectRoot)
+      .filter((a: any) => a.status !== 'deleted');
+    // Drop orphans — files marked 'active' but bash-rm'd off disk (CC has no
+    // Delete tool, so this is the common case). fs.access in parallel is cheap.
+    const alive = await Promise.all(visible.map(async (a: any) => {
+      const full = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath!;
+      try { await fs.promises.access(full); return true; } catch { return false; }
+    }));
+    return alive.filter(Boolean).length;
+  }
+
+  // ALL FILES = on-disk discovery UNIONed with any tracked artifact that exists on
+  // disk but discovery didn't reach (e.g. an artifact inside a skipped nested
+  // sub-repo). The union GUARANTEES All files is a SUPERSET of Artifacts — it is
+  // nonsensical for a project to report fewer "all files" than "artifacts".
+  async function projectAllFiles(projectRoot: string): Promise<{ files: any[]; truncated: boolean }> {
+    let scan: { files: any[]; truncated: boolean };
+    try { scan = await discoverProjectFiles(projectRoot); }
+    catch { scan = { files: [], truncated: false }; }
+    const seen = new Set(scan.files.map((f: any) => f.path));
+    const sidecar = await readSidecar(projectRoot);
+    const extra: any[] = [];
+    if (sidecar && !('corrupted' in sidecar)) {
+      const candidates = sidecar.artifacts.filter((a) => {
+        if (a.kind !== 'internal' || a.status === 'deleted') return false;
+        return !seen.has(canonicalize(a.path, projectRoot));
+      });
+      // Orphan check (skip artifacts bash-rm'd off disk) in PARALLEL — same
+      // pattern as countArtifacts above; the serial version added a round-trip
+      // of latency per artifact on sidecars with many entries.
+      const alive = await Promise.all(candidates.map(async (a) => {
+        try { await fs.promises.access(path.join(projectRoot, a.path)); return true; }
+        catch { return false; }
+      }));
+      candidates.forEach((a, i) => {
+        if (!alive[i]) return;
+        const rel = canonicalize(a.path, projectRoot);
+        if (seen.has(rel)) return; // two sidecar entries can canonicalize to one path
+        seen.add(rel);
+        // Present as a browser entry (discovered shape) so the All files tab treats
+        // it uniformly (no existence re-check; opens via the path-fallback GET).
+        extra.push({
+          id: rel, path: rel, kind: 'internal', absolutePath: null,
+          lastModified: a.lastModified ?? '', status: 'active',
+          versions: [], comments: [], tags: [], discovered: true,
+        });
+      });
+    }
+    return { files: [...scan.files, ...extra], truncated: scan.truncated };
+  }
+
+  // A "gated" root is the user's whole home directory or a drive/filesystem
+  // root — trees so large that discovery ALWAYS hits its caps, making the
+  // resulting list/count an arbitrary, run-to-run-varying sample. Rather than
+  // show garbage numbers by default (and burn ~1.5s of directory I/O every
+  // time the switcher computes counts — "Home" is always in the list), the All
+  // files section shows a "Browse anyway?" gate and counts show "—". The gate
+  // is about honesty, not safety: the scan itself is hard-bounded either way.
+  function isGatedRoot(projectRoot: string): boolean {
+    const canon = canonicalize(projectRoot, null);
+    if (canon === canonicalize(os.homedir(), null)) return true;
+    return /^[a-z]:?$/.test(canon) || canon === '/' || /^[a-z]:\/$/.test(canon);
+  }
+
+  async function countAllFiles(projectRoot: string): Promise<{ count: number; truncated: boolean } | null> {
+    if (isGatedRoot(projectRoot)) return null; // gated — no scan, no fake number
+    try {
+      const r = await projectAllFiles(projectRoot);
+      return { count: r.files.length, truncated: r.truncated };
+    } catch { return { count: 0, truncated: false }; }
+  }
+
+  // LIST_PROJECT → ARTIFACTS ONLY. Returns the tracked sidecar artifacts (internal
+  // always; external only if manually included). Deleted ones are INCLUDED so the
+  // Artifacts tab's "Show deleted" toggle works; the renderer filters them. NO
+  // on-disk discovery is merged in — that is LIST_ALL_FILES's job (the split is the
+  // core principle). visibleCount (withCount) is the authoritative non-deleted,
+  // on-disk artifact count shared with the hero + switcher.
+  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECT, async (_e, projectId: string, opts?: { withCount?: boolean }) => {
+    const projects = await listProjects(CLAUDE_DIR);
+    const p = projects.find((x) => x.id === projectId);
+    // Synth (saved-folder) projects use their canonical PATH as id and have no
+    // index entry — fall back to reading the sidecar at that path so their
+    // artifacts resolve too. A bogus id simply yields no sidecar.
+    const projectRoot = p ? p.path : projectId;
+    const sidecar = await readSidecar(projectRoot);
+
+    let tracked: any[] = [];
+    if (sidecar && !('corrupted' in sidecar)) {
+      // Shared predicate — see visible-artifacts.ts for the full rules.
+      tracked = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, projectRoot);
+    }
+
+    const visibleCount = opts?.withCount ? await countArtifacts(projectRoot) : undefined;
+    return {
+      ok: true,
+      artifacts: tracked,
+      ...(visibleCount !== undefined ? { visibleCount } : {}),
+    };
+  });
+
+  // LIST_ALL_FILES → ALL FILES. The project folder's real documents on disk (the
+  // full-browser view). Pure discovery — bounded, deterministic (stops at nested
+  // git repos), cached. Independent of the sidecar / what Claude touched, so a
+  // Claude-authored doc legitimately appears in BOTH Artifacts and All files.
+  // Gated roots (home dir / drive root) return { gated: true } with no scan
+  // unless opts.force — the tab renders a "Browse anyway?" gate (see
+  // isGatedRoot above for WHY).
+  ipcMain.handle(ARTIFACT_IPC.LIST_ALL_FILES, async (_e, projectId: string, opts?: { force?: boolean }) => {
+    const projects = await listProjects(CLAUDE_DIR);
+    const p = projects.find((x) => x.id === projectId);
+    const projectRoot = p ? p.path : projectId;
+    if (isGatedRoot(projectRoot) && !opts?.force) {
+      return { ok: true, files: [], truncated: false, gated: true };
+    }
+    const r = await projectAllFiles(projectRoot);
+    return { ok: true, files: r.files, truncated: r.truncated };
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.GET, async (_e, projectRoot: string, artifactId: string) => {
+    const sidecar = await readSidecar(projectRoot);
+    const artifact = (sidecar && !('corrupted' in sidecar))
+      ? sidecar.artifacts.find((a) => a.id === artifactId)
+      : undefined;
+
+    let fullPath: string;
+    if (artifact) {
+      fullPath = artifact.kind === 'internal'
+        ? path.join(projectRoot, artifact.path)
+        : artifact.absolutePath!;
+    } else {
+      // Discovered (on-disk) file: the id IS a canonical relative path. Resolve
+      // it inside the project root and refuse anything that escapes (traversal
+      // guard) so this can't be used to read arbitrary files.
+      const resolved = path.resolve(projectRoot, artifactId);
+      const root = path.resolve(projectRoot);
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        return { ok: false, error: 'artifact-not-found' };
+      }
+      fullPath = resolved;
+    }
+
+    let content: string | null = null;
+    try {
+      content = await fs.promises.readFile(fullPath, 'utf8');
+    } catch (e: any) {
+      if (e.code !== 'ENOENT') throw e;
+      // File is missing — return orphan signal
+    }
+    return { ok: true, artifact: artifact ?? null, content, orphan: content === null };
+  });
+
+  // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image). The
+  // renderer can't fetch a file:// URL from the http(dev)/app(prod) origin, so
+  // bytes come through IPC.
+  //
+  // SECURITY: unlike openPath (which only launches a local app and returns
+  // nothing), this IPC RETURNS file contents — and on remote-access setups it is
+  // reachable over the WebSocket from a remote browser. So reads are restricted
+  // to (a) the user's known project roots (saved folders + central-index
+  // projects) and (b) tracked external artifact paths (temp-dir files the
+  // session drawer legitimately shows), with well-known secret locations
+  // (.ssh, .netrc, .credentials.json, …) refused even inside those roots.
+  // Pure decision logic + tests live in artifacts/read-binary-access.ts.
+  const READ_BINARY_MAX_BYTES = 50 * 1024 * 1024; // 50 MB — base64 inflates 33%, and it all transits IPC/WS
+  ipcMain.handle(ARTIFACT_IPC.READ_BINARY, async (_e, absolutePath: string) => {
+    if (typeof absolutePath !== 'string' || absolutePath.length === 0) {
+      return { ok: false, error: 'no path' };
+    }
+    try {
+      const canon = canonicalize(absolutePath, null);
+      // Known roots: saved folders (the session-creation picker) + every
+      // central-index project path.
+      const roots = [
+        ...readFolders().map((f) => canonicalize(f.path, null)),
+        ...(await listProjects(CLAUDE_DIR)).map((p) => canonicalize(p.path, null)),
+      ];
+      let verdict = evaluateBinaryRead(canon, roots, new Set());
+      if (verdict === 'outside-roots') {
+        // Second pass (rare): collect tracked EXTERNAL artifact paths + manual
+        // includes from each root's sidecar — covers e.g. a temp-dir xlsx.
+        const tracked = new Set<string>();
+        for (const root of roots) {
+          const sidecar = await readSidecar(root).catch(() => null);
+          if (!sidecar || 'corrupted' in sidecar) continue;
+          for (const a of sidecar.artifacts) {
+            if (a.kind === 'external' && a.absolutePath) tracked.add(canonicalize(a.absolutePath, null));
+          }
+          for (const inc of sidecar.manualIncludes) tracked.add(canonicalize(inc.path, null));
+        }
+        verdict = evaluateBinaryRead(canon, roots, tracked);
+      }
+      if (verdict !== 'allowed') return { ok: false, error: 'not-allowed' };
+
+      // Size gate before reading — a huge file would freeze the renderer (and
+      // the WS transport) long before the viewer could reject it.
+      const st = await fs.promises.stat(absolutePath);
+      if (st.size > READ_BINARY_MAX_BYTES) return { ok: false, error: 'too-large' };
+
+      const buf = await fs.promises.readFile(absolutePath);
+      return { ok: true, base64: buf.toString('base64') };
+    } catch (e: any) {
+      return { ok: false, error: e?.code === 'ENOENT' ? 'orphan' : String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.handle(ARTIFACT_IPC.SAVE, async (
+    _e,
+    projectRoot: string,
+    projectId: string,
+    projectName: string,
+    artifactId: string,
+    newContent: string,
+    sessionId: string
+  ) => {
+    const sidecar = await readSidecar(projectRoot);
+    const artifact = (sidecar && !('corrupted' in sidecar))
+      ? sidecar.artifacts.find((a) => a.id === artifactId)
+      : undefined;
+
+    if (artifact) {
+      const fullPath = artifact.kind === 'internal'
+        ? path.join(projectRoot, artifact.path)
+        : artifact.absolutePath!;
+      // Atomic write: write to .tmp then rename, so the original is never half-written
+      await fs.promises.writeFile(fullPath + '.tmp', newContent, 'utf8');
+      await fs.promises.rename(fullPath + '.tmp', fullPath);
+      await appendVersion(projectRoot, projectId, projectName, {
+        path: artifact.path,
+        kind: artifact.kind,
+        absolutePath: artifact.absolutePath,
+        sessionId,
+        type: 'edit',
+        author: 'user',
+      });
+      // Broadcast the change to every renderer so all open windows update their artifact UI
+      webContents.getAllWebContents().forEach((wc) =>
+        wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
+      );
+      return { ok: true };
+    }
+
+    // Discovered (on-disk) file: write directly by path. NO sidecar mutation, so
+    // editing a doc never silently creates a .youcoded/ tracking dir. Resolve
+    // inside the project root and refuse escapes (traversal guard, same as GET).
+    const resolved = path.resolve(projectRoot, artifactId);
+    const root = path.resolve(projectRoot);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return { ok: false, error: 'artifact-not-found' };
+    }
+    await fs.promises.writeFile(resolved + '.tmp', newContent, 'utf8');
+    await fs.promises.rename(resolved + '.tmp', resolved);
+    invalidateDiscoveryCache(projectRoot); // refresh the cached mtime next scan
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
+    );
+    return { ok: true };
+  });
+
+  // Normalize an include/exclude entry to a canonical ABSOLUTE path. FilesTab
+  // passes a relative path for internal artifacts and an absolute one for
+  // externals; storing one uniform shape keeps trackedArtifacts' comparisons
+  // trivial.
+  const toCanonicalAbs = (projectRoot: string, p: string): string => {
+    const fwd = p.replace(/\\/g, '/');
+    const isAbs = /^[a-zA-Z]:\//.test(fwd) || fwd.startsWith('/');
+    return canonicalize(isAbs ? fwd : `${projectRoot.replace(/\\/g, '/')}/${fwd}`, null);
+  };
+
+  // "+ Add file" = PIN a file into the Artifacts tab (any kind — external temp
+  // files or in-project files Claude never edited). Three steps:
+  //   1. Ensure an artifact RECORD exists (appendVersion dedups by path+kind and
+  //      creates the sidecar if missing) — a pin with no record would show
+  //      nothing, which was a real bug on fresh projects.
+  //   2. Add to manualIncludes (idempotent).
+  //   3. Remove from manualExcludes — re-adding is the RECOVERY path for a
+  //      mistaken Exclude (includes also win over excludes in trackedArtifacts,
+  //      so this is belt-and-suspenders).
+  ipcMain.handle(ARTIFACT_IPC.INCLUDE_EXTERNAL, async (
+    _e, projectRoot: string, absolutePath: string
+  ) => {
+    const canonical = toCanonicalAbs(projectRoot, absolutePath);
+    const rootCanon = canonicalize(projectRoot, null);
+    const isInternal = canonical === rootCanon || canonical.startsWith(rootCanon + '/');
+
+    // 1. Ensure a record exists (author 'user', type 'read' — a pin, not an edit).
+    const { project } = await ensureProject(CLAUDE_DIR, projectRoot, 'manual-include');
+    const appendResult = await appendVersion(projectRoot, project.id, project.name, {
+      path: isInternal ? canonical.slice(rootCanon.length + 1) : (canonical.split('/').pop() ?? canonical),
+      kind: isInternal ? 'internal' : 'external',
+      absolutePath: isInternal ? null : canonical,
+      sessionId: 'manual-include',
+      type: 'read',
+      author: 'user',
+    });
+
+    // 2 + 3. Pin it and clear any standing exclude (CAS-retried).
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const sidecar = await readSidecar(projectRoot);
+      if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
+      const originalUpdatedAt = sidecar.updatedAt;
+      const alreadyIncluded = sidecar.manualIncludes.some((i) => i.path === canonical);
+      const hadExclude = sidecar.manualExcludes.includes(canonical);
+      if (alreadyIncluded && !hadExclude) break; // nothing to change
+      if (!alreadyIncluded) {
+        sidecar.manualIncludes.push({ path: canonical, addedAt: new Date().toISOString(), addedBy: 'user' });
+      }
+      sidecar.manualExcludes = sidecar.manualExcludes.filter((p) => p !== canonical);
+      sidecar.updatedAt = new Date().toISOString();
+      const w = await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+      if (w.committed) break;
+    }
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId: appendResult.artifactId, kind: 'include', by: 'user' })
+    );
+    return { ok: true };
+  });
+
+  // Exclude = HIDE a file from the Artifacts tab: un-pin it (remove from
+  // manualIncludes) AND add a sticky manualExcludes entry so Claude re-editing
+  // the file doesn't resurface it. Recovery: "+ Add file" (see above). Never
+  // touches the file on disk or the session drawer's activity log.
+  ipcMain.handle(ARTIFACT_IPC.EXCLUDE, async (
+    _e, projectRoot: string, canonicalPath: string
+  ) => {
+    const canonical = toCanonicalAbs(projectRoot, canonicalPath);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const sidecar = await readSidecar(projectRoot);
+      if (!sidecar || 'corrupted' in sidecar) return { ok: false, error: 'sidecar-missing' };
+      const originalUpdatedAt = sidecar.updatedAt;
+      sidecar.manualIncludes = sidecar.manualIncludes.filter((i) => i.path !== canonical);
+      if (!sidecar.manualExcludes.includes(canonical)) sidecar.manualExcludes.push(canonical);
+      sidecar.updatedAt = new Date().toISOString();
+      const w = await writeSidecar(projectRoot, originalUpdatedAt, sidecar);
+      if (w.committed) break;
+    }
+    webContents.getAllWebContents().forEach((wc) =>
+      wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId: null, kind: 'exclude', by: 'user' })
+    );
+    return { ok: true };
+  });
+
+  // Returns the Project View project list — the user's SAVED FOLDERS (the same
+  // list the session-creation folder picker shows), reconciled with the central
+  // index for artifact ids + stats. WHY saved folders rather than the raw index:
+  // the index only gains an entry once Claude writes a tracked artifact in a
+  // folder, so folders the user works in (conversations / reads only, or
+  // pre-artifact-viewer) were invisible. The picker list is the user's own
+  // source of truth and needs no Claude Code ~/.claude/projects dependency.
+  ipcMain.handle(ARTIFACT_IPC.LIST_PROJECTS_INDEX, async (_e, opts?: { withCounts?: boolean }) => {
+    let saved = readFolders();
+    if (saved.length === 0) {
+      // Mirror the folder picker's first-use seed so a fresh install isn't empty.
+      saved = [{ path: os.homedir(), nickname: 'Home', addedAt: Date.now() }];
+    }
+    const indexProjects = await listProjects(CLAUDE_DIR);
+    const projects = buildSavedFolderProjects(saved, indexProjects);
+
+    // Conversation counts: a single global session scan, bucketed by CC slug.
+    // Only when requested — listPastSessions is heavier (global), and ChatView's
+    // frequent cwd-resolution calls don't need it. WHY a flag rather than always:
+    // ChatView calls this on every drawer open and must stay fast.
+    const ccSlug = (projectPath: string) =>
+      cwdToProjectSlug(projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`));
+    let convBySlug: Map<string, number> | null = null;
+    if (opts?.withCounts) {
+      const sessions = await listPastSessions();
+      convBySlug = new Map();
+      for (const s of sessions) convBySlug.set(s.projectSlug, (convBySlug.get(s.projectSlug) ?? 0) + 1);
+    }
+
+    // The stored stats.artifactCount is seeded to 0 and almost always stale, so
+    // compute it live per project. Fast mode = tracked (sidecar) only — matches
+    // what ChatView needs. withCounts mode ALSO scans on-disk docs (bounded +
+    // cached, in parallel) so the switcher's "N files" reflects real files, not
+    // just tracked artifacts, plus the conversation count.
+    const computed = await Promise.all(projects.map(async (p) => {
+      // artifactCount (stats.artifactCount) = ARTIFACTS (Claude-authored, tracked).
+      // fileCount = ALL FILES (on-disk documents). Two distinct numbers, per the
+      // core principle — the hero/segments/switcher each read the right one.
+      let artifactCount: number;
+      let fileCount: number | undefined;
+      let fileCountTruncated: boolean | undefined;
+      let conversationCount: number | undefined;
+      if (opts?.withCounts) {
+        // Authoritative counts via the SAME helpers the hero/segments use, so the
+        // switcher row never disagrees with the open project's header. Gated
+        // roots (home dir / drive root) return null — no scan, no fake number;
+        // the switcher falls back to the artifact count. Truncated counts are
+        // flagged so the UI can render "N+" instead of posing as exact.
+        artifactCount = await countArtifacts(p.path);
+        const allFiles = await countAllFiles(p.path);
+        if (allFiles !== null) {
+          fileCount = allFiles.count;
+          fileCountTruncated = allFiles.truncated || undefined;
+        }
+        conversationCount = convBySlug!.get(ccSlug(p.path)) ?? 0;
+      } else {
+        // Fast path for ChatView's frequent cwd-resolution calls: cheap sidecar-
+        // only artifact count, no on-disk scan and no existence check.
+        const sidecar = await readSidecar(p.path);
+        let trackedCount = 0;
+        if (sidecar && !('corrupted' in sidecar)) {
+          // Shared predicate — see visible-artifacts.ts for the full rules.
+          trackedCount = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, p.path)
+            .filter((a: any) => a.status !== 'deleted').length;
+        }
+        artifactCount = trackedCount;
+      }
+
+      return {
+        ...p,
+        stats: { ...p.stats, artifactCount },
+        ...(fileCount !== undefined ? { fileCount } : {}),
+        ...(fileCountTruncated ? { fileCountTruncated } : {}),
+        ...(conversationCount !== undefined ? { conversationCount } : {}),
+      };
+    }));
+    return { ok: true, projects: computed };
+  });
+
+  // Task 7.3: remove a project from the central index. The project folder and
+  // its files are NOT deleted — only the YouCoded tracking record is removed.
+  // When deleteSidecar is true, also removes .youcoded/artifacts.json from the
+  // project folder so artifact history starts fresh on next session.
+  ipcMain.handle(ARTIFACT_IPC.DELETE_PROJECT, async (
+    _e, projectId: string, deleteSidecar: boolean
+  ) => {
+    const projects = await listProjects(CLAUDE_DIR);
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return { ok: false, error: 'project-not-found' };
+    await removeProject(CLAUDE_DIR, projectId);
+    if (deleteSidecar) {
+      const sidecarPath = path.join(p.path, '.youcoded', 'artifacts.json');
+      try {
+        await fs.promises.unlink(sidecarPath);
+      } catch {
+        // Ignore ENOENT — sidecar may already be absent
+      }
+    }
+    return { ok: true };
+  });
+
+  // Batch-check whether each requested artifact's resolved path still exists on
+  // disk. Used by SessionDrawer + ProjectView to mark "file not on disk"
+  // artifacts as deleted in the UI without mutating the sidecar. Internal
+  // artifacts resolve to projectRoot/path; external artifacts resolve to
+  // absolutePath. Parallel fs.access keeps this cheap even for hundreds of IDs.
+  ipcMain.handle(ARTIFACT_IPC.CHECK_EXISTENCE, async (
+    _e, projectRoot: string, artifactIds: string[]
+  ) => {
+    if (!projectRoot || !Array.isArray(artifactIds) || artifactIds.length === 0) {
+      return { ok: true, missingIds: [] };
+    }
+    const sidecar = await readSidecar(projectRoot);
+    if (!sidecar || 'corrupted' in sidecar) return { ok: true, missingIds: [] };
+    const byId = new Map(sidecar.artifacts.map((a) => [a.id, a]));
+    const results = await Promise.all(
+      artifactIds.map(async (id) => {
+        const a = byId.get(id);
+        if (!a) return id; // unknown id treated as missing
+        const fullPath = a.kind === 'internal'
+          ? path.join(projectRoot, a.path)
+          : a.absolutePath;
+        if (!fullPath) return id;
+        try {
+          await fs.promises.access(fullPath);
+          return null;
+        } catch {
+          return id;
+        }
+      })
+    );
+    return { ok: true, missingIds: results.filter((x): x is string => x !== null) };
   });
 
   // Return cleanup function for use during app shutdown

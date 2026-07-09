@@ -198,6 +198,12 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  // Exact file paths the user attached with this message (from InputBar's file
+  // picker). Carried alongside content — which space-joins them — so
+  // UserMessage can render each as a clickable pill even when the path
+  // contains spaces (regex detection can't recover those from the joined
+  // string). Live-bubble only: transcript-confirmed entries don't carry it.
+  attachments?: string[];
 }
 
 // --- Command drawer / marketplace types ---
@@ -668,6 +674,10 @@ export const IPC = {
   UPDATE_PROGRESS: 'update:progress',
   UPDATE_GET_CACHED_DOWNLOAD: 'update:get-cached-download',
   OPEN_EXTERNAL: 'shell:open-external',
+  SHOW_ITEM_IN_FOLDER: 'shell:show-item-in-folder',
+  // Open a local file with the OS default app (HTML→browser, .docx→Word, etc.).
+  // Desktop-only: Android has no desktop shell; remote-shim no-ops it.
+  OPEN_PATH: 'shell:open-path',
   PERMISSION_RESPOND: 'permission:respond',
   // Remote settings
   REMOTE_GET_CONFIG: 'remote:get-config',

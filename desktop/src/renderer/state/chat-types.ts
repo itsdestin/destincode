@@ -175,6 +175,9 @@ export type ChatAction =
       sessionId: string;
       content: string;
       timestamp: number;
+      // Exact attached-file paths (see ChatMessage.attachments) — lets the
+      // bubble render pills for paths with spaces that regex detection misses.
+      attachments?: string[];
     }
   | {
       type: 'SHOW_PROMPT';
