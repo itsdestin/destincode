@@ -40,6 +40,8 @@ import { getChangelog } from './changelog-service';
 // ~/.claude/youcoded-analytics.json; runAnalyticsOnLaunch (wired in main.ts)
 // short-circuits when optIn is false.
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
+// Saved-folder store — extracted so sync-spaces/ can share the reader/writer.
+import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
@@ -776,29 +778,10 @@ export function registerIpcHandlers(
   });
 
   // --- Folder switcher persistence ---
-  const foldersPrefPath = path.join(os.homedir(), '.claude', 'youcoded-folders.json');
-
-  interface SavedFolder {
-    path: string;
-    nickname: string;
-    addedAt: number;
-  }
-
-  function readFolders(): SavedFolder[] {
-    try {
-      const raw = fs.readFileSync(foldersPrefPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-
-  function writeFolders(folders: SavedFolder[]) {
-    fs.mkdirSync(path.dirname(foldersPrefPath), { recursive: true });
-    fs.writeFileSync(foldersPrefPath, JSON.stringify(folders, null, 2));
-  }
-
+  // Reader/writer + SavedFolder type now live in ./saved-folders (imported
+  // above) so the sync-spaces import flow can rewrite an entry when a folder
+  // moves. The FOLDERS_* handlers below call the no-arg forms, which default
+  // to the same ~/.claude/youcoded-folders.json path.
   ipcMain.handle(IPC.FOLDERS_LIST, async () => {
     let folders = readFolders();
     // Seed with home directory on first use
@@ -2092,7 +2075,8 @@ export function registerIpcHandlers(
     try {
       const result = await installWorkspace(send);
       // Register the workspace as a known project folder.
-      // readFolders / writeFolders / SavedFolder are already in scope above.
+      // readFolders / writeFolders / SavedFolder come from the ./saved-folders
+      // module imported at the top of this file (no-arg = default store path).
       try {
         const normalized = path.resolve(result.path);
         const folders = readFolders();
