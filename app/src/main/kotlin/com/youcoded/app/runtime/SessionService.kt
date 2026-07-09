@@ -3198,7 +3198,11 @@ class SessionService : Service() {
                 // resolves to context.filesDir/home/.claude-mobile parent; the Kotlin
                 // artifact helpers expect the ~/.claude equivalent, which on Android is
                 // the same parent (session-manager sets CLAUDE_HOME there).
-                val claudeDir = java.io.File(bootstrap?.homeDir ?: android.os.Environment.getExternalStorageDirectory().path, ".claude")
+                // Fix: Bootstrap.homeDir is a java.io.File, so mixing it with a String
+                // in the Elvis made the expression type `Any` and broke compilation
+                // (master Android CI red since the artifact-viewer merge). Take .path
+                // so both Elvis arms are Strings.
+                val claudeDir = java.io.File(bootstrap?.homeDir?.path ?: android.os.Environment.getExternalStorageDirectory().path, ".claude")
                     .absolutePath
                 val ensured = ensureProject(claudeDir, projectRoot, sessionId)
                 applyGitTreatment(projectRoot)
@@ -3224,8 +3228,10 @@ class SessionService : Service() {
                         .put("kind",        args.optString("type", "edit"))
                         .put("by",          args.optString("author", "agent")))
                 })
+                // Fix: Kotlin appendVersion returns a plain Boolean (committed or not),
+                // not an object — `.committed` didn't exist and broke compilation.
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
-                    org.json.JSONObject().put("ok", result.committed)) }
+                    org.json.JSONObject().put("ok", result)) }
             }
 
             // ── Desktop-only channels: return not-implemented so the React layer
