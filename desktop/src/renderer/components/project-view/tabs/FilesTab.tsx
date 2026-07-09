@@ -453,9 +453,12 @@ export function FilesTab({
                           </div>
                         )}
                       </div>
-                      {/* Footer inside the folder: name (with accent folder glyph) + count. */}
+                      {/* Footer inside the folder: name (with accent folder glyph) + count.
+                          Typography matches the doc-card caption (12px mono fg-2 name,
+                          10.5px fg-muted second line) so the two card kinds read as one
+                          consistent grid — user preferred the docs' lighter styling. */}
                       <div className="shrink-0 border-t border-edge-dim px-2.5 py-1.5">
-                        <div className="text-[12.5px] font-semibold text-fg flex items-center gap-1.5">
+                        <div className="text-[12px] font-mono text-fg-2 flex items-center gap-1.5">
                           <span className="text-accent shrink-0"><FolderCardIcon size={13} strokeWidth={1.5} /></span>
                           <span className="truncate">{f.name}</span>
                         </div>
