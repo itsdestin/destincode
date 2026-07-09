@@ -63,7 +63,8 @@ function HandlePromptPopup({
 
   // Skip (and ESC — registered below) persist the flag so we never nag again.
   // Write the per-account key only; the legacy global key is never written
-  // again (it ages out naturally as pre-existing dismissals are honored).
+  // again (it stays in localStorage indefinitely but is read-only from here on
+  // — pre-existing dismissals keep working, new ones are always per-account).
   const skip = () => {
     localStorage.setItem(dismissKey(userId), '1');
     closedRef.current = true;
