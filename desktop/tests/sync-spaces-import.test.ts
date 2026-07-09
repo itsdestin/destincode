@@ -254,6 +254,29 @@ describe('importProjectFolder', () => {
     expect(fs.existsSync(s.source)).toBe(true);
   });
 
+  it('degrades a store-remap failure to ok:true + warning (corrupt central index)', async () => {
+    const s = await setup();
+    // Corrupt the index AFTER setup wrote a valid one: remapProjectPath's
+    // parseIndex (JSON.parse inside mutateFileUnderLock) throws on this, which
+    // must surface as a WARNING while the move itself still succeeds.
+    fs.writeFileSync(path.join(s.claudeDir, 'youcoded-projects-index.json'), '{not json');
+    const result = await importProjectFolder({
+      sourcePath: s.source, name: 'budget-app',
+      projectsRoot: s.projectsRoot, youcodedRoot: s.youcodedRoot,
+      liveCwds: [], claudeDir: s.claudeDir,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.warnings).toContain(
+      'The artifact index could not be updated — artifact history may restart for this project.'
+    );
+    // The move and the OTHER remaps still went through.
+    const dest = path.join(s.projectsRoot, 'budget-app');
+    expect(fs.existsSync(s.source)).toBe(false);
+    expect(fs.existsSync(path.join(dest, 'docs', 'plan.md'))).toBe(true);
+    expect(fs.existsSync(path.join(s.claudeDir, 'projects', ccProjectSlug(dest), 'session1.jsonl'))).toBe(true);
+  });
+
   it('merges into an existing slug dir instead of failing when the new slug already exists', async () => {
     const s = await setup();
     const dest = path.join(s.projectsRoot, 'budget-app');

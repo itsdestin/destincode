@@ -157,13 +157,28 @@ function moveFolder(src: string, dest: string): string[] {
     return [];
   } catch (e: any) {
     if (e?.code === 'EXDEV') {
-      fs.cpSync(src, dest, { recursive: true });
+      try {
+        fs.cpSync(src, dest, { recursive: true });
+      } catch {
+        // A half-copied dest would shadow checkImport's name guard ("A project
+        // with that name already exists") on EVERY retry, permanently blocking
+        // the import. The source is untouched (rmSync(src) hasn't run yet), so
+        // clean up the partial dest best-effort and tell the user to retry.
+        try { fs.rmSync(dest, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* best-effort */ }
+        throw new Error('Copying the folder to its new drive failed partway. Nothing was lost — your folder is still in its original place. Free up space (or close whatever is using the files) and try again.');
+      }
       try {
         fs.rmSync(src, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
         return [];
       } catch {
         return [`The folder was copied to its new home, but the original at ${src} could not be fully removed — delete it manually so you don't keep editing the old copy.`];
       }
+    }
+    // A dest created BETWEEN checkImport and renameSync (TOCTOU — see module
+    // header) surfaces as EEXIST/ENOTEMPTY; without this branch it fell into
+    // the "another program is using this folder" message, which is wrong.
+    if (e?.code === 'EEXIST' || e?.code === 'ENOTEMPTY') {
+      throw new Error('A project with that name already exists');
     }
     if (e?.code === 'EBUSY' || e?.code === 'EPERM' || e?.code === 'EACCES') {
       throw new Error('Another program is using this folder (an open terminal, editor, or file). Close it and try again.');
@@ -194,7 +209,11 @@ async function remapSidecarManualPaths(newRoot: string, oldRoot: string): Promis
   cur.manualIncludes = nextIncludes;
   cur.manualExcludes = nextExcludes;
   cur.updatedAt = new Date().toISOString();
-  await writeSidecar(newRoot, expected, cur);
+  const res = await writeSidecar(newRoot, expected, cur);
+  // Every remap failure must surface as a warning (this module's contract) —
+  // a silently-dropped CAS miss would lose the rewrite invisibly. The
+  // orchestrator's catch converts this throw into the user-facing warning.
+  if (!res.committed) throw new Error('sidecar-cas-miss');
 }
 
 /** CC's transcript dirs are keyed by a slug DERIVED from the cwd

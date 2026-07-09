@@ -30,10 +30,21 @@ export function writeFolders(folders: SavedFolder[], file: string = foldersFileP
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // Temp-file + rename: the import flow widened this store's writers, and the
   // dev instance and built app share ~/.claude. rename is atomic, so a
-  // concurrent reader (readFolders) never sees a half-written file.
-  const tmp = `${file}.tmp`;
+  // concurrent reader (readFolders) never sees a half-written file. The tmp
+  // name is unique per writer (pid + time) — a fixed `.tmp` would let two
+  // concurrent processes interleave writes to the SAME tmp path.
+  // NOTE: the store is best-effort read-modify-write (no file lock like
+  // central-index's mutateFileUnderLock) — deliberate given the low write
+  // rate, not an oversight.
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(folders, null, 2));
-  fs.renameSync(tmp, file);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // Don't leave the orphaned tmp behind on a failed rename.
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }
+    throw e;
+  }
 }
 
 // Case-insensitive on Windows for the same reason FOLDERS_REMOVE compares that
