@@ -127,6 +127,10 @@ const pipeName = process.platform === 'win32'
   : path.join(os.tmpdir(), `claude-desktop-hooks-${process.pid}.sock`);
 sessionManager.setPipeName(pipeName);
 const hookRelay = new HookRelay(pipeName);
+// Hold /reload-plugins broadcasts away from sessions whose TUI is showing a
+// live permission/AskUserQuestion menu — typing into that menu presses Enter
+// on the highlighted option and silently answers the prompt (stray-Enter fix).
+sessionManager.setReloadPluginsGate((sessionId) => hookRelay.hasPendingPermission(sessionId));
 const remoteConfig = new RemoteConfig();
 const skillProvider = new LocalSkillProvider();
 skillProvider.ensureMigrated();

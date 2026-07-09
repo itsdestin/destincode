@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useChatStateMap } from '../state/chat-context';
+import { canRetrySubmit } from '../state/pty-input-gate';
 
 // First-attempt retry threshold. After this long with the optimistic bubble
 // still in pending state, if the session is observably idle, we send a
@@ -14,17 +15,17 @@ import { useChatStateMap } from '../state/chat-context';
 //    `pending` can legitimately stay set for 5+ s on a successful send.
 //
 // 8s is a compromise: long enough to outlast typical first-token delay while
-// staying short enough to feel responsive when recovery IS needed. The idle
-// gate (attentionState === 'ok') ensures we don't fire while a spinner is
-// visible, which catches most slow-first-token false positives even within
-// the 8s window. Race window remains: a successful submit whose spinner
-// hasn't rendered yet AND whose attentionState is still 'ok' at 8s would
-// trigger a spurious bare-\r that submits an empty message. Acceptable
-// given CC ignores empty input bar submits.
+// staying short enough to feel responsive when recovery IS needed. The busy
+// gate (canRetrySubmit) defers the retry while anything is observably in
+// flight. Residual race: a successful submit that has produced NO observable
+// state at 8s (no spinner, no transcript turn, no tool) would trigger a
+// spurious bare-\r that submits an empty message. Acceptable given CC
+// ignores empty input bar submits — and canRetrySubmit guarantees no Ink
+// select menu is up, so the stray \r cannot answer a prompt.
 const RETRY_DELAY_MS = 8000;
 
 // When the retry timer fires but Claude is still busy, recheck after this
-// shorter delay. The idle gate is what avoids double-submitting while
+// shorter delay. The busy gate is what avoids double-submitting while
 // Claude's own pending-message queue is still draining.
 const RECHECK_DELAY_MS = 1000;
 
@@ -60,9 +61,10 @@ interface UseSubmitConfirmationArgs {
  * submit was lost; send a single `\r` (body bytes are already in Claude's
  * input bar from the failed first attempt) to trigger submission.
  *
- * Idle gate (attentionState === 'ok' && !isThinking) is what prevents
- * double-submits while Claude's own queue is still draining — only retry
- * when Claude is observably available to read input.
+ * Busy gate (canRetrySubmit in pty-input-gate.ts) is what prevents both
+ * double-submits while Claude's own queue is still draining AND stray Enter
+ * presses landing on a live permission/AskUserQuestion menu — only retry
+ * when Claude is observably idle with no prompt awaiting the user.
  */
 export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
   const chatState = useChatStateMap();
@@ -113,26 +115,24 @@ export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
       return;
     }
 
-    // Idle gate: only `attentionState === 'ok'` (no spinner visible). We do
-    // NOT also require `!isThinking`, even though that looks like the obvious
-    // belt-and-suspenders check: `isThinking` is set true on USER_PROMPT and
-    // is only cleared by endTurn() (TRANSCRIPT_TURN_COMPLETE / interrupt /
-    // session exit). In the bug state we're trying to recover from, CC never
-    // received the message, so endTurn() never fires — `isThinking` stays
-    // true forever, and gating on `!isThinking` would make the retry never
-    // trigger in the very case it exists for.
+    // Busy gate: canRetrySubmit requires attentionState 'ok' AND no
+    // in-flight turn, no running tools, and — critically — no pending
+    // permission/AskUserQuestion/plan approval or interactive prompt. While
+    // one of those is pending, CC's native Ink select menu is LIVE in the
+    // PTY (the chat card answers via the hook socket, but the menu still
+    // listens for keys), so a bare `\r` here would press Enter on the
+    // highlighted option and silently auto-answer it. That exact failure
+    // shipped: attentionState alone was the old gate, and 'ok' is ALSO the
+    // normal state mid-turn and while a menu is up — see pty-input-gate.ts.
     //
-    // attentionState is the right signal: classifier-driven from the PTY
-    // buffer, flips to a thinking-* state within ~1-2s of CC's spinner
-    // appearing, and back to 'ok' when there's no spinner. After 5s without
-    // a spinner, CC has either already finished (pending was cleared) or
-    // never received the message — both safe to act on.
-    const idle = session.attentionState === 'ok';
-    if (!idle) {
-      // CC is observably busy (spinner visible, possibly draining its own
-      // queue). Don't retry yet; recheck shortly. By the time the spinner
-      // clears, TRANSCRIPT_USER_MESSAGE will likely have cleared `pending`
-      // already and the early-return above will fire.
+    // isThinking is deliberately not consulted (it stays true forever in the
+    // lost-message state this hook recovers from) — rationale lives in
+    // canRetrySubmit's doc comment.
+    if (!canRetrySubmit(session)) {
+      // CC is observably busy (turn in flight, tool running, or a prompt is
+      // awaiting the user). Don't retry yet; recheck shortly. By the time
+      // the session is idle, TRANSCRIPT_USER_MESSAGE will likely have
+      // cleared `pending` already and the early-return above will fire.
       info.timer = setTimeout(() => attemptRetry(messageId), RECHECK_DELAY_MS);
       return;
     }
