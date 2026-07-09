@@ -182,11 +182,10 @@ async function remapSidecarManualPaths(newRoot: string, oldRoot: string): Promis
   const oldCanon = canonicalize(oldRoot, null);
   const newCanon = canonicalize(newRoot, null);
   const remapStr = (p: string) => (isUnder(p, oldCanon) ? newCanon + p.slice(oldCanon.length) : p);
-  // manualExcludes is string[]; manualIncludes is ManualInclude[] ({path,…}).
-  // Older synced sidecars may still carry bare strings in either list, so the
-  // include remapper handles both shapes and preserves whichever it got.
-  const remapInclude = (inc: ManualInclude): ManualInclude =>
-    typeof inc === 'string' ? (remapStr(inc) as any) : { ...inc, path: remapStr(inc.path) };
+  // manualExcludes is string[]; manualIncludes is ManualInclude[] — objects
+  // whose .path is the canonical absolute path. Rewrite only the path; the
+  // addedAt/addedBy provenance survives the move untouched.
+  const remapInclude = (inc: ManualInclude): ManualInclude => ({ ...inc, path: remapStr(inc.path) });
   const nextIncludes = cur.manualIncludes.map(remapInclude);
   const nextExcludes = cur.manualExcludes.map(remapStr);
   if (JSON.stringify(nextIncludes) === JSON.stringify(cur.manualIncludes) &&

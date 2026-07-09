@@ -185,7 +185,13 @@ describe('importProjectFolder', () => {
     await writeSidecar(source, null, {
       $schema: SIDECAR_SCHEMA_VERSION, projectId: 'ULIDBUDGET', name: 'budget-app',
       createdAt: now, updatedAt: now, artifacts: [],
-      manualExcludes: [], manualIncludes: [canonicalize(path.join(source, 'docs', 'plan.md'), null)],
+      manualExcludes: [],
+      // Real ManualInclude shape ({path, addedAt, addedBy}) — the remap must
+      // rewrite ONLY .path and carry the provenance fields through untouched.
+      manualIncludes: [{
+        path: canonicalize(path.join(source, 'docs', 'plan.md'), null),
+        addedAt: now, addedBy: 'user',
+      }],
     });
 
     // CC transcript dir for the OLD path (drive-case-normalized slug)
@@ -194,7 +200,7 @@ describe('importProjectFolder', () => {
     fs.mkdirSync(slugDir, { recursive: true });
     fs.writeFileSync(path.join(slugDir, 'session1.jsonl'), '{}');
 
-    return { claudeDir, youcodedRoot, projectsRoot, source, foldersFile };
+    return { claudeDir, youcodedRoot, projectsRoot, source, foldersFile, includeAddedAt: now };
   }
 
   it('moves the folder and remaps saved folders, central index, sidecar includes, and the transcript slug dir', async () => {
@@ -224,10 +230,13 @@ describe('importProjectFolder', () => {
     expect(projects[0].id).toBe('ULIDBUDGET');
     expect(projects[0].path).toBe(canonicalize(dest, null));
 
-    // sidecar traveled with the folder; manual include re-pointed inside it
+    // sidecar traveled with the folder; manual include re-pointed inside it,
+    // provenance fields (addedAt/addedBy) carried through untouched
     const sidecar = await readSidecar(dest);
-    expect(sidecar && !('corrupted' in sidecar) && sidecar.manualIncludes[0])
-      .toBe(canonicalize(path.join(dest, 'docs', 'plan.md'), null));
+    expect(sidecar && !('corrupted' in sidecar) && sidecar.manualIncludes[0]).toEqual({
+      path: canonicalize(path.join(dest, 'docs', 'plan.md'), null),
+      addedAt: s.includeAddedAt, addedBy: 'user',
+    });
 
     // transcript slug dir renamed to the new path's slug
     expect(fs.existsSync(path.join(s.claudeDir, 'projects', ccProjectSlug(s.source)))).toBe(false);
