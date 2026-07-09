@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
+import type { BlockRow } from '../state/marketplace-api-client';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Reads all state and actions from
@@ -211,6 +212,75 @@ function SignedInBody({
   // double-click while the request is in flight.
   const [signingOut, setSigningOut] = useState(false);
 
+  // Blocked users — fetched once when the popup opens (SignedInBody mounts on
+  // open). null while loading / on error; we render nothing in either case so
+  // settings stays free of empty-state noise. window.claude.social is the same
+  // surface the friends UI uses directly — the context only owns the auth token
+  // boundary (profile/handle/delete), not the social graph.
+  const [blocks, setBlocks] = useState<BlockRow[] | null>(null);
+  // In-flight id (single-fire guard) + per-row unblock error text.
+  const [unblockingId, setUnblockingId] = useState<string | null>(null);
+  const [unblockErrors, setUnblockErrors] = useState<Record<string, string>>({});
+
+  // Data export — single-fire guard + a persisted saved-path / error line. Both
+  // persist until the popup closes (SignedInBody unmounts).
+  const [exporting, setExporting] = useState(false);
+  const [exportSavedPath, setExportSavedPath] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const refetchBlocks = async () => {
+    const res = await window.claude.social.listBlocks();
+    // Leave blocks null on failure so the section simply doesn't render.
+    setBlocks(res.ok ? res.value : null);
+  };
+
+  useEffect(() => {
+    void refetchBlocks();
+    // Fetch once on mount (popup open). No deps — user identity is fixed for
+    // this mount (SignedInBody remounts on handle change via the parent key).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onUnblock = async (id: string) => {
+    if (unblockingId) return; // single-fire guard across rows
+    setUnblockingId(id);
+    setUnblockErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    try {
+      const res = await window.claude.social.unblock(id);
+      if (res.ok) {
+        await refetchBlocks();
+      } else {
+        setUnblockErrors((prev) => ({ ...prev, [id]: res.message || 'Could not unblock' }));
+      }
+    } finally {
+      setUnblockingId(null);
+    }
+  };
+
+  const onExport = async () => {
+    if (exporting) return; // single-fire guard
+    setExporting(true);
+    setExportError(null);
+    setExportSavedPath(null);
+    try {
+      const res = await window.claude.account.exportData();
+      if ('path' in res) {
+        setExportSavedPath(res.path);
+      } else if ('canceled' in res) {
+        // User dismissed the save dialog — nothing to report.
+      } else {
+        // Server errors pass through verbatim (e.g. "export requires Android 10+").
+        setExportError(res.error || 'Could not export data');
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return mode === 'view' ? (
     <>
       {/* Identity summary — avatar + display name + @handle, all read-only. */}
@@ -237,6 +307,34 @@ function SignedInBody({
         <span>Connected: GitHub (@{user.login})</span>
       </section>
 
+      {/* Blocked users — only rendered when the list is non-empty (loading and
+          empty both leave `blocks` falsy so nothing shows in settings). */}
+      {blocks && blocks.length > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Blocked users</h4>
+          {blocks.map((b) => (
+            <div key={b.id} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0 flex items-baseline gap-1.5">
+                  <span className="text-xs text-fg truncate">{b.display_name}</span>
+                  {b.handle && <span className="text-[11px] text-fg-muted truncate">@{b.handle}</span>}
+                </div>
+                {/* No confirm — unblocking is the recovery action, not the
+                    destructive one (blocking is what's consequence-gated). */}
+                <button
+                  onClick={() => void onUnblock(b.id)}
+                  disabled={unblockingId === b.id}
+                  className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {unblockingId === b.id ? 'Unblocking…' : 'Unblock'}
+                </button>
+              </div>
+              {unblockErrors[b.id] && <p className="text-[10px] text-red-500">{unblockErrors[b.id]}</p>}
+            </div>
+          ))}
+        </section>
+      )}
+
       <hr className="border-edge-dim" />
 
       {/* The single edit affordance — pencil icon + label, per the rework spec. */}
@@ -262,6 +360,24 @@ function SignedInBody({
       >
         {signingOut ? 'Signing out…' : 'Sign out'}
       </button>
+
+      {/* Download my data — GDPR-style export of everything the server stores.
+          Desktop shows a save dialog (resolves to {path}); Android writes to
+          Downloads. Single-fire guarded while the request is in flight. */}
+      <section className="space-y-1.5">
+        <button
+          onClick={() => void onExport()}
+          disabled={exporting}
+          className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {exporting ? 'Preparing export…' : 'Download my data'}
+        </button>
+        <p className="text-[10px] text-fg-muted leading-relaxed">
+          Downloads a file containing everything YouCoded's server stores about your account.
+        </p>
+        {exportSavedPath && <p className="text-[10px] text-fg-muted">Saved to {exportSavedPath}</p>}
+        {exportError && <p className="text-[10px] text-red-500">{exportError}</p>}
+      </section>
     </>
   ) : (
     // Mounted fresh on each entry into edit mode, so the draft useState
