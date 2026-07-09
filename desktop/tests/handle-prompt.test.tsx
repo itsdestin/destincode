@@ -11,7 +11,9 @@ import { render, act, cleanup, fireEvent } from "@testing-library/react";
 import { AccountProvider } from "../src/renderer/state/account-context";
 import HandlePrompt from "../src/renderer/components/HandlePrompt";
 
-const DISMISS_KEY = "youcoded-handle-prompt-dismissed";
+const LEGACY_DISMISS_KEY = "youcoded-handle-prompt-dismissed";
+// Per-account key for the "github:1" fixture account used throughout.
+const DISMISS_KEY = `youcoded-handle-prompt-dismissed:github:1`;
 
 // Install a deterministic, dependency-free Map-backed localStorage stub the
 // component reads — so these tests don't couple to jsdom's Storage internals.
@@ -108,7 +110,27 @@ describe("HandlePrompt", () => {
     expect(queryByText("Pick a handle")).toBeNull();
   });
 
-  it("skip sets the dismissal flag and closes", async () => {
+  it("does not show when a legacy global dismissal exists (read-only fallback)", async () => {
+    // Pre-existing machine-global dismissal from before the per-account change.
+    localStorage.setItem(LEGACY_DISMISS_KEY, "1");
+    (globalThis as any).window.claude = signedInMock(null);
+    const { queryByText } = renderPrompt();
+    await flush();
+
+    expect(queryByText("Pick a handle")).toBeNull();
+  });
+
+  it("another account's dismissal does NOT suppress this account (knowledge-debt #4)", async () => {
+    // User B skipped on this machine; user "github:1" must still be prompted.
+    localStorage.setItem("youcoded-handle-prompt-dismissed:github:2", "1");
+    (globalThis as any).window.claude = signedInMock(null);
+    const { queryByText } = renderPrompt();
+    await flush();
+
+    expect(queryByText("Pick a handle")).toBeTruthy();
+  });
+
+  it("skip sets the per-account dismissal flag (not the legacy key) and closes", async () => {
     (globalThis as any).window.claude = signedInMock(null);
     const { queryByText, getByRole } = renderPrompt();
     await flush();
@@ -118,8 +140,10 @@ describe("HandlePrompt", () => {
     fireEvent.click(getByRole("button", { name: "Skip for now" }));
     await flush();
 
-    // Dismissal flag persisted so we never nag again.
+    // Dismissal flag persisted per-account so we never nag THIS account again.
     expect(localStorage.getItem(DISMISS_KEY)).toBe("1");
+    // The legacy global key is never (re)written — it only ages out.
+    expect(localStorage.getItem(LEGACY_DISMISS_KEY)).toBeNull();
     // Prompt closed.
     expect(queryByText("Pick a handle")).toBeNull();
   });

@@ -10,7 +10,12 @@ import { useAccount } from '../state/account-context';
 
 // Persisted "don't nag me again" flag. Set on skip (and on ESC, which is the
 // same as skip), never set when the user actually claims a handle.
-const DISMISS_KEY = 'youcoded-handle-prompt-dismissed';
+//
+// Keyed by account id (knowledge-debt #4: user A skipping used to suppress the
+// prompt for user B on the same machine). The legacy global key is honored
+// once as a fallback so existing dismissals don't re-prompt anyone.
+const LEGACY_DISMISS_KEY = 'youcoded-handle-prompt-dismissed';
+const dismissKey = (userId: string) => `youcoded-handle-prompt-dismissed:${userId}`;
 
 export default function HandlePrompt() {
   const { signedIn, user, setHandle } = useAccount();
@@ -26,20 +31,28 @@ export default function HandlePrompt() {
   // sign-in completes, or when a refresh reveals a handle-less profile).
   useEffect(() => {
     if (closedRef.current) return;
-    const dismissed = localStorage.getItem(DISMISS_KEY) === '1';
+    // Per-account dismissal: honor this account's key, falling back to the
+    // legacy global key (read-only) so anyone who skipped before this change
+    // isn't re-prompted.
+    const dismissed = user
+      ? localStorage.getItem(dismissKey(user.id)) === '1' ||
+        localStorage.getItem(LEGACY_DISMISS_KEY) === '1'
+      : false;
     setOpen(Boolean(signedIn && user && !user.handle && !dismissed));
   }, [signedIn, user]);
 
-  if (!open) return null; // render nothing when closed
-  return <HandlePromptPopup setHandle={setHandle} closedRef={closedRef} setOpen={setOpen} />;
+  if (!open || !user) return null; // render nothing when closed
+  return <HandlePromptPopup userId={user.id} setHandle={setHandle} closedRef={closedRef} setOpen={setOpen} />;
 }
 
 // Mounted only while open so the input's useState initializer seeds cleanly.
 function HandlePromptPopup({
+  userId,
   setHandle,
   closedRef,
   setOpen,
 }: {
+  userId: string;
   setHandle: (handle: string) => Promise<void>;
   closedRef: React.MutableRefObject<boolean>;
   setOpen: (open: boolean) => void;
@@ -49,8 +62,10 @@ function HandlePromptPopup({
   const [error, setError] = useState<string | null>(null);
 
   // Skip (and ESC — registered below) persist the flag so we never nag again.
+  // Write the per-account key only; the legacy global key is never written
+  // again (it ages out naturally as pre-existing dismissals are honored).
   const skip = () => {
-    localStorage.setItem(DISMISS_KEY, '1');
+    localStorage.setItem(dismissKey(userId), '1');
     closedRef.current = true;
     setOpen(false);
   };
