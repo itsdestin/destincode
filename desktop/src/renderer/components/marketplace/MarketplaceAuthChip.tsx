@@ -14,7 +14,7 @@
 // realize there's an account at all.
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { useMarketplaceAuth } from "../../state/marketplace-auth-context";
+import { useAccount } from "../../state/account-context";
 
 function GitHubMark({ size = 16 }: { size?: number }) {
   return (
@@ -31,7 +31,7 @@ function GitHubMark({ size = 16 }: { size?: number }) {
 }
 
 export default function MarketplaceAuthChip() {
-  const { signedIn, user, signInPending, startSignIn, signOut } = useMarketplaceAuth();
+  const { signedIn, user, signInPending, startSignIn, signOut } = useAccount();
   const [popoverOpen, setPopoverOpen] = useState(false);
   // Avatar load failure → fall back to the octocat so we never render a broken image
   const [avatarFailed, setAvatarFailed] = useState(false);

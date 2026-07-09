@@ -2,13 +2,13 @@
 // handle-prompt.test.tsx
 // Render tests for the post-sign-in handle prompt (HandlePrompt.tsx).
 // Follows the same provider/mock conventions as account-section.test.tsx:
-// HandlePrompt reads state via useMarketplaceAuth(), so we wrap it in a real
-// MarketplaceAuthProvider and drive state through a mocked window.claude.account.
+// HandlePrompt reads state via useAccount(), so we wrap it in a real
+// AccountProvider and drive state through a mocked window.claude.account.
 
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act, cleanup, fireEvent } from "@testing-library/react";
-import { MarketplaceAuthProvider } from "../src/renderer/state/marketplace-auth-context";
+import { AccountProvider } from "../src/renderer/state/account-context";
 import HandlePrompt from "../src/renderer/components/HandlePrompt";
 
 const DISMISS_KEY = "youcoded-handle-prompt-dismissed";
@@ -65,9 +65,9 @@ function signedInMock(handle: string | null) {
 
 function renderPrompt() {
   return render(
-    <MarketplaceAuthProvider pollIntervalMs={10}>
+    <AccountProvider pollIntervalMs={10}>
       <HandlePrompt />
-    </MarketplaceAuthProvider>,
+    </AccountProvider>,
   );
 }
 

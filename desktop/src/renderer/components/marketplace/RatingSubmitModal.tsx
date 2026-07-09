@@ -25,7 +25,7 @@ import React, {
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
-import { useMarketplaceAuth } from '../../state/marketplace-auth-context';
+import { useAccount } from '../../state/account-context';
 import { useMarketplaceStats } from '../../state/marketplace-stats-context';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ export default function RatingSubmitModal({
   onClose,
   onSubmitted,
 }: RatingSubmitModalProps) {
-  const { signedIn, startSignIn } = useMarketplaceAuth();
+  const { signedIn, startSignIn } = useAccount();
   const { refresh: refreshStats } = useMarketplaceStats();
 
   const [stars, setStars] = useState<number | null>(null);

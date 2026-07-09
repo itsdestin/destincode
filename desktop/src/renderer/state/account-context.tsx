@@ -1,10 +1,12 @@
-// marketplace-auth-context.tsx
+// account-context.tsx
 // Global "am I signed in to my YouCoded account?" React context.
 //
-// WHY the exported names still say "Marketplace": this is the account context now,
-// but the MarketplaceAuthProvider / useMarketplaceAuth rename lands with the Phase 2
-// friends UI so the churn stays in one diff. Only the underlying window.claude
-// surface renamed (marketplaceAuth → account) in Phase 1.
+// WHY the "account" naming: this is the Phase 2 rename. Phase 1 renamed only the
+// underlying window.claude surface (marketplaceAuth → account) and deliberately
+// left the React-side provider/hook identifiers on their old marketplace names to
+// keep that diff small. Phase 2's friends UI builds on the account identity, so
+// the React-side rename to AccountProvider / useAccount lands here as a pure
+// mechanical change with zero behavior difference.
 //
 // Uses window.claude.account (exposed via preload + remote-shim) for all
 // communication with the main process. The main process owns the token — it never
@@ -29,7 +31,7 @@ import type { MarketplaceUser } from "../../main/marketplace-auth-store";
 
 // ── Context shape ─────────────────────────────────────────────────────────────
 
-interface MarketplaceAuthCtx {
+interface AccountCtx {
   /** Whether the user is currently signed in to their YouCoded account. */
   signedIn: boolean;
   /** The signed-in user's profile, or null if not signed in. */
@@ -48,7 +50,7 @@ interface MarketplaceAuthCtx {
   deleteAccount(): Promise<void>;
 }
 
-const MarketplaceAuthContext = createContext<MarketplaceAuthCtx | null>(null);
+const AccountContext = createContext<AccountCtx | null>(null);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -58,7 +60,7 @@ const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
-export function MarketplaceAuthProvider({
+export function AccountProvider({
   children,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 }: {
@@ -224,26 +226,26 @@ export function MarketplaceAuthProvider({
   // signInPending actually change. Action fns (startSignIn, signOut, updateProfile,
   // setHandle, deleteAccount) are stable useCallback references, so they don't break
   // the memo comparison. Matches the pattern used in ThemeProvider (theme-context.tsx).
-  const value = useMemo<MarketplaceAuthCtx>(
+  const value = useMemo<AccountCtx>(
     () => ({ signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount }),
     [signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount],
   );
 
   return (
-    <MarketplaceAuthContext.Provider value={value}>
+    <AccountContext.Provider value={value}>
       {children}
-    </MarketplaceAuthContext.Provider>
+    </AccountContext.Provider>
   );
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
-/** Access marketplace auth state and actions from any component inside MarketplaceAuthProvider. */
-export function useMarketplaceAuth(): MarketplaceAuthCtx {
-  const ctx = useContext(MarketplaceAuthContext);
+/** Access account auth state and actions from any component inside AccountProvider. */
+export function useAccount(): AccountCtx {
+  const ctx = useContext(AccountContext);
   if (!ctx) {
     throw new Error(
-      "useMarketplaceAuth must be used inside <MarketplaceAuthProvider>"
+      "useAccount must be used inside <AccountProvider>"
     );
   }
   return ctx;

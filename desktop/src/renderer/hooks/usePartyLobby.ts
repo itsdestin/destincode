@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useGameDispatch } from '../state/game-context';
-import { useMarketplaceAuth } from '../state/marketplace-auth-context';
+import { useAccount } from '../state/account-context';
 import { PartyClient, PARTYKIT_HOST } from '../game/party-client';
 
 const PING_INTERVAL = 30_000; // 30s — matches server sweep interval
@@ -42,7 +42,7 @@ export function usePartyLobby(isLeader: boolean = true) {
   // Identity now comes from the marketplace sign-in (user.login), not the gh CLI
   // — no terminal login is needed to play. The effect below reacts to sign-in
   // state flipping: sign in → connect, sign out → tear down.
-  const { user } = useMarketplaceAuth();
+  const { user } = useAccount();
   const username = user?.login;
   const clientRef = useRef<PartyClient | null>(null);
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);

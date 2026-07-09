@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 // account-section.test.tsx
 // Render tests for the Settings → Account section (AccountSection.tsx).
-// Follows the same provider/mock conventions as marketplace-auth-context.test.tsx:
-// AccountSection reads state via useMarketplaceAuth(), so we wrap it in a real
-// MarketplaceAuthProvider and drive state through a mocked window.claude.account.
+// Follows the same provider/mock conventions as account-context.test.tsx:
+// AccountSection reads state via useAccount(), so we wrap it in a real
+// AccountProvider and drive state through a mocked window.claude.account.
 //
 // The signed-in popup is a view/edit split (2026-07-08 UX rework): read-only
 // summary by default, "Edit account" toggles the editors + danger zone in.
@@ -11,7 +11,7 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act, cleanup, fireEvent } from "@testing-library/react";
-import { MarketplaceAuthProvider } from "../src/renderer/state/marketplace-auth-context";
+import { AccountProvider } from "../src/renderer/state/account-context";
 import AccountSection from "../src/renderer/components/AccountSection";
 
 // Flush the provider's mount refresh() — it awaits signedIn() then user()
@@ -65,9 +65,9 @@ function signedInMock(handle: string | null = "octo") {
 
 function renderSection() {
   return render(
-    <MarketplaceAuthProvider pollIntervalMs={10}>
+    <AccountProvider pollIntervalMs={10}>
       <AccountSection />
-    </MarketplaceAuthProvider>,
+    </AccountProvider>,
   );
 }
 

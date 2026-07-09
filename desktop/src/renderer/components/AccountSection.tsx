@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { useMarketplaceAuth } from '../state/marketplace-auth-context';
+import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Reads all state and actions from
-// useMarketplaceAuth(); it never touches window.claude.account directly (the
+// useAccount(); it never touches window.claude.account directly (the
 // context owns the token boundary). Follows the chip+popup pattern used by
 // PerformanceButton / SoundButton / AboutPopup — a small settings row that opens
 // a centered L2 overlay where the real controls live.
@@ -33,7 +33,7 @@ function PersonIcon() {
 }
 
 export default function AccountSection() {
-  const { signedIn, user } = useMarketplaceAuth();
+  const { signedIn, user } = useAccount();
   const [open, setOpen] = useState(false);
 
   const rowLabel = 'Account';
@@ -79,7 +79,7 @@ export default function AccountSection() {
 // user profile (no reset-on-change effect needed).
 function AccountPopup({ onClose }: { onClose: () => void }) {
   const { signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount } =
-    useMarketplaceAuth();
+    useAccount();
 
   useEscClose(true, onClose);
 

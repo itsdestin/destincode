@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
-import { useMarketplaceAuth } from '../../state/marketplace-auth-context';
+import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
 
@@ -365,7 +365,7 @@ function WaitingScreen({ connection }: Props) {
 // in-app browser sign-in (no terminal / gh CLI needed); the lobby hook reacts to
 // the sign-in flipping and connects automatically once it completes.
 function SignInScreen() {
-  const { signInPending, startSignIn } = useMarketplaceAuth();
+  const { signInPending, startSignIn } = useAccount();
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
@@ -389,7 +389,7 @@ function SignInScreen() {
 
 export default function GameLobby({ connection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
-  const { signedIn } = useMarketplaceAuth();
+  const { signedIn } = useAccount();
   // Sign-in gate comes BEFORE the error/spinner branches — not being signed in
   // isn't a failure or a slow connection, it's a prerequisite. Incognito keeps
   // its own UI (you don't need to sign in to stay intentionally disconnected).

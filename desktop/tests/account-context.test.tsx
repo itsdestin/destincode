@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// marketplace-auth-context.test.tsx
-// Tests for the MarketplaceAuthProvider React context.
+// account-context.test.tsx
+// Tests for the AccountProvider React context.
 // Runs in jsdom so React DOM + document are available.
 // Uses vi.useFakeTimers() so the poll setTimeout doesn't slow tests down.
 // Uses a small pollIntervalMs (10ms) + real Promise.resolve() flushing via
@@ -10,13 +10,13 @@ import React, { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act, cleanup } from "@testing-library/react";
 import {
-  MarketplaceAuthProvider,
-  useMarketplaceAuth,
-} from "../src/renderer/state/marketplace-auth-context";
+  AccountProvider,
+  useAccount,
+} from "../src/renderer/state/account-context";
 
 // Simple probe component that renders current auth state
 function Probe() {
-  const { signedIn, startSignIn, user } = useMarketplaceAuth();
+  const { signedIn, startSignIn, user } = useAccount();
   return (
     <div>
       <span data-testid="state">{signedIn ? "in" : "out"}</span>
@@ -74,7 +74,7 @@ function makeMock() {
 // resulting state + surfaced error message.
 function ActionsProbe() {
   const { signedIn, user, updateProfile, setHandle, deleteAccount } =
-    useMarketplaceAuth();
+    useAccount();
   const [err, setErr] = useState("");
   return (
     <div>
@@ -95,7 +95,7 @@ function ActionsProbe() {
   );
 }
 
-describe("MarketplaceAuthProvider", () => {
+describe("AccountProvider", () => {
   beforeEach(() => {
     // Fake timers so setTimeout in the poll loop resolves instantly
     vi.useFakeTimers();
@@ -113,9 +113,9 @@ describe("MarketplaceAuthProvider", () => {
 
   it("starts as signed-out", async () => {
     const { getByTestId } = render(
-      <MarketplaceAuthProvider pollIntervalMs={10}>
+      <AccountProvider pollIntervalMs={10}>
         <Probe />
-      </MarketplaceAuthProvider>
+      </AccountProvider>
     );
 
     // Let the initial refresh() promises resolve (signedIn + user calls)
@@ -129,9 +129,9 @@ describe("MarketplaceAuthProvider", () => {
 
   it("transitions to signed-in after sign-in flow completes", async () => {
     const { getByTestId } = render(
-      <MarketplaceAuthProvider pollIntervalMs={10}>
+      <AccountProvider pollIntervalMs={10}>
         <Probe />
-      </MarketplaceAuthProvider>
+      </AccountProvider>
     );
 
     // Wait for initial mount refresh to complete
@@ -178,9 +178,9 @@ describe("MarketplaceAuthProvider", () => {
       },
     };
     const { getByTestId } = render(
-      <MarketplaceAuthProvider pollIntervalMs={10}>
+      <AccountProvider pollIntervalMs={10}>
         <ActionsProbe />
-      </MarketplaceAuthProvider>
+      </AccountProvider>
     );
     await act(async () => { await vi.runAllTimersAsync(); });
 
@@ -208,9 +208,9 @@ describe("MarketplaceAuthProvider", () => {
       },
     };
     const { getByTestId } = render(
-      <MarketplaceAuthProvider pollIntervalMs={10}>
+      <AccountProvider pollIntervalMs={10}>
         <ActionsProbe />
-      </MarketplaceAuthProvider>
+      </AccountProvider>
     );
     await act(async () => { await vi.runAllTimersAsync(); });
     expect(getByTestId("handle").textContent).toBe("");
@@ -235,9 +235,9 @@ describe("MarketplaceAuthProvider", () => {
       },
     };
     const { getByTestId } = render(
-      <MarketplaceAuthProvider pollIntervalMs={10}>
+      <AccountProvider pollIntervalMs={10}>
         <ActionsProbe />
-      </MarketplaceAuthProvider>
+      </AccountProvider>
     );
     await act(async () => { await vi.runAllTimersAsync(); });
     expect(getByTestId("state").textContent).toBe("in");
@@ -271,9 +271,9 @@ describe("MarketplaceAuthProvider", () => {
       },
     };
     const { getByTestId } = render(
-      <MarketplaceAuthProvider pollIntervalMs={10}>
+      <AccountProvider pollIntervalMs={10}>
         <ActionsProbe />
-      </MarketplaceAuthProvider>
+      </AccountProvider>
     );
     await act(async () => { await vi.runAllTimersAsync(); });
     expect(getByTestId("state").textContent).toBe("in");
@@ -301,9 +301,9 @@ describe("MarketplaceAuthProvider", () => {
       },
     };
     const { getByTestId } = render(
-      <MarketplaceAuthProvider pollIntervalMs={10}>
+      <AccountProvider pollIntervalMs={10}>
         <ActionsProbe />
-      </MarketplaceAuthProvider>
+      </AccountProvider>
     );
     await act(async () => { await vi.runAllTimersAsync(); });
 

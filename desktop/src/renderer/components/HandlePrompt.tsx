@@ -6,14 +6,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { useMarketplaceAuth } from '../state/marketplace-auth-context';
+import { useAccount } from '../state/account-context';
 
 // Persisted "don't nag me again" flag. Set on skip (and on ESC, which is the
 // same as skip), never set when the user actually claims a handle.
 const DISMISS_KEY = 'youcoded-handle-prompt-dismissed';
 
 export default function HandlePrompt() {
-  const { signedIn, user, setHandle } = useMarketplaceAuth();
+  const { signedIn, user, setHandle } = useAccount();
   const [open, setOpen] = useState(false);
 
   // Once the user answers (skip or save) or ESC-dismisses this session, don't
