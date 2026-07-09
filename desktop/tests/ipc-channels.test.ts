@@ -173,6 +173,11 @@ describe('social:* channel parity', () => {
     'social:accept-request', 'social:decline-request', 'social:cancel-request',
     'social:list-friends', 'social:unfriend', 'social:block', 'social:unblock',
     'social:list-blocks',
+    // Presence socket (Task 6). The three invoke channels + the one push channel.
+    // social:presence-event's desktop-main surface is social-handlers.ts (the
+    // broadcaster), so the standard four-file assertion holds for all four.
+    'social:presence-connect', 'social:presence-disconnect', 'social:presence-send',
+    'social:presence-event',
   ];
   const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
 

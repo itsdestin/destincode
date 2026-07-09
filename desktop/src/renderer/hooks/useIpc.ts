@@ -163,6 +163,15 @@ declare global {
         block: (userId: string) => Promise<ApiResult<void>>;
         unblock: (userId: string) => Promise<ApiResult<void>>;
         listBlocks: () => Promise<ApiResult<import('../state/marketplace-api-client').BlockRow[]>>;
+        // Presence socket (Task 6). connect/disconnect/send return { ok:true };
+        // real presence data arrives via onPresenceEvent. The event object is a
+        // relayed server frame (presence/user-joined/challenge/…) or a synthetic
+        // connection-state event ({type:'connected'|'disconnected'|'error'}) — all
+        // carry a `type` discriminator; the renderer (Task 7) narrows on it.
+        presenceConnect: () => Promise<{ ok: true }>;
+        presenceDisconnect: () => Promise<{ ok: true }>;
+        presenceSend: (message: Record<string, unknown>) => Promise<{ ok: true }>;
+        onPresenceEvent: (cb: (ev: { type: string; [k: string]: unknown }) => void) => () => void;
       };
       // Fix: expose marketplaceApi on Window.claude so Tasks 9-12 can call install,
       // rate, deleteRating, likeTheme, and report without (window as any) casts.

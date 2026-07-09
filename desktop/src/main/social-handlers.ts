@@ -4,7 +4,7 @@
 // every call needs the bearer token, so all logic lives in the main process —
 // the token never crosses the contextBridge into the renderer bundle.
 
-import { ipcMain } from "electron";
+import { ipcMain, webContents } from "electron";
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
 import { createMarketplaceApiClient, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
 import type {
@@ -17,6 +17,18 @@ import type {
 // handler-utils.ts so the renderer sees ONE consistent ApiResult error contract
 // across account:* and social:* — .status must survive the contextBridge.
 import { wrap, makeClearSessionOn401 } from "./handler-utils";
+// Platform-owned presence socket (Task 6). The account session token and the
+// WebSocket live in the main process; the renderer only ever sees relayed
+// social:presence-event pushes and expresses desired connection state.
+import { createPresenceSocket, type PresenceSocket } from "./presence-socket";
+import type { WindowRegistry } from "./window-registry";
+import type { RemoteServer } from "./remote-server";
+
+// Module-scope handle so the account sign-out / delete handlers (in
+// marketplace-api-handlers.ts) can drop the socket via notifySignedOut(), and
+// app-quit teardown can destroy it — without threading the instance through the
+// account module. Only the most recent registration's socket is retained.
+let presenceSocket: PresenceSocket | null = null;
 
 // ── Channel list for double-registration guard ───────────────────────────────
 // Byte-identical to the strings in preload.ts (IPC.SOCIAL_*), remote-shim.ts,
@@ -34,12 +46,55 @@ const CHANNELS = [
   "social:block",
   "social:unblock",
   "social:list-blocks",
+  // Presence socket (Task 6) — invoke channels the renderer uses to express
+  // desired connection state and to send one protocol message.
+  "social:presence-connect",
+  "social:presence-disconnect",
+  "social:presence-send",
 ] as const;
 
-export function registerSocialHandlers(store: MarketplaceAuthStore): void {
+export function registerSocialHandlers(
+  store: MarketplaceAuthStore,
+  // Optional broadcast targets. windowRegistry mirrors ipc-handlers.ts's global
+  // send() (every renderer window); remoteServer forwards the push to connected
+  // remote browsers (main-originated pushes do NOT ride to remotes automatically
+  // — each one calls remoteServer.broadcast explicitly). Both are optional so
+  // tests / minimal boots can register handlers without a full app graph.
+  windowRegistry?: WindowRegistry,
+  remoteServer?: RemoteServer,
+): void {
   // WHY: ipcMain.handle throws on re-registration. Clear prior handlers so
   // hot-reload dev sessions (scripts/run-dev.sh) don't crash on reload.
   for (const ch of CHANNELS) ipcMain.removeHandler(ch);
+
+  // Relay one presence event to every renderer window AND every remote browser.
+  // The event objects are opaque here (server protocol frames + synthetic
+  // connection-state events) — the renderer (Task 7) interprets them.
+  const broadcastPresenceEvent = (ev: Record<string, unknown>) => {
+    // Replicated from ipc-handlers.ts's local send() closure (not exported).
+    if (windowRegistry) {
+      for (const wid of windowRegistry.getWindowIds()) {
+        const wc = webContents.fromId(wid);
+        if (wc && !wc.isDestroyed()) wc.send("social:presence-event", ev);
+      }
+    } else {
+      // No registry (minimal boot): fall back to every live webContents.
+      for (const wc of webContents.getAllWebContents()) {
+        if (!wc.isDestroyed()) wc.send("social:presence-event", ev);
+      }
+    }
+    // Remote browsers share the desktop's single account/presence connection.
+    remoteServer?.broadcast({ type: "social:presence-event", payload: ev });
+  };
+
+  // One desired-state connection manager. getToken() is read lazily at connect
+  // time so a token that appears after sign-in is picked up on the next attempt.
+  presenceSocket?.destroy(); // hot-reload: tear down the prior socket first
+  const presence = createPresenceSocket({
+    getToken: () => store.getToken(),
+    onEvent: broadcastPresenceEvent,
+  });
+  presenceSocket = presence;
 
   // One client instance shared across all handlers. getToken() is read lazily
   // per-request so sign-out takes effect immediately.
@@ -102,4 +157,40 @@ export function registerSocialHandlers(store: MarketplaceAuthStore): void {
   ipcMain.handle("social:list-blocks", (): Promise<ApiResult<BlockRow[]>> =>
     wrap(() => client.listBlocks()).then(clearSessionOn401)
   );
+
+  // ── Presence socket (Task 6) ────────────────────────────────────────────────
+  // These express desired state / send one message; they never return data — the
+  // socket relays everything back asynchronously via social:presence-event.
+
+  ipcMain.handle("social:presence-connect", (): { ok: true } => {
+    presence.setDesired(true);
+    return { ok: true };
+  });
+
+  ipcMain.handle("social:presence-disconnect", (): { ok: true } => {
+    presence.setDesired(false);
+    return { ok: true };
+  });
+
+  // Positional `message` arg (preload passes it positionally; remote-shim wraps
+  // it as { message } and the Android SessionService reads message.message).
+  ipcMain.handle("social:presence-send", (_e, message: Record<string, unknown>): { ok: true } => {
+    presence.send(message);
+    return { ok: true };
+  });
+}
+
+// Called by the account sign-out + delete handlers (marketplace-api-handlers.ts)
+// so signing out drops presence immediately. Without this the socket would
+// linger connected after the local token is cleared until its next server
+// interaction. No-op when presence was never registered.
+export function notifySignedOut(): void {
+  presenceSocket?.setDesired(false);
+}
+
+// App-quit teardown hook. Electron process death kills the socket anyway, but
+// this makes the intent explicit and cleans timers if called during teardown.
+export function destroySocialHandlers(): void {
+  presenceSocket?.destroy();
+  presenceSocket = null;
 }

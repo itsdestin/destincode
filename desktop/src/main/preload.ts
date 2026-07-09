@@ -219,6 +219,13 @@ const IPC = {
   SOCIAL_BLOCK: 'social:block',
   SOCIAL_UNBLOCK: 'social:unblock',
   SOCIAL_LIST_BLOCKS: 'social:list-blocks',
+  // Presence socket (Task 6) — connect/disconnect express desired state, send
+  // pushes one protocol message, and the main process relays every event back
+  // on SOCIAL_PRESENCE_EVENT (a push channel, not a request-response handler).
+  SOCIAL_PRESENCE_CONNECT: 'social:presence-connect',
+  SOCIAL_PRESENCE_DISCONNECT: 'social:presence-disconnect',
+  SOCIAL_PRESENCE_SEND: 'social:presence-send',
+  SOCIAL_PRESENCE_EVENT: 'social:presence-event',
   // Marketplace write APIs — byte-identical to marketplace-api-handlers.ts CHANNELS
   MARKETPLACE_INSTALL: 'marketplace:install',
   MARKETPLACE_RATE: 'marketplace:rate',
@@ -502,6 +509,23 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SOCIAL_UNBLOCK, userId),
     listBlocks: (): Promise<ApiResult<unknown>> =>
       ipcRenderer.invoke(IPC.SOCIAL_LIST_BLOCKS),
+    // Presence socket (Task 6). connect/disconnect/send return { ok: true };
+    // all real data arrives asynchronously via onPresenceEvent. message is
+    // passed positionally (matches the ipcMain.handle signature).
+    presenceConnect: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_CONNECT),
+    presenceDisconnect: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_DISCONNECT),
+    presenceSend: (message: Record<string, unknown>): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_SEND, message),
+    // Subscribe to relayed presence events (server frames + synthetic
+    // connection-state events). Returns an unsubscribe that removes the listener
+    // — same pattern as onChatExportSnapshot above.
+    onPresenceEvent: (cb: (ev: Record<string, unknown>) => void) => {
+      const handler = (_e: IpcRendererEvent, ev: Record<string, unknown>) => cb(ev);
+      ipcRenderer.on(IPC.SOCIAL_PRESENCE_EVENT, handler);
+      return () => ipcRenderer.off(IPC.SOCIAL_PRESENCE_EVENT, handler);
+    },
   },
   // Marketplace write endpoints — all return ApiResult so the renderer can
   // surface install-gate (403) vs. generic errors (Task 7+).

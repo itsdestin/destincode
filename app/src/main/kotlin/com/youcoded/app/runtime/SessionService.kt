@@ -40,6 +40,7 @@ import com.youcoded.app.artifacts.*
 import com.youcoded.app.skills.BundledPlugins
 import com.youcoded.app.skills.LocalSkillProvider
 import com.youcoded.app.skills.PluginInstaller
+import com.youcoded.app.social.PresenceClient
 
 class SessionService : Service() {
     private val binder = LocalBinder()
@@ -128,6 +129,22 @@ class SessionService : Service() {
     }
     private val marketplaceApiClient: MarketplaceApiClient by lazy {
         MarketplaceApiClient(marketplaceAuthStore)
+    }
+
+    // Platform-owned presence socket (Task 6) — mirror of desktop's
+    // presence-socket.ts. The token + WebSocket live here; every presence event
+    // is relayed to React via a social:presence-event broadcast. Lazy so the
+    // OkHttp client isn't built until presence is first used.
+    private val presenceClient: PresenceClient by lazy {
+        PresenceClient(
+            getToken = { marketplaceAuthStore.getToken() },
+            onEvent = { ev ->
+                bridgeServer.broadcast(JSONObject().apply {
+                    put("type", "social:presence-event")
+                    put("payload", ev)
+                })
+            },
+        )
     }
 
     /**
@@ -2577,6 +2594,9 @@ class SessionService : Service() {
                     android.util.Log.w("SessionService", "account:sign-out — server logout failed (${revoke.status}): ${revoke.message}")
                 }
                 marketplaceAuthStore.signOut()
+                // Drop the presence socket so we don't linger online after the
+                // local token is cleared (desktop parity: notifySignedOut).
+                presenceClient.setDesired(false)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
 
@@ -2624,7 +2644,11 @@ class SessionService : Service() {
             "account:delete" -> {
                 // Permanent hard-delete (Worker cascades all rows). Clear the local session only on success.
                 val result = marketplaceApiClient.deleteAccount()
-                if (result is ApiResult.Ok) marketplaceAuthStore.signOut()
+                if (result is ApiResult.Ok) {
+                    marketplaceAuthStore.signOut()
+                    // Drop the presence socket on account deletion too (desktop parity).
+                    presenceClient.setDesired(false)
+                }
                 // Fix: a 401 also means the session is dead (already deleted / expired) —
                 // clear locally so the UI flips to signed-out rather than looping on a
                 // delete that can never authenticate. Still respond with the Err.
@@ -2805,6 +2829,34 @@ class SessionService : Service() {
                 clearSessionOn401(result)
                 // value shape: bare array of BlockRow
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            // ── Presence socket (Task 6) ─────────────────────────────────────────
+            // Express desired state / send one protocol message. No data is
+            // returned — the socket relays everything back via the
+            // social:presence-event broadcast (see the presenceClient onEvent).
+
+            "social:presence-connect" -> {
+                presenceClient.setDesired(true)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+
+            "social:presence-disconnect" -> {
+                presenceClient.setDesired(false)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+
+            "social:presence-send" -> {
+                // payload: { message: {...} } (remote-shim wraps the protocol frame).
+                // Guard a missing/malformed message so a bad frame is a clean error,
+                // not a crash.
+                val message = msg.payload.optJSONObject("message")
+                if (message == null) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", false).put("error", "missing message")) }
+                } else {
+                    presenceClient.send(message)
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+                }
             }
 
             // ── Settings → Development IPC handlers ──────────────────────────────

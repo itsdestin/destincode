@@ -20,7 +20,7 @@ import { setSyncService } from './sync-state';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
-import { registerSocialHandlers } from './social-handlers';
+import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
@@ -1253,8 +1253,10 @@ app.whenReady().then(async () => {
   registerMarketplaceApiHandlers(marketplaceAuthStore);
   // Accounts Phase 2 — social graph (friends/requests/blocks) IPC. Shares the
   // same token-bound auth store; handlers live in a sibling module to keep the
-  // account file focused on auth + marketplace writes.
-  registerSocialHandlers(marketplaceAuthStore);
+  // account file focused on auth + marketplace writes. windowRegistry +
+  // remoteServer let the presence relay (Task 6) reach every local window and
+  // any connected remote browser.
+  registerSocialHandlers(marketplaceAuthStore, windowRegistry, remoteServer);
 
   createWindow(isFirstRun ? firstRunManager : undefined);
   registerDetachIpc();
@@ -1447,6 +1449,7 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (cleanupIpcHandlers) cleanupIpcHandlers();
+  destroySocialHandlers(); // tear down the presence WebSocket + its timers
   sessionManager.destroyAll();
   hookRelay.stop();
   remoteServer.stop();

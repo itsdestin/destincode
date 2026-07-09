@@ -277,6 +277,13 @@ function handleMessage(data: string): void {
       // modified, or excluded. The payload contains change metadata.
       dispatchEvent('artifacts:changed', payload);
       break;
+    case 'social:presence-event':
+      // Presence relay (Task 6). The host forwards one presence event (server
+      // protocol frame or synthetic connection-state event). window.claude.social
+      // .onPresenceEvent subscribers registered via addListener receive the
+      // payload object verbatim; the renderer (Task 7) interprets it.
+      dispatchEvent('social:presence-event', payload);
+      break;
   }
 }
 
@@ -825,6 +832,18 @@ export function installShim(): void {
       block: (userId: string): Promise<ApiResult<unknown>> => invoke('social:block', { userId }),
       unblock: (userId: string): Promise<ApiResult<unknown>> => invoke('social:unblock', { userId }),
       listBlocks: (): Promise<ApiResult<unknown>> => invoke('social:list-blocks'),
+      // Presence socket (Task 6). connect/disconnect/send resolve to { ok:true };
+      // events flow back via the 'social:presence-event' push (handleMessage below).
+      // message is object-wrapped as { message } so the Android SessionService
+      // reads it via msg.payload.getJSONObject("message").
+      presenceConnect: (): Promise<{ ok: true }> => invoke('social:presence-connect'),
+      presenceDisconnect: (): Promise<{ ok: true }> => invoke('social:presence-disconnect'),
+      presenceSend: (message: Record<string, unknown>): Promise<{ ok: true }> =>
+        invoke('social:presence-send', { message }),
+      onPresenceEvent: (cb: (ev: Record<string, unknown>) => void) => {
+        const handler = addListener('social:presence-event', cb as Callback);
+        return () => removeListener('social:presence-event', handler);
+      },
     },
     // Marketplace write endpoints — same shape as preload.ts.
     marketplaceApi: {

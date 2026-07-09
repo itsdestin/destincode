@@ -11,6 +11,12 @@ import type { PostRatingInput, AuthStartResponse, AuthPollResponse } from "../re
 // wrap + the 401-clear closure are shared with social-handlers.ts via
 // handler-utils.ts so the error contract can't drift between the two modules.
 import { wrap, makeClearSessionOn401 } from "./handler-utils";
+// Signing out / deleting the account must also drop the main-owned presence
+// WebSocket (Task 6) — otherwise it lingers connected after the token is
+// cleared until its next server interaction. Type-only import of ApiResult
+// keeps social-handlers → this module a pure type edge; the value edge here is
+// one-way (this → social-handlers) so there's no runtime import cycle.
+import { notifySignedOut } from "./social-handlers";
 
 // ── Discriminated union returned by all API-calling handlers ─────────────────
 // WHY: Custom Error fields (MarketplaceApiError.status) are dropped by
@@ -152,6 +158,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
   ipcMain.handle("account:sign-out", async () => {
     try { await client.logout(); } catch { /* offline sign-out is fine */ }
     store.signOut();
+    notifySignedOut(); // drop the presence socket so we don't linger online
   });
 
   // Update the account display name, then mirror the new value into the stored
@@ -183,6 +190,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     wrap(async () => {
       await client.deleteAccount();
       store.signOut();
+      notifySignedOut(); // drop the presence socket on account deletion too
     }).then(clearSessionOn401)
   );
 
