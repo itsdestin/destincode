@@ -18,6 +18,10 @@ interface SpaceState {
   debounce: ReturnType<typeof setTimeout> | null;
   syncing: boolean;
   rerun: boolean;
+  // The in-flight sync's promise, so stop() can await it. Without this, quit
+  // teardown (and tests' temp-dir cleanup) races the git subprocesses a sync
+  // spawns — on Windows their cwd/file handles block directory removal.
+  current: Promise<void> | null;
 }
 
 // Coarse watcher-level filter only — intentionally narrower than the git layer's
@@ -64,7 +68,7 @@ export class SpaceSyncEngine {
       watcher.once('ready', () => resolve());
       watcher.once('error', () => resolve());
     });
-    const st: SpaceState = { space, watcher, debounce: null, syncing: false, rerun: false };
+    const st: SpaceState = { space, watcher, debounce: null, syncing: false, rerun: false, current: null };
     watcher.on('all', () => this.schedule(st));
     // A watcher that dies after startup (inotify exhaustion, permissions) must
     // surface as a sync error, not crash the app — an unhandled 'error' on a
@@ -86,26 +90,39 @@ export class SpaceSyncEngine {
     // rerun (the finally block below fires it) — extra requests coalesce.
     if (st.syncing) { st.rerun = true; return; }
     st.syncing = true;
-    try {
-      const pull = await this.transport.pull(space);
-      if (pull.conflictCopies.length) this.onEvent({ type: 'conflict', spaceId: space.id, copies: pull.conflictCopies });
-      const push = await this.transport.push(space, `sync from ${space.id}`);
-      if (push.oversize.length) this.onEvent({ type: 'oversize', spaceId: space.id, files: push.oversize });
-      this.onEvent({ type: 'synced', spaceId: space.id, pushed: push.pushed, updated: pull.updated });
-    } catch (e: any) {
-      this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e) });
-    } finally {
-      st.syncing = false;
-      if (st.rerun) { st.rerun = false; void this.syncSpace(space); }
-    }
+    // Keep the whole pull+push chain as a promise on the state so stop() can
+    // await an in-flight sync instead of resolving with git still running.
+    st.current = (async () => {
+      try {
+        const pull = await this.transport.pull(space);
+        if (pull.conflictCopies.length) this.onEvent({ type: 'conflict', spaceId: space.id, copies: pull.conflictCopies });
+        const push = await this.transport.push(space, `sync from ${space.id}`);
+        if (push.oversize.length) this.onEvent({ type: 'oversize', spaceId: space.id, files: push.oversize });
+        this.onEvent({ type: 'synced', spaceId: space.id, pushed: push.pushed, updated: pull.updated });
+      } catch (e: any) {
+        this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e) });
+      } finally {
+        st.syncing = false;
+        st.current = null;
+        if (st.rerun) { st.rerun = false; void this.syncSpace(space); }
+      }
+    })();
+    await st.current;
   }
 
   async stop(): Promise<void> {
     if (this.pollTimer) clearInterval(this.pollTimer);
-    for (const st of this.states.values()) {
+    // Snapshot then clear FIRST: a finishing sync's queued rerun re-enters
+    // syncSpace, which early-returns once the state map is empty — otherwise
+    // stop() could leave a fresh git chain running after it resolves.
+    const states = [...this.states.values()];
+    this.states.clear();
+    for (const st of states) {
       if (st.debounce) clearTimeout(st.debounce);
       await st.watcher.close();
+      // Await the in-flight sync: its git subprocesses hold handles inside the
+      // space root, which blocks folder removal on Windows (app quit, tests).
+      if (st.current) await st.current.catch(() => {});
     }
-    this.states.clear();
   }
 }

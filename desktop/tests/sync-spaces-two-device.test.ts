@@ -13,7 +13,11 @@ import type { SpaceSyncEvent } from '../src/main/sync-spaces/types';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-e2e-')); });
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => {
+  // Windows releases chokidar/git handles asynchronously after close() —
+  // retry the temp-dir removal instead of flaking on EPERM/ENOTEMPTY.
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+});
 
 it('laptop → desktop file propagation via engines', async () => {
   const bare = path.join(tmp, 'remote.git');
