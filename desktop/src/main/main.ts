@@ -20,6 +20,7 @@ import { setSyncService } from './sync-state';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
+import { registerSocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
@@ -1250,6 +1251,10 @@ app.whenReady().then(async () => {
   // never crosses the contextBridge into the renderer.
   const marketplaceAuthStore = createAuthStore(app.getPath('userData'));
   registerMarketplaceApiHandlers(marketplaceAuthStore);
+  // Accounts Phase 2 — social graph (friends/requests/blocks) IPC. Shares the
+  // same token-bound auth store; handlers live in a sibling module to keep the
+  // account file focused on auth + marketplace writes.
+  registerSocialHandlers(marketplaceAuthStore);
 
   createWindow(isFirstRun ? firstRunManager : undefined);
   registerDetachIpc();

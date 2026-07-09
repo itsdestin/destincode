@@ -64,6 +64,30 @@ export interface PostRatingInput {
   review_text?: string;
 }
 
+// ── Social graph (accounts Phase 2) — snake_case wire shapes from GET/POST /social/* ──
+// A minimal public card. handle/avatar_url may be null (handle unclaimed;
+// GitHub always sets an avatar, but the column is nullable so we mirror it).
+export interface SocialUserCard {
+  id: string;
+  display_name: string;
+  handle: string | null;
+  avatar_url: string | null;
+}
+// GET /social/friends returns a bare array of these (card + presence + friends-since).
+export interface FriendRow extends SocialUserCard {
+  last_seen_at: number | null;
+  created_at: number; // friendship row timestamp (friends-since), NOT account age
+}
+// GET /social/requests returns this object (both directions), NOT a bare array.
+export interface RequestsPayload {
+  incoming: Array<{ id: string; from: SocialUserCard; created_at: number }>;
+  outgoing: Array<{ id: string; to: SocialUserCard; created_at: number }>;
+}
+// GET /social/blocks returns a bare array of these (owner-only view).
+export interface BlockRow extends SocialUserCard {
+  created_at: number; // when I blocked them
+}
+
 export interface MarketplaceApiClient {
   getStats(): Promise<StatsResponse>;
   authStart(): Promise<AuthStartResponse>;
@@ -86,6 +110,36 @@ export interface MarketplaceApiClient {
   /** Fetch all visible ratings for a plugin. Unauthenticated; newest-first, LIMIT 50.
    *  Pass an AbortSignal to cancel in-flight requests on unmount or refresh. */
   listRatings(pluginId: string, signal?: AbortSignal): Promise<ListRatingsResponse>;
+
+  // ── Social graph (accounts Phase 2). All auth'd. The Worker 404s an unknown or
+  //    blocked handle (indistinguishable — no enumeration oracle), 429s on caps,
+  //    and 400s a self-request; those surface as MarketplaceApiError.status so the
+  //    handler layer can forward the code to the UI. ──
+  /** Exact-match handle lookup → one card. Throws 404 (unknown/blocked), 429 (cap). */
+  lookupHandle(handle: string): Promise<SocialUserCard>;
+  /** Send a friend request by handle. { status:"friends" } if already friends or the
+   *  target had a pending request to me (mutual-accept). Throws 404/400/429. */
+  sendRequest(handle: string): Promise<{ status: "pending" | "friends" }>;
+  /** Both directions of my pending requests. */
+  listRequests(): Promise<RequestsPayload>;
+  /** Accept an incoming request (recipient only; 404 otherwise). */
+  acceptRequest(id: string): Promise<void>;
+  /** Decline an incoming request (silent — sender is never notified). */
+  declineRequest(id: string): Promise<void>;
+  /** Cancel an outgoing request I sent. */
+  cancelRequest(id: string): Promise<void>;
+  /** My friends (card + last_seen_at + friends-since). */
+  listFriends(): Promise<FriendRow[]>;
+  /** Remove a friend by their account id (silent). */
+  unfriend(userId: string): Promise<void>;
+  /** Block a user by account id (severs friendship + clears requests both ways). */
+  block(userId: string): Promise<void>;
+  /** Remove a block by account id. */
+  unblock(userId: string): Promise<void>;
+  /** My block list (owner-only view). */
+  listBlocks(): Promise<BlockRow[]>;
+  /** Full account data export (GET /auth/export) — one large JSON object. */
+  exportData(): Promise<unknown>;
 }
 
 export function createMarketplaceApiClient(opts: {
@@ -192,5 +246,44 @@ export function createMarketplaceApiClient(opts: {
     // signal allows callers to cancel mid-flight on unmount or refreshKey change.
     listRatings: (plugin_id, signal?) =>
       request<ListRatingsResponse>(`/ratings/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
+
+    // ── Social graph (accounts Phase 2). All auth'd; path params URL-encoded. The
+    //    action endpoints (accept/decline/cancel/unfriend/block/unblock) return
+    //    { ok: true }; we discard it (async wrapper) since only success matters. ──
+    lookupHandle: (handle) =>
+      request<SocialUserCard>(`/social/users/${encodeURIComponent(handle)}`, { method: "GET", auth: true }),
+    sendRequest: (handle) =>
+      request<{ status: "pending" | "friends" }>("/social/requests", {
+        method: "POST",
+        body: JSON.stringify({ handle }),
+        auth: true,
+      }),
+    listRequests: () =>
+      request<RequestsPayload>("/social/requests", { method: "GET", auth: true }),
+    acceptRequest: async (id) => {
+      await request(`/social/requests/${encodeURIComponent(id)}/accept`, { method: "POST", auth: true });
+    },
+    declineRequest: async (id) => {
+      await request(`/social/requests/${encodeURIComponent(id)}/decline`, { method: "POST", auth: true });
+    },
+    cancelRequest: async (id) => {
+      await request(`/social/requests/${encodeURIComponent(id)}`, { method: "DELETE", auth: true });
+    },
+    listFriends: () =>
+      request<FriendRow[]>("/social/friends", { method: "GET", auth: true }),
+    unfriend: async (userId) => {
+      await request(`/social/friends/${encodeURIComponent(userId)}`, { method: "DELETE", auth: true });
+    },
+    // Body is snake_case { user_id } — the Worker reads body.user_id (POST /social/blocks).
+    block: async (userId) => {
+      await request("/social/blocks", { method: "POST", body: JSON.stringify({ user_id: userId }), auth: true });
+    },
+    unblock: async (userId) => {
+      await request(`/social/blocks/${encodeURIComponent(userId)}`, { method: "DELETE", auth: true });
+    },
+    listBlocks: () =>
+      request<BlockRow[]>("/social/blocks", { method: "GET", auth: true }),
+    exportData: () =>
+      request<unknown>("/auth/export", { method: "GET", auth: true }),
   };
 }

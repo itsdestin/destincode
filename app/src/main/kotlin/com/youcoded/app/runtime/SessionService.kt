@@ -153,6 +153,27 @@ class SessionService : Service() {
         put("display_name", user.displayName ?: JSONObject.NULL)
         put("handle",       user.handle ?: JSONObject.NULL)
     }
+
+    /**
+     * Write a text file into the public Downloads collection via MediaStore
+     * (used by account:export). WHY MediaStore: the Android WebView has no
+     * save-dialog path, and scoped storage (API 29+) blocks direct writes to the
+     * Downloads directory — RELATIVE_PATH targets Environment.DIRECTORY_DOWNLOADS.
+     * Caller MUST gate on Build.VERSION.SDK_INT >= 29 (MediaStore.Downloads is API 29+).
+     */
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.Q)
+    private fun writeExportToDownloads(filename: String, content: String) {
+        val resolver = applicationContext.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, filename)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json")
+            put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+        }
+        val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw java.io.IOException("could not create Downloads entry")
+        resolver.openOutputStream(uri)?.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+            ?: throw java.io.IOException("could not open Downloads output stream")
+    }
     /**
      * Callback for the Activity to open the device's browser at the given URL.
      * Follows the same deferred-callback pattern as onFilePickerRequested and
@@ -2611,6 +2632,40 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
+            "account:export" -> {
+                // WHY: Android WebView has no native save-dialog path (desktop opens
+                // dialog.showSaveDialog). We write the export JSON into the public
+                // Downloads collection via MediaStore, which requires API 29+ (minSdk
+                // is 28). Below 29, respond an error the renderer surfaces inline.
+                if (android.os.Build.VERSION.SDK_INT < 29) {
+                    msg.id?.let {
+                        bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", false).put("error", "export requires Android 10+"))
+                    }
+                } else {
+                    val result = marketplaceApiClient.exportData()
+                    val response: JSONObject = if (result is ApiResult.Ok) {
+                        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+                        val filename = "youcoded-account-export-$stamp.json"
+                        try {
+                            writeExportToDownloads(filename, result.value.toString(2))
+                            // Match desktop's { path } success shape (relative label — the
+                            // absolute MediaStore path isn't a plain filesystem path anyway).
+                            JSONObject().put("path", "Downloads/$filename")
+                        } catch (e: Exception) {
+                            android.util.Log.w("SessionService", "account:export write failed: ${e.message}")
+                            JSONObject().put("ok", false).put("error", (e.message ?: "failed to write export"))
+                        }
+                    } else {
+                        // Fetch failure — clear on 401 (dead session) and surface { ok:false }
+                        // like the desktop handler, preserving .status for the UI.
+                        clearSessionOn401(result)
+                        val err = result as ApiResult.Err
+                        JSONObject().put("ok", false).put("status", err.status).put("error", err.message)
+                    }
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
+                }
+            }
+
             // ── Marketplace write endpoints ───────────────────────────────────
 
             "marketplace:install" -> {
@@ -2662,6 +2717,91 @@ class SessionService : Service() {
                 msg.id?.let {
                     bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL })
                 }
+            }
+
+            // ── Social graph (accounts Phase 2) ─────────────────────────────────
+            // These social:* types mirror the desktop social-handlers.ts channels
+            // exactly (wire shapes via ApiResult.toJson). Payloads are object-wrapped
+            // by remote-shim.ts and read here via optString. Every handler clears the
+            // local session on a 401 (dead token) — desktop parity with clearSessionOn401.
+
+            "social:lookup-handle" -> {
+                // payload: { handle } (matches remote-shim.ts invoke call)
+                val result = marketplaceApiClient.lookupHandle(msg.payload.optString("handle", ""))
+                clearSessionOn401(result)
+                // value shape: a user card (JSONObject)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:send-request" -> {
+                // payload: { handle }
+                val result = marketplaceApiClient.sendRequest(msg.payload.optString("handle", ""))
+                clearSessionOn401(result)
+                // value shape: { status: "pending" | "friends" }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:list-requests" -> {
+                val result = marketplaceApiClient.listRequests()
+                clearSessionOn401(result)
+                // value shape: { incoming: [...], outgoing: [...] }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:accept-request" -> {
+                // payload: { id }
+                val result = marketplaceApiClient.acceptRequest(msg.payload.optString("id", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:decline-request" -> {
+                // payload: { id }
+                val result = marketplaceApiClient.declineRequest(msg.payload.optString("id", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:cancel-request" -> {
+                // payload: { id }
+                val result = marketplaceApiClient.cancelRequest(msg.payload.optString("id", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:list-friends" -> {
+                val result = marketplaceApiClient.listFriends()
+                clearSessionOn401(result)
+                // value shape: bare array of FriendRow (toJson has a JSONArray branch)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:unfriend" -> {
+                // payload: { userId }
+                val result = marketplaceApiClient.unfriend(msg.payload.optString("userId", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:block" -> {
+                // payload: { userId } — the client sends the Worker's snake_case { user_id }
+                val result = marketplaceApiClient.block(msg.payload.optString("userId", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:unblock" -> {
+                // payload: { userId }
+                val result = marketplaceApiClient.unblock(msg.payload.optString("userId", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:list-blocks" -> {
+                val result = marketplaceApiClient.listBlocks()
+                clearSessionOn401(result)
+                // value shape: bare array of BlockRow
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
             // ── Settings → Development IPC handlers ──────────────────────────────

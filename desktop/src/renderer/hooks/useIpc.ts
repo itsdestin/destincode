@@ -144,6 +144,25 @@ declare global {
         updateProfile: (displayName: string) => Promise<ApiResult<{ display_name: string }>>;
         setHandle: (handle: string) => Promise<ApiResult<{ handle: string }>>;
         deleteAccount: () => Promise<ApiResult<void>>;
+        // Export all account data (GET /auth/export). Not ApiResult — resolves to
+        // { path } on save, { canceled: true } on cancel, { ok:false, ... } on error.
+        exportData: () => Promise<{ path: string } | { canceled: true } | { ok: false; status: number; error: string }>;
+      };
+      // Social graph (accounts Phase 2). All return ApiResult so callers can read
+      // .status (404 unknown/blocked handle, 429 caps, 400 self-request). Payload
+      // types live in renderer/state (importable — same renderer boundary).
+      social: {
+        lookupHandle: (handle: string) => Promise<ApiResult<import('../state/marketplace-api-client').SocialUserCard>>;
+        sendRequest: (handle: string) => Promise<ApiResult<{ status: 'pending' | 'friends' }>>;
+        listRequests: () => Promise<ApiResult<import('../state/marketplace-api-client').RequestsPayload>>;
+        acceptRequest: (id: string) => Promise<ApiResult<void>>;
+        declineRequest: (id: string) => Promise<ApiResult<void>>;
+        cancelRequest: (id: string) => Promise<ApiResult<void>>;
+        listFriends: () => Promise<ApiResult<import('../state/marketplace-api-client').FriendRow[]>>;
+        unfriend: (userId: string) => Promise<ApiResult<void>>;
+        block: (userId: string) => Promise<ApiResult<void>>;
+        unblock: (userId: string) => Promise<ApiResult<void>>;
+        listBlocks: () => Promise<ApiResult<import('../state/marketplace-api-client').BlockRow[]>>;
       };
       // Fix: expose marketplaceApi on Window.claude so Tasks 9-12 can call install,
       // rate, deleteRating, likeTheme, and report without (window as any) casts.

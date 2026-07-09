@@ -3,7 +3,8 @@
 // All operations requiring the bearer token live here in the main process —
 // tokens never cross the contextBridge into the renderer bundle.
 
-import { ipcMain, shell } from "electron";
+import { ipcMain, shell, dialog } from "electron";
+import fs from "fs";
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
 import { createMarketplaceApiClient, MarketplaceApiError, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
 import type { PostRatingInput, AuthStartResponse, AuthPollResponse } from "../renderer/state/marketplace-api-client";
@@ -44,6 +45,7 @@ const CHANNELS = [
   "account:update-profile",
   "account:set-handle",
   "account:delete",
+  "account:export",
   "marketplace:install",
   "marketplace:rate",
   "marketplace:rate:delete",
@@ -198,6 +200,36 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       store.signOut();
     }).then(clearSessionOn401)
   );
+
+  // Export all account data (GET /auth/export → one big JSON object). Desktop
+  // opens a native save dialog and writes the file pretty-printed. NOT wrapped in
+  // ApiResult — the renderer discriminates the union without a try/catch: a
+  // successful save returns { path }, a canceled dialog returns { canceled: true },
+  // and a fetch failure returns { ok:false, status, error } (Android mirrors this
+  // shape, writing to the public Downloads collection instead of a save dialog).
+  ipcMain.handle("account:export", async (): Promise<
+    { path: string } | { canceled: true } | { ok: false; status: number; error: string }
+  > => {
+    let data: unknown;
+    try {
+      data = await client.exportData();
+    } catch (e) {
+      if (e instanceof MarketplaceApiError) {
+        if (e.status === 401) store.signOut(); // dead session → flip UI signed-out
+        return { ok: false, status: e.status, error: e.message };
+      }
+      return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+    const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: "Export account data",
+      defaultPath: `youcoded-account-export-${stamp}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (canceled || !filePath) return { canceled: true };
+    await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
+    return { path: filePath };
+  });
 
   // ── Write endpoints ───────────────────────────────────────────────────────
   // Wrapped in ApiResult so the renderer preserves HTTP status across the
