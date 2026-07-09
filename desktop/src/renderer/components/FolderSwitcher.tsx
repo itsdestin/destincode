@@ -49,7 +49,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
         onChange(list[0].path);
       }
     } catch {}
-  }, [value, onChange]);
+  }, [value, onChange, autoSelect]);
 
   useEffect(() => { load(); }, [load]);
 
