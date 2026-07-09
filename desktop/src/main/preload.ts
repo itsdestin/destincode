@@ -169,6 +169,7 @@ const IPC = {
   SYNC_SPACES_ENABLE: 'syncspaces:enable',
   SYNC_SPACES_SYNC_NOW: 'syncspaces:sync-now',
   SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
+  SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Restore from backup (directional pull — see restore-service.ts)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
@@ -658,6 +659,9 @@ contextBridge.exposeInMainWorld('claude', {
     enable: (enabled: boolean) => ipcRenderer.invoke(IPC.SYNC_SPACES_ENABLE, enabled),
     syncNow: () => ipcRenderer.invoke(IPC.SYNC_SPACES_SYNC_NOW),
     createProject: (name: string) => ipcRenderer.invoke(IPC.SYNC_SPACES_CREATE_PROJECT, name),
+    // Spec §3 import: move an existing folder into ~/YouCoded/Projects/<name>.
+    importProject: (sourcePath: string, name: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_IMPORT_PROJECT, sourcePath, name),
     // Returns an unsubscribe function — callers MUST invoke it on unmount to
     // avoid leaking listeners across mounts (matches restore.onProgress above).
     onEvent: (cb: (e: unknown) => void) => {

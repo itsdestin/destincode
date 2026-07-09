@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
+import ImportProjectModal from './ImportProjectModal';
 
 interface SavedFolder {
   path: string;
@@ -35,6 +36,10 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
   const [newProjectName, setNewProjectName] = useState('');
   const [projectError, setProjectError] = useState<string | null>(null);
 
+  // Import-existing-folder flow (spec §3): which folder the consent modal is
+  // showing for. Set by the row action (flow 1) or the picker button (flow 2).
+  const [importTarget, setImportTarget] = useState<{ sourcePath: string; defaultName: string } | null>(null);
+
   const load = useCallback(async () => {
     try {
       const list = await (window as any).claude.folders.list();
@@ -44,7 +49,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
         onChange(list[0].path);
       }
     } catch {}
-  }, [value, onChange]);
+  }, [value, onChange, autoSelect]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -106,6 +111,36 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
       setProjectError(String(err?.message ?? err));
     }
   }, [newProjectName, load, onChange]);
+
+  // Import flow 1: the per-row "Sync this project" hover action. Seeds the
+  // consent modal with the existing folder's path + its basename as the
+  // default project name. stopPropagation so the row-click select doesn't fire.
+  const startImportForRow = useCallback((e: React.MouseEvent, folder: SavedFolder) => {
+    e.stopPropagation();
+    const base = folder.path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? folder.nickname;
+    setImportTarget({ sourcePath: folder.path, defaultName: base });
+  }, []);
+
+  // Import flow 2: pick any on-device folder via the native picker, then open
+  // the consent modal for it. Empty catch: cancelling the dialog is not an error.
+  const startImportFromPicker = useCallback(async () => {
+    try {
+      const folder = await (window as any).claude.dialog.openFolder();
+      if (!folder) return;
+      const base = folder.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? '';
+      setImportTarget({ sourcePath: folder, defaultName: base });
+    } catch {}
+  }, []);
+
+  // After a successful move: close the modal, reload the list, and select the
+  // project at its NEW home (also covers the case where the moved folder was
+  // the current selection — the old path no longer exists on disk).
+  const handleImportDone = useCallback(async (newPath: string) => {
+    setImportTarget(null);
+    await load();
+    onChange(newPath);
+    setOpen(false);
+  }, [load, onChange]);
 
   const handleSelect = useCallback((path: string) => {
     onChange(path);
@@ -239,6 +274,19 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
                     {/* Action buttons — visible on hover */}
                     {!isEditing && (
                       <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover/folder:opacity-100 transition-opacity">
+                        {/* Sync this project (spec §3 flow 1) — move into ~/YouCoded/Projects/.
+                            Only for real, non-managed folders: managed ones already sync. */}
+                        {f.exists && !f.managed && (
+                          <button
+                            onClick={(e) => startImportForRow(e, f)}
+                            className="w-5 h-5 flex items-center justify-center rounded-sm text-fg-faint hover:text-fg hover:bg-inset transition-colors"
+                            title="Sync this project (moves it into ~/YouCoded/Projects/)"
+                          >
+                            <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M5.5 9a7.5 7.5 0 0113-2.5M18.5 15a7.5 7.5 0 01-13 2.5" />
+                            </svg>
+                          </button>
+                        )}
                         {/* Rename */}
                         <button
                           onClick={(e) => handleStartRename(e, f)}
@@ -300,9 +348,29 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
                 </button>
               </div>
               {projectError && <div className="text-xs text-red-500 mt-1">{projectError}</div>}
+
+              {/* Spec §3 flow 2: import any on-device folder via the native picker. */}
+              <button
+                onClick={() => void startImportFromPicker()}
+                className="mt-1.5 w-full text-left text-[11px] text-fg-dim hover:text-fg transition-colors"
+              >
+                or move an existing folder into sync…
+              </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Consent modal — rendered OUTSIDE the {open && (…)} dropdown so it
+          survives the dropdown's outside-click close (mousedown outside
+          wrapperRef closes the dropdown; the modal must stay up). */}
+      {importTarget && (
+        <ImportProjectModal
+          sourcePath={importTarget.sourcePath}
+          defaultName={importTarget.defaultName}
+          onClose={() => setImportTarget(null)}
+          onDone={(p) => void handleImportDone(p)}
+        />
       )}
     </div>
   );

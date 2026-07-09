@@ -24,7 +24,7 @@ import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend, getSyncService, type SyncWarning } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
-  syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, getManagedRoots,
+  syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, getManagedRoots,
 } from './sync-spaces/service';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
@@ -40,6 +40,8 @@ import { getChangelog } from './changelog-service';
 // ~/.claude/youcoded-analytics.json; runAnalyticsOnLaunch (wired in main.ts)
 // short-circuits when optIn is false.
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
+// Saved-folder store — extracted so sync-spaces/ can share the reader/writer.
+import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
@@ -776,29 +778,10 @@ export function registerIpcHandlers(
   });
 
   // --- Folder switcher persistence ---
-  const foldersPrefPath = path.join(os.homedir(), '.claude', 'youcoded-folders.json');
-
-  interface SavedFolder {
-    path: string;
-    nickname: string;
-    addedAt: number;
-  }
-
-  function readFolders(): SavedFolder[] {
-    try {
-      const raw = fs.readFileSync(foldersPrefPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-
-  function writeFolders(folders: SavedFolder[]) {
-    fs.mkdirSync(path.dirname(foldersPrefPath), { recursive: true });
-    fs.writeFileSync(foldersPrefPath, JSON.stringify(folders, null, 2));
-  }
-
+  // Reader/writer + SavedFolder type now live in ./saved-folders (imported
+  // above) so the sync-spaces import flow can rewrite an entry when a folder
+  // moves. The FOLDERS_* handlers below call the no-arg forms, which default
+  // to the same ~/.claude/youcoded-folders.json path.
   ipcMain.handle(IPC.FOLDERS_LIST, async () => {
     let folders = readFolders();
     // Seed with home directory on first use
@@ -807,10 +790,17 @@ export function registerIpcHandlers(
       folders = [{ path: home, nickname: 'Home', addedAt: Date.now() }];
       writeFolders(folders);
     }
-    // Annotate each folder with whether the path still exists on disk
+    // Annotate each folder with whether the path still exists on disk.
+    // A saved folder that lives under ~/YouCoded/Projects/ IS a managed sync
+    // project (the import flow rewrites saved entries to their new managed
+    // path) — badge it like the synthesized managed rows below.
+    const projectsRoot = getManagedRoots()?.projectsRoot;
+    const projectsPrefix = projectsRoot ? path.resolve(projectsRoot).toLowerCase() + path.sep : null;
     const result: any[] = folders.map(f => ({
       ...f,
       exists: fs.existsSync(f.path),
+      ...(projectsPrefix && path.resolve(f.path).toLowerCase().startsWith(projectsPrefix)
+        ? { managed: true } : {}),
     }));
     // Managed projects (spec §3) always appear in the session-creation picker,
     // deduped against saved folders by normalized path. `managed: true` lets
@@ -1927,6 +1917,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SYNC_SPACES_ENABLE, (_e, enabled: boolean) => syncSpacesEnable(!!enabled));
   ipcMain.handle(IPC.SYNC_SPACES_SYNC_NOW, () => syncSpacesSyncNow());
   ipcMain.handle(IPC.SYNC_SPACES_CREATE_PROJECT, (_e, name: string) => syncSpacesCreateProject(String(name ?? '')));
+  ipcMain.handle(IPC.SYNC_SPACES_IMPORT_PROJECT, (_e, sourcePath: string, name: string) =>
+    // Live-cwd guard input: the folder must not move under a running session.
+    syncSpacesImportProject(String(sourcePath ?? ''), String(name ?? ''),
+      sessionManager.listSessions().filter(s => s.status !== 'destroyed').map(s => s.cwd)));
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));
@@ -2092,7 +2086,8 @@ export function registerIpcHandlers(
     try {
       const result = await installWorkspace(send);
       // Register the workspace as a known project folder.
-      // readFolders / writeFolders / SavedFolder are already in scope above.
+      // readFolders / writeFolders / SavedFolder come from the ./saved-folders
+      // module imported at the top of this file (no-arg = default store path).
       try {
         const normalized = path.resolve(result.path);
         const folders = readFolders();

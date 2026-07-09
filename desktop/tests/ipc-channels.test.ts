@@ -497,6 +497,7 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     ['syncspaces:enable', 'IPC.SYNC_SPACES_ENABLE'],
     ['syncspaces:sync-now', 'IPC.SYNC_SPACES_SYNC_NOW'],
     ['syncspaces:create-project', 'IPC.SYNC_SPACES_CREATE_PROJECT'],
+    ['syncspaces:import-project', 'IPC.SYNC_SPACES_IMPORT_PROJECT'],
   ];
   const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
   const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
