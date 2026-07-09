@@ -365,7 +365,7 @@ function WaitingScreen({ connection }: Props) {
 // in-app browser sign-in (no terminal / gh CLI needed); the lobby hook reacts to
 // the sign-in flipping and connects automatically once it completes.
 function SignInScreen() {
-  const { signInPending, startSignIn } = useAccount();
+  const { signInPending, signInError, startSignIn } = useAccount();
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
@@ -383,6 +383,10 @@ function SignInScreen() {
       >
         {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
       </button>
+      {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
+      {signInError && !signInPending && (
+        <p className="text-xs text-red-400 text-center max-w-xs">Sign-in failed: {signInError}. Try again.</p>
+      )}
     </div>
   );
 }

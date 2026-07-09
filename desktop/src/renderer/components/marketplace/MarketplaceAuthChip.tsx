@@ -31,7 +31,7 @@ function GitHubMark({ size = 16 }: { size?: number }) {
 }
 
 export default function MarketplaceAuthChip() {
-  const { signedIn, user, signInPending, startSignIn, signOut } = useAccount();
+  const { signedIn, user, signInPending, signInError, startSignIn, signOut } = useAccount();
   const [popoverOpen, setPopoverOpen] = useState(false);
   // Avatar load failure → fall back to the octocat so we never render a broken image
   const [avatarFailed, setAvatarFailed] = useState(false);
@@ -67,7 +67,11 @@ export default function MarketplaceAuthChip() {
     ? `Signed in as @${user?.login ?? "github user"}`
     : signInPending
       ? "Sign-in pending — complete in your browser"
-      : "Sign in with GitHub";
+      // knowledge-debt #6: reflect a failed sign-in in the tooltip too (the chip is
+      // an icon; the anchored error popover below carries the full message).
+      : signInError
+        ? `Sign-in failed: ${signInError}. Click to try again.`
+        : "Sign in with GitHub";
 
   return (
     <div ref={wrapperRef} className="relative shrink-0">
@@ -99,6 +103,18 @@ export default function MarketplaceAuthChip() {
           <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 ring-1 ring-canvas animate-pulse" />
         )}
       </button>
+
+      {/* knowledge-debt #6: signed-out sign-in error — anchored under the chip so a
+          failed sign-in isn't silently swallowed. No scrim (matches the signed-in popover). */}
+      {signInError && !signedIn && !signInPending && (
+        <div
+          role="alert"
+          className="layer-surface absolute left-0 top-full mt-2 min-w-[200px] max-w-[260px] rounded-md p-2 text-xs shadow-md"
+          style={{ zIndex: 62 }}
+        >
+          <span className="text-red-400">Sign-in failed: {signInError}. Click the icon to try again.</span>
+        </div>
+      )}
 
       {/* Signed-in popover — anchored under the chip, no scrim */}
       {popoverOpen && signedIn && (

@@ -201,6 +201,7 @@ const IPC = {
   ACCOUNT_POLL: 'account:poll',
   ACCOUNT_SIGNED_IN: 'account:signed-in',
   ACCOUNT_USER: 'account:user',
+  ACCOUNT_REFRESH: 'account:refresh',
   ACCOUNT_SIGN_OUT: 'account:sign-out',
   ACCOUNT_UPDATE_PROFILE: 'account:update-profile',
   ACCOUNT_SET_HANDLE: 'account:set-handle',
@@ -444,6 +445,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.ACCOUNT_SIGNED_IN),
     user: (): Promise<MarketplaceUser | null> =>
       ipcRenderer.invoke(IPC.ACCOUNT_USER),
+    // Force a /auth/me round-trip and return the fresh profile (null if signed
+    // out or 401-cleared). No ApiResult wrapper — same raw shape as user().
+    refresh: (): Promise<MarketplaceUser | null> =>
+      ipcRenderer.invoke(IPC.ACCOUNT_REFRESH),
     signOut: (): Promise<void> =>
       ipcRenderer.invoke(IPC.ACCOUNT_SIGN_OUT),
     updateProfile: (displayName: string): Promise<ApiResult<{ display_name: string }>> =>

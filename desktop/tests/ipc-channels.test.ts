@@ -132,7 +132,7 @@ describe('dev:* channel parity', () => {
 describe('account:* channel parity', () => {
   const NEW_TYPES = [
     'account:start', 'account:poll', 'account:signed-in', 'account:user',
-    'account:sign-out', 'account:update-profile', 'account:set-handle', 'account:delete',
+    'account:refresh', 'account:sign-out', 'account:update-profile', 'account:set-handle', 'account:delete',
   ];
   const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
 

@@ -89,7 +89,7 @@ export default function RatingSubmitModal({
   onClose,
   onSubmitted,
 }: RatingSubmitModalProps) {
-  const { signedIn, startSignIn } = useAccount();
+  const { signedIn, startSignIn, signInError } = useAccount();
   const { refresh: refreshStats } = useMarketplaceStats();
 
   const [stars, setStars] = useState<number | null>(null);
@@ -266,6 +266,10 @@ export default function RatingSubmitModal({
             >
               Sign in with GitHub
             </button>
+            {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
+            {signInError && (
+              <p className="text-xs text-red-400 text-center">Sign-in failed: {signInError}. Try again.</p>
+            )}
           </div>
         ) : (
           // ── Signed-in form ──────────────────────────────────────────────────

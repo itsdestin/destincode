@@ -138,6 +138,8 @@ declare global {
         >>;
         signedIn: () => Promise<boolean>;
         user: () => Promise<import('../../main/marketplace-auth-store').MarketplaceUser | null>;
+        // Force a /auth/me round-trip; returns the fresh profile or null (401-cleared).
+        refresh: () => Promise<import('../../main/marketplace-auth-store').MarketplaceUser | null>;
         signOut: () => Promise<void>;
         updateProfile: (displayName: string) => Promise<ApiResult<{ display_name: string }>>;
         setHandle: (handle: string) => Promise<ApiResult<{ handle: string }>>;

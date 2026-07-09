@@ -39,6 +39,7 @@ const CHANNELS = [
   "account:poll",
   "account:signed-in",
   "account:user",
+  "account:refresh",
   "account:sign-out",
   "account:update-profile",
   "account:set-handle",
@@ -132,6 +133,32 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       return null;
     }
   });
+  // Force-revalidate the cached profile against /auth/me. Unlike account:user
+  // (which only heals when the cache is empty), this ALWAYS re-fetches — so a
+  // profile change made on another device (a rename, a newly-claimed @handle)
+  // reaches this client without a sign-out/in cycle (knowledge-debt #8). Returns
+  // the fresh user, or null when signed out / the session was 401-cleared.
+  ipcMain.handle("account:refresh", async () => {
+    const token = store.getToken();
+    if (!token) return null;
+    try {
+      const stored = toStoredUser(await client.authMe());
+      store.setSession(token, stored);
+      return stored;
+    } catch (e) {
+      // A 401 means the stored token is dead server-side — clear the local
+      // session so the UI flips to signed-out (same rationale as clearSessionOn401).
+      // Any OTHER failure (offline, parse) leaves the token AND cached profile
+      // untouched, and returns the cached user: a transient network blip must not
+      // blank a signed-in UI (the renderer's focus/interval revalidation retries).
+      if (e instanceof MarketplaceApiError && e.status === 401) {
+        store.signOut();
+        return null;
+      }
+      return store.getUser();
+    }
+  });
+
   // Sign-out now revokes server-side too (spec §1) — best-effort: if the
   // Worker is unreachable, the local clear still wins (never trap the user
   // signed-in). The 90-day expiry + prune cron mop up the orphaned row.

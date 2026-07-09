@@ -141,6 +141,18 @@ class SessionService : Service() {
     private fun clearSessionOn401(result: ApiResult<*>) {
         if (result is ApiResult.Err && result.status == 401) marketplaceAuthStore.signOut()
     }
+
+    /**
+     * Serialize a stored profile to the snake_case wire shape React reads (matches
+     * the desktop stored MarketplaceUser). Shared by account:user and account:refresh.
+     */
+    private fun accountUserJson(user: MarketplaceUser): JSONObject = JSONObject().apply {
+        put("id",           user.id)
+        put("login",        user.login)
+        put("avatar_url",   user.avatarUrl)
+        put("display_name", user.displayName ?: JSONObject.NULL)
+        put("handle",       user.handle ?: JSONObject.NULL)
+    }
     /**
      * Callback for the Activity to open the device's browser at the given URL.
      * Follows the same deferred-callback pattern as onFilePickerRequested and
@@ -2497,6 +2509,46 @@ class SessionService : Service() {
                     }
                 } else {
                     JSONObject.NULL
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+
+            "account:refresh" -> {
+                // Force-revalidate the cached profile against /auth/me. Unlike
+                // account:user (which heals ONLY when the cache is empty), this ALWAYS
+                // re-fetches — so a rename or newly-claimed @handle made on another
+                // device reaches this client without a sign-out/in cycle (knowledge-debt #8).
+                // WHY capture the token BEFORE the suspend: authMe() can take up to 30s;
+                // a sign-out processed during that window would make a re-read + `!!`
+                // throw NPE. Desktop parity: marketplace-api-handlers.ts account:refresh.
+                val refreshToken = marketplaceAuthStore.getToken()
+                val result: Any = if (refreshToken == null) {
+                    JSONObject.NULL
+                } else {
+                    val me = marketplaceApiClient.authMe()
+                    if (me is ApiResult.Ok) {
+                        val fresh = MarketplaceUser(
+                            id        = me.value.optString("id"),
+                            login     = me.value.optString("login"),
+                            avatarUrl = me.value.optString("avatar_url", ""),
+                            // isNull() checks — optString(name, null) is a Java-null trap.
+                            displayName = if (me.value.isNull("display_name")) null else me.value.optString("display_name"),
+                            handle      = if (me.value.isNull("handle")) null else me.value.optString("handle"),
+                        )
+                        marketplaceAuthStore.setSession(refreshToken, fresh)
+                        accountUserJson(fresh)
+                    } else if (me is ApiResult.Err && me.status == 401) {
+                        // Dead token server-side — clear the local session so the UI flips
+                        // signed-out (desktop parity with clearSessionOn401). Respond null.
+                        marketplaceAuthStore.signOut()
+                        JSONObject.NULL
+                    } else {
+                        // Any other failure (offline, parse) leaves the session untouched.
+                        // Respond with the CACHED profile so a network blip can't blank a
+                        // signed-in UI — the renderer's focus/interval revalidation retries.
+                        val cached = marketplaceAuthStore.getUser()
+                        if (cached != null) accountUserJson(cached) else JSONObject.NULL
+                    }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }

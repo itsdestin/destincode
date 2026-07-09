@@ -795,6 +795,8 @@ export function installShim(): void {
         invoke('account:poll', { deviceCode }),
       signedIn: (): Promise<boolean> => invoke('account:signed-in'),
       user: (): Promise<MarketplaceUser | null> => invoke('account:user'),
+      // Force a /auth/me round-trip; returns the fresh profile or null (401-cleared).
+      refresh: (): Promise<MarketplaceUser | null> => invoke('account:refresh'),
       signOut: (): Promise<void> => invoke('account:sign-out'),
       updateProfile: (displayName: string): Promise<ApiResult<unknown>> =>
         invoke('account:update-profile', { displayName }),
