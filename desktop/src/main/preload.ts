@@ -164,6 +164,12 @@ const IPC = {
   SYNC_FORCE: 'sync:force',
   SYNC_GET_LOG: 'sync:get-log',
   SYNC_DISMISS_WARNING: 'sync:dismiss-warning',
+  // Cross-device sync spaces (spec 2026-07-03) — distinct from the legacy sync:* above
+  SYNC_SPACES_STATUS: 'syncspaces:status',
+  SYNC_SPACES_ENABLE: 'syncspaces:enable',
+  SYNC_SPACES_SYNC_NOW: 'syncspaces:sync-now',
+  SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
+  SYNC_SPACES_EVENT: 'syncspaces:event',
   // Restore from backup (directional pull — see restore-service.ts)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
   SYNC_RESTORE_PREVIEW: 'sync:restore:preview',
@@ -642,6 +648,22 @@ contextBridge.exposeInMainWorld('claude', {
         ipcRenderer.on(IPC.SYNC_RESTORE_PROGRESS, handler);
         return () => ipcRenderer.removeListener(IPC.SYNC_RESTORE_PROGRESS, handler);
       },
+    },
+  },
+  // Cross-device sync spaces (spec 2026-07-03) — the new folder-based sync
+  // engine. Kept as its own namespace so it never entangles with the legacy
+  // sync.* backup API above.
+  syncSpaces: {
+    status: () => ipcRenderer.invoke(IPC.SYNC_SPACES_STATUS),
+    enable: (enabled: boolean) => ipcRenderer.invoke(IPC.SYNC_SPACES_ENABLE, enabled),
+    syncNow: () => ipcRenderer.invoke(IPC.SYNC_SPACES_SYNC_NOW),
+    createProject: (name: string) => ipcRenderer.invoke(IPC.SYNC_SPACES_CREATE_PROJECT, name),
+    // Returns an unsubscribe function — callers MUST invoke it on unmount to
+    // avoid leaking listeners across mounts (matches restore.onProgress above).
+    onEvent: (cb: (e: unknown) => void) => {
+      const listener = (_: unknown, e: unknown) => cb(e);
+      ipcRenderer.on(IPC.SYNC_SPACES_EVENT, listener);
+      return () => ipcRenderer.removeListener(IPC.SYNC_SPACES_EVENT, listener);
     },
   },
   getFavorites: () => ipcRenderer.invoke('favorites:get'),

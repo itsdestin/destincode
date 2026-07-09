@@ -22,6 +22,10 @@ import { isBundledPlugin } from '../shared/bundled-plugins';
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend, getSyncService, type SyncWarning } from './sync-state';
+// Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
+import {
+  syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, getManagedRoots,
+} from './sync-spaces/service';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
@@ -804,10 +808,21 @@ export function registerIpcHandlers(
       writeFolders(folders);
     }
     // Annotate each folder with whether the path still exists on disk
-    return folders.map(f => ({
+    const result: any[] = folders.map(f => ({
       ...f,
       exists: fs.existsSync(f.path),
     }));
+    // Managed projects (spec §3) always appear in the session-creation picker,
+    // deduped against saved folders by normalized path. `managed: true` lets
+    // the renderer badge them. addedAt:0 sorts them below user-added folders.
+    const managed = getManagedRoots()?.listProjects() ?? [];
+    const known = new Set(result.map(f => path.resolve(f.path).toLowerCase()));
+    for (const p of managed) {
+      if (!known.has(path.resolve(p.path).toLowerCase())) {
+        result.push({ path: p.path, nickname: p.name, addedAt: 0, exists: true, managed: true });
+      }
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.FOLDERS_ADD, async (_event, folderPath: string, nickname?: string) => {
@@ -1904,6 +1919,14 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SYNC_FORCE, () => forceSync());
   ipcMain.handle(IPC.SYNC_GET_LOG, (_e, lines) => getSyncLog(lines));
   ipcMain.handle(IPC.SYNC_DISMISS_WARNING, (_e, warning) => dismissWarning(warning));
+
+  // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine,
+  // distinct from the legacy sync:* backup control plane above. The service
+  // module owns the singleton engine/manager/roots.
+  ipcMain.handle(IPC.SYNC_SPACES_STATUS, () => syncSpacesStatus());
+  ipcMain.handle(IPC.SYNC_SPACES_ENABLE, (_e, enabled: boolean) => syncSpacesEnable(!!enabled));
+  ipcMain.handle(IPC.SYNC_SPACES_SYNC_NOW, () => syncSpacesSyncNow());
+  ipcMain.handle(IPC.SYNC_SPACES_CREATE_PROJECT, (_e, name: string) => syncSpacesCreateProject(String(name ?? '')));
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));

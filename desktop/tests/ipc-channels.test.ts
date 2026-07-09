@@ -483,3 +483,35 @@ describe('project:* channel parity', () => {
     for (const t of NEW_TYPES) expect(kt).toContain(`"${t}"`);
   });
 });
+
+// Cross-device sync spaces (spec 2026-07-03). Desktop-only in Phase 1a — no
+// Android surface yet — so parity is asserted across the four DESKTOP surfaces:
+// preload.ts, remote-shim.ts, ipc-handlers.ts, and remote-server.ts. preload
+// (inlined IPC object), remote-shim (invoke literal), and remote-server (switch
+// case) carry the literal string; ipc-handlers registers via the IPC.* constant
+// (matching the existing sync:* handlers), so its check maps to the constant
+// name — same "accepts the constant form" pattern as the artifact parity test.
+describe('syncspaces:* channel parity (desktop surfaces)', () => {
+  const channels: Array<[string, string]> = [
+    ['syncspaces:status', 'IPC.SYNC_SPACES_STATUS'],
+    ['syncspaces:enable', 'IPC.SYNC_SPACES_ENABLE'],
+    ['syncspaces:sync-now', 'IPC.SYNC_SPACES_SYNC_NOW'],
+    ['syncspaces:create-project', 'IPC.SYNC_SPACES_CREATE_PROJECT'],
+  ];
+  const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
+  const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
+  const handlers = fs.readFileSync(path.join(__dirname, '../src/main/ipc-handlers.ts'), 'utf8');
+  const remoteServer = fs.readFileSync(path.join(__dirname, '../src/main/remote-server.ts'), 'utf8');
+  for (const [ch, constant] of channels) {
+    it(`${ch} present in preload, remote-shim, ipc-handlers, remote-server`, () => {
+      expect(preload).toContain(ch);
+      expect(shim).toContain(ch);
+      expect(handlers).toContain(constant);
+      expect(remoteServer).toContain(ch);
+    });
+  }
+  it('syncspaces:event push channel present in preload + remote-shim', () => {
+    expect(preload).toContain('syncspaces:event');
+    expect(shim).toContain('syncspaces:event');
+  });
+});

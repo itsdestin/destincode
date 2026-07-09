@@ -248,6 +248,12 @@ function handleMessage(data: string): void {
       // window.claude.sync.restore.onProgress(). Broadcast (no sessionId).
       dispatchEvent('sync:restore:progress', payload);
       break;
+    case 'syncspaces:event':
+      // Cross-device sync-space engine events (synced/conflict/oversize/error)
+      // flow to any listener registered via window.claude.syncSpaces.onEvent().
+      // Broadcast (no sessionId).
+      dispatchEvent('syncspaces:event', payload);
+      break;
     case 'chat:hydrate':
       // Full chat state snapshot sent by the host when a remote client connects.
       // Dispatched into the chat reducer via window.claude.on.chatHydrate in App.tsx.
@@ -1007,6 +1013,21 @@ export function installShim(): void {
           addListener('sync:restore:progress', handler);
           return () => removeListener('sync:restore:progress', handler);
         },
+      },
+    },
+    // Cross-device sync spaces (spec 2026-07-03). Same shared shape as
+    // preload.ts syncSpaces so React components render identically on remote
+    // browsers + Android (PITFALLS parity rule). onEvent returns an
+    // unsubscribe function to match preload's shape.
+    syncSpaces: {
+      status: () => invoke('syncspaces:status'),
+      enable: (enabled: boolean) => invoke('syncspaces:enable', { enabled }),
+      syncNow: () => invoke('syncspaces:sync-now'),
+      createProject: (name: string) => invoke('syncspaces:create-project', { name }),
+      onEvent: (cb: (e: unknown) => void) => {
+        const handler: Callback = (e: any) => cb(e);
+        addListener('syncspaces:event', handler);
+        return () => removeListener('syncspaces:event', handler);
       },
     },
     folders: {

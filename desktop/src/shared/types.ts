@@ -762,6 +762,12 @@ export const IPC = {
   SYNC_FORCE: 'sync:force',
   SYNC_GET_LOG: 'sync:get-log',
   SYNC_DISMISS_WARNING: 'sync:dismiss-warning',
+  // Cross-device sync spaces (spec 2026-07-03) — distinct from the legacy sync:* above
+  SYNC_SPACES_STATUS: 'syncspaces:status',
+  SYNC_SPACES_ENABLE: 'syncspaces:enable',
+  SYNC_SPACES_SYNC_NOW: 'syncspaces:sync-now',
+  SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
+  SYNC_SPACES_EVENT: 'syncspaces:event',
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',
   WINDOW_DIRECTORY_UPDATED: 'window:directory-updated',
