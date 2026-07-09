@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useGameDispatch, useGameState } from '../state/game-context';
-import { useAccount } from '../state/account-context';
 import { PartyClient } from '../game/party-client';
 import { createBoard, dropPiece, checkWin, checkDraw } from '../game/connect-four';
 
@@ -20,12 +19,15 @@ export function usePartyGame(
 ) {
   const dispatch = useGameDispatch();
   const state = useGameState();
-  // The in-room player tag is the account display name (spec §3 — display_name
-  // is the visible tag; login is the fallback for accounts predating display
-  // names). Game rooms still run on PartyKit; only the identity source changed
-  // from the old GitHub login to the account.
-  const { user } = useAccount();
-  const playerName = user?.display_name ?? user?.login ?? null;
+  // In-room player tag: state.username, frozen at PARTY_CONNECTED time. It
+  // already carries the account display name (spec §3) because usePresence
+  // dispatches PARTY_CONNECTED with display_name ?? login. SINGLE SOURCE —
+  // GameChat's `from === state.username` own-message check and the lobby
+  // self-filter compare against this same value, so own-message attribution
+  // holds by construction even if the profile is renamed mid-session. Do NOT
+  // re-source the tag from useAccount() here without also refreshing
+  // state.username, or the two would diverge on a mid-session rename.
+  const playerName = state.username;
   const clientRef = useRef<PartyClient | null>(null);
   const gameCodeRef = useRef<string | null>(null);
   const myColorRef = useRef<'red' | 'yellow' | null>(null);

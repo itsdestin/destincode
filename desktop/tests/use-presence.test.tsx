@@ -65,6 +65,19 @@ describe('usePresence — desired state', () => {
     await waitFor(() => expect((window as any).claude.social.presenceDisconnect).toHaveBeenCalled());
     expect((window as any).claude.social.presenceConnect).not.toHaveBeenCalled();
   });
+
+  it('non-leader window disconnects even while signed in (no duplicate presence)', async () => {
+    renderHook(() => usePresence(false));
+    await waitFor(() => expect((window as any).claude.social.presenceDisconnect).toHaveBeenCalled());
+    expect((window as any).claude.social.presenceConnect).not.toHaveBeenCalled();
+  });
+
+  it('stored incognito=true disconnects instead of connecting', async () => {
+    (window as any).claude.getIncognito = vi.fn().mockResolvedValue(true);
+    renderHook(() => usePresence());
+    await waitFor(() => expect((window as any).claude.social.presenceDisconnect).toHaveBeenCalled());
+    expect((window as any).claude.social.presenceConnect).not.toHaveBeenCalled();
+  });
 });
 
 describe('usePresence — event mapping', () => {

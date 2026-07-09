@@ -39,13 +39,22 @@ export function usePresence(isLeader: boolean = true) {
   const [incognitoLoaded, setIncognitoLoaded] = useState(false);
 
   // Load incognito preference on mount — same persistence usePartyLobby used.
+  // All three surfaces (preload / remote-shim / SessionService) currently
+  // provide getIncognito, but guard the promise anyway: the optional-chained
+  // CALL returns undefined when the method is absent, and `.then` on undefined
+  // throws — so branch on the promise instead of chaining blindly.
   useEffect(() => {
-    (window as any).claude?.getIncognito?.().then((val: boolean) => {
-      setIncognitoState(val ?? false);
+    const p = (window as any).claude?.getIncognito?.();
+    if (p) {
+      p.then((val: boolean) => {
+        setIncognitoState(val ?? false);
+        setIncognitoLoaded(true);
+      }).catch(() => {
+        setIncognitoLoaded(true);
+      });
+    } else {
       setIncognitoLoaded(true);
-    }).catch(() => {
-      setIncognitoLoaded(true);
-    });
+    }
   }, []);
 
   // Desired-state effect: connect only when signed in, not incognito, and this
@@ -125,8 +134,9 @@ export function usePresence(isLeader: boolean = true) {
           break;
 
         case 'challenge-response': {
-          // Server relays the responder's card in `from`.
-          const by = { id: String(e.from?.id), name: e.from?.display_name ?? '' };
+          // Server relays the responder's card in `from`. handle carried through
+          // for the Task 8 friends UI (@handle in banners).
+          const by = { id: String(e.from?.id), name: e.from?.display_name ?? '', handle: e.from?.handle ?? null };
           if (e.accept) dispatch({ type: 'CHALLENGE_ACCEPTED', by });
           else dispatch({ type: 'CHALLENGE_DECLINED', by });
           break;

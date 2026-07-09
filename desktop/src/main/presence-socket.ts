@@ -39,6 +39,12 @@ export function createPresenceSocket(opts: {
   let attempts = 0;
   let pingTimer: NodeJS.Timeout | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
+  // Last full presence snapshot seen on the live socket. Kept so a RELOADED
+  // renderer (dev HMR / Ctrl+R resets the reducer while main keeps the socket)
+  // can be re-hydrated: setDesired(true) on an already-open socket replays
+  // {type:'connected'} + this frame instead of returning silently — without it
+  // the fresh renderer never leaves "Connecting…".
+  let lastPresence: Record<string, unknown> | null = null;
 
   function clearTimers() {
     if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
@@ -61,7 +67,13 @@ export function createPresenceSocket(opts: {
       pingTimer = setInterval(() => { try { sock.send(JSON.stringify({ type: 'ping' })); } catch { /* mid-close */ } }, PING_INTERVAL_MS);
     });
     sock.on('message', (data) => {
-      try { opts.onEvent(JSON.parse(String(data))); } catch { /* non-JSON frame: ignore */ }
+      try {
+        const ev = JSON.parse(String(data));
+        // Cache the latest full presence snapshot for renderer-reload replay
+        // (see lastPresence above).
+        if (ev && ev.type === 'presence') lastPresence = ev;
+        opts.onEvent(ev);
+      } catch { /* non-JSON frame: ignore */ }
     });
     sock.on('close', (code, reason) => {
       if (ws !== sock) return; // superseded socket — its lifecycle no longer drives state
@@ -76,6 +88,7 @@ export function createPresenceSocket(opts: {
   function handleDown(ev: Record<string, unknown>) {
     clearTimers();
     ws = null;
+    lastPresence = null; // snapshot belongs to the dead socket — never replay it stale
     opts.onEvent(ev);
     if (desired) {
       // Reconnect with capped backoff — a Worker deploy or network blip must
@@ -97,12 +110,25 @@ export function createPresenceSocket(opts: {
       // we want-on WITH a live socket. The one case we must NOT short-circuit is
       // want===true while desired-but-disconnected (e.g. the token finally
       // appeared after sign-in) — that has to fall through and trigger connect().
-      if (want === desired && (!want || ws !== null)) return;
+      if (want === desired && (!want || ws !== null)) {
+        // Renderer-reload replay: dev HMR / Ctrl+R resets the renderer's reducer
+        // while main keeps the socket open, so the fresh renderer's connect
+        // request lands here with nothing to do — and without a replay it never
+        // sees 'connected' and sticks on "Connecting…" forever. Re-emit the
+        // synthetic connected + the cached presence snapshot so the reducer
+        // re-hydrates. Skip while still CONNECTING — the real open event fires.
+        if (want && ws && ws.readyState === WebSocket.OPEN) {
+          opts.onEvent({ type: 'connected' });
+          if (lastPresence) opts.onEvent(lastPresence);
+        }
+        return;
+      }
       desired = want;
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       if (want) { connect(); return; }
       const s = ws;
       ws = null;
+      lastPresence = null; // intentional teardown — drop the snapshot with the socket
       clearTimers();
       if (s) {
         try { s.close(1000, 'incognito or sign-out'); } catch { /* already closed */ }

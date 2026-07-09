@@ -22,6 +22,17 @@ describe('gameReducer — presence (account-keyed)', () => {
     expect(next.partyError).toBeNull();
   });
 
+  it('PARTY_CONNECTED preserves an in-progress game screen (reload-replay broadcast)', () => {
+    // The platform layer's renderer-reload replay re-emits a synthetic
+    // 'connected' to ALL windows when any one of them reconnects — a second
+    // window mid-game must not be yanked back to the lobby.
+    for (const screen of ['waiting', 'joining', 'playing', 'game-over'] as const) {
+      const next = gameReducer({ ...createInitialGameState(), screen }, { type: 'PARTY_CONNECTED', username: 'Alice' });
+      expect(next.screen).toBe(screen);
+      expect(next.connected).toBe(true);
+    }
+  });
+
   it('PRESENCE_UPDATE replaces the whole list', () => {
     const next = gameReducer(withUsers([alice]), { type: 'PRESENCE_UPDATE', online: [bob] });
     expect(next.onlineUsers).toEqual([bob]);
@@ -59,21 +70,22 @@ describe('gameReducer — presence (account-keyed)', () => {
 });
 
 describe('gameReducer — challenges (account identity)', () => {
-  it('CHALLENGE_RECEIVED stores {id, name}, sets the code, and opens the panel', () => {
+  it('CHALLENGE_RECEIVED stores the full card {id, name, handle}, sets the code, and opens the panel', () => {
     const next = gameReducer(createInitialGameState(), {
       type: 'CHALLENGE_RECEIVED',
-      from: { id: 'github:2', name: 'Bob', handle: null },
+      from: { id: 'github:2', name: 'Bob', handle: 'bob' },
       gameType: 'connect-four',
       code: 'ABC123',
     });
-    expect(next.challengeFrom).toEqual({ id: 'github:2', name: 'Bob' });
+    // handle is carried through (Task 8's friends UI renders @handle).
+    expect(next.challengeFrom).toEqual({ id: 'github:2', name: 'Bob', handle: 'bob' });
     expect(next.challengeCode).toBe('ABC123');
     expect(next.panelOpen).toBe(true);
   });
 
-  it('CHALLENGE_DECLINED stores the {id, name} of the decliner', () => {
-    const next = gameReducer(createInitialGameState(), { type: 'CHALLENGE_DECLINED', by: { id: 'github:2', name: 'Bob' } });
-    expect(next.challengeDeclinedBy).toEqual({ id: 'github:2', name: 'Bob' });
+  it('CHALLENGE_DECLINED stores the full card {id, name, handle} of the decliner', () => {
+    const next = gameReducer(createInitialGameState(), { type: 'CHALLENGE_DECLINED', by: { id: 'github:2', name: 'Bob', handle: null } });
+    expect(next.challengeDeclinedBy).toEqual({ id: 'github:2', name: 'Bob', handle: null });
   });
 
   it('CHALLENGE_FAILED resolves the account id to a visible name via the presence list', () => {
@@ -86,9 +98,9 @@ describe('gameReducer — challenges (account identity)', () => {
   it('CLEAR_CHALLENGE clears all challenge fields', () => {
     const state: GameState = {
       ...createInitialGameState(),
-      challengeFrom: { id: 'github:2', name: 'Bob' },
+      challengeFrom: { id: 'github:2', name: 'Bob', handle: 'bob' },
       challengeCode: 'ABC123',
-      challengeDeclinedBy: { id: 'github:3', name: 'Cara' },
+      challengeDeclinedBy: { id: 'github:3', name: 'Cara', handle: null },
     };
     const next = gameReducer(state, { type: 'CLEAR_CHALLENGE' });
     expect(next.challengeFrom).toBeNull();

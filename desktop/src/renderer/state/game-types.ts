@@ -34,12 +34,14 @@ export interface GameState {
   chatMessages: ChatMessage[];
   panelOpen: boolean;
   /** Incoming challenge from another player (account identity: id is the stable
-   * key, name is the visible tag). */
-  challengeFrom: { id: string; name: string } | null;
+   * key, name is the visible tag; handle is carried through for the Task 8
+   * friends UI to render @handle in the challenge banner). */
+  challengeFrom: { id: string; name: string; handle: string | null } | null;
   /** Room code from incoming challenge */
   challengeCode: string | null;
-  /** Outgoing challenge was declined (account identity). */
-  challengeDeclinedBy: { id: string; name: string } | null;
+  /** Outgoing challenge was declined (account identity, handle included — see
+   * challengeFrom). */
+  challengeDeclinedBy: { id: string; name: string; handle: string | null } | null;
   /** Whether this player has requested a rematch */
   rematchRequested: boolean;
   /** Opponent disconnected during game */
@@ -67,8 +69,8 @@ export type GameAction =
   | { type: 'RETURN_TO_LOBBY' }
   | { type: 'RESET' }
   | { type: 'CHALLENGE_RECEIVED'; from: { id: string; name: string; handle: string | null }; gameType: string; code: string }
-  | { type: 'CHALLENGE_ACCEPTED'; by: { id: string; name: string } }
-  | { type: 'CHALLENGE_DECLINED'; by: { id: string; name: string } }
+  | { type: 'CHALLENGE_ACCEPTED'; by: { id: string; name: string; handle: string | null } }
+  | { type: 'CHALLENGE_DECLINED'; by: { id: string; name: string; handle: string | null } }
   | { type: 'CHALLENGE_FAILED'; target: string }
   | { type: 'CLEAR_CHALLENGE' }
   | { type: 'REMATCH_REQUESTED' };

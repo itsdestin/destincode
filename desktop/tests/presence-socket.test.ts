@@ -151,6 +151,35 @@ describe('presence-socket state machine', () => {
     sock.destroy();
   });
 
+  it('renderer-reload replay: setDesired(true) on an already-open socket re-emits connected + the cached presence frame', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    const presenceFrame = { type: 'presence', users: [{ id: 'github:2', display_name: 'Bob', handle: 'bob', status: 'idle' }] };
+    inst.emit('message', JSON.stringify(presenceFrame));
+    expect(types(events)).toEqual(['connected', 'presence']);
+
+    // A reloaded renderer (dev HMR / Ctrl+R) re-invokes presence-connect while
+    // main still holds the open socket — without the replay it would stick on
+    // "Connecting…" forever because only 'connected' flips the reducer flag.
+    sock.setDesired(true);
+    expect(types(events)).toEqual(['connected', 'presence', 'connected', 'presence']);
+    expect(events[3]).toEqual(presenceFrame); // the CACHED snapshot, replayed verbatim
+    expect(FakeSocket.instances).toHaveLength(1); // no second socket was opened
+    sock.destroy();
+  });
+
+  it('renderer-reload replay does NOT fire while the handshake is still in flight', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true); // socket exists, still CONNECTING
+    sock.setDesired(true); // duplicate connect request during handshake
+    expect(events).toEqual([]); // the REAL open event will emit connected
+    FakeSocket.instances[0].emit('open');
+    expect(types(events)).toEqual(['connected']);
+    sock.destroy();
+  });
+
   it('send is a silent no-op when disconnected; isConnected gates the honest handler receipt', () => {
     const { sock } = makeSocket(() => 'tok');
     // The manager itself no-ops; the HANDLER (social-handlers.ts) consults

@@ -2,17 +2,27 @@ import { GameState, GameAction, createInitialGameState } from './game-types';
 
 export function gameReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
-    case 'PARTY_CONNECTED':
+    case 'PARTY_CONNECTED': {
       // Clear any hard error — a fresh successful open means the earlier
       // failure copy is no longer relevant. `username` is the player's own
       // visible tag (display_name, spec §3), set by usePresence from the account.
+      //
+      // Preserve an in-progress game flow: the platform layer's renderer-reload
+      // replay re-emits a synthetic 'connected' to ALL windows whenever any one
+      // of them re-requests presence-connect (dev HMR / Ctrl+R), so a second
+      // window mid-game must NOT get yanked back to the lobby. Game rooms are a
+      // separate PartyKit socket — a presence reconnect doesn't invalidate them.
+      // Only 'setup' (and a no-op 'lobby') resets to the lobby screen.
+      const inGameFlow = state.screen === 'waiting' || state.screen === 'joining'
+        || state.screen === 'playing' || state.screen === 'game-over';
       return {
         ...state,
         connected: true,
         username: action.username,
-        screen: 'lobby',
+        screen: inGameFlow ? state.screen : 'lobby',
         partyError: null,
       };
+    }
 
     case 'PARTY_DISCONNECTED': {
       // Keep username — game actions guard on it, and PARTY_CONNECTED refreshes
@@ -172,10 +182,15 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       };
 
     case 'CHALLENGE_RECEIVED':
-      // Store only {id, name} in state (handle isn't rendered on the lobby
-      // challenge banner). Forces the panel open so an incoming challenge is
-      // seen even if the games panel is closed.
-      return { ...state, challengeFrom: { id: action.from.id, name: action.from.name }, challengeCode: action.code, panelOpen: true };
+      // Store the full account card {id, name, handle} — Task 8's friends UI
+      // renders @handle in the challenge banner. Forces the panel open so an
+      // incoming challenge is seen even if the games panel is closed.
+      return {
+        ...state,
+        challengeFrom: { id: action.from.id, name: action.from.name, handle: action.from.handle },
+        challengeCode: action.code,
+        panelOpen: true,
+      };
 
     case 'CHALLENGE_ACCEPTED':
       // Informational — the game starts when opponent joins the room.
