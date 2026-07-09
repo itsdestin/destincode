@@ -11,9 +11,15 @@
 // or a session having opened in the folder — it cannot assume checkImport's
 // answer still holds when it runs.
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { validateSyncName, isIgnoredPath, MAX_IMPORT_FILE_COUNT } from './guards';
 import { canonicalize } from '../../shared/artifacts/canonicalize';
+import { updateFolderPath } from '../saved-folders';
+import { remapProjectPath } from '../artifacts/central-index';
+import { readSidecar, writeSidecar } from '../artifacts/artifact-store';
+import { ccProjectSlug } from '../project-conversations';
+import type { ManualInclude } from '../../shared/artifacts/types';
 
 export interface ImportCheckOpts {
   sourcePath: string;
@@ -128,4 +134,119 @@ export function checkImport(opts: ImportCheckOpts): string | null {
   }
 
   return null;
+}
+
+export type ImportResult =
+  | { ok: true; path: string; warnings: string[] }
+  | { ok: false; error: string };
+
+export interface ImportOpts extends ImportCheckOpts {
+  /** Injectable for tests; defaults to ~/.claude */
+  claudeDir?: string;
+}
+
+/** Move src → dest. rename when possible; EXDEV (another drive) falls back to
+ *  copy-then-delete — still MOVE semantics per spec §3 (a surviving copy at
+ *  the old path silently forks the user's work), so a failed source delete is
+ *  surfaced as a warning, never ignored. Returns warnings; throws with a
+ *  user-facing message on a blocked move (Windows EBUSY/EPERM when another
+ *  process holds the folder). */
+function moveFolder(src: string, dest: string): string[] {
+  try {
+    fs.renameSync(src, dest);
+    return [];
+  } catch (e: any) {
+    if (e?.code === 'EXDEV') {
+      fs.cpSync(src, dest, { recursive: true });
+      try {
+        fs.rmSync(src, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        return [];
+      } catch {
+        return [`The folder was copied to its new home, but the original at ${src} could not be fully removed — delete it manually so you don't keep editing the old copy.`];
+      }
+    }
+    if (e?.code === 'EBUSY' || e?.code === 'EPERM' || e?.code === 'EACCES') {
+      throw new Error('Another program is using this folder (an open terminal, editor, or file). Close it and try again.');
+    }
+    throw e;
+  }
+}
+
+/** The sidecar rides inside the folder, so after the move it's already at the
+ *  new root — but manualIncludes/manualExcludes hold canonical ABSOLUTE paths
+ *  (PITFALLS → Artifact Viewer), which still point at the old location.
+ *  Rewrite the old-root prefix. */
+async function remapSidecarManualPaths(newRoot: string, oldRoot: string): Promise<void> {
+  const cur = await readSidecar(newRoot);
+  if (cur === null || 'corrupted' in cur) return;
+  const oldCanon = canonicalize(oldRoot, null);
+  const newCanon = canonicalize(newRoot, null);
+  const remapStr = (p: string) => (isUnder(p, oldCanon) ? newCanon + p.slice(oldCanon.length) : p);
+  // manualExcludes is string[]; manualIncludes is ManualInclude[] ({path,…}).
+  // Older synced sidecars may still carry bare strings in either list, so the
+  // include remapper handles both shapes and preserves whichever it got.
+  const remapInclude = (inc: ManualInclude): ManualInclude =>
+    typeof inc === 'string' ? (remapStr(inc) as any) : { ...inc, path: remapStr(inc.path) };
+  const nextIncludes = cur.manualIncludes.map(remapInclude);
+  const nextExcludes = cur.manualExcludes.map(remapStr);
+  if (JSON.stringify(nextIncludes) === JSON.stringify(cur.manualIncludes) &&
+      JSON.stringify(nextExcludes) === JSON.stringify(cur.manualExcludes)) return;
+  const expected = cur.updatedAt;
+  cur.manualIncludes = nextIncludes;
+  cur.manualExcludes = nextExcludes;
+  cur.updatedAt = new Date().toISOString();
+  await writeSidecar(newRoot, expected, cur);
+}
+
+/** CC's transcript dirs are keyed by a slug DERIVED from the cwd
+ *  (~/.claude/projects/<slug>/), not stored — so a move silently orphans every
+ *  past conversation unless the dir is renamed to the new path's slug. When
+ *  the new slug dir already exists (rare), merge file-by-file, never clobber. */
+function remapTranscriptDir(oldPath: string, newPath: string, claudeDir: string): void {
+  const projectsDir = path.join(claudeDir, 'projects');
+  const oldDir = path.join(projectsDir, ccProjectSlug(oldPath));
+  const newDir = path.join(projectsDir, ccProjectSlug(newPath));
+  if (!fs.existsSync(oldDir)) return; // no conversations for this folder — nothing to remap
+  if (!fs.existsSync(newDir)) {
+    fs.renameSync(oldDir, newDir);
+    return;
+  }
+  for (const entry of fs.readdirSync(oldDir)) {
+    const from = path.join(oldDir, entry);
+    const to = path.join(newDir, entry);
+    if (!fs.existsSync(to)) fs.renameSync(from, to);
+  }
+  try { fs.rmdirSync(oldDir); } catch { /* leftovers (all-duplicate names) — harmless */ }
+}
+
+/** Guards → move → best-effort remaps. Remap failures become warnings, not
+ *  errors: the folder has already moved, and each store degrades gracefully
+ *  (spec §3) — e.g. a missed index remap only means artifact history restarts. */
+export async function importProjectFolder(opts: ImportOpts): Promise<ImportResult> {
+  const claudeDir = opts.claudeDir ?? path.join(os.homedir(), '.claude');
+  const err = checkImport(opts);
+  if (err) return { ok: false, error: err };
+
+  const dest = path.join(opts.projectsRoot, opts.name);
+  let warnings: string[];
+  try {
+    warnings = moveFolder(opts.sourcePath, dest);
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+
+  const foldersFile = path.join(claudeDir, 'youcoded-folders.json');
+  try { updateFolderPath(opts.sourcePath, dest, foldersFile); }
+  catch { warnings.push('The saved-folders list could not be updated — remove the old entry from the picker manually.'); }
+
+  try { await remapProjectPath(claudeDir, canonicalize(opts.sourcePath, null), canonicalize(dest, null), opts.name); }
+  catch { warnings.push('The artifact index could not be updated — artifact history may restart for this project.'); }
+
+  try { await remapSidecarManualPaths(dest, opts.sourcePath); }
+  catch { warnings.push('Manually added files in the artifact drawer may need re-adding.'); }
+
+  try { remapTranscriptDir(opts.sourcePath, dest, claudeDir); }
+  catch { warnings.push('Past conversations could not be re-linked to the new location.'); }
+
+  return { ok: true, path: dest, warnings };
 }

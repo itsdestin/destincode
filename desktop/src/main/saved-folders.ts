@@ -28,7 +28,12 @@ export function readFolders(file: string = foldersFilePath()): SavedFolder[] {
 
 export function writeFolders(folders: SavedFolder[], file: string = foldersFilePath()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(folders, null, 2));
+  // Temp-file + rename: the import flow widened this store's writers, and the
+  // dev instance and built app share ~/.claude. rename is atomic, so a
+  // concurrent reader (readFolders) never sees a half-written file.
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(folders, null, 2));
+  fs.renameSync(tmp, file);
 }
 
 // Case-insensitive on Windows for the same reason FOLDERS_REMOVE compares that

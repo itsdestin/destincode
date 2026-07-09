@@ -6,7 +6,10 @@ import { MAX_IMPORT_FILE_COUNT } from '../src/main/sync-spaces/guards';
 import { ccProjectSlug } from '../src/main/project-conversations';
 import { upsertProject, remapProjectPath, listProjects } from '../src/main/artifacts/central-index';
 import { canonicalize } from '../src/shared/artifacts/canonicalize';
-import { checkImport, countFilesBounded } from '../src/main/sync-spaces/import-project';
+import { checkImport, countFilesBounded, importProjectFolder } from '../src/main/sync-spaces/import-project';
+import { writeFolders as writeSavedFolders, readFolders as readSavedFolders } from '../src/main/saved-folders';
+import { readSidecar, writeSidecar } from '../src/main/artifacts/artifact-store';
+import { SIDECAR_SCHEMA_VERSION } from '../src/shared/artifacts/types';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-import-')); });
@@ -43,6 +46,26 @@ describe('import enablers', () => {
   it('remapProjectPath is a no-op when no entry matches', async () => {
     await remapProjectPath(tmp, canonicalize(path.join(tmp, 'ghost'), null), canonicalize(path.join(tmp, 'x'), null));
     expect(await listProjects(tmp)).toEqual([]);
+  });
+
+  it('remapProjectPath drops a stale entry already sitting at the destination path', async () => {
+    const oldRoot = path.join(tmp, 'oldproj');
+    const newRoot = path.join(tmp, 'newproj');
+    await upsertProject(tmp, {
+      id: 'ULID1', name: 'oldproj', path: canonicalize(oldRoot, null),
+      lastIndexed: new Date().toISOString(), lastSession: null,
+      contentTypes: ['artifacts'], stats: { artifactCount: 1 },
+    } as any);
+    await upsertProject(tmp, {
+      id: 'STALE', name: 'stale', path: canonicalize(newRoot, null),
+      lastIndexed: new Date().toISOString(), lastSession: null,
+      contentTypes: ['artifacts'], stats: { artifactCount: 9 },
+    } as any);
+    await remapProjectPath(tmp, canonicalize(oldRoot, null), canonicalize(newRoot, null));
+    const projects = await listProjects(tmp);
+    expect(projects).toHaveLength(1);          // stale entry dropped, not shadowed
+    expect(projects[0].id).toBe('ULID1');      // the moved project wins
+    expect(projects[0].path).toBe(canonicalize(newRoot, null));
   });
 });
 
@@ -131,5 +154,110 @@ describe('checkImport', () => {
     expect(checkImport({ ...c, liveCwds: [path.join(c.sourcePath, 'sub')] })).toMatch(/session is currently open/);
     expect(checkImport({ ...c, liveCwds: [c.sourcePath] })).toMatch(/session is currently open/);
     expect(checkImport({ ...c, liveCwds: [path.join(tmp, 'elsewhere')] })).toBeNull();
+  });
+});
+
+describe('importProjectFolder', () => {
+  // Full fake home: claudeDir + YouCoded roots + a source folder with content,
+  // a saved-folder entry, a central-index entry, a sidecar with a manual
+  // include, and a fake CC transcript slug dir.
+  async function setup() {
+    const claudeDir = path.join(tmp, '.claude');
+    const youcodedRoot = path.join(tmp, 'YouCoded');
+    const projectsRoot = path.join(youcodedRoot, 'Projects');
+    fs.mkdirSync(projectsRoot, { recursive: true });
+    fs.mkdirSync(claudeDir, { recursive: true });
+
+    const source = path.join(tmp, 'budget-app');
+    fs.mkdirSync(path.join(source, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(source, 'docs', 'plan.md'), 'the plan');
+
+    const foldersFile = path.join(claudeDir, 'youcoded-folders.json');
+    writeSavedFolders([{ path: source, nickname: 'Budget', addedAt: 99 }], foldersFile);
+
+    await upsertProject(claudeDir, {
+      id: 'ULIDBUDGET', name: 'budget-app', path: canonicalize(source, null),
+      lastIndexed: new Date().toISOString(), lastSession: null,
+      contentTypes: ['artifacts'], stats: { artifactCount: 1 },
+    } as any);
+
+    const now = new Date().toISOString();
+    await writeSidecar(source, null, {
+      $schema: SIDECAR_SCHEMA_VERSION, projectId: 'ULIDBUDGET', name: 'budget-app',
+      createdAt: now, updatedAt: now, artifacts: [],
+      manualExcludes: [], manualIncludes: [canonicalize(path.join(source, 'docs', 'plan.md'), null)],
+    });
+
+    // CC transcript dir for the OLD path (drive-case-normalized slug)
+    const oldSlug = ccProjectSlug(source);
+    const slugDir = path.join(claudeDir, 'projects', oldSlug);
+    fs.mkdirSync(slugDir, { recursive: true });
+    fs.writeFileSync(path.join(slugDir, 'session1.jsonl'), '{}');
+
+    return { claudeDir, youcodedRoot, projectsRoot, source, foldersFile };
+  }
+
+  it('moves the folder and remaps saved folders, central index, sidecar includes, and the transcript slug dir', async () => {
+    const s = await setup();
+    const result = await importProjectFolder({
+      sourcePath: s.source, name: 'budget-app',
+      projectsRoot: s.projectsRoot, youcodedRoot: s.youcodedRoot,
+      liveCwds: [], claudeDir: s.claudeDir,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const dest = path.join(s.projectsRoot, 'budget-app');
+    expect(result.path).toBe(dest);
+    expect(result.warnings).toEqual([]);
+
+    // folder moved (content intact, source gone)
+    expect(fs.readFileSync(path.join(dest, 'docs', 'plan.md'), 'utf8')).toBe('the plan');
+    expect(fs.existsSync(s.source)).toBe(false);
+
+    // saved-folders entry rewritten, nickname kept
+    const folders = readSavedFolders(s.foldersFile);
+    expect(folders[0].nickname).toBe('Budget');
+    expect(path.resolve(folders[0].path)).toBe(path.resolve(dest));
+
+    // central index remapped, identity kept
+    const projects = await listProjects(s.claudeDir);
+    expect(projects[0].id).toBe('ULIDBUDGET');
+    expect(projects[0].path).toBe(canonicalize(dest, null));
+
+    // sidecar traveled with the folder; manual include re-pointed inside it
+    const sidecar = await readSidecar(dest);
+    expect(sidecar && !('corrupted' in sidecar) && sidecar.manualIncludes[0])
+      .toBe(canonicalize(path.join(dest, 'docs', 'plan.md'), null));
+
+    // transcript slug dir renamed to the new path's slug
+    expect(fs.existsSync(path.join(s.claudeDir, 'projects', ccProjectSlug(s.source)))).toBe(false);
+    expect(fs.readFileSync(path.join(s.claudeDir, 'projects', ccProjectSlug(dest), 'session1.jsonl'), 'utf8')).toBe('{}');
+  });
+
+  it('refuses (ok:false) when a guard fails, without touching the source', async () => {
+    const s = await setup();
+    const result = await importProjectFolder({
+      sourcePath: s.source, name: 'budget-app',
+      projectsRoot: s.projectsRoot, youcodedRoot: s.youcodedRoot,
+      liveCwds: [s.source], claudeDir: s.claudeDir,
+    });
+    expect(result.ok).toBe(false);
+    expect(fs.existsSync(s.source)).toBe(true);
+  });
+
+  it('merges into an existing slug dir instead of failing when the new slug already exists', async () => {
+    const s = await setup();
+    const dest = path.join(s.projectsRoot, 'budget-app');
+    const newSlugDir = path.join(s.claudeDir, 'projects', ccProjectSlug(dest));
+    fs.mkdirSync(newSlugDir, { recursive: true });
+    fs.writeFileSync(path.join(newSlugDir, 'existing.jsonl'), '{}');
+    const result = await importProjectFolder({
+      sourcePath: s.source, name: 'budget-app',
+      projectsRoot: s.projectsRoot, youcodedRoot: s.youcodedRoot,
+      liveCwds: [], claudeDir: s.claudeDir,
+    });
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(path.join(newSlugDir, 'session1.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(newSlugDir, 'existing.jsonl'))).toBe(true);
   });
 });

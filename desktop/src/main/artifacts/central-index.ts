@@ -85,6 +85,9 @@ export async function remapProjectPath(
   await mutateIndex(claudeDir, (idx) => {
     const p = idx.projects.find((x) => x.path === oldCanonicalPath);
     if (!p) return;
+    // Fix: don't create two entries sharing a path — drop any stale entry
+    // already sitting at the destination before we move this one onto it.
+    idx.projects = idx.projects.filter((x) => x === p || x.path !== newCanonicalPath);
     p.path = newCanonicalPath;
     if (newName) p.name = newName;
   });
