@@ -174,7 +174,11 @@ export function registerSocialHandlers(
 
   // Positional `message` arg (preload passes it positionally; remote-shim wraps
   // it as { message } and the Android SessionService reads message.message).
-  ipcMain.handle("social:presence-send", (_e, message: Record<string, unknown>): { ok: true } => {
+  // Honest receipt: sending with no OPEN socket would silently drop the frame,
+  // so report a failure (ApiResult-style error shape, status:0 = local/non-API)
+  // instead of returning a success the renderer would trust.
+  ipcMain.handle("social:presence-send", (_e, message: Record<string, unknown>): { ok: true } | { ok: false; status: number; message: string } => {
+    if (!presence.isConnected()) return { ok: false, status: 0, message: "not connected" };
     presence.send(message);
     return { ok: true };
   });

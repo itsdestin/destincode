@@ -2849,14 +2849,22 @@ class SessionService : Service() {
             "social:presence-send" -> {
                 // payload: { message: {...} } (remote-shim wraps the protocol frame).
                 // Guard a missing/malformed message so a bad frame is a clean error,
-                // not a crash.
+                // not a crash. Honest receipt (desktop parity): sending with no
+                // OPEN socket would silently drop the frame, so respond with the
+                // ApiResult-style error shape ({ok:false, status:0, message}) the
+                // other social cases use instead of a success the renderer trusts.
                 val message = msg.payload.optJSONObject("message")
-                if (message == null) {
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", false).put("error", "missing message")) }
-                } else {
-                    presenceClient.send(message)
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+                val response: JSONObject = when {
+                    message == null ->
+                        JSONObject().put("ok", false).put("status", 0).put("message", "missing message")
+                    !presenceClient.isConnected() ->
+                        JSONObject().put("ok", false).put("status", 0).put("message", "not connected")
+                    else -> {
+                        presenceClient.send(message)
+                        JSONObject().put("ok", true)
+                    }
                 }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
             }
 
             // ── Settings → Development IPC handlers ──────────────────────────────

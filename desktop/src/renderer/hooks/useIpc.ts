@@ -170,7 +170,9 @@ declare global {
         // carry a `type` discriminator; the renderer (Task 7) narrows on it.
         presenceConnect: () => Promise<{ ok: true }>;
         presenceDisconnect: () => Promise<{ ok: true }>;
-        presenceSend: (message: Record<string, unknown>) => Promise<{ ok: true }>;
+        // Honest receipt: { ok:false, status:0, message:'not connected' } when
+        // no live socket exists — don't treat presenceSend as infallible.
+        presenceSend: (message: Record<string, unknown>) => Promise<{ ok: true } | { ok: false; status: number; message: string }>;
         onPresenceEvent: (cb: (ev: { type: string; [k: string]: unknown }) => void) => () => void;
       };
       // Fix: expose marketplaceApi on Window.claude so Tasks 9-12 can call install,

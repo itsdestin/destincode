@@ -838,7 +838,9 @@ export function installShim(): void {
       // reads it via msg.payload.getJSONObject("message").
       presenceConnect: (): Promise<{ ok: true }> => invoke('social:presence-connect'),
       presenceDisconnect: (): Promise<{ ok: true }> => invoke('social:presence-disconnect'),
-      presenceSend: (message: Record<string, unknown>): Promise<{ ok: true }> =>
+      // presenceSend returns an honest receipt: { ok:false, status:0, message }
+      // when the platform socket isn't connected (frame would silently drop).
+      presenceSend: (message: Record<string, unknown>): Promise<{ ok: true } | { ok: false; status: number; message: string }> =>
         invoke('social:presence-send', { message }),
       onPresenceEvent: (cb: (ev: Record<string, unknown>) => void) => {
         const handler = addListener('social:presence-event', cb as Callback);

@@ -516,7 +516,9 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_CONNECT),
     presenceDisconnect: (): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_DISCONNECT),
-    presenceSend: (message: Record<string, unknown>): Promise<{ ok: true }> =>
+    // presenceSend returns an honest receipt: { ok:false, status:0, message }
+    // when no socket is connected (the frame would otherwise silently drop).
+    presenceSend: (message: Record<string, unknown>): Promise<{ ok: true } | { ok: false; status: number; message: string }> =>
       ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_SEND, message),
     // Subscribe to relayed presence events (server frames + synthetic
     // connection-state events). Returns an unsubscribe that removes the listener
