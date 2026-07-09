@@ -126,8 +126,15 @@ export function AccountProvider({
   // signed-out. A transient offline failure returns the cached profile (main
   // swallows non-401 errors), so a network blip can't blank a signed-in UI.
   const refresh = useCallback(async () => {
+    // Fix: capture the epoch so a refresh resolving AFTER a signOut/deleteAccount
+    // can't resurrect the signed-in UI. refresh() runs on every focus/15-min tick,
+    // so a signOut landing while the main process's /auth/me is in flight would
+    // otherwise flip the UI back to signed-in when it resolves OK. (The store-side
+    // re-persist self-heals — the revoked token 401s on the next refresh — but the
+    // visible flip-back would not.)
+    const epoch = signInEpoch.current;
     const profile = await window.claude.account.refresh();
-    if (cancelledRef.current) return; // unmounted — skip setState
+    if (cancelledRef.current || signInEpoch.current !== epoch) return; // unmounted / signed-out mid-flight — skip setState
     setSignedIn(!!profile);
     setUser(profile);
   }, []);

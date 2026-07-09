@@ -135,14 +135,16 @@ function EpochProbe() {
   );
 }
 
-// Probe exposing the refresh() action + state (Part 4c).
+// Probe exposing the refresh() action + state (Part 4c) plus signOut (epoch
+// guard on refresh — a refresh resolving after signOut must not resurrect state).
 function RefreshProbe() {
-  const { signedIn, user, refresh } = useAccount();
+  const { signedIn, user, refresh, signOut } = useAccount();
   return (
     <div>
       <span data-testid="state">{signedIn ? "in" : "out"}</span>
       <span data-testid="user">{user?.login ?? ""}</span>
       <button data-testid="refresh" onClick={() => void refresh()}>refresh</button>
+      <button data-testid="so" onClick={() => void signOut()}>so</button>
     </div>
   );
 }
@@ -515,6 +517,56 @@ describe("AccountProvider", () => {
       await vi.advanceTimersByTimeAsync(STEP_MS);
     });
 
+    expect(getByTestId("state").textContent).toBe("out");
+    expect(getByTestId("user").textContent).toBe("");
+  });
+
+  it("a refresh() resolving after signOut does NOT resurrect the signed-in UI (epoch guard)", async () => {
+    // Regression: refresh() runs on every focus/15-min tick. A signOut landing
+    // while the main process's /auth/me is in flight must not flip the UI back
+    // to signed-in when the refresh resolves OK with a user.
+    (globalThis as any).window.claude = {
+      account: {
+        signedIn: vi.fn().mockResolvedValue(true),
+        user: vi.fn().mockResolvedValue({ id: "github:1", login: "u", avatar_url: "http://a" }),
+        // Slow refresh: resolves WITH A USER only after 50ms (fake-timer time),
+        // giving the test a window to sign out while it's in flight.
+        refresh: vi.fn(
+          () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ id: "github:1", login: "u", avatar_url: "http://a" }), 50),
+            ),
+        ),
+        signOut: vi.fn().mockResolvedValue(undefined),
+        updateProfile: vi.fn(),
+        setHandle: vi.fn(),
+        deleteAccount: vi.fn(),
+      },
+    };
+    const { getByTestId } = render(
+      <AccountProvider pollIntervalMs={10}>
+        <RefreshProbe />
+      </AccountProvider>
+    );
+    await settle();
+    expect(getByTestId("state").textContent).toBe("in");
+
+    // Start a refresh (parked in its 50ms timeout), then sign out before it resolves.
+    await act(async () => {
+      getByTestId("refresh").click();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    await act(async () => {
+      getByTestId("so").click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(getByTestId("state").textContent).toBe("out");
+
+    // Let the in-flight refresh resolve with a user — the epoch guard must
+    // discard it; state stays signed-out.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
     expect(getByTestId("state").textContent).toBe("out");
     expect(getByTestId("user").textContent).toBe("");
   });

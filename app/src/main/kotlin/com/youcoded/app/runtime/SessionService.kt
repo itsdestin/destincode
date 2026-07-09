@@ -2498,18 +2498,9 @@ class SessionService : Service() {
                         marketplaceAuthStore.signOut()
                     }
                 }
-                val result: Any = if (user != null) {
-                    JSONObject().apply {
-                        // Wire format is snake_case (matches desktop's stored MarketplaceUser + what React reads).
-                        put("id",           user.id)
-                        put("login",        user.login)
-                        put("avatar_url",   user.avatarUrl)
-                        put("display_name", user.displayName ?: JSONObject.NULL)
-                        put("handle",       user.handle ?: JSONObject.NULL)
-                    }
-                } else {
-                    JSONObject.NULL
-                }
+                // Shared serializer (accountUserJson) — same wire shape as account:refresh,
+                // so the snake_case format React reads can't drift between the two cases.
+                val result: Any = user?.let { u -> accountUserJson(u) } ?: JSONObject.NULL
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
 
