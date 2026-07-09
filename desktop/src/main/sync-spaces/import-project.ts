@@ -157,6 +157,14 @@ function moveFolder(src: string, dest: string): string[] {
     return [];
   } catch (e: any) {
     if (e?.code === 'EXDEV') {
+      // Re-check dest existence: rename(2) reports EXDEV from the filesystem
+      // comparison BEFORE it ever looks at dest, so a dest created in the
+      // checkImport→move window (the sync engine materializing a same-named
+      // project from another device, or the dev + built app both running)
+      // would be silently MERGED into by cpSync — and then DELETED by the
+      // failure cleanup below. Refuse instead: never touch a folder this
+      // import didn't create.
+      if (fs.existsSync(dest)) throw new Error('A project with that name already exists');
       try {
         fs.cpSync(src, dest, { recursive: true });
       } catch {
