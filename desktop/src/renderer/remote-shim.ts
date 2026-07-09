@@ -1024,6 +1024,10 @@ export function installShim(): void {
       enable: (enabled: boolean) => invoke('syncspaces:enable', { enabled }),
       syncNow: () => invoke('syncspaces:sync-now'),
       createProject: (name: string) => invoke('syncspaces:create-project', { name }),
+      // Spec §3 import: move an existing folder into ~/YouCoded/Projects/<name>.
+      // Shim wraps args in an object (the established convention).
+      importProject: (sourcePath: string, name: string) =>
+        invoke('syncspaces:import-project', { sourcePath, name }),
       onEvent: (cb: (e: unknown) => void) => {
         const handler: Callback = (e: any) => cb(e);
         addListener('syncspaces:event', handler);

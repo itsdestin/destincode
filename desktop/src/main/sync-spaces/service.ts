@@ -9,6 +9,7 @@ import { SpaceManager } from './space-manager';
 import { GitTransport } from './git-transport';
 import { SpaceSyncEngine } from './engine';
 import { DailyBackup, BackupTarget } from './daily-backup';
+import { importProjectFolder } from './import-project';
 import type { SpaceSyncEvent } from './types';
 
 let roots: ManagedRoots | null = null;
@@ -142,6 +143,33 @@ export async function syncSpacesCreateProject(name: string) {
       // No initial syncSpace here: a freshly created folder is empty — the
       // first file change (debounce) or the 2-minute poll drives the first sync.
     } catch { /* engine events surface the failure */ }
+  }
+  return result;
+}
+
+/** Spec §3 import flows: move an existing folder into ~/YouCoded/Projects/ and
+ *  make it a synced space. liveCwds comes from the caller (ipc-handlers /
+ *  remote-server own the SessionManager) so this module stays free of a
+ *  session-manager import. Unlike createProject, an imported folder HAS
+ *  content — kick an immediate syncSpace instead of waiting for the poll. */
+export async function syncSpacesImportProject(sourcePath: string, name: string, liveCwds: string[]) {
+  if (!roots) return { ok: false as const, error: 'Sync is still starting up — try again in a moment' };
+  const result = await importProjectFolder({
+    sourcePath, name, liveCwds,
+    projectsRoot: roots.projectsRoot,
+    youcodedRoot: roots.youcodedRoot,
+  });
+  if (result.ok && engine) {
+    const space = roots.spaces().find(s => s.id === `project:${name}`);
+    if (space) {
+      try {
+        await engine.addSpace(space);
+        const transport = new GitTransport({ deviceName: os.hostname() });
+        await transport.init(space);
+        await transport.setRemote(space, await manager!.ensureRemote(space));
+        void engine.syncSpace(space); // imported content should reach the remote now, not at the next poll
+      } catch { /* engine error events surface the failure (same contract as createProject) */ }
+    }
   }
   return result;
 }

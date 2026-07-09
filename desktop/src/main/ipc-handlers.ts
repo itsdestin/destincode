@@ -24,7 +24,7 @@ import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend, getSyncService, type SyncWarning } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
-  syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, getManagedRoots,
+  syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, getManagedRoots,
 } from './sync-spaces/service';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
@@ -790,10 +790,17 @@ export function registerIpcHandlers(
       folders = [{ path: home, nickname: 'Home', addedAt: Date.now() }];
       writeFolders(folders);
     }
-    // Annotate each folder with whether the path still exists on disk
+    // Annotate each folder with whether the path still exists on disk.
+    // A saved folder that lives under ~/YouCoded/Projects/ IS a managed sync
+    // project (the import flow rewrites saved entries to their new managed
+    // path) — badge it like the synthesized managed rows below.
+    const projectsRoot = getManagedRoots()?.projectsRoot;
+    const projectsPrefix = projectsRoot ? path.resolve(projectsRoot).toLowerCase() + path.sep : null;
     const result: any[] = folders.map(f => ({
       ...f,
       exists: fs.existsSync(f.path),
+      ...(projectsPrefix && path.resolve(f.path).toLowerCase().startsWith(projectsPrefix)
+        ? { managed: true } : {}),
     }));
     // Managed projects (spec §3) always appear in the session-creation picker,
     // deduped against saved folders by normalized path. `managed: true` lets
@@ -1910,6 +1917,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SYNC_SPACES_ENABLE, (_e, enabled: boolean) => syncSpacesEnable(!!enabled));
   ipcMain.handle(IPC.SYNC_SPACES_SYNC_NOW, () => syncSpacesSyncNow());
   ipcMain.handle(IPC.SYNC_SPACES_CREATE_PROJECT, (_e, name: string) => syncSpacesCreateProject(String(name ?? '')));
+  ipcMain.handle(IPC.SYNC_SPACES_IMPORT_PROJECT, (_e, sourcePath: string, name: string) =>
+    // Live-cwd guard input: the folder must not move under a running session.
+    syncSpacesImportProject(String(sourcePath ?? ''), String(name ?? ''),
+      sessionManager.listSessions().filter(s => s.status !== 'destroyed').map(s => s.cwd)));
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));
