@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useGameDispatch, useGameState } from '../state/game-context';
+import { useAccount } from '../state/account-context';
 import { PartyClient } from '../game/party-client';
 import { createBoard, dropPiece, checkWin, checkDraw } from '../game/connect-four';
 
@@ -19,6 +20,12 @@ export function usePartyGame(
 ) {
   const dispatch = useGameDispatch();
   const state = useGameState();
+  // The in-room player tag is the account display name (spec §3 — display_name
+  // is the visible tag; login is the fallback for accounts predating display
+  // names). Game rooms still run on PartyKit; only the identity source changed
+  // from the old GitHub login to the account.
+  const { user } = useAccount();
+  const playerName = user?.display_name ?? user?.login ?? null;
   const clientRef = useRef<PartyClient | null>(null);
   const gameCodeRef = useRef<string | null>(null);
   const myColorRef = useRef<'red' | 'yellow' | null>(null);
@@ -178,26 +185,26 @@ export function usePartyGame(
   }, [dispatch, lobbyStatusUpdate]);
 
   const createGame = useCallback(() => {
-    if (!state.username) return;
+    if (!playerName) return;
     const code = generateCode();
     myColorRef.current = 'red';
     rematchRequestedRef.current = false;
     opponentRef.current = null;
     dispatch({ type: 'ROOM_CREATED', code, color: 'red' });
-    connectToRoom(code, state.username);
-  }, [state.username, dispatch, connectToRoom]);
+    connectToRoom(code, playerName);
+  }, [playerName, dispatch, connectToRoom]);
 
   const joinGame = useCallback((code: string) => {
-    if (!state.username) return;
+    if (!playerName) return;
     myColorRef.current = 'yellow';
     rematchRequestedRef.current = false;
     opponentRef.current = null;
     dispatch({ type: 'JOINING_GAME', code });
-    connectToRoom(code, state.username);
-  }, [state.username, dispatch, connectToRoom]);
+    connectToRoom(code, playerName);
+  }, [playerName, dispatch, connectToRoom]);
 
   const makeMove = useCallback((column: number) => {
-    if (!clientRef.current || !state.username) return;
+    if (!clientRef.current || !playerName) return;
     const playerNum = turnRef.current === 'red' ? 1 : 2;
     const result = dropPiece(boardRef.current, column, playerNum);
     if (!result) return;
@@ -209,7 +216,7 @@ export function usePartyGame(
     const nextTurn = mover === 'red' ? 'yellow' : 'red';
     turnRef.current = nextTurn;
 
-    clientRef.current.send({ type: 'move', username: state.username, column });
+    clientRef.current.send({ type: 'move', username: playerName, column });
 
     if (winLine) {
       dispatch({
@@ -236,24 +243,24 @@ export function usePartyGame(
         lastMove: { col: column, row: result.row },
       });
     }
-  }, [state.username, dispatch]);
+  }, [playerName, dispatch]);
 
   const sendChat = useCallback((text: string) => {
-    if (!clientRef.current || !state.username) return;
-    clientRef.current.send({ type: 'chat', username: state.username, text });
-    dispatch({ type: 'CHAT_MESSAGE', from: state.username, text });
-  }, [state.username, dispatch]);
+    if (!clientRef.current || !playerName) return;
+    clientRef.current.send({ type: 'chat', username: playerName, text });
+    dispatch({ type: 'CHAT_MESSAGE', from: playerName, text });
+  }, [playerName, dispatch]);
 
   const requestRematch = useCallback(() => {
-    if (!clientRef.current || !state.username) return;
+    if (!clientRef.current || !playerName) return;
     rematchRequestedRef.current = true;
-    clientRef.current.send({ type: 'rematch', username: state.username });
+    clientRef.current.send({ type: 'rematch', username: playerName });
     dispatch({ type: 'REMATCH_REQUESTED' });
-  }, [state.username, dispatch]);
+  }, [playerName, dispatch]);
 
   const leaveGame = useCallback(() => {
-    if (clientRef.current && state.username) {
-      clientRef.current.send({ type: 'leave', username: state.username });
+    if (clientRef.current && playerName) {
+      clientRef.current.send({ type: 'leave', username: playerName });
       clientRef.current.close();
       clientRef.current = null;
     }
@@ -264,18 +271,21 @@ export function usePartyGame(
     rematchRequestedRef.current = false;
     opponentRef.current = null;
     lobbyStatusUpdate('idle');
-  }, [state.username, lobbyStatusUpdate]);
+  }, [playerName, lobbyStatusUpdate]);
 
+  // target is the challenged player's ACCOUNT ID (spec §3) — forwarded verbatim
+  // to the presence layer via lobbyChallenge; the room itself still uses our
+  // display-name tag.
   const challengePlayer = useCallback((target: string) => {
-    if (!state.username) return;
+    if (!playerName) return;
     const code = generateCode();
     myColorRef.current = 'red';
     rematchRequestedRef.current = false;
     opponentRef.current = null;
     dispatch({ type: 'ROOM_CREATED', code, color: 'red' });
-    connectToRoom(code, state.username);
+    connectToRoom(code, playerName);
     lobbyChallenge(target, 'connect-four', code);
-  }, [state.username, dispatch, connectToRoom, lobbyChallenge]);
+  }, [playerName, dispatch, connectToRoom, lobbyChallenge]);
 
   return { createGame, joinGame, makeMove, sendChat, requestRematch, leaveGame, challengePlayer };
 }

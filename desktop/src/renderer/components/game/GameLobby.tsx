@@ -139,16 +139,17 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
         )}
       </div>
 
-      {/* Incoming challenge */}
+      {/* Incoming challenge — challengeFrom is account identity now: .id is the
+          stable key passed to respondToChallenge, .name is the visible tag. */}
       {state.challengeFrom && (
         <div className="px-3 py-2 border-b border-edge bg-indigo-950/50">
           <p className="text-sm text-fg mb-2">
-            <span className="font-medium text-[#66AAFF]">{state.challengeFrom}</span> wants to play!
+            <span className="font-medium text-[#66AAFF]">{state.challengeFrom.name}</span> wants to play!
           </p>
           <div className="flex gap-2">
             <button
               onClick={() => {
-                connection.respondToChallenge(state.challengeFrom!, true);
+                connection.respondToChallenge(state.challengeFrom!.id, true);
                 connection.joinGame(state.challengeCode!);
                 dispatch({ type: 'CLEAR_CHALLENGE' });
               }}
@@ -157,7 +158,7 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
               Accept
             </button>
             <button
-              onClick={() => { connection.respondToChallenge(state.challengeFrom!, false); dispatch({ type: 'CLEAR_CHALLENGE' }); }}
+              onClick={() => { connection.respondToChallenge(state.challengeFrom!.id, false); dispatch({ type: 'CLEAR_CHALLENGE' }); }}
               className="flex-1 bg-inset hover:bg-edge text-fg-2 text-xs font-medium rounded-lg py-1.5 transition-colors"
             >
               Decline
@@ -170,7 +171,7 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
       {state.challengeDeclinedBy && (
         <div className="px-3 py-2 border-b border-edge">
           <p className="text-xs text-fg-dim">
-            <span className="text-fg-2">{state.challengeDeclinedBy}</span> declined your challenge.
+            <span className="text-fg-2">{state.challengeDeclinedBy.name}</span> declined your challenge.
             <button onClick={() => dispatch({ type: 'CLEAR_CHALLENGE' })} className="text-[#66AAFF] ml-1">Dismiss</button>
           </p>
         </div>
@@ -203,14 +204,16 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
         </div>
       </div>
 
-      {/* Online users */}
+      {/* Online users — account identity now: display via u.name, challenge by
+          u.id. Favorites still key on the visible tag (Task 8 owns migrating the
+          favorites store to account ids); self-filter compares tag to tag. */}
       {(() => {
-        const otherUsers = state.onlineUsers.filter(u => u.username !== state.username);
-        const onlineFavorites = otherUsers.filter(u => favorites.includes(u.username));
-        const onlineNonFavorites = otherUsers.filter(u => !favorites.includes(u.username));
+        const otherUsers = state.onlineUsers.filter(u => u.name !== state.username);
+        const onlineFavorites = otherUsers.filter(u => favorites.includes(u.name));
+        const onlineNonFavorites = otherUsers.filter(u => !favorites.includes(u.name));
         const offlineFavorites = favorites
-          .filter(f => f !== state.username && !otherUsers.some(u => u.username === f))
-          .map(f => ({ username: f, status: 'offline' as const }));
+          .filter(f => f !== state.username && !otherUsers.some(u => u.name === f))
+          .map(f => ({ id: f, name: f, handle: null, status: 'offline' as const }));
         const sortedUsers = [...onlineFavorites, ...onlineNonFavorites, ...offlineFavorites];
         return (
           <div className="px-3 py-2 border-b border-edge">
@@ -223,11 +226,11 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
               <ul className="flex flex-col gap-1">
                 {sortedUsers.map((user) => {
                   const isOnline = user.status !== 'offline';
-                  const isFav = favorites.includes(user.username);
+                  const isFav = favorites.includes(user.name);
                   return (
-                    <li key={user.username} className="flex items-center gap-2">
+                    <li key={user.id} className="flex items-center gap-2">
                       <button
-                        onClick={() => toggleFavorite(user.username)}
+                        onClick={() => toggleFavorite(user.name)}
                         className={`text-xs shrink-0 transition-colors ${isFav ? 'text-yellow-400' : 'text-fg-faint hover:text-fg-dim'}`}
                         title={isFav ? 'Remove from favorites' : 'Add to favorites'}
                       >
@@ -238,13 +241,13 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
                         user.status === 'idle' ? 'bg-green-400' : 'bg-yellow-400'
                       }`} />
                       <span className={`text-sm truncate flex-1 ${isOnline ? 'text-fg-2' : 'text-fg-faint'}`}>
-                        {user.username}
+                        {user.name}
                       </span>
                       {isOnline && user.status === 'in-game' ? (
                         <span className="text-[10px] text-yellow-500 ml-auto">in game</span>
                       ) : isOnline ? (
                         <button
-                          onClick={() => connection.challengePlayer(user.username)}
+                          onClick={() => connection.challengePlayer(user.id)}
                           className="text-[10px] text-[#66AAFF] hover:text-[#88CCFF] ml-auto transition-colors"
                         >
                           Challenge
@@ -401,31 +404,15 @@ export default function GameLobby({ connection, incognito, onToggleIncognito }: 
   if (state.partyError && !incognito) return <ErrorScreen connection={connection} />;
   if (state.screen === 'joining') return <JoiningScreen connection={connection} />;
   if (state.screen === 'waiting') return <WaitingScreen connection={connection} />;
-  // Show connecting spinner while waiting for PartyKit (setup screen, not incognito).
-  // After ~10s of no open, `slowConnect` flips and we swap in friendlier copy
-  // plus a Reload button — prevents the infinite-silent-spinner that hid the
-  // "PartyKit crashed, partysocket retrying forever on 5xx" case.
+  // Show connecting spinner while the platform layer opens the presence socket
+  // (setup screen, not incognito). The slow-connect hint that used to live here
+  // was tied to the retired PartyKit client's HTTP probe — removed with it
+  // (Task 7). A real socket failure surfaces via PARTY_ERROR → ErrorScreen above.
   if (!state.connected && !incognito) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
         <BrailleSpinner size="lg" />
-        <p className="text-sm text-fg-dim">
-          {state.slowConnect ? 'Still trying to connect…' : 'Connecting…'}
-        </p>
-        {state.slowConnect && (
-          <>
-            <p className="text-xs text-fg-muted text-center max-w-xs">
-              {state.slowConnectHint ?? 'Taking a little longer than usual. Hang tight…'}
-            </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="text-xs text-[#66AAFF] hover:text-[#88CCFF] transition-colors"
-              title="Reload the app"
-            >
-              Reload app
-            </button>
-          </>
-        )}
+        <p className="text-sm text-fg-dim">Connecting…</p>
       </div>
     );
   }

@@ -32,7 +32,7 @@ import { hookEventToAction } from './state/hook-dispatcher';
 import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
 import { useVisualViewport } from './hooks/useVisualViewport';
-import { usePartyLobby } from './hooks/usePartyLobby';
+import { usePresence } from './hooks/usePresence';
 import { usePartyGame } from './hooks/usePartyGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
@@ -460,7 +460,10 @@ function AppInner() {
   // shim / Android), myWindowId stays null so isLeader is false — fall
   // back to true-by-default so the lobby still connects.
   const lobbyLeader = (window as any).claude?.detach?.openDetached ? isLeader : true;
-  const lobby = usePartyLobby(lobbyLeader);
+  // Presence socket lives in the platform layer now (spec §3); usePresence
+  // expresses desired state and maps relayed events onto the same reducer
+  // actions the retired PartyKit lobby hook used. Same public API shape.
+  const lobby = usePresence(lobbyLeader);
   const game = usePartyGame(lobby.updateStatus, lobby.challengePlayer);
 
   const gameConnection = useMemo(() => ({
