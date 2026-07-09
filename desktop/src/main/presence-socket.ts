@@ -144,6 +144,6 @@ export function createPresenceSocket(opts: {
     // presence-send handler return an honest failure instead of silently
     // dropping a frame with a success receipt.
     isConnected() { return ws !== null && ws.readyState === WebSocket.OPEN; },
-    destroy() { desired = false; clearTimers(); try { ws?.close(); } catch { /* noop */ } ws = null; },
+    destroy() { desired = false; clearTimers(); try { ws?.close(); } catch { /* noop */ } ws = null; lastPresence = null; },
   };
 }
