@@ -385,6 +385,13 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // above. Status refetches whenever the engine emits an event so the list and
   // per-space connected/local state stay live.
   const [spacesStatus, setSpacesStatus] = useState<any>(null);
+  // Local error from the enable toggle itself (a rejected invoke — e.g. bridge
+  // timeout on Android, which has no syncspaces handlers yet). Rendered in the
+  // same red note slot as engine error events below.
+  const [spacesError, setSpacesError] = useState<string | null>(null);
+  // First enable provisions GitHub repos and can take seconds — without a
+  // visible pending state the checkbox reads as "didn't take" to a non-developer.
+  const [enabling, setEnabling] = useState(false);
 
   const claude = (window as any).claude;
 
@@ -553,13 +560,32 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
 
   // Load synced-spaces status now, and re-load on every engine event so the
   // section reflects sync activity (conflicts, connect/disconnect) live.
-  useEffect(() => {
-    void (async () => setSpacesStatus(await (window as any).claude.syncSpaces.status()))();
-    const off = (window as any).claude.syncSpaces.onEvent?.(() => {
-      void (async () => setSpacesStatus(await (window as any).claude.syncSpaces.status()))();
-    });
-    return () => { off?.(); };
+  // catch {} matches the component's other fetches: a rejected invoke (e.g.
+  // 30s bridge timeout on Android, which has no syncspaces handlers yet) must
+  // not become an unhandled promise rejection — the section just stays empty.
+  const refreshSpacesStatus = useCallback(async () => {
+    try { setSpacesStatus(await (window as any).claude.syncSpaces.status()); } catch {}
   }, []);
+  useEffect(() => {
+    void refreshSpacesStatus();
+    const off = (window as any).claude.syncSpaces.onEvent?.(() => { void refreshSpacesStatus(); });
+    return () => { off?.(); };
+  }, [refreshSpacesStatus]);
+
+  // Enable/disable toggle. try/catch: on rejection, surface the message in the
+  // red note slot and re-fetch status so the checkbox reflects reality instead
+  // of silently staying out of sync with the engine.
+  const handleSpacesEnable = useCallback(async (enabled: boolean) => {
+    setEnabling(true);
+    try {
+      setSpacesStatus(await claude.syncSpaces.enable(enabled));
+      setSpacesError(null);
+    } catch (err: any) {
+      setSpacesError(String(err?.message ?? err));
+      await refreshSpacesStatus();
+    }
+    setEnabling(false);
+  }, [claude, refreshSpacesStatus]);
 
   if (loading) {
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).
@@ -803,22 +829,25 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium text-fg">Synced spaces</h3>
                 <label className="flex items-center gap-2 text-sm text-fg-2">
+                  {/* Plain-word pending state — first enable provisions repos and takes seconds. */}
+                  {enabling && <span className="text-xs text-fg-muted">Setting up…</span>}
                   <input
                     type="checkbox"
                     checked={!!spacesStatus?.enabled}
-                    onChange={async e => setSpacesStatus(await (window as any).claude.syncSpaces.enable(e.target.checked))}
+                    disabled={enabling}
+                    onChange={e => void handleSpacesEnable(e.target.checked)}
                   />
                   Sync across devices
                 </label>
               </div>
               {spacesStatus?.enabled && (
                 <ul className="mt-2 space-y-1">
-                  {spacesStatus.spaces.map((s: any) => (
+                  {(spacesStatus.spaces?.map((s: any) => (
                     <li key={s.id} className="text-sm text-fg-2 flex items-center justify-between">
                       <span>{s.id === 'personal' ? 'Personal' : s.id.replace('project:', '')}</span>
                       <span className="text-xs text-fg-muted">{s.remote ? 'connected' : 'local only'}</span>
                     </li>
-                  ))}
+                  )) ?? [])}
                 </ul>
               )}
               {spacesStatus?.recentEvents?.some((e: any) => e.type === 'conflict') && (
@@ -827,7 +856,23 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                   (look for "(from …)" files).
                 </p>
               )}
-              <button onClick={() => void (window as any).claude.syncSpaces.syncNow()} className="text-xs mt-2 underline text-fg-muted">
+              {/* Error note — one slot, toggle rejection first, else the latest engine
+                  error event. space-manager.ts's friendly messages ("GitHub CLI (gh) is
+                  not installed…") arrive as broadcast {type:'error'} events on the enable
+                  path and are contractually "shown verbatim" here — without this, enable
+                  with gh missing checks the box with zero explanation. */}
+              {(() => {
+                const engineError = [...(spacesStatus?.recentEvents ?? [])].reverse()
+                  .find((e: any) => e.type === 'error');
+                const msg = spacesError ?? engineError?.message;
+                return msg ? <p className="text-xs text-red-500 mt-2">{msg}</p> : null;
+              })()}
+              {/* .catch: void doesn't swallow rejections — route a failed invoke
+                  (bridge timeout) into the red note slot instead of an unhandled rejection. */}
+              <button
+                onClick={() => void (window as any).claude.syncSpaces.syncNow().catch((err: any) => setSpacesError(String(err?.message ?? err)))}
+                className="text-xs mt-2 underline text-fg-muted"
+              >
                 Sync now
               </button>
             </section>

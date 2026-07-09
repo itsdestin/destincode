@@ -93,11 +93,18 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true }: P
   const createProject = useCallback(async () => {
     const name = newProjectName.trim();
     if (!name) return;
-    const r = await (window as any).claude.syncSpaces.createProject(name);
-    // On success: clear the field, reload the folder list (reuses `load`, the
-    // existing folders.list() refresh) so the new project shows up, and select it.
-    if (r?.ok) { setNewProjectName(''); setProjectError(null); await load(); onChange(r.path); }
-    else setProjectError(r?.error ?? 'Could not create project');
+    // try/catch: a REJECTED invoke (e.g. bridge timeout — Android has no
+    // syncspaces handlers yet, so remote-shim rejects after 30s) must surface
+    // as an inline error here, not escape as an unhandled promise rejection.
+    try {
+      const r = await (window as any).claude.syncSpaces.createProject(name);
+      // On success: clear the field, reload the folder list (reuses `load`, the
+      // existing folders.list() refresh) so the new project shows up, and select it.
+      if (r?.ok) { setNewProjectName(''); setProjectError(null); await load(); onChange(r.path); }
+      else setProjectError(r?.error ?? 'Could not create project');
+    } catch (err: any) {
+      setProjectError(String(err?.message ?? err));
+    }
   }, [newProjectName, load, onChange]);
 
   const handleSelect = useCallback((path: string) => {
