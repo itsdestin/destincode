@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
+import { mergeFriends, statusLabel } from './friends-data';
+import type { FriendRow, RequestsPayload } from '../../state/marketplace-api-client';
 
-interface LeaderboardEntry {
-  username: string;
-  wins: number;
-  losses: number;
-}
+// Local mirror of the renderer/main ApiResult shape (useIpc.ts declares it but
+// doesn't export it — keeping a copy avoids importing across that boundary).
+type ApiResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; status: number; message: string };
 
 interface Props {
   connection: GameConnection;
@@ -94,25 +96,189 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
   );
 }
 
-function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
+// Per-friend "…" row menu. Manages its own open + block-confirm state and
+// closes on outside click (anchored popover pattern from MarketplaceAuthChip —
+// no Scrim because it's anchored, not centered). Block is consequence-gated:
+// the menu item swaps the popover to a plain-language confirm BEFORE acting
+// (Destin's standing rule for destructive/hard-to-reverse actions).
+function FriendRowMenu({ onUnfriend, onBlock }: { onUnfriend: () => void; onBlock: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [confirmingBlock, setConfirmingBlock] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setConfirmingBlock(false);
+      }
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  const close = () => { setOpen(false); setConfirmingBlock(false); };
+
+  return (
+    <div ref={wrapRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        title="More"
+        aria-label="Friend options"
+        className="text-fg-muted hover:text-fg-2 px-1 transition-colors"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="layer-surface absolute right-0 top-full mt-1 min-w-[220px] rounded-md p-1.5 text-xs shadow-md"
+          // z-index 62 = one above L2 popup content (61), same as the
+          // MarketplaceAuthChip popover — clears any L1 drawer overlap.
+          style={{ zIndex: 62 }}
+        >
+          {confirmingBlock ? (
+            <div className="flex flex-col gap-2 p-1">
+              <p className="text-fg-2 leading-snug">
+                Blocking removes this friend, cancels pending requests, and hides you
+                from each other. You can unblock later in Settings → Account.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => { onBlock(); close(); }}
+                  className="flex-1 bg-red-600 hover:bg-red-500 text-white font-medium rounded py-1 transition-colors"
+                >
+                  Block
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingBlock(false)}
+                  className="flex-1 bg-inset hover:bg-edge text-fg-2 rounded py-1 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { onUnfriend(); close(); }}
+                className="w-full text-left px-2 py-1 rounded text-fg-2 hover:text-fg hover:bg-inset transition-colors"
+              >
+                Unfriend
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setConfirmingBlock(true)}
+                className="w-full text-left px-2 py-1 rounded text-red-400 hover:bg-inset transition-colors"
+              >
+                Block
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The lobby is the friends list now (spec §6): add-by-handle, incoming/outgoing
+// requests, and challenge buttons gated to online friends. Presence relays only
+// ONLINE FRIENDS, so onlineUsers is merged onto the server friends list to light
+// up "Online" / "In game" and the Challenge button.
+function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
   const [joinCode, setJoinCode] = useState('');
-  const [favorites, setFavorites] = useState<string[]>([]);
 
-  useEffect(() => {
-    (window as any).claude?.getFavorites?.().then((favs: string[]) => {
-      if (favs) setFavorites(favs);
-    });
+  const [friends, setFriends] = useState<FriendRow[] | null>(null);
+  const [requests, setRequests] = useState<RequestsPayload | null>(null);
+  const [addHandle, setAddHandle] = useState('');
+  // Add-friend inline feedback: plain sentence + tone (ok=green, else red).
+  const [addFeedback, setAddFeedback] = useState<{ text: string; ok: boolean } | null>(null);
+  // Per-row error strings keyed by request/friend id (rendered under the row).
+  const [rowError, setRowError] = useState<Record<string, string>>({});
+
+  // Fetch both lists in parallel; called on mount and after every mutation.
+  const refresh = useCallback(async () => {
+    const [fr, rq] = await Promise.all([
+      window.claude.social.listFriends(),
+      window.claude.social.listRequests(),
+    ]);
+    if (fr.ok) setFriends(fr.value);
+    if (rq.ok) setRequests(rq.value);
   }, []);
 
-  const toggleFavorite = (username: string) => {
-    const updated = favorites.includes(username)
-      ? favorites.filter(f => f !== username)
-      : [...favorites, username];
-    setFavorites(updated);
-    (window as any).claude?.setFavorites?.(updated);
-  };
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // Refresh when presence shows an online user who ISN'T a known friend yet — a
+  // request I sent was just accepted (the server pokes visibility ahead of my
+  // list refetch). friendIdsRef avoids re-running purely on the friends array
+  // reference changing, so this can't tight-loop; it settles once the new friend
+  // lands in the list. Self can appear in onlineUsers, so exclude it by tag.
+  const friendIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    friendIdsRef.current = new Set((friends ?? []).map(f => f.id));
+  }, [friends]);
+  useEffect(() => {
+    const hasUnknownOnline = state.onlineUsers.some(
+      u => u.name !== state.username && !friendIdsRef.current.has(u.id),
+    );
+    if (hasUnknownOnline) void refresh();
+  }, [state.onlineUsers, state.username, refresh]);
+
+  // Shared mutation runner for accept/decline/cancel/unfriend/block: on failure
+  // stash a plain sentence under the row; on success clear it and refresh.
+  const runMutation = useCallback(async (
+    fn: () => Promise<ApiResult<unknown>>,
+    key: string,
+    fallback = 'Something went wrong. Try again.',
+  ) => {
+    const res = await fn();
+    if (!res.ok) {
+      setRowError(prev => ({ ...prev, [key]: res.message || fallback }));
+      return;
+    }
+    setRowError(prev => { const next = { ...prev }; delete next[key]; return next; });
+    await refresh();
+  }, [refresh]);
+
+  // Add a friend by exact handle. Maps the Worker's status codes to human copy.
+  const submitAddFriend = useCallback(async () => {
+    const handle = addHandle.trim();
+    if (!handle) return;
+    const res = await window.claude.social.sendRequest(handle);
+    if (res.ok) {
+      setAddFeedback({
+        text: res.value.status === 'friends' ? `You're now friends with @${handle}` : 'Request sent',
+        ok: true,
+      });
+      setAddHandle('');
+      await refresh();
+      return;
+    }
+    // 404 = unknown or blocked handle (no enumeration oracle — same message).
+    // 429 = daily request cap. 400 = a validation reason the server phrases well
+    // ("that's you"). Anything else falls back to the server message.
+    const text =
+      res.status === 404 ? 'No one has that handle' :
+      res.status === 429 ? 'Daily request limit reached — try tomorrow' :
+      res.status === 400 ? (res.message || "That request can't be sent") :
+      (res.message || 'Could not send the request. Try again.');
+    setAddFeedback({ text, ok: false });
+  }, [addHandle, refresh]);
+
+  const merged = mergeFriends(friends ?? [], state.onlineUsers);
+  const incoming = requests?.incoming ?? [];
+  const outgoing = requests?.outgoing ?? [];
+  const loaded = friends !== null;
+  const isEmpty = loaded && merged.length === 0 && incoming.length === 0 && outgoing.length === 0;
 
   return (
     <div className="flex flex-col gap-0">
@@ -132,19 +298,24 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
                 ? 'bg-inset text-fg-2 hover:bg-edge'
                 : 'text-fg-muted hover:text-fg-2'
             }`}
-            title={incognito ? 'Go online — appear in player lists' : 'Go incognito — hide from player lists'}
+            title={incognito ? 'Go online — appear to friends' : 'Go incognito — hide from friends'}
           >
             {incognito ? 'Go Online' : 'Go Incognito'}
           </button>
         )}
       </div>
 
-      {/* Incoming challenge — challengeFrom is account identity now: .id is the
-          stable key passed to respondToChallenge, .name is the visible tag. */}
+      {/* Incoming challenge — challengeFrom is account identity: .id is the
+          stable key passed to respondToChallenge, .name the visible tag, and
+          .handle is now carried so we can render @handle alongside. */}
       {state.challengeFrom && (
         <div className="px-3 py-2 border-b border-edge bg-indigo-950/50">
           <p className="text-sm text-fg mb-2">
-            <span className="font-medium text-[#66AAFF]">{state.challengeFrom.name}</span> wants to play!
+            <span className="font-medium text-[#66AAFF]">{state.challengeFrom.name}</span>
+            {state.challengeFrom.handle && (
+              <span className="text-fg-muted text-xs ml-1">@{state.challengeFrom.handle}</span>
+            )}
+            <span> wants to play!</span>
           </p>
           <div className="flex gap-2">
             <button
@@ -177,7 +348,9 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
         </div>
       )}
 
-      {/* Create / Join */}
+      {/* Create / Join by room code — kept for playing with someone you'd rather
+          share a one-off code with than add as a friend (challenge covers the
+          friends path). */}
       <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
         <button
           onClick={() => connection.createGame()}
@@ -204,71 +377,134 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
         </div>
       </div>
 
-      {/* Online users — account identity now: display via u.name, challenge by
-          u.id. Favorites still key on the visible tag (Task 8 owns migrating the
-          favorites store to account ids); self-filter compares tag to tag. */}
-      {(() => {
-        const otherUsers = state.onlineUsers.filter(u => u.name !== state.username);
-        const onlineFavorites = otherUsers.filter(u => favorites.includes(u.name));
-        const onlineNonFavorites = otherUsers.filter(u => !favorites.includes(u.name));
-        const offlineFavorites = favorites
-          .filter(f => f !== state.username && !otherUsers.some(u => u.name === f))
-          .map(f => ({ id: f, name: f, handle: null, status: 'offline' as const }));
-        const sortedUsers = [...onlineFavorites, ...onlineNonFavorites, ...offlineFavorites];
-        return (
-          <div className="px-3 py-2 border-b border-edge">
-            <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">
-              Players ({otherUsers.length} online{offlineFavorites.length > 0 ? `, ${offlineFavorites.length} favorite offline` : ''})
-            </div>
-            {sortedUsers.length === 0 ? (
-              <p className="text-xs text-fg-faint italic">No one else online yet</p>
-            ) : (
-              <ul className="flex flex-col gap-1">
-                {sortedUsers.map((user) => {
-                  const isOnline = user.status !== 'offline';
-                  const isFav = favorites.includes(user.name);
-                  return (
-                    <li key={user.id} className="flex items-center gap-2">
-                      <button
-                        onClick={() => toggleFavorite(user.name)}
-                        className={`text-xs shrink-0 transition-colors ${isFav ? 'text-yellow-400' : 'text-fg-faint hover:text-fg-dim'}`}
-                        title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-                      >
-                        {isFav ? '★' : '☆'}
-                      </button>
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${
-                        !isOnline ? 'bg-fg-faint' :
-                        user.status === 'idle' ? 'bg-green-400' : 'bg-yellow-400'
-                      }`} />
-                      <span className={`text-sm truncate flex-1 ${isOnline ? 'text-fg-2' : 'text-fg-faint'}`}>
-                        {user.name}
-                      </span>
-                      {isOnline && user.status === 'in-game' ? (
-                        <span className="text-[10px] text-yellow-500 ml-auto">in game</span>
-                      ) : isOnline ? (
-                        <button
-                          onClick={() => connection.challengePlayer(user.id)}
-                          className="text-[10px] text-[#66AAFF] hover:text-[#88CCFF] ml-auto transition-colors"
-                        >
-                          Challenge
-                        </button>
-                      ) : (
-                        <span className="text-[10px] text-fg-faint ml-auto">offline</span>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        );
-      })()}
+      {/* Incoming friend requests */}
+      {incoming.length > 0 && (
+        <div className="px-3 py-2 border-b border-edge">
+          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friend requests</div>
+          <ul className="flex flex-col gap-2">
+            {incoming.map((req) => (
+              <li key={req.id} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-fg-2 truncate flex-1 min-w-0">
+                    {req.from.display_name}
+                    {req.from.handle && <span className="text-fg-muted ml-1">@{req.from.handle}</span>}
+                  </span>
+                  <button
+                    onClick={() => runMutation(() => window.claude.social.acceptRequest(req.id), req.id, "Couldn't accept — try again")}
+                    className="text-[10px] text-green-400 hover:text-green-300 transition-colors shrink-0"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() => runMutation(() => window.claude.social.declineRequest(req.id), req.id, "Couldn't decline — try again")}
+                    className="text-[10px] text-fg-muted hover:text-fg-2 transition-colors shrink-0"
+                  >
+                    Decline
+                  </button>
+                </div>
+                {rowError[req.id] && <p className="text-xs text-red-400">{rowError[req.id]}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
-      {/* Leaderboard preview */}
-      <div className="px-3 py-2">
-        <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Top Players</div>
-        <p className="text-xs text-fg-faint italic">No stats yet</p>
+      {/* Add a friend by handle */}
+      <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
+        <div className="text-[10px] uppercase tracking-wider text-fg-muted">Add a friend</div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={addHandle}
+            // Handles are lowercase — normalize as the user types so the exact-match
+            // lookup on the Worker doesn't 404 on a stray capital.
+            onChange={(e) => setAddHandle(e.target.value.toLowerCase())}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submitAddFriend(); }}
+            placeholder="friend's handle"
+            className="flex-1 bg-well border border-edge rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-fg-dim transition-colors"
+          />
+          <button
+            onClick={() => void submitAddFriend()}
+            disabled={!addHandle.trim()}
+            className="bg-inset hover:bg-edge disabled:opacity-40 disabled:cursor-not-allowed text-fg text-sm font-medium rounded-lg px-3 py-2 transition-colors"
+          >
+            Send request
+          </button>
+        </div>
+        {addFeedback && (
+          <p className={`text-xs ${addFeedback.ok ? 'text-green-400' : 'text-red-400'}`}>{addFeedback.text}</p>
+        )}
       </div>
+
+      {/* Friends list */}
+      {merged.length > 0 && (
+        <div className="px-3 py-2 border-b border-edge">
+          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friends ({merged.length})</div>
+          <ul className="flex flex-col gap-2">
+            {merged.map((row) => (
+              <li key={row.id} className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-fg-2 truncate flex-1 min-w-0">
+                    {row.name}
+                    {row.handle && <span className="text-fg-muted ml-1">@{row.handle}</span>}
+                  </span>
+                  {/* Challenge only when the friend is actually online (has a live
+                      presence entry). row.id is the account id challengePlayer wants. */}
+                  {row.online && (
+                    <button
+                      onClick={() => connection.challengePlayer(row.id)}
+                      className="text-[10px] text-[#66AAFF] hover:text-[#88CCFF] transition-colors shrink-0"
+                    >
+                      Challenge
+                    </button>
+                  )}
+                  <FriendRowMenu
+                    onUnfriend={() => runMutation(() => window.claude.social.unfriend(row.id), row.id, "Couldn't unfriend — try again")}
+                    onBlock={() => runMutation(() => window.claude.social.block(row.id), row.id, "Couldn't block — try again")}
+                  />
+                </div>
+                {/* Plain-word status — never glyphs (workspace rule). */}
+                <span className="text-[10px] text-fg-muted">{statusLabel(row, Date.now())}</span>
+                {rowError[row.id] && <p className="text-xs text-red-400">{rowError[row.id]}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Sent (outgoing) requests — dim, collapsed-feeling */}
+      {outgoing.length > 0 && (
+        <div className="px-3 py-2 border-b border-edge">
+          <div className="text-[10px] uppercase tracking-wider text-fg-faint mb-2">Sent requests</div>
+          <ul className="flex flex-col gap-1">
+            {outgoing.map((req) => (
+              <li key={req.id} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-fg-dim truncate flex-1 min-w-0">
+                    @{req.to.handle ?? req.to.display_name}
+                  </span>
+                  <button
+                    onClick={() => runMutation(() => window.claude.social.cancelRequest(req.id), req.id, "Couldn't cancel — try again")}
+                    className="text-[10px] text-fg-muted hover:text-fg-2 transition-colors shrink-0"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {rowError[req.id] && <p className="text-xs text-red-400">{rowError[req.id]}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Empty state — no friends and no requests in either direction */}
+      {isEmpty && (
+        <div className="px-3 py-6">
+          <p className="text-xs text-fg-faint text-center leading-relaxed">
+            No friends yet. Ask a friend for their handle and add them above.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -416,5 +652,5 @@ export default function GameLobby({ connection, incognito, onToggleIncognito }: 
       </div>
     );
   }
-  return <LobbyScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />;
+  return <FriendsScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />;
 }
