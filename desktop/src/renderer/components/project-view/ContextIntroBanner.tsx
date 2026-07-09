@@ -45,7 +45,10 @@ export function ContextIntroBanner() {
     // shrink-0: the Context tab is a flex-col with overflow-auto; without this the
     // banner gets vertically compressed by the column and `.layer-surface`'s
     // overflow:hidden clips the paragraph down to the eyebrow line.
-    <div className="layer-surface relative flex gap-3 p-3.5 pr-9 mb-4 shrink-0">
+    // boxShadow none: this is an in-flow banner, not a floating overlay — the
+    // .layer-surface popup shadow read as stray elevation (same override the
+    // seg control and file cards use).
+    <div className="layer-surface relative flex gap-3 p-3.5 pr-9 mb-4 shrink-0" style={{ boxShadow: 'none' }}>
       <span className="shrink-0 text-fg-dim mt-px">
         <InfoIcon size={18} />
       </span>
