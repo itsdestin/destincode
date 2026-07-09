@@ -50,6 +50,13 @@ export function isIgnoredPath(relPath: string): boolean {
 /** Spec §7: files over this cap don't live-sync (daily backup covers them). */
 export const MAX_SYNC_FILE_BYTES = 50 * 1024 * 1024;
 
+// Spec §18 watcher-scale guardrail, applied at IMPORT time: folders with more
+// files than this are refused with a clear message instead of silently hanging
+// chokidar. An engine-level guardrail (for folders that GROW past the cap
+// after import) is Plan 1b scope. Count excludes DEFAULT_IGNORES (node_modules
+// etc.) — those never sync, so they shouldn't disqualify a folder either.
+export const MAX_IMPORT_FILE_COUNT = 20_000;
+
 /** Spec §8: "notes (from Laptop, 2026-07-03).md" — the visible conflict copy. */
 export function conflictCopyName(relPath: string, deviceName: string, when: Date): string {
   const date = when.toISOString().slice(0, 10);

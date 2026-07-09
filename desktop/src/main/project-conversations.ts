@@ -23,7 +23,7 @@ const SAFE_ID_RE = /^[A-Za-z0-9._-]+$/;
 // so the slug matches CC's directory name. Windows paths are case-insensitive,
 // so this only normalizes the drive letter; the rest of the path is untouched.
 // Without this, project-filtered conversations come back EMPTY on Windows.
-function ccProjectSlug(projectPath: string): string {
+export function ccProjectSlug(projectPath: string): string {
   const driveNormalized = projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
   return cwdToProjectSlug(driveNormalized);
 }

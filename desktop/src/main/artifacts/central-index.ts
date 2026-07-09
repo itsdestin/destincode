@@ -70,3 +70,22 @@ export async function listProjects(claudeDir: string): Promise<CentralIndexProje
   const idx = await readIndex(claudeDir);
   return idx.projects;
 }
+
+/** Rewrite a project entry's path (and optionally name) when its folder is
+ *  MOVED on disk (the sync-spaces import flow). Matching is by canonical path
+ *  — the store key — so the entry keeps its ULID id and stats, which is what
+ *  keeps artifact history attached to the project across the move. No-op when
+ *  no entry matches (a never-indexed folder has nothing to remap). */
+export async function remapProjectPath(
+  claudeDir: string,
+  oldCanonicalPath: string,
+  newCanonicalPath: string,
+  newName?: string
+): Promise<void> {
+  await mutateIndex(claudeDir, (idx) => {
+    const p = idx.projects.find((x) => x.path === oldCanonicalPath);
+    if (!p) return;
+    p.path = newCanonicalPath;
+    if (newName) p.name = newName;
+  });
+}
