@@ -36,6 +36,10 @@ sealed class ApiResult<out T> {
             val v = serializeValue(value)
             when (v) {
                 null               -> put("value", JSONObject.NULL)
+                // Fix: JSONObject.NULL is a sentinel OBJECT, not Kotlin null — without
+                // this branch the void-endpoint callers (`{ _ -> JSONObject.NULL }`)
+                // fell through to else and shipped the literal string "null".
+                JSONObject.NULL    -> put("value", JSONObject.NULL)
                 is JSONObject      -> put("value", v)
                 // Social list endpoints (friends/blocks) return a bare JSON array —
                 // without this branch it would fall to toString() and ship a stringified
@@ -335,7 +339,9 @@ class MarketplaceApiClient(
     suspend fun listFriends(): ApiResult<JSONArray> {
         val (code, raw) = requestRaw("/social/friends", auth = true)
         return if (code in 200..299) {
-            ApiResult.Ok(try { JSONArray(raw) } catch (_: Exception) { JSONArray() })
+            // Fix: a 2xx with an unparseable body is a FAULT, not an empty list —
+            // an empty-array fallback would render "no friends" and mask the bug.
+            try { ApiResult.Ok(JSONArray(raw)) } catch (_: Exception) { ApiResult.Err(code, "malformed response") }
         } else ApiResult.Err(code, extractMessage(raw, code))
     }
 
@@ -366,7 +372,8 @@ class MarketplaceApiClient(
     suspend fun listBlocks(): ApiResult<JSONArray> {
         val (code, raw) = requestRaw("/social/blocks", auth = true)
         return if (code in 200..299) {
-            ApiResult.Ok(try { JSONArray(raw) } catch (_: Exception) { JSONArray() })
+            // Fix: 2xx + unparseable body = fault, not an empty block list (see listFriends).
+            try { ApiResult.Ok(JSONArray(raw)) } catch (_: Exception) { ApiResult.Err(code, "malformed response") }
         } else ApiResult.Err(code, extractMessage(raw, code))
     }
 }

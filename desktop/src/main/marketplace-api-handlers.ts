@@ -8,6 +8,9 @@ import fs from "fs";
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
 import { createMarketplaceApiClient, MarketplaceApiError, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
 import type { PostRatingInput, AuthStartResponse, AuthPollResponse } from "../renderer/state/marketplace-api-client";
+// wrap + the 401-clear closure are shared with social-handlers.ts via
+// handler-utils.ts so the error contract can't drift between the two modules.
+import { wrap, makeClearSessionOn401 } from "./handler-utils";
 
 // ── Discriminated union returned by all API-calling handlers ─────────────────
 // WHY: Custom Error fields (MarketplaceApiError.status) are dropped by
@@ -22,16 +25,6 @@ export type ApiResult<T> = { ok: true; value: T } | { ok: false; status: number;
 // the account-native fields (both optional — pre-Phase-1 /auth/me omits them).
 function toStoredUser(me: { id: string; login: string; avatar_url: string | null; display_name?: string; handle?: string | null }) {
   return { id: me.id, login: me.login, avatar_url: me.avatar_url ?? "", display_name: me.display_name, handle: me.handle ?? null };
-}
-
-async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
-  try {
-    return { ok: true, value: await run() };
-  } catch (e) {
-    if (e instanceof MarketplaceApiError) return { ok: false, status: e.status, message: e.message };
-    const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, status: 0, message }; // status:0 = non-API error (network, parse, etc.)
-  }
 }
 
 // ── Channel list for double-registration guard ────────────────────────────────
@@ -65,17 +58,9 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     getToken: () => store.getToken(),
   });
 
-  // Fix: a 401 from an auth'd account endpoint means the server no longer
-  // recognizes this session (identity-migration row drop, 90-day idle expiry,
-  // revocation). Keeping the local token would strand the user "signed in" with
-  // every call failing (the exact bug: post-migration users saw the handle
-  // prompt, typed a handle, got "invalid token" and no way out). Clear the local
-  // session so the UI flips to signed-out and offers a fresh sign-in. This only
-  // REACTS to a 401 that already happened — it never proactively validates.
-  const clearSessionOn401 = <T>(result: ApiResult<T>): ApiResult<T> => {
-    if (!result.ok && result.status === 401) store.signOut();
-    return result;
-  };
+  // Shared 401-reaction (see handler-utils.ts for the full WHY): a dead session
+  // server-side clears the local token so the UI flips to signed-out.
+  const clearSessionOn401 = makeClearSessionOn401(store);
 
   // ── Auth: device-code flow ────────────────────────────────────────────────
   // Renderer calls authStart to receive a user_code + auth_url. Main process
@@ -210,9 +195,22 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
   ipcMain.handle("account:export", async (): Promise<
     { path: string } | { canceled: true } | { ok: false; status: number; error: string }
   > => {
-    let data: unknown;
+    // WHY one try/catch around EVERYTHING: the renderer is promised a
+    // discriminated union it can handle without try/catch. If the dialog or the
+    // disk write (ENOSPC, EACCES) threw outside the catch, the invoke promise
+    // would REJECT instead of returning the union — diverging from Android,
+    // which catches its Downloads write. status:0 = local/non-API failure.
     try {
-      data = await client.exportData();
+      const data = await client.exportData();
+      const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: "Export account data",
+        defaultPath: `youcoded-account-export-${stamp}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (canceled || !filePath) return { canceled: true };
+      await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
+      return { path: filePath };
     } catch (e) {
       if (e instanceof MarketplaceApiError) {
         if (e.status === 401) store.signOut(); // dead session → flip UI signed-out
@@ -220,15 +218,6 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       }
       return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
     }
-    const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      title: "Export account data",
-      defaultPath: `youcoded-account-export-${stamp}.json`,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-    if (canceled || !filePath) return { canceled: true };
-    await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
-    return { path: filePath };
   });
 
   // ── Write endpoints ───────────────────────────────────────────────────────

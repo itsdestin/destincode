@@ -6,27 +6,17 @@
 
 import { ipcMain } from "electron";
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
-import { createMarketplaceApiClient, MarketplaceApiError, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
+import { createMarketplaceApiClient, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
 import type {
   ApiResult,
 } from "./marketplace-api-handlers";
 import type {
   SocialUserCard, FriendRow, RequestsPayload, BlockRow,
 } from "../renderer/state/marketplace-api-client";
-
-// Replicated from marketplace-api-handlers.ts (that copy isn't exported). It's a
-// six-line helper, so we keep this module self-contained rather than widening the
-// account file's API surface — but it MUST stay the same discriminated-union shape
-// so the renderer sees one consistent contract across account:* and social:*.
-async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
-  try {
-    return { ok: true, value: await run() };
-  } catch (e) {
-    if (e instanceof MarketplaceApiError) return { ok: false, status: e.status, message: e.message };
-    const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, status: 0, message }; // status:0 = non-API error (network, parse, etc.)
-  }
-}
+// wrap + the 401-clear closure are shared with marketplace-api-handlers.ts via
+// handler-utils.ts so the renderer sees ONE consistent ApiResult error contract
+// across account:* and social:* — .status must survive the contextBridge.
+import { wrap, makeClearSessionOn401 } from "./handler-utils";
 
 // ── Channel list for double-registration guard ───────────────────────────────
 // Byte-identical to the strings in preload.ts (IPC.SOCIAL_*), remote-shim.ts,
@@ -58,14 +48,9 @@ export function registerSocialHandlers(store: MarketplaceAuthStore): void {
     getToken: () => store.getToken(),
   });
 
-  // Same 401 reaction as the account handlers: a dead session server-side must
-  // flip the local UI to signed-out rather than strand the user "signed in" with
-  // every call failing. Only reacts to a 401 that already happened; never
-  // proactively validates. See marketplace-api-handlers.ts clearSessionOn401.
-  const clearSessionOn401 = <T>(result: ApiResult<T>): ApiResult<T> => {
-    if (!result.ok && result.status === 401) store.signOut();
-    return result;
-  };
+  // Shared 401-reaction (see handler-utils.ts for the full WHY): a dead session
+  // server-side clears the local token so the UI flips to signed-out.
+  const clearSessionOn401 = makeClearSessionOn401(store);
 
   // All handlers return ApiResult<T> so the renderer preserves HTTP status across
   // the contextBridge (structuredClone drops MarketplaceApiError.status). The

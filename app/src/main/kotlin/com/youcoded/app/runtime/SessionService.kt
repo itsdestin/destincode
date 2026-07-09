@@ -2639,7 +2639,9 @@ class SessionService : Service() {
                 // is 28). Below 29, respond an error the renderer surfaces inline.
                 if (android.os.Build.VERSION.SDK_INT < 29) {
                     msg.id?.let {
-                        bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", false).put("error", "export requires Android 10+"))
+                        // status:0 = local/non-API failure (desktop convention) — keeps the
+                        // renderer's error type ({ ok:false, status, error }) required and truthful.
+                        bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", false).put("status", 0).put("error", "export requires Android 10+"))
                     }
                 } else {
                     val result = marketplaceApiClient.exportData()
@@ -2653,7 +2655,8 @@ class SessionService : Service() {
                             JSONObject().put("path", "Downloads/$filename")
                         } catch (e: Exception) {
                             android.util.Log.w("SessionService", "account:export write failed: ${e.message}")
-                            JSONObject().put("ok", false).put("error", (e.message ?: "failed to write export"))
+                            // status:0 = local write failure, matching desktop's non-API convention.
+                            JSONObject().put("ok", false).put("status", 0).put("error", (e.message ?: "failed to write export"))
                         }
                     } else {
                         // Fetch failure — clear on 401 (dead session) and surface { ok:false }
