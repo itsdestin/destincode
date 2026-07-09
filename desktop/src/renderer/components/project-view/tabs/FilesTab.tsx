@@ -423,10 +423,11 @@ export function FilesTab({
                   >
                     {/* Folder tab (nub). ml-4 clears the body's rounded top-left
                         corner (at ml-2 it floated over the curve and looked
-                        detached); relative + -mb-px tucks it 1px INTO the body so
-                        the nub's inset fill paints over the body's top border and
-                        the two read as one connected folder shape. */}
-                    <div className="relative -mb-px ml-4 h-3 w-14 rounded-t-md bg-inset border border-edge border-b-0 group-hover:border-accent/60 transition-colors" />
+                        detached). NO overlap tuck: the body's top border runs
+                        continuously beneath the nub — an earlier -mb-px tuck
+                        painted the nub's fill over that line and the user wants
+                        it visible. */}
+                    <div className="ml-4 h-3 w-14 rounded-t-md bg-inset border border-edge border-b-0 group-hover:border-accent/60 transition-colors" />
                     {/* Folder body — preview AND the name/count footer, all inside one
                         bordered, rounded container so they read as the same folder.
                         All four corners rounded — the old rounded-tl-none square
