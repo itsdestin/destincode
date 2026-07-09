@@ -101,7 +101,7 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
 // no Scrim because it's anchored, not centered). Block is consequence-gated:
 // the menu item swaps the popover to a plain-language confirm BEFORE acting
 // (Destin's standing rule for destructive/hard-to-reverse actions).
-function FriendRowMenu({ onUnfriend, onBlock }: { onUnfriend: () => void; onBlock: () => void }) {
+function FriendRowMenu({ onUnfriend, onBlock, pending }: { onUnfriend: () => void; onBlock: () => void; pending?: boolean }) {
   const [open, setOpen] = useState(false);
   const [confirmingBlock, setConfirmingBlock] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -127,7 +127,10 @@ function FriendRowMenu({ onUnfriend, onBlock }: { onUnfriend: () => void; onBloc
         onClick={() => setOpen(o => !o)}
         title="More"
         aria-label="Friend options"
-        className="text-fg-muted hover:text-fg-2 px-1 transition-colors"
+        // Touch target: p-1.5 gives the ⋯ a ≥32px square hit box — this panel
+        // ships to a 320px Android WebView, so bare 10px text (~14px box) is
+        // untappable. Keep the padding even if the visual density changes.
+        className="text-fg-muted hover:text-fg-2 p-1.5 transition-colors"
       >
         ⋯
       </button>
@@ -146,17 +149,19 @@ function FriendRowMenu({ onUnfriend, onBlock }: { onUnfriend: () => void; onBloc
                 from each other. You can unblock later in Settings → Account.
               </p>
               <div className="flex gap-2">
+                {/* py-1.5 keeps these ≥32px tall for touch (see the ⋯ trigger note). */}
                 <button
                   type="button"
                   onClick={() => { onBlock(); close(); }}
-                  className="flex-1 bg-red-600 hover:bg-red-500 text-white font-medium rounded py-1 transition-colors"
+                  disabled={pending}
+                  className="flex-1 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-medium rounded py-1.5 transition-colors"
                 >
                   Block
                 </button>
                 <button
                   type="button"
                   onClick={() => setConfirmingBlock(false)}
-                  className="flex-1 bg-inset hover:bg-edge text-fg-2 rounded py-1 transition-colors"
+                  className="flex-1 bg-inset hover:bg-edge text-fg-2 rounded py-1.5 transition-colors"
                 >
                   Cancel
                 </button>
@@ -164,11 +169,13 @@ function FriendRowMenu({ onUnfriend, onBlock }: { onUnfriend: () => void; onBloc
             </div>
           ) : (
             <>
+              {/* py-1.5 keeps menu items ≥32px tall for touch (see the ⋯ trigger note). */}
               <button
                 type="button"
                 role="menuitem"
                 onClick={() => { onUnfriend(); close(); }}
-                className="w-full text-left px-2 py-1 rounded text-fg-2 hover:text-fg hover:bg-inset transition-colors"
+                disabled={pending}
+                className="w-full text-left px-2 py-1.5 rounded text-fg-2 hover:text-fg hover:bg-inset disabled:opacity-40 transition-colors"
               >
                 Unfriend
               </button>
@@ -176,7 +183,7 @@ function FriendRowMenu({ onUnfriend, onBlock }: { onUnfriend: () => void; onBloc
                 type="button"
                 role="menuitem"
                 onClick={() => setConfirmingBlock(true)}
-                className="w-full text-left px-2 py-1 rounded text-red-400 hover:bg-inset transition-colors"
+                className="w-full text-left px-2 py-1.5 rounded text-red-400 hover:bg-inset transition-colors"
               >
                 Block
               </button>
@@ -195,6 +202,11 @@ function FriendRowMenu({ onUnfriend, onBlock }: { onUnfriend: () => void; onBloc
 function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
+  // Review fix: self-exclusion keys on the ACCOUNT ID (ids-not-names principle) —
+  // display names aren't unique, so tag-comparison would miss a friend who
+  // shares your name and fire spurious refreshes on null display_name edges.
+  const { user } = useAccount();
+  const myId = user?.id ?? null;
   const [joinCode, setJoinCode] = useState('');
 
   const [friends, setFriends] = useState<FriendRow[] | null>(null);
@@ -202,8 +214,16 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
   const [addHandle, setAddHandle] = useState('');
   // Add-friend inline feedback: plain sentence + tone (ok=green, else red).
   const [addFeedback, setAddFeedback] = useState<{ text: string; ok: boolean } | null>(null);
+  // True while a sendRequest is in flight — disables the Send button so a
+  // double-tap can't fire two requests (and burn the daily cap twice).
+  const [addPending, setAddPending] = useState(false);
   // Per-row error strings keyed by request/friend id (rendered under the row).
   const [rowError, setRowError] = useState<Record<string, string>>({});
+  // Ids with a mutation in flight — their row buttons are disabled. The ref is
+  // the synchronous double-fire guard (state alone can lag a fast double-tap);
+  // the state copy drives the disabled rendering.
+  const pendingRowsRef = useRef<Set<string>>(new Set());
+  const [pendingRows, setPendingRows] = useState<Set<string>>(new Set());
 
   // Fetch both lists in parallel; called on mount and after every mutation.
   const refresh = useCallback(async () => {
@@ -221,58 +241,78 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
   // request I sent was just accepted (the server pokes visibility ahead of my
   // list refetch). friendIdsRef avoids re-running purely on the friends array
   // reference changing, so this can't tight-loop; it settles once the new friend
-  // lands in the list. Self can appear in onlineUsers, so exclude it by tag.
+  // lands in the list. Self can appear in onlineUsers, so exclude it by ACCOUNT
+  // ID (review fix — names aren't unique keys).
   const friendIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     friendIdsRef.current = new Set((friends ?? []).map(f => f.id));
   }, [friends]);
   useEffect(() => {
     const hasUnknownOnline = state.onlineUsers.some(
-      u => u.name !== state.username && !friendIdsRef.current.has(u.id),
+      u => u.id !== myId && !friendIdsRef.current.has(u.id),
     );
     if (hasUnknownOnline) void refresh();
-  }, [state.onlineUsers, state.username, refresh]);
+  }, [state.onlineUsers, myId, refresh]);
 
   // Shared mutation runner for accept/decline/cancel/unfriend/block: on failure
   // stash a plain sentence under the row; on success clear it and refresh.
+  // Review fix: a per-key in-flight guard so a double-tap can't fire the same
+  // mutation twice — the ref check is synchronous (state updates would lag a
+  // fast second tap), and pendingRows state disables the row's buttons.
   const runMutation = useCallback(async (
     fn: () => Promise<ApiResult<unknown>>,
     key: string,
     fallback = 'Something went wrong. Try again.',
   ) => {
-    const res = await fn();
-    if (!res.ok) {
-      setRowError(prev => ({ ...prev, [key]: res.message || fallback }));
-      return;
+    if (pendingRowsRef.current.has(key)) return;
+    pendingRowsRef.current.add(key);
+    setPendingRows(prev => new Set(prev).add(key));
+    try {
+      const res = await fn();
+      if (!res.ok) {
+        setRowError(prev => ({ ...prev, [key]: res.message || fallback }));
+        return;
+      }
+      // Success: drop any stale error for this row so entries can't accumulate.
+      setRowError(prev => { const next = { ...prev }; delete next[key]; return next; });
+      await refresh();
+    } finally {
+      pendingRowsRef.current.delete(key);
+      setPendingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
     }
-    setRowError(prev => { const next = { ...prev }; delete next[key]; return next; });
-    await refresh();
   }, [refresh]);
 
   // Add a friend by exact handle. Maps the Worker's status codes to human copy.
   const submitAddFriend = useCallback(async () => {
     const handle = addHandle.trim();
-    if (!handle) return;
-    const res = await window.claude.social.sendRequest(handle);
-    if (res.ok) {
-      setAddFeedback({
-        text: res.value.status === 'friends' ? `You're now friends with @${handle}` : 'Request sent',
-        ok: true,
-      });
-      setAddHandle('');
-      await refresh();
-      return;
+    // addPending guard (review fix): Enter + click (or a double-tap) must not
+    // send the request twice — a duplicate burns the daily request cap.
+    if (!handle || addPending) return;
+    setAddPending(true);
+    try {
+      const res = await window.claude.social.sendRequest(handle);
+      if (res.ok) {
+        setAddFeedback({
+          text: res.value.status === 'friends' ? `You're now friends with @${handle}` : 'Request sent',
+          ok: true,
+        });
+        setAddHandle('');
+        await refresh();
+        return;
+      }
+      // 404 = unknown or blocked handle (no enumeration oracle — same message).
+      // 429 = daily request cap. 400 = a validation reason the server phrases well
+      // ("that's you"). Anything else falls back to the server message.
+      const text =
+        res.status === 404 ? 'No one has that handle' :
+        res.status === 429 ? 'Daily request limit reached — try tomorrow' :
+        res.status === 400 ? (res.message || "That request can't be sent") :
+        (res.message || 'Could not send the request. Try again.');
+      setAddFeedback({ text, ok: false });
+    } finally {
+      setAddPending(false);
     }
-    // 404 = unknown or blocked handle (no enumeration oracle — same message).
-    // 429 = daily request cap. 400 = a validation reason the server phrases well
-    // ("that's you"). Anything else falls back to the server message.
-    const text =
-      res.status === 404 ? 'No one has that handle' :
-      res.status === 429 ? 'Daily request limit reached — try tomorrow' :
-      res.status === 400 ? (res.message || "That request can't be sent") :
-      (res.message || 'Could not send the request. Try again.');
-    setAddFeedback({ text, ok: false });
-  }, [addHandle, refresh]);
+  }, [addHandle, addPending, refresh]);
 
   const merged = mergeFriends(friends ?? [], state.onlineUsers);
   const incoming = requests?.incoming ?? [];
@@ -389,15 +429,20 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                     {req.from.display_name}
                     {req.from.handle && <span className="text-fg-muted ml-1">@{req.from.handle}</span>}
                   </span>
+                  {/* Touch target: px-1.5 py-1.5 keeps these row actions ≥32px
+                      tall on the Android WebView — the 10px text alone is a
+                      ~14px hit box. Applies to every row button in this screen. */}
                   <button
                     onClick={() => runMutation(() => window.claude.social.acceptRequest(req.id), req.id, "Couldn't accept — try again")}
-                    className="text-[10px] text-green-400 hover:text-green-300 transition-colors shrink-0"
+                    disabled={pendingRows.has(req.id)}
+                    className="text-[10px] px-1.5 py-1.5 text-green-400 hover:text-green-300 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Accept
                   </button>
                   <button
                     onClick={() => runMutation(() => window.claude.social.declineRequest(req.id), req.id, "Couldn't decline — try again")}
-                    className="text-[10px] text-fg-muted hover:text-fg-2 transition-colors shrink-0"
+                    disabled={pendingRows.has(req.id)}
+                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Decline
                   </button>
@@ -425,7 +470,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
           />
           <button
             onClick={() => void submitAddFriend()}
-            disabled={!addHandle.trim()}
+            disabled={!addHandle.trim() || addPending}
             className="bg-inset hover:bg-edge disabled:opacity-40 disabled:cursor-not-allowed text-fg text-sm font-medium rounded-lg px-3 py-2 transition-colors"
           >
             Send request
@@ -453,12 +498,14 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   {row.online && (
                     <button
                       onClick={() => connection.challengePlayer(row.id)}
-                      className="text-[10px] text-[#66AAFF] hover:text-[#88CCFF] transition-colors shrink-0"
+                      // px/py-1.5 = touch-target padding (see the Accept button note).
+                      className="text-[10px] px-1.5 py-1.5 text-[#66AAFF] hover:text-[#88CCFF] transition-colors shrink-0"
                     >
                       Challenge
                     </button>
                   )}
                   <FriendRowMenu
+                    pending={pendingRows.has(row.id)}
                     onUnfriend={() => runMutation(() => window.claude.social.unfriend(row.id), row.id, "Couldn't unfriend — try again")}
                     onBlock={() => runMutation(() => window.claude.social.block(row.id), row.id, "Couldn't block — try again")}
                   />
@@ -485,7 +532,9 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                   </span>
                   <button
                     onClick={() => runMutation(() => window.claude.social.cancelRequest(req.id), req.id, "Couldn't cancel — try again")}
-                    className="text-[10px] text-fg-muted hover:text-fg-2 transition-colors shrink-0"
+                    disabled={pendingRows.has(req.id)}
+                    // px/py-1.5 = touch-target padding (see the Accept button note).
+                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
                   >
                     Cancel
                   </button>

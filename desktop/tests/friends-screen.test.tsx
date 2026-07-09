@@ -29,7 +29,8 @@ vi.mock('../src/renderer/state/game-context', () => ({
   useGameDispatch: () => h.dispatch,
 }));
 vi.mock('../src/renderer/state/account-context', () => ({
-  useAccount: () => ({ signedIn: true, signInPending: false, signInError: null, startSignIn: vi.fn() }),
+  // user.id feeds the presence-refetch self-exclusion (id-keyed, review fix).
+  useAccount: () => ({ signedIn: true, user: { id: 'github:me' }, signInPending: false, signInError: null, startSignIn: vi.fn() }),
 }));
 
 import GameLobby from '../src/renderer/components/game/GameLobby';
@@ -156,6 +157,60 @@ describe('FriendsScreen — add a friend', () => {
     const input = (await findByPlaceholderText("friend's handle")) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'AlIcE' } });
     expect(input.value).toBe('alice');
+  });
+});
+
+describe('FriendsScreen — in-flight mutation guards', () => {
+  it('double-clicking Accept fires acceptRequest once', async () => {
+    // Hold the mutation open across both clicks so the second click hits the
+    // in-flight guard rather than a completed (re-enabled) button.
+    let release: (v: any) => void = () => {};
+    const acceptRequest = vi.fn().mockImplementation(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    (window as any).claude.social = makeSocial({
+      listRequests: vi.fn().mockResolvedValue(ok({
+        incoming: [{ id: 'req-1', from: { id: 'github:9', display_name: 'Zed', handle: 'zed', avatar_url: null }, created_at: 0 }],
+        outgoing: [],
+      })),
+      acceptRequest,
+    });
+
+    const { findByText } = render(<GameLobby connection={makeConnection()} />);
+    const accept = await findByText('Accept');
+
+    fireEvent.click(accept);
+    fireEvent.click(accept); // double-tap — guarded by pendingRowsRef + disabled state
+    expect(acceptRequest).toHaveBeenCalledTimes(1);
+
+    // The button is disabled while the mutation is in flight.
+    await waitFor(() => expect((accept as HTMLButtonElement).disabled).toBe(true));
+
+    // Release the mutation; the button re-enables after refresh.
+    await act(async () => { release(ok(undefined)); });
+    await waitFor(() => expect((accept as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('add-friend Send button is guarded against double-submit', async () => {
+    let release: (v: any) => void = () => {};
+    const sendRequest = vi.fn().mockImplementation(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    (window as any).claude.social = makeSocial({ sendRequest });
+
+    const { findByPlaceholderText, getByText } = render(<GameLobby connection={makeConnection()} />);
+    const input = (await findByPlaceholderText("friend's handle")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'zed' } });
+
+    const send = getByText('Send request') as HTMLButtonElement;
+    fireEvent.click(send);
+    // Enter while the first request is still in flight must not double-send.
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(send);
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+
+    await act(async () => { release(ok({ status: 'pending' })); });
+    await waitFor(() => expect(getByText('Request sent')).toBeTruthy());
   });
 });
 
