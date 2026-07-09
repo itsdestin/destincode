@@ -3,6 +3,13 @@
 // the guards, the move itself, and the remap of every store that keys on the
 // folder's absolute path. Space/remote initialization stays in service.ts (it
 // owns the engine singletons).
+//
+// NOTE: checkImport() is a UX PRE-FLIGHT, not an authoritative gate. It runs
+// before the move to give a friendly refusal, but the world can change between
+// the check and the move (TOCTOU). The move path (Task 4) must independently
+// tolerate the source having vanished, the destination name having been claimed,
+// or a session having opened in the folder — it cannot assume checkImport's
+// answer still holds when it runs.
 import fs from 'fs';
 import path from 'path';
 import { validateSyncName, isIgnoredPath, MAX_IMPORT_FILE_COUNT } from './guards';
@@ -21,17 +28,48 @@ export interface ImportCheckOpts {
 // lowercased drive, so string prefix is safe here. (Byte-case differences in
 // the REST of a Windows path aren't normalized — acceptable: every caller
 // feeds paths from the same pickers/stores, not hand-typed variants.)
+// NOTE: the isUnder(ycCanon, srcCanon) check in checkImport is a SAFETY guard
+// (it prevents moving a folder that contains ~/YouCoded into itself), not just
+// a UX nicety — so it too relies on pickers/stores yielding consistently-cased
+// paths. A caller that fed a differently-cased variant could slip past it.
 function isUnder(child: string, parent: string): boolean {
   return child === parent || child.startsWith(parent + '/');
 }
 
+// Depth + wall-clock caps mirror the sibling bounded walk in
+// artifacts/project-file-discovery.ts (which uses files/dirs/depth caps + a
+// time budget). The §18 guardrail must never itself hang the Electron main
+// thread while probing a folder the user picked.
+const MAX_DEPTH = 100;         // 100-deep nesting = pathological or a junction cycle
+const WALK_BUDGET_MS = 2000;   // hard wall-clock cap regardless of tree shape
+
 /** Count real files under root, skipping DEFAULT_IGNORES (node_modules etc. —
  *  they never sync so they shouldn't disqualify the folder) and never
- *  following symlinks. Stops at limit+1: callers only need "over or not". */
+ *  following symlinks. Stops at limit+1: callers only need "over or not".
+ *
+ *  Bounded THREE ways so it can never hang the main process: file count, plus
+ *  recursion depth (MAX_DEPTH) and wall-clock time (WALK_BUDGET_MS). WHY the
+ *  depth + time caps are load-bearing, not belt-and-suspenders: e.isSymbolicLink()
+ *  does NOT detect NTFS junctions — a junction reports isDirectory() === true —
+ *  so a junction CYCLE that contains no files would recurse forever (the
+ *  file-count limit never trips because it never finds a file to count). On
+ *  either cap we return the over-limit signal (limit + 1), NOT the partial
+ *  count: a 100-deep tree, or a walk we couldn't finish in 2s, is either
+ *  pathological or a cycle, and the honest answer is "too big/weird to
+ *  live-sync" — treating it as "fine, N files" would let a monster tree (or an
+ *  endless junction loop) through the guardrail. */
 export function countFilesBounded(root: string, limit: number): number {
   let count = 0;
-  const walk = (dir: string, rel: string): boolean => {
+  let over = false;
+  const deadline = Date.now() + WALK_BUDGET_MS;
+  const walk = (dir: string, rel: string, depth: number): boolean => {
+    // Depth/time exhaustion => treat the whole walk as over-limit (see fn doc).
+    if (depth > MAX_DEPTH || Date.now() > deadline) { over = true; return false; }
     let entries: fs.Dirent[];
+    // An unreadable directory yields no files here. If the ROOT itself is
+    // unreadable, the count is 0 and the import proceeds past this guard — it
+    // then fails at MOVE time with the OS error instead. Accepted trade-off:
+    // the pre-flight isn't authoritative (see the module header TOCTOU note).
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return true; }
     for (const e of entries) {
       const childRel = rel ? `${rel}/${e.name}` : e.name;
@@ -41,7 +79,7 @@ export function countFilesBounded(root: string, limit: number): number {
         // a path SEGMENT, so pass the bare relative path (no trailing slash) —
         // guards.ts splits on separators and checks each segment.
         if (isIgnoredPath(childRel)) continue;
-        if (!walk(path.join(dir, e.name), childRel)) return false;
+        if (!walk(path.join(dir, e.name), childRel, depth + 1)) return false;
       } else if (e.isFile()) {
         if (isIgnoredPath(childRel)) continue;
         count++;
@@ -50,8 +88,8 @@ export function countFilesBounded(root: string, limit: number): number {
     }
     return true;
   };
-  walk(root, '');
-  return count;
+  walk(root, '', 0);
+  return over ? limit + 1 : count;
 }
 
 /** Every reason an import must be refused, checked BEFORE anything moves.

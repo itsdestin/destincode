@@ -63,6 +63,20 @@ describe('countFilesBounded', () => {
     for (let i = 0; i < 10; i++) fs.writeFileSync(path.join(root, `f${i}.txt`), 'x');
     expect(countFilesBounded(root, 3)).toBe(4); // limit+1: enough to know it's over
   });
+
+  it('treats a walk deeper than MAX_DEPTH (100) as over-limit', () => {
+    // Build a 120-level-deep chain of single-char dirs with one file at the
+    // bottom. This stands in for the junction-cycle hazard: isSymbolicLink()
+    // misses NTFS junctions, so an unbounded walk would recurse forever. The
+    // depth cap must fire and return the over-limit signal (> limit) even
+    // though only one real file exists. Short segment names keep us under
+    // Windows MAX_PATH (modern Node uses the \\?\ long-path prefix anyway).
+    let deep = path.join(tmp, 'deep');
+    for (let i = 0; i < 120; i++) deep = path.join(deep, 'd');
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(deep, 'bottom.txt'), 'x');
+    expect(countFilesBounded(path.join(tmp, 'deep'), 100)).toBeGreaterThan(100);
+  });
 });
 
 describe('checkImport', () => {
