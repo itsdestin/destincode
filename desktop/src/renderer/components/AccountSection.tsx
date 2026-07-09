@@ -7,9 +7,11 @@ import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
-// both the Desktop and Android settings stacks. Reads all state and actions from
-// useAccount(); it never touches window.claude.account directly (the
-// context owns the token boundary). Follows the chip+popup pattern used by
+// both the Desktop and Android settings stacks. Auth-token state and mutations
+// (sign in/out, profile, handle, delete) all flow through useAccount() — the
+// context owns that boundary. The blocked-users and data-export controls call
+// window.claude.social.* / window.claude.account.exportData() directly; those
+// aren't part of the token lifecycle. Follows the chip+popup pattern used by
 // PerformanceButton / SoundButton / AboutPopup — a small settings row that opens
 // a centered L2 overlay where the real controls live.
 
