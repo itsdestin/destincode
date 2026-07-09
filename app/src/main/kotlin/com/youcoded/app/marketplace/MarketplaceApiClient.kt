@@ -66,6 +66,9 @@ class MarketplaceApiClient(
         method: String = "GET",
         body: JSONObject? = null,
         auth: Boolean = false,
+        // WHY: lets a single call (sign-out) impose a bounded call timeout without
+        // touching the shared client's defaults. Defaults to the shared `http`.
+        client: OkHttpClient = http,
     ): Pair<Int, JSONObject> = withContext(Dispatchers.IO) {
         val reqBody = body?.toString()?.toRequestBody(JSON_MEDIA_TYPE)
         val builder = Request.Builder()
@@ -83,7 +86,7 @@ class MarketplaceApiClient(
         }
 
         try {
-            val resp = http.newCall(builder.build()).execute()
+            val resp = client.newCall(builder.build()).execute()
             val code = resp.code
             val raw = resp.body?.string() ?: "{}"
             // 202 Accepted = poll-pending — return synthetic pending body
@@ -211,7 +214,10 @@ class MarketplaceApiClient(
 
     /** POST /auth/logout — server-side session revocation (best-effort on sign-out). */
     suspend fun logout(): ApiResult<JSONObject> {
-        val (code, body) = request("/auth/logout", method = "POST", auth = true)
+        // Sign-out is best-effort server-side revocation: a hung network must not
+        // hold the UI. Desktop uses a 5s AbortSignal; this is the Kotlin mirror.
+        val logoutClient = http.newBuilder().callTimeout(5, TimeUnit.SECONDS).build()
+        val (code, body) = request("/auth/logout", method = "POST", auth = true, client = logoutClient)
         return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
     }
 

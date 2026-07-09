@@ -206,6 +206,11 @@ function SignedInBody({
   // remount is the intended "exit edit mode after a handle change" path.
   const [mode, setMode] = useState<'view' | 'edit'>('view');
 
+  // Sign-out awaits a network revocation (bounded at 5s on both platforms — see
+  // MarketplaceApiClient.logout). Show that something is happening and prevent a
+  // double-click while the request is in flight.
+  const [signingOut, setSigningOut] = useState(false);
+
   return mode === 'view' ? (
     <>
       {/* Identity summary — avatar + display name + @handle, all read-only. */}
@@ -244,10 +249,18 @@ function SignedInBody({
       </button>
 
       <button
-        onClick={() => void signOut()}
-        className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+        onClick={async () => {
+          setSigningOut(true);
+          try {
+            await signOut();
+          } finally {
+            setSigningOut(false);
+          }
+        }}
+        disabled={signingOut}
+        className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
       >
-        Sign out
+        {signingOut ? 'Signing out…' : 'Sign out'}
       </button>
     </>
   ) : (
