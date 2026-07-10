@@ -115,13 +115,24 @@ async function startEngine(log: (m: string) => void): Promise<void> {
     }
   }
 
+  // Supersession guard: while we were awaiting addSpace above, a disable (or a
+  // newer start) may have replaced our engine — the app-boot start isn't
+  // chained through `transition`, so it can race a disable/enable pair. A
+  // superseded run owns NO global state: it must not create a socket and must
+  // not touch hubStatus — the newer run's live socket may already have set it
+  // to 'connected', and stamping 'connecting'/'off' here would make
+  // syncSpacesStatus() lie until the next disconnect/reconnect. (Our engine
+  // was already stopped by whichever transition superseded us.) Everything
+  // below the check is synchronous, so it can't be re-raced.
+  if (engine !== e) return;
+
   // SyncHub (Plan 1b): instant "something changed" signals between this
   // account's devices. The 120s poll in the engine stays as the fallback —
   // SyncHub being down never blocks sync, it only makes it less instant (spec §6).
   hubStatus = 'connecting';
   const spaceForKey = (key: string) =>
     roots!.spaces().find((s) => repoNameForSpace(s) === key) ?? null;
-  const sock = createSyncHubSocket({
+  hubSocket = createSyncHubSocket({
     getToken: () => authStore?.getToken() ?? null,
     deviceName: os.hostname(),
     onEvent: (ev) => {
@@ -141,12 +152,6 @@ async function startEngine(log: (m: string) => void): Promise<void> {
       }
     },
   });
-  // Supersession guard: while we were awaiting addSpace, a disable (or newer
-  // start) may have replaced our engine — the app-boot start isn't chained
-  // through `transition`, so it can race a disable. If so, the socket we just
-  // built would outlive its engine; tear it down instead of connecting.
-  if (engine !== e) { sock.destroy(); hubStatus = 'off'; return; }
-  hubSocket = sock;
   hubSocket.setDesired(true);
 }
 

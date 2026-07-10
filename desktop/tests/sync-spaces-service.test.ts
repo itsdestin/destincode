@@ -40,6 +40,10 @@ const h = vi.hoisted(() => {
     // the per-space tests widen this to two projects.
     spaces: [{ id: 'personal', kind: 'personal', root: '/fake/personal' }] as Array<{ id: string; kind: string; root: string }>,
     autoAddSpace: false,
+    // When true, the fake SpaceManager reports enabled at construction time —
+    // makes startSyncSpaces launch its UNCHAINED boot startEngine, the only
+    // path where a run can be superseded mid-flight by a disable/enable pair.
+    initialEnabled: false,
     onEvent: null as null | ((e: unknown) => void),
     // SyncHub fake (Task 5): captures the opts createSyncHubSocket was called
     // with (so a test can read deviceName + fire opts.onEvent the way the real
@@ -66,7 +70,7 @@ vi.mock('../src/main/sync-spaces/managed-roots', () => ({
 }));
 vi.mock('../src/main/sync-spaces/space-manager', () => ({
   SpaceManager: class {
-    private enabled = false;
+    private enabled = h.initialEnabled; // read at construction — see h.initialEnabled comment
     isEnabled(): boolean { return this.enabled; }
     setEnabled(v: boolean): void { this.enabled = v; }
     remoteFor(): string | null { return null; }
@@ -125,6 +129,7 @@ describe('sync-spaces service transition serialization', () => {
     // space + blocking addSpace gate they were written against.
     h.spaces = [{ id: 'personal', kind: 'personal', root: '/fake/personal' }];
     h.autoAddSpace = false;
+    h.initialEnabled = false;
     h.onEvent = null;
     // Reset the SyncHub fake so setDesired/sendSignal/destroy call counts and
     // the captured opts don't bleed across tests.
@@ -276,5 +281,35 @@ describe('sync-spaces service transition serialization', () => {
     const evs = (await svc.syncSpacesStatus()).recentEvents.filter((e: any) => e.type === 'hub-status');
     expect(evs.map((e: any) => e.status)).toEqual(['connected', 'disconnected']);
     expect(typeof (evs[0] as any).at).toBe('number');
+  });
+
+  it('a superseded boot start must not clobber hubStatus set by the newer live socket', async () => {
+    // Boot with sync already enabled so startSyncSpaces launches an UNCHAINED
+    // startEngine — the only run not serialized through `transition`, so it
+    // can resume AFTER a disable/enable pair has installed a newer engine +
+    // socket. The superseded run must bail without touching hubStatus (or
+    // creating a socket): stamping 'connecting'/'off' here would make
+    // syncSpacesStatus() lie about a live connection until the next reconnect.
+    h.initialEnabled = true;
+    vi.resetModules();
+    h.engines.length = 0;
+    const svc = await import('../src/main/sync-spaces/service');
+    // Don't await — the boot start is suspended inside engines[0].addSpace.
+    const bootP = svc.startSyncSpaces(async () => [], () => {});
+    await waitForGate(0);
+    // Rapid disable → enable while the boot start is still suspended. These are
+    // chained, so the enable's start (engines[1]) runs after the disable.
+    const pOff = svc.syncSpacesEnable(false);
+    const pOn = svc.syncSpacesEnable(true);
+    await waitForGate(1);
+    h.engines[1].releaseAddSpace!();
+    await Promise.all([pOff, pOn]);
+    // The newer run's socket connects.
+    h.hub.opts.onEvent({ type: 'connected' });
+    expect((await svc.syncSpacesStatus()).syncHub).toBe('connected');
+    // Now the superseded boot run resumes and bails — status must be untouched.
+    h.engines[0].releaseAddSpace!();
+    await bootP;
+    expect((await svc.syncSpacesStatus()).syncHub).toBe('connected');
   });
 });
