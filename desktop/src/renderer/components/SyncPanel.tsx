@@ -587,6 +587,14 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     setEnabling(false);
   }, [claude, refreshSpacesStatus]);
 
+  // Recent sync events for DISPLAY only. `hub-status` entries drive the
+  // "Instant sync" status line below (that's their surface); routing the
+  // conflict/error notices through this filtered list keeps them out of those
+  // surfaces so they never render as noise. The raw events stay in
+  // spacesStatus.recentEvents — only the display is filtered.
+  const visibleSpaceEvents = ((spacesStatus?.recentEvents ?? []) as any[])
+    .filter(e => e.type !== 'hub-status');
+
   if (loading) {
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).
     return (
@@ -850,7 +858,20 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                   )) ?? [])}
                 </ul>
               )}
-              {spacesStatus?.recentEvents?.some((e: any) => e.type === 'conflict') && (
+              {/* Instant sync (SyncHub, Plan 1b): whether the live cross-device
+                  signal channel is up. 'off' = sync disabled → render nothing.
+                  Anything but 'connected' (connecting/disconnected) falls back to
+                  the every-couple-of-minutes polling loop, so reassure the user
+                  sync still works while the channel reconnects. Plain words, no
+                  status glyphs. */}
+              {spacesStatus?.syncHub && spacesStatus.syncHub !== 'off' && (
+                <p className="text-xs text-fg-muted mt-2">
+                  {spacesStatus.syncHub === 'connected'
+                    ? 'Instant sync: connected'
+                    : 'Instant sync: reconnecting — changes still sync every couple of minutes'}
+                </p>
+              )}
+              {visibleSpaceEvents.some((e: any) => e.type === 'conflict') && (
                 <p className="text-xs text-amber-600 mt-2">
                   Some files had conflicting edits — the other device's copy was kept alongside yours
                   (look for "(from …)" files).
@@ -862,7 +883,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                   path and are contractually "shown verbatim" here — without this, enable
                   with gh missing checks the box with zero explanation. */}
               {(() => {
-                const engineError = [...(spacesStatus?.recentEvents ?? [])].reverse()
+                const engineError = [...visibleSpaceEvents].reverse()
                   .find((e: any) => e.type === 'error');
                 const msg = spacesError ?? engineError?.message;
                 return msg ? <p className="text-xs text-red-500 mt-2">{msg}</p> : null;
