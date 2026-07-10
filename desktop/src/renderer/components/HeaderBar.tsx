@@ -189,8 +189,10 @@ interface Props {
 
 /** Projects button — always visible (projects are persistent, not session-local).
  *  Opens ProjectView as a full-screen overlay via PROJECT_VIEW_OPENED dispatch.
- *  Isolated into its own component so it can safely call useArtifact() without
- *  requiring the parent HeaderBar to be inside an ArtifactContext. */
+ *  HeaderBar must always render inside ArtifactProvider (its only render site,
+ *  App.tsx, does) — useArtifact() needs a provider ancestor regardless of which
+ *  component calls it. Keeping this in its own small component is just code
+ *  organization; SessionStrip now also calls useArtifact() at its top level. */
 function ProjectsButton() {
   const { dispatch } = useArtifact();
   return (

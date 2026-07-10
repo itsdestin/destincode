@@ -10,6 +10,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
+import { syncDotFor, findSpaceFor, type SyncStatusData } from '../sync-dot-state';
 
 interface ProjectSwitcherProps {
   projects: CentralIndexProject[];
@@ -21,6 +22,9 @@ interface ProjectSwitcherProps {
   // parent). The palette is the project-list surface now that the rail is gone,
   // so the hover-revealed × delete lives on each row here.
   onDeleteProject?: (project: CentralIndexProject) => void;
+  // Per-project sync state (spec §4) — drives the row sync dots and hides the
+  // remove-× on synced rows. null → syncSpaces unavailable (no dots at all).
+  syncStatus?: SyncStatusData | null;
 }
 
 // Shared glyphs — see ./icons.tsx. (The check is the active-project indicator,
@@ -34,6 +38,7 @@ export function ProjectSwitcher({
   onClose,
   onAddProject,
   onDeleteProject,
+  syncStatus,
 }: ProjectSwitcherProps) {
   const [query, setQuery] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
@@ -201,6 +206,19 @@ export function ProjectSwitcher({
                       </span>
                     );
                   })()}
+                  {/* Sync dot (spec §4) — green synced / red errored / gray
+                      only-on-this-computer. Hidden entirely when syncStatus is
+                      null (Android). Tooltip carries the plain-words label. */}
+                  {(() => {
+                    const dot = syncDotFor(p.path, syncStatus ?? null);
+                    return dot ? (
+                      <span
+                        className={`w-2 h-2 rounded-full shrink-0 ml-1 ${dot.color === 'green' ? 'bg-[#44A05C]' : dot.color === 'red' ? 'bg-[#DD4444]' : 'bg-fg-faint'}`}
+                        title={dot.label}
+                        aria-label={dot.label}
+                      />
+                    ) : null;
+                  })()}
                   {/* Active check (NOT a status glyph). */}
                   {isActive && (
                     <span className="text-fg shrink-0 ml-1">
@@ -209,8 +227,10 @@ export function ProjectSwitcher({
                   )}
                 </button>
                 {/* Hover-revealed remove-from-YouCoded × (opens the confirm modal
-                    in the parent). Does not delete files. */}
-                {onDeleteProject && (
+                    in the parent). Does not delete files. Hidden for SYNCED rows —
+                    removing a folder that's managed by sync is a deferred
+                    move-out flow, not a simple un-list. */}
+                {onDeleteProject && !findSpaceFor(p.path, syncStatus ?? null) && (
                   <button
                     type="button"
                     className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-well"

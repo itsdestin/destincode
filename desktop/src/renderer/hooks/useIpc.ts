@@ -254,7 +254,8 @@ declare global {
       syncSpaces?: {
         status: () => Promise<any>;
         enable: (enabled: boolean) => Promise<any>;
-        syncNow: () => Promise<{ ok: boolean }>;
+        // Optional spaceId narrows to one space (Project View "Sync now"); omit for all.
+        syncNow: (spaceId?: string) => Promise<{ ok: boolean }>;
         createProject: (name: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
         onEvent: (cb: (e: unknown) => void) => () => void;
       };

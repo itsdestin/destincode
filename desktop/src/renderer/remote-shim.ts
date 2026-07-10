@@ -1067,7 +1067,8 @@ export function installShim(): void {
     syncSpaces: {
       status: () => invoke('syncspaces:status'),
       enable: (enabled: boolean) => invoke('syncspaces:enable', { enabled }),
-      syncNow: () => invoke('syncspaces:sync-now'),
+      // Optional spaceId narrows to one space (Project View "Sync now"); omit for all.
+      syncNow: (spaceId?: string) => invoke('syncspaces:sync-now', { spaceId }),
       createProject: (name: string) => invoke('syncspaces:create-project', { name }),
       // Spec §3 import: move an existing folder into ~/YouCoded/Projects/<name>.
       // Shim wraps args in an object (the established convention).
