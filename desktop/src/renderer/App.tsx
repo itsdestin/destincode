@@ -1926,6 +1926,9 @@ function AppInner() {
 
   const currentSession = sessions.find((s) => s.id === sessionId);
   const canBypass = currentSession?.skipPermissions ?? false;
+  // Native sessions: permission modes are a harness policy (Phase 2), not a
+  // PTY shift+tab cycle — hide the badge + cycle affordance for them.
+  const isNativeSession = currentSession?.provider === 'native';
   const currentPermissionMode = sessionId ? (permissionModes.get(sessionId) || 'normal') : 'normal';
 
   // Shift+Tab cycles permission mode in chat view
@@ -2284,6 +2287,7 @@ function AppInner() {
                       sessionId={s.id}
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
                       resumeInfo={resumeInfo}
+                      provider={s.provider}
                       cwd={s.cwd}
                       // Game pane lives in the active session's framed-shell
                       // right slot. Only the active session renders it (others
@@ -2370,8 +2374,8 @@ function AppInner() {
                   } : undefined}
                   model={currentModel}
                   onCycleModel={cycleModel}
-                  permissionMode={currentPermissionMode}
-                  onCyclePermission={cyclePermission}
+                  permissionMode={isNativeSession ? undefined : currentPermissionMode}
+                  onCyclePermission={isNativeSession ? undefined : cyclePermission}
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}
@@ -2583,6 +2587,7 @@ function AppInner() {
           postSwitchTurnReady.current = false;
           (window.claude as any).model?.setPreference(m);
         }}
+        provider={currentSession?.provider}
       />
       {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
           Reads from the single `openTasks` useSessionTasks instance declared in AppInner. */}
