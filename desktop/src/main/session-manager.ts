@@ -47,20 +47,23 @@ export class SessionManager extends EventEmitter {
     // Resolve CWD: fall back to home directory if empty or nonexistent
     const resolvedCwd = (opts.cwd && fs.existsSync(opts.cwd)) ? opts.cwd : os.homedir();
 
-    // Build CLI args — Gemini CLI has no equivalent for Claude's flags
-    const args: string[] = [];
-    if (provider === 'claude') {
-      if (opts.skipPermissions) {
-        args.push('--dangerously-skip-permissions');
-      }
-      if (opts.resumeSessionId) {
-        args.push('--resume', opts.resumeSessionId);
-      }
-      if (opts.model) {
-        args.push('--model', opts.model);
-      }
+    // Build Claude CLI args. The 'native' provider (platform roadmap Phase 1+)
+    // never reaches this PTY path — SessionManager will branch before the
+    // worker spawn once the native harness exists. Guarded here so a stray
+    // native create fails loudly instead of spawning a broken PTY.
+    if (provider !== 'claude') {
+      throw new Error(`SessionManager: provider '${provider}' has no runtime yet (Phase 1)`);
     }
-    // Gemini CLI launches with no special args for now
+    const args: string[] = [];
+    if (opts.skipPermissions) {
+      args.push('--dangerously-skip-permissions');
+    }
+    if (opts.resumeSessionId) {
+      args.push('--resume', opts.resumeSessionId);
+    }
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
 
     // Spawn a separate Node.js process for node-pty so it uses Node's
     // native binary instead of Electron's (which requires electron-rebuild).
@@ -152,14 +155,14 @@ export class SessionManager extends EventEmitter {
     try {
       worker.send({
         type: 'spawn',
-        command: provider === 'gemini' ? 'gemini' : 'claude',
+        command: 'claude',
         args,
         cwd: resolvedCwd,
         cols: opts.cols || 80,
         rows: opts.rows || 24,
-        // Claude-specific: session ID + pipe name for hook event correlation
-        sessionId: provider === 'claude' ? id : '',
-        pipeName: provider === 'claude' ? this.pipeName : '',
+        // Session ID + pipe name for hook event correlation
+        sessionId: id,
+        pipeName: this.pipeName,
       });
     } catch {
       // The 'error' handler above will clean up the session asynchronously.

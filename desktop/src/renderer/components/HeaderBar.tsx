@@ -161,7 +161,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'gemini') => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native') => void;
   onCloseSession: (id: string) => void;
   viewMode: 'chat' | 'terminal';
   onToggleView: (mode: 'chat' | 'terminal') => void;
@@ -182,7 +182,6 @@ interface Props {
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
   defaultProjectFolder?: string;
-  geminiEnabled?: boolean;
   windowDirectory?: any;
   myWindowId?: number | null;
 }
@@ -291,7 +290,6 @@ export default function HeaderBar({
   settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses, onResumeSession,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
-  geminiEnabled,
   windowDirectory, myWindowId,
 }: Props) {
   // Pill doesn't track live button widths — it pins to the active button's
@@ -620,7 +618,6 @@ export default function HeaderBar({
         defaultModel={defaultModel}
         defaultSkipPermissions={defaultSkipPermissions}
         defaultProjectFolder={defaultProjectFolder}
-        geminiEnabled={geminiEnabled}
         windowDirectory={windowDirectory}
         myWindowId={myWindowId}
       />

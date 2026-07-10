@@ -317,7 +317,7 @@ function AppInner() {
     }).catch(() => {});
   }, []);
 
-  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false });
+  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
 
   // Check first-run state with a 3-second safety timeout — never hang the app
   useEffect(() => {
@@ -679,8 +679,10 @@ function AppInner() {
         setSessionId(info.id);
         return [...prev, info];
       });
-      // Gemini sessions are terminal-only (no transcript watcher), so default to terminal view
-      const defaultView = (info.provider && info.provider !== 'claude') ? 'terminal' : 'chat';
+      // Native harness sessions (roadmap Phase 1+) are chat-first — they have
+      // no PTY, so 'terminal' would be an empty pane. Claude sessions also
+      // default to chat. (Gemini, the old terminal-only provider, is gone.)
+      const defaultView = 'chat';
       setViewModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, defaultView));
       setPermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, info.permissionMode || 'normal'));
       setSessionModels((prev) => {
@@ -689,7 +691,7 @@ function AppInner() {
         const alias = MODELS.find((m) => info.model?.includes(m.replace(/\[.*\]/, ''))) ?? 'sonnet';
         return new Map(prev).set(info.id, alias);
       });
-      // Non-Claude providers (e.g. Gemini) don't emit hook events, so they'd
+      // Native harness sessions (roadmap Phase 1+) have no hook relay, so they'd
       // never trigger the "first hook = initialized" gate. Mark them ready immediately.
       if (info.provider && info.provider !== 'claude') {
         setInitializedSessions((prev) => {
@@ -1307,7 +1309,10 @@ function AppInner() {
         return [...prev, sessionInfo];
       });
       dispatch({ type: 'SESSION_INIT', sessionId: sid });
-      const defaultView = (sessionInfo.provider && sessionInfo.provider !== 'claude') ? 'terminal' : 'chat';
+      // Native harness sessions (roadmap Phase 1+) are chat-first — they have
+      // no PTY, so 'terminal' would be an empty pane. Claude sessions also
+      // default to chat. (Gemini, the old terminal-only provider, is gone.)
+      const defaultView = 'chat';
       setViewModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, defaultView));
       setPermissionModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, sessionInfo.permissionMode || 'normal'));
       // Transferred sessions were already initialized on the source — skip the
@@ -1769,11 +1774,11 @@ function AppInner() {
     [sessionId, dispatch, viewModes, getUsageSnapshot, guardedPtySend],
   );
 
-  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini', launchInNewWindow?: boolean) => {
+  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean) => {
     // Use the explicitly chosen model; fall back to the current session's model
     const m = sessionModel || currentModel;
     const info = await (window.claude.session.create as any)({
-      name: provider === 'gemini' ? 'Gemini Session' : 'New Session',
+      name: 'New Session',
       cwd,
       skipPermissions: dangerous,
       model: m,
@@ -2255,7 +2260,6 @@ function AppInner() {
                 defaultModel={sessionDefaults.model}
                 defaultSkipPermissions={sessionDefaults.skipPermissions}
                 defaultProjectFolder={sessionDefaults.projectFolder}
-                geminiEnabled={sessionDefaults.geminiEnabled}
                 windowDirectory={windowDirectory}
                 myWindowId={myWindowId}
               />
