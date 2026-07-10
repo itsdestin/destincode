@@ -74,7 +74,11 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
       const baseName = folder.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? '';
       setError(null);
       setStep({ kind: 'existing', path: folder, baseName });
-    } catch { /* dialog unavailable (remote) — nothing to do */ }
+    } catch (err: any) {
+      // Cancel resolves to null (handled above), NOT a rejection — anything
+      // caught here is a genuine failure worth showing, not a user cancel.
+      if (!cancelledRef.current) setError(String(err?.message ?? err));
+    }
   }, []);
 
   const keepInPlace = useCallback(async () => {
@@ -130,6 +134,8 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
               <div className="text-[13px] font-semibold text-fg">Start something new</div>
               <div className="mt-0.5 text-xs text-fg-dim">Creates an empty project in YouCoded that syncs across your devices.</div>
               <div className="mt-2 flex items-center gap-2">
+                {/* No autoFocus (deliberate): the choose step presents two co-equal
+                    choices — auto-focusing would bias toward create-new and pre-arm Enter. */}
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -177,7 +183,9 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
             </button>
 
             <button
-              onClick={() => setStep({ kind: 'move', path: step.path, baseName: step.baseName })}
+              // Clear any stale keep-in-place error so it doesn't reappear after
+              // Cancel-ing back from ImportProjectModal.
+              onClick={() => { setError(null); setStep({ kind: 'move', path: step.path, baseName: step.baseName }); }}
               disabled={busy}
               className="mt-2 w-full text-left rounded-lg border border-edge p-3 hover:border-accent hover:bg-inset transition-colors"
             >
