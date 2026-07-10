@@ -140,10 +140,9 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
               docs/superpowers/specs/2026-04-23-analytics-privacy-copy-draft.md);
               do not edit wording without re-approval. The <AnalyticsOptInToggle />
               lives inline so the toggle sits right next to the explanation
-              of what it does.
-              NOTE: the "Friends & presence" paragraph + the updated games line
-              were added by accounts Phase 2 and are PENDING Destin's approval —
-              get sign-off during the Phase 2 verification pass before release. */}
+              of what it does. The "Friends & presence" paragraph + the updated
+              games line were added by accounts Phase 2 (wording approved by
+              Destin 2026-07-09). */}
           <section className="space-y-1.5">
             <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Privacy</h4>
             {platform === 'desktop' ? (
