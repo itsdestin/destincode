@@ -334,13 +334,41 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
 
           {/* Footer: the ONLY action — everything about adding/importing/
               syncing projects lives in Project View (spec decision 3). */}
-          {onManageProjects && (
+          {onManageProjects ? (
             <div className="border-t border-edge">
               <button
                 onClick={() => { setOpen(false); onManageProjects(); }}
                 className="w-full px-2.5 py-2 text-xs text-fg-dim hover:bg-inset hover:text-fg transition-colors flex items-center justify-center gap-1.5"
               >
                 Manage projects…
+              </button>
+            </div>
+          ) : (
+            // WHY: the main picker deliberately has no add actions (spec
+            // decision 3 — Project View owns adding), but windows WITHOUT
+            // Project View (the buddy window has no ArtifactProvider) need a
+            // minimal escape hatch to add a folder — otherwise there is NO way
+            // to add one there (a regression). This row renders ONLY when
+            // onManageProjects is absent.
+            <div className="border-t border-edge">
+              <button
+                onClick={async () => {
+                  try {
+                    const folder = await (window as any).claude.dialog.openFolder();
+                    if (folder) {
+                      await (window as any).claude.folders.add(folder);
+                      await load();
+                      onChange(folder);
+                      setOpen(false);
+                    }
+                  } catch {
+                    // Swallow: user cancel resolves to null (handled above);
+                    // anything thrown here (e.g. dialog unavailable) is a no-op.
+                  }
+                }}
+                className="w-full px-2.5 py-2 text-xs text-fg-dim hover:bg-inset hover:text-fg transition-colors flex items-center justify-center gap-1.5"
+              >
+                Browse for folder…
               </button>
             </div>
           )}

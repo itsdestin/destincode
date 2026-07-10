@@ -2417,7 +2417,13 @@ function AppInner() {
                 <div className="layer-surface w-full p-3 flex flex-col gap-2">
                   <div>
                     <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
-                    <FolderSwitcher value={welcomeCwd} onChange={setWelcomeCwd} />
+                    {/* Match SessionStrip: the picker's "Manage projects…"
+                        footer opens Project View (where adding lives). */}
+                    <FolderSwitcher
+                      value={welcomeCwd}
+                      onChange={setWelcomeCwd}
+                      onManageProjects={() => dispatchArtifact({ type: 'PROJECT_VIEW_OPENED' })}
+                    />
                   </div>
                   <div>
                     <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
