@@ -2,7 +2,6 @@ import React, { useRef, useLayoutEffect, useEffect, useCallback, useState } from
 import { ChatIcon, TerminalIcon, GamepadIcon } from './Icons';
 import SessionStrip from './SessionStrip';
 import type { SessionStatusColor } from './StatusDot';
-import type { PermissionMode } from '../../shared/types';
 import { isAndroid, isRemoteMode } from '../platform';
 // Artifact drawer trigger — reads session artifact count for the badge.
 import { useArtifact } from '../state/ArtifactContext';
@@ -171,8 +170,6 @@ interface Props {
   onToggleGamePanel: () => void;
   gameConnected: boolean;
   challengePending: boolean;
-  permissionMode: PermissionMode;
-  onCyclePermission: () => void;
   settingsOpen: boolean;
   onToggleSettings: () => void;
   settingsBadge?: boolean;
@@ -288,7 +285,6 @@ export default function HeaderBar({
   sessions, activeSessionId, onSelectSession, onCreateSession, onCloseSession,
   viewMode, onToggleView,
   gamePanelOpen, onToggleGamePanel, gameConnected, challengePending,
-  permissionMode, onCyclePermission,
   settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses, onResumeSession,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,

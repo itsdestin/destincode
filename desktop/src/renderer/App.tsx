@@ -2251,8 +2251,6 @@ function AppInner() {
                 onToggleGamePanel={() => gameDispatch({ type: 'TOGGLE_PANEL' })}
                 gameConnected={gameState.connected}
                 challengePending={gameState.challengeFrom !== null}
-                permissionMode={currentPermissionMode}
-                onCyclePermission={cyclePermission}
                 settingsOpen={settingsOpen}
                 onToggleSettings={() => setSettingsOpen(prev => !prev)}
                 settingsBadge={settingsBadge}
