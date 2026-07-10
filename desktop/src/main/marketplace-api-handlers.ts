@@ -3,10 +3,20 @@
 // All operations requiring the bearer token live here in the main process —
 // tokens never cross the contextBridge into the renderer bundle.
 
-import { ipcMain, shell } from "electron";
+import { ipcMain, shell, dialog } from "electron";
+import fs from "fs";
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
 import { createMarketplaceApiClient, MarketplaceApiError, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
 import type { PostRatingInput, AuthStartResponse, AuthPollResponse } from "../renderer/state/marketplace-api-client";
+// wrap + the 401-clear closure are shared with social-handlers.ts via
+// handler-utils.ts so the error contract can't drift between the two modules.
+import { wrap, makeClearSessionOn401 } from "./handler-utils";
+// Signing out / deleting the account must also drop the main-owned presence
+// WebSocket (Task 6) — otherwise it lingers connected after the token is
+// cleared until its next server interaction. Type-only import of ApiResult
+// keeps social-handlers → this module a pure type edge; the value edge here is
+// one-way (this → social-handlers) so there's no runtime import cycle.
+import { notifySignedOut } from "./social-handlers";
 
 // ── Discriminated union returned by all API-calling handlers ─────────────────
 // WHY: Custom Error fields (MarketplaceApiError.status) are dropped by
@@ -23,26 +33,18 @@ function toStoredUser(me: { id: string; login: string; avatar_url: string | null
   return { id: me.id, login: me.login, avatar_url: me.avatar_url ?? "", display_name: me.display_name, handle: me.handle ?? null };
 }
 
-async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
-  try {
-    return { ok: true, value: await run() };
-  } catch (e) {
-    if (e instanceof MarketplaceApiError) return { ok: false, status: e.status, message: e.message };
-    const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, status: 0, message }; // status:0 = non-API error (network, parse, etc.)
-  }
-}
-
 // ── Channel list for double-registration guard ────────────────────────────────
 const CHANNELS = [
   "account:start",
   "account:poll",
   "account:signed-in",
   "account:user",
+  "account:refresh",
   "account:sign-out",
   "account:update-profile",
   "account:set-handle",
   "account:delete",
+  "account:export",
   "marketplace:install",
   "marketplace:rate",
   "marketplace:rate:delete",
@@ -62,17 +64,9 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     getToken: () => store.getToken(),
   });
 
-  // Fix: a 401 from an auth'd account endpoint means the server no longer
-  // recognizes this session (identity-migration row drop, 90-day idle expiry,
-  // revocation). Keeping the local token would strand the user "signed in" with
-  // every call failing (the exact bug: post-migration users saw the handle
-  // prompt, typed a handle, got "invalid token" and no way out). Clear the local
-  // session so the UI flips to signed-out and offers a fresh sign-in. This only
-  // REACTS to a 401 that already happened — it never proactively validates.
-  const clearSessionOn401 = <T>(result: ApiResult<T>): ApiResult<T> => {
-    if (!result.ok && result.status === 401) store.signOut();
-    return result;
-  };
+  // Shared 401-reaction (see handler-utils.ts for the full WHY): a dead session
+  // server-side clears the local token so the UI flips to signed-out.
+  const clearSessionOn401 = makeClearSessionOn401(store);
 
   // ── Auth: device-code flow ────────────────────────────────────────────────
   // Renderer calls authStart to receive a user_code + auth_url. Main process
@@ -132,12 +126,39 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
       return null;
     }
   });
+  // Force-revalidate the cached profile against /auth/me. Unlike account:user
+  // (which only heals when the cache is empty), this ALWAYS re-fetches — so a
+  // profile change made on another device (a rename, a newly-claimed @handle)
+  // reaches this client without a sign-out/in cycle (knowledge-debt #8). Returns
+  // the fresh user, or null when signed out / the session was 401-cleared.
+  ipcMain.handle("account:refresh", async () => {
+    const token = store.getToken();
+    if (!token) return null;
+    try {
+      const stored = toStoredUser(await client.authMe());
+      store.setSession(token, stored);
+      return stored;
+    } catch (e) {
+      // A 401 means the stored token is dead server-side — clear the local
+      // session so the UI flips to signed-out (same rationale as clearSessionOn401).
+      // Any OTHER failure (offline, parse) leaves the token AND cached profile
+      // untouched, and returns the cached user: a transient network blip must not
+      // blank a signed-in UI (the renderer's focus/interval revalidation retries).
+      if (e instanceof MarketplaceApiError && e.status === 401) {
+        store.signOut();
+        return null;
+      }
+      return store.getUser();
+    }
+  });
+
   // Sign-out now revokes server-side too (spec §1) — best-effort: if the
   // Worker is unreachable, the local clear still wins (never trap the user
   // signed-in). The 90-day expiry + prune cron mop up the orphaned row.
   ipcMain.handle("account:sign-out", async () => {
     try { await client.logout(); } catch { /* offline sign-out is fine */ }
     store.signOut();
+    notifySignedOut(); // drop the presence socket so we don't linger online
   });
 
   // Update the account display name, then mirror the new value into the stored
@@ -169,8 +190,43 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
     wrap(async () => {
       await client.deleteAccount();
       store.signOut();
+      notifySignedOut(); // drop the presence socket on account deletion too
     }).then(clearSessionOn401)
   );
+
+  // Export all account data (GET /auth/export → one big JSON object). Desktop
+  // opens a native save dialog and writes the file pretty-printed. NOT wrapped in
+  // ApiResult — the renderer discriminates the union without a try/catch: a
+  // successful save returns { path }, a canceled dialog returns { canceled: true },
+  // and a fetch failure returns { ok:false, status, error } (Android mirrors this
+  // shape, writing to the public Downloads collection instead of a save dialog).
+  ipcMain.handle("account:export", async (): Promise<
+    { path: string } | { canceled: true } | { ok: false; status: number; error: string }
+  > => {
+    // WHY one try/catch around EVERYTHING: the renderer is promised a
+    // discriminated union it can handle without try/catch. If the dialog or the
+    // disk write (ENOSPC, EACCES) threw outside the catch, the invoke promise
+    // would REJECT instead of returning the union — diverging from Android,
+    // which catches its Downloads write. status:0 = local/non-API failure.
+    try {
+      const data = await client.exportData();
+      const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: "Export account data",
+        defaultPath: `youcoded-account-export-${stamp}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (canceled || !filePath) return { canceled: true };
+      await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
+      return { path: filePath };
+    } catch (e) {
+      if (e instanceof MarketplaceApiError) {
+        if (e.status === 401) store.signOut(); // dead session → flip UI signed-out
+        return { ok: false, status: e.status, error: e.message };
+      }
+      return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
 
   // ── Write endpoints ───────────────────────────────────────────────────────
   // Wrapped in ApiResult so the renderer preserves HTTP status across the

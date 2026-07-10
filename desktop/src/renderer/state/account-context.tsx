@@ -1,10 +1,12 @@
-// marketplace-auth-context.tsx
+// account-context.tsx
 // Global "am I signed in to my YouCoded account?" React context.
 //
-// WHY the exported names still say "Marketplace": this is the account context now,
-// but the MarketplaceAuthProvider / useMarketplaceAuth rename lands with the Phase 2
-// friends UI so the churn stays in one diff. Only the underlying window.claude
-// surface renamed (marketplaceAuth → account) in Phase 1.
+// WHY the "account" naming: this is the Phase 2 rename. Phase 1 renamed only the
+// underlying window.claude surface (marketplaceAuth → account) and deliberately
+// left the React-side provider/hook identifiers on their old marketplace names to
+// keep that diff small. Phase 2's friends UI builds on the account identity, so
+// the React-side rename to AccountProvider / useAccount lands here as a pure
+// mechanical change with zero behavior difference.
 //
 // Uses window.claude.account (exposed via preload + remote-shim) for all
 // communication with the main process. The main process owns the token — it never
@@ -29,15 +31,28 @@ import type { MarketplaceUser } from "../../main/marketplace-auth-store";
 
 // ── Context shape ─────────────────────────────────────────────────────────────
 
-interface MarketplaceAuthCtx {
+interface AccountCtx {
   /** Whether the user is currently signed in to their YouCoded account. */
   signedIn: boolean;
   /** The signed-in user's profile, or null if not signed in. */
   user: MarketplaceUser | null;
   /** True while the device-code sign-in flow is in progress. */
   signInPending: boolean;
-  /** Kick off the device-code OAuth flow. Resolves when sign-in completes or rejects on timeout/error. */
+  /**
+   * Human-readable message when the last sign-in attempt failed, else null.
+   * (knowledge-debt #6: startSignIn failures were void-swallowed at every
+   * sign-in button — this one context field surfaces them everywhere.)
+   * Cleared when a new sign-in attempt starts.
+   */
+  signInError: string | null;
+  /** Kick off the device-code OAuth flow. On failure sets `signInError` (never rejects). */
   startSignIn(): Promise<void>;
+  /**
+   * Force a /auth/me round-trip and apply the fresh profile to state. A null
+   * result (session 401-cleared server-side) flips the UI to signed-out.
+   * (knowledge-debt #8: profile changes on another device now propagate here.)
+   */
+  refresh(): Promise<void>;
   /** Sign out and clear local state. */
   signOut(): Promise<void>;
   /** Update display name; refreshes user state on success. Throws on failure. */
@@ -48,7 +63,7 @@ interface MarketplaceAuthCtx {
   deleteAccount(): Promise<void>;
 }
 
-const MarketplaceAuthContext = createContext<MarketplaceAuthCtx | null>(null);
+const AccountContext = createContext<AccountCtx | null>(null);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -58,7 +73,7 @@ const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
-export function MarketplaceAuthProvider({
+export function AccountProvider({
   children,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 }: {
@@ -69,6 +84,9 @@ export function MarketplaceAuthProvider({
   const [signedIn, setSignedIn] = useState(false);
   const [user, setUser] = useState<MarketplaceUser | null>(null);
   const [signInPending, setSignInPending] = useState(false);
+  // knowledge-debt #6: one context-level error string surfaces sign-in failures
+  // at every sign-in button (they were void-swallowed at 4 separate callsites).
+  const [signInError, setSignInError] = useState<string | null>(null);
 
   // Fix: cancelledRef prevents setState calls and poll-loop IPC calls after unmount.
   // Without this, an in-progress sign-in flow (which can run up to 15 minutes)
@@ -81,9 +99,17 @@ export function MarketplaceAuthProvider({
     };
   }, []);
 
-  // Refresh auth state from the main process (token + user profile).
-  // Called on mount and after sign-in completes.
-  const refresh = useCallback(async () => {
+  // knowledge-debt #5: an in-flight sign-in poll loop could complete AFTER a
+  // signOut()/deleteAccount() and flip state back to signed-in. Each signOut /
+  // deleteAccount bumps this epoch; the poll loop captures it at start and
+  // discards its result if the epoch changed underneath it.
+  const signInEpoch = useRef(0);
+
+  // Re-read auth state from the main process's LOCAL store (token + cached
+  // profile). Cheap, no network — used on mount, after sign-in completes, and
+  // after profile mutations (the main process has already mirrored those into
+  // its store). For a forced /auth/me round-trip, use refresh() below instead.
+  const reloadFromStore = useCallback(async () => {
     // Note: signedIn() and user() return plain values (NOT ApiResult-wrapped).
     // The main process reads from its in-memory store so these are cheap/fast.
     const isIn = await window.claude.account.signedIn();
@@ -94,21 +120,44 @@ export function MarketplaceAuthProvider({
     setUser(profile);
   }, []);
 
+  // knowledge-debt #8: force a /auth/me round-trip via the main process, then
+  // apply the fresh profile to state. A null result means the token was cleared
+  // server-side (401 auto-sign-out) — propagate that to the UI so it flips to
+  // signed-out. A transient offline failure returns the cached profile (main
+  // swallows non-401 errors), so a network blip can't blank a signed-in UI.
+  const refresh = useCallback(async () => {
+    // Fix: capture the epoch so a refresh resolving AFTER a signOut/deleteAccount
+    // can't resurrect the signed-in UI. refresh() runs on every focus/15-min tick,
+    // so a signOut landing while the main process's /auth/me is in flight would
+    // otherwise flip the UI back to signed-in when it resolves OK. (The store-side
+    // re-persist self-heals — the revoked token 401s on the next refresh — but the
+    // visible flip-back would not.)
+    const epoch = signInEpoch.current;
+    const profile = await window.claude.account.refresh();
+    if (cancelledRef.current || signInEpoch.current !== epoch) return; // unmounted / signed-out mid-flight — skip setState
+    setSignedIn(!!profile);
+    setUser(profile);
+  }, []);
+
   // Load initial auth state on mount
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void reloadFromStore();
+  }, [reloadFromStore]);
 
   // Start the device-code OAuth flow.
   // Prevents concurrent flows with signInPending guard.
   const startSignIn = useCallback(async () => {
     if (signInPending) return;
     setSignInPending(true);
+    setSignInError(null); // clear any prior error on a fresh attempt
+    // knowledge-debt #5: capture the epoch so a signOut/deleteAccount that lands
+    // mid-flight makes the loop discard its result instead of resurrecting the session.
+    const epoch = signInEpoch.current;
     try {
       // Fix: start() returns ApiResult<AuthStartResponse> — must check .ok and
       // read .value; the main process may return an error if the auth server is down.
       const startRes = await window.claude.account.start();
-      if (cancelledRef.current) return; // unmounted mid-await — abort before setState
+      if (cancelledRef.current || signInEpoch.current !== epoch) return; // unmounted / cancelled mid-await
       if (!startRes.ok) {
         throw new Error(`sign-in start failed: ${startRes.message ?? "unknown error"}`);
       }
@@ -120,13 +169,13 @@ export function MarketplaceAuthProvider({
       // Fix: each await point checks cancelledRef so an unmount during the 15-minute
       // window stops the loop immediately instead of continuing to burn IPC calls.
       while (true) {
-        if (cancelledRef.current) return; // unmounted — stop loop
+        if (cancelledRef.current || signInEpoch.current !== epoch) return; // unmounted / cancelled — stop loop
         if (Date.now() > deadline) {
           throw new Error("sign-in timed out — please try again");
         }
 
         const pollRes = await window.claude.account.poll(device_code);
-        if (cancelledRef.current) return; // unmounted mid-await — stop loop
+        if (cancelledRef.current || signInEpoch.current !== epoch) return; // unmounted / cancelled mid-await — stop loop
 
         if (!pollRes.ok) {
           throw new Error(`sign-in poll failed: ${pollRes.message ?? "unknown error"}`);
@@ -134,14 +183,21 @@ export function MarketplaceAuthProvider({
         const pollData = pollRes.value;
 
         if (pollData.status === "complete") {
-          // Main process has stored the token — refresh our renderer-side state
-          await refresh();
+          // Main process has stored the token — reload our renderer-side state.
+          await reloadFromStore();
           return;
         }
 
         // Status is "pending" — wait before polling again
         await new Promise((r) => setTimeout(r, pollIntervalMs));
-        if (cancelledRef.current) return; // unmounted during sleep — stop loop
+        if (cancelledRef.current || signInEpoch.current !== epoch) return; // unmounted / cancelled during sleep — stop loop
+      }
+    } catch (err) {
+      // knowledge-debt #6: surface the failure via context instead of leaving it
+      // as an unhandled rejection (every sign-in button calls `void startSignIn()`).
+      // The four sign-in surfaces render `signInError` below their button.
+      if (!cancelledRef.current && signInEpoch.current === epoch) {
+        setSignInError(err instanceof Error ? err.message : "sign-in failed");
       }
     } finally {
       // Always clear pending flag, even on error or timeout.
@@ -149,7 +205,7 @@ export function MarketplaceAuthProvider({
       // but setSignInPending is a no-op at that point (React silently ignores it).
       setSignInPending(false);
     }
-  }, [signInPending, pollIntervalMs, refresh]);
+  }, [signInPending, pollIntervalMs, reloadFromStore]);
 
   // Sign out — clear token on main process side, then clear local React state.
   // Fix: optimistic sign-out — local state is cleared unconditionally even if
@@ -158,6 +214,9 @@ export function MarketplaceAuthProvider({
   // is worse than the edge-case inconsistency. Do NOT add error propagation here
   // unless the design explicitly requires rollback on failure.
   const signOut = useCallback(async () => {
+    // knowledge-debt #5: bump the epoch FIRST so any in-flight sign-in poll loop
+    // discards its result instead of flipping us back to signed-in after this.
+    signInEpoch.current += 1;
     // Fix: try/CATCH (not try/finally) so the IPC rejection is SWALLOWED, not
     // re-thrown. void-callers (the "Sign out" button) would otherwise get an
     // unhandled promise rejection — contradicting the "do NOT propagate" contract
@@ -182,12 +241,12 @@ export function MarketplaceAuthProvider({
       // process clear the local session (dead/expired token); refresh() re-reads
       // signedIn()/user() so the UI flips to signed-out promptly instead of
       // staying stranded "signed in" while every call fails. Non-401 failures
-      // (e.g. validation) leave the session intact, so refresh is a cheap no-op.
-      await refresh();
+      // (e.g. validation) leave the session intact, so this is a cheap no-op.
+      await reloadFromStore();
       throw new Error(res.message ?? "couldn't update name");
     }
-    await refresh();
-  }, [refresh]);
+    await reloadFromStore();
+  }, [reloadFromStore]);
 
   // Claim/change the @handle. Throws with the server's message (e.g. "that handle is
   // taken" on 409) so the Settings UI can surface it verbatim; refreshes on success.
@@ -198,52 +257,78 @@ export function MarketplaceAuthProvider({
       // session in the main process, so refresh() flips the UI to signed-out
       // instead of leaving the post-sign-in handle prompt stuck showing "invalid
       // token" with no way out (the exact migration bug). Non-401 failures (e.g.
-      // "handle taken") keep the session, so refresh is a cheap no-op there.
-      await refresh();
+      // "handle taken") keep the session, so this is a cheap no-op there.
+      await reloadFromStore();
       throw new Error(res.message ?? "couldn't set handle");
     }
-    await refresh();
-  }, [refresh]);
+    await reloadFromStore();
+  }, [reloadFromStore]);
 
   // Permanent hard-delete. Main clears the local session too, but we also clear
   // renderer state immediately so the UI reflects the signed-out state at once.
   const deleteAccount = useCallback(async () => {
+    // knowledge-debt #5: bump the epoch FIRST (same as signOut) so an in-flight
+    // sign-in poll can't resurrect the account we're about to delete.
+    signInEpoch.current += 1;
     const res = await window.claude.account.deleteAccount();
     if (!res.ok) {
       // Same 401 escape hatch as updateProfile/setHandle: a dead token makes
-      // main clear the local session, so refresh() flips the UI to signed-out
-      // instead of stranding the user retrying delete against "invalid token".
-      await refresh();
+      // main clear the local session, so reloadFromStore() flips the UI to
+      // signed-out instead of stranding the user retrying delete against
+      // "invalid token".
+      await reloadFromStore();
       throw new Error(res.message ?? "couldn't delete account");
     }
     setSignedIn(false);
     setUser(null);
-  }, [refresh]);
+  }, [reloadFromStore]);
+
+  // knowledge-debt #8: re-fetch the profile when the window regains focus (min
+  // 60s between refreshes) and every 15 minutes, so a rename / new @handle made
+  // on another device reaches this client without a sign-out/in cycle. Only runs
+  // while signed in. Offline failures are fine — the next focus/tick retries.
+  useEffect(() => {
+    if (!signedIn) return;
+    let last = 0;
+    const doRefresh = async () => {
+      if (Date.now() - last < 60_000) return;
+      last = Date.now();
+      try { await refresh(); } catch { /* offline is fine; next focus retries */ }
+    };
+    const onFocus = () => { void doRefresh(); };
+    window.addEventListener("focus", onFocus);
+    const timer = setInterval(() => { void doRefresh(); }, 15 * 60_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      clearInterval(timer);
+    };
+  }, [signedIn, refresh]);
 
   // Fix: memoize context value so consumers only re-render when signedIn / user /
-  // signInPending actually change. Action fns (startSignIn, signOut, updateProfile,
-  // setHandle, deleteAccount) are stable useCallback references, so they don't break
-  // the memo comparison. Matches the pattern used in ThemeProvider (theme-context.tsx).
-  const value = useMemo<MarketplaceAuthCtx>(
-    () => ({ signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount }),
-    [signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount],
+  // signInPending / signInError actually change. Action fns (startSignIn, refresh,
+  // signOut, updateProfile, setHandle, deleteAccount) are stable useCallback
+  // references, so they don't break the memo comparison. Matches the pattern used
+  // in ThemeProvider (theme-context.tsx).
+  const value = useMemo<AccountCtx>(
+    () => ({ signedIn, user, signInPending, signInError, startSignIn, refresh, signOut, updateProfile, setHandle, deleteAccount }),
+    [signedIn, user, signInPending, signInError, startSignIn, refresh, signOut, updateProfile, setHandle, deleteAccount],
   );
 
   return (
-    <MarketplaceAuthContext.Provider value={value}>
+    <AccountContext.Provider value={value}>
       {children}
-    </MarketplaceAuthContext.Provider>
+    </AccountContext.Provider>
   );
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
-/** Access marketplace auth state and actions from any component inside MarketplaceAuthProvider. */
-export function useMarketplaceAuth(): MarketplaceAuthCtx {
-  const ctx = useContext(MarketplaceAuthContext);
+/** Access account auth state and actions from any component inside AccountProvider. */
+export function useAccount(): AccountCtx {
+  const ctx = useContext(AccountContext);
   if (!ctx) {
     throw new Error(
-      "useMarketplaceAuth must be used inside <MarketplaceAuthProvider>"
+      "useAccount must be used inside <AccountProvider>"
     );
   }
   return ctx;

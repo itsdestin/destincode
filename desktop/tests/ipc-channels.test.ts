@@ -132,7 +132,9 @@ describe('dev:* channel parity', () => {
 describe('account:* channel parity', () => {
   const NEW_TYPES = [
     'account:start', 'account:poll', 'account:signed-in', 'account:user',
-    'account:sign-out', 'account:update-profile', 'account:set-handle', 'account:delete',
+    'account:refresh', 'account:sign-out', 'account:update-profile', 'account:set-handle', 'account:delete',
+    // Accounts Phase 2 — data export lives in the account group across all four surfaces.
+    'account:export',
   ];
   const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
 
@@ -156,6 +158,44 @@ describe('account:* channel parity', () => {
     for (const p of [['src','main','preload.ts'],['src','renderer','remote-shim.ts'],['src','main','marketplace-api-handlers.ts']] as const) {
       expect(read(...p)).not.toContain('marketplace:auth:');
     }
+  });
+});
+
+// Regression net for the social:* IPC channels introduced by the Accounts
+// Phase 2 (client social graph) plan — friends, requests, blocks. All four
+// surfaces must carry identical type strings; drift would silently break the
+// friends UI on one platform. The channel strings are asserted in preload.ts +
+// remote-shim.ts (single-quoted) and social-handlers.ts + SessionService.kt
+// (double-quoted). account:export is NOT here — it rides the account:* describe.
+describe('social:* channel parity', () => {
+  const NEW_TYPES = [
+    'social:lookup-handle', 'social:send-request', 'social:list-requests',
+    'social:accept-request', 'social:decline-request', 'social:cancel-request',
+    'social:list-friends', 'social:unfriend', 'social:block', 'social:unblock',
+    'social:list-blocks',
+    // Presence socket (Task 6). The three invoke channels + the one push channel.
+    // social:presence-event's desktop-main surface is social-handlers.ts (the
+    // broadcaster), so the standard four-file assertion holds for all four.
+    'social:presence-connect', 'social:presence-disconnect', 'social:presence-send',
+    'social:presence-event',
+  ];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('all social:* types are declared in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('all social:* types are referenced in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('all social:* types are handled in social-handlers.ts', () => {
+    const src = read('src', 'main', 'social-handlers.ts');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
+  });
+  it('all social:* types are handled by SessionService.kt (Android)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`"${t}"`);
   });
 });
 

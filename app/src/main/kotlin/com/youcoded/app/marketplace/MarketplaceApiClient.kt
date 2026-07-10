@@ -7,6 +7,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -35,7 +36,15 @@ sealed class ApiResult<out T> {
             val v = serializeValue(value)
             when (v) {
                 null               -> put("value", JSONObject.NULL)
+                // Fix: JSONObject.NULL is a sentinel OBJECT, not Kotlin null — without
+                // this branch the void-endpoint callers (`{ _ -> JSONObject.NULL }`)
+                // fell through to else and shipped the literal string "null".
+                JSONObject.NULL    -> put("value", JSONObject.NULL)
                 is JSONObject      -> put("value", v)
+                // Social list endpoints (friends/blocks) return a bare JSON array —
+                // without this branch it would fall to toString() and ship a stringified
+                // array, breaking the { ok, value } wire shape the renderer reads.
+                is JSONArray       -> put("value", v)
                 is Boolean         -> put("value", v)
                 is Int             -> put("value", v)
                 is String          -> put("value", v)
@@ -66,6 +75,9 @@ class MarketplaceApiClient(
         method: String = "GET",
         body: JSONObject? = null,
         auth: Boolean = false,
+        // WHY: lets a single call (sign-out) impose a bounded call timeout without
+        // touching the shared client's defaults. Defaults to the shared `http`.
+        client: OkHttpClient = http,
     ): Pair<Int, JSONObject> = withContext(Dispatchers.IO) {
         val reqBody = body?.toString()?.toRequestBody(JSON_MEDIA_TYPE)
         val builder = Request.Builder()
@@ -83,7 +95,7 @@ class MarketplaceApiClient(
         }
 
         try {
-            val resp = http.newCall(builder.build()).execute()
+            val resp = client.newCall(builder.build()).execute()
             val code = resp.code
             val raw = resp.body?.string() ?: "{}"
             // 202 Accepted = poll-pending — return synthetic pending body
@@ -101,6 +113,43 @@ class MarketplaceApiClient(
 
     private fun errFromResponse(code: Int, body: JSONObject): ApiResult.Err =
         ApiResult.Err(code, body.optString("message", "HTTP $code"))
+
+    /**
+     * Raw-body variant for endpoints that return a JSON ARRAY (GET /social/friends,
+     * GET /social/blocks). request() parses only a JSONObject, so a bare array would
+     * be coerced to an empty object — these methods need the raw string to parse with
+     * JSONArray. Mirrors request()'s auth + I/O error handling.
+     */
+    private suspend fun requestRaw(
+        path: String,
+        method: String = "GET",
+        auth: Boolean = false,
+    ): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val builder = Request.Builder()
+            .url("$host$path")
+            .method(method, if (method == "GET") null else "{}".toRequestBody(JSON_MEDIA_TYPE))
+            .addHeader("Content-Type", "application/json")
+        if (auth) {
+            val token = store.getToken()
+                ?: return@withContext Pair(401, "{\"message\":\"not signed in\"}")
+            builder.addHeader("Authorization", "Bearer $token")
+        }
+        try {
+            val resp = http.newCall(builder.build()).execute()
+            Pair(resp.code, resp.body?.string() ?: "")
+        } catch (e: Exception) {
+            Log.w(TAG, "HTTP $method $path failed: ${e.message}")
+            Pair(0, e.message ?: "network error")
+        }
+    }
+
+    /** Extract an error message from a raw body: JSON {message} / {error}, else the raw text. */
+    private fun extractMessage(raw: String, code: Int): String = try {
+        val obj = JSONObject(raw)
+        obj.optString("message").ifEmpty { obj.optString("error").ifEmpty { raw.trim().ifEmpty { "HTTP $code" } } }
+    } catch (_: Exception) {
+        raw.trim().ifEmpty { "HTTP $code" }
+    }
 
     // ── Public API (mirrors TS client method by method) ──────────────────────
 
@@ -211,7 +260,10 @@ class MarketplaceApiClient(
 
     /** POST /auth/logout — server-side session revocation (best-effort on sign-out). */
     suspend fun logout(): ApiResult<JSONObject> {
-        val (code, body) = request("/auth/logout", method = "POST", auth = true)
+        // Sign-out is best-effort server-side revocation: a hung network must not
+        // hold the UI. Desktop uses a 5s AbortSignal; this is the Kotlin mirror.
+        val logoutClient = http.newBuilder().callTimeout(5, TimeUnit.SECONDS).build()
+        val (code, body) = request("/auth/logout", method = "POST", auth = true, client = logoutClient)
         return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
     }
 
@@ -228,5 +280,100 @@ class MarketplaceApiClient(
         }
         val (code, body) = request("/reports", method = "POST", body = payload, auth = true)
         return if (code in 200..299) ApiResult.Ok(Unit) else errFromResponse(code, body)
+    }
+
+    // ── Account data export (accounts Phase 2) ───────────────────────────────
+    /** GET /auth/export — the full account data dump (one big JSON object). */
+    suspend fun exportData(): ApiResult<JSONObject> {
+        val (code, body) = request("/auth/export", method = "GET", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    // ── Social graph (accounts Phase 2) — all auth'd, mirror the desktop client.
+    //    Object-returning endpoints reuse request(); the two LIST endpoints return
+    //    a bare JSON array, so they use requestRaw() + JSONArray. Path params are
+    //    URL-encoded (same convention as deleteRating above). ──
+
+    /** GET /social/users/:handle — one card. 404 = unknown OR blocked (no oracle); 429 = cap. */
+    suspend fun lookupHandle(handle: String): ApiResult<JSONObject> {
+        val (code, body) = request("/social/users/${URLEncoder.encode(handle, "UTF-8")}", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** POST /social/requests — body { handle }. Returns { status: "pending"|"friends" }. 404/400/429. */
+    suspend fun sendRequest(handle: String): ApiResult<JSONObject> {
+        val (code, body) = request(
+            "/social/requests",
+            method = "POST",
+            body = JSONObject().put("handle", handle),
+            auth = true,
+        )
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** GET /social/requests — { incoming: [...], outgoing: [...] }. */
+    suspend fun listRequests(): ApiResult<JSONObject> {
+        val (code, body) = request("/social/requests", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** POST /social/requests/:id/accept. */
+    suspend fun acceptRequest(id: String): ApiResult<Unit> {
+        val (code, body) = request("/social/requests/${URLEncoder.encode(id, "UTF-8")}/accept", method = "POST", auth = true)
+        return if (code in 200..299) ApiResult.Ok(Unit) else errFromResponse(code, body)
+    }
+
+    /** POST /social/requests/:id/decline. */
+    suspend fun declineRequest(id: String): ApiResult<Unit> {
+        val (code, body) = request("/social/requests/${URLEncoder.encode(id, "UTF-8")}/decline", method = "POST", auth = true)
+        return if (code in 200..299) ApiResult.Ok(Unit) else errFromResponse(code, body)
+    }
+
+    /** DELETE /social/requests/:id — cancel an outgoing request. */
+    suspend fun cancelRequest(id: String): ApiResult<Unit> {
+        val (code, body) = request("/social/requests/${URLEncoder.encode(id, "UTF-8")}", method = "DELETE", auth = true)
+        return if (code in 200..299) ApiResult.Ok(Unit) else errFromResponse(code, body)
+    }
+
+    /** GET /social/friends — bare array of FriendRow. */
+    suspend fun listFriends(): ApiResult<JSONArray> {
+        val (code, raw) = requestRaw("/social/friends", auth = true)
+        return if (code in 200..299) {
+            // Fix: a 2xx with an unparseable body is a FAULT, not an empty list —
+            // an empty-array fallback would render "no friends" and mask the bug.
+            try { ApiResult.Ok(JSONArray(raw)) } catch (_: Exception) { ApiResult.Err(code, "malformed response") }
+        } else ApiResult.Err(code, extractMessage(raw, code))
+    }
+
+    /** DELETE /social/friends/:userId. */
+    suspend fun unfriend(userId: String): ApiResult<Unit> {
+        val (code, body) = request("/social/friends/${URLEncoder.encode(userId, "UTF-8")}", method = "DELETE", auth = true)
+        return if (code in 200..299) ApiResult.Ok(Unit) else errFromResponse(code, body)
+    }
+
+    /** POST /social/blocks — body { user_id }. Severs friendship + clears requests both ways. */
+    suspend fun block(userId: String): ApiResult<Unit> {
+        val (code, body) = request(
+            "/social/blocks",
+            method = "POST",
+            body = JSONObject().put("user_id", userId),
+            auth = true,
+        )
+        return if (code in 200..299) ApiResult.Ok(Unit) else errFromResponse(code, body)
+    }
+
+    /** DELETE /social/blocks/:userId. */
+    suspend fun unblock(userId: String): ApiResult<Unit> {
+        val (code, body) = request("/social/blocks/${URLEncoder.encode(userId, "UTF-8")}", method = "DELETE", auth = true)
+        return if (code in 200..299) ApiResult.Ok(Unit) else errFromResponse(code, body)
+    }
+
+    /** GET /social/blocks — bare array of BlockRow (owner-only view). */
+    suspend fun listBlocks(): ApiResult<JSONArray> {
+        val (code, raw) = requestRaw("/social/blocks", auth = true)
+        return if (code in 200..299) {
+            // Fix: 2xx + unparseable body = fault, not an empty block list (see listFriends).
+            try { ApiResult.Ok(JSONArray(raw)) } catch (_: Exception) { ApiResult.Err(code, "malformed response") }
+        } else ApiResult.Err(code, extractMessage(raw, code))
     }
 }

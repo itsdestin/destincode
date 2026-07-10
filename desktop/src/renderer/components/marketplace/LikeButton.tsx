@@ -19,7 +19,7 @@
 //   - Disables button during in-flight request to prevent double-clicks
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { useMarketplaceAuth } from '../../state/marketplace-auth-context';
+import { useAccount } from '../../state/account-context';
 import SignInPromptModal from './SignInPromptModal';
 
 // ── Mini local toast (no global toast context available inside the modal) ──────
@@ -85,7 +85,7 @@ interface LikeButtonProps {
 }
 
 export default function LikeButton({ themeId, initialLiked = false, initialCount }: LikeButtonProps) {
-  const { signedIn } = useMarketplaceAuth();
+  const { signedIn } = useAccount();
 
   const [liked, setLiked] = useState(initialLiked);
   const [count, setCount] = useState(initialCount);

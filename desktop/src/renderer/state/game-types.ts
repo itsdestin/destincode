@@ -1,8 +1,13 @@
 export type GameScreen = 'setup' | 'lobby' | 'waiting' | 'joining' | 'playing' | 'game-over';
 export type PlayerColor = 'red' | 'yellow';
 
+// Identity is the ACCOUNT now (spec §3): display name is the visible tag,
+// account id is the stable key (display names aren't unique). Replaces the old
+// GitHub-login-keyed OnlineUser from the retired PartyKit global lobby.
 export interface OnlineUser {
-  username: string;
+  id: string;
+  name: string;            // display_name from the account
+  handle: string | null;
   status: 'idle' | 'in-game';
 }
 
@@ -14,14 +19,6 @@ export interface ChatMessage {
 
 export interface GameState {
   connected: boolean;
-  /** True once we've been spinning on "Connecting…" long enough that the UI
-   * should swap in a friendlier "taking longer than usual" message. Separate
-   * from `partyError` so the spinner path stays distinct from hard failures. */
-  slowConnect: boolean;
-  /** Set by the lightweight HTTP probe in usePartyLobby when slowConnect
-   * fires — gives the spinner screen a plain-language explanation of the
-   * likely cause (offline vs server-napping vs just-slow). */
-  slowConnectHint: string | null;
   partyError: string | null;
   username: string | null;
   onlineUsers: OnlineUser[];
@@ -36,12 +33,15 @@ export interface GameState {
   winLine: [number, number][] | null;
   chatMessages: ChatMessage[];
   panelOpen: boolean;
-  /** Incoming challenge from another player */
-  challengeFrom: string | null;
+  /** Incoming challenge from another player (account identity: id is the stable
+   * key, name is the visible tag; handle is carried through for the Task 8
+   * friends UI to render @handle in the challenge banner). */
+  challengeFrom: { id: string; name: string; handle: string | null } | null;
   /** Room code from incoming challenge */
   challengeCode: string | null;
-  /** Outgoing challenge was declined */
-  challengeDeclinedBy: string | null;
+  /** Outgoing challenge was declined (account identity, handle included — see
+   * challengeFrom). */
+  challengeDeclinedBy: { id: string; name: string; handle: string | null } | null;
   /** Whether this player has requested a rematch */
   rematchRequested: boolean;
   /** Opponent disconnected during game */
@@ -53,12 +53,10 @@ export type GameAction =
   | { type: 'PARTY_DISCONNECTED'; code?: number; reason?: string }
   | { type: 'PARTY_ERROR'; message: string }
   | { type: 'PARTY_ERROR_CLEARED' }
-  | { type: 'PARTY_SLOW_CONNECT'; hint?: string | null }
-  | { type: 'PARTY_SLOW_CLEARED' }
   | { type: 'PRESENCE_UPDATE'; online: OnlineUser[] }
-  | { type: 'USER_JOINED'; username: string; status: string }
-  | { type: 'USER_LEFT'; username: string }
-  | { type: 'USER_STATUS'; username: string; status: string }
+  | { type: 'USER_JOINED'; user: OnlineUser }
+  | { type: 'USER_LEFT'; id: string }
+  | { type: 'USER_STATUS'; id: string; status: 'idle' | 'in-game' }
   | { type: 'ROOM_CREATED'; code: string; color: PlayerColor }
   | { type: 'JOINING_GAME'; code: string }
   | { type: 'GAME_START'; board: number[][]; you: PlayerColor; opponent: string }
@@ -70,32 +68,36 @@ export type GameAction =
   | { type: 'TOGGLE_PANEL' }
   | { type: 'RETURN_TO_LOBBY' }
   | { type: 'RESET' }
-  | { type: 'CHALLENGE_RECEIVED'; from: string; code: string }
-  | { type: 'CHALLENGE_ACCEPTED'; by: string }
-  | { type: 'CHALLENGE_DECLINED'; by: string }
+  | { type: 'CHALLENGE_RECEIVED'; from: { id: string; name: string; handle: string | null }; gameType: string; code: string }
+  | { type: 'CHALLENGE_ACCEPTED'; by: { id: string; name: string; handle: string | null } }
+  | { type: 'CHALLENGE_DECLINED'; by: { id: string; name: string; handle: string | null } }
   | { type: 'CHALLENGE_FAILED'; target: string }
   | { type: 'CLEAR_CHALLENGE' }
   | { type: 'REMATCH_REQUESTED' };
 
 export interface GameConnection {
-  createGame: () => void;
+  // createGame was removed 2026-07-09 with the manual room-code UI (Destin:
+  // challenges are the only game entry now). Room codes REMAIN the internal
+  // capability token for PartyKit rooms — challengePlayer generates one and
+  // joinGame consumes the code received with an accepted challenge.
+  /** Join a game room by code — the code arrives with an incoming challenge. */
   joinGame: (code: string) => void;
   makeMove: (column: number) => void;
   sendChat: (text: string) => void;
   requestRematch: () => void;
   leaveGame: () => void;
+  /** target is the challenged player's ACCOUNT ID (spec §3). */
   challengePlayer: (target: string) => void;
+  /** `from` is the challenger's ACCOUNT ID (spec §3). */
   respondToChallenge: (from: string, accept: boolean) => void;
-  /** Force a fresh lobby socket — used by the ErrorScreen Retry button when
-   * partysocket's auto-reconnect has given up. */
+  /** Force a fresh presence socket — used by the ErrorScreen Retry button when
+   * the platform-layer socket has dropped and needs a clean reconnect. */
   reconnectLobby: () => void;
 }
 
 export function createInitialGameState(): GameState {
   return {
     connected: false,
-    slowConnect: false,
-    slowConnectHint: null,
     partyError: null,
     username: null,
     onlineUsers: [],

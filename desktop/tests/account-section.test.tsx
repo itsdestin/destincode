@@ -1,18 +1,22 @@
 // @vitest-environment jsdom
 // account-section.test.tsx
 // Render tests for the Settings → Account section (AccountSection.tsx).
-// Follows the same provider/mock conventions as marketplace-auth-context.test.tsx:
-// AccountSection reads state via useMarketplaceAuth(), so we wrap it in a real
-// MarketplaceAuthProvider and drive state through a mocked window.claude.account.
+// Follows the same provider/mock conventions as account-context.test.tsx:
+// AccountSection reads state via useAccount(), so we wrap it in a real
+// AccountProvider and drive state through a mocked window.claude.account.
 //
 // The signed-in popup is a view/edit split (2026-07-08 UX rework): read-only
 // summary by default, "Edit account" toggles the editors + danger zone in.
 
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, act, cleanup, fireEvent } from "@testing-library/react";
-import { MarketplaceAuthProvider } from "../src/renderer/state/marketplace-auth-context";
+import { render, act, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { AccountProvider } from "../src/renderer/state/account-context";
 import AccountSection from "../src/renderer/components/AccountSection";
+
+// ApiResult helpers matching the { ok, value } / { ok, status, message } union.
+const ok = <T,>(value: T) => ({ ok: true as const, value });
+const apiErr = (status: number, message = "nope") => ({ ok: false as const, status, message });
 
 // Flush the provider's mount refresh() — it awaits signedIn() then user()
 // (two sequential microtask hops), so we drain the microtask queue a few times.
@@ -42,7 +46,12 @@ function signedOutMock() {
 
 // Signed-in account mock. handle is parameterized so tests can cover both the
 // "has a handle already" (change → confirm) and "first handle" (no confirm) paths.
-function signedInMock(handle: string | null = "octo") {
+// `over` lets a test replace the account.exportData or social.* stubs used by the
+// blocked-users + data-export surfaces (Task 9).
+function signedInMock(
+  handle: string | null = "octo",
+  over: { account?: Record<string, any>; social?: Record<string, any> } = {},
+) {
   return {
     account: {
       start: vi.fn(),
@@ -59,15 +68,34 @@ function signedInMock(handle: string | null = "octo") {
       updateProfile: vi.fn().mockResolvedValue({ ok: true }),
       setHandle: vi.fn().mockResolvedValue({ ok: true }),
       deleteAccount: vi.fn().mockResolvedValue({ ok: true }),
+      // Default: user cancels the save dialog (no-op).
+      exportData: vi.fn().mockResolvedValue({ canceled: true }),
+      ...over.account,
+    },
+    // SignedInBody fetches listBlocks() on mount — an empty list by default so
+    // the blocked-users section renders nothing.
+    social: {
+      listBlocks: vi.fn().mockResolvedValue(ok([])),
+      unblock: vi.fn().mockResolvedValue(ok(undefined)),
+      ...over.social,
     },
   };
 }
 
+// A blocked-user row shape (BlockRow = SocialUserCard + created_at).
+const block = (over: Partial<{ id: string; display_name: string; handle: string | null }> = {}) => ({
+  id: over.id ?? "github:9",
+  display_name: over.display_name ?? "Blocky",
+  handle: over.handle ?? "blocky",
+  avatar_url: null,
+  created_at: 0,
+});
+
 function renderSection() {
   return render(
-    <MarketplaceAuthProvider pollIntervalMs={10}>
+    <AccountProvider pollIntervalMs={10}>
       <AccountSection />
-    </MarketplaceAuthProvider>,
+    </AccountProvider>,
   );
 }
 
@@ -217,5 +245,128 @@ describe("AccountSection", () => {
     fireEvent.change(confirmInput, { target: { value: "delete" } });
 
     expect(confirmBtn.disabled).toBe(false);
+  });
+
+  // ── Blocked users (view mode) ──────────────────────────────────────────────
+
+  it("blocked users: renders a row per block with @handle when the list is non-empty", async () => {
+    (globalThis as any).window.claude = signedInMock("octo", {
+      social: {
+        listBlocks: vi
+          .fn()
+          .mockResolvedValue(ok([block({ id: "github:9", display_name: "Blocky", handle: "blocky" })])),
+        unblock: vi.fn().mockResolvedValue(ok(undefined)),
+      },
+    });
+    const utils = renderSection();
+    await flush();
+    await openPopup(utils);
+
+    // Wait for the mount-time listBlocks() to populate the section.
+    await waitFor(() => expect(utils.getByText("Blocked users")).toBeTruthy());
+    expect(utils.getByText("Blocky")).toBeTruthy();
+    expect(utils.getByText("@blocky")).toBeTruthy();
+    expect(utils.getByRole("button", { name: "Unblock" })).toBeTruthy();
+  });
+
+  it("blocked users: renders nothing when the block list is empty", async () => {
+    // signedInMock defaults listBlocks → ok([]).
+    (globalThis as any).window.claude = signedInMock();
+    const utils = renderSection();
+    await flush();
+    await openPopup(utils);
+    await flush();
+
+    expect(utils.queryByText("Blocked users")).toBeNull();
+    expect(utils.queryByRole("button", { name: "Unblock" })).toBeNull();
+  });
+
+  it("Unblock calls unblock(id) then refetches the list", async () => {
+    const listBlocks = vi
+      .fn()
+      // First load has one block; after unblock the refetch returns empty.
+      .mockResolvedValueOnce(ok([block({ id: "github:9", display_name: "Blocky", handle: "blocky" })]))
+      .mockResolvedValueOnce(ok([]));
+    const unblock = vi.fn().mockResolvedValue(ok(undefined));
+    (globalThis as any).window.claude = signedInMock("octo", { social: { listBlocks, unblock } });
+
+    const utils = renderSection();
+    await flush();
+    await openPopup(utils);
+
+    const unblockBtn = await waitFor(() => utils.getByRole("button", { name: "Unblock" }));
+    fireEvent.click(unblockBtn);
+
+    await waitFor(() => expect(unblock).toHaveBeenCalledWith("github:9"));
+    // Refetch ran (2nd call) and the now-empty list removes the section.
+    await waitFor(() => expect(listBlocks).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(utils.queryByText("Blocked users")).toBeNull());
+  });
+
+  it("Unblock surfaces a row error on failure", async () => {
+    const listBlocks = vi
+      .fn()
+      .mockResolvedValue(ok([block({ id: "github:9", display_name: "Blocky", handle: "blocky" })]));
+    const unblock = vi.fn().mockResolvedValue(apiErr(500, "server exploded"));
+    (globalThis as any).window.claude = signedInMock("octo", { social: { listBlocks, unblock } });
+
+    const utils = renderSection();
+    await flush();
+    await openPopup(utils);
+
+    const unblockBtn = await waitFor(() => utils.getByRole("button", { name: "Unblock" }));
+    fireEvent.click(unblockBtn);
+
+    await waitFor(() => expect(utils.getByText("server exploded")).toBeTruthy());
+    // Row still present (unblock failed).
+    expect(utils.getByText("Blocky")).toBeTruthy();
+  });
+
+  // ── Download my data (view mode) ───────────────────────────────────────────
+
+  it("Download my data: shows the saved path on success", async () => {
+    const exportData = vi.fn().mockResolvedValue({ path: "C:/Users/me/youcoded-export.json" });
+    (globalThis as any).window.claude = signedInMock("octo", { account: { exportData } });
+
+    const utils = renderSection();
+    await flush();
+    await openPopup(utils);
+
+    fireEvent.click(utils.getByRole("button", { name: "Download my data" }));
+    await waitFor(() =>
+      expect(utils.getByText("Saved to C:/Users/me/youcoded-export.json")).toBeTruthy(),
+    );
+    expect(exportData).toHaveBeenCalledTimes(1);
+  });
+
+  it("Download my data: shows the server error verbatim on failure", async () => {
+    const exportData = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, error: "export requires Android 10+" });
+    (globalThis as any).window.claude = signedInMock("octo", { account: { exportData } });
+
+    const utils = renderSection();
+    await flush();
+    await openPopup(utils);
+
+    fireEvent.click(utils.getByRole("button", { name: "Download my data" }));
+    await waitFor(() => expect(utils.getByText("export requires Android 10+")).toBeTruthy());
+  });
+
+  it("Download my data: a canceled export shows neither a saved path nor an error", async () => {
+    const exportData = vi.fn().mockResolvedValue({ canceled: true });
+    (globalThis as any).window.claude = signedInMock("octo", { account: { exportData } });
+
+    const utils = renderSection();
+    await flush();
+    await openPopup(utils);
+
+    fireEvent.click(utils.getByRole("button", { name: "Download my data" }));
+    await flush();
+
+    expect(exportData).toHaveBeenCalledTimes(1);
+    expect(utils.queryByText(/Saved to/)).toBeNull();
+    // No red error line either.
+    expect(utils.container.querySelector(".text-red-500")).toBeNull();
   });
 });

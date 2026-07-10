@@ -25,7 +25,7 @@ import React, {
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
-import { useMarketplaceAuth } from '../../state/marketplace-auth-context';
+import { useAccount } from '../../state/account-context';
 import { REPORT_REASON_MAX } from '../../state/marketplace-constants';
 
 // ── Flag icon SVG ─────────────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ export default function ReportReviewButton({
   pluginId,
   reviewerLogin,
 }: ReportReviewButtonProps) {
-  const { signedIn } = useMarketplaceAuth();
+  const { signedIn } = useAccount();
   const [dialogOpen, setDialogOpen] = useState(false);
   const { toastMessage, showToast } = useLocalToast();
 

@@ -283,6 +283,13 @@ function handleMessage(data: string): void {
       // modified, or excluded. The payload contains change metadata.
       dispatchEvent('artifacts:changed', payload);
       break;
+    case 'social:presence-event':
+      // Presence relay (Task 6). The host forwards one presence event (server
+      // protocol frame or synthetic connection-state event). window.claude.social
+      // .onPresenceEvent subscribers registered via addListener receive the
+      // payload object verbatim; the renderer (Task 7) interprets it.
+      dispatchEvent('social:presence-event', payload);
+      break;
   }
 }
 
@@ -801,12 +808,50 @@ export function installShim(): void {
         invoke('account:poll', { deviceCode }),
       signedIn: (): Promise<boolean> => invoke('account:signed-in'),
       user: (): Promise<MarketplaceUser | null> => invoke('account:user'),
+      // Force a /auth/me round-trip; returns the fresh profile or null (401-cleared).
+      refresh: (): Promise<MarketplaceUser | null> => invoke('account:refresh'),
       signOut: (): Promise<void> => invoke('account:sign-out'),
       updateProfile: (displayName: string): Promise<ApiResult<unknown>> =>
         invoke('account:update-profile', { displayName }),
       setHandle: (handle: string): Promise<ApiResult<unknown>> =>
         invoke('account:set-handle', { handle }),
       deleteAccount: (): Promise<ApiResult<unknown>> => invoke('account:delete'),
+      // Export account data. On a remote browser the SAVE DIALOG opens on the
+      // HOST desktop (the file is written host-side) — a browser can't drive a
+      // native save dialog; acceptable pre-existing remote-host pattern. On
+      // Android the SessionService handler writes to the public Downloads folder.
+      exportData: (): Promise<unknown> => invoke('account:export'),
+    },
+    // Social graph (accounts Phase 2) — friends / requests / blocks. Same shape
+    // as preload.ts; args are object-wrapped so the Android SessionService
+    // handlers read them via optString. Every method returns ApiResult so the
+    // renderer sees .status (404 unknown/blocked handle, 429 caps, 400 self-request).
+    social: {
+      lookupHandle: (handle: string): Promise<ApiResult<unknown>> => invoke('social:lookup-handle', { handle }),
+      sendRequest: (handle: string): Promise<ApiResult<unknown>> => invoke('social:send-request', { handle }),
+      listRequests: (): Promise<ApiResult<unknown>> => invoke('social:list-requests'),
+      acceptRequest: (id: string): Promise<ApiResult<unknown>> => invoke('social:accept-request', { id }),
+      declineRequest: (id: string): Promise<ApiResult<unknown>> => invoke('social:decline-request', { id }),
+      cancelRequest: (id: string): Promise<ApiResult<unknown>> => invoke('social:cancel-request', { id }),
+      listFriends: (): Promise<ApiResult<unknown>> => invoke('social:list-friends'),
+      unfriend: (userId: string): Promise<ApiResult<unknown>> => invoke('social:unfriend', { userId }),
+      block: (userId: string): Promise<ApiResult<unknown>> => invoke('social:block', { userId }),
+      unblock: (userId: string): Promise<ApiResult<unknown>> => invoke('social:unblock', { userId }),
+      listBlocks: (): Promise<ApiResult<unknown>> => invoke('social:list-blocks'),
+      // Presence socket (Task 6). connect/disconnect/send resolve to { ok:true };
+      // events flow back via the 'social:presence-event' push (handleMessage below).
+      // message is object-wrapped as { message } so the Android SessionService
+      // reads it via msg.payload.getJSONObject("message").
+      presenceConnect: (): Promise<{ ok: true }> => invoke('social:presence-connect'),
+      presenceDisconnect: (): Promise<{ ok: true }> => invoke('social:presence-disconnect'),
+      // presenceSend returns an honest receipt: { ok:false, status:0, message }
+      // when the platform socket isn't connected (frame would silently drop).
+      presenceSend: (message: Record<string, unknown>): Promise<{ ok: true } | { ok: false; status: number; message: string }> =>
+        invoke('social:presence-send', { message }),
+      onPresenceEvent: (cb: (ev: Record<string, unknown>) => void) => {
+        const handler = addListener('social:presence-event', cb as Callback);
+        return () => removeListener('social:presence-event', handler);
+      },
     },
     // Marketplace write endpoints — same shape as preload.ts.
     marketplaceApi: {

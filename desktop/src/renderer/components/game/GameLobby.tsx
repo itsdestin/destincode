@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
-import { useMarketplaceAuth } from '../../state/marketplace-auth-context';
+import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
+import { mergeFriends, statusLabel } from './friends-data';
+import type { FriendRow, RequestsPayload } from '../../state/marketplace-api-client';
 
-interface LeaderboardEntry {
-  username: string;
-  wins: number;
-  losses: number;
-}
+// Local mirror of the renderer/main ApiResult shape (useIpc.ts declares it but
+// doesn't export it — keeping a copy avoids importing across that boundary).
+type ApiResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; status: number; message: string };
 
 interface Props {
   connection: GameConnection;
@@ -94,35 +96,240 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
   );
 }
 
-function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
-  const state = useGameState();
-  const dispatch = useGameDispatch();
-  const [joinCode, setJoinCode] = useState('');
-  const [favorites, setFavorites] = useState<string[]>([]);
+// Per-friend "…" row menu. Manages its own open + block-confirm state and
+// closes on outside click (anchored popover pattern from MarketplaceAuthChip —
+// no Scrim because it's anchored, not centered). Block is consequence-gated:
+// the menu item swaps the popover to a plain-language confirm BEFORE acting
+// (Destin's standing rule for destructive/hard-to-reverse actions).
+function FriendRowMenu({ onUnfriend, onBlock, pending }: { onUnfriend: () => void; onBlock: () => void; pending?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [confirmingBlock, setConfirmingBlock] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    (window as any).claude?.getFavorites?.().then((favs: string[]) => {
-      if (favs) setFavorites(favs);
-    });
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setConfirmingBlock(false);
+      }
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  const close = () => { setOpen(false); setConfirmingBlock(false); };
+
+  return (
+    <div ref={wrapRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        title="More"
+        aria-label="Friend options"
+        // Touch target: p-1.5 gives the ⋯ a ≥32px square hit box — this panel
+        // ships to a 320px Android WebView, so bare 10px text (~14px box) is
+        // untappable. Keep the padding even if the visual density changes.
+        className="text-fg-muted hover:text-fg-2 p-1.5 transition-colors"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="layer-surface absolute right-0 top-full mt-1 min-w-[220px] rounded-md p-1.5 text-xs shadow-md"
+          // z-index 62 = one above L2 popup content (61), same as the
+          // MarketplaceAuthChip popover — clears any L1 drawer overlap.
+          style={{ zIndex: 62 }}
+        >
+          {confirmingBlock ? (
+            <div className="flex flex-col gap-2 p-1">
+              <p className="text-fg-2 leading-snug">
+                Blocking removes this friend, cancels pending requests, and hides you
+                from each other. You can unblock later in Settings → Account.
+              </p>
+              <div className="flex gap-2">
+                {/* py-1.5 keeps these ≥32px tall for touch (see the ⋯ trigger note). */}
+                <button
+                  type="button"
+                  onClick={() => { onBlock(); close(); }}
+                  disabled={pending}
+                  className="flex-1 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-medium rounded py-1.5 transition-colors"
+                >
+                  Block
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingBlock(false)}
+                  className="flex-1 bg-inset hover:bg-edge text-fg-2 rounded py-1.5 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* py-1.5 keeps menu items ≥32px tall for touch (see the ⋯ trigger note). */}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { onUnfriend(); close(); }}
+                disabled={pending}
+                className="w-full text-left px-2 py-1.5 rounded text-fg-2 hover:text-fg hover:bg-inset disabled:opacity-40 transition-colors"
+              >
+                Unfriend
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setConfirmingBlock(true)}
+                className="w-full text-left px-2 py-1.5 rounded text-red-400 hover:bg-inset transition-colors"
+              >
+                Block
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The lobby is the friends list now (spec §6): add-by-handle, incoming/outgoing
+// requests, and challenge buttons gated to online friends. Presence relays only
+// ONLINE FRIENDS, so onlineUsers is merged onto the server friends list to light
+// up "Online" / "In game" and the Challenge button.
+function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
+  const state = useGameState();
+  const dispatch = useGameDispatch();
+  // Review fix: self-exclusion keys on the ACCOUNT ID (ids-not-names principle) —
+  // display names aren't unique, so tag-comparison would miss a friend who
+  // shares your name and fire spurious refreshes on null display_name edges.
+  const { user } = useAccount();
+  const myId = user?.id ?? null;
+
+  const [friends, setFriends] = useState<FriendRow[] | null>(null);
+  const [requests, setRequests] = useState<RequestsPayload | null>(null);
+  const [addHandle, setAddHandle] = useState('');
+  // Add-friend inline feedback: plain sentence + tone (ok=green, else red).
+  const [addFeedback, setAddFeedback] = useState<{ text: string; ok: boolean } | null>(null);
+  // True while a sendRequest is in flight — disables the Send button so a
+  // double-tap can't fire two requests (and burn the daily cap twice).
+  const [addPending, setAddPending] = useState(false);
+  // Per-row error strings keyed by request/friend id (rendered under the row).
+  const [rowError, setRowError] = useState<Record<string, string>>({});
+  // Ids with a mutation in flight — their row buttons are disabled. The ref is
+  // the synchronous double-fire guard (state alone can lag a fast double-tap);
+  // the state copy drives the disabled rendering.
+  const pendingRowsRef = useRef<Set<string>>(new Set());
+  const [pendingRows, setPendingRows] = useState<Set<string>>(new Set());
+
+  // Fetch both lists in parallel; called on mount and after every mutation.
+  const refresh = useCallback(async () => {
+    const [fr, rq] = await Promise.all([
+      window.claude.social.listFriends(),
+      window.claude.social.listRequests(),
+    ]);
+    if (fr.ok) setFriends(fr.value);
+    if (rq.ok) setRequests(rq.value);
   }, []);
 
-  const toggleFavorite = (username: string) => {
-    const updated = favorites.includes(username)
-      ? favorites.filter(f => f !== username)
-      : [...favorites, username];
-    setFavorites(updated);
-    (window as any).claude?.setFavorites?.(updated);
-  };
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // Refresh when presence shows an online user who ISN'T a known friend yet — a
+  // request I sent was just accepted (the server pokes visibility ahead of my
+  // list refetch). friendIdsRef avoids re-running purely on the friends array
+  // reference changing, so this can't tight-loop; it settles once the new friend
+  // lands in the list. Self can appear in onlineUsers, so exclude it by ACCOUNT
+  // ID (review fix — names aren't unique keys).
+  const friendIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    friendIdsRef.current = new Set((friends ?? []).map(f => f.id));
+  }, [friends]);
+  useEffect(() => {
+    const hasUnknownOnline = state.onlineUsers.some(
+      u => u.id !== myId && !friendIdsRef.current.has(u.id),
+    );
+    if (hasUnknownOnline) void refresh();
+  }, [state.onlineUsers, myId, refresh]);
+
+  // Shared mutation runner for accept/decline/cancel/unfriend/block: on failure
+  // stash a plain sentence under the row; on success clear it and refresh.
+  // Review fix: a per-key in-flight guard so a double-tap can't fire the same
+  // mutation twice — the ref check is synchronous (state updates would lag a
+  // fast second tap), and pendingRows state disables the row's buttons.
+  const runMutation = useCallback(async (
+    fn: () => Promise<ApiResult<unknown>>,
+    key: string,
+    fallback = 'Something went wrong. Try again.',
+  ) => {
+    if (pendingRowsRef.current.has(key)) return;
+    pendingRowsRef.current.add(key);
+    setPendingRows(prev => new Set(prev).add(key));
+    try {
+      const res = await fn();
+      if (!res.ok) {
+        setRowError(prev => ({ ...prev, [key]: res.message || fallback }));
+        return;
+      }
+      // Success: drop any stale error for this row so entries can't accumulate.
+      setRowError(prev => { const next = { ...prev }; delete next[key]; return next; });
+      await refresh();
+    } finally {
+      pendingRowsRef.current.delete(key);
+      setPendingRows(prev => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  }, [refresh]);
+
+  // Add a friend by exact handle. Maps the Worker's status codes to human copy.
+  const submitAddFriend = useCallback(async () => {
+    const handle = addHandle.trim();
+    // addPending guard (review fix): Enter + click (or a double-tap) must not
+    // send the request twice — a duplicate burns the daily request cap.
+    if (!handle || addPending) return;
+    setAddPending(true);
+    try {
+      const res = await window.claude.social.sendRequest(handle);
+      if (res.ok) {
+        setAddFeedback({
+          text: res.value.status === 'friends' ? `You're now friends with @${handle}` : 'Request sent',
+          ok: true,
+        });
+        setAddHandle('');
+        await refresh();
+        return;
+      }
+      // 404 = unknown or blocked handle (no enumeration oracle — same message).
+      // 429 = daily request cap. 400 = a validation reason the server phrases well
+      // ("that's you"). Anything else falls back to the server message.
+      const text =
+        res.status === 404 ? 'No one has that handle' :
+        res.status === 429 ? 'Daily request limit reached — try tomorrow' :
+        res.status === 400 ? (res.message || "That request can't be sent") :
+        (res.message || 'Could not send the request. Try again.');
+      setAddFeedback({ text, ok: false });
+    } finally {
+      setAddPending(false);
+    }
+  }, [addHandle, addPending, refresh]);
+
+  const merged = mergeFriends(friends ?? [], state.onlineUsers);
+  const incoming = requests?.incoming ?? [];
+  const outgoing = requests?.outgoing ?? [];
+  const loaded = friends !== null;
+  const isEmpty = loaded && merged.length === 0 && incoming.length === 0 && outgoing.length === 0;
 
   return (
     <div className="flex flex-col gap-0">
       {/* Player info bar */}
       <div className="px-3 py-2 border-b border-edge flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {/* Show green only when actually connected — not just non-incognito */}
-          <div className={`w-2 h-2 rounded-full ${incognito || !state.connected ? 'bg-fg-faint' : 'bg-green-400'}`} />
-          <span className="text-sm font-medium text-fg">{state.username}</span>
-          {incognito && <span className="text-[10px] text-fg-muted">Incognito</span>}
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-medium text-fg truncate">{state.username}</span>
+          {/* Plain-word status, never a glyph (Destin's standing rule — the old
+              green/faint dot was removed 2026-07-09). This screen only renders
+              when connected or incognito (the parent gates the rest), so the
+              two reachable states are exactly these words. */}
+          <span className="text-[10px] text-fg-muted shrink-0">{incognito ? 'Incognito' : 'Online'}</span>
         </div>
         {onToggleIncognito && (
           <button
@@ -132,23 +339,34 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
                 ? 'bg-inset text-fg-2 hover:bg-edge'
                 : 'text-fg-muted hover:text-fg-2'
             }`}
-            title={incognito ? 'Go online — appear in player lists' : 'Go incognito — hide from player lists'}
+            title={incognito ? 'Go online — appear to friends' : 'Go incognito — hide from friends'}
           >
             {incognito ? 'Go Online' : 'Go Incognito'}
           </button>
         )}
       </div>
 
-      {/* Incoming challenge */}
+      {/* Incoming challenge — challengeFrom is account identity: .id is the
+          stable key passed to respondToChallenge, .name the visible tag, and
+          .handle is now carried so we can render @handle alongside.
+          Room codes still exist INTERNALLY as the capability token for PartyKit
+          rooms — accepting a challenge joins by the received code below. The
+          manual Create Game / enter-a-room-code UI was removed 2026-07-09
+          (Destin: friends/handles cover the real use case); challenges are the
+          only way into a game now. */}
       {state.challengeFrom && (
         <div className="px-3 py-2 border-b border-edge bg-indigo-950/50">
           <p className="text-sm text-fg mb-2">
-            <span className="font-medium text-[#66AAFF]">{state.challengeFrom}</span> wants to play!
+            <span className="font-medium text-[#66AAFF]">{state.challengeFrom.name}</span>
+            {state.challengeFrom.handle && (
+              <span className="text-fg-muted text-xs ml-1">@{state.challengeFrom.handle}</span>
+            )}
+            <span> wants to play!</span>
           </p>
           <div className="flex gap-2">
             <button
               onClick={() => {
-                connection.respondToChallenge(state.challengeFrom!, true);
+                connection.respondToChallenge(state.challengeFrom!.id, true);
                 connection.joinGame(state.challengeCode!);
                 dispatch({ type: 'CLEAR_CHALLENGE' });
               }}
@@ -157,7 +375,7 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
               Accept
             </button>
             <button
-              onClick={() => { connection.respondToChallenge(state.challengeFrom!, false); dispatch({ type: 'CLEAR_CHALLENGE' }); }}
+              onClick={() => { connection.respondToChallenge(state.challengeFrom!.id, false); dispatch({ type: 'CLEAR_CHALLENGE' }); }}
               className="flex-1 bg-inset hover:bg-edge text-fg-2 text-xs font-medium rounded-lg py-1.5 transition-colors"
             >
               Decline
@@ -170,108 +388,154 @@ function LobbyScreen({ connection, incognito, onToggleIncognito }: Props) {
       {state.challengeDeclinedBy && (
         <div className="px-3 py-2 border-b border-edge">
           <p className="text-xs text-fg-dim">
-            <span className="text-fg-2">{state.challengeDeclinedBy}</span> declined your challenge.
+            <span className="text-fg-2">{state.challengeDeclinedBy.name}</span> declined your challenge.
             <button onClick={() => dispatch({ type: 'CLEAR_CHALLENGE' })} className="text-[#66AAFF] ml-1">Dismiss</button>
           </p>
         </div>
       )}
 
-      {/* Create / Join */}
+      {/* Incoming friend requests */}
+      {incoming.length > 0 && (
+        <div className="px-3 py-2 border-b border-edge">
+          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friend requests</div>
+          <ul className="flex flex-col gap-2">
+            {incoming.map((req) => (
+              <li key={req.id} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-fg-2 truncate flex-1 min-w-0">
+                    {req.from.display_name}
+                    {req.from.handle && <span className="text-fg-muted ml-1">@{req.from.handle}</span>}
+                  </span>
+                  {/* Touch target: px-1.5 py-1.5 keeps these row actions ≥32px
+                      tall on the Android WebView — the 10px text alone is a
+                      ~14px hit box. Applies to every row button in this screen. */}
+                  <button
+                    onClick={() => runMutation(() => window.claude.social.acceptRequest(req.id), req.id, "Couldn't accept — try again")}
+                    disabled={pendingRows.has(req.id)}
+                    className="text-[10px] px-1.5 py-1.5 text-green-400 hover:text-green-300 disabled:opacity-40 transition-colors shrink-0"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() => runMutation(() => window.claude.social.declineRequest(req.id), req.id, "Couldn't decline — try again")}
+                    disabled={pendingRows.has(req.id)}
+                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
+                  >
+                    Decline
+                  </button>
+                </div>
+                {rowError[req.id] && <p className="text-xs text-red-400">{rowError[req.id]}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Add a friend by handle */}
       <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
-        <button
-          onClick={() => connection.createGame()}
-          className="w-full bg-accent hover:bg-accent text-on-accent text-sm font-medium rounded-lg py-2 transition-colors"
-        >
-          Create Game
-        </button>
+        <div className="text-[10px] uppercase tracking-wider text-fg-muted">Add a friend</div>
         <div className="flex gap-2">
           <input
             type="text"
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-            placeholder="Room code"
-            maxLength={6}
-            className="flex-1 bg-well border border-edge rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-fg-dim transition-colors uppercase tracking-widest"
+            value={addHandle}
+            // Handles are lowercase — normalize as the user types so the exact-match
+            // lookup on the Worker doesn't 404 on a stray capital.
+            onChange={(e) => setAddHandle(e.target.value.toLowerCase())}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submitAddFriend(); }}
+            placeholder="friend's handle"
+            className="flex-1 bg-well border border-edge rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-fg-dim transition-colors"
           />
           <button
-            onClick={() => { if (joinCode.trim()) connection.joinGame(joinCode.trim()); }}
-            disabled={!joinCode.trim()}
+            onClick={() => void submitAddFriend()}
+            disabled={!addHandle.trim() || addPending}
             className="bg-inset hover:bg-edge disabled:opacity-40 disabled:cursor-not-allowed text-fg text-sm font-medium rounded-lg px-3 py-2 transition-colors"
           >
-            Join
+            Send request
           </button>
         </div>
+        {addFeedback && (
+          <p className={`text-xs ${addFeedback.ok ? 'text-green-400' : 'text-red-400'}`}>{addFeedback.text}</p>
+        )}
       </div>
 
-      {/* Online users */}
-      {(() => {
-        const otherUsers = state.onlineUsers.filter(u => u.username !== state.username);
-        const onlineFavorites = otherUsers.filter(u => favorites.includes(u.username));
-        const onlineNonFavorites = otherUsers.filter(u => !favorites.includes(u.username));
-        const offlineFavorites = favorites
-          .filter(f => f !== state.username && !otherUsers.some(u => u.username === f))
-          .map(f => ({ username: f, status: 'offline' as const }));
-        const sortedUsers = [...onlineFavorites, ...onlineNonFavorites, ...offlineFavorites];
-        return (
-          <div className="px-3 py-2 border-b border-edge">
-            <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">
-              Players ({otherUsers.length} online{offlineFavorites.length > 0 ? `, ${offlineFavorites.length} favorite offline` : ''})
-            </div>
-            {sortedUsers.length === 0 ? (
-              <p className="text-xs text-fg-faint italic">No one else online yet</p>
-            ) : (
-              <ul className="flex flex-col gap-1">
-                {sortedUsers.map((user) => {
-                  const isOnline = user.status !== 'offline';
-                  const isFav = favorites.includes(user.username);
-                  return (
-                    <li key={user.username} className="flex items-center gap-2">
-                      <button
-                        onClick={() => toggleFavorite(user.username)}
-                        className={`text-xs shrink-0 transition-colors ${isFav ? 'text-yellow-400' : 'text-fg-faint hover:text-fg-dim'}`}
-                        title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-                      >
-                        {isFav ? '★' : '☆'}
-                      </button>
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${
-                        !isOnline ? 'bg-fg-faint' :
-                        user.status === 'idle' ? 'bg-green-400' : 'bg-yellow-400'
-                      }`} />
-                      <span className={`text-sm truncate flex-1 ${isOnline ? 'text-fg-2' : 'text-fg-faint'}`}>
-                        {user.username}
-                      </span>
-                      {isOnline && user.status === 'in-game' ? (
-                        <span className="text-[10px] text-yellow-500 ml-auto">in game</span>
-                      ) : isOnline ? (
-                        <button
-                          onClick={() => connection.challengePlayer(user.username)}
-                          className="text-[10px] text-[#66AAFF] hover:text-[#88CCFF] ml-auto transition-colors"
-                        >
-                          Challenge
-                        </button>
-                      ) : (
-                        <span className="text-[10px] text-fg-faint ml-auto">offline</span>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        );
-      })()}
+      {/* Friends list */}
+      {merged.length > 0 && (
+        <div className="px-3 py-2 border-b border-edge">
+          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Friends ({merged.length})</div>
+          <ul className="flex flex-col gap-2">
+            {merged.map((row) => (
+              <li key={row.id} className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-fg-2 truncate flex-1 min-w-0">
+                    {row.name}
+                    {row.handle && <span className="text-fg-muted ml-1">@{row.handle}</span>}
+                  </span>
+                  {/* Challenge only when the friend is actually online (has a live
+                      presence entry). row.id is the account id challengePlayer wants. */}
+                  {row.online && (
+                    <button
+                      onClick={() => connection.challengePlayer(row.id)}
+                      // px/py-1.5 = touch-target padding (see the Accept button note).
+                      className="text-[10px] px-1.5 py-1.5 text-[#66AAFF] hover:text-[#88CCFF] transition-colors shrink-0"
+                    >
+                      Challenge
+                    </button>
+                  )}
+                  <FriendRowMenu
+                    pending={pendingRows.has(row.id)}
+                    onUnfriend={() => runMutation(() => window.claude.social.unfriend(row.id), row.id, "Couldn't unfriend — try again")}
+                    onBlock={() => runMutation(() => window.claude.social.block(row.id), row.id, "Couldn't block — try again")}
+                  />
+                </div>
+                {/* Plain-word status — never glyphs (workspace rule). */}
+                <span className="text-[10px] text-fg-muted">{statusLabel(row, Date.now())}</span>
+                {rowError[row.id] && <p className="text-xs text-red-400">{rowError[row.id]}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
-      {/* Leaderboard preview */}
-      <div className="px-3 py-2">
-        <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Top Players</div>
-        <p className="text-xs text-fg-faint italic">No stats yet</p>
-      </div>
+      {/* Sent (outgoing) requests — dim, collapsed-feeling */}
+      {outgoing.length > 0 && (
+        <div className="px-3 py-2 border-b border-edge">
+          <div className="text-[10px] uppercase tracking-wider text-fg-faint mb-2">Sent requests</div>
+          <ul className="flex flex-col gap-1">
+            {outgoing.map((req) => (
+              <li key={req.id} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-fg-dim truncate flex-1 min-w-0">
+                    @{req.to.handle ?? req.to.display_name}
+                  </span>
+                  <button
+                    onClick={() => runMutation(() => window.claude.social.cancelRequest(req.id), req.id, "Couldn't cancel — try again")}
+                    disabled={pendingRows.has(req.id)}
+                    // px/py-1.5 = touch-target padding (see the Accept button note).
+                    className="text-[10px] px-1.5 py-1.5 text-fg-muted hover:text-fg-2 disabled:opacity-40 transition-colors shrink-0"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {rowError[req.id] && <p className="text-xs text-red-400">{rowError[req.id]}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Empty state — no friends and no requests in either direction */}
+      {isEmpty && (
+        <div className="px-3 py-6">
+          <p className="text-xs text-fg-faint text-center leading-relaxed">
+            No friends yet. Ask a friend for their handle and add them above.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
 function JoiningScreen({ connection }: Props) {
-  const state = useGameState();
   const dispatch = useGameDispatch();
   const [timedOut, setTimedOut] = useState(false);
 
@@ -287,16 +551,14 @@ function JoiningScreen({ connection }: Props) {
     }
   }, [timedOut, connection, dispatch]);
 
+  // The only way here is accepting a friend's challenge, so the room code
+  // (still the internal PartyKit capability token) means nothing to the user —
+  // don't display it. Removed with the manual create/join UI, 2026-07-09.
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-6 px-4 py-8">
-      <div className="flex flex-col items-center gap-3">
-        <p className="text-xs text-fg-muted uppercase tracking-wider">Joining Room</p>
-        <p className="text-lg font-mono font-bold text-fg tracking-widest">{state.roomCode}</p>
-      </div>
-
       <div className="flex flex-col items-center gap-2">
         <BrailleSpinner size="lg" />
-        <p className="text-sm text-fg-dim">Connecting...</p>
+        <p className="text-sm text-fg-dim">Joining the game…</p>
       </div>
 
       <button
@@ -310,43 +572,17 @@ function JoiningScreen({ connection }: Props) {
 }
 
 function WaitingScreen({ connection }: Props) {
-  const state = useGameState();
   const dispatch = useGameDispatch();
-  const code = state.roomCode ?? '';
-  const [copied, setCopied] = useState(false);
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
+  // The only way here is challenging a friend, so the old share-this-room-code
+  // display (code boxes + Copy Code) came out with the manual create/join UI
+  // (2026-07-09). The room code still exists internally as the PartyKit
+  // capability token — the challenge message already delivered it to the friend.
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-6 px-4 py-8">
-      <div className="flex flex-col items-center gap-3">
-        <p className="text-xs text-fg-muted uppercase tracking-wider">Room Code</p>
-        <div className="flex gap-1.5">
-          {code.split('').map((ch, i) => (
-            <span
-              key={i}
-              className="w-9 h-10 flex items-center justify-center bg-inset border border-edge rounded-lg text-lg font-mono font-bold text-fg"
-            >
-              {ch}
-            </span>
-          ))}
-        </div>
-        <button
-          onClick={copyCode}
-          className="text-xs text-[#66AAFF] hover:text-[#88CCFF] transition-colors"
-        >
-          {copied ? 'Copied!' : 'Copy Code'}
-        </button>
-      </div>
-
       <div className="flex flex-col items-center gap-2">
         <BrailleSpinner size="lg" />
-        <p className="text-sm text-fg-dim">Waiting for opponent...</p>
+        <p className="text-sm text-fg-dim">Waiting for your friend to accept…</p>
       </div>
 
       <button
@@ -365,7 +601,7 @@ function WaitingScreen({ connection }: Props) {
 // in-app browser sign-in (no terminal / gh CLI needed); the lobby hook reacts to
 // the sign-in flipping and connects automatically once it completes.
 function SignInScreen() {
-  const { signInPending, startSignIn } = useMarketplaceAuth();
+  const { signInPending, signInError, startSignIn } = useAccount();
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
@@ -383,13 +619,17 @@ function SignInScreen() {
       >
         {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
       </button>
+      {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
+      {signInError && !signInPending && (
+        <p className="text-xs text-red-400 text-center max-w-xs">Sign-in failed: {signInError}. Try again.</p>
+      )}
     </div>
   );
 }
 
 export default function GameLobby({ connection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
-  const { signedIn } = useMarketplaceAuth();
+  const { signedIn } = useAccount();
   // Sign-in gate comes BEFORE the error/spinner branches — not being signed in
   // isn't a failure or a slow connection, it's a prerequisite. Incognito keeps
   // its own UI (you don't need to sign in to stay intentionally disconnected).
@@ -397,33 +637,17 @@ export default function GameLobby({ connection, incognito, onToggleIncognito }: 
   if (state.partyError && !incognito) return <ErrorScreen connection={connection} />;
   if (state.screen === 'joining') return <JoiningScreen connection={connection} />;
   if (state.screen === 'waiting') return <WaitingScreen connection={connection} />;
-  // Show connecting spinner while waiting for PartyKit (setup screen, not incognito).
-  // After ~10s of no open, `slowConnect` flips and we swap in friendlier copy
-  // plus a Reload button — prevents the infinite-silent-spinner that hid the
-  // "PartyKit crashed, partysocket retrying forever on 5xx" case.
+  // Show connecting spinner while the platform layer opens the presence socket
+  // (setup screen, not incognito). The slow-connect hint that used to live here
+  // was tied to the retired PartyKit client's HTTP probe — removed with it
+  // (Task 7). A real socket failure surfaces via PARTY_ERROR → ErrorScreen above.
   if (!state.connected && !incognito) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
         <BrailleSpinner size="lg" />
-        <p className="text-sm text-fg-dim">
-          {state.slowConnect ? 'Still trying to connect…' : 'Connecting…'}
-        </p>
-        {state.slowConnect && (
-          <>
-            <p className="text-xs text-fg-muted text-center max-w-xs">
-              {state.slowConnectHint ?? 'Taking a little longer than usual. Hang tight…'}
-            </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="text-xs text-[#66AAFF] hover:text-[#88CCFF] transition-colors"
-              title="Reload the app"
-            >
-              Reload app
-            </button>
-          </>
-        )}
+        <p className="text-sm text-fg-dim">Connecting…</p>
       </div>
     );
   }
-  return <LobbyScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />;
+  return <FriendsScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />;
 }

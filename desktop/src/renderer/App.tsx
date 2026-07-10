@@ -34,7 +34,7 @@ import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
 import { useVisualViewport } from './hooks/useVisualViewport';
-import { usePartyLobby } from './hooks/usePartyLobby';
+import { usePresence } from './hooks/usePresence';
 import { usePartyGame } from './hooks/usePartyGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
@@ -64,7 +64,7 @@ import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
 import { ThemeProvider, useTheme } from './state/theme-context';
 import { SkillProvider } from './state/skill-context';
-import { MarketplaceAuthProvider } from './state/marketplace-auth-context';
+import { AccountProvider } from './state/account-context';
 import HandlePrompt from './components/HandlePrompt';
 import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
 import { WorkerHealthProvider, useWorkerHealth } from './state/worker-health-context';
@@ -487,11 +487,16 @@ function AppInner() {
   // shim / Android), myWindowId stays null so isLeader is false — fall
   // back to true-by-default so the lobby still connects.
   const lobbyLeader = (window as any).claude?.detach?.openDetached ? isLeader : true;
-  const lobby = usePartyLobby(lobbyLeader);
+  // Presence socket lives in the platform layer now (spec §3); usePresence
+  // expresses desired state and maps relayed events onto the same reducer
+  // actions the retired PartyKit lobby hook used. Same public API shape.
+  const lobby = usePresence(lobbyLeader);
   const game = usePartyGame(lobby.updateStatus, lobby.challengePlayer);
 
+  // createGame is gone from GameConnection (2026-07-09): the manual room-code
+  // UI was removed — challenges are the only game entry. joinGame stays (an
+  // accepted challenge joins by the received code).
   const gameConnection = useMemo(() => ({
-    createGame: game.createGame,
     joinGame: game.joinGame,
     makeMove: game.makeMove,
     sendChat: game.sendChat,
@@ -500,7 +505,7 @@ function AppInner() {
     challengePlayer: game.challengePlayer,
     respondToChallenge: lobby.respondToChallenge,
     reconnectLobby: lobby.reconnect,
-  }), [game.createGame, game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
+  }), [game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
 
   // Derive session status colors for status dots.
   // chatStateMap is a new Map reference on every dispatch, so we stabilize with
@@ -2713,15 +2718,15 @@ export default function App() {
       <ThemeProvider>
         <ThemeBg />
         <ThemeEffects />
-        {/* Fix: MarketplaceAuthProvider sits outside SkillProvider so marketplace-
+        {/* Fix: AccountProvider sits outside SkillProvider so marketplace-
             context can consume auth state without introducing a circular dependency.
             MarketplaceStatsProvider sits inside auth so it can co-exist with auth
             state, but outside SkillProvider/GameProvider/ChatProvider which may
             eventually consume live stats via useMarketplaceStats(). */}
-        <MarketplaceAuthProvider>
+        <AccountProvider>
           {/* Always-mounted, self-driven overlay: shows a one-time handle prompt
               right after sign-in (renders nothing when not applicable). Lives here
-              so it can consume useMarketplaceAuth() regardless of the active view. */}
+              so it can consume useAccount() regardless of the active view. */}
           <HandlePrompt />
           {/* WorkerHealthProvider wraps stats so the stats provider can report
               network results to the health indicator via the onNetworkResult prop. */}
@@ -2741,7 +2746,7 @@ export default function App() {
               </SkillProvider>
             </StatsWithHealthBridge>
           </WorkerHealthProvider>
-        </MarketplaceAuthProvider>
+        </AccountProvider>
       </ThemeProvider>
       </EscCloseProvider>
     </RootErrorBoundary>

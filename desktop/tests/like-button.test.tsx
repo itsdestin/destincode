@@ -7,7 +7,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 
-import * as AuthContextModule from '../src/renderer/state/marketplace-auth-context';
+import * as AuthContextModule from '../src/renderer/state/account-context';
 import LikeButton from '../src/renderer/components/marketplace/LikeButton';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ function setupApiMock(likeThemeMock: ReturnType<typeof vi.fn>) {
 }
 
 function mockAuth(signedIn: boolean) {
-  vi.spyOn(AuthContextModule, 'useMarketplaceAuth').mockReturnValue({
+  vi.spyOn(AuthContextModule, 'useAccount').mockReturnValue({
     signedIn,
     user: signedIn ? { id: 'github:1', login: 'u', avatar_url: '' } : null,
     signInPending: false,

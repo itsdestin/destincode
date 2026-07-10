@@ -138,10 +138,42 @@ declare global {
         >>;
         signedIn: () => Promise<boolean>;
         user: () => Promise<import('../../main/marketplace-auth-store').MarketplaceUser | null>;
+        // Force a /auth/me round-trip; returns the fresh profile or null (401-cleared).
+        refresh: () => Promise<import('../../main/marketplace-auth-store').MarketplaceUser | null>;
         signOut: () => Promise<void>;
         updateProfile: (displayName: string) => Promise<ApiResult<{ display_name: string }>>;
         setHandle: (handle: string) => Promise<ApiResult<{ handle: string }>>;
         deleteAccount: () => Promise<ApiResult<void>>;
+        // Export all account data (GET /auth/export). Not ApiResult — resolves to
+        // { path } on save, { canceled: true } on cancel, { ok:false, ... } on error.
+        exportData: () => Promise<{ path: string } | { canceled: true } | { ok: false; status: number; error: string }>;
+      };
+      // Social graph (accounts Phase 2). All return ApiResult so callers can read
+      // .status (404 unknown/blocked handle, 429 caps, 400 self-request). Payload
+      // types live in renderer/state (importable — same renderer boundary).
+      social: {
+        lookupHandle: (handle: string) => Promise<ApiResult<import('../state/marketplace-api-client').SocialUserCard>>;
+        sendRequest: (handle: string) => Promise<ApiResult<{ status: 'pending' | 'friends' }>>;
+        listRequests: () => Promise<ApiResult<import('../state/marketplace-api-client').RequestsPayload>>;
+        acceptRequest: (id: string) => Promise<ApiResult<void>>;
+        declineRequest: (id: string) => Promise<ApiResult<void>>;
+        cancelRequest: (id: string) => Promise<ApiResult<void>>;
+        listFriends: () => Promise<ApiResult<import('../state/marketplace-api-client').FriendRow[]>>;
+        unfriend: (userId: string) => Promise<ApiResult<void>>;
+        block: (userId: string) => Promise<ApiResult<void>>;
+        unblock: (userId: string) => Promise<ApiResult<void>>;
+        listBlocks: () => Promise<ApiResult<import('../state/marketplace-api-client').BlockRow[]>>;
+        // Presence socket (Task 6). connect/disconnect/send return { ok:true };
+        // real presence data arrives via onPresenceEvent. The event object is a
+        // relayed server frame (presence/user-joined/challenge/…) or a synthetic
+        // connection-state event ({type:'connected'|'disconnected'|'error'}) — all
+        // carry a `type` discriminator; the renderer (Task 7) narrows on it.
+        presenceConnect: () => Promise<{ ok: true }>;
+        presenceDisconnect: () => Promise<{ ok: true }>;
+        // Honest receipt: { ok:false, status:0, message:'not connected' } when
+        // no live socket exists — don't treat presenceSend as infallible.
+        presenceSend: (message: Record<string, unknown>) => Promise<{ ok: true } | { ok: false; status: number; message: string }>;
+        onPresenceEvent: (cb: (ev: { type: string; [k: string]: unknown }) => void) => () => void;
       };
       // Fix: expose marketplaceApi on Window.claude so Tasks 9-12 can call install,
       // rate, deleteRating, likeTheme, and report without (window as any) casts.

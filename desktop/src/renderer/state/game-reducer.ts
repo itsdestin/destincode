@@ -2,18 +2,27 @@ import { GameState, GameAction, createInitialGameState } from './game-types';
 
 export function gameReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
-    case 'PARTY_CONNECTED':
-      // Clear both hard errors AND the slow-connect hint — a fresh successful
-      // open means the earlier friendlier copy is no longer relevant.
+    case 'PARTY_CONNECTED': {
+      // Clear any hard error — a fresh successful open means the earlier
+      // failure copy is no longer relevant. `username` is the player's own
+      // visible tag (display_name, spec §3), set by usePresence from the account.
+      //
+      // Preserve an in-progress game flow: the platform layer's renderer-reload
+      // replay re-emits a synthetic 'connected' to ALL windows whenever any one
+      // of them re-requests presence-connect (dev HMR / Ctrl+R), so a second
+      // window mid-game must NOT get yanked back to the lobby. Game rooms are a
+      // separate PartyKit socket — a presence reconnect doesn't invalidate them.
+      // Only 'setup' (and a no-op 'lobby') resets to the lobby screen.
+      const inGameFlow = state.screen === 'waiting' || state.screen === 'joining'
+        || state.screen === 'playing' || state.screen === 'game-over';
       return {
         ...state,
         connected: true,
         username: action.username,
-        screen: 'lobby',
+        screen: inGameFlow ? state.screen : 'lobby',
         partyError: null,
-        slowConnect: false,
-        slowConnectHint: null,
       };
+    }
 
     case 'PARTY_DISCONNECTED': {
       // Keep username — game actions guard on it, and PARTY_CONNECTED refreshes
@@ -47,46 +56,39 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return { ...state, connected: false, partyError: action.message };
 
     case 'PARTY_ERROR_CLEARED':
-      // User hit Retry on the ErrorScreen — clear the banner so partysocket's
-      // ongoing reconnect attempts can promote to PARTY_CONNECTED, or so the
-      // lobby effect re-runs the auth fetch on next dependency change.
-      return { ...state, partyError: null, slowConnect: false, slowConnectHint: null };
-
-    case 'PARTY_SLOW_CONNECT':
-      // Fired by PartyClient's slow-connect timer (10s of CONNECTING with no
-      // open). usePartyLobby may follow up with an HTTP probe to set the hint
-      // based on what the server actually returned.
-      return { ...state, slowConnect: true, slowConnectHint: action.hint ?? state.slowConnectHint };
-
-    case 'PARTY_SLOW_CLEARED':
-      return { ...state, slowConnect: false, slowConnectHint: null };
+      // User hit Retry on the ErrorScreen — clear the banner so a fresh
+      // presence connect can promote to PARTY_CONNECTED, or so the desired-state
+      // effect re-runs on the next reconnect.
+      return { ...state, partyError: null };
 
     case 'PRESENCE_UPDATE':
       // Defensive: a malformed server frame (wrong schema, missing `users`) must
       // not wipe onlineUsers to undefined — subsequent USER_JOINED/LEFT/STATUS
       // reducers call .filter/.map on it and would crash the whole App tree
-      // (PRESENCE_UPDATE dispatch originates in usePartyLobby at AppInner scope,
+      // (PRESENCE_UPDATE dispatch originates in usePresence at AppInner scope,
       // above the GamePanel ErrorBoundary, so the throw reaches RootErrorBoundary
       // and resets chat state). Fall back to the existing list if the payload
       // is missing, never to undefined.
       return { ...state, onlineUsers: Array.isArray(action.online) ? action.online : state.onlineUsers };
 
     case 'USER_JOINED':
+      // Key on account id (display names aren't unique, spec §3). Replace any
+      // existing entry for the same id, then append the fresh one.
       return {
         ...state,
-        onlineUsers: [...state.onlineUsers.filter(u => u.username !== action.username), { username: action.username, status: action.status as 'idle' | 'in-game' }],
+        onlineUsers: [...state.onlineUsers.filter(u => u.id !== action.user.id), action.user],
       };
 
     case 'USER_LEFT':
       return {
         ...state,
-        onlineUsers: state.onlineUsers.filter(u => u.username !== action.username),
+        onlineUsers: state.onlineUsers.filter(u => u.id !== action.id),
       };
 
     case 'USER_STATUS':
       return {
         ...state,
-        onlineUsers: state.onlineUsers.map(u => u.username === action.username ? { ...u, status: action.status as 'idle' | 'in-game' } : u),
+        onlineUsers: state.onlineUsers.map(u => u.id === action.id ? { ...u, status: action.status } : u),
       };
 
     case 'ROOM_CREATED':
@@ -180,7 +182,15 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       };
 
     case 'CHALLENGE_RECEIVED':
-      return { ...state, challengeFrom: action.from, challengeCode: action.code, panelOpen: true };
+      // Store the full account card {id, name, handle} — Task 8's friends UI
+      // renders @handle in the challenge banner. Forces the panel open so an
+      // incoming challenge is seen even if the games panel is closed.
+      return {
+        ...state,
+        challengeFrom: { id: action.from.id, name: action.from.name, handle: action.from.handle },
+        challengeCode: action.code,
+        panelOpen: true,
+      };
 
     case 'CHALLENGE_ACCEPTED':
       // Informational — the game starts when opponent joins the room.
@@ -200,18 +210,22 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       }
       return { ...state, challengeDeclinedBy: action.by };
 
-    case 'CHALLENGE_FAILED':
-      // Target wasn't reachable — return challenger to lobby with feedback
+    case 'CHALLENGE_FAILED': {
+      // Target wasn't reachable — return challenger to lobby with feedback.
+      // action.target is an account id now (spec §3); resolve it to the visible
+      // name via the presence list so the message reads naturally.
+      const targetName = state.onlineUsers.find(u => u.id === action.target)?.name ?? 'That player';
       if (state.screen === 'waiting') {
         return {
           ...state,
           screen: 'lobby',
           roomCode: null,
           myColor: null,
-          partyError: `${action.target} is no longer online.`,
+          partyError: `${targetName} is no longer online.`,
         };
       }
       return state;
+    }
 
     case 'CLEAR_CHALLENGE':
       return { ...state, challengeFrom: null, challengeCode: null, challengeDeclinedBy: null, partyError: null };

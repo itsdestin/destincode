@@ -41,6 +41,7 @@ import com.youcoded.app.artifacts.*
 import com.youcoded.app.skills.BundledPlugins
 import com.youcoded.app.skills.LocalSkillProvider
 import com.youcoded.app.skills.PluginInstaller
+import com.youcoded.app.social.PresenceClient
 
 class SessionService : Service() {
     private val binder = LocalBinder()
@@ -131,6 +132,22 @@ class SessionService : Service() {
         MarketplaceApiClient(marketplaceAuthStore)
     }
 
+    // Platform-owned presence socket (Task 6) — mirror of desktop's
+    // presence-socket.ts. The token + WebSocket live here; every presence event
+    // is relayed to React via a social:presence-event broadcast. Lazy so the
+    // OkHttp client isn't built until presence is first used.
+    private val presenceClient: PresenceClient by lazy {
+        PresenceClient(
+            getToken = { marketplaceAuthStore.getToken() },
+            onEvent = { ev ->
+                bridgeServer.broadcast(JSONObject().apply {
+                    put("type", "social:presence-event")
+                    put("payload", ev)
+                })
+            },
+        )
+    }
+
     /**
      * A 401 from an auth'd account endpoint means the Worker no longer recognizes
      * this session (identity-migration row drop, 90-day idle expiry, revocation).
@@ -141,6 +158,39 @@ class SessionService : Service() {
      */
     private fun clearSessionOn401(result: ApiResult<*>) {
         if (result is ApiResult.Err && result.status == 401) marketplaceAuthStore.signOut()
+    }
+
+    /**
+     * Serialize a stored profile to the snake_case wire shape React reads (matches
+     * the desktop stored MarketplaceUser). Shared by account:user and account:refresh.
+     */
+    private fun accountUserJson(user: MarketplaceUser): JSONObject = JSONObject().apply {
+        put("id",           user.id)
+        put("login",        user.login)
+        put("avatar_url",   user.avatarUrl)
+        put("display_name", user.displayName ?: JSONObject.NULL)
+        put("handle",       user.handle ?: JSONObject.NULL)
+    }
+
+    /**
+     * Write a text file into the public Downloads collection via MediaStore
+     * (used by account:export). WHY MediaStore: the Android WebView has no
+     * save-dialog path, and scoped storage (API 29+) blocks direct writes to the
+     * Downloads directory — RELATIVE_PATH targets Environment.DIRECTORY_DOWNLOADS.
+     * Caller MUST gate on Build.VERSION.SDK_INT >= 29 (MediaStore.Downloads is API 29+).
+     */
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.Q)
+    private fun writeExportToDownloads(filename: String, content: String) {
+        val resolver = applicationContext.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, filename)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json")
+            put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+        }
+        val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw java.io.IOException("could not create Downloads entry")
+        resolver.openOutputStream(uri)?.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+            ?: throw java.io.IOException("could not open Downloads output stream")
     }
     /**
      * Callback for the Activity to open the device's browser at the given URL.
@@ -2506,17 +2556,48 @@ class SessionService : Service() {
                         marketplaceAuthStore.signOut()
                     }
                 }
-                val result: Any = if (user != null) {
-                    JSONObject().apply {
-                        // Wire format is snake_case (matches desktop's stored MarketplaceUser + what React reads).
-                        put("id",           user.id)
-                        put("login",        user.login)
-                        put("avatar_url",   user.avatarUrl)
-                        put("display_name", user.displayName ?: JSONObject.NULL)
-                        put("handle",       user.handle ?: JSONObject.NULL)
-                    }
-                } else {
+                // Shared serializer (accountUserJson) — same wire shape as account:refresh,
+                // so the snake_case format React reads can't drift between the two cases.
+                val result: Any = user?.let { u -> accountUserJson(u) } ?: JSONObject.NULL
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
+            }
+
+            "account:refresh" -> {
+                // Force-revalidate the cached profile against /auth/me. Unlike
+                // account:user (which heals ONLY when the cache is empty), this ALWAYS
+                // re-fetches — so a rename or newly-claimed @handle made on another
+                // device reaches this client without a sign-out/in cycle (knowledge-debt #8).
+                // WHY capture the token BEFORE the suspend: authMe() can take up to 30s;
+                // a sign-out processed during that window would make a re-read + `!!`
+                // throw NPE. Desktop parity: marketplace-api-handlers.ts account:refresh.
+                val refreshToken = marketplaceAuthStore.getToken()
+                val result: Any = if (refreshToken == null) {
                     JSONObject.NULL
+                } else {
+                    val me = marketplaceApiClient.authMe()
+                    if (me is ApiResult.Ok) {
+                        val fresh = MarketplaceUser(
+                            id        = me.value.optString("id"),
+                            login     = me.value.optString("login"),
+                            avatarUrl = me.value.optString("avatar_url", ""),
+                            // isNull() checks — optString(name, null) is a Java-null trap.
+                            displayName = if (me.value.isNull("display_name")) null else me.value.optString("display_name"),
+                            handle      = if (me.value.isNull("handle")) null else me.value.optString("handle"),
+                        )
+                        marketplaceAuthStore.setSession(refreshToken, fresh)
+                        accountUserJson(fresh)
+                    } else if (me is ApiResult.Err && me.status == 401) {
+                        // Dead token server-side — clear the local session so the UI flips
+                        // signed-out (desktop parity with clearSessionOn401). Respond null.
+                        marketplaceAuthStore.signOut()
+                        JSONObject.NULL
+                    } else {
+                        // Any other failure (offline, parse) leaves the session untouched.
+                        // Respond with the CACHED profile so a network blip can't blank a
+                        // signed-in UI — the renderer's focus/interval revalidation retries.
+                        val cached = marketplaceAuthStore.getUser()
+                        if (cached != null) accountUserJson(cached) else JSONObject.NULL
+                    }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result) }
             }
@@ -2533,6 +2614,9 @@ class SessionService : Service() {
                     android.util.Log.w("SessionService", "account:sign-out — server logout failed (${revoke.status}): ${revoke.message}")
                 }
                 marketplaceAuthStore.signOut()
+                // Drop the presence socket so we don't linger online after the
+                // local token is cleared (desktop parity: notifySignedOut).
+                presenceClient.setDesired(false)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
 
@@ -2580,12 +2664,53 @@ class SessionService : Service() {
             "account:delete" -> {
                 // Permanent hard-delete (Worker cascades all rows). Clear the local session only on success.
                 val result = marketplaceApiClient.deleteAccount()
-                if (result is ApiResult.Ok) marketplaceAuthStore.signOut()
+                if (result is ApiResult.Ok) {
+                    marketplaceAuthStore.signOut()
+                    // Drop the presence socket on account deletion too (desktop parity).
+                    presenceClient.setDesired(false)
+                }
                 // Fix: a 401 also means the session is dead (already deleted / expired) —
                 // clear locally so the UI flips to signed-out rather than looping on a
                 // delete that can never authenticate. Still respond with the Err.
                 clearSessionOn401(result)
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "account:export" -> {
+                // WHY: Android WebView has no native save-dialog path (desktop opens
+                // dialog.showSaveDialog). We write the export JSON into the public
+                // Downloads collection via MediaStore, which requires API 29+ (minSdk
+                // is 28). Below 29, respond an error the renderer surfaces inline.
+                if (android.os.Build.VERSION.SDK_INT < 29) {
+                    msg.id?.let {
+                        // status:0 = local/non-API failure (desktop convention) — keeps the
+                        // renderer's error type ({ ok:false, status, error }) required and truthful.
+                        bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", false).put("status", 0).put("error", "export requires Android 10+"))
+                    }
+                } else {
+                    val result = marketplaceApiClient.exportData()
+                    val response: JSONObject = if (result is ApiResult.Ok) {
+                        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+                        val filename = "youcoded-account-export-$stamp.json"
+                        try {
+                            writeExportToDownloads(filename, result.value.toString(2))
+                            // Match desktop's { path } success shape (relative label — the
+                            // absolute MediaStore path isn't a plain filesystem path anyway).
+                            JSONObject().put("path", "Downloads/$filename")
+                        } catch (e: Exception) {
+                            android.util.Log.w("SessionService", "account:export write failed: ${e.message}")
+                            // status:0 = local write failure, matching desktop's non-API convention.
+                            JSONObject().put("ok", false).put("status", 0).put("error", (e.message ?: "failed to write export"))
+                        }
+                    } else {
+                        // Fetch failure — clear on 401 (dead session) and surface { ok:false }
+                        // like the desktop handler, preserving .status for the UI.
+                        clearSessionOn401(result)
+                        val err = result as ApiResult.Err
+                        JSONObject().put("ok", false).put("status", err.status).put("error", err.message)
+                    }
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
+                }
             }
 
             // ── Marketplace write endpoints ───────────────────────────────────
@@ -2639,6 +2764,127 @@ class SessionService : Service() {
                 msg.id?.let {
                     bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL })
                 }
+            }
+
+            // ── Social graph (accounts Phase 2) ─────────────────────────────────
+            // These social:* types mirror the desktop social-handlers.ts channels
+            // exactly (wire shapes via ApiResult.toJson). Payloads are object-wrapped
+            // by remote-shim.ts and read here via optString. Every handler clears the
+            // local session on a 401 (dead token) — desktop parity with clearSessionOn401.
+
+            "social:lookup-handle" -> {
+                // payload: { handle } (matches remote-shim.ts invoke call)
+                val result = marketplaceApiClient.lookupHandle(msg.payload.optString("handle", ""))
+                clearSessionOn401(result)
+                // value shape: a user card (JSONObject)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:send-request" -> {
+                // payload: { handle }
+                val result = marketplaceApiClient.sendRequest(msg.payload.optString("handle", ""))
+                clearSessionOn401(result)
+                // value shape: { status: "pending" | "friends" }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:list-requests" -> {
+                val result = marketplaceApiClient.listRequests()
+                clearSessionOn401(result)
+                // value shape: { incoming: [...], outgoing: [...] }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:accept-request" -> {
+                // payload: { id }
+                val result = marketplaceApiClient.acceptRequest(msg.payload.optString("id", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:decline-request" -> {
+                // payload: { id }
+                val result = marketplaceApiClient.declineRequest(msg.payload.optString("id", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:cancel-request" -> {
+                // payload: { id }
+                val result = marketplaceApiClient.cancelRequest(msg.payload.optString("id", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:list-friends" -> {
+                val result = marketplaceApiClient.listFriends()
+                clearSessionOn401(result)
+                // value shape: bare array of FriendRow (toJson has a JSONArray branch)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "social:unfriend" -> {
+                // payload: { userId }
+                val result = marketplaceApiClient.unfriend(msg.payload.optString("userId", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:block" -> {
+                // payload: { userId } — the client sends the Worker's snake_case { user_id }
+                val result = marketplaceApiClient.block(msg.payload.optString("userId", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:unblock" -> {
+                // payload: { userId }
+                val result = marketplaceApiClient.unblock(msg.payload.optString("userId", ""))
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { _ -> JSONObject.NULL }) }
+            }
+
+            "social:list-blocks" -> {
+                val result = marketplaceApiClient.listBlocks()
+                clearSessionOn401(result)
+                // value shape: bare array of BlockRow
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            // ── Presence socket (Task 6) ─────────────────────────────────────────
+            // Express desired state / send one protocol message. No data is
+            // returned — the socket relays everything back via the
+            // social:presence-event broadcast (see the presenceClient onEvent).
+
+            "social:presence-connect" -> {
+                presenceClient.setDesired(true)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+
+            "social:presence-disconnect" -> {
+                presenceClient.setDesired(false)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject().put("ok", true)) }
+            }
+
+            "social:presence-send" -> {
+                // payload: { message: {...} } (remote-shim wraps the protocol frame).
+                // Guard a missing/malformed message so a bad frame is a clean error,
+                // not a crash. Honest receipt (desktop parity): sending with no
+                // OPEN socket would silently drop the frame, so respond with the
+                // ApiResult-style error shape ({ok:false, status:0, message}) the
+                // other social cases use instead of a success the renderer trusts.
+                val message = msg.payload.optJSONObject("message")
+                val response: JSONObject = when {
+                    message == null ->
+                        JSONObject().put("ok", false).put("status", 0).put("message", "missing message")
+                    !presenceClient.isConnected() ->
+                        JSONObject().put("ok", false).put("status", 0).put("message", "not connected")
+                    else -> {
+                        presenceClient.send(message)
+                        JSONObject().put("ok", true)
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
             }
 
             // ── Settings → Development IPC handlers ──────────────────────────────

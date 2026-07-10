@@ -8,7 +8,7 @@ import { useEscClose } from "../../hooks/use-esc-close";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
-import { useMarketplaceAuth } from "../../state/marketplace-auth-context";
+import { useAccount } from "../../state/account-context";
 import { useTheme } from "../../state/theme-context";
 import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import { isBundledPlugin, BUNDLED_REASON } from "../../../shared/bundled-plugins";
@@ -223,7 +223,7 @@ function SkillBody({
   const rating = pluginStats?.rating;
   const reviewCount = pluginStats?.review_count ?? 0;
 
-  const auth = useMarketplaceAuth();
+  const auth = useAccount();
   const [ratingOpen, setRatingOpen] = useState(false);
   const [reviewRefresh, setReviewRefresh] = useState(0);
   // File viewer for items in the "What's inside" peek — nested layer-3 overlay

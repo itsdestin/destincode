@@ -7,14 +7,14 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, act, screen } from '@testing-library/react';
 
-import * as AuthContextModule from '../src/renderer/state/marketplace-auth-context';
+import * as AuthContextModule from '../src/renderer/state/account-context';
 import * as StatsContextModule from '../src/renderer/state/marketplace-stats-context';
 import RatingSubmitModal from '../src/renderer/components/marketplace/RatingSubmitModal';
 
 // ── Mock helpers ───────────────────────────────────────────────────────────────
 
 function mockAuth(signedIn: boolean, startSignIn = vi.fn().mockResolvedValue(undefined)) {
-  vi.spyOn(AuthContextModule, 'useMarketplaceAuth').mockReturnValue({
+  vi.spyOn(AuthContextModule, 'useAccount').mockReturnValue({
     signedIn,
     user: signedIn ? { id: 'github:1', login: 'alice', avatar_url: '' } : null,
     signInPending: false,

@@ -208,10 +208,31 @@ const IPC = {
   ACCOUNT_POLL: 'account:poll',
   ACCOUNT_SIGNED_IN: 'account:signed-in',
   ACCOUNT_USER: 'account:user',
+  ACCOUNT_REFRESH: 'account:refresh',
   ACCOUNT_SIGN_OUT: 'account:sign-out',
   ACCOUNT_UPDATE_PROFILE: 'account:update-profile',
   ACCOUNT_SET_HANDLE: 'account:set-handle',
   ACCOUNT_DELETE: 'account:delete',
+  ACCOUNT_EXPORT: 'account:export',
+  // Social graph (accounts Phase 2) — byte-identical to social-handlers.ts CHANNELS
+  SOCIAL_LOOKUP_HANDLE: 'social:lookup-handle',
+  SOCIAL_SEND_REQUEST: 'social:send-request',
+  SOCIAL_LIST_REQUESTS: 'social:list-requests',
+  SOCIAL_ACCEPT_REQUEST: 'social:accept-request',
+  SOCIAL_DECLINE_REQUEST: 'social:decline-request',
+  SOCIAL_CANCEL_REQUEST: 'social:cancel-request',
+  SOCIAL_LIST_FRIENDS: 'social:list-friends',
+  SOCIAL_UNFRIEND: 'social:unfriend',
+  SOCIAL_BLOCK: 'social:block',
+  SOCIAL_UNBLOCK: 'social:unblock',
+  SOCIAL_LIST_BLOCKS: 'social:list-blocks',
+  // Presence socket (Task 6) — connect/disconnect express desired state, send
+  // pushes one protocol message, and the main process relays every event back
+  // on SOCIAL_PRESENCE_EVENT (a push channel, not a request-response handler).
+  SOCIAL_PRESENCE_CONNECT: 'social:presence-connect',
+  SOCIAL_PRESENCE_DISCONNECT: 'social:presence-disconnect',
+  SOCIAL_PRESENCE_SEND: 'social:presence-send',
+  SOCIAL_PRESENCE_EVENT: 'social:presence-event',
   // Marketplace write APIs — byte-identical to marketplace-api-handlers.ts CHANNELS
   MARKETPLACE_INSTALL: 'marketplace:install',
   MARKETPLACE_RATE: 'marketplace:rate',
@@ -451,6 +472,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.ACCOUNT_SIGNED_IN),
     user: (): Promise<MarketplaceUser | null> =>
       ipcRenderer.invoke(IPC.ACCOUNT_USER),
+    // Force a /auth/me round-trip and return the fresh profile (null if signed
+    // out or 401-cleared). No ApiResult wrapper — same raw shape as user().
+    refresh: (): Promise<MarketplaceUser | null> =>
+      ipcRenderer.invoke(IPC.ACCOUNT_REFRESH),
     signOut: (): Promise<void> =>
       ipcRenderer.invoke(IPC.ACCOUNT_SIGN_OUT),
     updateProfile: (displayName: string): Promise<ApiResult<{ display_name: string }>> =>
@@ -459,6 +484,57 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.ACCOUNT_SET_HANDLE, handle),
     deleteAccount: (): Promise<ApiResult<void>> =>
       ipcRenderer.invoke(IPC.ACCOUNT_DELETE),
+    // Export all account data. Resolves to { path } on save, { canceled: true }
+    // on cancel, or { ok:false, status, error } on fetch failure — NOT ApiResult.
+    exportData: (): Promise<{ path: string } | { canceled: true } | { ok: false; status: number; error: string }> =>
+      ipcRenderer.invoke(IPC.ACCOUNT_EXPORT),
+  },
+  // Social graph (accounts Phase 2) — friends / requests / blocks. Every method
+  // returns ApiResult so the renderer can read .status (404 unknown/blocked
+  // handle, 429 caps, 400 self-request). Args are positional to match the
+  // ipcMain.handle signatures in social-handlers.ts.
+  social: {
+    lookupHandle: (handle: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_LOOKUP_HANDLE, handle),
+    sendRequest: (handle: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_SEND_REQUEST, handle),
+    listRequests: (): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_LIST_REQUESTS),
+    acceptRequest: (id: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_ACCEPT_REQUEST, id),
+    declineRequest: (id: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_DECLINE_REQUEST, id),
+    cancelRequest: (id: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_CANCEL_REQUEST, id),
+    listFriends: (): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_LIST_FRIENDS),
+    unfriend: (userId: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_UNFRIEND, userId),
+    block: (userId: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_BLOCK, userId),
+    unblock: (userId: string): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_UNBLOCK, userId),
+    listBlocks: (): Promise<ApiResult<unknown>> =>
+      ipcRenderer.invoke(IPC.SOCIAL_LIST_BLOCKS),
+    // Presence socket (Task 6). connect/disconnect/send return { ok: true };
+    // all real data arrives asynchronously via onPresenceEvent. message is
+    // passed positionally (matches the ipcMain.handle signature).
+    presenceConnect: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_CONNECT),
+    presenceDisconnect: (): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_DISCONNECT),
+    // presenceSend returns an honest receipt: { ok:false, status:0, message }
+    // when no socket is connected (the frame would otherwise silently drop).
+    presenceSend: (message: Record<string, unknown>): Promise<{ ok: true } | { ok: false; status: number; message: string }> =>
+      ipcRenderer.invoke(IPC.SOCIAL_PRESENCE_SEND, message),
+    // Subscribe to relayed presence events (server frames + synthetic
+    // connection-state events). Returns an unsubscribe that removes the listener
+    // — same pattern as onChatExportSnapshot above.
+    onPresenceEvent: (cb: (ev: Record<string, unknown>) => void) => {
+      const handler = (_e: IpcRendererEvent, ev: Record<string, unknown>) => cb(ev);
+      ipcRenderer.on(IPC.SOCIAL_PRESENCE_EVENT, handler);
+      return () => ipcRenderer.off(IPC.SOCIAL_PRESENCE_EVENT, handler);
+    },
   },
   // Marketplace write endpoints — all return ApiResult so the renderer can
   // surface install-gate (403) vs. generic errors (Task 7+).

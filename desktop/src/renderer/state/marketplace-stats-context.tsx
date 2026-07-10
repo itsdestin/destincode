@@ -63,7 +63,7 @@ export function MarketplaceStatsProvider({
   );
 
   // cancelledRef — prevents setState calls after the provider unmounts.
-  // Mirrors the pattern in ThemeProvider and MarketplaceAuthProvider.
+  // Mirrors the pattern in ThemeProvider and AccountProvider.
   const cancelledRef = useRef(false);
   useEffect(() => {
     cancelledRef.current = false;

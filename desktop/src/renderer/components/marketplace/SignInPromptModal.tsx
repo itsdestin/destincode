@@ -8,7 +8,7 @@
 
 import React from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { useMarketplaceAuth } from "../../state/marketplace-auth-context";
+import { useAccount } from "../../state/account-context";
 import { useEscClose } from "../../hooks/use-esc-close";
 
 interface Props {
@@ -22,7 +22,7 @@ interface Props {
 
 export default function SignInPromptModal({ open, onClose, title, message }: Props) {
   useEscClose(open, onClose);
-  const { signedIn, signInPending, startSignIn } = useMarketplaceAuth();
+  const { signedIn, signInPending, signInError, startSignIn } = useAccount();
 
   // Auto-close once sign-in completes — the caller's signed-out gate will
   // disappear and they can retry their action.
@@ -72,6 +72,10 @@ export default function SignInPromptModal({ open, onClose, title, message }: Pro
             <p className="text-xs text-fg-faint text-center">
               Complete sign-in in your browser. This window will close automatically.
             </p>
+          )}
+          {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
+          {signInError && !signInPending && (
+            <p className="text-xs text-red-400 text-center">Sign-in failed: {signInError}. Try again.</p>
           )}
         </div>
       </OverlayPanel>

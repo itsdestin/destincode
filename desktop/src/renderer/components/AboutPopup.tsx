@@ -140,7 +140,9 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
               docs/superpowers/specs/2026-04-23-analytics-privacy-copy-draft.md);
               do not edit wording without re-approval. The <AnalyticsOptInToggle />
               lives inline so the toggle sits right next to the explanation
-              of what it does. */}
+              of what it does. The "Friends & presence" paragraph + the updated
+              games line were added by accounts Phase 2 (wording approved by
+              Destin 2026-07-09). */}
           <section className="space-y-1.5">
             <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Privacy</h4>
             {platform === 'desktop' ? (
@@ -150,6 +152,9 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
                 </p>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
                   <strong className="text-fg-2 font-semibold">Your account (optional).</strong> Signing in with GitHub creates a YouCoded account. We store: your GitHub username, display name, avatar, and handle; your theme likes, plugin reviews, and install records. We never see your GitHub password or private repos — sign-in uses read-only access to your public profile. Delete your account any time in Settings → Account; deletion removes everything above immediately. Analytics stays separate: your account is never linked to the anonymous device statistics described below.
+                </p>
+                <p className="text-[11px] text-fg-dim leading-relaxed">
+                  <strong className="text-fg-2 font-semibold">Friends &amp; presence (optional).</strong> If you use friends, we store your friend list, pending requests, and your block list (your block list is visible only to you). While you're signed in with the app open, your friends — and only your friends — can see that you're online and, after you disconnect, a single "last seen" time. We never keep a history of when you were online. You can appear offline any time (incognito in the games panel), download everything we store (Settings → Account → Download my data), and deleting your account removes all of it immediately.
                 </p>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
                   By default, your device may send anonymous usage data to YouCoded once per day, including:
@@ -168,7 +173,7 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
                   Remote access (when enabled) serves the UI over your local network or Tailscale. Remote connections are NOT TLS-encrypted — use Tailscale for sensitive conversations since it provides WireGuard encryption end-to-end.
                 </p>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
-                  Multiplayer games connect to a PartyKit server (Cloudflare) only while a lobby or game is open. No game traffic is retained server-side beyond the active room.
+                  Multiplayer game moves are relayed through a PartyKit server (Cloudflare) only while a game is open; challenges and the friends lobby go through the YouCoded server. No game traffic is retained server-side beyond the active room.
                 </p>
               </>
             ) : (
@@ -178,6 +183,9 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
                 </p>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
                   <strong className="text-fg-2 font-semibold">Your account (optional).</strong> Signing in with GitHub creates a YouCoded account. We store: your GitHub username, display name, avatar, and handle; your theme likes, plugin reviews, and install records. We never see your GitHub password or private repos — sign-in uses read-only access to your public profile. Delete your account any time in Settings → Account; deletion removes everything above immediately. Analytics stays separate: your account is never linked to the anonymous device statistics described below.
+                </p>
+                <p className="text-[11px] text-fg-dim leading-relaxed">
+                  <strong className="text-fg-2 font-semibold">Friends &amp; presence (optional).</strong> If you use friends, we store your friend list, pending requests, and your block list (your block list is visible only to you). While you're signed in with the app open, your friends — and only your friends — can see that you're online and, after you disconnect, a single "last seen" time. We never keep a history of when you were online. You can appear offline any time (incognito in the games panel), download everything we store (Settings → Account → Download my data), and deleting your account removes all of it immediately.
                 </p>
                 <p className="text-[11px] text-fg-dim leading-relaxed">
                   By default, your device may send anonymous usage data to YouCoded once per day, including:
