@@ -57,19 +57,24 @@ function broadcast(e: SpaceSyncEvent): void {
   // so every stored + fanned-out copy must carry the same timestamp.
   const stamped: SpaceSyncEvent = { ...e, at: Date.now() };
   recentEvents = [...recentEvents.slice(-49), stamped];
-  // A local push means this account's OTHER devices should pull now. Signal the
-  // room. Guard on type + pushed so hub-status / error / pull-only events never
-  // recurse into a send. sendSignal is a no-op when the socket is down (the
-  // 120s poll still covers the miss), so this is safe to fire unconditionally.
-  if (stamped.type === 'synced' && stamped.pushed && hubSocket) {
-    const space = roots?.spaces().find(s => s.id === stamped.spaceId);
-    if (space) hubSocket.sendSignal('space-updated', repoNameForSpace(space));
-  }
   for (const w of BrowserWindow.getAllWindows()) {
     try { w.webContents.send('syncspaces:event', stamped); } catch { /* window closing */ }
   }
   // Fan out to remote clients too (see comment on remoteBroadcast above).
   try { remoteBroadcast?.(stamped); } catch { /* remote server not up / closing */ }
+  // A local push means this account's OTHER devices should pull now — signal
+  // the room LAST, isolated in its own try/catch like the fan-outs above:
+  // broadcast() is the single fan-out chokepoint invoked from the engine's
+  // onEvent, and a hub send must never block or kill local event delivery.
+  // Signalling is best-effort anyway — the 120s poll covers any miss. Guard on
+  // type + pushed so hub-status / error / pull-only events never recurse into
+  // a send.
+  try {
+    if (stamped.type === 'synced' && stamped.pushed && hubSocket) {
+      const space = roots?.spaces().find(s => s.id === stamped.spaceId);
+      if (space) hubSocket.sendSignal('space-updated', repoNameForSpace(space));
+    }
+  } catch { /* best-effort — the poll fallback covers it */ }
 }
 
 /** Called once from main.ts after app ready. Roots always exist (the picker
