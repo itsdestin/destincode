@@ -759,12 +759,21 @@ function AppInner() {
 
     // Batch transcript dispatches into animation frames — multiple fs.watch events
     // within a single frame become one React render instead of N separate renders.
+    //
+    // Hidden-window caveat: Electron suspends requestAnimationFrame while the
+    // window is minimized/occluded, which used to FREEZE chat state (queued
+    // actions never flushed) while wall-clock timers kept firing — the 8s
+    // submit-retry then evaluated its idle gate against stale state and could
+    // send a stray \r into the PTY. While hidden we batch on a 16ms timeout
+    // instead: same batching cost, but state keeps advancing.
     const pendingTranscriptActions: any[] = [];
     let transcriptRafId: number | null = null;
+    let transcriptTimerId: ReturnType<typeof setTimeout> | null = null;
     let transcriptBatchCancelled = false;
 
     function flushTranscriptActions() {
       transcriptRafId = null;
+      transcriptTimerId = null;
       if (transcriptBatchCancelled) return;
       const batch = pendingTranscriptActions.splice(0);
       // React 18 batches all synchronous dispatches → single render for the whole batch
@@ -775,10 +784,26 @@ function AppInner() {
 
     function batchTranscriptDispatch(action: any) {
       pendingTranscriptActions.push(action);
-      if (transcriptRafId === null) {
+      if (transcriptRafId !== null || transcriptTimerId !== null) return;
+      if (document.visibilityState === 'hidden') {
+        transcriptTimerId = setTimeout(flushTranscriptActions, 16);
+      } else {
         transcriptRafId = requestAnimationFrame(flushTranscriptActions);
       }
     }
+
+    // If the window hides while an rAF flush is pending, that rAF may never
+    // fire — hand the pending batch to a timeout so it can't strand.
+    function onTranscriptVisibilityChange() {
+      if (document.visibilityState === 'hidden' && transcriptRafId !== null) {
+        cancelAnimationFrame(transcriptRafId);
+        transcriptRafId = null;
+        if (transcriptTimerId === null) {
+          transcriptTimerId = setTimeout(flushTranscriptActions, 16);
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', onTranscriptVisibilityChange);
 
     const transcriptHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
       if (!event?.type || !event?.sessionId) return;
@@ -1169,6 +1194,8 @@ function AppInner() {
     return () => {
       transcriptBatchCancelled = true;
       if (transcriptRafId !== null) cancelAnimationFrame(transcriptRafId);
+      if (transcriptTimerId !== null) clearTimeout(transcriptTimerId);
+      document.removeEventListener('visibilitychange', onTranscriptVisibilityChange);
       window.claude.off('session:created', createdHandler);
       window.claude.off('session:destroyed', destroyedHandler);
       window.claude.off('hook:event', hookHandler);

@@ -141,3 +141,96 @@ describe('TRANSCRIPT_TURN_COMPLETE metadata', () => {
     expect(session.assistantTurns.size).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PERMISSION_REQUEST → running-tool matching (2026-07-10 review fix)
+// ---------------------------------------------------------------------------
+describe('PERMISSION_REQUEST tool matching', () => {
+  let state: ChatState;
+
+  const toolUse = (toolUseId: string, toolName: string, toolInput: Record<string, unknown>): ChatAction => ({
+    type: 'TRANSCRIPT_TOOL_USE',
+    sessionId: SESSION,
+    uuid: `uuid-${toolUseId}`,
+    toolUseId,
+    toolName,
+    toolInput,
+    timestamp: 1000,
+  } as ChatAction);
+
+  beforeEach(() => {
+    state = initState();
+  });
+
+  it('attaches approval to the running tool whose input matches, not the first same-name tool', () => {
+    // Two Bash tools running in parallel — the permission is for the SECOND.
+    state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+    state = dispatch(state, toolUse('tool-b', 'Bash', { command: 'rm -rf build' }));
+
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'rm -rf build' },
+      requestId: 'req-1',
+    });
+
+    const session = state.get(SESSION)!;
+    expect(session.toolCalls.get('tool-b')!.status).toBe('awaiting-approval');
+    expect(session.toolCalls.get('tool-b')!.requestId).toBe('req-1');
+    expect(session.toolCalls.get('tool-a')!.status).toBe('running');
+  });
+
+  it('matches input regardless of key order', () => {
+    state = dispatch(state, toolUse('tool-a', 'Write', { file_path: '/x', content: 'one' }));
+    state = dispatch(state, toolUse('tool-b', 'Write', { content: 'two', file_path: '/y' }));
+
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Write',
+      input: { file_path: '/y', content: 'two' },
+      requestId: 'req-2',
+    });
+
+    const session = state.get(SESSION)!;
+    expect(session.toolCalls.get('tool-b')!.status).toBe('awaiting-approval');
+    expect(session.toolCalls.get('tool-a')!.status).toBe('running');
+  });
+
+  it('falls back to the first same-name running tool when no input matches', () => {
+    // Pins the pre-existing fallback: hook input shape may not always mirror
+    // the transcript's toolInput — degrading to name-match must keep working.
+    state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+    state = dispatch(state, toolUse('tool-b', 'Bash', { command: 'pwd' }));
+
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'echo mismatched' },
+      requestId: 'req-3',
+    });
+
+    const session = state.get(SESSION)!;
+    const awaiting = ['tool-a', 'tool-b'].filter(
+      (id) => session.toolCalls.get(id)!.status === 'awaiting-approval',
+    );
+    expect(awaiting).toEqual(['tool-a']);
+  });
+
+  it('still creates a synthetic entry when no running tool exists', () => {
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'echo hi' },
+      requestId: 'req-4',
+    });
+
+    const session = state.get(SESSION)!;
+    const syn = session.toolCalls.get('perm-req-4');
+    expect(syn).toBeDefined();
+    expect(syn!.status).toBe('awaiting-approval');
+  });
+});

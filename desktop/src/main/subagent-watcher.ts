@@ -9,7 +9,15 @@ interface PerFileState {
   jsonlPath: string;
   metaPath: string;
   offset: number;
-  partialLine: string;
+  // Incomplete-trailing-line carry, kept as BYTES (a decoded-string carry
+  // corrupts multi-byte UTF-8 chars split across a read boundary — each half
+  // decodes to U+FFFD independently). Mirrors TranscriptWatcher.
+  partialBytes: Buffer;
+  // Serialization guard: one readNewLines per file at a time; overlapping
+  // triggers (fs.watch burst + poll + forced re-read) coalesce into a rerun.
+  // Mirrors TranscriptWatcher — see its readNewLines comment for the race.
+  reading: boolean;
+  rerunQueued: boolean;
   seenUuids: Set<string>;
   watcher: fs.FSWatcher | null;
   pollTimer: ReturnType<typeof setInterval> | null;
@@ -215,7 +223,9 @@ export class SubagentWatcher {
       jsonlPath,
       metaPath,
       offset: 0,
-      partialLine: '',
+      partialBytes: Buffer.alloc(0),
+      reading: false,
+      rerunQueued: false,
       seenUuids: new Set(),
       watcher: null,
       pollTimer: null,
@@ -257,12 +267,29 @@ export class SubagentWatcher {
   }
 
   private async readNewLines(state: PerFileState): Promise<void> {
+    // Serialized per file — see PerFileState.reading.
+    if (state.reading) {
+      state.rerunQueued = true;
+      return;
+    }
+    state.reading = true;
+    try {
+      do {
+        state.rerunQueued = false;
+        await this.readNewLinesOnce(state);
+      } while (state.rerunQueued);
+    } finally {
+      state.reading = false;
+    }
+  }
+
+  private async readNewLinesOnce(state: PerFileState): Promise<void> {
     let stat: fs.Stats;
     try { stat = await fs.promises.stat(state.jsonlPath); } catch { return; }
     const fileSize = stat.size;
     if (fileSize < state.offset) {
       state.offset = 0;
-      state.partialLine = '';
+      state.partialBytes = Buffer.alloc(0);
     }
     if (fileSize <= state.offset) return;
 
@@ -282,10 +309,20 @@ export class SubagentWatcher {
     if (bytesRead === 0) return;
     state.offset += bytesRead;
 
-    const text = buffer.toString('utf8', 0, bytesRead);
+    // Stitch the byte carry BEFORE decoding so a multi-byte UTF-8 char split
+    // across reads reassembles losslessly (mirrors TranscriptWatcher).
+    const fresh = buffer.subarray(0, bytesRead);
+    const combined = state.partialBytes.length
+      ? Buffer.concat([state.partialBytes, fresh])
+      : fresh;
+    const lastNewline = combined.lastIndexOf(0x0a);
+    if (lastNewline === -1) {
+      state.partialBytes = Buffer.from(combined);
+      return;
+    }
+    state.partialBytes = Buffer.from(combined.subarray(lastNewline + 1));
+    const text = combined.subarray(0, lastNewline).toString('utf8');
     const chunks = text.split('\n');
-    chunks[0] = state.partialLine + chunks[0];
-    state.partialLine = chunks.pop() || '';
 
     for (const chunk of chunks) {
       const trimmed = chunk.trim();

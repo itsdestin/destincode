@@ -329,7 +329,17 @@ interface WatchedSession {
   cwd: string;
   jsonlPath: string;
   offset: number;
-  partialLine: string;
+  // Carry-over of an incomplete trailing line between reads, kept as BYTES.
+  // A decoded-string carry corrupts multi-byte UTF-8 chars split across a
+  // read boundary (each half decodes to U+FFFD independently) — bytes stitch
+  // back losslessly.
+  partialBytes: Buffer;
+  // Serialization guard: only one readNewLines runs per session at a time.
+  // Overlapping invocations (fs.watch bursts + global poll + manual triggers)
+  // used to read the same byte range twice — double-emitting events — and
+  // could corrupt the carry buffer via stale offsets. See readNewLines.
+  reading: boolean;
+  rerunQueued: boolean;
   // Perf: rotating two-Set dedup. `has` checks both; `add` writes to recent.
   // When recent exceeds DEDUP_CAP, we rotate (discard old, promote recent to
   // old, start a fresh recent). Replaces the old "build an array, slice it,
@@ -391,7 +401,9 @@ export class TranscriptWatcher extends EventEmitter {
     const session: WatchedSession = {
       desktopSessionId, claudeSessionId, cwd, jsonlPath,
       offset: 0,
-      partialLine: '',
+      partialBytes: Buffer.alloc(0),
+      reading: false,
+      rerunQueued: false,
       seenUuidsRecent: new Set(),
       seenUuidsOld: new Set(),
       watcher: null,
@@ -460,6 +472,12 @@ export class TranscriptWatcher extends EventEmitter {
     const events: TranscriptEvent[] = [];
     // Fresh, throwaway index so replay doesn't corrupt live correlation.
     const replayIndex = new SubagentIndex();
+    // Replay-side uuid dedup, mirroring the live path's semantics exactly:
+    // CC rewrites the same-uuid line as an assistant message grows, so
+    // repeated uuids skip assistant-text (first write wins) while tool-use /
+    // tool-result / turn-complete still emit (reducer Map.set absorbs them).
+    // Without this, every re-dock/replay rendered duplicate text segments.
+    const seenUuids = new Set<string>();
     if (fs.existsSync(session.jsonlPath)) {
       let raw: string;
       try { raw = fs.readFileSync(session.jsonlPath, 'utf8'); }
@@ -467,7 +485,12 @@ export class TranscriptWatcher extends EventEmitter {
       for (const line of raw.split('\n')) {
         if (!line.trim()) continue;
         const parsed = parseTranscriptLine(line, desktopSessionId);
+        if (parsed.length === 0) continue;
+        const lineUuid = parsed[0].uuid;
+        const isRepeat = !!lineUuid && seenUuids.has(lineUuid);
+        if (lineUuid) seenUuids.add(lineUuid);
         for (const ev of parsed) {
+          if (isRepeat && ev.type === 'assistant-text') continue;
           if (ev.type === 'tool-use' && ev.data.toolName === 'Agent') {
             replayIndex.recordParentAgentToolUse(
               ev.data.toolUseId!,
@@ -549,7 +572,35 @@ export class TranscriptWatcher extends EventEmitter {
     session.subagentWatcher.stop();
   }
 
+  /**
+   * Serialized entry point: one read runs per session at a time; any trigger
+   * arriving mid-read (fs.watch fires multiple events per write on Windows,
+   * the global poll and manual triggers overlap them) coalesces into a single
+   * rerun. Without this, two overlapping invocations both computed
+   * bytesToRead from the same stale offset — double-emitting every event in
+   * the range — and worse: the read POSITION argument was re-evaluated after
+   * the first invocation advanced the offset, so the second read could come
+   * back short/empty while its zero-filled buffer was still decoded, wedging
+   * NUL bytes into the partial-line carry and silently dropping the next
+   * message at JSON.parse. (Root cause of "rare missing Claude message".)
+   */
   private async readNewLines(session: WatchedSession): Promise<void> {
+    if (session.reading) {
+      session.rerunQueued = true;
+      return;
+    }
+    session.reading = true;
+    try {
+      do {
+        session.rerunQueued = false;
+        await this.readNewLinesOnce(session);
+      } while (session.rerunQueued);
+    } finally {
+      session.reading = false;
+    }
+  }
+
+  private async readNewLinesOnce(session: WatchedSession): Promise<void> {
     let stat: fs.Stats;
     try {
       stat = await fs.promises.stat(session.jsonlPath);
@@ -570,7 +621,7 @@ export class TranscriptWatcher extends EventEmitter {
     if (fileSize < session.offset) {
       const oldOffset = session.offset;
       session.offset = 0;
-      session.partialLine = '';
+      session.partialBytes = Buffer.alloc(0);
       this.emit('transcript-shrink', { sessionId: session.desktopSessionId, oldSize: oldOffset, newSize: fileSize });
       // Don't return — fall through and read from offset 0 if the file has content now
     }
@@ -586,21 +637,37 @@ export class TranscriptWatcher extends EventEmitter {
       return;
     }
 
+    let bytesRead = 0;
     try {
-      await handle.read(buffer, 0, bytesToRead, session.offset);
+      ({ bytesRead } = await handle.read(buffer, 0, bytesToRead, session.offset));
     } finally {
       await handle.close();
     }
 
-    session.offset = fileSize;
+    // Advance by what was ACTUALLY read, and never decode past it — a short
+    // read must not stamp zero-fill from the untouched buffer tail into the
+    // stream (the remainder is picked up by the next invocation).
+    session.offset += bytesRead;
+    if (bytesRead === 0) return;
 
-    const text = buffer.toString('utf8');
+    // Stitch the byte carry-over BEFORE decoding so a multi-byte UTF-8 char
+    // split across reads reassembles losslessly (decoding the halves
+    // separately yields permanent U+FFFD replacement chars).
+    const fresh = buffer.subarray(0, bytesRead);
+    const combined = session.partialBytes.length
+      ? Buffer.concat([session.partialBytes, fresh])
+      : fresh;
+    const lastNewline = combined.lastIndexOf(0x0a);
+    if (lastNewline === -1) {
+      // No complete line yet — keep carrying bytes. Buffer.from copies so we
+      // don't retain a view into the (potentially large) read buffer.
+      session.partialBytes = Buffer.from(combined);
+      return;
+    }
+    session.partialBytes = Buffer.from(combined.subarray(lastNewline + 1));
+
+    const text = combined.subarray(0, lastNewline).toString('utf8');
     const chunks = text.split('\n');
-
-    // Prepend any leftover partial line from previous read
-    chunks[0] = session.partialLine + chunks[0];
-    // Last element is either empty (if text ended with \n) or a partial line
-    session.partialLine = chunks.pop() || '';
 
     for (const chunk of chunks) {
       const trimmed = chunk.trim();
@@ -619,7 +686,12 @@ export class TranscriptWatcher extends EventEmitter {
       // - tool-result: EMIT (reducer Map.set deduplicates by toolUseId)
       // - turn-complete: EMIT (only appears on the final write;
       //   critical for clearing the "thinking" state)
-      // - user-message: EMIT (reducer has its own text-based dedup)
+      // - user-message: EMIT. NOTE: the reducer's dedup is the pending-flag
+      //   scheme — a re-emit with no pending match APPENDS a duplicate
+      //   bubble. Re-emitting is only safe because CC doesn't rewrite user
+      //   lines in practice, and serialized reads (readNewLines) guarantee
+      //   the same byte range is never read twice. Don't rely on the reducer
+      //   to absorb duplicate user-message emits.
       const lineUuid = events[0].uuid;
       const isRepeat =
         !!lineUuid && (session.seenUuidsRecent.has(lineUuid) || session.seenUuidsOld.has(lineUuid));
