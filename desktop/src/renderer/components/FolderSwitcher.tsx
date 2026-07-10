@@ -15,8 +15,9 @@ interface SavedFolder {
   nickname: string;
   addedAt: number;
   exists: boolean;
-  // Still set by FOLDERS_LIST for managed projects; the dot supersedes the old
-  // text badge but the flag keeps rename/remove semantics cheap to reason about.
+  // Kept solely to mirror the FOLDERS_LIST IPC payload shape — rows arrive
+  // with this flag, but nothing in this file reads it anymore (the sync dot
+  // supersedes the old "synced project" managed badge).
   managed?: boolean;
 }
 
@@ -88,7 +89,10 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
   // overflow-hidden — an absolutely-positioned child gets CLIPPED at the menu
   // edges (cut-off icons, truncated list). Portaling to document.body lets the
   // dropdown float above the host menu instead of being squeezed inside it.
-  const PANEL_WIDTH = 288; // w-72
+  // Must match the `w-72` Tailwind class on the panel div (288px = 18rem) —
+  // if one changes, change the other, or the clamping math here silently
+  // drifts from the panel's real rendered width.
+  const PANEL_WIDTH = 288;
   const measure = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
