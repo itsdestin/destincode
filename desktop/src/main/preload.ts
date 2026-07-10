@@ -950,6 +950,12 @@ contextBridge.exposeInMainWorld('claude', {
   app: {
     restart: (): Promise<void> => ipcRenderer.invoke(IPC.APP_RESTART),
   },
+  // Native runtime (YouCoded first-party harness — platform roadmap Phase 1+).
+  // Hard-false until Phase 1 ships the local engine + harness. Dev builds can
+  // force the dormant UI with YOUCODED_NATIVE=1 (run-dev.sh environment).
+  native: {
+    supported: process.env.YOUCODED_NATIVE === '1',
+  },
   // System namespace — platform integrations like hardware back button.
   // Desktop no-op stub: notifyStackState / onBack are only meaningful on
   // Android, where MainActivity uses them to enable/disable

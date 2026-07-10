@@ -556,3 +556,21 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     expect(shim).toContain('syncspaces:event');
   });
 });
+
+// Native runtime capability flag (platform roadmap Phase 0 seam).
+// preload and remote-shim must both expose window.claude.native.supported —
+// the renderer gates the runtime selector on it without platform branching.
+// It is a plain boolean (no IPC round-trip), so there is no ipc-handlers or
+// SessionService.kt row — this describe pins shape parity only.
+describe('native runtime capability parity', () => {
+  it('preload.ts exposes native.supported', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
+    expect(src).toMatch(/native:\s*\{/);
+    expect(src).toMatch(/supported:/);
+  });
+  it('remote-shim.ts exposes native.supported: false', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
+    expect(src).toMatch(/native:\s*\{/);
+    expect(src).toMatch(/supported:\s*false/);
+  });
+});
