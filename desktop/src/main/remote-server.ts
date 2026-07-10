@@ -1123,7 +1123,9 @@ export class RemoteServer {
         break;
       }
       case 'syncspaces:sync-now': {
-        this.respond(client.ws, type, id, await syncSpacesSyncNow());
+        // Optional spaceId narrows to one space (Project View "Sync now"); omit for all.
+        this.respond(client.ws, type, id, await syncSpacesSyncNow(
+          payload?.spaceId ? String(payload.spaceId) : undefined));
         break;
       }
       case 'syncspaces:create-project': {
