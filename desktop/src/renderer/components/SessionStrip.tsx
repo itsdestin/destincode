@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { SessionStatusColor } from './StatusDot';
-import { isAndroid } from '../platform';
+import { isAndroid, isRemoteMode } from '../platform';
 import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
 import { ModelInfoTooltip } from './ModelPickerPopup';
@@ -165,6 +165,15 @@ export default function SessionStrip({
   const [newCwd, setNewCwd] = useState('');
   const [dangerous, setDangerous] = useState(false);
   const [newModel, setNewModel] = useState<string>('sonnet');
+  // Runtime selector (platform roadmap Phase 0 seam). Renders only when the
+  // native runtime capability is on — with a single runtime there is nothing
+  // to select. The YouCoded option is visible-but-disabled until Phase 1
+  // ships the engine + harness.
+  // Phase 1 wires this into handleCreate — for now it never leaves 'claude'.
+  type Runtime = 'claude' | 'native';
+  const [runtime, setRuntime] = useState<Runtime>('claude');
+  const nativeSupported = !isAndroid() && !isRemoteMode()
+    && (window as any).claude?.native?.supported === true;
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -958,6 +967,32 @@ export default function SessionStrip({
                   onManageProjects={() => { setMenuOpen(false); artifactDispatch({ type: 'PROJECT_VIEW_OPENED' }); }}
                 />
               </div>
+              {/* Runtime selector — Claude Code vs the YouCoded native harness.
+                  Hidden when native.supported is false (the common case until
+                  Phase 1): one runtime = no selector. */}
+              {nativeSupported && (
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Runtime</label>
+                  <div className="inline-flex rounded border border-edge overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setRuntime('claude')}
+                      className={`px-3 py-1 text-xs ${runtime === 'claude' ? 'bg-accent text-on-accent' : 'bg-panel text-fg hover:bg-inset'}`}
+                    >
+                      Claude Code
+                    </button>
+                    <button
+                      type="button"
+                      disabled
+                      title="The YouCoded runtime arrives in a future update"
+                      className="px-3 py-1 text-xs bg-panel text-fg-faint cursor-not-allowed"
+                    >
+                      YouCoded
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-fg-faint mt-1">YouCoded runtime — coming soon</p>
+                </div>
+              )}
               {/* Model selector */}
               <div>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
