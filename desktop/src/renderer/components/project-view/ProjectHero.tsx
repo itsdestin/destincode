@@ -10,8 +10,10 @@
 // The project name is a clickable switcher trigger (opens <ProjectSwitcher>,
 // Task 2.3) and MUST NOT truncate — it wraps. The ONE accent use in this card is
 // the New Conversation primary button.
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import type { CentralIndexProject } from '../../../shared/artifacts/types';
+import { getPlatform } from '../../platform';
+import { type SyncDot } from '../sync-dot-state';
 
 // Live, computed-in-ProjectView stats (NOT the stale stats.artifactCount).
 interface HeroStats {
@@ -40,12 +42,26 @@ interface HeroRepo {
   name?: string;
 }
 
+// Per-project sync props, derived in ProjectView from syncSpaces.status().
+interface HeroSync {
+  dot: SyncDot;
+  spaceId: string | null;
+  lastSynced: string | null;
+  errorMessage: string | null;
+}
+
 interface ProjectHeroProps {
   project: CentralIndexProject;
   stats: HeroStats;
   repo: HeroRepo | null;
   onOpenSwitcher: () => void;
   onNewConversation: (cwd: string) => void;
+  sync: HeroSync | null;             // null → syncSpaces unavailable: render no sync line
+  onTurnOnSync: () => void;
+  onSyncNow: (spaceId: string) => void;
+  onRenamed: () => void;             // parent refreshes the list after a nickname rename
+  canRemove: boolean;                // false for synced projects (move-out is deferred)
+  onRemove: () => void;
 }
 
 // lucide-style chevron-down (matches prototype IC.chevDown).
@@ -79,8 +95,33 @@ export function ProjectHero({
   repo,
   onOpenSwitcher,
   onNewConversation,
+  sync,
+  onTurnOnSync,
+  onSyncNow,
+  onRenamed,
+  canRemove,
+  onRemove,
 }: ProjectHeroProps) {
   const showRepoSlug = !!(repo?.webUrl && repo.owner && repo.name);
+  const isElectron = getPlatform() === 'electron';
+
+  // Nickname rename — inline field on the actions row. Resets whenever the
+  // active project changes (keyed on path) so a half-typed name from the last
+  // project doesn't bleed into the next.
+  const [renaming, setRenaming] = useState(false);
+  const [nickname, setNickname] = useState(project.name);
+  useEffect(() => { setNickname(project.name); setRenaming(false); }, [project.path]);
+  const commitRename = async () => {
+    const n = nickname.trim();
+    setRenaming(false);
+    if (!n || n === project.name) return;
+    // Nickname only — NEVER the folder on disk. A folder rename would change the
+    // sync identity (the repo name is derived from the folder), which the spec
+    // defers. folders.rename updates the picker nickname, which
+    // buildSavedFolderProjects prefers for the display name.
+    await (window.claude as any).folders.rename(project.path, n).catch(() => {});
+    onRenamed();
+  };
 
   return (
     <div className="layer-surface p-5 flex items-start justify-between gap-4">
@@ -123,6 +164,59 @@ export function ProjectHero({
           )}
         </div>
 
+        {/* Sync status line (2026-07-09 spec §4). Plain words + the one action
+            that matters for the state. Hidden when syncSpaces is unavailable. */}
+        {sync && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-inset px-3 py-2">
+            {sync.dot.color === 'green' && (
+              <>
+                <span className="text-[13px] font-semibold text-[#44A05C]">Syncs across your devices</span>
+                {sync.lastSynced && <span className="text-xs text-fg-muted">Last synced {sync.lastSynced}</span>}
+                {sync.spaceId && (
+                  <button
+                    type="button"
+                    onClick={() => onSyncNow(sync.spaceId!)}
+                    className="px-2.5 py-1 rounded-md bg-panel border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors"
+                  >
+                    Sync now
+                  </button>
+                )}
+              </>
+            )}
+            {sync.dot.color === 'red' && (
+              <>
+                <span className="text-[13px] font-semibold text-[#DD4444]">Sync isn't working</span>
+                {sync.errorMessage && <span className="text-xs text-fg-dim">{sync.errorMessage}</span>}
+                {sync.spaceId && (
+                  <button
+                    type="button"
+                    onClick={() => onSyncNow(sync.spaceId!)}
+                    className="px-2.5 py-1 rounded-md bg-panel border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors"
+                  >
+                    Try again
+                  </button>
+                )}
+              </>
+            )}
+            {sync.dot.color === 'gray' && sync.spaceId && (
+              // Managed but global Sync is off — the honesty rule.
+              <span className="text-[13px] text-fg-dim">Sync is turned off — this project will sync once you turn it on in Settings</span>
+            )}
+            {sync.dot.color === 'gray' && !sync.spaceId && (
+              <>
+                <span className="text-[13px] font-semibold text-fg-2">Only on this computer</span>
+                <button
+                  type="button"
+                  onClick={onTurnOnSync}
+                  className="px-3 py-1 rounded-md bg-accent text-on-accent text-xs hover:opacity-90 transition-opacity"
+                >
+                  Turn on sync for this project
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Stat row — dot-separated. */}
         <div className="flex flex-wrap gap-4 mt-3 text-xs text-fg-muted">
           <span><b className="text-fg-2 font-semibold">{stats.artifacts}</b> artifacts</span>
@@ -130,6 +224,41 @@ export function ProjectHero({
           <span><b className="text-fg-2 font-semibold">{stats.conversations}</b> conversations</span>
           <span><b className="text-fg-2 font-semibold">{stats.contextFiles}</b> context files</span>
           <span>active <b className="text-fg-2 font-semibold">{stats.activeLabel}</b></span>
+        </div>
+
+        {/* Management actions (spec §4). Rename = picker nickname only. Remove
+            hides for synced projects (move-out-of-sync is a deferred flow). */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {renaming ? (
+            <input
+              value={nickname}
+              autoFocus
+              onChange={(e) => setNickname(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void commitRename(); if (e.key === 'Escape') { setNickname(project.name); setRenaming(false); } }}
+              onBlur={() => void commitRename()}
+              className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none"
+            />
+          ) : (
+            <button type="button" onClick={() => setRenaming(true)} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors">
+              Rename
+            </button>
+          )}
+          {isElectron && (
+            <button
+              type="button"
+              onClick={() => void (window.claude as any).shell.openPath(project.path)}
+              className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors"
+            >
+              Open in File Explorer
+            </button>
+          )}
+          {canRemove ? (
+            <button type="button" onClick={onRemove} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
+              Remove from YouCoded
+            </button>
+          ) : (
+            <span className="text-[11px] text-fg-faint">Managed by sync</span>
+          )}
         </div>
       </div>
 

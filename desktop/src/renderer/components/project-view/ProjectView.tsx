@@ -29,6 +29,9 @@ import { ContextTab } from './tabs/ContextTab';
 import { ConversationPreview } from './ConversationPreview';
 import { ProjectHero, formatFileCount } from './ProjectHero';
 import { ProjectSwitcher } from './ProjectSwitcher';
+import { syncDotFor, findSpaceFor, lastSyncedLabel, type SyncStatusData } from '../sync-dot-state';
+import AddProjectModal from './AddProjectModal';
+import ImportProjectModal from '../ImportProjectModal';
 import { FileFilterPopover } from './FileFilterPopover';
 import { HowContextWorksPopup } from './HowContextWorksPopup';
 import { ContextEditorOverlay } from './ContextEditorOverlay';
@@ -166,6 +169,13 @@ export function ProjectView(props: ProjectViewProps) {
   // Project deletion modal state.
   const [deletingProject, setDeletingProject] = useState<CentralIndexProject | null>(null);
   const [alsoDeleteSidecar, setAlsoDeleteSidecar] = useState(false);
+
+  // Per-project sync state (spec §4) — feeds the hero sync line + switcher dots.
+  const [syncStatus, setSyncStatus] = useState<SyncStatusData | null>(null);
+  // Unified "Add a project" modal (replaces the old direct folder-picker flow).
+  const [addOpen, setAddOpen] = useState(false);
+  // Turn-on-sync consent modal for the ACTIVE project (hero button).
+  const [turnOnSyncFor, setTurnOnSyncFor] = useState<{ path: string; name: string } | null>(null);
 
   // Context tab selection state. The ContextTab bubbles a clicked file (to edit)
   // or a clicked group's (i) info button (to explain the scope) up to here;
@@ -343,30 +353,44 @@ export function ProjectView(props: ProjectViewProps) {
     // context come back from the per-project cache on those refreshes (instant).
   }, [activeProject?.id, activeProject?.path, refreshKey, countsKey]);
 
+  // Per-project sync state for the hero + switcher dots. Refetched whenever the
+  // view opens, the project list refreshes (add/exclude), or the active project
+  // changes. catch → null (Android has no syncspaces handlers; the UI simply
+  // shows no sync affordances when status is unavailable).
+  useEffect(() => {
+    if (!state.projectViewOpen) return;
+    let cancelled = false;
+    (window.claude as any).syncSpaces.status()
+      .then((s: SyncStatusData) => { if (!cancelled) setSyncStatus(s); })
+      .catch(() => { if (!cancelled) setSyncStatus(null); });
+    return () => { cancelled = true; };
+  }, [state.projectViewOpen, refreshKey, countsKey, activeProject?.path]);
+
   if (!state.projectViewOpen) return null;
 
-  // Add a project = add a saved folder. The project list IS the saved-folders
-  // store (youcoded-folders.json) now, so a real add flow exists: browse for a
-  // folder → folders.add → refresh the list and select it. (An earlier v1
-  // comment said no register flow existed — that predated the saved-folders
-  // refactor.)
-  const handleAddProject = async () => {
+  // Add a project = open the unified AddProjectModal (spec §3). It routes to
+  // create-new / keep-in-place / move+sync itself — this just opens it (and
+  // closes the switcher so the two overlays don't stack).
+  const handleAddProject = () => {
     setSwitcherOpen(false);
-    try {
-      const folder: string | null = await (window.claude as any).dialog.openFolder();
-      if (!folder) return;
-      await (window.claude as any).folders.add(folder);
-      const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
-      if (res?.ok) {
-        setProjects(res.projects);
-        // Select the newly-added folder (match by path suffix-insensitively via
-        // the canonical path the index builder stores).
-        const added = res.projects.find(
-          (p: CentralIndexProject) => p.path.replace(/\\/g, '/').toLowerCase() === folder.replace(/\\/g, '/').toLowerCase()
-        );
-        if (added) setActiveProject(added);
-      }
-    } catch { /* dialog unavailable (remote/Android) — leave the list as-is */ }
+    setAddOpen(true);
+  };
+
+  // Shared post-add handler for EVERY successful add path (create / keep /
+  // move+sync) AND the hero's turn-on-sync flow: refresh the project list and
+  // select the project at its (possibly new) path. Match by PATH — a synth
+  // project's id is its path until it gains a central-index entry.
+  const handleAdded = async (path: string) => {
+    setAddOpen(false);
+    setTurnOnSyncFor(null);
+    const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
+    if (res?.ok) {
+      setProjects(res.projects);
+      const added = res.projects.find(
+        (p: CentralIndexProject) => p.path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase()
+      );
+      if (added) setActiveProject(added);
+    }
   };
 
   const confirmDelete = async () => {
@@ -414,6 +438,24 @@ export function ProjectView(props: ProjectViewProps) {
     { id: 'context', label: 'Context', icon: <DocIcon />, count: String(heroStats.contextFiles) },
   ];
 
+  // Per-active-project sync props for the hero. `dot` is null when syncStatus is
+  // unavailable (Android / status() rejected) → hero renders no sync line. The
+  // error message is the latest 'error' engine event for this space (friendly-
+  // error contract), surfaced only in the red state.
+  const heroDot = activeProject ? syncDotFor(activeProject.path, syncStatus) : null;
+  const heroSpace = activeProject ? findSpaceFor(activeProject.path, syncStatus) : null;
+  const heroSync = heroDot
+    ? {
+        dot: heroDot,
+        spaceId: heroSpace?.id ?? null,
+        lastSynced: heroSpace ? lastSyncedLabel(heroSpace.id, syncStatus) : null,
+        errorMessage: heroDot.color === 'red'
+          ? [...(syncStatus?.recentEvents ?? [])].reverse()
+              .find((e) => e.spaceId === heroSpace?.id && e.type === 'error')?.message ?? null
+          : null,
+      }
+    : null;
+
   return (
     <div className="fixed inset-0 bg-canvas z-[8000] flex flex-col">
       {/* Header: title + global search + Esc·Close */}
@@ -448,6 +490,19 @@ export function ProjectView(props: ProjectViewProps) {
                 repo={heroRepo}
                 onOpenSwitcher={() => setSwitcherOpen(true)}
                 onNewConversation={props.onNewConversation}
+                sync={heroSync}
+                onTurnOnSync={() => setTurnOnSyncFor({ path: activeProject.path, name: activeProject.name })}
+                onSyncNow={(spaceId) => { void (window.claude as any).syncSpaces.syncNow(spaceId); }}
+                onRenamed={async () => {
+                  const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
+                  if (res?.ok) {
+                    setProjects(res.projects);
+                    const cur = res.projects.find((p: CentralIndexProject) => p.path === activeProject.path);
+                    if (cur) setActiveProject(cur);
+                  }
+                }}
+                canRemove={!heroSpace}
+                onRemove={() => setDeletingProject(activeProject)}
               />
             ) : (
               <div className="text-sm text-fg-muted">Select a project to view its artifacts.</div>
@@ -644,6 +699,7 @@ export function ProjectView(props: ProjectViewProps) {
           onClose={() => setSwitcherOpen(false)}
           onAddProject={handleAddProject}
           onDeleteProject={(p) => setDeletingProject(p)}
+          syncStatus={syncStatus}
         />
       )}
 
@@ -696,6 +752,22 @@ export function ProjectView(props: ProjectViewProps) {
             </div>
           </OverlayPanel>
         </>
+      )}
+
+      {/* Unified add-project flow (spec §3). Routes create-new / keep-in-place /
+          move+sync itself; handleAdded refreshes + selects on any success. */}
+      {addOpen && (
+        <AddProjectModal onClose={() => setAddOpen(false)} onAdded={(p) => void handleAdded(p)} />
+      )}
+      {/* Turn-on-sync for the ACTIVE project (hero button) — the consent+move
+          modal, seeded with the project's current path + name. */}
+      {turnOnSyncFor && (
+        <ImportProjectModal
+          sourcePath={turnOnSyncFor.path}
+          defaultName={turnOnSyncFor.name}
+          onClose={() => setTurnOnSyncFor(null)}
+          onDone={(p) => void handleAdded(p)}
+        />
       )}
     </div>
   );
