@@ -366,6 +366,34 @@ export function ProjectView(props: ProjectViewProps) {
     return () => { cancelled = true; };
   }, [state.projectViewOpen, refreshKey, countsKey, activeProject?.path]);
 
+  // Live refresh: "Sync now"/background syncs must update the hero line + dots
+  // live; the open-gated fetch alone goes stale (the red→green flip and "Last
+  // synced" would sit frozen until the next view-open). The sync engine
+  // broadcasts synced/error events on the syncspaces:event push channel —
+  // refetch status() on each, trailing-debounced 500ms to coalesce bursts (one
+  // sync can emit several events back-to-back). Cleanup drops BOTH the
+  // subscription and any pending timer so a late tick can't setState after
+  // close/unmount. catch → null, same convention as the fetch above.
+  useEffect(() => {
+    if (!state.projectViewOpen) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = (window.claude as any).syncSpaces.onEvent(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        (window.claude as any).syncSpaces.status()
+          .then((s: SyncStatusData) => { if (!cancelled) setSyncStatus(s); })
+          .catch(() => { if (!cancelled) setSyncStatus(null); });
+      }, 500);
+    });
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [state.projectViewOpen]);
+
   if (!state.projectViewOpen) return null;
 
   // Add a project = open the unified AddProjectModal (spec §3). It routes to
@@ -383,13 +411,21 @@ export function ProjectView(props: ProjectViewProps) {
   const handleAdded = async (path: string) => {
     setAddOpen(false);
     setTurnOnSyncFor(null);
-    const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
-    if (res?.ok) {
-      setProjects(res.projects);
-      const added = res.projects.find(
-        (p: CentralIndexProject) => p.path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase()
-      );
-      if (added) setActiveProject(added);
+    // try/catch: the modals are already closed by the time this runs, so a
+    // listProjectsIndex rejection would otherwise float as an unhandled
+    // rejection with no UI to land in. Swallow it — the next natural refresh
+    // (view re-open / refreshKey bump) recovers the list.
+    try {
+      const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
+      if (res?.ok) {
+        setProjects(res.projects);
+        const added = res.projects.find(
+          (p: CentralIndexProject) => p.path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase()
+        );
+        if (added) setActiveProject(added);
+      }
+    } catch (err) {
+      console.warn('post-add project list refresh failed', err);
     }
   };
 
@@ -494,11 +530,20 @@ export function ProjectView(props: ProjectViewProps) {
                 onTurnOnSync={() => setTurnOnSyncFor({ path: activeProject.path, name: activeProject.name })}
                 onSyncNow={(spaceId) => { void (window.claude as any).syncSpaces.syncNow(spaceId); }}
                 onRenamed={async () => {
-                  const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
-                  if (res?.ok) {
-                    setProjects(res.projects);
-                    const cur = res.projects.find((p: CentralIndexProject) => p.path === activeProject.path);
-                    if (cur) setActiveProject(cur);
+                  // try/catch + slash/case-normalized match — same conventions
+                  // as handleAdded (exact === path compare is a latent Windows
+                  // drive-case/slash footgun).
+                  try {
+                    const res = await (window.claude as any).artifacts.listProjectsIndex({ withCounts: true });
+                    if (res?.ok) {
+                      setProjects(res.projects);
+                      const cur = res.projects.find(
+                        (p: CentralIndexProject) => p.path.replace(/\\/g, '/').toLowerCase() === activeProject.path.replace(/\\/g, '/').toLowerCase()
+                      );
+                      if (cur) setActiveProject(cur);
+                    }
+                  } catch (err) {
+                    console.warn('post-rename project list refresh failed', err);
                   }
                 }}
                 canRemove={!heroSpace}
