@@ -950,9 +950,10 @@ contextBridge.exposeInMainWorld('claude', {
   app: {
     restart: (): Promise<void> => ipcRenderer.invoke(IPC.APP_RESTART),
   },
-  // Native runtime (YouCoded first-party harness — platform roadmap Phase 1+).
-  // Hard-false until Phase 1 ships the local engine + harness. Dev builds can
-  // force the dormant UI with YOUCODED_NATIVE=1 (run-dev.sh environment).
+  // Native runtime — the Phase 0 seam for YouCoded's first-party harness
+  // (ships in platform roadmap Phase 1). Hard-false until then. To preview the
+  // dormant UI in dev, prefix the launch: YOUCODED_NATIVE=1 bash scripts/run-dev.sh
+  // (run-dev.sh does not set this var itself — it must come from your shell).
   native: {
     supported: process.env.YOUCODED_NATIVE === '1',
   },
