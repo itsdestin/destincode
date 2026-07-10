@@ -800,8 +800,7 @@ body[data-mode="buddy-chat"] #theme-bg {
 /* macOS traffic lights need space — add left padding when title bar is hidden.
    Applies to the main header bar AND full-screen overlay headers (e.g., theme
    marketplace/detail) whose back buttons would otherwise sit under the traffic lights. */
-.mac-titlebar-inset .header-bar,
-.mac-titlebar-inset .overlay-header {
+.mac-titlebar-inset .header-bar {
   padding-left: 78px;
 }
 
@@ -1015,12 +1014,6 @@ body[data-mode="buddy-chat"] #theme-bg {
 @keyframes version-glow {
   0%, 100% { box-shadow: 0 0 4px rgba(234, 179, 8, 0.3); }
   50% { box-shadow: 0 0 10px rgba(234, 179, 8, 0.6); }
-}
-
-/* Android safe area handling */
-@supports (padding-top: env(safe-area-inset-top)) {
-  .safe-area-top { padding-top: env(safe-area-inset-top); }
-  .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
 }
 
 /* Touch device: make hover-revealed elements always visible */

@@ -27,10 +27,9 @@ import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { useAccount } from '../../state/account-context';
 import { useMarketplaceStats } from '../../state/marketplace-stats-context';
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const MAX_REVIEW_CHARS = 500;
+// Single source for the review character limit — this modal used to hardcode
+// its own 500, leaving marketplace-constants' REVIEW_TEXT_MAX drift-prone.
+import { REVIEW_TEXT_MAX as MAX_REVIEW_CHARS } from '../../state/marketplace-constants';
 
 // ── Interactive star picker ───────────────────────────────────────────────────
 // Distinct from the read-only StarRating component — these stars are clickable buttons.

@@ -317,8 +317,3 @@ export function unregisterPluginInstall(id: string): void {
   disablePluginInSettings(id);
 }
 
-/** Check if we've already registered this plugin key in installed_plugins.json. */
-export function isPluginRegistered(id: string): boolean {
-  const db = readInstalledPlugins();
-  return !!db.plugins[pluginKey(id)];
-}
