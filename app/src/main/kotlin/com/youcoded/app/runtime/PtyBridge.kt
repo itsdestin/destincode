@@ -233,6 +233,19 @@ class PtyBridge(
                 val preamble = text.dropLast(1)
                 session?.write(preamble)
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    // Deferred-Enter gate for plain-text sends (stray-Enter fix,
+                    // youcoded#110): if a permission/AskUserQuestion request
+                    // arrived during the 600 ms gap, the TUI now shows a live
+                    // Ink select menu and this `\r` would press Enter on the
+                    // highlighted option. Skip it — the renderer-side submit
+                    // retry (gated in pty-input-gate.ts) recovers a genuinely
+                    // lost send. Menu-navigation payloads (hasEscape) are
+                    // EXEMPT: driving the live menu is their whole purpose
+                    // (sendApproval, sign-in/theme/trust pre-session menus).
+                    if (!hasEscape && eventBridge?.hasPendingPermission() == true) {
+                        android.util.Log.w("PtyBridge", "Deferred \\r suppressed — permission request pending")
+                        return@postDelayed
+                    }
                     session?.write("\r")
                 }, 600)
             }

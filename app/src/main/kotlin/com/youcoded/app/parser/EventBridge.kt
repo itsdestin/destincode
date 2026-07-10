@@ -207,6 +207,17 @@ class EventBridge(private val socketName: String) {
         try { socket.close() } catch (_: Exception) {}
     }
 
+    /**
+     * True while any PermissionRequest socket is held open. In that window
+     * Claude Code's TUI is showing a live Ink select menu (permission prompt /
+     * AskUserQuestion / plan approval) — automated PTY writers must not send
+     * bytes to this session or they act as menu keystrokes (a trailing `\r`
+     * selects the highlighted option, silently answering the prompt).
+     * EventBridge is per-session (one per PtyBridge), so no session filter is
+     * needed. Desktop equivalent: HookRelay.hasPendingPermission (youcoded#110).
+     */
+    fun hasPendingPermission(): Boolean = pendingSockets.isNotEmpty()
+
     fun stop() {
         // Close all pending sockets
         for ((_, socket) in pendingSockets) {

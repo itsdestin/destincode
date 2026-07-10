@@ -115,6 +115,12 @@ class ManagedSession(
     fun writeInput(text: String) {
         ptyBridge?.writeInput(text) ?: directShellBridge?.writeInput(text)
     }
+    /** True while a permission/AskUserQuestion hook request is held open for
+     *  this session — its TUI is showing a live Ink select menu, so automated
+     *  writers (e.g. the /reload-plugins write) must not type into it.
+     *  See EventBridge.hasPendingPermission (stray-Enter fix, youcoded#110). */
+    fun hasPendingPermission(): Boolean =
+        ptyBridge?.getEventBridge()?.hasPendingPermission() ?: false
     val screenVersion: StateFlow<Int> get() =
         ptyBridge?.screenVersion ?: directShellBridge?.screenVersion ?: MutableStateFlow(0)
 

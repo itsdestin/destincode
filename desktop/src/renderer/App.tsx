@@ -29,6 +29,8 @@ import { categorizeArtifact } from '../shared/artifacts/categorization';
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
+import { hasPendingInteraction } from './state/pty-input-gate';
+import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
 import { useVisualViewport } from './hooks/useVisualViewport';
@@ -375,6 +377,31 @@ function AppInner() {
   // up-to-date compactionPending state without re-subscribing on every reducer tick.
   const chatStateMapRef = useRef(chatStateMap);
   useEffect(() => { chatStateMapRef.current = chatStateMap; }, [chatStateMap]);
+
+  // Guarded PTY send for command-shaped writes triggered by UI actions
+  // (command drawer, skill runs, /sync, /config, /model, Settings sends).
+  // While a permission/AskUserQuestion/plan request is pending, CC's native
+  // Ink select menu is live in the PTY — the sent text would be eaten as menu
+  // input and its trailing \r would press Enter on the highlighted option,
+  // silently answering the prompt (stray-Enter fix, youcoded#110). Same rule
+  // InputBar.sendMessage applies to typed messages. Deliberate menu-driving
+  // writes (ToolCard plan keys, TrustGate, prompt option clicks, terminal
+  // view) must NOT use this helper. Returns false when the send was refused.
+  const notifyIfPtyBlocked = useCallback((sid: string): boolean => {
+    const session = chatStateMapRef.current.get(sid);
+    if (session && hasPendingInteraction(session)) {
+      setToast('Claude is waiting for your response — answer the prompt first.');
+      setTimeout(() => setToast(null), 3000);
+      return true;
+    }
+    return false;
+  }, []);
+
+  const guardedPtySend = useCallback((sid: string, text: string): boolean => {
+    if (notifyIfPtyBlocked(sid)) return false;
+    window.claude.session.sendInput(sid, text);
+    return true;
+  }, [notifyIfPtyBlocked]);
 
   // Compaction watchdog: activity-aware — resets on any reducer update for a
   // session with compactionPending set. Any transcript event bumps the timer
@@ -1457,6 +1484,10 @@ function AppInner() {
     if (!sessionId) return;
     const idx = MODELS.indexOf(currentModel);
     const next = MODELS[(idx + 1) % MODELS.length];
+    // Send first, guarded: while a prompt is pending, "/model …\r" would land
+    // on CC's live Ink menu and answer it. Refusing BEFORE the optimistic
+    // state writes also keeps the model pill truthful when nothing was sent.
+    if (!guardedPtySend(sessionId, `/model ${next}\r`)) return;
     setSessionModels((prev) => new Map(prev).set(sessionId, next));
     setPendingModel(next);
     // Fix: don't verify against in-flight events from the current turn —
@@ -1466,8 +1497,7 @@ function AppInner() {
     // verification is just a safety net. If verification later shows a
     // mismatch, the failure handler overwrites with the actual model.
     (window.claude as any).model?.setPreference(next);
-    window.claude.session.sendInput(sessionId, `/model ${next}\r`);
-  }, [currentModel, sessionId]);
+  }, [currentModel, sessionId, guardedPtySend]);
   cycleModelRef.current = cycleModel;
 
   useEffect(() => {
@@ -1655,7 +1685,7 @@ function AppInner() {
         });
         if (result.handled) {
           if (result.alsoSendToPty) {
-            window.claude.session.sendInput(sessionId, result.alsoSendToPty);
+            guardedPtySend(sessionId, result.alsoSendToPty);
           }
           return;
         }
@@ -1665,15 +1695,17 @@ function AppInner() {
       // Filesystem commands (and any unhandled YouCoded command) — send the
       // slash command to the PTY so Claude Code executes it. Also record the
       // optimistic user prompt so the chat timeline shows the action.
+      // Send first, guarded (pending-prompt gate) — dispatching the bubble for
+      // a refused send would leave a stale pending entry in the timeline.
+      if (!guardedPtySend(sessionId, `${entry.name}\r`)) return;
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
         content: entry.name,
         timestamp: Date.now(),
       });
-      window.claude.session.sendInput(sessionId, `${entry.name}\r`);
     },
-    [sessionId, dispatch, viewModes, getUsageSnapshot],
+    [sessionId, dispatch, viewModes, getUsageSnapshot, guardedPtySend],
   );
 
   const handleSelectSkill = useCallback(
@@ -1706,21 +1738,30 @@ function AppInner() {
         });
         if (result.handled) {
           if (result.alsoSendToPty) {
-            window.claude.session.sendInput(sessionId, result.alsoSendToPty);
+            guardedPtySend(sessionId, result.alsoSendToPty);
           }
           return;
         }
       }
 
+      // Sanitize through the same one-source helper InputBar uses: skill
+      // prompts can be multiline, and (a) raw newlines written to the PTY act
+      // as premature Enter presses on short sends, (b) the optimistic bubble
+      // must exactly match the sanitized text or the transcript confirm never
+      // clears its pending flag (see outgoing-message.ts).
+      const outgoing = buildOutgoingMessage(skill.prompt, []);
+      if (!outgoing) return;
+      // Send first, guarded (pending-prompt gate) — dispatching the bubble for
+      // a refused send would leave a stale pending entry in the timeline.
+      if (!guardedPtySend(sessionId, outgoing.ptyText + '\r')) return;
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
-        content: skill.prompt,
+        content: outgoing.content,
         timestamp: Date.now(),
       });
-      window.claude.session.sendInput(sessionId, skill.prompt + '\r');
     },
-    [sessionId, dispatch, viewModes, getUsageSnapshot],
+    [sessionId, dispatch, viewModes, getUsageSnapshot, guardedPtySend],
   );
 
   const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini', launchInNewWindow?: boolean) => {
@@ -2313,8 +2354,10 @@ function AppInner() {
                     setSettingsOpen(true);
                   }}
                   onRunSync={!trustGateActive && sessionId ? () => {
+                    // Send first, guarded — a refused send must not leave a
+                    // stale pending "/sync" bubble in the timeline.
+                    if (!guardedPtySend(sessionId, '/sync\r')) return;
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
-                    window.claude.session.sendInput(sessionId, '/sync\r');
                   } : undefined}
                   model={currentModel}
                   onCycleModel={cycleModel}
@@ -2350,7 +2393,7 @@ function AppInner() {
                     // COMPACTION_PENDING / CLEAR_TIMELINE reducer actions already update the timeline, so a
                     // USER_PROMPT bubble would render redundantly alongside them.
                     if (result.handled && result.alsoSendToPty) {
-                      window.claude.session.sendInput(sessionId, result.alsoSendToPty);
+                      guardedPtySend(sessionId, result.alsoSendToPty);
                     }
                   }}
                   openTasksCounts={sessionId ? { running: openTasks.counts.running, pending: openTasks.counts.pending } : undefined}
@@ -2460,10 +2503,9 @@ function AppInner() {
         open={settingsOpen}
         onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); }}
         onSendInput={(text) => {
-          if (sessionId) {
-            const claude = (window as any).claude;
-            claude.session.sendInput(sessionId, text + '\r');
-          }
+          // Guarded: with a permission/question pending, the text would land on
+          // CC's live Ink menu and the trailing \r would answer it.
+          if (sessionId) guardedPtySend(sessionId, text + '\r');
         }}
         hasActiveSession={!!sessionId}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); openMarketplace('themes'); }}
@@ -2505,8 +2547,9 @@ function AppInner() {
           setViewModes((prev) => new Map(prev).set(sessionId, 'terminal'));
           // Small delay so the view switch happens before input lands.
           // pty-worker will auto-split "/config\r" into "/config" + 600ms + "\r"
-          // to avoid Ink's paste timer swallowing Enter.
-          setTimeout(() => window.claude.session.sendInput(sessionId, '/config\r'), 50);
+          // to avoid Ink's paste timer swallowing Enter. Guarded: with a prompt
+          // pending, "/config\r" would answer CC's live Ink menu instead.
+          setTimeout(() => guardedPtySend(sessionId, '/config\r'), 50);
         }}
       />
       <ModelPickerPopup
@@ -2516,11 +2559,14 @@ function AppInner() {
         currentModel={currentModel}
         onSelectModel={(m) => {
           if (!sessionId) return;
+          // Send first, guarded (pending-prompt gate) — refusing before the
+          // optimistic state writes keeps the model pill truthful when the
+          // command never reached CC. Mirrors cycleModel.
+          if (!guardedPtySend(sessionId, `/model ${m}\r`)) return;
           setSessionModels((prev) => new Map(prev).set(sessionId, m));
           setPendingModel(m);
           postSwitchTurnReady.current = false;
           (window.claude as any).model?.setPreference(m);
-          window.claude.session.sendInput(sessionId, `/model ${m}\r`);
         }}
       />
       {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
