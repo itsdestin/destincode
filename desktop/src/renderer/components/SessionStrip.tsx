@@ -8,6 +8,7 @@ import { ModelInfoTooltip } from './ModelPickerPopup';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useArtifact } from '../state/ArtifactContext';
 
 interface SessionEntry {
   id: string;
@@ -155,6 +156,10 @@ export default function SessionStrip({
   geminiEnabled,
   windowDirectory, myWindowId,
 }: Props) {
+  // Artifact dispatch — SessionStrip renders only in the main window, inside
+  // the ArtifactContext provider, so calling the hook at top level is safe.
+  // Used by the FolderSwitcher "Manage projects…" footer to open Project View.
+  const { dispatch: artifactDispatch } = useArtifact();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [shiftNavIdx, setShiftNavIdx] = useState<number>(-1);
@@ -945,7 +950,13 @@ export default function SessionStrip({
             <div className="p-3 flex flex-col gap-2 rounded-b-lg overflow-hidden">
               <div>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Project Folder</label>
-                <FolderSwitcher value={newCwd} onChange={setNewCwd} />
+                <FolderSwitcher
+                  value={newCwd}
+                  onChange={setNewCwd}
+                  // "Manage projects…" bridges to Project View (same action as
+                  // the header button) and closes the session menu behind it.
+                  onManageProjects={() => { setMenuOpen(false); artifactDispatch({ type: 'PROJECT_VIEW_OPENED' }); }}
+                />
               </div>
               {/* Model selector — grayed out when Gemini is selected */}
               <div style={{ opacity: isGemini ? 0.4 : 1, pointerEvents: isGemini ? 'none' : 'auto', transition: 'opacity 200ms' }}>
