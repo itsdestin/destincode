@@ -381,8 +381,11 @@ export function registerIpcHandlers(
   // under the classifier; round-trip overhead is negligible.
   ipcMain.handle('terminal:get-screen-text', async (event, sessionId: string) => {
     try {
+      // Tail read (120 buffer rows): the attention classifier keeps only the
+      // last 40 logical lines, so serializing the full 1000+-row scrollback
+      // every second was pure waste. 120 rows leaves ample wrap headroom.
       return await event.sender.executeJavaScript(
-        `window.__terminalRegistry?.getScreenText(${JSON.stringify(sessionId)}) ?? ''`
+        `window.__terminalRegistry?.getScreenText(${JSON.stringify(sessionId)}, 120) ?? ''`
       );
     } catch {
       return '';

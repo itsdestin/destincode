@@ -26,6 +26,24 @@ function nextTurnId(): string {
 }
 
 /**
+ * Key-order-independent JSON serialization, used to compare a permission
+ * hook's `tool_input` against a transcript tool's `input`. The two arrive
+ * from different sources (named-pipe relay vs JSONL parse) and plain
+ * JSON.stringify equality would fail whenever their key order differs.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'undefined';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+}
+
+/**
  * Returns the current assistant turn (or creates a new one).
  * All assistant text and tool groups within a single turn accumulate here.
  */
@@ -736,44 +754,38 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const session = next.get(action.sessionId);
       if (!session) return state;
 
-      // Find the matching running tool — prefer matching by tool name,
-      // fall back to the first running tool if no name match exists.
+      // Find the matching running tool. Match order, most → least specific:
+      //   1. same name AND identical input — disambiguates parallel same-name
+      //      tools (e.g. two Bash calls in one batch). Without it the approval
+      //      card rendered tool A's input while its buttons approved tool B's
+      //      command.
+      //   2. first running tool with the same name (hook payload and
+      //      transcript input shapes can differ — degrade safely)
+      //   3. first running tool of any name
+      // (An older requestId pass between 2 and 3 was unreachable — a running
+      // tool never carries a requestId; PERMISSION_RESPONDED clears it.)
       const toolCalls = new Map(session.toolCalls);
-      let found = false;
-      let fallbackId: string | null = null;
+      let inputMatchId: string | null = null;
+      let nameMatchId: string | null = null;
+      let anyRunningId: string | null = null;
+      const wantedInput = action.input ? stableStringify(action.input) : null;
       for (const [id, tool] of toolCalls) {
-        if (tool.status === 'running') {
-          if (tool.toolName === action.toolName) {
-            toolCalls.set(id, {
-              ...tool,
-              status: 'awaiting-approval',
-              requestId: action.requestId,
-              permissionSuggestions: action.permissionSuggestions,
-            });
-            found = true;
-            break;
-          }
-          if (!fallbackId) fallbackId = id;
-        }
-      }
-      // Prefer matching by requestId over the arbitrary first-running-tool fallback
-      if (!found && action.requestId) {
-        for (const [id, tool] of toolCalls) {
-          if (tool.status === 'running' && tool.requestId === action.requestId) {
-            toolCalls.set(id, {
-              ...tool,
-              status: 'awaiting-approval',
-              requestId: action.requestId,
-              permissionSuggestions: action.permissionSuggestions,
-            });
-            found = true;
+        if (tool.status !== 'running') continue;
+        if (anyRunningId === null) anyRunningId = id;
+        if (tool.toolName === action.toolName) {
+          if (nameMatchId === null) nameMatchId = id;
+          if (wantedInput !== null && tool.input
+              && stableStringify(tool.input) === wantedInput) {
+            inputMatchId = id;
             break;
           }
         }
       }
-      if (!found && fallbackId) {
-        const tool = toolCalls.get(fallbackId)!;
-        toolCalls.set(fallbackId, {
+      const targetId = inputMatchId ?? nameMatchId ?? anyRunningId;
+      let found = false;
+      if (targetId !== null) {
+        const tool = toolCalls.get(targetId)!;
+        toolCalls.set(targetId, {
           ...tool,
           status: 'awaiting-approval',
           requestId: action.requestId,

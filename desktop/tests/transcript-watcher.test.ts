@@ -609,3 +609,114 @@ describe('TranscriptWatcher', () => {
     expect(subagentToolUse!.data.agentId).toBe('abc');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Read serialization, UTF-8 boundary safety, replay dedup (2026-07-10 review)
+// ---------------------------------------------------------------------------
+describe('TranscriptWatcher read integrity', () => {
+  let watcher: TranscriptWatcher;
+  let tmpDir: string;
+
+  function setupSession(desktopId: string, claudeId: string) {
+    const cwd = '/home/user/integrity';
+    const slug = cwdToProjectSlug(cwd);
+    const projectDir = path.join(tmpDir, slug);
+    fs.mkdirSync(projectDir, { recursive: true });
+    const jsonlPath = path.join(projectDir, `${claudeId}.jsonl`);
+    fs.writeFileSync(jsonlPath, '');
+    watcher.startWatching(desktopId, claudeId, cwd);
+    return jsonlPath;
+  }
+
+  const userLine = (uuid: string, text: string) =>
+    JSON.stringify({
+      type: 'user',
+      uuid,
+      promptId: `prompt-${uuid}`,
+      message: { role: 'user', content: text },
+    });
+
+  beforeEach(() => {
+    // Long poll interval so the global poll can't interfere with the
+    // deterministic manual triggers these tests rely on.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tw-integrity-'));
+    watcher = new TranscriptWatcher(tmpDir, 60_000);
+  });
+
+  afterEach(() => {
+    watcher.stopAll();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('does not double-emit when two reads are triggered concurrently', async () => {
+    const jsonlPath = setupSession('desktop-race', 'claude-race');
+    // Let the startWatching initial read settle on the empty file.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const events: TranscriptEvent[] = [];
+    watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
+
+    fs.appendFileSync(jsonlPath, userLine('uuid-race-1', 'hello once') + '\n');
+
+    // Two synchronous triggers — without per-session serialization both stat
+    // the same file size before either advances session.offset, so both read
+    // and emit the same byte range (user-message is deliberately re-emitted
+    // on repeated uuids, so uuid dedup does not mask the race).
+    watcher.readNewLinesForSession('desktop-race');
+    watcher.readNewLinesForSession('desktop-race');
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    const userMessages = events.filter((e) => e.type === 'user-message');
+    expect(userMessages.length).toBe(1);
+  });
+
+  it('preserves a multi-byte UTF-8 character split across two reads', async () => {
+    const jsonlPath = setupSession('desktop-utf8', 'claude-utf8');
+    await new Promise((r) => setTimeout(r, 200));
+
+    const events: TranscriptEvent[] = [];
+    watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
+
+    const full = Buffer.from(userLine('uuid-utf8-1', 'emoji 😀 intact') + '\n', 'utf8');
+    // Split inside the emoji's 4-byte sequence. The emoji is the only 4-byte
+    // char, so cutting 2 bytes after its first byte is guaranteed mid-sequence.
+    const emojiStart = full.indexOf(Buffer.from('😀', 'utf8'));
+    const splitAt = emojiStart + 2;
+
+    fs.appendFileSync(jsonlPath, full.subarray(0, splitAt));
+    watcher.readNewLinesForSession('desktop-utf8');
+    await new Promise((r) => setTimeout(r, 300));
+
+    fs.appendFileSync(jsonlPath, full.subarray(splitAt));
+    for (let i = 0; i < 20 && events.length === 0; i++) {
+      watcher.readNewLinesForSession('desktop-utf8');
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    const msg = events.find((e) => e.type === 'user-message');
+    expect(msg).toBeDefined();
+    expect(msg!.data.text).toContain('😀');
+    expect(msg!.data.text).not.toContain('�');
+  });
+
+  it('getHistory skips repeated assistant-text for the same uuid (mirrors live dedup)', () => {
+    const jsonlPath = setupSession('desktop-replay', 'claude-replay');
+
+    const assistantLine = (text: string) =>
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'uuid-replay-dup',
+        message: { role: 'assistant', content: [{ type: 'text', text }], stop_reason: null },
+      });
+    // Claude rewrites the same uuid line as the message grows — replay must
+    // apply first-write-wins exactly like the live path, or a re-docked
+    // window renders duplicate text segments.
+    fs.writeFileSync(jsonlPath, assistantLine('grow') + '\n' + assistantLine('grow more') + '\n');
+
+    const history = watcher.getHistory('desktop-replay');
+    const texts = history.filter((e) => e.type === 'assistant-text');
+    expect(texts.length).toBe(1);
+    expect(texts[0].data.text).toBe('grow');
+  });
+});

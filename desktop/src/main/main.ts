@@ -83,7 +83,6 @@ const sessionManager = new SessionManager();
 // singletons (PartyKit lobby). Populated when sessions are created and
 // when windows spawn/close. See window-registry.ts.
 const windowRegistry = new WindowRegistry();
-export function getWindowRegistry() { return windowRegistry; }
 
 // IDs in the registry are webContents.id values, NOT BrowserWindow.id values.
 // BrowserWindow.fromId(webContentsId) silently returns null, so previously
@@ -92,16 +91,6 @@ export function getWindowRegistry() { return windowRegistry; }
 function windowFromWcId(wid: number): BrowserWindow | null {
   const wc = webContents.fromId(wid);
   return wc ? BrowserWindow.fromWebContents(wc) : null;
-}
-
-// Route a session-scoped IPC event to the window that currently owns the
-// session. No-op if ownership is unknown (e.g., during teardown). Task 1.4
-// will migrate ipc-handlers.ts emits to use this helper.
-export function routeToOwner(sessionId: string, channel: string, ...args: unknown[]): void {
-  const wid = windowRegistry.getOwner(sessionId);
-  if (wid == null) return;
-  const win = windowFromWcId(wid);
-  if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 
 // Broadcast the current window directory to every renderer whenever windows
@@ -250,11 +239,6 @@ let permissionOverrides: PermissionOverrides = { ...PERMISSION_OVERRIDES_DEFAULT
 /** Called by ipc-handlers.ts on startup and after each defaults:set. */
 export function setPermissionOverrides(overrides: Partial<PermissionOverrides>) {
   permissionOverrides = { ...PERMISSION_OVERRIDES_DEFAULT, ...overrides };
-}
-
-/** Read current overrides (for ipc-handlers.ts startup load). */
-export function getPermissionOverrides(): PermissionOverrides {
-  return permissionOverrides;
 }
 
 function registerFirstRunIpc(

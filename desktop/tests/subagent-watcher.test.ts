@@ -182,3 +182,147 @@ describe('SubagentWatcher', () => {
     expect(emitted[0].data.agentId).toBe('abc');
   });
 });
+
+// ---------------------------------------------------------------------------
+// UTF-8 boundary safety (2026-07-10 review) — mirrors the TranscriptWatcher
+// byte-carry fix: a multi-byte char split across two reads must reassemble.
+// ---------------------------------------------------------------------------
+describe('SubagentWatcher read integrity', () => {
+  let tmpRoot: string;
+  let subagentsDir: string;
+  let index: SubagentIndex;
+  let emitted: TranscriptEvent[];
+  let watcher: SubagentWatcher;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'subagent-utf8-'));
+    subagentsDir = path.join(tmpRoot, 'subagents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    index = new SubagentIndex();
+    emitted = [];
+    watcher = new SubagentWatcher({
+      sessionId: 'sess-utf8',
+      subagentsDir,
+      index,
+      emit: e => emitted.push(e),
+    });
+  });
+
+  afterEach(() => {
+    watcher.stop();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('preserves a multi-byte UTF-8 character split across two reads', async () => {
+    writeMeta(subagentsDir, 'utf8', 'Emoji task', 'claude');
+    index.recordParentAgentToolUse('toolu_parent_utf8', 'Emoji task', 'claude');
+
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'u-emoji',
+      isSidechain: true,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'result 😀 done' }],
+        stop_reason: null,
+      },
+    });
+    const full = Buffer.from(line + '\n', 'utf8');
+    const emojiStart = full.indexOf(Buffer.from('😀', 'utf8'));
+    const splitAt = emojiStart + 2;
+    const jsonlPath = path.join(subagentsDir, 'agent-utf8.jsonl');
+
+    // First half (cut mid-emoji), then start + read — leaves a partial carry.
+    fs.writeFileSync(jsonlPath, full.subarray(0, splitAt));
+    watcher.start();
+    await wait(150);
+    expect(emitted).toHaveLength(0);
+
+    // Second half completes the line.
+    fs.appendFileSync(jsonlPath, full.subarray(splitAt));
+    for (let i = 0; i < 20 && emitted.length === 0; i++) {
+      watcher.forceRereadFor('utf8');
+      await wait(50);
+    }
+
+    const text = emitted.find(e => e.type === 'assistant-text');
+    expect(text).toBeDefined();
+    expect(text!.data.text).toContain('😀');
+    expect(text!.data.text).not.toContain('�');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timer lifecycle (2026-07-10 perf pass): event-driven kick + poll settle.
+// The old behavior leaked one 1s dir poll per session forever (even sessions
+// that never ran a subagent) and a 2s stat-poll per subagent file that was
+// never pruned — the main "idle CPU creeps up over a long day" candidate.
+// ---------------------------------------------------------------------------
+describe('SubagentWatcher timer lifecycle', () => {
+  let tmpRoot: string;
+  let subagentsDir: string;
+  let index: SubagentIndex;
+  let emitted: TranscriptEvent[];
+  let watcher: SubagentWatcher;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'subagent-timers-'));
+    subagentsDir = path.join(tmpRoot, 'subagents');
+    index = new SubagentIndex();
+    emitted = [];
+    watcher = new SubagentWatcher({
+      sessionId: 'sess-timers',
+      subagentsDir,
+      index,
+      emit: e => emitted.push(e),
+    });
+  });
+
+  afterEach(() => {
+    watcher.stop();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('kickScan discovers a brand-new subagent dir immediately (no poll wait)', async () => {
+    // Dir does not exist at start — the bootstrap poll is now slow (5s), so
+    // without the kick the first subagent's output would sit undiscovered.
+    watcher.start();
+
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    writeMeta(subagentsDir, 'kick', 'Kicked task', 'claude');
+    index.recordParentAgentToolUse('toolu_parent_kick', 'Kicked task', 'claude');
+    appendLine(subagentsDir, 'kick', toolUseLine('u-kick', 'toolu_K', 'Read', { file_path: '/k' }));
+
+    watcher.kickScan();
+    await wait(150);
+
+    expect(emitted.some(e => e.data.agentId === 'kick')).toBe(true);
+  });
+
+  it('settleByParent stops the file poll but keeps fs.watch delivering late writes', async () => {
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    writeMeta(subagentsDir, 'done', 'Finished task', 'claude');
+    index.recordParentAgentToolUse('toolu_parent_done', 'Finished task', 'claude');
+    appendLine(subagentsDir, 'done', toolUseLine('u-d1', 'toolu_D1', 'Read', { file_path: '/d' }));
+
+    watcher.start();
+    await wait(150);
+    expect(emitted.length).toBeGreaterThanOrEqual(1);
+    expect(watcher.hasActivePoll('done')).toBe(true);
+
+    await watcher.settleByParent('toolu_parent_done');
+    expect(watcher.hasActivePoll('done')).toBe(false);
+
+    // Late write after settle must still arrive (fs.watch stays attached —
+    // the settle only removes the belt-and-suspenders stat poll).
+    const before = emitted.length;
+    appendLine(subagentsDir, 'done', toolUseLine('u-d2', 'toolu_D2', 'Grep', { pattern: 'x' }));
+    for (let i = 0; i < 20 && emitted.length === before; i++) await wait(50);
+    expect(emitted.length).toBeGreaterThan(before);
+  });
+
+  it('settleByParent for an unknown parent is a harmless no-op', async () => {
+    watcher.start();
+    await expect(watcher.settleByParent('toolu_never_seen')).resolves.toBeUndefined();
+  });
+});

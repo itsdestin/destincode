@@ -184,7 +184,6 @@ function AppInner() {
   const bottomBarRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBadge, setSettingsBadge] = useState(false);
-  const [settingsDangerBadge, setSettingsDangerBadge] = useState(false);
   const [syncAutoOpen, setSyncAutoOpen] = useState(false);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   // Track which sessions the user has "seen" (switched to after activity completed)
@@ -570,6 +569,10 @@ function AppInner() {
   // the reducer is idempotent for same-value transitions and the diff prevents redundant
   // dispatches). On remote browsers the classifier doesn't run, so this is the only path.
   const prevAttentionRef = useRef<Record<string, string>>({});
+  // Perf: last status:data payload (serialized). Main pushes every 10s even
+  // when nothing changed; without this guard the unconditional setStatusData
+  // re-rendered the whole app tree at idle, forever.
+  const lastStatusJsonRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevStatusSoundRef.current;
     for (const [id, color] of sessionStatuses) {
@@ -759,12 +762,21 @@ function AppInner() {
 
     // Batch transcript dispatches into animation frames — multiple fs.watch events
     // within a single frame become one React render instead of N separate renders.
+    //
+    // Hidden-window caveat: Electron suspends requestAnimationFrame while the
+    // window is minimized/occluded, which used to FREEZE chat state (queued
+    // actions never flushed) while wall-clock timers kept firing — the 8s
+    // submit-retry then evaluated its idle gate against stale state and could
+    // send a stray \r into the PTY. While hidden we batch on a 16ms timeout
+    // instead: same batching cost, but state keeps advancing.
     const pendingTranscriptActions: any[] = [];
     let transcriptRafId: number | null = null;
+    let transcriptTimerId: ReturnType<typeof setTimeout> | null = null;
     let transcriptBatchCancelled = false;
 
     function flushTranscriptActions() {
       transcriptRafId = null;
+      transcriptTimerId = null;
       if (transcriptBatchCancelled) return;
       const batch = pendingTranscriptActions.splice(0);
       // React 18 batches all synchronous dispatches → single render for the whole batch
@@ -775,10 +787,26 @@ function AppInner() {
 
     function batchTranscriptDispatch(action: any) {
       pendingTranscriptActions.push(action);
-      if (transcriptRafId === null) {
+      if (transcriptRafId !== null || transcriptTimerId !== null) return;
+      if (document.visibilityState === 'hidden') {
+        transcriptTimerId = setTimeout(flushTranscriptActions, 16);
+      } else {
         transcriptRafId = requestAnimationFrame(flushTranscriptActions);
       }
     }
+
+    // If the window hides while an rAF flush is pending, that rAF may never
+    // fire — hand the pending batch to a timeout so it can't strand.
+    function onTranscriptVisibilityChange() {
+      if (document.visibilityState === 'hidden' && transcriptRafId !== null) {
+        cancelAnimationFrame(transcriptRafId);
+        transcriptRafId = null;
+        if (transcriptTimerId === null) {
+          transcriptTimerId = setTimeout(flushTranscriptActions, 16);
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', onTranscriptVisibilityChange);
 
     const transcriptHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
       if (!event?.type || !event?.sessionId) return;
@@ -932,6 +960,12 @@ function AppInner() {
     // see ipc-handlers.ts pty-output comments).
 
     const statusHandler = window.claude.on.statusData((data) => {
+      // Skip byte-identical payloads. Safe to skip the attention diff below
+      // too: an identical payload implies an identical attentionMap, which
+      // was already folded into prevAttentionRef when first seen.
+      const json = JSON.stringify(data);
+      if (json === lastStatusJsonRef.current) return;
+      lastStatusJsonRef.current = json;
       setStatusData((prev) => ({
         ...prev,
         usage: data.usage,
@@ -1169,6 +1203,8 @@ function AppInner() {
     return () => {
       transcriptBatchCancelled = true;
       if (transcriptRafId !== null) cancelAnimationFrame(transcriptRafId);
+      if (transcriptTimerId !== null) clearTimeout(transcriptTimerId);
+      document.removeEventListener('visibilitychange', onTranscriptVisibilityChange);
       window.claude.off('session:created', createdHandler);
       window.claude.off('session:destroyed', destroyedHandler);
       window.claude.off('hook:event', hookHandler);
@@ -1451,24 +1487,30 @@ function AppInner() {
     return () => clearInterval(interval);
   }, []);
 
-  // Poll sync status; if any danger-level warning exists, surface a red
-  // dot on the gear icon so the user can't miss a push failure.
+  // Seed syncWarnings once at mount so a danger badge shows instantly at
+  // launch. Ongoing updates ride the status:data push (same authoritative
+  // .sync-warnings.json source) — the old 15s getStatus poll duplicated data
+  // the push already carried and woke the main process for nothing.
   useEffect(() => {
     const claude = (window as any).claude;
     if (!claude?.sync?.getStatus) return;
-    const check = () => {
-      claude.sync.getStatus()
-        .then((s: any) => {
-          const hasDanger = Array.isArray(s?.warnings)
-            && s.warnings.some((w: any) => w?.level === 'danger');
-          setSettingsDangerBadge(hasDanger);
-        })
-        .catch(() => {});
-    };
-    check();
-    const interval = setInterval(check, 15000);
-    return () => clearInterval(interval);
+    claude.sync.getStatus()
+      .then((s: any) => {
+        if (!Array.isArray(s?.warnings)) return;
+        setStatusData((prev) =>
+          prev.syncWarnings && prev.syncWarnings.length > 0
+            ? prev // a status:data push beat us — it's the fresher source
+            : { ...prev, syncWarnings: s.warnings });
+      })
+      .catch(() => {});
   }, []);
+
+  // Red dot on the gear icon so the user can't miss a push failure —
+  // derived from the pushed warnings, no dedicated poll.
+  const settingsDangerBadge = useMemo(
+    () => (statusData.syncWarnings ?? []).some((w) => w?.level === 'danger'),
+    [statusData.syncWarnings],
+  );
 
   const handleOpenDrawer = useCallback((searchMode: boolean) => {
     setDrawerSearchMode(searchMode);

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { parseInkSelect, menuToButtons } from '../parser/ink-select-parser';
 import { useChatDispatch, useChatStateMap } from '../state/chat-context';
-import { getScreenText, onBufferReady } from './terminal-registry';
+import { getVisibleScreenText, onBufferReady } from './terminal-registry';
 
 // How long to wait before showing a parser-detected prompt, giving the hook
 // system time to deliver a PermissionRequest via the named pipe relay.
@@ -97,7 +97,10 @@ export function usePromptDetector() {
         return;
       }
 
-      const screen = getScreenText(sid);
+      // Visible screen only — Ink menus render at the bottom; serializing the
+      // full scrollback here (per buffer flush, up to ~60/s while streaming)
+      // was the top renderer CPU cost. See terminal-registry.getScreenText.
+      const screen = getVisibleScreenText(sid);
       if (!screen) return;
 
       const menu = parseInkSelect(screen);

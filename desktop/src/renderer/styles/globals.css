@@ -800,8 +800,7 @@ body[data-mode="buddy-chat"] #theme-bg {
 /* macOS traffic lights need space — add left padding when title bar is hidden.
    Applies to the main header bar AND full-screen overlay headers (e.g., theme
    marketplace/detail) whose back buttons would otherwise sit under the traffic lights. */
-.mac-titlebar-inset .header-bar,
-.mac-titlebar-inset .overlay-header {
+.mac-titlebar-inset .header-bar {
   padding-left: 78px;
 }
 
@@ -1017,12 +1016,6 @@ body[data-mode="buddy-chat"] #theme-bg {
   50% { box-shadow: 0 0 10px rgba(234, 179, 8, 0.6); }
 }
 
-/* Android safe area handling */
-@supports (padding-top: env(safe-area-inset-top)) {
-  .safe-area-top { padding-top: env(safe-area-inset-top); }
-  .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
-}
-
 /* Touch device: make hover-revealed elements always visible */
 @media (pointer: coarse) {
   .group:hover .hover-reveal,
@@ -1056,6 +1049,14 @@ body[data-mode="buddy-chat"] #theme-bg {
      textarea above it, which widens the keyword in the mirror only and
      pushes every following character off the caret. Bold is scoped to the
      user bubble rule below, where there's no textarea layered over it. */
+}
+/* Perf: the gradient pan repaints every frame, forever, for every keyword in
+   scrollback. Pause it while the bubble is scrolled out of view — ChatView's
+   IntersectionObserver removes `.in-view` from offscreen timeline entries on
+   every theme. The chat-input mirror isn't inside a timeline entry, so the
+   keyword being typed keeps animating. */
+.timeline-entry:not(.in-view) .flowing-word {
+  animation-play-state: paused;
 }
 /* Inside user bubble the surface is bg-accent, so --accent disappears into
    the background. Flow between on-accent shades instead. Bold is safe here

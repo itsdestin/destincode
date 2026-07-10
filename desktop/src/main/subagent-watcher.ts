@@ -9,7 +9,15 @@ interface PerFileState {
   jsonlPath: string;
   metaPath: string;
   offset: number;
-  partialLine: string;
+  // Incomplete-trailing-line carry, kept as BYTES (a decoded-string carry
+  // corrupts multi-byte UTF-8 chars split across a read boundary — each half
+  // decodes to U+FFFD independently). Mirrors TranscriptWatcher.
+  partialBytes: Buffer;
+  // Serialization guard: one readNewLines per file at a time; overlapping
+  // triggers (fs.watch burst + poll + forced re-read) coalesce into a rerun.
+  // Mirrors TranscriptWatcher — see its readNewLines comment for the race.
+  reading: boolean;
+  rerunQueued: boolean;
   seenUuids: Set<string>;
   watcher: fs.FSWatcher | null;
   pollTimer: ReturnType<typeof setInterval> | null;
@@ -144,6 +152,47 @@ export class SubagentWatcher {
     if (state) this.readNewLines(state).catch(() => undefined);
   }
 
+  /**
+   * Event-driven kick from TranscriptWatcher when a parent Agent tool_use is
+   * recorded: a subagent just started, so discover the subagents dir / new
+   * JSONL files NOW instead of waiting for the safety-net polls. This is what
+   * lets the polls run slow (5s) without delaying first subagent output.
+   */
+  kickScan(): void {
+    if (!this.started) return;
+    if (!fs.existsSync(this.subagentsDir)) return;
+    if (!this.dirWatcher) {
+      // Dir just appeared — retire the bootstrap poll and upgrade to
+      // fs.watch + safety-net (attachDirWatcher re-arms the poll).
+      if (this.dirPollTimer) { clearInterval(this.dirPollTimer); this.dirPollTimer = null; }
+      this.scanDirectory();
+      this.attachDirWatcher();
+      return;
+    }
+    this.scanDirectory();
+  }
+
+  /**
+   * Called by TranscriptWatcher when a tool-result lands: if it completes a
+   * parent Agent tool call, that subagent's transcript is done growing — do
+   * one final read (bytes written between the last watch/poll tick and the
+   * result), then stop the belt-and-suspenders stat poll. fs.watch stays
+   * attached so an unexpected late write still delivers; without this settle,
+   * a session that ran 50 subagents held 50 stat-poll timers forever.
+   */
+  async settleByParent(parentToolUseId: string): Promise<void> {
+    for (const state of this.perFile.values()) {
+      if (this.index.lookup(state.agentId) !== parentToolUseId) continue;
+      try { await this.readNewLines(state); } catch { /* file may be gone */ }
+      if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+    }
+  }
+
+  /** Test-only: whether an agent file's safety-net stat poll is running. */
+  hasActivePoll(agentId: string): boolean {
+    return !!this.perFile.get(agentId)?.pollTimer;
+  }
+
   // ---- internals ----
 
   private readMeta(agentId: string): { description: string; agentType: string } | null {
@@ -170,6 +219,8 @@ export class SubagentWatcher {
     if (!fs.existsSync(this.subagentsDir)) {
       // The directory is created by Claude Code only once a subagent runs.
       // Poll the parent until it exists; upgrade to fs.watch once it does.
+      // 5s is deliberately slow — most sessions never run a subagent, and
+      // kickScan() (fired on the parent Agent tool_use) covers the fast path.
       this.dirPollTimer = setInterval(() => {
         // Fix 2: stop() was called after setInterval was scheduled — bail.
         if (!this.started) return;
@@ -178,7 +229,7 @@ export class SubagentWatcher {
           this.scanDirectory();
           this.attachDirWatcher();
         }
-      }, 1000);
+      }, 5000);
       return;
     }
     try {
@@ -187,7 +238,7 @@ export class SubagentWatcher {
         if (this.dirWatcher) { this.dirWatcher.close(); this.dirWatcher = null; }
         this.startDirPoll();
       });
-      this.startDirPoll(); // 1s safety-net poll alongside watch
+      this.startDirPoll(); // slow safety-net poll alongside watch
     } catch {
       this.startDirPoll();
     }
@@ -196,10 +247,13 @@ export class SubagentWatcher {
   private startDirPoll(): void {
     if (this.dirPollTimer) return;
     // Fix 2 (defensive): guard against one-more-firing after stop().
+    // 5s: fs.watch + kickScan() are the fast paths; this only catches the
+    // rare Windows fs.watch dropped notification, so it can afford to be slow
+    // (it readdirs the whole subagents dir on every tick, forever).
     this.dirPollTimer = setInterval(() => {
       if (!this.started) return;
       this.scanDirectory();
-    }, 1000);
+    }, 5000);
   }
 
   private trackSubagent(agentId: string): void {
@@ -215,7 +269,9 @@ export class SubagentWatcher {
       jsonlPath,
       metaPath,
       offset: 0,
-      partialLine: '',
+      partialBytes: Buffer.alloc(0),
+      reading: false,
+      rerunQueued: false,
       seenUuids: new Set(),
       watcher: null,
       pollTimer: null,
@@ -250,19 +306,39 @@ export class SubagentWatcher {
   private startFilePoll(state: PerFileState): void {
     if (state.pollTimer) return;
     // Fix 2 (defensive): guard against one-more-firing after stop().
+    // Slow when fs.watch is attached (pure safety net — settleByParent stops
+    // this timer entirely once the parent tool-result lands); faster only
+    // when fs.watch failed and polling is the sole delivery path.
     state.pollTimer = setInterval(() => {
       if (!this.started) return;
       this.readNewLines(state).catch(() => undefined);
-    }, state.watcher ? 2000 : 1000);
+    }, state.watcher ? 5000 : 1500);
   }
 
   private async readNewLines(state: PerFileState): Promise<void> {
+    // Serialized per file — see PerFileState.reading.
+    if (state.reading) {
+      state.rerunQueued = true;
+      return;
+    }
+    state.reading = true;
+    try {
+      do {
+        state.rerunQueued = false;
+        await this.readNewLinesOnce(state);
+      } while (state.rerunQueued);
+    } finally {
+      state.reading = false;
+    }
+  }
+
+  private async readNewLinesOnce(state: PerFileState): Promise<void> {
     let stat: fs.Stats;
     try { stat = await fs.promises.stat(state.jsonlPath); } catch { return; }
     const fileSize = stat.size;
     if (fileSize < state.offset) {
       state.offset = 0;
-      state.partialLine = '';
+      state.partialBytes = Buffer.alloc(0);
     }
     if (fileSize <= state.offset) return;
 
@@ -282,10 +358,20 @@ export class SubagentWatcher {
     if (bytesRead === 0) return;
     state.offset += bytesRead;
 
-    const text = buffer.toString('utf8', 0, bytesRead);
+    // Stitch the byte carry BEFORE decoding so a multi-byte UTF-8 char split
+    // across reads reassembles losslessly (mirrors TranscriptWatcher).
+    const fresh = buffer.subarray(0, bytesRead);
+    const combined = state.partialBytes.length
+      ? Buffer.concat([state.partialBytes, fresh])
+      : fresh;
+    const lastNewline = combined.lastIndexOf(0x0a);
+    if (lastNewline === -1) {
+      state.partialBytes = Buffer.from(combined);
+      return;
+    }
+    state.partialBytes = Buffer.from(combined.subarray(lastNewline + 1));
+    const text = combined.subarray(0, lastNewline).toString('utf8');
     const chunks = text.split('\n');
-    chunks[0] = state.partialLine + chunks[0];
-    state.partialLine = chunks.pop() || '';
 
     for (const chunk of chunks) {
       const trimmed = chunk.trim();

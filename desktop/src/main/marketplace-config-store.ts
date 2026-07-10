@@ -43,14 +43,3 @@ export function setConfig(id: string, values: Record<string, unknown>): void {
   fs.renameSync(tmpPath, filePath);
 }
 
-/**
- * Delete config for a marketplace entry (used on uninstall).
- */
-export function deleteConfig(id: string): void {
-  try {
-    const filePath = path.join(CONFIG_DIR, `${id}.json`);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  } catch {
-    // best-effort
-  }
-}

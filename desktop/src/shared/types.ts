@@ -702,7 +702,6 @@ export const IPC = {
   SESSION_SET_FLAG: 'session:set-flag',
   // Broadcast when session metadata changes (carries a flag + value)
   SESSION_META_CHANGED: 'session:meta-changed',
-  SESSION_RESUME: 'session:resume',
   // Folder switcher
   FOLDERS_LIST: 'folders:list',
   FOLDERS_ADD: 'folders:add',
@@ -713,7 +712,6 @@ export const IPC = {
   THEME_LIST: 'theme:list',       // Renderer -> Main: get list of user theme slugs
   THEME_READ_FILE: 'theme:read-file', // Renderer -> Main: read a user theme JSON by slug
   THEME_WRITE_FILE: 'theme:write-file',
-  THEME_READ_ASSET: 'theme:read-asset',
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_CLOSE: 'window:close',
