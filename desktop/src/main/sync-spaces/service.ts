@@ -5,11 +5,12 @@
 import os from 'os';
 import { BrowserWindow } from 'electron';
 import { ManagedRoots } from './managed-roots';
-import { SpaceManager } from './space-manager';
+import { SpaceManager, repoNameForSpace } from './space-manager';
 import { GitTransport } from './git-transport';
 import { SpaceSyncEngine } from './engine';
 import { DailyBackup, BackupTarget } from './daily-backup';
 import { importProjectFolder } from './import-project';
+import { createSyncHubSocket } from '../sync-hub-socket';
 import type { SpaceSyncEvent } from './types';
 
 let roots: ManagedRoots | null = null;
@@ -19,6 +20,20 @@ let backup: DailyBackup | null = null;
 let backupTimer: ReturnType<typeof setInterval> | null = null;
 let recentEvents: SpaceSyncEvent[] = [];
 let logFn: (m: string) => void = console.log;
+
+// SyncHub (Plan 1b): the WebSocket that relays "something changed" signals
+// between this account's devices. Held for the enabled lifetime; the engine's
+// 120s poll is the fallback when it's down. hubStatus feeds syncSpacesStatus().
+let hubSocket: ReturnType<typeof createSyncHubSocket> | null = null;
+let hubStatus: 'off' | 'connecting' | 'connected' | 'disconnected' = 'off';
+
+// Auth store facade (marketplace token) wired from main.ts. Read lazily per
+// connect so a mid-session sign-in/out takes effect without an app restart.
+// Kept as a narrow facade so service.ts doesn't import the whole auth store.
+let authStore: { getToken(): string | null } | null = null;
+export function setSyncSpacesAuthStore(store: { getToken(): string | null } | null): void {
+  authStore = store;
+}
 
 // Why: enable(true) racing enable(false) (two windows, or panel double-click)
 // would otherwise interleave — the disable stops the half-started engine and
@@ -47,6 +62,19 @@ function broadcast(e: SpaceSyncEvent): void {
   }
   // Fan out to remote clients too (see comment on remoteBroadcast above).
   try { remoteBroadcast?.(stamped); } catch { /* remote server not up / closing */ }
+  // A local push means this account's OTHER devices should pull now — signal
+  // the room LAST, isolated in its own try/catch like the fan-outs above:
+  // broadcast() is the single fan-out chokepoint invoked from the engine's
+  // onEvent, and a hub send must never block or kill local event delivery.
+  // Signalling is best-effort anyway — the 120s poll covers any miss. Guard on
+  // type + pushed so hub-status / error / pull-only events never recurse into
+  // a send.
+  try {
+    if (stamped.type === 'synced' && stamped.pushed && hubSocket) {
+      const space = roots?.spaces().find(s => s.id === stamped.spaceId);
+      if (space) hubSocket.sendSignal('space-updated', repoNameForSpace(space));
+    }
+  } catch { /* best-effort — the poll fallback covers it */ }
 }
 
 /** Called once from main.ts after app ready. Roots always exist (the picker
@@ -80,7 +108,7 @@ async function startEngine(log: (m: string) => void): Promise<void> {
   const e = new SpaceSyncEngine(transport, { onEvent: broadcast });
   engine = e;
   for (const space of roots!.spaces()) {
-    if (engine !== e) { await e.stop(); return; } // superseded — clean up and bail
+    if (engine !== e) { await e.stop(); return; } // superseded — clean up and bail (no socket created yet)
     try {
       await e.addSpace(space);
       const url = await manager!.ensureRemote(space);
@@ -91,10 +119,60 @@ async function startEngine(log: (m: string) => void): Promise<void> {
       broadcast({ type: 'error', spaceId: space.id, message: String(err?.message ?? err) });
     }
   }
+
+  // Supersession guard: while we were awaiting addSpace above, a disable (or a
+  // newer start) may have replaced our engine — the app-boot start isn't
+  // chained through `transition`, so it can race a disable/enable pair. A
+  // superseded run owns NO global state: it must not create a socket and must
+  // not touch hubStatus — the newer run's live socket may already have set it
+  // to 'connected', and stamping 'connecting'/'off' here would make
+  // syncSpacesStatus() lie until the next disconnect/reconnect. (Our engine
+  // was already stopped by whichever transition superseded us.) Everything
+  // below the check is synchronous, so it can't be re-raced.
+  if (engine !== e) return;
+
+  // SyncHub (Plan 1b): instant "something changed" signals between this
+  // account's devices. The 120s poll in the engine stays as the fallback —
+  // SyncHub being down never blocks sync, it only makes it less instant (spec §6).
+  hubStatus = 'connecting';
+  const spaceForKey = (key: string) =>
+    roots!.spaces().find((s) => repoNameForSpace(s) === key) ?? null;
+  hubSocket = createSyncHubSocket({
+    getToken: () => authStore?.getToken() ?? null,
+    deviceName: os.hostname(),
+    onEvent: (ev) => {
+      if (ev.type === 'signal' && ev.kind === 'space-updated') {
+        // Another device pushed — pull that space now. syncSpace is single-flight
+        // + coalescing, so signal bursts and hello-replay dupes are free.
+        const space = spaceForKey(ev.spaceKey);
+        if (space && engine) void engine.syncSpace(space);
+      } else if (ev.type === 'connected') {
+        hubStatus = 'connected';
+        broadcast({ type: 'hub-status', spaceId: 'hub', status: 'connected' });
+        // Reconcile-on-connect: pull anything missed while we were offline.
+        if (engine && roots) for (const s of roots.spaces()) void engine.syncSpace(s);
+      } else if (ev.type === 'disconnected') {
+        hubStatus = 'disconnected';
+        broadcast({ type: 'hub-status', spaceId: 'hub', status: 'disconnected' });
+      }
+    },
+  });
+  hubSocket.setDesired(true);
+}
+
+// Tear the SyncHub socket down. setDesired(false) stops its reconnect loop
+// BEFORE destroy() closes the current socket, so no retry fires after teardown.
+// Matches where `engine` is nulled — the hub belongs to the engine's lifetime.
+function teardownHub(): void {
+  hubSocket?.setDesired(false);
+  hubSocket?.destroy();
+  hubSocket = null;
+  hubStatus = 'off';
 }
 
 export async function stopSyncSpaces(): Promise<void> {
   if (backupTimer) clearInterval(backupTimer);
+  teardownHub();
   await engine?.stop();
   engine = null;
 }
@@ -105,6 +183,7 @@ export async function syncSpacesStatus() {
     enabled: manager?.isEnabled() ?? false,
     spaces: roots?.spaces().map(s => ({ ...s, remote: manager?.remoteFor(s.id) ?? null })) ?? [],
     recentEvents,
+    syncHub: hubStatus, // SyncHub connection state (Plan 1b): 'off' when sync disabled
   };
 }
 
@@ -121,6 +200,7 @@ export async function syncSpacesEnable(enabled: boolean) {
       // and cleans up its own instance instead of watching a dead engine.
       const current = engine;
       engine = null;
+      teardownHub(); // stop cross-device signalling too — the engine is going away
       await current.stop();
     }
   });
