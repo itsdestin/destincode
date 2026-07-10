@@ -2,6 +2,8 @@
 // The session picker's folder dropdown. Per the 2026-07-09 project-sync UX
 // spec this component ONLY picks: adding/importing/syncing projects moved to
 // Project View, reached via the single "Manage projects…" footer entry.
+// Rows are pick-only — rename and remove also live in Project View (Destin's
+// 2026-07-09 follow-up: no per-row hover actions here).
 // Each row carries a sync dot (green syncing / red problem / gray not in
 // sync) whose tooltip holds the full plain-language phrase.
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
@@ -44,10 +46,7 @@ const DOT_CLASS: Record<'green' | 'red' | 'gray', string> = {
 export default function FolderSwitcher({ value, onChange, autoSelect = true, onManageProjects }: Props) {
   const [folders, setFolders] = useState<SavedFolder[]>([]);
   const [open, setOpen] = useState(false);
-  const [editingPath, setEditingPath] = useState<string | null>(null);
-  const [editNickname, setEditNickname] = useState('');
   const [syncStatus, setSyncStatus] = useState<SyncStatusData | null>(null);
-  const editRef = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // The dropdown panel is PORTALED to document.body (see render below), so it
@@ -122,7 +121,6 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
       const t = e.target as Node;
       if (wrapperRef.current?.contains(t) || panelRef.current?.contains(t)) return;
       setOpen(false);
-      setEditingPath(null);
     };
     document.addEventListener('mousedown', handler);
     document.addEventListener('touchstart', handler);
@@ -136,47 +134,13 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
   // so chat-passthrough preventDefault works consistently with other overlays.
   const handleEscClose = useCallback(() => {
     setOpen(false);
-    setEditingPath(null);
   }, []);
   useEscClose(open, handleEscClose);
-
-  // Focus nickname input when editing starts
-  useEffect(() => {
-    if (editingPath && editRef.current) {
-      editRef.current.focus();
-      editRef.current.select();
-    }
-  }, [editingPath]);
 
   const handleSelect = useCallback((path: string) => {
     onChange(path);
     setOpen(false);
-    setEditingPath(null);
   }, [onChange]);
-
-  const handleRemove = useCallback(async (e: React.MouseEvent, folderPath: string) => {
-    e.stopPropagation();
-    await (window as any).claude.folders.remove(folderPath);
-    await load();
-    // If we just removed the selected folder, clear selection
-    if (value === folderPath) onChange('');
-  }, [value, onChange, load]);
-
-  const handleStartRename = useCallback((e: React.MouseEvent, folder: SavedFolder) => {
-    e.stopPropagation();
-    setEditingPath(folder.path);
-    setEditNickname(folder.nickname);
-  }, []);
-
-  const handleFinishRename = useCallback(async () => {
-    if (!editingPath || !editNickname.trim()) {
-      setEditingPath(null);
-      return;
-    }
-    await (window as any).claude.folders.rename(editingPath, editNickname.trim());
-    await load();
-    setEditingPath(null);
-  }, [editingPath, editNickname, load]);
 
   // Find nickname for current value
   const currentFolder = folders.find(f => f.path === value);
@@ -220,6 +184,11 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
       {open && panelPos && createPortal(
         <div
           ref={panelRef}
+          // Marker for HOST menus' outside-click handlers (SessionStrip): the
+          // portal lives on document.body, so a host's contains() check can't
+          // see it — without this attribute the host closes (and unmounts us)
+          // on the mousedown, and our click never fires.
+          data-folder-switcher-portal=""
           className="layer-surface fixed w-72 overflow-hidden flex flex-col"
           style={{ top: panelPos.top, left: panelPos.left, maxHeight: panelPos.maxHeight, zIndex: 9001, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
         >
@@ -230,14 +199,13 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
               <div className="py-1">
               {folders.map((f) => {
                 const isSelected = f.path === value;
-                const isEditing = editingPath === f.path;
                 const dot = syncDotFor(f.path, syncStatus);
 
                 return (
                   <div
                     key={f.path}
-                    onClick={() => !isEditing && handleSelect(f.path)}
-                    className={`group/folder flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer transition-colors ${
+                    onClick={() => handleSelect(f.path)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer transition-colors ${
                       isSelected
                         ? 'bg-accent/10 text-fg'
                         : f.exists
@@ -250,66 +218,25 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
                       <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                     </svg>
 
-                    {/* Nickname (editable) or display */}
+                    {/* Nickname + path. Rename/remove hover actions were
+                        deliberately removed (2026-07-09) — both live in
+                        Project View via "Manage projects…". Don't re-add. */}
                     <div className="flex-1 min-w-0">
-                      {isEditing ? (
-                        <input
-                          ref={editRef}
-                          value={editNickname}
-                          onChange={(e) => setEditNickname(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleFinishRename();
-                            if (e.key === 'Escape') setEditingPath(null);
-                          }}
-                          onBlur={handleFinishRename}
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-full bg-inset border border-edge rounded-sm px-1 py-0.5 text-xs text-fg outline-none focus:border-accent"
-                        />
-                      ) : (
-                        <>
-                          <div className="text-xs truncate">{f.nickname}</div>
-                          <div className="text-[10px] text-fg-faint truncate" title={f.path}>
-                            {f.path}
-                          </div>
-                        </>
-                      )}
+                      <div className="text-xs truncate">{f.nickname}</div>
+                      <div className="text-[10px] text-fg-faint truncate" title={f.path}>
+                        {f.path}
+                      </div>
                     </div>
 
                     {/* Stale warning */}
-                    {!f.exists && !isEditing && (
+                    {!f.exists && (
                       <span className="text-[9px] text-[#DD4444]/80 shrink-0" title="Directory not found">
                         missing
                       </span>
                     )}
 
-                    {/* Action buttons — visible on hover */}
-                    {!isEditing && (
-                      <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover/folder:opacity-100 transition-opacity">
-                        {/* Rename */}
-                        <button
-                          onClick={(e) => handleStartRename(e, f)}
-                          className="w-5 h-5 flex items-center justify-center rounded-sm text-fg-faint hover:text-fg hover:bg-inset transition-colors"
-                          title="Rename"
-                        >
-                          <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                        </button>
-                        {/* Remove */}
-                        <button
-                          onClick={(e) => handleRemove(e, f.path)}
-                          className="w-5 h-5 flex items-center justify-center rounded-sm text-fg-faint hover:text-[#DD4444] hover:bg-inset transition-colors"
-                          title="Remove from list"
-                        >
-                          <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-
                     {/* Selected check */}
-                    {isSelected && !isEditing && (
+                    {isSelected && (
                       <svg className="w-3 h-3 shrink-0 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                       </svg>
@@ -318,7 +245,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
                     {/* Sync dot — green syncing / red problem / gray not in
                         sync; the tooltip carries the full phrase. Renders only
                         when syncSpaces.status() resolved (desktop). */}
-                    {dot && !isEditing && (
+                    {dot && (
                       <span
                         className={`w-2 h-2 rounded-full shrink-0 ${DOT_CLASS[dot.color]}`}
                         title={dot.label}
