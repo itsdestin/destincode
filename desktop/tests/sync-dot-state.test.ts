@@ -73,4 +73,16 @@ describe('lastSyncedLabel', () => {
     const s = status({ recentEvents: [{ type: 'synced', spaceId: 'project:budget-app', at: NOW - 5_000 }] });
     expect(lastSyncedLabel('project:budget-app', s, NOW)).toBe('just now');
   });
+  it('uses the singular "1 minute ago" at exactly one minute', () => {
+    const s = status({ recentEvents: [{ type: 'synced', spaceId: 'project:budget-app', at: NOW - 60_000 }] });
+    expect(lastSyncedLabel('project:budget-app', s, NOW)).toBe('1 minute ago');
+  });
+  it('uses the singular "1 hour ago" at exactly one hour', () => {
+    const s = status({ recentEvents: [{ type: 'synced', spaceId: 'project:budget-app', at: NOW - 60 * 60_000 }] });
+    expect(lastSyncedLabel('project:budget-app', s, NOW)).toBe('1 hour ago');
+  });
+  it('pluralizes hours ("3 hours ago")', () => {
+    const s = status({ recentEvents: [{ type: 'synced', spaceId: 'project:budget-app', at: NOW - 3 * 60 * 60_000 }] });
+    expect(lastSyncedLabel('project:budget-app', s, NOW)).toBe('3 hours ago');
+  });
 });
