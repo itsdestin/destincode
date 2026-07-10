@@ -76,7 +76,11 @@ export type GameAction =
   | { type: 'REMATCH_REQUESTED' };
 
 export interface GameConnection {
-  createGame: () => void;
+  // createGame was removed 2026-07-09 with the manual room-code UI (Destin:
+  // challenges are the only game entry now). Room codes REMAIN the internal
+  // capability token for PartyKit rooms — challengePlayer generates one and
+  // joinGame consumes the code received with an accepted challenge.
+  /** Join a game room by code — the code arrives with an incoming challenge. */
   joinGame: (code: string) => void;
   makeMove: (column: number) => void;
   sendChat: (text: string) => void;

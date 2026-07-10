@@ -186,16 +186,9 @@ export function usePartyGame(
     gameCodeRef.current = code;
   }, [dispatch, lobbyStatusUpdate]);
 
-  const createGame = useCallback(() => {
-    if (!playerName) return;
-    const code = generateCode();
-    myColorRef.current = 'red';
-    rematchRequestedRef.current = false;
-    opponentRef.current = null;
-    dispatch({ type: 'ROOM_CREATED', code, color: 'red' });
-    connectToRoom(code, playerName);
-  }, [playerName, dispatch, connectToRoom]);
-
+  // createGame (manual room creation for the old Create Game button) was
+  // removed 2026-07-09 along with the room-code UI — challengePlayer below is
+  // the only room-creating path now, and it generates its own code.
   const joinGame = useCallback((code: string) => {
     if (!playerName) return;
     myColorRef.current = 'yellow';
@@ -278,6 +271,10 @@ export function usePartyGame(
   // target is the challenged player's ACCOUNT ID (spec §3) — forwarded verbatim
   // to the presence layer via lobbyChallenge; the room itself still uses our
   // display-name tag.
+  // Room codes REMAIN the internal capability token for PartyKit rooms — this
+  // generates one and sends it with the challenge; the recipient's Accept joins
+  // by it. Only the manual create/join-by-code UI was removed (2026-07-09,
+  // Destin: friends/handles cover the real use case).
   const challengePlayer = useCallback((target: string) => {
     if (!playerName) return;
     const code = generateCode();
@@ -289,5 +286,5 @@ export function usePartyGame(
     lobbyChallenge(target, 'connect-four', code);
   }, [playerName, dispatch, connectToRoom, lobbyChallenge]);
 
-  return { createGame, joinGame, makeMove, sendChat, requestRematch, leaveGame, challengePlayer };
+  return { joinGame, makeMove, sendChat, requestRematch, leaveGame, challengePlayer };
 }

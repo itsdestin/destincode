@@ -466,8 +466,10 @@ function AppInner() {
   const lobby = usePresence(lobbyLeader);
   const game = usePartyGame(lobby.updateStatus, lobby.challengePlayer);
 
+  // createGame is gone from GameConnection (2026-07-09): the manual room-code
+  // UI was removed — challenges are the only game entry. joinGame stays (an
+  // accepted challenge joins by the received code).
   const gameConnection = useMemo(() => ({
-    createGame: game.createGame,
     joinGame: game.joinGame,
     makeMove: game.makeMove,
     sendChat: game.sendChat,
@@ -476,7 +478,7 @@ function AppInner() {
     challengePlayer: game.challengePlayer,
     respondToChallenge: lobby.respondToChallenge,
     reconnectLobby: lobby.reconnect,
-  }), [game.createGame, game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
+  }), [game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
 
   // Derive session status colors for status dots.
   // chatStateMap is a new Map reference on every dispatch, so we stabilize with

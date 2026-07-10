@@ -207,7 +207,6 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
   // shares your name and fire spurious refreshes on null display_name edges.
   const { user } = useAccount();
   const myId = user?.id ?? null;
-  const [joinCode, setJoinCode] = useState('');
 
   const [friends, setFriends] = useState<FriendRow[] | null>(null);
   const [requests, setRequests] = useState<RequestsPayload | null>(null);
@@ -324,11 +323,13 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
     <div className="flex flex-col gap-0">
       {/* Player info bar */}
       <div className="px-3 py-2 border-b border-edge flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {/* Show green only when actually connected — not just non-incognito */}
-          <div className={`w-2 h-2 rounded-full ${incognito || !state.connected ? 'bg-fg-faint' : 'bg-green-400'}`} />
-          <span className="text-sm font-medium text-fg">{state.username}</span>
-          {incognito && <span className="text-[10px] text-fg-muted">Incognito</span>}
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-medium text-fg truncate">{state.username}</span>
+          {/* Plain-word status, never a glyph (Destin's standing rule — the old
+              green/faint dot was removed 2026-07-09). This screen only renders
+              when connected or incognito (the parent gates the rest), so the
+              two reachable states are exactly these words. */}
+          <span className="text-[10px] text-fg-muted shrink-0">{incognito ? 'Incognito' : 'Online'}</span>
         </div>
         {onToggleIncognito && (
           <button
@@ -347,7 +348,12 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
 
       {/* Incoming challenge — challengeFrom is account identity: .id is the
           stable key passed to respondToChallenge, .name the visible tag, and
-          .handle is now carried so we can render @handle alongside. */}
+          .handle is now carried so we can render @handle alongside.
+          Room codes still exist INTERNALLY as the capability token for PartyKit
+          rooms — accepting a challenge joins by the received code below. The
+          manual Create Game / enter-a-room-code UI was removed 2026-07-09
+          (Destin: friends/handles cover the real use case); challenges are the
+          only way into a game now. */}
       {state.challengeFrom && (
         <div className="px-3 py-2 border-b border-edge bg-indigo-950/50">
           <p className="text-sm text-fg mb-2">
@@ -387,35 +393,6 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
           </p>
         </div>
       )}
-
-      {/* Create / Join by room code — kept for playing with someone you'd rather
-          share a one-off code with than add as a friend (challenge covers the
-          friends path). */}
-      <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
-        <button
-          onClick={() => connection.createGame()}
-          className="w-full bg-accent hover:bg-accent text-on-accent text-sm font-medium rounded-lg py-2 transition-colors"
-        >
-          Create Game
-        </button>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-            placeholder="Room code"
-            maxLength={6}
-            className="flex-1 bg-well border border-edge rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-fg-dim transition-colors uppercase tracking-widest"
-          />
-          <button
-            onClick={() => { if (joinCode.trim()) connection.joinGame(joinCode.trim()); }}
-            disabled={!joinCode.trim()}
-            className="bg-inset hover:bg-edge disabled:opacity-40 disabled:cursor-not-allowed text-fg text-sm font-medium rounded-lg px-3 py-2 transition-colors"
-          >
-            Join
-          </button>
-        </div>
-      </div>
 
       {/* Incoming friend requests */}
       {incoming.length > 0 && (
@@ -559,7 +536,6 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
 }
 
 function JoiningScreen({ connection }: Props) {
-  const state = useGameState();
   const dispatch = useGameDispatch();
   const [timedOut, setTimedOut] = useState(false);
 
@@ -575,16 +551,14 @@ function JoiningScreen({ connection }: Props) {
     }
   }, [timedOut, connection, dispatch]);
 
+  // The only way here is accepting a friend's challenge, so the room code
+  // (still the internal PartyKit capability token) means nothing to the user —
+  // don't display it. Removed with the manual create/join UI, 2026-07-09.
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-6 px-4 py-8">
-      <div className="flex flex-col items-center gap-3">
-        <p className="text-xs text-fg-muted uppercase tracking-wider">Joining Room</p>
-        <p className="text-lg font-mono font-bold text-fg tracking-widest">{state.roomCode}</p>
-      </div>
-
       <div className="flex flex-col items-center gap-2">
         <BrailleSpinner size="lg" />
-        <p className="text-sm text-fg-dim">Connecting...</p>
+        <p className="text-sm text-fg-dim">Joining the game…</p>
       </div>
 
       <button
@@ -598,43 +572,17 @@ function JoiningScreen({ connection }: Props) {
 }
 
 function WaitingScreen({ connection }: Props) {
-  const state = useGameState();
   const dispatch = useGameDispatch();
-  const code = state.roomCode ?? '';
-  const [copied, setCopied] = useState(false);
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
+  // The only way here is challenging a friend, so the old share-this-room-code
+  // display (code boxes + Copy Code) came out with the manual create/join UI
+  // (2026-07-09). The room code still exists internally as the PartyKit
+  // capability token — the challenge message already delivered it to the friend.
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-6 px-4 py-8">
-      <div className="flex flex-col items-center gap-3">
-        <p className="text-xs text-fg-muted uppercase tracking-wider">Room Code</p>
-        <div className="flex gap-1.5">
-          {code.split('').map((ch, i) => (
-            <span
-              key={i}
-              className="w-9 h-10 flex items-center justify-center bg-inset border border-edge rounded-lg text-lg font-mono font-bold text-fg"
-            >
-              {ch}
-            </span>
-          ))}
-        </div>
-        <button
-          onClick={copyCode}
-          className="text-xs text-[#66AAFF] hover:text-[#88CCFF] transition-colors"
-        >
-          {copied ? 'Copied!' : 'Copy Code'}
-        </button>
-      </div>
-
       <div className="flex flex-col items-center gap-2">
         <BrailleSpinner size="lg" />
-        <p className="text-sm text-fg-dim">Waiting for opponent...</p>
+        <p className="text-sm text-fg-dim">Waiting for your friend to accept…</p>
       </div>
 
       <button

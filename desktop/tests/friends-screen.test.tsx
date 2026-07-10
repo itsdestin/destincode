@@ -39,9 +39,9 @@ const ok = <T,>(value: T) => ({ ok: true as const, value });
 const err = (status: number, message = 'nope') => ({ ok: false as const, status, message });
 
 // A no-op connection; challengePlayer is spied where a test needs it.
+// (No createGame — it left GameConnection with the room-code UI, 2026-07-09.)
 function makeConnection(over: Record<string, any> = {}) {
   return {
-    createGame: vi.fn(),
     joinGame: vi.fn(),
     makeMove: vi.fn(),
     sendChat: vi.fn(),
@@ -102,14 +102,20 @@ describe('FriendsScreen — friends list', () => {
       ])),
     });
 
-    const { findByText, getByText } = render(<GameLobby connection={makeConnection()} />);
+    const { findByText, getByText, getAllByText, queryByText, queryByPlaceholderText } = render(<GameLobby connection={makeConnection()} />);
 
     // Wait for refresh() to populate the list.
     await findByText('Alice');
     expect(getByText('Bob')).toBeTruthy();
-    // Word statuses — never glyphs.
-    expect(getByText('Online')).toBeTruthy();   // Bob (live presence)
+    // Word statuses — never glyphs. 'Online' appears twice: the player bar
+    // (word status replaced the old green dot) and Bob's row (live presence).
+    expect(getAllByText('Online').length).toBeGreaterThan(0);
     expect(getByText('Offline')).toBeTruthy();  // Alice (no lastSeenAt)
+
+    // The room-code UI is gone (Destin decision 2026-07-09) — challenges are
+    // the only game entry point.
+    expect(queryByText('Create Game')).toBeNull();
+    expect(queryByPlaceholderText('Room code')).toBeNull();
 
     // Online-first ordering: Bob's row precedes Alice's in the DOM.
     const bobIdx = getByText('Bob').compareDocumentPosition(getByText('Alice'));
