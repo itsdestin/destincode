@@ -105,9 +105,16 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
           // Flatten the replay ring into ordinary signal events — the consumer
           // treats replay and live signals identically (see header note 3).
           for (const entry of msg.replay) {
-            opts.onEvent({ type: 'signal', kind: entry.kind, spaceKey: entry.spaceKey });
+            // Per-entry guard: a null/malformed entry must not throw out of the
+            // loop into the outer catch and silently strand the REST of the
+            // replay batch (same per-emit isolation principle as the transcript
+            // watcher's readNewLines), nor emit {kind: undefined} downstream.
+            if (entry && entry.kind && entry.spaceKey) {
+              opts.onEvent({ type: 'signal', kind: entry.kind, spaceKey: entry.spaceKey });
+            }
           }
-        } else if (msg && msg.type === 'signal') {
+        } else if (msg && msg.type === 'signal' && msg.kind && msg.spaceKey) {
+          // Same guard on live frames — never hand the consumer undefined fields.
           opts.onEvent({ type: 'signal', kind: msg.kind, spaceKey: msg.spaceKey });
         }
         // pong (or any other frame): ignore — pings are fire-and-forget liveness.

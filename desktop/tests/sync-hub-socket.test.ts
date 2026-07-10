@@ -141,6 +141,32 @@ describe('sync-hub-socket state machine', () => {
     sock.destroy();
   });
 
+  // Hardening (review): one malformed replay entry must not throw out of the
+  // flatten loop and strand the rest of the batch, nor emit undefined fields.
+  it('skips malformed replay entries without dropping the valid ones around them', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    inst.emit('message', JSON.stringify({
+      type: 'hello',
+      replay: [
+        { kind: 'space-updated', spaceKey: 'a', device: 'd1', at: 1 },
+        null, // malformed: would TypeError on entry.kind without the guard
+        { kind: 'space-updated' }, // malformed: missing spaceKey
+        { kind: 'space-updated', spaceKey: 'b', device: 'd2', at: 2 },
+      ],
+    }));
+    expect(types(events)).toEqual(['connected', 'signal', 'signal']);
+    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'a' });
+    expect(events[2]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'b' });
+
+    // Live signal frames get the same guard — missing fields emit nothing.
+    inst.emit('message', JSON.stringify({ type: 'signal', kind: 'space-updated' }));
+    expect(types(events)).toEqual(['connected', 'signal', 'signal']);
+    sock.destroy();
+  });
+
   // Behavior 6: sendSignal on an OPEN socket sends the JSON frame and returns
   // true; on a closed socket it's a silent no-op returning false.
   it('sendSignal sends the frame + returns true when open, no-ops + returns false when closed', () => {
