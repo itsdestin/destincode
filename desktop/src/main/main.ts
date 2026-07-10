@@ -18,7 +18,7 @@ import { FirstRunManager } from './first-run';
 import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
-import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster } from './sync-spaces/service';
+import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore } from './sync-spaces/service';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
@@ -1435,6 +1435,11 @@ app.whenReady().then(async () => {
   // sync. Wire the remote broadcaster first so engine events fired during the
   // initial reconcile still reach any already-connected remote clients.
   setSyncSpacesRemoteBroadcaster((e) => remoteServer.broadcast({ type: 'syncspaces:event', payload: e }));
+  // SyncHub (Plan 1b) reads the marketplace token to auth its WebSocket. Reuse
+  // the same auth store the social/marketplace handlers own; getToken() is read
+  // lazily per-connect so sign-in/out mid-session is picked up without a restart.
+  // Must be set before startSyncSpaces so a sync enabled at boot can connect.
+  setSyncSpacesAuthStore(marketplaceAuthStore);
   startSyncSpaces(
     async () => {
       // Daily dated backup targets come from the SAME backend config the legacy

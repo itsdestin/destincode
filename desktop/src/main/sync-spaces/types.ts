@@ -42,4 +42,8 @@ export type SpaceSyncEvent = (
   | { type: 'conflict'; spaceId: string; copies: string[] }
   | { type: 'oversize'; spaceId: string; files: string[] }
   | { type: 'error'; spaceId: string; message: string }
+  // SyncHub (Plan 1b) connection status. spaceId is the literal 'hub' (never a
+  // real space id) so every consumer's per-space event scan / sync-dot
+  // derivation ignores it naturally while keeping the field shape uniform.
+  | { type: 'hub-status'; spaceId: 'hub'; status: 'connected' | 'disconnected' }
 ) & { at?: number };
