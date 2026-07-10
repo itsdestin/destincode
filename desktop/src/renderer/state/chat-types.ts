@@ -15,6 +15,12 @@ export interface InteractivePrompt {
 
 export type AssistantTurnSegment =
   | { type: 'text'; content: string; messageId: string }
+  // Reasoning / extended-thinking content with a text payload. The native
+  // harness (Phase 2) streams these for thinking models; CC's transcript
+  // path may also carry thinking text in future. Rendered as a collapsible
+  // disclosure attached to the next text bubble. partId merges streaming
+  // chunks into one segment, mirroring the text streaming path.
+  | { type: 'reasoning'; content: string; messageId: string; partId?: string }
   | { type: 'tool-group'; groupId: string }
   // Plan mode: ExitPlanMode tool's `input.plan` surfaced as its own bubble so
   // users see the full plan markdown in chat, not just the approval buttons.
@@ -216,10 +222,22 @@ export type ChatAction =
     }
   | {
       // Heartbeat fired when the transcript watcher sees an assistant
-      // thinking block (extended-thinking models). No UI; just bumps
-      // lastActivityAt and clears attentionState back to 'ok'.
+      // thinking block (extended-thinking models) WITHOUT a text payload —
+      // a lifecycle marker only. No UI; just bumps lastActivityAt and
+      // clears attentionState back to 'ok'.
       type: 'TRANSCRIPT_THINKING_HEARTBEAT';
       sessionId: string;
+    }
+  | {
+      // Streaming reasoning chunk WITH text payload. Merged into a single
+      // reasoning segment by partId, rendered as a collapsible disclosure
+      // in AssistantTurnBubble. Bumps lastActivityAt + clears attentionState.
+      type: 'TRANSCRIPT_ASSISTANT_REASONING';
+      sessionId: string;
+      uuid: string;
+      text: string;
+      timestamp: number;
+      partId?: string;
     }
   | {
       type: 'PERMISSION_REQUEST';

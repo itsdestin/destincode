@@ -140,4 +140,41 @@ describe('TRANSCRIPT_TURN_COMPLETE metadata', () => {
     expect(session.currentTurnId).toBeNull();
     expect(session.assistantTurns.size).toBe(0);
   });
+
+  it('reasoning: consecutive REASONING events with same partId merge into one segment', () => {
+    // Thinking models (native harness) stream reasoning as chunks carrying a
+    // text payload + partId. Same partId → append to one segment, mirroring
+    // the text streaming path. Without this, the collapsible reasoning block
+    // would render dozens of tiny disclosures per turn.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r1', text: 'Let me ', timestamp: 1, partId: 'rprt_1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r2', text: 'think...', timestamp: 2, partId: 'rprt_1' });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(1);
+    expect(turn.segments[0]).toMatchObject({ type: 'reasoning', content: 'Let me think...', partId: 'rprt_1' });
+  });
+
+  it('reasoning: REASONING followed by TEXT produces two segments (reasoning then text)', () => {
+    // The bubble splitter then attaches the reasoning to the following text
+    // bubble as a collapsible disclosure. Reducer just keeps them as
+    // distinct segments in order. (TEXT carries no partId on master.)
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r1', text: 'thinking', timestamp: 1, partId: 'rprt_1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't1', text: 'answer', timestamp: 2 });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(2);
+    expect(turn.segments[0].type).toBe('reasoning');
+    expect(turn.segments[1].type).toBe('text');
+  });
+
+  it('reasoning: REASONING action clears stale attentionState back to ok', () => {
+    // Reasoning is genuine activity — bumps lastActivityAt and clears the
+    // 'stuck' banner. Mirrors the existing TRANSCRIPT_THINKING_HEARTBEAT
+    // behavior so thinking models don't surface false-positive stuck banners
+    // while reasoning is streaming.
+    state = dispatch(state, { type: 'ATTENTION_STATE_CHANGED', sessionId: SESSION, state: 'stuck' });
+    expect(state.get(SESSION)!.attentionState).toBe('stuck');
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r1', text: 'x', timestamp: 1, partId: 'rprt_1' });
+    expect(state.get(SESSION)!.attentionState).toBe('ok');
+  });
 });

@@ -872,14 +872,27 @@ function AppInner() {
             agentId: event.data.agentId,
           });
           break;
-        case 'assistant-thinking':
-          // Extended-thinking heartbeat — bumps lastActivityAt and clears
-          // any stale attention banner. No timeline change.
-          batchTranscriptDispatch({
-            type: 'TRANSCRIPT_THINKING_HEARTBEAT',
-            sessionId: event.sessionId,
-          });
+        case 'assistant-thinking': {
+          // Text payload → real reasoning content (collapsible in chat).
+          // No payload → lifecycle heartbeat only (existing behavior:
+          // bumps lastActivityAt and clears any stale attention banner).
+          if (event.data?.text) {
+            batchTranscriptDispatch({
+              type: 'TRANSCRIPT_ASSISTANT_REASONING',
+              sessionId: event.sessionId,
+              uuid: event.uuid,
+              text: event.data.text,
+              timestamp: event.timestamp,
+              partId: (event.data as any).partId,
+            });
+          } else {
+            batchTranscriptDispatch({
+              type: 'TRANSCRIPT_THINKING_HEARTBEAT',
+              sessionId: event.sessionId,
+            });
+          }
           break;
+        }
         case 'compact-summary': {
           // Canonical compaction-complete signal — fired by the transcript
           // watcher when Claude Code writes an isCompactSummary entry. Works

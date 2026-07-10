@@ -502,6 +502,43 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    // Streaming reasoning chunk with text payload. Mirrors the
+    // TRANSCRIPT_ASSISTANT_TEXT streaming path: same partId merges chunks
+    // into one segment instead of creating a new bubble per token.
+    case 'TRANSCRIPT_ASSISTANT_REASONING': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+
+      const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
+      const turn = assistantTurns.get(currentTurnId)!;
+      let segments = turn.segments;
+      const lastIdx = segments.length - 1;
+      const last = lastIdx >= 0 ? segments[lastIdx] : null;
+      if (
+        action.partId
+        && last
+        && last.type === 'reasoning'
+        && last.partId === action.partId
+      ) {
+        const merged = { ...last, content: last.content + action.text };
+        segments = [...segments.slice(0, lastIdx), merged];
+      } else {
+        segments = [
+          ...segments,
+          { type: 'reasoning', content: action.text, messageId: nextMessageId(), partId: action.partId },
+        ];
+      }
+      assistantTurns.set(currentTurnId, { ...turn, segments });
+
+      next.set(action.sessionId, {
+        ...session, assistantTurns, timeline, currentTurnId,
+        currentGroupId: null,
+        lastActivityAt: Date.now(),
+        attentionState: 'ok',
+      });
+      return next;
+    }
+
     case 'TRANSCRIPT_TOOL_USE': {
       // Subagent event: route into the parent Agent tool's nested timeline.
       if (action.parentAgentToolUseId) return applySubagentEvent(state, action);
