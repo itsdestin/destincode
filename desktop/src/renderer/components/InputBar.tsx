@@ -9,6 +9,8 @@ import FlowingKeywordsText from './FlowingKeywords';
 // so interception is consistent between typed input and drawer selection.
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
 import type { UsageSnapshot } from '../state/chat-types';
+import { hasPendingInteraction } from '../state/pty-input-gate';
+import { buildOutgoingMessage } from './outgoing-message';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { isAndroid } from '../platform';
 
@@ -217,8 +219,22 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     setAttachments((prev) => prev.filter((a) => a.path !== path));
   }, []);
 
+  // Returns true when the message was consumed (input can clear), false when
+  // the send was refused and the draft should stay in the input bar.
   const sendMessage = useCallback(
-    (message: string, files: Attachment[] = []) => {
+    (message: string, files: Attachment[] = []): boolean => {
+      // Prompt gate: while a permission request / AskUserQuestion / plan
+      // approval / trust prompt is pending, Claude Code's native Ink select
+      // menu is LIVE in the PTY. Anything we write would be interpreted as
+      // menu keystrokes — the trailing \r would press Enter on the highlighted
+      // option, silently answering the prompt with the user's text lost.
+      // Refuse the send (keeping the draft) and tell the user why.
+      const session = getSessionState?.(sessionId);
+      if (session && hasPendingInteraction(session)) {
+        onToast?.('Claude is waiting for your response — answer the prompt first.');
+        return false;
+      }
+
       // Route slash commands through the central dispatcher BEFORE attachment
       // merging so the intercept sees the pristine command text (not "file.txt /clear").
       // The dispatcher decides: fully intercept, forward-and-intercept, or let through.
@@ -236,23 +252,24 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
           // For commands like /clear and /compact that still need Claude Code's own state to change.
           window.claude.session.sendInput(sessionId, dispatchResult.alsoSendToPty);
         }
-        return;
+        return true;
       }
       // Dispatcher may rewrite the message (e.g. strip escape-hatch backslash)
       const effectiveMessage = dispatchResult.rewritten ?? message;
 
-      const userText = effectiveMessage.trim();
-      const hasFiles = files.length > 0;
-      if (!userText && !hasFiles) return;
-      if (disabled) return;
+      // One sanitized source string for BOTH the optimistic bubble and the PTY
+      // send. The transcript confirms the bubble by EXACT content match, so if
+      // the bubble kept newlines the send stripped, a multiline message could
+      // never be confirmed — `pending` stayed set forever and
+      // useSubmitConfirmation fired a stray recovery \r. See outgoing-message.ts.
+      const outgoing = buildOutgoingMessage(effectiveMessage, files.map((f) => f.path));
+      if (!outgoing) return true; // nothing to send — treat as consumed
+      if (disabled) return false;
 
-      // Optimistic chat bubble: show what the user sent (paths + text,
-      // space-joined) before Claude's transcript event arrives.
-      const displayCombined = [...files.map((f) => f.path), userText].filter(Boolean).join(' ');
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
-        content: displayCombined,
+        content: outgoing.content,
         timestamp: Date.now(),
         // Exact attachment paths so UserMessage can render each as a clickable
         // pill — file-picker paths routinely contain spaces, which the joined
@@ -273,10 +290,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // Then send the user's text + \r as one write — the pty-worker splits it
       // into "text" + 600ms gap + "\r" so Enter arrives after the paste commits
       // (previously this was two scattered setTimeouts in the renderer).
-      //
-      // Newlines in user text are replaced with spaces so they don't submit early.
       const FILE_GAP_MS = 600; // > Ink's 500ms PASTE_TIMEOUT — breaks paste buffer between paths
-      const sanitizedText = userText.replace(/[\r\n]+/g, ' ');
 
       files.forEach((f, idx) => {
         setTimeout(() => {
@@ -289,8 +303,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // Attachments-only case: send just "\r" (single char, no split applied).
       const submitStart = files.length * FILE_GAP_MS;
       setTimeout(() => {
-        window.claude.session.sendInput(sessionId, sanitizedText + '\r');
+        window.claude.session.sendInput(sessionId, outgoing.ptyText + '\r');
       }, submitStart);
+      return true;
     },
     [sessionId, disabled, dispatch, view, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker],
   );
@@ -322,7 +337,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     // Read directly from the DOM element to avoid stale-closure races
     // where paste + immediate Enter outrun React's render cycle
     const currentText = inputRef.current?.value ?? text;
-    sendMessage(currentText, attachments);
+    // A refused send (pending prompt gate, disabled session) keeps the draft
+    // in the input bar so the user's text isn't lost.
+    if (!sendMessage(currentText, attachments)) return;
     setText('');
     setAttachments([]);
     draftsRef.current.delete(sessionId); // Clear stored draft after sending

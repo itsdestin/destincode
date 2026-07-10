@@ -1,0 +1,123 @@
+import { describe, it, expect } from 'vitest';
+import {
+  hasPendingInteraction,
+  canRetrySubmit,
+} from '../src/renderer/state/pty-input-gate';
+import { createSessionChatState, SessionChatState } from '../src/renderer/state/chat-types';
+import type { ToolCallState } from '../src/renderer/state/chat-types';
+
+// Why these tests exist: Claude Code keeps its native Ink select menu live in
+// the PTY while YouCoded shows a permission / AskUserQuestion / plan card.
+// Any programmatic byte written to the PTY in that window is menu input — a
+// bare `\r` selects the highlighted option, silently auto-answering the
+// question (or auto-approving the permission). These predicates are the
+// shared gate every automated PTY writer must consult first.
+
+function makeTool(overrides: Partial<ToolCallState>): ToolCallState {
+  return {
+    toolUseId: 'tool-1',
+    toolName: 'Bash',
+    input: {},
+    status: 'running',
+    ...overrides,
+  };
+}
+
+function withTool(session: SessionChatState, tool: ToolCallState): SessionChatState {
+  session.toolCalls.set(tool.toolUseId, tool);
+  session.activeTurnToolIds.add(tool.toolUseId);
+  return session;
+}
+
+describe('hasPendingInteraction', () => {
+  it('is false for a fresh idle session', () => {
+    expect(hasPendingInteraction(createSessionChatState())).toBe(false);
+  });
+
+  it('is true when an active-turn tool is awaiting approval', () => {
+    const session = withTool(createSessionChatState(), makeTool({ status: 'awaiting-approval' }));
+    expect(hasPendingInteraction(session)).toBe(true);
+  });
+
+  it('is false when the awaiting-approval tool belongs to a PRIOR turn', () => {
+    // toolCalls is a session-lifetime Map that is never cleared; only
+    // activeTurnToolIds scopes the current turn. A stale awaiting-approval
+    // entry from an ended turn must not block input forever.
+    const session = createSessionChatState();
+    session.toolCalls.set('old', makeTool({ toolUseId: 'old', status: 'awaiting-approval' }));
+    expect(hasPendingInteraction(session)).toBe(false);
+  });
+
+  it('is false when active-turn tools are merely running', () => {
+    const session = withTool(createSessionChatState(), makeTool({ status: 'running' }));
+    expect(hasPendingInteraction(session)).toBe(false);
+  });
+
+  it('is true when an uncompleted interactive prompt is in the timeline', () => {
+    const session = createSessionChatState();
+    session.timeline.push({
+      kind: 'prompt',
+      prompt: { promptId: 'p1', title: 'Trust this folder?', buttons: [] },
+    });
+    expect(hasPendingInteraction(session)).toBe(true);
+  });
+
+  it('is false when the interactive prompt was already completed', () => {
+    const session = createSessionChatState();
+    session.timeline.push({
+      kind: 'prompt',
+      prompt: { promptId: 'p1', title: 'Trust this folder?', buttons: [], completed: 'Yes' },
+    });
+    expect(hasPendingInteraction(session)).toBe(false);
+  });
+});
+
+describe('canRetrySubmit', () => {
+  it('allows retry for an idle session with attentionState ok', () => {
+    expect(canRetrySubmit(createSessionChatState())).toBe(true);
+  });
+
+  it('blocks retry when attentionState is not ok', () => {
+    const session = createSessionChatState();
+    session.attentionState = 'stuck';
+    expect(canRetrySubmit(session)).toBe(false);
+  });
+
+  it('blocks retry while a tool is awaiting approval (menu live in TUI)', () => {
+    const session = withTool(createSessionChatState(), makeTool({ status: 'awaiting-approval' }));
+    expect(canRetrySubmit(session)).toBe(false);
+  });
+
+  it('blocks retry while active-turn tools are running (turn in flight)', () => {
+    const session = withTool(createSessionChatState(), makeTool({ status: 'running' }));
+    expect(canRetrySubmit(session)).toBe(false);
+  });
+
+  it('blocks retry while an assistant turn is in flight (currentTurnId set)', () => {
+    // Covers the queued-message case: CC queues messages sent mid-turn and
+    // only writes their transcript line when consumed, so `pending` stays set
+    // for the whole turn. Retrying mid-turn risks pressing Enter on a menu
+    // that appears later in the turn.
+    const session = createSessionChatState();
+    session.currentTurnId = 'turn-1';
+    expect(canRetrySubmit(session)).toBe(false);
+  });
+
+  it('blocks retry while an uncompleted interactive prompt is shown', () => {
+    const session = createSessionChatState();
+    session.timeline.push({
+      kind: 'prompt',
+      prompt: { promptId: 'p1', title: 'Resume Session', buttons: [] },
+    });
+    expect(canRetrySubmit(session)).toBe(false);
+  });
+
+  it('still allows retry while isThinking is true but nothing else is in flight', () => {
+    // isThinking is set on USER_PROMPT and only cleared by endTurn(). In the
+    // lost-message state this hook recovers from, CC never received the
+    // message, so isThinking stays true forever — it must NOT gate the retry.
+    const session = createSessionChatState();
+    session.isThinking = true;
+    expect(canRetrySubmit(session)).toBe(true);
+  });
+});

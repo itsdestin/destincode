@@ -171,4 +171,76 @@ describe('SessionManager', () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0].initialInput).toBe('prefill text');
   });
+
+  // --- broadcastReloadPlugins gating (stray-Enter fix) ---
+  //
+  // `/reload-plugins\r` typed into a session whose PTY is showing a live Ink
+  // select menu (permission prompt / AskUserQuestion) presses Enter on the
+  // highlighted option. The broadcast must defer per-session while a
+  // permission request is pending there.
+
+  describe('broadcastReloadPlugins gating', () => {
+    const reloadSends = () =>
+      mockWorker.send.mock.calls.filter(
+        (c: any) => c[0].type === 'input' && c[0].data === '/reload-plugins\r',
+      );
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('sends /reload-plugins to active sessions after the delay', () => {
+      manager.createSession({ name: 's1', cwd: tmpDir, skipPermissions: false });
+      manager.broadcastReloadPlugins(100);
+      expect(reloadSends()).toHaveLength(0);
+      vi.advanceTimersByTime(100);
+      expect(reloadSends()).toHaveLength(1);
+    });
+
+    it('defers the send while the gate reports the session blocked', () => {
+      manager.createSession({ name: 's1', cwd: tmpDir, skipPermissions: false });
+      let blocked = true;
+      manager.setReloadPluginsGate(() => blocked);
+
+      manager.broadcastReloadPlugins(100);
+      vi.advanceTimersByTime(100);
+      expect(reloadSends()).toHaveLength(0);
+
+      // Still blocked across one retry tick…
+      vi.advanceTimersByTime(5000);
+      expect(reloadSends()).toHaveLength(0);
+
+      // …then the permission resolves and the next retry delivers the reload.
+      blocked = false;
+      vi.advanceTimersByTime(5000);
+      expect(reloadSends()).toHaveLength(1);
+    });
+
+    it('gives up after the retry cap instead of retrying forever', () => {
+      manager.createSession({ name: 's1', cwd: tmpDir, skipPermissions: false });
+      manager.setReloadPluginsGate(() => true);
+
+      manager.broadcastReloadPlugins(0);
+      // Far beyond the cap window — nothing should ever be sent.
+      vi.advanceTimersByTime(10 * 60 * 1000);
+      expect(reloadSends()).toHaveLength(0);
+    });
+
+    it('drops the retry when the session is destroyed in the meantime', () => {
+      const info = manager.createSession({ name: 's1', cwd: tmpDir, skipPermissions: false });
+      let blocked = true;
+      manager.setReloadPluginsGate(() => blocked);
+
+      manager.broadcastReloadPlugins(0);
+      vi.advanceTimersByTime(0);
+      manager.destroySession(info.id);
+      blocked = false;
+      vi.advanceTimersByTime(5000);
+      expect(reloadSends()).toHaveLength(0);
+    });
+  });
 });

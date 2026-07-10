@@ -189,9 +189,17 @@ async function handleInput(text) {
   // Chunk the body, wait for its tail to echo back from CC (proving CC
   // has drained the body bytes from its pipe), then send `\r` as a single
   // byte (guaranteed below paste threshold and guaranteed to arrive in a
-  // fresh kernel read). On echo timeout, fall back to sending `\r` anyway
-  // (the renderer-side useSubmitConfirmation retry covers the residual
-  // failure case).
+  // fresh kernel read).
+  //
+  // On echo timeout, DO NOT write a blind `\r`. No echo means CC is not
+  // showing an input bar that accepted our body — most likely a live Ink
+  // select menu (permission prompt / AskUserQuestion / plan approval) has
+  // focus, and a bare `\r` would press Enter on the highlighted option,
+  // silently auto-answering it (2026-07-09 stray-Enter fix). The
+  // renderer-side useSubmitConfirmation retry recovers the genuinely-lost
+  // case instead: it fires only when the session is observably idle with no
+  // prompt pending (see pty-input-gate.ts), and its `\r` queues behind this
+  // handler via inputQueue, so ordering is preserved.
   const tail = body.slice(Math.max(0, body.length - ECHO_TAIL_LEN));
   const echoStart = Date.now();
   trace('ECHO_WAIT', `tail=${tracePreview(tail, ECHO_TAIL_LEN)} timeout=${ECHO_TIMEOUT_MS}ms`);
@@ -199,14 +207,14 @@ async function handleInput(text) {
   await writeChunked(body);
   const echoed = await echoPromise;
   const echoMs = Date.now() - echoStart;
-  if (echoed) {
-    trace('ECHO_OK', `delayMs=${echoMs}`);
-  } else {
-    trace('ECHO_TIMEOUT', `delayMs=${echoMs} — falling back to bare CR`);
+  if (!echoed) {
+    trace('ECHO_TIMEOUT', `delayMs=${echoMs} — suppressing CR (renderer retry recovers)`);
+    return;
   }
+  trace('ECHO_OK', `delayMs=${echoMs}`);
   if (!ptyProcess) return;
   ptyProcess.write('\r');
-  trace('CR', echoed ? 'after-echo' : 'fallback');
+  trace('CR', 'after-echo');
 }
 
 process.on('message', (msg) => {

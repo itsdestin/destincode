@@ -201,18 +201,52 @@ export class SessionManager extends EventEmitter {
     return Array.from(this.sessions.values()).map(s => s.info);
   }
 
+  // Optional per-session hold for broadcastReloadPlugins. Wired to
+  // HookRelay.hasPendingPermission in main.ts: while a permission /
+  // AskUserQuestion request is pending, the session's TUI shows a live Ink
+  // select menu, and typing "/reload-plugins\r" into it would press Enter on
+  // the highlighted option — silently answering the prompt (2026-07-09
+  // stray-Enter fix). Returns true when the session must NOT receive input.
+  private reloadPluginsGate: ((sessionId: string) => boolean) | null = null;
+
+  setReloadPluginsGate(gate: (sessionId: string) => boolean): void {
+    this.reloadPluginsGate = gate;
+  }
+
+  private static readonly RELOAD_RETRY_MS = 5000;
+  private static readonly RELOAD_MAX_RETRIES = 24; // ~2 minutes of deferral
+
   /**
    * Send `/reload-plugins` to every active session after a short delay.
    * The delay gives Claude Code time to (a) flush its cached plugin state
    * and (b) be ready for input at the prompt. Firing immediately after an
    * install races with both and the reload silently no-ops.
+   *
+   * Sessions the gate reports blocked are retried every RELOAD_RETRY_MS for
+   * up to RELOAD_MAX_RETRIES (so the reload still lands once the user answers
+   * the prompt), then dropped — a missed reload is recoverable (next install
+   * or a manual /reload-plugins), an auto-answered prompt is not.
    */
   broadcastReloadPlugins(delayMs: number = 1500): void {
     setTimeout(() => {
       for (const s of this.listSessions()) {
-        if (s.status === 'active') this.sendInput(s.id, '/reload-plugins\r');
+        if (s.status === 'active') this.sendReloadWhenClear(s.id, 0);
       }
     }, delayMs);
+  }
+
+  private sendReloadWhenClear(id: string, attempt: number): void {
+    const session = this.sessions.get(id);
+    if (!session || session.info.status !== 'active') return;
+    if (this.reloadPluginsGate?.(id)) {
+      if (attempt >= SessionManager.RELOAD_MAX_RETRIES) return;
+      setTimeout(
+        () => this.sendReloadWhenClear(id, attempt + 1),
+        SessionManager.RELOAD_RETRY_MS,
+      );
+      return;
+    }
+    this.sendInput(id, '/reload-plugins\r');
   }
 
   getSession(id: string): SessionInfo | undefined {

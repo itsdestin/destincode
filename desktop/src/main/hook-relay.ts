@@ -14,7 +14,11 @@ const DEFAULT_PIPE_NAME = process.platform === 'win32'
 export class HookRelay extends EventEmitter {
   private server: net.Server | null = null;
   private running = false;
-  private pendingSockets = new Map<string, net.Socket>();
+  // requestId → held socket + owning session. The sessionId is tracked so
+  // hasPendingPermission() can tell automated PTY writers (e.g. the
+  // /reload-plugins broadcast) that this session's terminal currently shows
+  // a live permission/AskUserQuestion menu and must not be typed into.
+  private pendingSockets = new Map<string, { socket: net.Socket; sessionId: string }>();
   private pipeName: string;
 
   constructor(pipeName?: string) {
@@ -54,7 +58,7 @@ export class HookRelay extends EventEmitter {
           if (parsed.hook_event_name === 'PermissionRequest') {
             // Hold the socket open — relay-blocking.js is waiting for a response
             const requestId = randomUUID();
-            this.pendingSockets.set(requestId, socket);
+            this.pendingSockets.set(requestId, { socket, sessionId: event.sessionId });
             event.payload._requestId = requestId;
             this.emit('hook-event', event);
 
@@ -150,30 +154,43 @@ export class HookRelay extends EventEmitter {
   }
 
   respond(requestId: string, decision: object): boolean {
-    const socket = this.pendingSockets.get(requestId);
-    if (!socket || socket.destroyed) {
+    const pending = this.pendingSockets.get(requestId);
+    if (!pending || pending.socket.destroyed) {
       this.pendingSockets.delete(requestId);
       return false;
     }
-    socket.write(JSON.stringify(decision) + '\n');
-    socket.end();
+    pending.socket.write(JSON.stringify(decision) + '\n');
+    pending.socket.end();
     this.pendingSockets.delete(requestId);
     return true;
   }
 
   closeSocket(requestId: string): void {
-    const socket = this.pendingSockets.get(requestId);
-    if (socket && !socket.destroyed) {
-      socket.end();
+    const pending = this.pendingSockets.get(requestId);
+    if (pending && !pending.socket.destroyed) {
+      pending.socket.end();
     }
     this.pendingSockets.delete(requestId);
   }
 
+  /**
+   * True while a PermissionRequest for this session is held open. In that
+   * window Claude Code's TUI is showing a live Ink select menu — automated
+   * PTY writers must not send bytes to the session or they will act as menu
+   * keystrokes (a trailing `\r` selects the highlighted option).
+   */
+  hasPendingPermission(sessionId: string): boolean {
+    for (const pending of this.pendingSockets.values()) {
+      if (pending.sessionId === sessionId) return true;
+    }
+    return false;
+  }
+
   stop(): void {
     // Clean up all pending permission sockets
-    for (const [id, socket] of this.pendingSockets) {
-      if (!socket.destroyed) {
-        socket.end();
+    for (const [, pending] of this.pendingSockets) {
+      if (!pending.socket.destroyed) {
+        pending.socket.end();
       }
     }
     this.pendingSockets.clear();
