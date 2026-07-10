@@ -733,7 +733,8 @@ contextBridge.exposeInMainWorld('claude', {
   syncSpaces: {
     status: () => ipcRenderer.invoke(IPC.SYNC_SPACES_STATUS),
     enable: (enabled: boolean) => ipcRenderer.invoke(IPC.SYNC_SPACES_ENABLE, enabled),
-    syncNow: () => ipcRenderer.invoke(IPC.SYNC_SPACES_SYNC_NOW),
+    // Optional spaceId narrows to one space (Project View "Sync now"); omit for all.
+    syncNow: (spaceId?: string) => ipcRenderer.invoke(IPC.SYNC_SPACES_SYNC_NOW, spaceId),
     createProject: (name: string) => ipcRenderer.invoke(IPC.SYNC_SPACES_CREATE_PROJECT, name),
     // Spec §3 import: move an existing folder into ~/YouCoded/Projects/<name>.
     importProject: (sourcePath: string, name: string) =>

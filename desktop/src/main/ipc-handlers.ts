@@ -1915,7 +1915,10 @@ export function registerIpcHandlers(
   // module owns the singleton engine/manager/roots.
   ipcMain.handle(IPC.SYNC_SPACES_STATUS, () => syncSpacesStatus());
   ipcMain.handle(IPC.SYNC_SPACES_ENABLE, (_e, enabled: boolean) => syncSpacesEnable(!!enabled));
-  ipcMain.handle(IPC.SYNC_SPACES_SYNC_NOW, () => syncSpacesSyncNow());
+  // spaceId (optional) narrows the sync to one space for the Project View
+  // "Sync now" button; SyncPanel calls with no arg = sync everything.
+  ipcMain.handle(IPC.SYNC_SPACES_SYNC_NOW, (_e, spaceId?: string) =>
+    syncSpacesSyncNow(spaceId ? String(spaceId) : undefined));
   ipcMain.handle(IPC.SYNC_SPACES_CREATE_PROJECT, (_e, name: string) => syncSpacesCreateProject(String(name ?? '')));
   ipcMain.handle(IPC.SYNC_SPACES_IMPORT_PROJECT, (_e, sourcePath: string, name: string) =>
     // Live-cwd guard input: the folder must not move under a running session.

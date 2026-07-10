@@ -34,8 +34,12 @@ export interface SyncTransport {
   history(space: SyncSpace, limit?: number): Promise<SpaceVersion[]>;
 }
 
-export type SpaceSyncEvent =
+// `at` is stamped by service.broadcast() at emit time (ms epoch). Optional so
+// replayed or older payloads without it still typecheck. The renderer derives
+// "Last synced N minutes ago" (Project View hero) from it.
+export type SpaceSyncEvent = (
   | { type: 'synced'; spaceId: string; pushed: boolean; updated: boolean }
   | { type: 'conflict'; spaceId: string; copies: string[] }
   | { type: 'oversize'; spaceId: string; files: string[] }
-  | { type: 'error'; spaceId: string; message: string };
+  | { type: 'error'; spaceId: string; message: string }
+) & { at?: number };

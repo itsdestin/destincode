@@ -38,12 +38,15 @@ export function setSyncSpacesRemoteBroadcaster(fn: ((e: SpaceSyncEvent) => void)
 }
 
 function broadcast(e: SpaceSyncEvent): void {
-  recentEvents = [...recentEvents.slice(-49), e];
+  // Stamp at emit time — the renderer derives "Last synced N min ago" from it,
+  // so every stored + fanned-out copy must carry the same timestamp.
+  const stamped: SpaceSyncEvent = { ...e, at: Date.now() };
+  recentEvents = [...recentEvents.slice(-49), stamped];
   for (const w of BrowserWindow.getAllWindows()) {
-    try { w.webContents.send('syncspaces:event', e); } catch { /* window closing */ }
+    try { w.webContents.send('syncspaces:event', stamped); } catch { /* window closing */ }
   }
   // Fan out to remote clients too (see comment on remoteBroadcast above).
-  try { remoteBroadcast?.(e); } catch { /* remote server not up / closing */ }
+  try { remoteBroadcast?.(stamped); } catch { /* remote server not up / closing */ }
 }
 
 /** Called once from main.ts after app ready. Roots always exist (the picker
@@ -126,8 +129,15 @@ export async function syncSpacesEnable(enabled: boolean) {
   return syncSpacesStatus();
 }
 
-export async function syncSpacesSyncNow() {
-  if (engine && roots) for (const s of roots.spaces()) void engine.syncSpace(s);
+export async function syncSpacesSyncNow(spaceId?: string) {
+  // spaceId narrows to one space (the Project View hero's "Sync now" button);
+  // no arg keeps the SyncPanel's existing sync-everything behavior.
+  if (engine && roots) {
+    for (const s of roots.spaces()) {
+      if (spaceId && s.id !== spaceId) continue;
+      void engine.syncSpace(s);
+    }
+  }
   return { ok: true };
 }
 

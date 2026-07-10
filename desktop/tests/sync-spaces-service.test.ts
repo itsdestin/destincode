@@ -11,18 +11,36 @@ const h = vi.hoisted(() => {
   class FakeEngine {
     stopped = false;
     added: string[] = [];
+    // syncSpace is a spy so the per-space / sync-everything tests can assert
+    // which spaces were reconciled.
+    syncSpace = vi.fn(async (_space: { id: string }): Promise<void> => {});
     // Test releases this to let a blocked addSpace proceed — simulates the
     // real engine suspending on chokidar's ready await mid-startEngine.
     releaseAddSpace: (() => void) | null = null;
-    constructor() { h.engines.push(this); }
+    // Capture the onEvent callback (service.broadcast) so a test can fire an
+    // engine event the way the real engine would, and assert on the stamp.
+    constructor(_transport?: unknown, opts?: { onEvent?: (e: unknown) => void }) {
+      h.onEvent = opts?.onEvent ?? null;
+      h.engines.push(this);
+    }
     async addSpace(space: { id: string }): Promise<void> {
+      // The timestamp/per-space tests want enable() to resolve without manual
+      // gating; the serialization tests keep the blocking gate (autoAddSpace off).
+      if (h.autoAddSpace) { this.added.push(space.id); return; }
       await new Promise<void>((res) => { this.releaseAddSpace = res; });
       this.added.push(space.id);
     }
-    async syncSpace(): Promise<void> {}
     async stop(): Promise<void> { this.stopped = true; }
   }
-  return { engines: [] as InstanceType<typeof FakeEngine>[], FakeEngine };
+  return {
+    engines: [] as InstanceType<typeof FakeEngine>[],
+    FakeEngine,
+    // Default single space keeps the existing serialization tests unchanged;
+    // the per-space tests widen this to two projects.
+    spaces: [{ id: 'personal', kind: 'personal', root: '/fake/personal' }] as Array<{ id: string; kind: string; root: string }>,
+    autoAddSpace: false,
+    onEvent: null as null | ((e: unknown) => void),
+  };
 });
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
@@ -31,9 +49,8 @@ vi.mock('../src/main/sync-spaces/managed-roots', () => ({
   ManagedRoots: class {
     ensure(): void {}
     listProjects(): Array<{ name: string; path: string }> { return []; }
-    spaces(): Array<{ id: string; kind: string; root: string }> {
-      return [{ id: 'personal', kind: 'personal', root: '/fake/personal' }];
-    }
+    // Reads the hoisted list live so a test can widen the space set before enable.
+    spaces(): Array<{ id: string; kind: string; root: string }> { return h.spaces; }
   },
 }));
 vi.mock('../src/main/sync-spaces/space-manager', () => ({
@@ -74,7 +91,14 @@ async function waitForGate(index: number): Promise<void> {
 }
 
 describe('sync-spaces service transition serialization', () => {
-  beforeEach(() => { h.engines.length = 0; });
+  beforeEach(() => {
+    h.engines.length = 0;
+    // Reset per-test knobs so the serialization tests keep the default single
+    // space + blocking addSpace gate they were written against.
+    h.spaces = [{ id: 'personal', kind: 'personal', root: '/fake/personal' }];
+    h.autoAddSpace = false;
+    h.onEvent = null;
+  });
 
   it('disable issued mid-start waits for the start, then stops that engine (no interleave)', async () => {
     const svc = await freshService();
@@ -111,5 +135,48 @@ describe('sync-spaces service transition serialization', () => {
     expect(h.engines[1].stopped).toBe(false);
     expect(h.engines[1].added).toEqual(['personal']);
     expect((await svc.syncSpacesStatus()).enabled).toBe(true);
+  });
+
+  // ---- Per-space sync-now + event timestamps (Project View UX, Task 2) ----
+
+  // These use autoAddSpace so enable() resolves without manual gating, and a
+  // two-project space set so "sync one" vs "sync everything" are distinguishable.
+  async function enabledMultiSpaceService() {
+    h.autoAddSpace = true;
+    h.spaces = [
+      { id: 'personal', kind: 'personal', root: '/fake/personal' },
+      { id: 'project:alpha', kind: 'project', root: '/fake/alpha' },
+      { id: 'project:beta', kind: 'project', root: '/fake/beta' },
+    ];
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    return svc;
+  }
+
+  it('syncSpacesSyncNow(spaceId) syncs ONLY the matching space', async () => {
+    const svc = await enabledMultiSpaceService();
+    const engine = h.engines[0];
+    engine.syncSpace.mockClear(); // drop the initial-reconcile calls from enable
+    await svc.syncSpacesSyncNow('project:beta');
+    expect(engine.syncSpace).toHaveBeenCalledTimes(1);
+    expect(engine.syncSpace.mock.calls[0][0].id).toBe('project:beta');
+  });
+
+  it('syncSpacesSyncNow() with no arg still syncs every space', async () => {
+    const svc = await enabledMultiSpaceService();
+    const engine = h.engines[0];
+    engine.syncSpace.mockClear();
+    await svc.syncSpacesSyncNow();
+    expect(engine.syncSpace.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('broadcast stamps events with an `at` timestamp', async () => {
+    const svc = await enabledMultiSpaceService();
+    // Fire the engine's onEvent hook (= service.broadcast) the way the real
+    // engine would when a space finishes syncing.
+    h.onEvent!({ type: 'synced', spaceId: 'project:beta', pushed: true, updated: false });
+    const st = await svc.syncSpacesStatus();
+    const e = st.recentEvents.find((x: any) => x.spaceId === 'project:beta');
+    expect(typeof (e as any).at).toBe('number');
   });
 });
