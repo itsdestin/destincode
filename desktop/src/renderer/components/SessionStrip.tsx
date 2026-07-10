@@ -243,7 +243,13 @@ export default function SessionStrip({
       const target = e.target as Node;
       const inTrigger = menuRef.current?.contains(target);
       const inDropdown = dropdownRef.current?.contains(target);
-      if (!inTrigger && !inDropdown) {
+      // Fix: the FolderSwitcher's dropdown is PORTALED to document.body (to
+      // escape this menu's overflow-hidden), so the contains() checks above
+      // can't see it. Without this check, a mousedown on the portaled panel
+      // counted as "outside", closed the menu, and unmounted the picker BEFORE
+      // its click could fire — "Manage projects…" and row selection did nothing.
+      const inFolderPortal = target instanceof Element && !!target.closest('[data-folder-switcher-portal]');
+      if (!inTrigger && !inDropdown && !inFolderPortal) {
         setMenuOpen(false);
         setShowNewForm(false);
       }
