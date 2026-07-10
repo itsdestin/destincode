@@ -20,6 +20,7 @@ import com.youcoded.app.analytics.AnalyticsService
 import com.youcoded.app.bridge.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -289,9 +290,28 @@ class SessionService : Service() {
         // handles all install/uninstall routing (consolidates SessionService logic)
         skillProvider?.pluginInstaller = pluginInstaller
         skillProvider?.onPluginsChanged = {
-            sessionRegistry.getCurrentSession()
-                ?.takeIf { !it.shellMode && it.isRunning }
-                ?.writeInput("/reload-plugins\r")
+            // Mirror of desktop's SessionManager.broadcastReloadPlugins gating
+            // (stray-Enter fix, youcoded#110): typing "/reload-plugins\r" while a
+            // permission/AskUserQuestion request is pending lands on Claude
+            // Code's live Ink select menu — the trailing \r presses Enter on the
+            // highlighted option and silently answers the prompt. Delay so CC is
+            // ready for input, then defer with bounded retries while a request
+            // is pending. A missed reload is recoverable (next install or a
+            // manual /reload-plugins); an auto-answered prompt is not.
+            serviceScope.launch {
+                delay(1500)
+                var attempts = 0
+                while (true) {
+                    val session = sessionRegistry.getCurrentSession()
+                    if (session == null || session.shellMode || !session.isRunning) return@launch
+                    if (!session.hasPendingPermission()) {
+                        session.writeInput("/reload-plugins\r")
+                        return@launch
+                    }
+                    if (++attempts >= 24) return@launch // ~2 min of deferral, then give up
+                    delay(5000)
+                }
+            }
         }
 
         // Decomposition v3 §9.2: reconcile plugin hooks-manifest.json into
