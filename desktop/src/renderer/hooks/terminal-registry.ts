@@ -56,7 +56,19 @@ export function unregisterTerminal(sessionId: string) {
   terminals.delete(sessionId);
 }
 
-export function getScreenText(sessionId: string): string | null {
+/**
+ * Serialize the terminal buffer to text, joining wrapped lines.
+ *
+ * @param tailRows When set, only the last `tailRows` buffer rows are
+ *   serialized (walked back to the nearest logical-line start so a wrapped
+ *   line is never cut). The hot callers only need the tail — the prompt
+ *   detector reads once per buffer flush (up to ~60/s while Claude streams)
+ *   and the attention classifier keeps just the last 40 lines — so
+ *   serializing the full scrollback (1000+ rows × translateToString) on
+ *   every read was the single largest renderer CPU cost during streaming.
+ *   Omit for the full buffer.
+ */
+export function getScreenText(sessionId: string, tailRows?: number): string | null {
   const terminal = terminals.get(sessionId);
   if (!terminal) return null;
 
@@ -67,10 +79,23 @@ export function getScreenText(sessionId: string): string | null {
   } catch {
     return null;
   }
+
+  let start = 0;
+  if (tailRows !== undefined && buf.length > tailRows) {
+    start = buf.length - tailRows;
+    // Never start mid-wrapped-line: walk back to the logical line start so
+    // the join below sees the whole first line, not a fragment.
+    while (start > 0) {
+      const line = buf.getLine(start);
+      if (!line || !line.isWrapped) break;
+      start--;
+    }
+  }
+
   const lines: string[] = [];
   let current = '';
 
-  for (let i = 0; i < buf.length; i++) {
+  for (let i = start; i < buf.length; i++) {
     const line = buf.getLine(i);
     if (!line) continue;
 
@@ -86,4 +111,20 @@ export function getScreenText(sessionId: string): string | null {
   if (current) lines.push(current);
 
   return lines.join('\n');
+}
+
+// Extra rows past the visible screen so a wrapped line straddling the
+// boundary still joins completely, with headroom for tall Ink menus.
+const VISIBLE_TAIL_MARGIN_ROWS = 40;
+
+/**
+ * The visible screen (plus a wrap-join margin) — the cheap read for hot
+ * callers. Ink menus render at the bottom of the screen, so the prompt
+ * detector never needs scrollback; feeding it less than the full buffer also
+ * stops menus that scrolled AWAY from shadowing a live one.
+ */
+export function getVisibleScreenText(sessionId: string): string | null {
+  const terminal = terminals.get(sessionId);
+  if (!terminal) return null;
+  return getScreenText(sessionId, terminal.rows + VISIBLE_TAIL_MARGIN_ROWS);
 }

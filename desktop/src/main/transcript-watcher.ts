@@ -736,6 +736,16 @@ export class TranscriptWatcher extends EventEmitter {
             event.data.toolUseId!, description, subagentType,
           );
           session.subagentWatcher.flushAllPending();
+          // Event-driven kick: a subagent just started, so its JSONL is about
+          // to appear — discover it now instead of waiting for the slow
+          // safety-net dir poll.
+          session.subagentWatcher.kickScan();
+        }
+        if (event.type === 'tool-result' && event.data.toolUseId) {
+          // If this result completes a parent Agent tool call, that subagent
+          // is done writing — settle its file poll (fire-and-forget; no-op
+          // for non-Agent toolUseIds, fs.watch stays attached either way).
+          void session.subagentWatcher.settleByParent(event.data.toolUseId);
         }
       }
     }

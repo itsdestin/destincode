@@ -1057,6 +1057,14 @@ body[data-mode="buddy-chat"] #theme-bg {
      pushes every following character off the caret. Bold is scoped to the
      user bubble rule below, where there's no textarea layered over it. */
 }
+/* Perf: the gradient pan repaints every frame, forever, for every keyword in
+   scrollback. Pause it while the bubble is scrolled out of view — ChatView's
+   IntersectionObserver removes `.in-view` from offscreen timeline entries on
+   every theme. The chat-input mirror isn't inside a timeline entry, so the
+   keyword being typed keeps animating. */
+.timeline-entry:not(.in-view) .flowing-word {
+  animation-play-state: paused;
+}
 /* Inside user bubble the surface is bg-accent, so --accent disappears into
    the background. Flow between on-accent shades instead. Bold is safe here
    because user bubbles have no layered textarea — nothing to stay in sync with. */

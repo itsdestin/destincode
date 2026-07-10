@@ -42,11 +42,13 @@ export default function InstallFavoriteCorner({
   }
 
   if (installing) {
+    // Perf: no backdrop-blur — same compositing-cost removal FavoriteStar
+    // documented; bg-panel/90 keeps the corner legible over card art.
     return (
       <span
         role="status"
         aria-label="Installing"
-        className="absolute top-1.5 right-1.5 bg-panel/80 backdrop-blur-sm p-1 rounded-md text-accent font-mono text-sm leading-none select-none"
+        className="absolute top-1.5 right-1.5 bg-panel/90 p-1 rounded-md text-accent font-mono text-sm leading-none select-none"
       >
         {BRAILLE_FRAMES[frame]}
       </span>
@@ -54,13 +56,14 @@ export default function InstallFavoriteCorner({
   }
 
   // Not installed — download affordance.
+  // Perf: no backdrop-blur — matches FavoriteStar's documented removal.
   return (
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onInstall(); }}
       aria-label="Install"
       title="Install"
-      className="absolute top-1.5 right-1.5 bg-panel/80 backdrop-blur-sm p-1 rounded-md text-fg-dim hover:text-fg transition-colors"
+      className="absolute top-1.5 right-1.5 bg-panel/90 p-1 rounded-md text-fg-dim hover:text-fg transition-colors"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />

@@ -12,5 +12,7 @@
 // arrives.
 import { getScreenText } from '../hooks/terminal-registry';
 
-(window as unknown as { __terminalRegistry?: { getScreenText: (id: string) => string | null } })
+(window as unknown as {
+  __terminalRegistry?: { getScreenText: (id: string, tailRows?: number) => string | null };
+})
   .__terminalRegistry = { getScreenText };
