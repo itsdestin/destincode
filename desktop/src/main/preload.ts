@@ -274,6 +274,19 @@ const IPC = {
   SYSTEM_NOTIFY_STACK_STATE: 'system:notify-stack-state',
   SYSTEM_BACK: 'system:back',
   APP_RESTART: 'app:restart',
+  // ---- Native runtime Plan A (Phase 1): session I/O + provider management ----
+  // Mirrors src/shared/types.ts — the sandboxed preload can't import it, and
+  // tests/ipc-channels.test.ts asserts the two blocks stay value-identical.
+  NATIVE_SEND: 'native:send',
+  NATIVE_INTERRUPT: 'native:interrupt',
+  NATIVE_SET_BINDING: 'native:set-binding',
+  NATIVE_SESSIONS_LIST: 'native:sessions-list',
+  PROVIDER_LIST: 'provider:list',
+  PROVIDER_UPSERT: 'provider:upsert',
+  PROVIDER_REMOVE: 'provider:remove',
+  PROVIDER_TEST: 'provider:test',
+  PROVIDER_SET_KEY: 'provider:set-key',
+  PROVIDER_CATALOG: 'provider:catalog',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {

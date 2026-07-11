@@ -17,12 +17,16 @@ interface Props {
 const COPY: Record<Props['state'], string> = {
   'stuck': 'Still waiting on Claude — check Terminal view if this persists.',
   'session-died': 'Session ended unexpectedly.',
+  // 'error' is native-runtime only (dispatcher: NATIVE_SESSION_ERROR, added in
+  // Phase 1 Plan A). The detailed provider message rides the 'session-error'
+  // transcript event; this banner copy stays generic.
+  'error': 'The model provider returned an error — this turn has ended.',
 };
 
 // Destructive states pick up the L3 destructive ring tokens so they read as
 // "something went wrong" rather than just a nudge. Other states reuse the
 // neutral bubble styling to stay consistent with ThinkingIndicator.
-const DESTRUCTIVE: Props['state'][] = ['session-died'];
+const DESTRUCTIVE: Props['state'][] = ['session-died', 'error'];
 
 export default function AttentionBanner({ state, anthropicRequestId }: Props) {
   const destructive = DESTRUCTIVE.includes(state);
@@ -33,13 +37,15 @@ export default function AttentionBanner({ state, anthropicRequestId }: Props) {
   const textClasses = destructive
     ? 'text-sm text-fg-2'
     : 'text-sm text-fg-muted italic';
-  // Show the spinner for every state except session-died — that one signals
-  // the process is gone, so a spinning indicator would be misleading.
-  const showSpinner = state !== 'session-died';
-  // Only surface the request ID on session-died: it's strictly a support
-  // correlation aid, so we hide it during the benign 'stuck' banner where
-  // Claude is likely still working.
-  const showRequestId = state === 'session-died' && !!anthropicRequestId;
+  // Show the spinner only while Claude might still be working ('stuck').
+  // session-died and error both mean the turn is over — a spinning indicator
+  // would be misleading.
+  const showSpinner = state === 'stuck';
+  // Surface the request ID on terminal failures only (session-died / error):
+  // it's strictly a support-correlation aid, so we hide it during the benign
+  // 'stuck' banner where Claude is likely still working. Matches the Props
+  // doc comment above.
+  const showRequestId = (state === 'session-died' || state === 'error') && !!anthropicRequestId;
 
   return (
     // in-view: opts the bubble into wallpaper-driven bubble glassmorphism

@@ -80,7 +80,11 @@ export type TranscriptEventType =
   // interrupted by user]" / "...for tool use"), produced when the user
   // presses ESC during a turn. The reducer uses this to end the turn
   // without rendering the marker as a user bubble.
-  | 'user-interrupt';
+  | 'user-interrupt'
+  // Native-runtime only: a provider/stream failure ended the turn. Carries the
+  // human-readable message in data.text. Never emitted by CC's transcript
+  // watcher and never persisted to the native session store (stale on resume).
+  | 'session-error';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;
@@ -112,6 +116,8 @@ export interface TranscriptEvent {
       outputTokens: number;
       cacheReadTokens: number;
       cacheCreationTokens: number;
+      /** Native runtime only: output tokens / stream seconds. CC never reports this. */
+      tokensPerSecond?: number;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies
@@ -474,10 +480,16 @@ export interface IntegrationState {
 // the dead branches. Reducer tests that used them have been switched to
 // 'stuck' (the only buffer-driven non-ok state). If we ever need finer
 // distinctions, reintroduce them along with the dispatching code path.
+//
+// 2026-07-10: 'error' reintroduced WITH a writer for the native runtime
+// (Phase 1 Plan A) — see the union member's comment for the dispatcher.
 export type AttentionState =
   | 'ok'              // Default — indicator renders if isThinking
   | 'stuck'           // Spinner glyph stale ≥ 10s OR no spinner ≥ 20s while thinking
-  | 'session-died';   // Process exited mid-turn
+  | 'session-died'    // Process exited mid-turn
+  // Native-runtime provider/stream failure (dispatcher: NATIVE_SESSION_ERROR,
+  // fed by the 'session-error' transcript event). CC sessions never enter it.
+  | 'error';
 
 // Red | green | blue | gray — mirrors SessionStatusColor in renderer.
 // Duplicated as a string literal type here (not imported) so main-process
@@ -857,6 +869,17 @@ export const IPC = {
   // ---- Native runtime (YouCoded first-party harness — platform roadmap Phase 1+) ----
   // Capability probe: false everywhere until Phase 1 ships the engine.
   NATIVE_SUPPORTED: 'native:supported',
+  // ---- Native runtime Plan A (Phase 1): session I/O + provider management ----
+  NATIVE_SEND: 'native:send',
+  NATIVE_INTERRUPT: 'native:interrupt',
+  NATIVE_SET_BINDING: 'native:set-binding',
+  NATIVE_SESSIONS_LIST: 'native:sessions-list',
+  PROVIDER_LIST: 'provider:list',
+  PROVIDER_UPSERT: 'provider:upsert',
+  PROVIDER_REMOVE: 'provider:remove',
+  PROVIDER_TEST: 'provider:test',
+  PROVIDER_SET_KEY: 'provider:set-key',
+  PROVIDER_CATALOG: 'provider:catalog',
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.
