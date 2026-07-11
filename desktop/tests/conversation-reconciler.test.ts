@@ -105,6 +105,24 @@ describe('reconcile — UUID gate', () => {
 });
 
 describe('reconcile — freshness merge', () => {
+  it('UPDATES an existing STALE record from a newer transcript (the catch-up core purpose)', async () => {
+    // Seed a record OLDER than the transcript — e.g. the session last ran in
+    // the app a week ago, then the user ran bare `claude` in a terminal since.
+    await store.upsert({
+      id: SID_A, provider: 'claude', projectName: 'alpha',
+      device: 'OldDevice', lastActive: '2026-06-01T00:00:00.000Z', title: 'Existing',
+    });
+    writeTranscript(projectsDir, 'C--proj-alpha', SID_A, { lastTimestamp: '2026-06-20T12:00:00Z' });
+    const n = await reconcile({ projectsDir, topicsDir, store, device: 'NewDevice', mirror });
+    expect(n).toBe(1);
+    const rec = await store.get('claude', SID_A);
+    // lastActive advanced to the transcript tail; device flipped (merge-decided,
+    // and this side carries the newer activity so it wins).
+    expect(rec!.lastActive).toBe('2026-06-20T12:00:00.000Z');
+    expect(rec!.device).toBe('NewDevice');
+    expect(rec!.title).toBe('Existing'); // real title survives the refresh
+  });
+
   it('does not touch an existing record whose lastActive >= the transcript tail', async () => {
     // Seed a record FRESHER than the transcript we are about to scan.
     await store.upsert({
@@ -172,6 +190,20 @@ describe('reconcile — junk threshold', () => {
     const n = await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
     expect(n).toBe(0);
     expect(await store.list('claude')).toHaveLength(0);
+  });
+
+  it('skips a corrupt transcript (no parseable tail timestamp) instead of creating an EPOCH record', async () => {
+    // >500 bytes but NO line carries a parseable timestamp — a corrupt file.
+    // Creating a record would stamp EPOCH lastActive and re-upsert every scan.
+    const dir = path.join(projectsDir, 'C--proj-alpha');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${SID_A}.jsonl`), 'not json at all '.repeat(50) + '\n');
+    // A GOOD transcript alongside proves the scan continues past the corrupt one.
+    writeTranscript(projectsDir, 'C--proj-beta', SID_B);
+    const n = await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
+    expect(n).toBe(1);
+    expect(await store.get('claude', SID_A)).toBeNull();
+    expect(await store.get('claude', SID_B)).not.toBeNull();
   });
 });
 
