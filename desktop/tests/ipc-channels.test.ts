@@ -23,8 +23,13 @@ describe('IPC channel consistency', () => {
       preloadChannels.add(match[1]);
     }
 
-    // Also extract channels from the preload IPC constant object
-    const preloadIpcBlock = preloadSource.match(/const IPC\s*=\s*\{([^}]+)\}/s);
+    // Also extract channels from the preload IPC constant object.
+    // Anchor the capture to the block's `} as const;` terminator at line start —
+    // the old `[^}]+` pattern stopped at the FIRST `}`, which occurs inside a
+    // mid-block comment ("Caller passes a {x,y} offset"), silently truncating
+    // the extracted block to ~1/3 of its keys and skipping the parity check
+    // for everything after it.
+    const preloadIpcBlock = preloadSource.match(/const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
     if (preloadIpcBlock) {
       const constPattern = /:\s*'([^']+)'/g;
       while ((match = constPattern.exec(preloadIpcBlock[1])) !== null) {
@@ -32,9 +37,11 @@ describe('IPC channel consistency', () => {
       }
     }
 
-    // Extract channel strings from types.ts IPC object
+    // Extract channel strings from types.ts IPC object. Same terminator-anchored
+    // pattern as the preload extraction above — the types block has no stray `}`
+    // today, but a future comment containing one would silently truncate it too.
     const typesChannels = new Set<string>();
-    const typesIpcBlock = typesSource.match(/export const IPC\s*=\s*\{([^}]+)\}/s);
+    const typesIpcBlock = typesSource.match(/export const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
     if (typesIpcBlock) {
       const typesPattern = /:\s*'([^']+)'/g;
       while ((match = typesPattern.exec(typesIpcBlock[1])) !== null) {

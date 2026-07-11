@@ -43,7 +43,8 @@
     "remark-gfm": "^4.0.1",
     "ulid": "^3.0.2",
     "which": "^4.0.0",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",

@@ -275,8 +275,10 @@ const IPC = {
   SYSTEM_BACK: 'system:back',
   APP_RESTART: 'app:restart',
   // ---- Native runtime Plan A (Phase 1): session I/O + provider management ----
-  // Mirrors src/shared/types.ts — the sandboxed preload can't import it, and
-  // tests/ipc-channels.test.ts asserts the two blocks stay value-identical.
+  // Mirrors src/shared/types.ts — the sandboxed preload can't import it.
+  // tests/ipc-channels.test.ts extracts BOTH full IPC blocks (anchored to the
+  // `} as const;` terminator) and asserts value equality for every key the two
+  // blocks share, so drift on these constants fails the test.
   NATIVE_SEND: 'native:send',
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_SET_BINDING: 'native:set-binding',

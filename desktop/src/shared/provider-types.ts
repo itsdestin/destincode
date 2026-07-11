@@ -5,7 +5,7 @@ export type ProviderType =
   | 'local-engine'        // supervised llama-server (registered in Plan B; entry exists from day one)
   | 'openai-compatible'   // Ollama, LM Studio, custom endpoints
   | 'openrouter'
-  | 'anthropic' | 'openai' | 'google';
+  | 'anthropic' | 'openai' | 'google';  // direct-key providers
 
 export interface ProviderConfig {
   id: string;             // 'local' | 'openrouter' | ulid for user-created entries
@@ -26,10 +26,15 @@ export interface CatalogModel {
   contextLength?: number;
   supportsTools?: boolean;
   supportsReasoning?: boolean;
-  pricing?: { in: number; out: number };  // USD per 1M tokens
+  // USD per 1M tokens — terse to mirror per-1M-token convention; `in` is a JS
+  // keyword — destructure as `{ in: input }`.
+  pricing?: { in: number; out: number };
 }
 
-/** provider:list row — config + derived status, never the key. */
+/** provider:list row — config + derived status, never the key.
+ *  Do NOT pass a status row back into provider:upsert — handlers must pick
+ *  ProviderConfig keys only, or the derived fields (builtIn/hasKey/ready)
+ *  get persisted. */
 export interface ProviderStatus extends ProviderConfig {
   builtIn: boolean;       // 'local' and 'openrouter' cannot be removed
   hasKey: boolean;        // a secret exists for secretRef
