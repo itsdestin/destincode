@@ -35,6 +35,23 @@ export class SecretsStore {
     }
   }
 
+  /**
+   * Parse store-file contents into the ref → base64-blob map. Corrupt JSON
+   * and corrupt-but-parseable shapes (array, string…) read as empty — the
+   * ciphertext is unrecoverable anyway (it's bound to this machine's
+   * keychain; no backup can decrypt it), so the next set() rebuilds the file.
+   * Single parser shared by read() and mutate() so their tolerance can't drift.
+   */
+  private parseStore(raw: string | null): Record<string, string> {
+    if (raw === null) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
   private read(): Record<string, string> {
     let raw: string;
     try {
@@ -48,16 +65,7 @@ export class SecretsStore {
       if (e?.code === 'ENOENT') return {};
       throw e;
     }
-    try {
-      const parsed = JSON.parse(raw);
-      // Corrupt-but-parseable shapes (array, string…) also read as empty —
-      // every valid store file is a plain object of ref → base64 blob.
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      // Corrupt JSON: the ciphertext is unrecoverable anyway (no backup can
-      // decrypt it), so treat as empty and let the next set() rebuild it.
-      return {};
-    }
+    return this.parseStore(raw);
   }
 
   /**
@@ -65,27 +73,27 @@ export class SecretsStore {
    * NativeHome-style retry-then-THROW: a contended write that silently
    * dropped would surface as "saved" in the UI while the key the user just
    * typed evaporated. Failing loudly lets the caller show a real error.
+   * opts.maxRetries is TEST-ONLY (mirrors NativeHome.mutateJson): it lets the
+   * lock-contention test run one ~3s lock-wait cycle instead of five (~15s);
+   * production callers never pass it.
    */
   private async mutate(
-    mutateFn: (cur: Record<string, string>) => Record<string, string>
+    mutateFn: (cur: Record<string, string>) => Record<string, string>,
+    opts?: { maxRetries?: number }
   ): Promise<void> {
-    for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
-      const ok = await mutateFileUnderLock(this.file, (onDisk) => {
-        let cur: Record<string, string> = {};
-        if (onDisk !== null) {
-          try {
-            const parsed = JSON.parse(onDisk);
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) cur = parsed;
-          } catch {
-            // Corrupt on disk — rebuild from empty (see read() rationale).
-          }
-        }
-        return JSON.stringify(mutateFn(cur), null, 2);
-      });
+    // Clamp to ≥1: a 0/negative override would fall straight through the loop
+    // and throw "lock held" without ever probing the lock once.
+    const maxRetries = Math.max(1, opts?.maxRetries ?? LOCK_MAX_RETRIES);
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const ok = await mutateFileUnderLock(this.file, (onDisk) =>
+        JSON.stringify(mutateFn(this.parseStore(onDisk)), null, 2)
+      );
       if (ok) return;
     }
+    // Operation-neutral copy: both set() AND delete() route through here, so
+    // "could not save the key" would read wrong to a user REMOVING one.
     throw new Error(
-      "Could not save the key — another YouCoded process is holding the store's lock. Try again in a moment."
+      "Could not update saved API keys — another YouCoded process is holding the store's lock. Try again in a moment."
     );
   }
 
@@ -93,14 +101,19 @@ export class SecretsStore {
    * Encrypt and store a key. Returns the secretRef to persist in
    * providers.json. Pass an existingRef to replace that entry in place
    * (key rotation) — the ref stays stable so pointers don't need rewriting.
+   * opts.maxRetries is TEST-ONLY (see mutate()).
    */
-  async set(plaintext: string, existingRef?: string): Promise<string> {
+  async set(
+    plaintext: string,
+    existingRef?: string,
+    opts?: { maxRetries?: number }
+  ): Promise<string> {
     this.assertAvailable();
     const ref = existingRef ?? ulid();
     // Encrypt BEFORE entering the lock — only ciphertext ever flows into the
     // file write, so no code path can accidentally serialize the plaintext.
     const blob = safeStorage.encryptString(plaintext).toString('base64');
-    await this.mutate((cur) => ({ ...cur, [ref]: blob }));
+    await this.mutate((cur) => ({ ...cur, [ref]: blob }), opts);
     return ref;
   }
 
@@ -116,12 +129,13 @@ export class SecretsStore {
     }
   }
 
-  async delete(ref: string): Promise<void> {
+  /** opts.maxRetries is TEST-ONLY (see mutate()). */
+  async delete(ref: string, opts?: { maxRetries?: number }): Promise<void> {
     await this.mutate((cur) => {
       const next = { ...cur };
       delete next[ref];
       return next;
-    });
+    }, opts);
   }
 
   /** Cheap presence check for UI ("key saved" badge) — never decrypts. */
