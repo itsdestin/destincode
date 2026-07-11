@@ -97,6 +97,12 @@ function laterOf<T>(x: T, y: T, tx: number, ty: number): T {
   return JSON.stringify(x) >= JSON.stringify(y) ? x : y;
 }
 
+// A "real" title is non-empty and not the literal 'Untitled' — that literal
+// is a legacy placeholder some older clients wrote (see PITFALLS → Resume
+// Browser) and must never shadow an actual name. Shared by the pairwise merge
+// and the fold's set-based title pick so the two definitions can't drift.
+const realTitle = (t: string) => (t && t !== 'Untitled' ? t : '');
+
 // Earliest-claim pick for createdAt, with the same content tiebreak: two
 // different spellings of the same instant must resolve identically on every
 // device, or merged records never byte-converge.
@@ -130,15 +136,15 @@ export function mergeRecords(a: ConversationRecord, b: ConversationRecord): Conv
     const fb = b.flags[k];
     flags[k] = fa && fb ? laterOf(fa, fb, ts(fa.updatedAt), ts(fb.updatedAt)) : (fa ?? fb);
   }
-  // A real title always beats an empty one (auto-title can lag a turn behind,
-  // so the newer side may not yet have a title). Literal 'Untitled' is a
-  // legacy placeholder some older clients wrote (see PITFALLS → Resume
-  // Browser) — it must never shadow a real title either. Two real titles →
-  // newer wins, which falls out naturally because `newer` is checked first.
-  // The trailing fallbacks keep *something* when both sides are placeholders
-  // (harmless — the renderer treats '' and 'Untitled' alike as untitled).
-  const real = (t: string) => (t && t !== 'Untitled' ? t : '');
-  const title = real(newer.title) || real(older.title) || newer.title || older.title;
+  // A real title always beats a placeholder (empty / literal 'Untitled' —
+  // see realTitle): auto-title can lag a turn behind, so the newer side may
+  // not have a name yet. Two real titles → newer wins, which falls out
+  // naturally because `newer` is checked first. The trailing fallbacks keep
+  // *something* when both sides are placeholders (harmless — the renderer
+  // treats '' and 'Untitled' alike as untitled). NOTE: this pairwise rule is
+  // a heuristic and is NOT associative — foldConflictCopies compensates with
+  // a set-based title pick over its original inputs.
+  const title = realTitle(newer.title) || realTitle(older.title) || newer.title || older.title;
   return {
     ...newer,
     title,
@@ -170,15 +176,25 @@ export function extractConflictBase(fileName: string): string | null {
 }
 
 // Fold every conflict copy of a conversation back into its canonical record.
-// The result is independent of the order the copies are folded in BECAUSE
-// mergeRecords picks each field group as the max/min under a total order
-// (timestamp primary, JSON-content tiebreak — see laterOf). Without the
-// content tiebreak, exact-timestamp ties would resolve by fold position and
-// two devices enumerating the same copies in different directory orders would
-// heal to different records.
+// Order-independence, field by field: lastActive/device/flags/createdAt
+// converge because the pairwise merge picks each of them as max/min under a
+// TOTAL order (timestamp primary, JSON-content tiebreak — see laterOf), and
+// max/min are associative + commutative. TITLE does NOT get that for free:
+// the pairwise title rule is a heuristic that isn't associative — once the
+// accumulator adopts a title from its first merge partner, that title rides
+// the accumulator's newest lastActive and beats a NEWER real title arriving
+// in a later fold step, so enumeration order changed the healed title. The
+// fold therefore OVERRIDES title with a pick computed over the original input
+// SET (order can't matter when the inputs are considered together): among
+// inputs with a real title, the one that is max under the same total order
+// wins; if none has a real title, the reduce's placeholder result stands.
 export function foldConflictCopies(
   canonical: ConversationRecord,
   copies: ConversationRecord[],
 ): ConversationRecord {
-  return copies.reduce((acc, c) => mergeRecords(acc, c), canonical);
+  const folded = copies.reduce((acc, c) => mergeRecords(acc, c), canonical);
+  const titled = [canonical, ...copies].filter((r) => realTitle(r.title));
+  if (titled.length === 0) return folded;
+  const winner = titled.reduce((x, y) => laterOf(x, y, ts(x.lastActive), ts(y.lastActive)));
+  return { ...folded, title: winner.title };
 }

@@ -245,7 +245,16 @@ describe('mergeRecords', () => {
       title: 'Title from desktop',
       flags: { pinned: flag(false, same) }, // same updatedAt, different value
     });
-    expect(mergeRecords(x, y)).toEqual(mergeRecords(y, x));
+    const xy = mergeRecords(x, y);
+    expect(xy).toEqual(mergeRecords(y, x));
+    // Pin the CONCRETE winner, not just symmetry: the two records' JSON text
+    // first differs at `title` ('Title from laptop' vs 'Title from desktop',
+    // 'l' > 'd'), so x sorts higher and wins the tiebreak. If a future
+    // comparator change silently flips historical tie resolutions, this catches it.
+    expect(xy.device).toBe('Laptop');
+    expect(xy.title).toBe('Title from laptop');
+    // Flag tie: '{"value":true,...}' sorts above '{"value":false,...}' ('t' > 'f').
+    expect(xy.flags.pinned).toEqual(flag(true, same));
   });
 
   it('flag ties on equal updatedAt break by content, not argument order', () => {
@@ -255,6 +264,9 @@ describe('mergeRecords', () => {
     const ab = mergeRecords(a, b).flags.starred;
     const ba = mergeRecords(b, a).flags.starred;
     expect(ab).toEqual(ba);
+    // Concrete winner: '{"value":true,...}' sorts above '{"value":false,...}'
+    // ('t' > 'f'), so the true-valued FlagState deterministically wins this tie.
+    expect(ab).toEqual(flag(true, same));
   });
 });
 
@@ -290,9 +302,10 @@ describe('isConflictCopyName / extractConflictBase', () => {
 });
 
 describe('foldConflictCopies', () => {
-  // Contract 8: folding == successive mergeRecords, and is order-independent —
-  // true because each field group is picked as max/min under a TOTAL order
-  // (timestamp primary, JSON-content tiebreak). Both orderings must match.
+  // Contract 8: folding is order-independent. lastActive/device/flags/createdAt
+  // converge via the pairwise merge's total-order picks (timestamp primary,
+  // JSON-content tiebreak); title converges via the fold's SET-BASED pick over
+  // the original inputs (the pairwise title heuristic is not associative).
   it('folds copies into the canonical record, order-independently', () => {
     const canonical = rec({
       id: 'sess-1',
@@ -333,6 +346,26 @@ describe('foldConflictCopies', () => {
   it('returns the canonical record unchanged when there are no copies', () => {
     const canonical = rec();
     expect(foldConflictCopies(canonical, [])).toEqual(canonical);
+  });
+
+  // The reviewer's counterexample — NO tie needed: once the accumulator adopts
+  // a title from its first merge partner, that title rides the accumulator's
+  // newest lastActive and beats a NEWER real title arriving in a later fold
+  // step. Pairwise: fold [B,C] healed to 'M-title' while fold [C,B] healed to
+  // 'Q-title' — two devices enumerating the same copies in different directory
+  // orders would heal to different titles and re-conflict forever. The fix is
+  // the fold's set-based title pick: newest REAL title among the inputs wins.
+  it('heals to the newest real title regardless of copy enumeration order', () => {
+    const canon = rec({ lastActive: '2026-07-05T00:00:00.000Z', title: '' });
+    const b = rec({ lastActive: '2026-07-01T00:00:00.000Z', title: 'M-title' });
+    const c = rec({ lastActive: '2026-07-03T00:00:00.000Z', title: 'Q-title' });
+    const bc = foldConflictCopies(canon, [b, c]);
+    const cb = foldConflictCopies(canon, [c, b]);
+    expect(bc).toEqual(cb);
+    // Specifically: the newest REAL title (C at 07-03 beats B at 07-01; the
+    // canonical's newer-but-empty title doesn't count).
+    expect(bc.title).toBe('Q-title');
+    expect(cb.title).toBe('Q-title');
   });
 
   // Convergence under ties: when canonical and every copy share ONE lastActive
