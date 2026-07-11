@@ -42,10 +42,22 @@ export class NativeHome {
    */
   readJson(rel: string): unknown | null {
     const p = path.join(this.dir, rel);
+    let raw: string;
     try {
-      return JSON.parse(fs.readFileSync(p, 'utf8'));
+      raw = fs.readFileSync(p, 'utf8');
+    } catch (e: any) {
+      // ONLY a missing file reads as null. Any other I/O error (EACCES, EIO,
+      // EISDIR…) must RETHROW: a transient error that read as "file absent"
+      // would let an initialize-on-null caller clobber real data on its next
+      // write. Same rethrow-non-ENOENT precedent as central-index.ts readIndex.
+      if (e?.code === 'ENOENT') return null;
+      throw e;
+    }
+    try {
+      return JSON.parse(raw);
     } catch {
-      // Missing file or corrupt JSON both read as "nothing here yet".
+      // Corrupt JSON reads as "nothing here yet" — the file exists but holds
+      // no usable value, so callers rebuild it (mutateJson does the same).
       return null;
     }
   }
@@ -74,7 +86,9 @@ export class NativeHome {
     opts?: { maxRetries?: number }
   ): Promise<void> {
     const p = path.join(this.dir, rel);
-    const maxRetries = opts?.maxRetries ?? LOCK_MAX_RETRIES;
+    // Clamp to ≥1: a 0/negative override would fall straight through the loop
+    // and throw "lock held" without ever probing the lock once.
+    const maxRetries = Math.max(1, opts?.maxRetries ?? LOCK_MAX_RETRIES);
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       // mutateFileUnderLock mkdirs the target's parent itself, so the directory
       // is created lazily here on first WRITE — never on read.
@@ -111,6 +125,26 @@ export class NativeHome {
   async appendSessionLine(slug: string, sessionId: string, obj: unknown): Promise<void> {
     const p = this.sessionPath(slug, sessionId);
     fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Crash-torn-tail guard: if a previous process died mid-append, the file
+    // can end WITHOUT a newline. Appending directly would fuse this record
+    // onto the torn fragment — losing BOTH lines to JSON.parse. Writing a
+    // newline first bounds the damage to the already-torn record.
+    try {
+      const st = await fs.promises.stat(p);
+      if (st.size > 0) {
+        const fh = await fs.promises.open(p, 'r');
+        try {
+          const buf = Buffer.alloc(1);
+          await fh.read(buf, 0, 1, st.size - 1);
+          if (buf[0] !== 0x0a /* \n */) await fs.promises.appendFile(p, '\n', 'utf8');
+        } finally {
+          await fh.close();
+        }
+      }
+    } catch (e: any) {
+      // ENOENT = first line of a new session file, nothing to guard.
+      if (e?.code !== 'ENOENT') throw e;
+    }
     await fs.promises.appendFile(p, JSON.stringify(obj) + '\n', 'utf8');
   }
 
@@ -128,8 +162,10 @@ export class NativeHome {
       try {
         out.push(JSON.parse(line));
       } catch {
-        // Torn tail line mid-write — skip it; the in-flight append will
-        // complete the line and the next read picks it up whole.
+        // Unparseable line — skipped PERMANENTLY (a crash-torn record stays
+        // torn on disk; appendSessionLine's tail guard only protects the NEXT
+        // record from fusing into it). A mid-live-append read may also see a
+        // torn tail transiently; that one heals on the next read.
       }
     }
     return out;
