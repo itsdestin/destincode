@@ -1338,5 +1338,10 @@ export function installShim(): void {
     app: {
       restart: () => invoke('app:restart'),
     },
+    // Native runtime — desktop Electron only. false on Android/remote-browser
+    // so the renderer gates the runtime selector without platform branching.
+    native: {
+      supported: false,
+    },
   };
 }

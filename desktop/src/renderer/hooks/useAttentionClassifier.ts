@@ -34,6 +34,10 @@ interface HookArgs {
   visible: boolean;
   /** Current reducer attentionState — used for dispatch-suppression. */
   currentAttentionState: AttentionState;
+  /** Which runtime backend this session uses. The classifier reads the xterm
+   *  PTY buffer — only meaningful for PTY sessions ('claude'). Native harness
+   *  sessions have no buffer; the hook short-circuits for them. */
+  provider?: 'claude' | 'native';
 }
 
 function bufferClassToAttention(cls: BufferClass): AttentionState {
@@ -65,13 +69,16 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
     hasAwaitingApproval,
     visible,
     currentAttentionState,
+    provider,
   } = args;
 
   // Mutable refs avoid restarting the interval when these change mid-run.
   const currentAttentionStateRef = useRef(currentAttentionState);
   currentAttentionStateRef.current = currentAttentionState;
 
-  const active = isThinking && !hasRunningTools && !hasAwaitingApproval && visible;
+  // Classifier reads the xterm PTY buffer — only PTY sessions have one.
+  const hasBuffer = provider === undefined || provider === 'claude';
+  const active = hasBuffer && isThinking && !hasRunningTools && !hasAwaitingApproval && visible;
 
   useEffect(() => {
     if (!active) {

@@ -25,8 +25,14 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
   compoundCdGit: false,
 };
 
-// Which CLI backend powers a session — defaults to 'claude' for backwards compat
-export type SessionProvider = 'claude' | 'gemini';
+// Which runtime backend powers a session — defaults to 'claude'.
+// 'claude'  = Claude Code CLI over PTY (the original path).
+// 'native'  = YouCoded's first-party harness (Phase 1+ of the platform
+//             roadmap; dormant until window.claude.native.supported is true).
+// 'gemini' was removed 2026-07-10 — Google discontinued the Gemini CLI
+// (June 2026); Gemini models are reachable through the native runtime via
+// OpenRouter or a direct Google key instead.
+export type SessionProvider = 'claude' | 'native';
 
 export interface SessionInfo {
   id: string;
@@ -36,7 +42,7 @@ export interface SessionInfo {
   skipPermissions: boolean;
   status: 'active' | 'idle' | 'destroyed';
   createdAt: number;
-  /** Which CLI backend this session runs — 'claude' (default) or 'gemini' */
+  /** Which runtime backend this session runs — 'claude' (default) or 'native' */
   provider: SessionProvider;
   /** Model alias the session was started with (e.g. 'claude-sonnet-4-6') */
   model?: string;
@@ -114,6 +120,8 @@ export interface TranscriptEvent {
     parentAgentToolUseId?: string;
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
+    /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */
+    partId?: string;
     /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
@@ -846,6 +854,9 @@ export const IPC = {
   // System namespace — hardware back button bridge (Android only)
   SYSTEM_NOTIFY_STACK_STATE: 'system:notify-stack-state',
   SYSTEM_BACK: 'system:back',
+  // ---- Native runtime (YouCoded first-party harness — platform roadmap Phase 1+) ----
+  // Capability probe: false everywhere until Phase 1 ships the engine.
+  NATIVE_SUPPORTED: 'native:supported',
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.

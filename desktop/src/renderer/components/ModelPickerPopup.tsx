@@ -131,9 +131,13 @@ interface Props {
   sessionId: string | null;
   currentModel: ModelAlias | null;
   onSelectModel: (m: ModelAlias) => void;
+  /** Runtime backend — Phase 1 replaces this guard with a provider-scoped
+   *  model catalog; in Phase 0 native sessions cannot exist, so this only
+   *  pins the seam. */
+  provider?: 'claude' | 'native';
 }
 
-export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel }: Props) {
+export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider }: Props) {
   useEscClose(open, onClose);
   const [fast, setFast] = useState(false);
   const [effort, setEffort] = useState<EffortLevel>('auto');
@@ -202,6 +206,11 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   };
 
   if (!open) return null;
+
+  // Native sessions get a provider-scoped picker in Phase 1. Until then
+  // (and they can't be created yet), render nothing rather than a Claude
+  // alias list that would send /model down a nonexistent PTY.
+  if (provider === 'native') return null;
 
   // "max" effort is top-tier-only (Opus 1M + Fable); disable the button otherwise.
   const maxAllowed = currentModel != null && MAX_EFFORT_MODELS.includes(currentModel);

@@ -720,7 +720,6 @@ export function registerIpcHandlers(
     skipPermissions: false,
     model: 'sonnet',
     projectFolder: '',
-    geminiEnabled: false, // Opt-in: show Gemini CLI option in new session form
     permissionOverrides: { ...PERMISSION_OVERRIDES_DEFAULT },
   };
 

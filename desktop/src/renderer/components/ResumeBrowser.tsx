@@ -573,7 +573,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           <div className="px-4 pt-4 pb-3 border-b border-edge">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-bold text-fg">Resume Session</h2>
-              {/* Show Complete — same toggle pattern as Skip Permissions + Gemini CLI
+              {/* Show Complete — same toggle pattern as Skip Permissions
                   in SessionStrip, but accent-colored to signal "on" rather than "danger". */}
               <div className="flex items-center gap-2">
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted">Show Complete</label>

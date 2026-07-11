@@ -240,6 +240,12 @@ declare global {
       app: {
         restart: () => Promise<void>;
       };
+      // Native runtime capability flag (platform roadmap Phase 0 seam). Plain
+      // boolean — no IPC round-trip. Hard-false everywhere except dev Electron
+      // builds launched with YOUCODED_NATIVE=1; the runtime selector gates on it.
+      native: {
+        supported: boolean;
+      };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState
       // enables/disables OnBackPressedCallback and onBack subscribes to

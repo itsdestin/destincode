@@ -50,7 +50,7 @@ The Chat View timeline is built from four event sources:
 - **Never use `process.env`** in renderer code — it doesn't exist in the browser. Use `import.meta.env` with `VITE_` prefixed vars if you need build-time env injection, but note the tsconfig uses `module: "commonjs"` so `import.meta` will fail `tsc`. Prefer constants or IPC for config the renderer needs.
 - **Never use `require()`** in renderer code — use ES `import` only.
 - **`node-pty`** cannot load in Electron's main process (ABI mismatch). It runs in a separate `node` child process via `pty-worker.js`. The worker's `case 'input'` handler implements Windows-ConPTY-aware submit logic — passthrough for non-CR writes, atomic single-write when `body + \r` ≤ 56 bytes (`SAFE_ATOMIC_LEN`, with an 8-byte margin under the empirically-measured 64-byte ConPTY paste threshold), and **echo-driven submit** for longer text (chunk the body in ≤56-byte pieces, wait for CC's stdout echo, then write a bare `\r`). See `docs/PITFALLS.md` → "PTY Writes" before changing how input is written. Android's `PtyBridge.writeInput` still uses a 600 ms gap because Linux PTY doesn't have ConPTY's gap-collapse issue.
-- **Preload** is sandboxed — no `require()`, no relative imports, no `process.env`. IPC channel names are inlined as string literals.
+- **Preload** is sandboxed — no `require()` of app modules, no relative imports. IPC channel names are inlined as string literals. Electron's polyfilled `process` IS available (including `process.env` — verified empirically 2026-07-10 against the built preload in a sandboxed window; `window.claude.native.supported` reads `YOUCODED_NATIVE` this way).
 
 ## Dev Commands
 

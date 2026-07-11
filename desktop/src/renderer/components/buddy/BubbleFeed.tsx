@@ -176,10 +176,25 @@ export function BubbleFeed({ sessionId }: Props) {
           });
           break;
         case 'assistant-thinking':
-          batchDispatch({
-            type: 'TRANSCRIPT_THINKING_HEARTBEAT',
-            sessionId: event.sessionId,
-          });
+          // Reasoning chunks carry a text payload (native harness / thinking
+          // models); the CC transcript path is heartbeat-only. Truthiness
+          // check (not typeof) so an empty-string payload stays a heartbeat —
+          // MUST match App.tsx's predicate or the two windows diverge.
+          if (event.data?.text) {
+            batchDispatch({
+              type: 'TRANSCRIPT_ASSISTANT_REASONING',
+              sessionId: event.sessionId,
+              uuid: event.uuid,
+              text: event.data.text,
+              timestamp: event.timestamp,
+              partId: event.data.partId,
+            });
+          } else {
+            batchDispatch({
+              type: 'TRANSCRIPT_THINKING_HEARTBEAT',
+              sessionId: event.sessionId,
+            });
+          }
           break;
         // compact-summary: buddy doesn't drive compaction UI (no /compact command),
         // but we still need to close any pending compaction spinner if it was opened

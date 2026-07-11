@@ -316,7 +316,7 @@ function AppInner() {
     }).catch(() => {});
   }, []);
 
-  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', geminiEnabled: false });
+  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
 
   // Check first-run state with a 3-second safety timeout — never hang the app
   useEffect(() => {
@@ -682,8 +682,10 @@ function AppInner() {
         setSessionId(info.id);
         return [...prev, info];
       });
-      // Gemini sessions are terminal-only (no transcript watcher), so default to terminal view
-      const defaultView = (info.provider && info.provider !== 'claude') ? 'terminal' : 'chat';
+      // Native harness sessions (roadmap Phase 1+) are chat-first — they have
+      // no PTY, so 'terminal' would be an empty pane. Claude sessions also
+      // default to chat. (Gemini, the old terminal-only provider, is gone.)
+      const defaultView = 'chat';
       setViewModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, defaultView));
       setPermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, info.permissionMode || 'normal'));
       setSessionModels((prev) => {
@@ -692,7 +694,7 @@ function AppInner() {
         const alias = MODELS.find((m) => info.model?.includes(m.replace(/\[.*\]/, ''))) ?? 'sonnet';
         return new Map(prev).set(info.id, alias);
       });
-      // Non-Claude providers (e.g. Gemini) don't emit hook events, so they'd
+      // Native harness sessions (roadmap Phase 1+) have no hook relay, so they'd
       // never trigger the "first hook = initialized" gate. Mark them ready immediately.
       if (info.provider && info.provider !== 'claude') {
         setInitializedSessions((prev) => {
@@ -898,14 +900,27 @@ function AppInner() {
             agentId: event.data.agentId,
           });
           break;
-        case 'assistant-thinking':
-          // Extended-thinking heartbeat — bumps lastActivityAt and clears
-          // any stale attention banner. No timeline change.
-          batchTranscriptDispatch({
-            type: 'TRANSCRIPT_THINKING_HEARTBEAT',
-            sessionId: event.sessionId,
-          });
+        case 'assistant-thinking': {
+          // Text payload → real reasoning content (collapsible in chat).
+          // No payload → lifecycle heartbeat only (existing behavior:
+          // bumps lastActivityAt and clears any stale attention banner).
+          if (event.data?.text) {
+            batchTranscriptDispatch({
+              type: 'TRANSCRIPT_ASSISTANT_REASONING',
+              sessionId: event.sessionId,
+              uuid: event.uuid,
+              text: event.data.text,
+              timestamp: event.timestamp,
+              partId: event.data.partId,
+            });
+          } else {
+            batchTranscriptDispatch({
+              type: 'TRANSCRIPT_THINKING_HEARTBEAT',
+              sessionId: event.sessionId,
+            });
+          }
           break;
+        }
         case 'compact-summary': {
           // Canonical compaction-complete signal — fired by the transcript
           // watcher when Claude Code writes an isCompactSummary entry. Works
@@ -1343,7 +1358,10 @@ function AppInner() {
         return [...prev, sessionInfo];
       });
       dispatch({ type: 'SESSION_INIT', sessionId: sid });
-      const defaultView = (sessionInfo.provider && sessionInfo.provider !== 'claude') ? 'terminal' : 'chat';
+      // Native harness sessions (roadmap Phase 1+) are chat-first — they have
+      // no PTY, so 'terminal' would be an empty pane. Claude sessions also
+      // default to chat. (Gemini, the old terminal-only provider, is gone.)
+      const defaultView = 'chat';
       setViewModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, defaultView));
       setPermissionModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, sessionInfo.permissionMode || 'normal'));
       // Transferred sessions were already initialized on the source — skip the
@@ -1811,11 +1829,11 @@ function AppInner() {
     [sessionId, dispatch, viewModes, getUsageSnapshot, guardedPtySend],
   );
 
-  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'gemini', launchInNewWindow?: boolean) => {
+  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean) => {
     // Use the explicitly chosen model; fall back to the current session's model
     const m = sessionModel || currentModel;
     const info = await (window.claude.session.create as any)({
-      name: provider === 'gemini' ? 'Gemini Session' : 'New Session',
+      name: 'New Session',
       cwd,
       skipPermissions: dangerous,
       model: m,
@@ -1963,6 +1981,9 @@ function AppInner() {
 
   const currentSession = sessions.find((s) => s.id === sessionId);
   const canBypass = currentSession?.skipPermissions ?? false;
+  // Native sessions: permission modes are a harness policy (Phase 2), not a
+  // PTY shift+tab cycle — hide the badge + cycle affordance for them.
+  const isNativeSession = currentSession?.provider === 'native';
   const currentPermissionMode = sessionId ? (permissionModes.get(sessionId) || 'normal') : 'normal';
 
   // Shift+Tab cycles permission mode in chat view
@@ -2285,8 +2306,6 @@ function AppInner() {
                 onToggleGamePanel={() => gameDispatch({ type: 'TOGGLE_PANEL' })}
                 gameConnected={gameState.connected}
                 challengePending={gameState.challengeFrom !== null}
-                permissionMode={currentPermissionMode}
-                onCyclePermission={cyclePermission}
                 settingsOpen={settingsOpen}
                 onToggleSettings={() => setSettingsOpen(prev => !prev)}
                 settingsBadge={settingsBadge}
@@ -2297,7 +2316,6 @@ function AppInner() {
                 defaultModel={sessionDefaults.model}
                 defaultSkipPermissions={sessionDefaults.skipPermissions}
                 defaultProjectFolder={sessionDefaults.projectFolder}
-                geminiEnabled={sessionDefaults.geminiEnabled}
                 windowDirectory={windowDirectory}
                 myWindowId={myWindowId}
               />
@@ -2322,6 +2340,7 @@ function AppInner() {
                       sessionId={s.id}
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
                       resumeInfo={resumeInfo}
+                      provider={s.provider}
                       cwd={s.cwd}
                       // Game pane lives in the active session's framed-shell
                       // right slot. Only the active session renders it (others
@@ -2408,8 +2427,8 @@ function AppInner() {
                   } : undefined}
                   model={currentModel}
                   onCycleModel={cycleModel}
-                  permissionMode={currentPermissionMode}
-                  onCyclePermission={cyclePermission}
+                  permissionMode={isNativeSession ? undefined : currentPermissionMode}
+                  onCyclePermission={isNativeSession ? undefined : cyclePermission}
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}
@@ -2621,6 +2640,7 @@ function AppInner() {
           postSwitchTurnReady.current = false;
           (window.claude as any).model?.setPreference(m);
         }}
+        provider={currentSession?.provider}
       />
       {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
           Reads from the single `openTasks` useSessionTasks instance declared in AppInner. */}

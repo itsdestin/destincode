@@ -2,6 +2,11 @@
 
 This doc tracks every place YouCoded couples to Claude Code's behavior — every silent point of failure when CC changes. It's both a navigational hub for humans and the input to the `review-cc-changes` release agent that maps CC CHANGELOG entries to code that might break.
 
+> **Sibling registries:** `engine-dependencies.md` (bundled llama.cpp) and
+> `provider-dependencies.md` (cloud provider APIs + AI SDK) track the
+> non-Claude backends introduced by the platform roadmap (Phase 0 seam:
+> `SessionProvider = 'claude' | 'native'`).
+
 ## When to update
 
 When you add code that parses CC output, consumes a CC file, depends on CLI behavior, or matches a CC text pattern, add an entry below. An omitted touchpoint silently downgrades the release agent to free-reasoning-only mode for that area — don't rely on the agent to notice a coupling that isn't documented here.

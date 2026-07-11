@@ -278,7 +278,7 @@ const IPC = {
 
 contextBridge.exposeInMainWorld('claude', {
   session: {
-    create: (opts: { name: string; cwd: string; skipPermissions: boolean; cols?: number; rows?: number; resumeSessionId?: string; provider?: 'claude' | 'gemini'; model?: string }) =>
+    create: (opts: { name: string; cwd: string; skipPermissions: boolean; cols?: number; rows?: number; resumeSessionId?: string; provider?: 'claude' | 'native'; model?: string }) =>
       ipcRenderer.invoke(IPC.SESSION_CREATE, opts),
     destroy: (sessionId: string) =>
       ipcRenderer.invoke(IPC.SESSION_DESTROY, sessionId),
@@ -948,6 +948,13 @@ contextBridge.exposeInMainWorld('claude', {
   // restart-required setting can reuse this single generic channel.
   app: {
     restart: (): Promise<void> => ipcRenderer.invoke(IPC.APP_RESTART),
+  },
+  // Native runtime — the Phase 0 seam for YouCoded's first-party harness
+  // (ships in platform roadmap Phase 1). Hard-false until then. To preview the
+  // dormant UI in dev, prefix the launch: YOUCODED_NATIVE=1 bash scripts/run-dev.sh
+  // (run-dev.sh does not set this var itself — it must come from your shell).
+  native: {
+    supported: process.env.YOUCODED_NATIVE === '1',
   },
   // System namespace — platform integrations like hardware back button.
   // Desktop no-op stub: notifyStackState / onBack are only meaningful on

@@ -27,6 +27,9 @@ interface Props {
    *  active session's ChatView receives this — App passes null otherwise. When
    *  present it takes precedence over the artifact drawer in the right slot. */
   gamePane?: React.ReactNode;
+  /** Runtime backend — forwarded to useAttentionClassifier so it
+   *  short-circuits for sessions without a PTY (native harness). */
+  provider?: 'claude' | 'native';
 }
 
 function HistoryExpandButton({ sessionId, resumeInfo }: {
@@ -71,7 +74,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane }: Props) {
+export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -203,6 +206,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     hasAwaitingApproval,
     visible,
     currentAttentionState: state.attentionState,
+    provider,
   });
 
   // Scroll container directly to scrollHeight instead of using
