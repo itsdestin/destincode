@@ -29,9 +29,14 @@ export interface ConversationStore {
   root(): string;
 }
 
-// The activity/metadata fields a caller can supply. `lastActive` is the ONLY
-// field that drives merge outcome — omit it for metadata-only upserts (flag /
-// title seeds) so they never masquerade as fresh activity.
+// The activity/metadata fields a caller can supply. `lastActive` decides how
+// the merge RANKS the two sides (omit it for metadata-only upserts so they
+// never masquerade as fresh activity) — but caller-provided metadata fields
+// (projectName / originalPath / title / transcriptRef) are LOCAL TRUTH and
+// always land regardless of merge ranking: the merge exists for cross-device
+// convergence, not for arguing with the caller. `lastActive`/`device` are
+// activity-coupled and stay merge-decided (a caller with newer activity lands
+// them via the merge anyway).
 export interface UpsertInput {
   id: string;
   provider: string;
@@ -48,10 +53,43 @@ export interface UpsertInput {
 // set before the first turn can never fabricate activity that outranks it.
 const EPOCH = '1970-01-01T00:00:00.000Z';
 
+// Quarantine marker the healer appends when it atomically CLAIMS a conflict
+// copy (see heal()). Files carrying it are healer-private intermediates.
+const HEALING_MARKER = '.healing-';
+
+// SECURITY (review fix 1): `provider` and `id` become path segments, and this
+// store sits near IPC/remote surfaces, so raw strings could traverse out of the
+// store root ('../../escape'). Allowlist charset — letters, digits, dot,
+// underscore, hyphen — contains no separators and no NUL; '.' and '..' are
+// rejected exactly. CC ids are UUIDs, which pass untouched. Same house pattern
+// as the artifacts GET/SAVE root-escape refusal.
+const SAFE_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+const isSafeSegment = (s: string) =>
+  SAFE_SEGMENT_RE.test(s) && s !== '.' && s !== '..';
+
 export function createConversationStore(conversationsRoot: string): ConversationStore {
-  // <root>/<provider>/<id>.json — one file per conversation, grouped by provider.
-  const recordPath = (provider: string, id: string) =>
-    path.join(conversationsRoot, provider, `${id}.json`);
+  const rootResolved = path.resolve(conversationsRoot);
+
+  // Resolve <root>/<provider>, refusing anything that escapes the root.
+  // The resolve+startsWith check is defense-in-depth behind the charset guard —
+  // both must hold for a path to be used.
+  function providerDir(provider: string): string {
+    const dir = path.resolve(rootResolved, provider);
+    if (!isSafeSegment(provider) || !dir.startsWith(rootResolved + path.sep)) {
+      throw new Error(`conversation-store: invalid provider '${provider}'`);
+    }
+    return dir;
+  }
+
+  // Resolve <root>/<provider>/<id>.json with the same escape refusal for id.
+  function recordPath(provider: string, id: string): string {
+    const dir = providerDir(provider);
+    const target = path.resolve(dir, `${id}.json`);
+    if (!isSafeSegment(id) || !target.startsWith(dir + path.sep)) {
+      throw new Error(`conversation-store: invalid conversation id '${id}'`);
+    }
+    return target;
+  }
 
   // Build a full record from a partial. Missing string fields default to '' so
   // a record on disk never carries undefined. `lastActive` defaults to EPOCH
@@ -87,6 +125,8 @@ export function createConversationStore(conversationsRoot: string): Conversation
     id: string,
     fn: (onDisk: ConversationRecord | null) => ConversationRecord,
   ): Promise<ConversationRecord> {
+    // recordPath validates provider + id and THROWS on traversal — this is the
+    // single chokepoint every write path funnels through (review fix 1).
     const target = recordPath(provider, id);
     // mutateFileUnderLock also mkdirs the parent, but doing it here keeps the
     // "provider dir created on demand" guarantee obvious at the call site.
@@ -100,41 +140,87 @@ export function createConversationStore(conversationsRoot: string): Conversation
       result = fn(existing);
       return JSON.stringify(result, null, 2);
     });
-    // Deviation from the plan: guard the lock-timeout case. mutateFileUnderLock
-    // returns false (and skips the write) when it can't acquire the lock within
-    // its timeout; the plan's `result!` would then hand back `undefined` typed
-    // as a record. Throwing surfaces the rare contention failure instead of
-    // silently returning a bogus record.
+    // mutateFileUnderLock returns false (and skips the write) when it can't
+    // acquire the lock within its timeout. Throwing surfaces the rare
+    // contention failure instead of silently returning a bogus record.
     if (!committed || !result) {
       throw new Error(`conversation-store: could not write ${provider}/${id} (lock timeout)`);
     }
     return result;
   }
 
-  // Heal engine conflict copies for ONE record id: fold them field-level into
-  // the canonical record, rewrite the canonical, delete the copies. Runs
-  // opportunistically on the read paths (get/list) and before an upsert.
+  // Heal engine conflict copies for ONE record id: atomically CLAIM each copy
+  // via quarantine-rename, fold the claimed content field-level into the
+  // canonical record, then delete the quarantine files. Runs opportunistically
+  // on the read paths (get/list) and before an upsert.
+  //
+  // WHY quarantine-rename (review fix 2): deleting a copy by its ORIGINAL name
+  // races the sync engine — between our read and our unlink, another process's
+  // heal can remove the copy and the engine can write NEW conflict content at
+  // the very same name (its free-name probe sees the name free; the date suffix
+  // is day-granular). Our unlink would then destroy unfolded data. Renaming to
+  // '<copy>.healing-<pid>' atomically claims the EXACT content we read: the
+  // engine can never collide with a claimed name, and everything we later
+  // delete is a name only we created.
   async function heal(provider: string, id: string): Promise<void> {
-    const dir = path.join(conversationsRoot, provider);
+    const dir = providerDir(provider);
     let names: string[];
     // The provider dir may not exist yet — nothing to heal.
     try { names = fs.readdirSync(dir); } catch { return; }
-    // Only conflict copies whose canonical base is exactly this id's file.
+    const baseName = `${id}.json`;
+
+    // CRASH RECOVERY: a healer that died after claiming left
+    // '<copy>.healing-<pid>' behind — junk that would otherwise sync forever.
+    // Adopt such files into this fold. Refolding content a previous healer
+    // already folded is harmless (the fold is idempotent), and if the file
+    // belongs to a LIVE concurrent healer, both of us fold the same bytes and
+    // the ENOENT guards below absorb whichever deletion lands second.
+    const claimed: string[] = names
+      .filter((n) => {
+        const h = n.indexOf(HEALING_MARKER);
+        if (h < 0) return false;
+        const original = n.slice(0, h);
+        return isConflictCopyName(original) && extractConflictBase(original) === baseName;
+      })
+      .map((n) => path.join(dir, n));
+
+    // Live conflict copies whose canonical base is exactly this id's file.
     // extractConflictBase runs to the LAST ')' before .json (device names may
     // contain ')'), so this correctly scopes to <id>.json copies only.
     const copies = names.filter(
-      (n) => isConflictCopyName(n) && extractConflictBase(n) === `${id}.json`,
+      (n) => isConflictCopyName(n) && extractConflictBase(n) === baseName,
     );
-    if (copies.length === 0) return;
-    // Parse the copies; a copy that won't parse (or whose id doesn't match) is
-    // dropped from the fold but STILL deleted below — it carries nothing and
-    // would otherwise re-trigger healing on every read forever.
-    const parsed = copies
-      .map((n) => {
-        try { return parseRecord(fs.readFileSync(path.join(dir, n), 'utf8')); }
+
+    for (const n of copies) {
+      const full = path.join(dir, n);
+      // Review fix 5b: a copy that parses to a VALID record with a DIFFERENT id
+      // is someone's data under a misleading filename — leave it in place for
+      // investigation; never fold it, never delete it. (Unreadable/corrupt
+      // copies fall through to claiming: unparseable content carries nothing
+      // usable as a record and would re-trigger healing forever if kept.)
+      let peek: ConversationRecord | null = null;
+      try { peek = parseRecord(fs.readFileSync(full, 'utf8')); } catch { /* vanished — claim attempt below sorts it out */ }
+      if (peek && peek.id !== id) continue;
+      // Atomic claim. ENOENT (or any rename failure) means another healer
+      // claimed or removed this copy first — skip it; their fold covers it.
+      const quarantine = full + HEALING_MARKER + process.pid;
+      try {
+        fs.renameSync(full, quarantine);
+        claimed.push(quarantine);
+      } catch { /* lost the claim race — not ours to heal */ }
+    }
+    if (claimed.length === 0) return;
+
+    // Read the claimed content. A quarantine file can still vanish under a
+    // concurrent adopter (see crash-recovery note) — per-file try/catch keeps
+    // one loss from aborting the fold of the rest.
+    const parsed = claimed
+      .map((q) => {
+        try { return parseRecord(fs.readFileSync(q, 'utf8')); }
         catch { return null; }
       })
       .filter((r): r is ConversationRecord => !!r && r.id === id);
+
     if (parsed.length > 0) {
       await mutateRecord(provider, id, (existing) =>
         // With a canonical on disk: fold ALL copies into it. Without one (only
@@ -143,10 +229,12 @@ export function createConversationStore(conversationsRoot: string): Conversation
         // result is independent of directory enumeration order.
         foldConflictCopies(existing ?? parsed[0], existing ? parsed : parsed.slice(1)));
     }
-    // Delete every copy we scanned (parseable or not). The try/catch tolerates a
-    // concurrent list()/heal() in another window having already unlinked it.
-    for (const n of copies) {
-      try { fs.unlinkSync(path.join(dir, n)); } catch { /* already gone */ }
+    // Delete the quarantine files ONLY after the fold landed — if mutateRecord
+    // threw above, they stay on disk and the next heal adopts them (no data
+    // loss on a failed fold). Unparseable claims are deleted too: they carry
+    // nothing usable as a record. ENOENT tolerated (concurrent adopter).
+    for (const q of claimed) {
+      try { fs.unlinkSync(q); } catch { /* already gone */ }
     }
   }
 
@@ -154,15 +242,17 @@ export function createConversationStore(conversationsRoot: string): Conversation
     root: () => conversationsRoot,
 
     async upsert(partial) {
+      // Validate FIRST so a traversal id/provider throws before any disk work
+      // (heal would otherwise silently no-op on a bad provider).
+      recordPath(partial.provider, partial.id);
       // Fold away any conflict copies first so we merge into the true canonical.
       await heal(partial.provider, partial.id);
       const incoming = toRecord(partial);
       return mutateRecord(partial.provider, partial.id, (existing) => {
         if (!existing) return incoming;
-        // Metadata-only partials must NOT blank real fields: overlay ONLY the
-        // fields the caller actually provided onto the existing record, then
-        // field-merge. lastActive always comes from `incoming` (EPOCH when the
-        // caller omitted it) so mergeRecords ranks activity correctly.
+        // Overlay the provided fields onto the existing record so mergeRecords
+        // can rank the two sides by activity (lastActive is `incoming`'s —
+        // EPOCH when the caller omitted it, so metadata-only never outranks).
         const overlay: ConversationRecord = {
           ...existing,
           ...(partial.projectName !== undefined && { projectName: partial.projectName }),
@@ -172,14 +262,33 @@ export function createConversationStore(conversationsRoot: string): Conversation
           ...(partial.transcriptRef !== undefined && { transcriptRef: partial.transcriptRef }),
           lastActive: incoming.lastActive,
         };
-        return mergeRecords(existing, overlay);
+        const merged = mergeRecords(existing, overlay);
+        // Review fix 3 — LOCAL TRUTH: the merge ranks by activity, so a
+        // metadata-only upsert (EPOCH lastActive) loses wholesale and every
+        // provided field would silently vanish. Re-apply the caller's explicit
+        // metadata POST-merge: these fields are facts the caller just observed,
+        // not cross-device claims to arbitrate. lastActive/device deliberately
+        // stay merge-decided (activity-coupled); title lands only when
+        // non-empty (never blank a real name with '').
+        return {
+          ...merged,
+          ...(partial.projectName !== undefined && { projectName: partial.projectName }),
+          ...(partial.originalPath !== undefined && { originalPath: partial.originalPath }),
+          ...(partial.transcriptRef !== undefined && { transcriptRef: partial.transcriptRef }),
+          ...(partial.title ? { title: partial.title } : null),
+        };
       });
     },
 
     async get(provider, id) {
-      // Heal-on-read: any conflict copies for this id are folded in before we
-      // return, so callers always see the converged record.
-      await heal(provider, id);
+      // Fail-soft reads (review fix 1): an invalid name can't address a record
+      // — answer "not found", don't throw (reads promise to degrade, not break).
+      if (!isSafeSegment(provider) || !isSafeSegment(id)) return null;
+      // Heal-on-read is OPPORTUNISTIC (review fix 4): a contended/stale lock on
+      // the canonical must not reject the read — serve the un-healed canonical
+      // and let the next read retry (claimed quarantine files survive a failed
+      // fold, so nothing is lost).
+      try { await heal(provider, id); } catch { /* heal retries on next read */ }
       try {
         return parseRecord(fs.readFileSync(recordPath(provider, id), 'utf8'));
       } catch {
@@ -190,26 +299,34 @@ export function createConversationStore(conversationsRoot: string): Conversation
     },
 
     async list(provider) {
-      const dir = path.join(conversationsRoot, provider);
+      // Fail-soft reads: invalid provider → empty listing, never a throw.
+      if (!isSafeSegment(provider)) return [];
+      let dir: string;
+      try { dir = providerDir(provider); } catch { return []; }
       let names: string[];
       // No provider dir → no conversations.
       try { names = fs.readdirSync(dir); } catch { return []; }
-      // Heal any conflict copies found in this listing pass, then read clean.
+      // Heal any conflict copies (and stale quarantine files) found in this
+      // listing pass, then read clean. Heal failures are swallowed per fix 4 —
+      // a stuck lock on ONE record must not empty the whole list.
       for (const n of names) {
-        if (isConflictCopyName(n)) {
-          const base = extractConflictBase(n);
-          // Only .json conflict copies map back to a record id; a non-record
-          // copy ('notes (from X).txt') yields a base that isn't ours and heal
-          // finds no matching copies, so it's a no-op — but we still gate on the
-          // .json base to avoid pointless heal calls.
-          if (base && base.endsWith('.json')) {
-            await heal(provider, base.replace(/\.json$/, ''));
+        // A stale quarantine name maps back to its original conflict-copy name.
+        const h = n.indexOf(HEALING_MARKER);
+        const original = h >= 0 ? n.slice(0, h) : n;
+        if (isConflictCopyName(original)) {
+          const base = extractConflictBase(original);
+          if (base) {
+            try { await heal(provider, base.replace(/\.json$/, '')); }
+            catch { /* opportunistic — next list retries */ }
           }
         }
       }
       const out: ConversationRecord[] = [];
-      // Re-read the dir: heal may have deleted conflict copies above.
-      for (const n of fs.readdirSync(dir)) {
+      // Re-read the dir (heal may have deleted copies) — guarded like the
+      // first read: a dir that vanished mid-list yields [] not a crash.
+      let finalNames: string[];
+      try { finalNames = fs.readdirSync(dir); } catch { return []; }
+      for (const n of finalNames) {
         if (!n.endsWith('.json') || isConflictCopyName(n)) continue;
         try {
           const r = parseRecord(fs.readFileSync(path.join(dir, n), 'utf8'));
