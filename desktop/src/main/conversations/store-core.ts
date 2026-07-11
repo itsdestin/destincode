@@ -176,25 +176,38 @@ export function extractConflictBase(fileName: string): string | null {
 }
 
 // Fold every conflict copy of a conversation back into its canonical record.
-// Order-independence, field by field: lastActive/device/flags/createdAt
-// converge because the pairwise merge picks each of them as max/min under a
-// TOTAL order (timestamp primary, JSON-content tiebreak — see laterOf), and
-// max/min are associative + commutative. TITLE does NOT get that for free:
-// the pairwise title rule is a heuristic that isn't associative — once the
-// accumulator adopts a title from its first merge partner, that title rides
-// the accumulator's newest lastActive and beats a NEWER real title arriving
-// in a later fold step, so enumeration order changed the healed title. The
-// fold therefore OVERRIDES title with a pick computed over the original input
-// SET (order can't matter when the inputs are considered together): among
-// inputs with a real title, the one that is max under the same total order
-// wins; if none has a real title, the reduce's placeholder result stands.
+// Order-independence strategy: every field group is picked over the ORIGINAL
+// inputs, never over mutated intermediates — that's what makes directory
+// enumeration order unable to change the healed record.
+//  - flags/createdAt: accumulated through the pairwise reduce, which is safe
+//    for THEM because those picks are per-key max / earliest-min over values
+//    that pass through merges UNCHANGED (max/min under a total order are
+//    associative and commutative).
+//  - activity/spread fields (lastActive, device, transcriptRef, ...): picked
+//    directly as the total-order max of the original inputs. Taking them from
+//    the reduce accumulator was subtly order-dependent: the accumulator's
+//    title override can shrink its JSON and flip a later exact-lastActive tie
+//    comparison inside mergeRecords, healing e.g. a different device per
+//    enumeration order.
+//  - title: picked over the original inputs that have a REAL (non-placeholder)
+//    title — the pairwise title rule is a heuristic that isn't associative
+//    (an adopted title rides the accumulator's newest lastActive and beats a
+//    newer real title from a later fold step). If no input has a real title,
+//    the reduce's placeholder result stands (either placeholder is fine — the
+//    renderer treats '' and 'Untitled' alike as untitled).
 export function foldConflictCopies(
   canonical: ConversationRecord,
   copies: ConversationRecord[],
 ): ConversationRecord {
+  const inputs = [canonical, ...copies];
   const folded = copies.reduce((acc, c) => mergeRecords(acc, c), canonical);
-  const titled = [canonical, ...copies].filter((r) => realTitle(r.title));
-  if (titled.length === 0) return folded;
-  const winner = titled.reduce((x, y) => laterOf(x, y, ts(x.lastActive), ts(y.lastActive)));
-  return { ...folded, title: winner.title };
+  // Spread-source: the total-order-max ORIGINAL record supplies every field
+  // the pairwise merge would take from its "newer" side.
+  const base = inputs.reduce((x, y) => laterOf(x, y, ts(x.lastActive), ts(y.lastActive)));
+  const titled = inputs.filter((r) => realTitle(r.title));
+  const title =
+    titled.length > 0
+      ? titled.reduce((x, y) => laterOf(x, y, ts(x.lastActive), ts(y.lastActive))).title
+      : folded.title;
+  return { ...base, title, flags: folded.flags, createdAt: folded.createdAt };
 }

@@ -379,4 +379,26 @@ describe('foldConflictCopies', () => {
     const y = rec({ lastActive: same, device: 'Phone', title: 'From phone' });
     expect(foldConflictCopies(canon, [x, y])).toEqual(foldConflictCopies(canon, [y, x]));
   });
+
+  // Residual-corner probe: 3-way exact tie + 'Untitled' placeholder canonical +
+  // real-titled copies straddling it in JSON order. When the record-level pick
+  // ran over the MUTATED reduce accumulator, the fold's title override shrank
+  // the accumulator's JSON and flipped a later tie comparison — device healed
+  // differently per enumeration order. The fix picks the spread-source record
+  // over the ORIGINAL inputs, same as the title pick.
+  it('picks activity fields over the original inputs, not the mutated accumulator', () => {
+    const same = '2026-07-05T12:00:00.000Z';
+    const canon = rec({ lastActive: same, title: 'Untitled', device: 'C-dev' });
+    const alpha = rec({ lastActive: same, title: 'Alpha', device: 'B-dev' });
+    const delta = rec({ lastActive: same, title: 'Delta', device: 'A-dev' });
+    const fwd = foldConflictCopies(canon, [alpha, delta]);
+    const rev = foldConflictCopies(canon, [delta, alpha]);
+    expect(fwd).toEqual(rev);
+    // Concrete winners under the total order (records' JSON first differs at
+    // `title`): 'Untitled' > 'Delta' > 'Alpha', so the canonical is the
+    // spread-source max → device 'C-dev'; the title pick considers only the
+    // REAL-titled inputs, where 'Delta' beats 'Alpha' on the same tiebreak.
+    expect(fwd.device).toBe('C-dev');
+    expect(fwd.title).toBe('Delta');
+  });
 });
