@@ -83,9 +83,14 @@ export function mergeRecords(a: ConversationRecord, b: ConversationRecord): Conv
     if (cur && ts(v.updatedAt) > ts(cur.updatedAt)) flags[k] = v;
   }
   // A real title always beats an empty one (auto-title can lag a turn behind,
-  // so the newer side may not yet have a title). Two real titles → newer wins,
-  // which falls out naturally because `newer.title` is checked first.
-  const title = newer.title || older.title;
+  // so the newer side may not yet have a title). Literal 'Untitled' is a
+  // legacy placeholder some older clients wrote (see PITFALLS → Resume
+  // Browser) — it must never shadow a real title either. Two real titles →
+  // newer wins, which falls out naturally because `newer` is checked first.
+  // The trailing fallbacks keep *something* when both sides are placeholders
+  // (harmless — the renderer treats '' and 'Untitled' alike as untitled).
+  const real = (t: string) => (t && t !== 'Untitled' ? t : '');
+  const title = real(newer.title) || real(older.title) || newer.title || older.title;
   return {
     ...newer,
     title,

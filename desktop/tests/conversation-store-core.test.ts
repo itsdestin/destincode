@@ -148,6 +148,36 @@ describe('mergeRecords', () => {
     expect(mergeRecords(incoming, base).title).toBe('Real title');
   });
 
+  // Contract 5 (continued): the literal 'Untitled' is a legacy placeholder
+  // (PITFALLS → Resume Browser: older clients wrote it into topic files) — it
+  // must never shadow a real title, in either direction, regardless of age.
+  it("lets a real title beat a literal 'Untitled' even when the placeholder side is newer", () => {
+    const older = rec({ lastActive: '2026-07-01T00:00:00.000Z', title: 'Real title' });
+    const newer = rec({ lastActive: '2026-07-09T00:00:00.000Z', title: 'Untitled' });
+    // (a) older side's real title beats newer side's 'Untitled'.
+    expect(mergeRecords(older, newer).title).toBe('Real title');
+    expect(mergeRecords(newer, older).title).toBe('Real title');
+  });
+
+  it("lets a newer real title beat an older 'Untitled'", () => {
+    const older = rec({ lastActive: '2026-07-01T00:00:00.000Z', title: 'Untitled' });
+    const newer = rec({ lastActive: '2026-07-09T00:00:00.000Z', title: 'Real title' });
+    // (b) newer real title beats older 'Untitled'.
+    expect(mergeRecords(older, newer).title).toBe('Real title');
+    expect(mergeRecords(newer, older).title).toBe('Real title');
+  });
+
+  it('degrades gracefully when both sides are placeholders', () => {
+    // (c) both placeholder/empty → no crash; result is one of the placeholders
+    // (the renderer treats '' and 'Untitled' alike as untitled, so either is fine).
+    const a = rec({ lastActive: '2026-07-01T00:00:00.000Z', title: 'Untitled' });
+    const b = rec({ lastActive: '2026-07-09T00:00:00.000Z', title: '' });
+    expect(['', 'Untitled']).toContain(mergeRecords(a, b).title);
+    expect(['', 'Untitled']).toContain(mergeRecords(b, a).title);
+    const c = rec({ title: 'Untitled' });
+    expect(['', 'Untitled']).toContain(mergeRecords(c, c).title);
+  });
+
   it('picks the newest side when both titles are non-empty', () => {
     const older = rec({ lastActive: '2026-07-01T00:00:00.000Z', title: 'Older title' });
     const newer = rec({ lastActive: '2026-07-09T00:00:00.000Z', title: 'Newer title' });
