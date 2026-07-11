@@ -78,6 +78,21 @@ describe('mirrorIn (local → space, add/update-only)', () => {
     expect(fs.statSync(spacePath).mtimeMs).toBe(before); // never rewritten
   });
 
+  // Reviewer pin: same byte length but DIFFERENT content still skips — and the
+  // space copy's bytes stay untouched. This pins the module header's deliberate
+  // trade-off ("a same-size-different-content case resolves on the next turn's
+  // growth"): a future content-hash refactor that starts copying here must trip
+  // this red test and re-argue the design first.
+  it('same size but different content: no copy, space bytes unchanged', () => {
+    put(spacePath, 'space-bytes\n');
+    put(localPath, 'local-bytes\n'); // identical byte length, different content
+
+    const res = mirrorIn({ localJsonlPath: localPath, spaceTranscriptPath: spacePath });
+
+    expect(res).toEqual({ copied: false });
+    expect(read(spacePath)).toBe('space-bytes\n'); // exact bytes preserved
+  });
+
   // Contract 4 (LOAD-BEARING): the local file is MISSING (CC's cleanupPeriodDays
   // deleted it). mirror-in must be a pure no-op — the durable space copy's BYTES
   // are untouched. Deletion must NEVER propagate into the space.
@@ -209,5 +224,30 @@ describe('stale tmp cleanup', () => {
     expect(fs.existsSync(freshTmp)).toBe(true);    // too new to sweep
     expect(fs.existsSync(foreignTmp)).toBe(true);  // belongs to another dest
     expect(read(spacePath)).toBe('trigger-a-copy\n'); // copy still succeeded
+  });
+
+  // Reviewer pin: the sweep also runs on the materialize-out side — its tmp
+  // lands in the LOCAL project-slug dir, and a crash-orphan there is disk junk
+  // (harmless to sync, but still junk). Same rules: stale same-dest swept,
+  // fresh and foreign-dest kept.
+  it('materializeOut sweeps a stale same-dest .tmp in the local dir, keeps fresh/foreign', () => {
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    const staleTmp = `${localPath}.77777.333.tmp`;      // matches <dest>.*.tmp
+    const freshTmp = `${localPath}.66666.444.tmp`;      // matches, but recent
+    const foreignTmp = path.join(path.dirname(localPath), 'other.jsonl.5.6.tmp'); // different dest
+    fs.writeFileSync(staleTmp, 'junk');
+    fs.writeFileSync(freshTmp, 'junk');
+    fs.writeFileSync(foreignTmp, 'junk');
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2h ago
+    fs.utimesSync(staleTmp, old, old);
+    fs.utimesSync(foreignTmp, old, old); // old too, but different dest ⇒ kept
+
+    put(spacePath, 'trigger-materialize\n');
+    materializeOut({ spaceTranscriptPath: spacePath, localJsonlPath: localPath });
+
+    expect(fs.existsSync(staleTmp)).toBe(false);   // swept
+    expect(fs.existsSync(freshTmp)).toBe(true);    // too new to sweep
+    expect(fs.existsSync(foreignTmp)).toBe(true);  // belongs to another dest
+    expect(read(localPath)).toBe('trigger-materialize\n'); // copy still succeeded
   });
 });
