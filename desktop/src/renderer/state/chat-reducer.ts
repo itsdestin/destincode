@@ -502,9 +502,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
-    // Streaming reasoning chunk with text payload. Mirrors the
-    // TRANSCRIPT_ASSISTANT_TEXT streaming path: same partId merges chunks
-    // into one segment instead of creating a new bubble per token.
+    // Streaming reasoning chunk with text payload. Reasoning arrives as
+    // per-token deltas merged into one segment by partId — UNLIKE the
+    // TRANSCRIPT_ASSISTANT_TEXT path, which appends each event as a whole
+    // block in its own new segment.
     case 'TRANSCRIPT_ASSISTANT_REASONING': {
       const session = next.get(action.sessionId);
       if (!session) return state;

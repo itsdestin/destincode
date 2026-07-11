@@ -120,6 +120,8 @@ export interface TranscriptEvent {
     parentAgentToolUseId?: string;
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
+    /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */
+    partId?: string;
     /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`

@@ -18,8 +18,9 @@ export type AssistantTurnSegment =
   // Reasoning / extended-thinking content with a text payload. The native
   // harness (Phase 2) streams these for thinking models; CC's transcript
   // path may also carry thinking text in future. Rendered as a collapsible
-  // disclosure attached to the next text bubble. partId merges streaming
-  // chunks into one segment, mirroring the text streaming path.
+  // disclosure attached to the next text bubble. Reasoning streams as
+  // per-token deltas merged into one segment by partId — UNLIKE the text
+  // path, which appends each whole block as its own segment.
   | { type: 'reasoning'; content: string; messageId: string; partId?: string }
   | { type: 'tool-group'; groupId: string }
   // Plan mode: ExitPlanMode tool's `input.plan` surfaced as its own bubble so
@@ -229,9 +230,11 @@ export type ChatAction =
       sessionId: string;
     }
   | {
-      // Streaming reasoning chunk WITH text payload. Merged into a single
-      // reasoning segment by partId, rendered as a collapsible disclosure
-      // in AssistantTurnBubble. Bumps lastActivityAt + clears attentionState.
+      // Streaming reasoning chunk WITH text payload. Per-token deltas are
+      // merged into a single reasoning segment by partId (UNLIKE the text
+      // path, which appends whole blocks), rendered as a collapsible
+      // disclosure in AssistantTurnBubble. Bumps lastActivityAt + clears
+      // attentionState.
       type: 'TRANSCRIPT_ASSISTANT_REASONING';
       sessionId: string;
       uuid: string;

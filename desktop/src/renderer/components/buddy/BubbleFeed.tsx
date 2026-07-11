@@ -177,16 +177,17 @@ export function BubbleFeed({ sessionId }: Props) {
           break;
         case 'assistant-thinking':
           // Reasoning chunks carry a text payload (native harness / thinking
-          // models); the CC transcript path is heartbeat-only. See App.tsx
-          // for the same branch logic.
-          if (event.data && typeof (event.data as any).text === 'string') {
+          // models); the CC transcript path is heartbeat-only. Truthiness
+          // check (not typeof) so an empty-string payload stays a heartbeat —
+          // MUST match App.tsx's predicate or the two windows diverge.
+          if (event.data?.text) {
             batchDispatch({
               type: 'TRANSCRIPT_ASSISTANT_REASONING',
               sessionId: event.sessionId,
               uuid: event.uuid,
-              text: (event.data as any).text,
+              text: event.data.text,
               timestamp: event.timestamp,
-              partId: (event.data as any).partId,
+              partId: event.data.partId,
             });
           } else {
             batchDispatch({

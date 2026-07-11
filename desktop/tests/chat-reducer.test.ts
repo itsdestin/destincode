@@ -142,16 +142,40 @@ describe('TRANSCRIPT_TURN_COMPLETE metadata', () => {
   });
 
   it('reasoning: consecutive REASONING events with same partId merge into one segment', () => {
-    // Thinking models (native harness) stream reasoning as chunks carrying a
-    // text payload + partId. Same partId → append to one segment, mirroring
-    // the text streaming path. Without this, the collapsible reasoning block
-    // would render dozens of tiny disclosures per turn.
+    // Thinking models (native harness) stream reasoning as per-token deltas
+    // carrying a text payload + partId. Same partId → append to one segment
+    // (unlike the text path, which appends whole blocks as new segments).
+    // Without this, the collapsible reasoning block would render dozens of
+    // tiny disclosures per turn.
     state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r1', text: 'Let me ', timestamp: 1, partId: 'rprt_1' });
     state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r2', text: 'think...', timestamp: 2, partId: 'rprt_1' });
 
     const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
     expect(turn.segments.length).toBe(1);
     expect(turn.segments[0]).toMatchObject({ type: 'reasoning', content: 'Let me think...', partId: 'rprt_1' });
+  });
+
+  it('reasoning: different or missing partIds do NOT merge — each starts a new segment', () => {
+    // The don't-over-merge half of the contract: merging is keyed strictly
+    // on a matching partId. A new partId means a new reasoning part; an
+    // undefined partId can never match, so those events always append.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r1', text: 'first part', timestamp: 1, partId: 'rprt_1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r2', text: 'second part', timestamp: 2, partId: 'rprt_2' });
+
+    let turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(2);
+    expect(turn.segments[0]).toMatchObject({ type: 'reasoning', content: 'first part', partId: 'rprt_1' });
+    expect(turn.segments[1]).toMatchObject({ type: 'reasoning', content: 'second part', partId: 'rprt_2' });
+
+    // Events with undefined partId each start a new segment — even
+    // back-to-back (undefined never satisfies the merge predicate).
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r3', text: 'no id A', timestamp: 3 });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r4', text: 'no id B', timestamp: 4 });
+
+    turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(4);
+    expect(turn.segments[2]).toMatchObject({ type: 'reasoning', content: 'no id A' });
+    expect(turn.segments[3]).toMatchObject({ type: 'reasoning', content: 'no id B' });
   });
 
   it('reasoning: REASONING followed by TEXT produces two segments (reasoning then text)', () => {

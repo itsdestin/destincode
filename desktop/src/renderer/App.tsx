@@ -883,7 +883,7 @@ function AppInner() {
               uuid: event.uuid,
               text: event.data.text,
               timestamp: event.timestamp,
-              partId: (event.data as any).partId,
+              partId: event.data.partId,
             });
           } else {
             batchTranscriptDispatch({
