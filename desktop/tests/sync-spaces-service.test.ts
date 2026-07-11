@@ -312,4 +312,44 @@ describe('sync-spaces service transition serialization', () => {
     await bootP;
     expect((await svc.syncSpacesStatus()).syncHub).toBe('connected');
   });
+
+  // ---- Main-process listener hook (Task 5): onSyncSpacesEvent ----
+  // behavior contract:
+  // 1. onSyncSpacesEvent(fn) subscribes; an engine event reaches fn with the
+  //    stamped `at` field; the returned unsubscribe fn stops delivery.
+  // 2. a listener that THROWS does not break other listeners or the window/
+  //    remote/hub fan-outs (assert a second listener still fires and the event
+  //    still lands in recentEvents).
+
+  it('onSyncSpacesEvent delivers stamped events; unsubscribe stops delivery', async () => {
+    const svc = await enabledMultiSpaceService();
+    const received: any[] = [];
+    const unsub = svc.onSyncSpacesEvent((e: any) => received.push(e));
+    // Fire an engine event (= service.broadcast) the way the real engine would.
+    h.onEvent!({ type: 'synced', spaceId: 'project:beta', pushed: false, updated: true });
+    expect(received.length).toBe(1);
+    expect(received[0].spaceId).toBe('project:beta');
+    expect(typeof received[0].at).toBe('number'); // stamped by broadcast()
+    unsub();
+    h.onEvent!({ type: 'synced', spaceId: 'project:alpha', pushed: false, updated: true });
+    expect(received.length).toBe(1); // no delivery after unsubscribe
+  });
+
+  it('a throwing listener does not strand other listeners, the hub send, or recentEvents', async () => {
+    const svc = await enabledMultiSpaceService();
+    h.hub.sendSignal.mockClear();
+    const good: any[] = [];
+    // First listener throws; second must still fire (per-listener isolation).
+    svc.onSyncSpacesEvent(() => { throw new Error('bad listener'); });
+    svc.onSyncSpacesEvent((e: any) => good.push(e));
+    // pushed:true so the hub send (which runs AFTER the local fan-out) also fires.
+    h.onEvent!({ type: 'synced', spaceId: 'project:beta', pushed: true, updated: false });
+    expect(good.length).toBe(1); // second listener still delivered
+    // Hub send comes after the local listeners — a throwing listener must not
+    // strand it.
+    expect(h.hub.sendSignal).toHaveBeenCalledWith('space-updated', 'repo-project:beta');
+    // And the event still landed in recentEvents.
+    const st = await svc.syncSpacesStatus();
+    expect(st.recentEvents.some((x: any) => x.spaceId === 'project:beta')).toBe(true);
+  });
 });

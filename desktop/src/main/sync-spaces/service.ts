@@ -52,6 +52,16 @@ export function setSyncSpacesRemoteBroadcaster(fn: ((e: SpaceSyncEvent) => void)
   remoteBroadcast = fn;
 }
 
+// Main-process subscribers (conversations service materializes on 'synced').
+// Renderer/remote consumers use the existing window/remote fan-outs; this hook
+// exists because main-process modules have no webContents to receive on.
+const localListeners = new Set<(e: SpaceSyncEvent) => void>();
+
+export function onSyncSpacesEvent(fn: (e: SpaceSyncEvent) => void): () => void {
+  localListeners.add(fn);
+  return () => localListeners.delete(fn);
+}
+
 function broadcast(e: SpaceSyncEvent): void {
   // Stamp at emit time — the renderer derives "Last synced N min ago" from it,
   // so every stored + fanned-out copy must carry the same timestamp.
@@ -62,6 +72,13 @@ function broadcast(e: SpaceSyncEvent): void {
   }
   // Fan out to remote clients too (see comment on remoteBroadcast above).
   try { remoteBroadcast?.(stamped); } catch { /* remote server not up / closing */ }
+  // Fan out to main-process subscribers (each isolated — same rationale as the
+  // window/remote blocks). Runs BEFORE the hub send so a bad listener can't
+  // strand the cross-device signal, and its own try/catch keeps one throwing
+  // listener from aborting the rest.
+  for (const fn of localListeners) {
+    try { fn(stamped); } catch { /* one bad listener must not strand the rest */ }
+  }
   // A local push means this account's OTHER devices should pull now — signal
   // the room LAST, isolated in its own try/catch like the fan-outs above:
   // broadcast() is the single fan-out chokepoint invoked from the engine's
