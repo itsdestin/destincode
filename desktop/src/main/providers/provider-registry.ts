@@ -89,9 +89,14 @@ export class ProviderRegistry {
     await this.home.mutateJson(FILE, (cur) => {
       const file = (cur as ProvidersFile | null) ?? { v: 1 as const, providers: [] };
       const existing = file.providers.find((p) => p.id === id);
+      // The IPC boundary makes this input untrusted at runtime — the TS types
+      // can't stop a renderer from sending a bare `{ enabled: true }`.
+      if (!existing && (!input.type || !input.label)) {
+        throw new Error('A new provider needs at least a type and a label.');
+      }
       // Field-by-field merge: an omitted field keeps the on-disk value, so a
-      // partial update (e.g. setKey persisting just the secretRef) can't wipe
-      // the label or baseUrl.
+      // partial update (e.g. a label-only edit from the Providers panel) can't
+      // wipe the baseUrl or secretRef.
       const next: ProviderConfig = {
         id,
         type: input.type ?? existing?.type,
@@ -111,12 +116,17 @@ export class ProviderRegistry {
   }
 
   async remove(id: string): Promise<void> {
-    if (BUILT_IN_IDS.has(id)) {
-      throw new Error(`'${id}' is a built-in provider and cannot be removed.`);
+    const builtIn = BUILT_INS.find((b) => b.id === id);
+    if (builtIn) {
+      throw new Error(`${builtIn.label} is a built-in provider and cannot be removed.`);
     }
     // Delete the secret FIRST: if the entry filter succeeded but the secret
     // delete failed, we'd have an orphaned ciphertext blob with no pointer to
     // it — unreachable forever. The other order just leaves a re-deletable row.
+    // Residual TOCTOU window: the secret store and providers.json are two
+    // stores with two separate locks, so a concurrent setKey between the
+    // delete and the filter below can still orphan a blob. Accepted for
+    // Plan A — the cost is one dead ciphertext entry, never a wrong key.
     const entry = this.readAll().find((p) => p.id === id);
     if (entry?.secretRef) await this.secrets.delete(entry.secretRef);
     await this.home.mutateJson(FILE, (cur) => {
@@ -134,13 +144,27 @@ export class ProviderRegistry {
       throw new Error(`Provider '${id}' is not configured.`);
     }
     const ref = await this.secrets.set(plaintext, entry.secretRef);
-    // Persist via upsert so the write is field-picked and lock-protected.
-    await this.upsert({ ...this.pickConfig(entry), secretRef: ref });
-  }
-
-  /** Explicit ProviderConfig key-pick — the one place that knows the six keys. */
-  private pickConfig(p: ProviderConfig): ProviderConfig {
-    return { id: p.id, type: p.type, label: p.label, baseUrl: p.baseUrl, secretRef: p.secretRef, enabled: p.enabled };
+    // Persist the pointer by mutating the LIVE entry inside the file lock —
+    // NOT by writing back the snapshot read above. A snapshot write would
+    // silently undo any concurrent edit (label change, disable) that landed
+    // between our read and this write (classic TOCTOU).
+    let found = false;
+    await this.home.mutateJson(FILE, (cur) => {
+      const file = (cur as ProvidersFile | null) ?? { v: 1 as const, providers: [] };
+      const live = file.providers.find((p) => p.id === id);
+      if (live) {
+        live.secretRef = ref;
+        found = true;
+      }
+      return file;
+    });
+    if (!found) {
+      // The entry was removed concurrently. Clean up the secret we just wrote
+      // so it doesn't become an orphaned ciphertext blob — best-effort only,
+      // the user-facing error below is what matters.
+      try { await this.secrets.delete(ref); } catch { /* best effort */ }
+      throw new Error(`Provider '${id}' is not configured.`);
+    }
   }
 
   private async keyFor(p: ProviderConfig): Promise<string | undefined> {
@@ -199,7 +223,7 @@ export class ProviderRegistry {
       default:
         // Unreachable with the current ProviderType union, but a corrupt
         // providers.json could hold anything — fail with a real message.
-        throw new Error(`Provider '${binding.providerId}' has an unknown type and cannot be used.`);
+        throw new Error(`${p.label} has an unknown type and cannot be used.`);
     }
   }
 
@@ -209,30 +233,52 @@ export class ProviderRegistry {
    * render the outcome without a try/catch on every call site.
    */
   async testConnection(id: string): Promise<{ ok: boolean; message: string }> {
-    const p = this.readAll().find((x) => x.id === id);
-    if (!p) return { ok: false, message: `Provider '${id}' is not configured.` };
+    // Everything — including the providers.json read and the localBaseUrl()
+    // callback — lives inside the try, so no code path can throw past the
+    // never-throws contract. (readAll rethrows non-ENOENT I/O errors, and
+    // localBaseUrl is injected code we don't control.)
+    let p: ProviderConfig | undefined;
     try {
+      p = this.readAll().find((x) => x.id === id);
+      if (!p) return { ok: false, message: `Provider '${id}' is not configured.` };
+      // Bare trailing slashes 404 on strict routers (`/v1//models`) —
+      // createOpenAICompatible normalizes internally, but these hand-built
+      // probe URLs don't get that treatment.
+      const stripSlash = (u: string) => u.replace(/\/+$/, '');
+      const needsKey = { ok: false, message: `${p.label} needs an API key — add one in Settings → Providers.` };
       const signal = AbortSignal.timeout(TEST_TIMEOUT_MS);
       let res: Response;
       switch (p.type) {
         case 'local-engine': {
           const base = this.localBaseUrl();
           if (base === null) return { ok: false, message: 'The local engine is not installed yet.' };
-          res = await fetch(`${base}/models`, { signal });
+          res = await fetch(`${stripSlash(base)}/models`, { signal });
           break;
         }
         case 'openrouter': {
           const key = await this.keyFor(p);
-          res = await fetch(`${p.baseUrl ?? OPENROUTER_BASE_URL}/models`, {
-            headers: { Authorization: `Bearer ${key ?? ''}`, ...OPENROUTER_HEADERS },
+          if (!key) return needsKey;
+          // CAVEAT: OpenRouter's /models endpoint is PUBLIC, so a 200 here
+          // proves reachability, NOT that the key is valid. (`GET /api/v1/key`
+          // would validate the key; deferred.) Don't present the green check
+          // as key validation in the UI.
+          res = await fetch(`${stripSlash(p.baseUrl ?? OPENROUTER_BASE_URL)}/models`, {
+            headers: { Authorization: `Bearer ${key}`, ...OPENROUTER_HEADERS },
             signal,
           });
           break;
         }
         case 'openai-compatible': {
           if (!p.baseUrl) return { ok: false, message: `${p.label} has no endpoint URL configured.` };
-          const key = p.secretRef ? await this.keyFor(p) : undefined;
-          res = await fetch(`${p.baseUrl}/models`, {
+          // A saved secretRef whose key can't be read back (deleted store,
+          // keychain mismatch) means the user THINKS a key is set — say so
+          // instead of probing with no credential and reporting a confusing 401.
+          let key: string | undefined;
+          if (p.secretRef) {
+            key = await this.keyFor(p);
+            if (!key) return needsKey;
+          }
+          res = await fetch(`${stripSlash(p.baseUrl)}/models`, {
             headers: key ? { Authorization: `Bearer ${key}` } : undefined,
             signal,
           });
@@ -240,27 +286,30 @@ export class ProviderRegistry {
         }
         case 'anthropic': {
           const key = await this.keyFor(p);
+          if (!key) return needsKey;
           res = await fetch('https://api.anthropic.com/v1/models', {
             // Anthropic uses x-api-key (not a bearer header) and requires a
             // version header on every request.
-            headers: { 'x-api-key': key ?? '', 'anthropic-version': '2023-06-01' },
+            headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
             signal,
           });
           break;
         }
         case 'openai': {
           const key = await this.keyFor(p);
+          if (!key) return needsKey;
           res = await fetch('https://api.openai.com/v1/models', {
-            headers: { Authorization: `Bearer ${key ?? ''}` },
+            headers: { Authorization: `Bearer ${key}` },
             signal,
           });
           break;
         }
         case 'google': {
           const key = await this.keyFor(p);
+          if (!key) return needsKey;
           // Google's API takes the key as a query param, not a header.
           res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key ?? '')}`,
+            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
             { signal }
           );
           break;
@@ -274,8 +323,9 @@ export class ProviderRegistry {
       }
       return { ok: false, message: `The provider responded with HTTP ${res.status}.` };
     } catch (e: any) {
-      // Network failure / timeout / DNS — return, never throw (UI contract).
-      return { ok: false, message: `Could not reach ${p.label}: ${e?.message ?? String(e)}` };
+      // Network failure / timeout / DNS / store I/O — return, never throw
+      // (UI contract). p may be unset if the read itself threw.
+      return { ok: false, message: `Could not reach ${p?.label ?? id}: ${e?.message ?? String(e)}` };
     }
   }
 }

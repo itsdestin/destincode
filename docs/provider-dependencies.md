@@ -15,6 +15,6 @@ _None yet — Phase 1 pins the AI SDK major/minor here._
   factory signatures. (harness, provider-registry)
 - **models.dev `api.json` schema** — model/provider metadata. (model-catalog)
 - **OpenRouter** — `/api/v1/models` shape, attribution headers
-  (`HTTP-Referer`, `X-OpenRouter-Title`), BYOK behavior. (provider-registry)
+  (`HTTP-Referer`, `X-Title`), BYOK behavior. (provider-registry)
 - **Per-vendor quirks** — reasoning blocks, prompt caching, rate-limit
   headers; one entry per adopted `@ai-sdk/*` provider. (provider-registry)

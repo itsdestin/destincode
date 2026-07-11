@@ -10,10 +10,11 @@ import { SecretsStore } from '../src/main/providers/secrets-store';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 
 describe('ProviderRegistry', () => {
-  let root: string; let reg: ProviderRegistry;
+  let root: string; let reg: ProviderRegistry; let secrets: SecretsStore;
   beforeEach(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-provreg-'));
-    reg = new ProviderRegistry(new NativeHome(root), new SecretsStore(root));
+    secrets = new SecretsStore(root);
+    reg = new ProviderRegistry(new NativeHome(root), secrets);
     await reg.init();
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -39,8 +40,11 @@ describe('ProviderRegistry', () => {
     await expect(reg.remove('openrouter')).rejects.toThrow(/built-in/);
     const id = await reg.upsert({ type: 'openai-compatible', label: 'My LM Studio', baseUrl: 'http://localhost:1234/v1', enabled: true });
     await reg.setKey(id, 'whatever');
+    const ref = (await reg.list()).find((p) => p.id === id)!.secretRef!;
+    expect(secrets.has(ref)).toBe(true); // sanity: the secret exists before remove
     await reg.remove(id);
     expect((await reg.list()).find((p) => p.id === id)).toBeUndefined();
+    expect(secrets.has(ref)).toBe(false); // ...and its secret was deleted too
   });
 
   it('upsert never persists derived status fields (builtIn/hasKey/ready)', async () => {
@@ -83,5 +87,28 @@ describe('ProviderRegistry', () => {
     await reg.setKey('openrouter', 'sk-2');
     const ref2 = (await reg.list()).find((p) => p.id === 'openrouter')!.secretRef;
     expect(ref2).toBe(ref1);
+  });
+
+  it('languageModel() throws when the provider is disabled', async () => {
+    await reg.setKey('openrouter', 'sk-or-abc'); // keyed, so ONLY the disable can be the reason
+    await reg.upsert({ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: false });
+    await expect(reg.languageModel({ providerId: 'openrouter', modelId: 'x' }))
+      .rejects.toThrow(/disabled/i);
+  });
+
+  it('openai-compatible without a key is ready and returns a handle (Ollama/LM Studio)', async () => {
+    const id = await reg.upsert({ type: 'openai-compatible', label: 'Ollama', baseUrl: 'http://localhost:11434/v1', enabled: true });
+    expect((await reg.list()).find((p) => p.id === id)!.ready).toBe(true);
+    const model = await reg.languageModel({ providerId: id, modelId: 'llama3' });
+    expect(typeof (model as any).modelId).toBe('string');
+  });
+
+  it('upsert partial update keeps omitted fields (baseUrl survives a label-only edit)', async () => {
+    const id = await reg.upsert({ type: 'openai-compatible', label: 'Before', baseUrl: 'http://localhost:1234/v1', enabled: true });
+    // Omit baseUrl entirely — the on-disk value must survive the merge.
+    await reg.upsert({ id, type: 'openai-compatible', label: 'After', enabled: true } as any);
+    const row = (await reg.list()).find((p) => p.id === id)!;
+    expect(row.label).toBe('After');
+    expect(row.baseUrl).toBe('http://localhost:1234/v1');
   });
 });
