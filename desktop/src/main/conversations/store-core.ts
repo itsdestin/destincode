@@ -26,6 +26,23 @@ export interface ConversationRecord {
   createdAt: string;             // ISO-8601
 }
 
+// Keep only well-formed FlagState entries. A malformed flag (string value,
+// missing updatedAt) would corrupt mergeRecords' per-flag newest-wins
+// comparison downstream, so it's dropped at the door instead of round-tripped
+// — "flags migrate losslessly" only holds for flags that ARE FlagStates.
+// Arrays are typeof 'object' too, so they're explicitly normalized to {}.
+function sanitizeFlags(raw: unknown): Record<string, FlagState> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, FlagState> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const f = v as FlagState | null;
+    if (f && typeof f === 'object' && typeof f.value === 'boolean' && typeof f.updatedAt === 'string') {
+      out[k] = { value: f.value, updatedAt: f.updatedAt };
+    }
+  }
+  return out;
+}
+
 // Parse + validate a record file's content. Returns null on anything invalid —
 // a corrupt record must damage exactly one conversation, never the whole list
 // (same "one bad record can't break the browser" guarantee as parseRecord's
@@ -49,10 +66,16 @@ export function parseRecord(json: string): ConversationRecord | null {
     title: typeof raw.title === 'string' ? raw.title : '',
     lastActive: raw.lastActive,
     device: typeof raw.device === 'string' ? raw.device : '',
-    flags: raw.flags && typeof raw.flags === 'object' ? raw.flags : {},
+    flags: sanitizeFlags(raw.flags),
     transcriptRef: typeof raw.transcriptRef === 'string' ? raw.transcriptRef : '',
-    // A record with no createdAt is treated as born when it was last active.
-    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : raw.lastActive,
+    // A record with a missing OR unparseable createdAt is treated as born when
+    // it was last active. Corrupt strings must not survive: Date.parse(garbage)
+    // is NaN → ts() maps it to 0 → it would WIN every "earliest claim wins"
+    // comparison in mergeRecords and poison the merged createdAt forever.
+    createdAt:
+      typeof raw.createdAt === 'string' && !Number.isNaN(Date.parse(raw.createdAt))
+        ? raw.createdAt
+        : raw.lastActive,
   };
 }
 
@@ -60,27 +83,52 @@ export function parseRecord(json: string): ConversationRecord | null {
 // "newest wins" comparison rather than throwing.
 const ts = (iso: string) => Date.parse(iso) || 0;
 
+// Pick the "later" of two values under a TOTAL order: primary by timestamp,
+// exact ties broken by comparing the two values' JSON text lexicographically.
+// WHY: convergence requires merge(a,b) === merge(b,a). A positional tiebreak
+// ("second argument wins") makes the healer fold depend on directory
+// enumeration order — two devices folding the same tied copies would pick
+// DIFFERENT winners and ping-pong forever instead of converging. The JSON
+// comparison is arbitrary but symmetric and stable across devices, which is
+// all a lattice join needs. Max under a total order is commutative AND
+// associative, so folds converge regardless of copy order.
+function laterOf<T>(x: T, y: T, tx: number, ty: number): T {
+  if (tx !== ty) return tx > ty ? x : y;
+  return JSON.stringify(x) >= JSON.stringify(y) ? x : y;
+}
+
+// Earliest-claim pick for createdAt, with the same content tiebreak: two
+// different spellings of the same instant must resolve identically on every
+// device, or merged records never byte-converge.
+function earliestOf(x: string, y: string): string {
+  const tx = ts(x);
+  const ty = ts(y);
+  if (tx !== ty) return tx < ty ? x : y;
+  return x <= y ? x : y;
+}
+
 // Field-level merge, newest-wins per field group (design §1 healer rule).
 // Used by BOTH the live upsert (base=on-disk, incoming=new event data) and the
 // conflict-copy healer — one merge function so the two paths can't drift.
 export function mergeRecords(a: ConversationRecord, b: ConversationRecord): ConversationRecord {
   // Activity fields travel together: whichever side saw the later turn knows
   // the true lastActive/device (and, for two real titles, the true title).
-  const newer = ts(b.lastActive) >= ts(a.lastActive) ? b : a;
+  // Exact lastActive ties break on record CONTENT via laterOf — never on
+  // argument position — so merge(a,b) === merge(b,a).
+  const newer = laterOf(a, b, ts(a.lastActive), ts(b.lastActive));
   const older = newer === a ? b : a;
   // Flags merge per-key by each flag's own updatedAt — a flag set on an idle
-  // device must survive a merge with a busier device's record. We seed from
-  // the older side, then let the newer side's flags win ties, then give the
-  // older side a second pass so a flag it updated MORE RECENTLY still lands
-  // (field-level, not record-level — this is contract item 4).
-  const flags: Record<string, FlagState> = { ...older.flags };
-  for (const [k, v] of Object.entries(newer.flags)) {
-    const prev = flags[k];
-    if (!prev || ts(v.updatedAt) >= ts(prev.updatedAt)) flags[k] = v;
-  }
-  for (const [k, v] of Object.entries(older.flags)) {
-    const cur = flags[k];
-    if (cur && ts(v.updatedAt) > ts(cur.updatedAt)) flags[k] = v;
+  // device must survive a merge with a busier device's record (field-level,
+  // not record-level — this is contract item 4). Equal-updatedAt ties break
+  // by flag content, same convergence reason as above. Keys are sorted so the
+  // merged object's key order is identical no matter which argument came
+  // first — downstream serialization then byte-converges too.
+  const flags: Record<string, FlagState> = {};
+  const flagKeys = [...new Set([...Object.keys(a.flags), ...Object.keys(b.flags)])].sort();
+  for (const k of flagKeys) {
+    const fa = a.flags[k];
+    const fb = b.flags[k];
+    flags[k] = fa && fb ? laterOf(fa, fb, ts(fa.updatedAt), ts(fb.updatedAt)) : (fa ?? fb);
   }
   // A real title always beats an empty one (auto-title can lag a turn behind,
   // so the newer side may not yet have a title). Literal 'Untitled' is a
@@ -95,17 +143,20 @@ export function mergeRecords(a: ConversationRecord, b: ConversationRecord): Conv
     ...newer,
     title,
     flags,
-    // createdAt is the conversation's birth — keep the earliest claim.
-    createdAt: ts(a.createdAt) <= ts(b.createdAt) ? a.createdAt : b.createdAt,
+    // createdAt is the conversation's birth — keep the earliest claim
+    // (content-tiebroken on equal instants, see earliestOf).
+    createdAt: earliestOf(a.createdAt, b.createdAt),
   };
 }
 
 // Engine conflict copies look like '<base> (from <device>, <date>).json'
 // (git-transport.ts → guards.ts conflictCopyName inserts the suffix BEFORE the
-// extension). The healer folds them back into the canonical record and deletes
-// them. `[^)]+` in the middle matches both the real ISO date ('2026-07-03') and
-// any other device/date shape, so the regex tracks the real producer.
-const CONFLICT_RE = /^(.+) \(from [^)]+\)\.json$/;
+// extension; the date is ISO, e.g. '2026-07-03'). The healer folds them back
+// into the canonical record and deletes them. The inner matcher is a GREEDY
+// `.+` — it runs to the LAST ')' before '.json' — because the producer's name
+// validation permits ')' inside device names; a first-')' stop ([^)]+) would
+// fail to match such names and the copy would silently never be healed.
+const CONFLICT_RE = /^(.+) \(from .+\)\.json$/;
 
 export function isConflictCopyName(fileName: string): boolean {
   return CONFLICT_RE.test(fileName);
@@ -119,8 +170,12 @@ export function extractConflictBase(fileName: string): string | null {
 }
 
 // Fold every conflict copy of a conversation back into its canonical record.
-// Because mergeRecords is field-level newest-wins (associative for these
-// fields), the result is independent of the order the copies are folded in.
+// The result is independent of the order the copies are folded in BECAUSE
+// mergeRecords picks each field group as the max/min under a total order
+// (timestamp primary, JSON-content tiebreak — see laterOf). Without the
+// content tiebreak, exact-timestamp ties would resolve by fold position and
+// two devices enumerating the same copies in different directory orders would
+// heal to different records.
 export function foldConflictCopies(
   canonical: ConversationRecord,
   copies: ConversationRecord[],

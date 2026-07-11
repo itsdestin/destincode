@@ -74,6 +74,46 @@ describe('parseRecord', () => {
     expect(() => parseRecord('  ')).not.toThrow();
     expect(() => parseRecord('[1,2,3')).not.toThrow();
   });
+
+  // Flags must round-trip LOSSLESSLY or not at all — a malformed FlagState
+  // reaching mergeRecords would corrupt the per-flag updatedAt comparison.
+  it('drops malformed flag entries but keeps well-formed ones', () => {
+    const parsed = parseRecord(JSON.stringify({
+      ...rec(),
+      flags: {
+        good: { value: true, updatedAt: '2026-07-01T00:00:00.000Z' },
+        stringValue: 'yes',                    // not an object
+        emptyObject: {},                       // missing both fields
+        badValue: { value: 'yes', updatedAt: '2026-07-01T00:00:00.000Z' }, // non-boolean
+        badUpdatedAt: { value: true, updatedAt: 42 },                      // non-string
+      },
+    }));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.flags).toEqual({
+      good: { value: true, updatedAt: '2026-07-01T00:00:00.000Z' },
+    });
+  });
+
+  it('normalizes a non-record flags shape (array) to {}', () => {
+    // Arrays are typeof 'object' — a naive object check would let one through.
+    const parsed = parseRecord(JSON.stringify({ ...rec(), flags: [1, 2, 3] }));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.flags).toEqual({});
+  });
+
+  // createdAt hygiene: garbage would parse to epoch 0 and then win every
+  // "earliest claim" comparison in mergeRecords — so it must never survive parse.
+  it('falls back to lastActive when createdAt is corrupt', () => {
+    const parsed = parseRecord(JSON.stringify({ ...rec(), createdAt: 'not-a-date' }));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.createdAt).toBe(rec().lastActive);
+  });
+
+  it('defaults createdAt to lastActive when absent', () => {
+    const parsed = parseRecord(JSON.stringify({ ...rec(), createdAt: undefined }));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.createdAt).toBe(rec().lastActive);
+  });
 });
 
 describe('mergeRecords', () => {
@@ -184,6 +224,38 @@ describe('mergeRecords', () => {
     expect(mergeRecords(older, newer).title).toBe('Newer title');
     expect(mergeRecords(newer, older).title).toBe('Newer title');
   });
+
+  // LOAD-BEARING convergence test: two devices merging the same pair must get
+  // the SAME result even on an exact lastActive tie. Positional tie-breaking
+  // ("second argument wins") makes merge(a,b) !== merge(b,a), and the healer
+  // fold becomes directory-enumeration-order dependent — devices ping-pong
+  // instead of converging. Ties must break on CONTENT (total order), never on
+  // argument position.
+  it('is commutative on an exact lastActive tie (content tiebreak)', () => {
+    const same = '2026-07-05T12:00:00.000Z';
+    const x = rec({
+      lastActive: same,
+      device: 'Laptop',
+      title: 'Title from laptop',
+      flags: { pinned: flag(true, same) },
+    });
+    const y = rec({
+      lastActive: same,
+      device: 'Desktop',
+      title: 'Title from desktop',
+      flags: { pinned: flag(false, same) }, // same updatedAt, different value
+    });
+    expect(mergeRecords(x, y)).toEqual(mergeRecords(y, x));
+  });
+
+  it('flag ties on equal updatedAt break by content, not argument order', () => {
+    const same = '2026-07-05T12:00:00.000Z';
+    const a = rec({ flags: { starred: flag(true, same) } });
+    const b = rec({ flags: { starred: flag(false, same) } });
+    const ab = mergeRecords(a, b).flags.starred;
+    const ba = mergeRecords(b, a).flags.starred;
+    expect(ab).toEqual(ba);
+  });
 });
 
 describe('isConflictCopyName / extractConflictBase', () => {
@@ -206,11 +278,21 @@ describe('isConflictCopyName / extractConflictBase', () => {
     expect(isConflictCopyName('abc123.json')).toBe(false);
     expect(extractConflictBase('abc123.json')).toBeNull();
   });
+
+  // The producer (guards.ts) permits ')' inside device names, so the matcher
+  // must run greedily to the LAST ')' before '.json' — a first-')' stop would
+  // truncate on such names and miss the copy entirely.
+  it("matches device names containing ')'", () => {
+    const tricky = 'abc123 (from foo)bar, 2026-07-03).json';
+    expect(isConflictCopyName(tricky)).toBe(true);
+    expect(extractConflictBase(tricky)).toBe('abc123.json');
+  });
 });
 
 describe('foldConflictCopies', () => {
-  // Contract 8: folding == successive mergeRecords, and is order-independent for
-  // these fields (associative merge) — both orderings must yield the same record.
+  // Contract 8: folding == successive mergeRecords, and is order-independent —
+  // true because each field group is picked as max/min under a TOTAL order
+  // (timestamp primary, JSON-content tiebreak). Both orderings must match.
   it('folds copies into the canonical record, order-independently', () => {
     const canonical = rec({
       id: 'sess-1',
@@ -251,5 +333,17 @@ describe('foldConflictCopies', () => {
   it('returns the canonical record unchanged when there are no copies', () => {
     const canonical = rec();
     expect(foldConflictCopies(canonical, [])).toEqual(canonical);
+  });
+
+  // Convergence under ties: when canonical and every copy share ONE lastActive
+  // (a real shape — two devices ran the same last turn's clock second), the
+  // fold must still be enumeration-order independent, which requires the
+  // content-based total-order tiebreak inside mergeRecords.
+  it('is order-independent even when all records tie on lastActive', () => {
+    const same = '2026-07-05T12:00:00.000Z';
+    const canon = rec({ lastActive: same, device: 'Laptop', title: 'Canon' });
+    const x = rec({ lastActive: same, device: 'Desktop', title: 'From desktop' });
+    const y = rec({ lastActive: same, device: 'Phone', title: 'From phone' });
+    expect(foldConflictCopies(canon, [x, y])).toEqual(foldConflictCopies(canon, [y, x]));
   });
 });
