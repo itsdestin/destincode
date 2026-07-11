@@ -42,6 +42,26 @@ describe('NativeHome', () => {
     expect(home.readSessionLines('my-slug', 'missing')).toEqual([]);
   });
 
+  // Contention: cas-write's lock is a <target>.lock DIRECTORY. Pre-creating it
+  // with a fresh mtime means acquireLock can't stale-break it (30s heuristic),
+  // so every attempt times out after LOCK_MAX_WAIT_MS (3s). maxRetries: 1 keeps
+  // the test at ~3s while exercising the exact same contention + throw path the
+  // default 5-retry production config uses. Real fs, no mocking of cas-write.
+  it('mutateJson throws when the lock cannot be acquired', async () => {
+    await home.writeJson('providers.json', { v: 1 });
+    const lock = path.join(root, '.youcoded', 'providers.json.lock');
+    fs.mkdirSync(lock, { recursive: true }); // fresh lock dir — held by "another process"
+    try {
+      await expect(
+        home.mutateJson('providers.json', (cur) => cur, { maxRetries: 1 })
+      ).rejects.toThrow(/lock/i);
+      // The contended write must NOT have touched the file.
+      expect(home.readJson('providers.json')).toEqual({ v: 1 });
+    } finally {
+      fs.rmSync(lock, { recursive: true, force: true });
+    }
+  }, 10_000); // one lock-wait cycle is ~3s; vitest default 5s is too tight for slow CI
+
   it('listSessionFiles enumerates slug dirs with mtimes', async () => {
     await home.appendSessionLine('slug-a', 's1', { v: 1 });
     const files = home.listSessionFiles();

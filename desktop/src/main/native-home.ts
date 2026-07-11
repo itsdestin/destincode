@@ -18,6 +18,11 @@ export interface SessionFileInfo {
   path: string;
 }
 
+// Mirrors central-index.ts MAX_RETRIES: each mutateFileUnderLock attempt waits
+// up to 3s for the lock (cas-write LOCK_MAX_WAIT_MS), so five attempts ride out
+// ~15s of contention before giving up loudly.
+const LOCK_MAX_RETRIES = 5;
+
 export class NativeHome {
   private readonly dir: string;
 
@@ -51,23 +56,45 @@ export class NativeHome {
     await this.mutateJson(rel, () => value);
   }
 
-  /** Read-modify-write inside the file lock. mutate receives the parsed current value (null if absent). */
-  async mutateJson(rel: string, mutate: (current: unknown | null) => unknown): Promise<void> {
+  /**
+   * Read-modify-write inside the file lock. mutate receives the parsed current
+   * value (null if absent).
+   *
+   * WHY the retry-then-THROW (mirrors central-index.ts mutateIndex): a
+   * contended write that's silently dropped would surface as "saved" in the UI
+   * with nothing actually on disk — for providers.json that means an API key
+   * the user just entered evaporates. Failing loudly lets the caller show a
+   * real error instead. opts.maxRetries exists only so the contention test can
+   * run one ~3s lock-wait cycle instead of five (~15s); production callers
+   * never pass it.
+   */
+  async mutateJson(
+    rel: string,
+    mutate: (current: unknown | null) => unknown,
+    opts?: { maxRetries?: number }
+  ): Promise<void> {
     const p = path.join(this.dir, rel);
-    // mutateFileUnderLock mkdirs the target's parent itself, so the directory
-    // is created lazily here on first WRITE — never on read.
-    await mutateFileUnderLock(p, (onDisk) => {
-      let current: unknown | null = null;
-      if (onDisk !== null) {
-        try {
-          current = JSON.parse(onDisk);
-        } catch {
-          // Corrupt file on disk: treat as absent so the mutate can rebuild it.
-          current = null;
+    const maxRetries = opts?.maxRetries ?? LOCK_MAX_RETRIES;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      // mutateFileUnderLock mkdirs the target's parent itself, so the directory
+      // is created lazily here on first WRITE — never on read.
+      const ok = await mutateFileUnderLock(p, (onDisk) => {
+        let current: unknown | null = null;
+        if (onDisk !== null) {
+          try {
+            current = JSON.parse(onDisk);
+          } catch {
+            // Corrupt file on disk: treat as absent so the mutate can rebuild it.
+            current = null;
+          }
         }
-      }
-      return JSON.stringify(mutate(current), null, 2);
-    });
+        return JSON.stringify(mutate(current), null, 2);
+      });
+      if (ok) return;
+    }
+    throw new Error(
+      `Could not update ${rel} — another YouCoded process is holding its lock. Try again in a moment.`
+    );
   }
 
   private sessionPath(slug: string, sessionId: string): string {
