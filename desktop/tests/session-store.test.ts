@@ -54,6 +54,19 @@ describe('SessionStore', () => {
     expect(store.readEvents('s-1', HEADER.cwd)).toEqual([]);
   });
 
+  // session-error is a turn boundary: it must flush the open part (the partial
+  // assistant text the user already saw live) even though its own line is
+  // display-only and never hits disk.
+  it('session-error flushes the open part but is not itself persisted', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Hel', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'lo!', partId: 'p1' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('session-error', { text: 'boom' }, 'e1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text']);
+    expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
+  });
+
   it('a new partId flushes the previous open part', async () => {
     await store.create(HEADER);
     await store.append(HEADER.cwd, ev('assistant-thinking', { text: 'thi', partId: 'r1' }, 'r1a') as any);

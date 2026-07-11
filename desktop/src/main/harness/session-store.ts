@@ -44,8 +44,9 @@ export class SessionStore {
   // KNOWN LIMITATION (deliberate, do not fix here): a part still buffered at
   // process exit is lost unless a turn-boundary event flushed it first.
   // HarnessSession always ends turns with turn-complete / user-interrupt /
-  // session-error, so in practice parts flush every turn — a hard crash
-  // mid-stream loses at most the one in-flight part.
+  // session-error — all three flush the open part (session-error flushes even
+  // though its own line is never persisted) — so in practice parts flush every
+  // turn, and a hard crash mid-stream loses at most the one in-flight part.
   private open = new Map<string, { slug: string; event: TranscriptEvent }>();
 
   constructor(private home: NativeHome) {}
@@ -61,8 +62,14 @@ export class SessionStore {
    * the slug is derived here so the CC-compatible encoding stays in one place.
    */
   async append(cwd: string, event: TranscriptEvent): Promise<void> {
-    // Display-only: never persisted (see module comment).
-    if (event.type === 'session-error') return;
+    // Display-only: never persisted (see module comment). But it IS a turn
+    // boundary — flush the open part first, or a turn that ends in a provider
+    // error would strand its partial assistant text in memory (lost on exit).
+    // The user already saw that text live; resume must show it too.
+    if (event.type === 'session-error') {
+      await this.flush(event.sessionId);
+      return;
+    }
 
     const slug = cwdToProjectSlug(cwd);
     const partId = event.data?.partId;
@@ -88,7 +95,11 @@ export class SessionStore {
     }
 
     // Any non-delta event is a part boundary: flush the open part first so
-    // on-disk ordering matches the order the reducer saw events live.
+    // on-disk ordering matches the order the reducer saw events live. That
+    // guarantee holds under SERIALIZED appends only — callers must await each
+    // append before firing the next for a session (the host serializes per
+    // session); un-awaited overlapping appends could interleave the underlying
+    // file writes and scramble on-disk order.
     await this.flush(event.sessionId);
     await this.home.appendSessionLine(slug, event.sessionId, event);
   }
