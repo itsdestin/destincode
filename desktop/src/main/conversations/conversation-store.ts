@@ -64,8 +64,12 @@ const HEALING_MARKER = '.healing-';
 // rejected exactly. CC ids are UUIDs, which pass untouched. Same house pattern
 // as the artifacts GET/SAVE root-escape refusal.
 const SAFE_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+// Windows reserved device names pass the charset check but map to DEVICES on
+// older Windows ('con.json' → the console). Mirrors the module-private
+// WINDOWS_RESERVED in sync-spaces/guards.ts:5 — keep the two in sync.
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 const isSafeSegment = (s: string) =>
-  SAFE_SEGMENT_RE.test(s) && s !== '.' && s !== '..';
+  SAFE_SEGMENT_RE.test(s) && s !== '.' && s !== '..' && !WINDOWS_RESERVED.test(s);
 
 export function createConversationStore(conversationsRoot: string): ConversationStore {
   const rootResolved = path.resolve(conversationsRoot);
@@ -268,14 +272,17 @@ export function createConversationStore(conversationsRoot: string): Conversation
         // provided field would silently vanish. Re-apply the caller's explicit
         // metadata POST-merge: these fields are facts the caller just observed,
         // not cross-device claims to arbitrate. lastActive/device deliberately
-        // stay merge-decided (activity-coupled); title lands only when
-        // non-empty (never blank a real name with '').
+        // stay merge-decided (activity-coupled); title lands only when it's a
+        // REAL name — non-empty AND not the literal 'Untitled' placeholder
+        // (same rule as store-core's realTitle). Callers normally normalize
+        // placeholders away, but the store is self-defending: a placeholder
+        // must never clobber a real title.
         return {
           ...merged,
           ...(partial.projectName !== undefined && { projectName: partial.projectName }),
           ...(partial.originalPath !== undefined && { originalPath: partial.originalPath }),
           ...(partial.transcriptRef !== undefined && { transcriptRef: partial.transcriptRef }),
-          ...(partial.title ? { title: partial.title } : null),
+          ...(partial.title && partial.title !== 'Untitled' ? { title: partial.title } : null),
         };
       });
     },

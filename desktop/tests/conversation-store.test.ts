@@ -152,6 +152,25 @@ describe('createConversationStore', () => {
     expect(rec.device).toBe('Laptop');
   });
 
+  // Review follow-up: a provided title of literal 'Untitled' is a legacy
+  // placeholder (see store-core realTitle), not a name — the local-truth
+  // re-apply must not let it clobber a real title.
+  it("upsert with title 'Untitled' never overwrites a real title", async () => {
+    stage(tmp, 'claude', 'sess-1.json', recJson({
+      id: 'sess-1',
+      title: 'Real name',
+      lastActive: '2026-07-03T10:00:00.000Z',
+    }));
+
+    const rec = await store.upsert({
+      id: 'sess-1',
+      provider: 'claude',
+      title: 'Untitled', // placeholder from a non-normalizing caller
+    });
+
+    expect(rec.title).toBe('Real name'); // placeholder lost, real title survived
+  });
+
   // Contract 3: get returns null for missing AND corrupt files, and a read must
   // NEVER delete the corrupt file (data isn't ours to throw away).
   it('get returns null for missing files', async () => {
@@ -468,6 +487,16 @@ describe('path traversal guard', () => {
 
   it('setTitle with a traversal id throws', async () => {
     await expect(s.setTitle('claude', '..', 'Evil')).rejects.toThrow(/invalid/i);
+  });
+
+  // Review follow-up: Windows reserved device names ('con', 'nul', 'com1', …)
+  // pass a pure charset check but map to DEVICES on older Windows — writing
+  // 'con.json' can target the console device. Refuse them like traversal names.
+  it('write with a Windows reserved device name throws', async () => {
+    await expect(s.setFlag('claude', 'con', 'complete', true)).rejects.toThrow(/invalid/i);
+    await expect(s.setFlag('claude', 'NUL', 'complete', true)).rejects.toThrow(/invalid/i);
+    await expect(s.setFlag('claude', 'com1', 'complete', true)).rejects.toThrow(/invalid/i);
+    await expect(s.setFlag('con', 'sess-1', 'complete', true)).rejects.toThrow(/invalid/i);
   });
 
   it('get with a traversal id/provider fails soft (null)', async () => {
