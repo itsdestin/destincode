@@ -56,6 +56,19 @@ export const powerSaveBlocker = {
   stop: vi.fn(),
 };
 
+export const safeStorage = {
+  isEncryptionAvailable: () => true,
+  // Reversible fake "encryption" so tests can assert the plaintext never
+  // appears on disk while decrypt still round-trips.
+  encryptString: (s: string) =>
+    Buffer.from('enc:' + Buffer.from(s, 'utf8').toString('base64'), 'utf8'),
+  decryptString: (b: Buffer) => {
+    const raw = b.toString('utf8');
+    if (!raw.startsWith('enc:')) throw new Error('not encrypted');
+    return Buffer.from(raw.slice(4), 'base64').toString('utf8');
+  },
+};
+
 export default {
   app,
   protocol,
@@ -66,4 +79,5 @@ export default {
   nativeImage,
   shell,
   powerSaveBlocker,
+  safeStorage,
 };
