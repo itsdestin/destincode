@@ -22,7 +22,9 @@ _None yet — Phase 1 pins the AI SDK major/minor here._
   `google`. Parsed DEFENSIVELY in `src/main/providers/model-catalog.ts` —
   malformed rows are skipped, absent fields omitted (never guessed), and a
   failed fetch falls back to the 24h disk cache
-  (`provider-catalog-cache.json` in the native home), stale-if-offline. If
+  (`provider-catalog-cache.json` in Electron userData — per-profile, so the
+  dev instance and the built app never share or contend for it),
+  stale-if-offline. If
   models.dev renames fields or restructures the top level, the catalog
   silently thins out rather than erroring — check this consumer first.
   (model-catalog)

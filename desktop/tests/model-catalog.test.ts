@@ -56,9 +56,11 @@ describe('ModelCatalog', () => {
   it('a failed fetch falls back to stale cache instead of throwing', async () => {
     const providers = [{ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any;
     await cat.get(providers);                    // primes cache
-    (cat as any).ttlMs = -1;                     // force expiry
+    // Second instance over the same dir with the TEST-ONLY ttlMs knob makes
+    // the on-disk cache read as expired.
+    const expired = new ModelCatalog(dir, fetchMock, { ttlMs: -1 });
     fetchMock.mockRejectedValue(new Error('offline'));
-    const models = await cat.get(providers);
+    const models = await expired.get(providers);
     expect(models.length).toBeGreaterThan(0);    // stale data served
   });
 
@@ -84,5 +86,69 @@ describe('ModelCatalog', () => {
     }));
     const models = await cat.get([{ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any);
     expect(models.map((m) => m.id)).toEqual(['good-model']);
+  });
+
+  it('converts OpenRouter per-token string pricing to USD per 1M tokens (×1e6)', async () => {
+    const models = await cat.get([
+      { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true },
+    ] as any);
+    const or = models.find((m) => m.id === 'meta-llama/llama-3-8b');
+    // '0.00000005'/token → $0.05 per 1M; '0.0000001'/token → $0.10 per 1M.
+    // toBeCloseTo(…, 10): the ×1e6 float product is within 1e-10 of exact.
+    expect(or?.pricing?.in).toBeCloseTo(0.05, 10);
+    expect(or?.pricing?.out).toBeCloseTo(0.1, 10);
+  });
+
+  it('null/absent OpenRouter pricing yields NO pricing field — never $0', async () => {
+    fetchMock.mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => url.includes('openrouter')
+        ? { data: [
+            { id: 'null-priced', name: 'Null', pricing: { prompt: null, completion: null } },
+            { id: 'empty-priced', name: 'Empty', pricing: { prompt: '', completion: '' } },
+            { id: 'no-pricing', name: 'None' },
+          ] }
+        : {},
+    }));
+    const models = await cat.get([
+      { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true },
+    ] as any);
+    // Number(null) and Number('') are 0 — without the string gate these rows
+    // would all read as "free". Pinned here so the guard can't regress.
+    for (const m of models) expect(m.pricing).toBeUndefined();
+  });
+
+  it('models.dev cost is already per-1M — passed through with NO scaling', async () => {
+    const models = await cat.get([
+      { id: 'anth1', type: 'anthropic', label: 'Anthropic', enabled: true, builtIn: false, hasKey: true, ready: true },
+    ] as any);
+    const an = models.find((m) => m.id === 'claude-sonnet-5');
+    expect(an?.pricing).toEqual({ in: 3, out: 15 });
+  });
+
+  it('partial refresh persists the good source but retries BOTH on the next call', async () => {
+    const providers = [
+      { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true },
+      { id: 'anth1', type: 'anthropic', label: 'Anthropic', enabled: true, builtIn: false, hasKey: true, ready: true },
+    ] as any;
+    // First call: OpenRouter up, models.dev down.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('openrouter')) return { ok: true, json: async () => OPENROUTER_PAYLOAD };
+      throw new Error('models.dev offline');
+    });
+    const first = await cat.get(providers);
+    expect(first.some((m) => m.providerId === 'openrouter')).toBe(true); // good source served
+    expect(first.some((m) => m.providerId === 'anth1')).toBe(false);
+
+    // Second call: both sources back up. The partial cache must NOT count as
+    // fresh — a re-fetch must actually happen and fill the missing source.
+    fetchMock.mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => url.includes('openrouter') ? OPENROUTER_PAYLOAD : MODELSDEV_PAYLOAD,
+    }));
+    const callsBefore = fetchMock.mock.calls.length;
+    const second = await cat.get(providers);
+    expect(fetchMock.mock.calls.length).toBe(callsBefore + 2); // both retried
+    expect(second.some((m) => m.providerId === 'anth1')).toBe(true); // gap filled
   });
 });

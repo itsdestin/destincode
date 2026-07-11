@@ -30,10 +30,15 @@ function isObj(x: unknown): x is Record<string, any> {
 }
 
 export class ModelCatalog {
-  private ttlMs = TTL_MS;
+  private readonly ttlMs: number;
   private readonly cachePath: string;
-  constructor(cacheDir: string, private fetchImpl: FetchLike = fetch as any) {
+  constructor(cacheDir: string, private fetchImpl: FetchLike = fetch as any,
+              // opts.ttlMs is TEST-ONLY (same convention as SecretsStore's
+              // maxRetries) — lets the stale-fallback tests force expiry
+              // without poking private fields. Production callers omit it.
+              opts?: { ttlMs?: number }) {
     this.cachePath = path.join(cacheDir, CACHE_FILE);
+    this.ttlMs = opts?.ttlMs ?? TTL_MS;
   }
 
   /** null on missing/corrupt. Unlike providers.json (user data — read errors
@@ -61,7 +66,8 @@ export class ModelCatalog {
 
     let openrouter: any | null = stale?.openrouter ?? null;
     let modelsdev: any | null = stale?.modelsdev ?? null;
-    let anySuccess = false;
+    let orSuccess = false;
+    let mdSuccess = false;
     // Both sources in parallel; per-source failure keeps that source's stale
     // data (allSettled — one dead upstream must not blank the other's models).
     const [orRes, mdRes] = await Promise.allSettled([
@@ -70,20 +76,26 @@ export class ModelCatalog {
     ]);
     if (orRes.status === 'fulfilled' && orRes.value.ok) {
       // json() can also reject (truncated body) — treat like a failed fetch.
-      try { openrouter = await orRes.value.json(); anySuccess = true; } catch { /* keep stale */ }
+      try { openrouter = await orRes.value.json(); orSuccess = true; } catch { /* keep stale */ }
     }
     if (mdRes.status === 'fulfilled' && mdRes.value.ok) {
-      try { modelsdev = await mdRes.value.json(); anySuccess = true; } catch { /* keep stale */ }
+      try { modelsdev = await mdRes.value.json(); mdSuccess = true; } catch { /* keep stale */ }
     }
 
-    if (!anySuccess) {
+    if (!orSuccess && !mdSuccess) {
       // Total failure: serve the stale cache entirely if we have one (don't
       // re-stamp fetchedAt — the next call should retry the network), else
       // an empty shape so get() yields [] rather than throwing.
       return stale ?? EMPTY_CACHE;
     }
 
-    const fresh: CacheShape = { fetchedAt: Date.now(), openrouter, modelsdev };
+    // Only stamp "fresh" when BOTH sources succeeded. A partial success keeps
+    // the good source's new payload on disk but carries the OLD (expired)
+    // stamp, so the next call retries both — otherwise one source being down
+    // on the very first fetch would leave that provider's picker empty for a
+    // full TTL. Same principle as the total-failure branch above.
+    const fetchedAt = orSuccess && mdSuccess ? Date.now() : stale?.fetchedAt ?? 0;
+    const fresh: CacheShape = { fetchedAt, openrouter, modelsdev };
     // Plain write, no tmp+rename: single consumer and fully rebuildable — a
     // torn file just reads as corrupt → refetch on the next call. Write
     // failures (read-only disk) are absorbed: the in-memory data still serves.
@@ -109,9 +121,14 @@ export class ModelCatalog {
       if (typeof row.context_length === 'number') m.contextLength = row.context_length;
       if (Array.isArray(row.supported_parameters)) m.supportsTools = row.supported_parameters.includes('tools');
       // OpenRouter pricing is USD-per-TOKEN strings; CatalogModel.pricing is
-      // USD per 1M tokens, hence the *1e6.
+      // USD per 1M tokens, hence the *1e6. Require NON-EMPTY STRINGS before
+      // Number(): Number(null) and Number('') are both 0, which would map a
+      // JSON null to "free" — violating "absent fields are omitted, never
+      // guessed" (header comment).
       const pricing = isObj(row.pricing) ? row.pricing : null;
-      if (pricing) {
+      if (pricing
+          && typeof pricing.prompt === 'string' && pricing.prompt !== ''
+          && typeof pricing.completion === 'string' && pricing.completion !== '') {
         const prompt = Number(pricing.prompt);
         const completion = Number(pricing.completion);
         if (Number.isFinite(prompt) && Number.isFinite(completion)) {
