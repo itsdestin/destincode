@@ -178,6 +178,10 @@ interface PastSession {
   // True when the conversation's project folder is not on THIS device (synced
   // in from elsewhere). Resume is disabled — there's no cwd to resume into.
   missingProject?: boolean;
+  // True when the folder IS here but the transcript hasn't been materialized
+  // into ~/.claude/projects yet (sync in flight). Resume is disabled too —
+  // distinct flag so the note can say so accurately.
+  notSyncedYet?: boolean;
 }
 
 interface Props {
@@ -527,12 +531,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     <div key={s.sessionId}>
       <button
         // Resume is disabled for conversations whose project folder isn't on
-        // this device (synced in from elsewhere) — there's no cwd to resume
-        // into, so the row shows a plain-words note instead of expanding.
-        onClick={() => { if (!s.missingProject) handleSelectSession(s.sessionId); }}
-        aria-disabled={s.missingProject || undefined}
+        // this device (synced in from elsewhere) OR whose transcript hasn't
+        // synced here yet — either way there's nothing to resume into, so the
+        // row shows a plain-words note instead of expanding.
+        onClick={() => { if (!s.missingProject && !s.notSyncedYet) handleSelectSession(s.sessionId); }}
+        aria-disabled={s.missingProject || s.notSyncedYet || undefined}
         className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${
-          s.missingProject
+          s.missingProject || s.notSyncedYet
             ? 'text-fg-dim cursor-default'
             : expandedId === s.sessionId
               ? 'bg-inset text-fg'
@@ -556,10 +561,13 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               project label since there's no group header; size rides along so
               no info is lost vs. the grouped view. Grouped rows keep size only
               — the group header already names the project. */}
-          {s.missingProject ? (
+          {s.missingProject || s.notSyncedYet ? (
             // Plain words, no glyphs (house rule). The conversation is visible
-            // everywhere; resume needs the project folder present on this device.
-            <div className="text-[10px] text-fg-muted truncate">Project folder not on this device</div>
+            // everywhere; resume needs the project folder AND its transcript
+            // present on this device — the two notes say which one is missing.
+            <div className="text-[10px] text-fg-muted truncate">
+              {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
+            </div>
           ) : (
             <div className="text-[10px] text-fg-faint truncate">
               {showPath

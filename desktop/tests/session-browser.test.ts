@@ -290,6 +290,73 @@ describe('listPastSessions — Conversation Store union (Phase 2a)', () => {
     expect(sessions.map((s: any) => s.sessionId)).toEqual([SID_A, SID_B]);
   });
 
+  it('never resurfaces a LIVE session from the store (double-attach hazard)', async () => {
+    const store = seedStore();
+    // A live session gains a store record within seconds of starting (live
+    // intake upserts on transcript events). The union must honor the same
+    // activeSessionIds exclusion the legacy scan applies — otherwise the
+    // running session shows up as a resumable store-only row, and resuming it
+    // spawns a second `claude --resume` against the transcript the live
+    // session is appending to.
+    await store.upsert({
+      id: SID_A,
+      provider: 'claude',
+      projectName: 'proj-alpha',
+      originalPath: absentProject(),
+      title: 'Currently Running',
+      lastActive: '2026-06-28T00:00:00Z',
+      device: 'this-machine',
+    });
+    const sessions = await listSessions(new Set([SID_A]));
+    expect(sessions).toHaveLength(0);
+  });
+
+  it('gates resume on a store-only row whose folder is local but transcript is not materialized yet', async () => {
+    const store = seedStore();
+    // Project folder EXISTS on this device, but the transcript hasn't been
+    // materialized into ~/.claude/projects yet — `claude --resume` would error.
+    const localProj = path.join(tmpHome, 'local-proj');
+    fs.mkdirSync(localProj, { recursive: true });
+    await store.upsert({
+      id: SID_A,
+      provider: 'claude',
+      projectName: 'local-proj',
+      originalPath: localProj,
+      title: 'Folder Here, Transcript Pending',
+      lastActive: '2026-06-22T00:00:00Z',
+      device: 'other-laptop',
+    });
+    const sessions = await listSessions();
+    expect(sessions).toHaveLength(1);
+    const row = sessions[0];
+    // Distinct sub-case: the folder is here, sync just hasn't delivered the
+    // transcript — renderer shows "Not synced to this device yet".
+    expect(row.notSyncedYet).toBe(true);
+    expect(row.missingProject).toBeUndefined();
+  });
+
+  it('ignores a literal Untitled store title when the legacy row has a real name', async () => {
+    const store = seedStore();
+    writeTranscript('C--proj-alpha', SID_A, {
+      firstUserText: 'derived name beats the placeholder',
+      lastTimestamp: '2026-06-01T10:05:00Z',
+    });
+    // Older clients synced literal 'Untitled' topic content; a record seeded
+    // fresh through upsert carries it verbatim (only the merge-override path
+    // rejects the placeholder, not first-write). The union must not let it
+    // clobber a real derived name.
+    await store.upsert({
+      id: SID_A,
+      provider: 'claude',
+      title: 'Untitled',
+      lastActive: '2026-06-26T00:00:00Z',
+      device: 'old-client',
+    });
+    const sessions = await listSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].name).toBe('derived name beats the placeholder');
+  });
+
   it('degrades to the legacy list when store.list() throws', async () => {
     // A store whose list rejects — the union must swallow it, not fail the call.
     storeHolder.current = { list: () => Promise.reject(new Error('store dir unreadable')) };

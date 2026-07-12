@@ -579,6 +579,11 @@ export interface PastSession {
    *  (a conversation synced in from another device). Resume is disabled for
    *  these rows — the working directory to resume into doesn't exist here. */
   missingProject?: boolean;
+  /** True when the project folder IS on this device but the transcript hasn't
+   *  been materialized into ~/.claude/projects yet (sync in flight). Resume is
+   *  disabled — `claude --resume` would error on the missing JSONL. Distinct
+   *  from missingProject so the renderer can word the note accurately. */
+  notSyncedYet?: boolean;
 }
 
 export interface HistoryMessage {

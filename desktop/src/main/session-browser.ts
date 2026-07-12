@@ -335,8 +335,9 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
   // conversation named on another device reads right here; legacy rows WIN on
   // projectSlug/projectPath because resume needs the LOCAL slug, which the store
   // doesn't know for a conversation that never ran on this device. A store
-  // record with no local transcript becomes a NEW row flagged missingProject
-  // (visible everywhere, resume disabled) when its project folder isn't here.
+  // record with no local transcript becomes a NEW row (visible everywhere)
+  // flagged missingProject (folder not on this device) or notSyncedYet
+  // (folder here, transcript not materialized yet) — resume disabled either way.
   // `deduped` is already keyed by sessionId, so it doubles as the merge index;
   // mutating a legacy value mutates the same object already in `result`.
   try {
@@ -345,6 +346,12 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     if (store) {
       const records = await store.list('claude');
       for (const rec of records) {
+        // LIVE sessions are excluded for the same reason the legacy scan
+        // excludes them: every live session gains a store record within
+        // seconds (live intake upserts on transcript events), and offering
+        // resume on one would spawn a SECOND `claude --resume` against the
+        // transcript the live session is actively appending to.
+        if (activeSessionIds?.has(rec.id)) continue;
         const legacy = deduped.get(rec.id);
         // Store flags are { value, updatedAt }; keep only the ON, known flags.
         const flags: Partial<Record<SessionFlagName, boolean>> = {};
@@ -352,16 +359,25 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           if (v.value && (k === 'complete' || k === 'priority' || k === 'helpful')) flags[k] = true;
         }
         if (legacy) {
-          // Overlay store metadata onto the local row (resume slug/path untouched).
-          legacy.name = rec.title || legacy.name;
+          // Overlay store metadata onto the local row (resume slug/path
+          // untouched). A literal 'Untitled' title is a PLACEHOLDER, not a
+          // name — older clients synced such topic files (see docs/PITFALLS.md
+          // → Resume Browser) — so it must never clobber a real derived name.
+          legacy.name = rec.title && rec.title !== 'Untitled' ? rec.title : legacy.name;
           legacy.lastModified = Math.max(legacy.lastModified, Date.parse(rec.lastActive) || 0);
           if (Object.keys(flags).length) legacy.flags = flags;
           legacy.device = rec.device || undefined;
           legacy.provider = rec.provider;
         } else {
-          // Store-only conversation: resolve its project locally. When the folder
-          // isn't on this device, there's no cwd to resume into — flag it.
+          // Store-only conversation: resolve its project locally. Resume needs
+          // BOTH the project folder AND a materialized transcript in
+          // ~/.claude/projects — a store-only row has no legacy-scanned
+          // transcript by construction, so check the JSONL explicitly;
+          // `claude --resume` on a missing transcript just errors out.
           const localPath = rec.originalPath && fs.existsSync(rec.originalPath) ? rec.originalPath : null;
+          const transcriptHere = localPath
+            ? fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(localPath), `${rec.id}.jsonl`))
+            : false;
           result.push({
             sessionId: rec.id,
             name: rec.title || 'Untitled',
@@ -372,7 +388,10 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
             ...(Object.keys(flags).length ? { flags } : {}),
             device: rec.device || undefined,
             provider: rec.provider,
+            // Two distinct resume-blocked sub-cases so the renderer can word
+            // the note accurately: folder absent vs. transcript not synced yet.
             ...(localPath ? {} : { missingProject: true }),
+            ...(localPath && !transcriptHere ? { notSyncedYet: true } : {}),
           });
         }
       }
