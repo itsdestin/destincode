@@ -669,7 +669,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         <div className="flex flex-col h-full">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-            <h2 className="text-sm font-bold text-fg">Cross-Device Backup &amp; Sync</h2>
+            <h2 className="text-sm font-bold text-fg">Backup &amp; Sync</h2>
             <div className="flex items-center gap-1">
               <InfoIconButton onClick={() => setShowInfo(true)} />
               <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset">
