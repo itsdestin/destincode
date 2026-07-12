@@ -114,51 +114,34 @@ export async function reconcile(opts: ReconcileOpts): Promise<number> {
     for (const r of await opts.store.list('claude')) existingById.set(r.id, r);
   } catch { /* degraded: treat everything as new; upsert merges safely */ }
 
-  // COLLECT PASS — map each session id to its MOST-SPECIFIC (longest) slug, and
-  // cache the per-slug file lists so the process pass doesn't re-readdir.
-  // WHY: Claude Code writes a session's transcript into the HOME-dir project too,
-  // not only its real cwd project — verified on a real machine: the same id lives
-  // under BOTH `C--Users-desti` and its actual cwd slug `C--Users-desti-<proj>`.
-  // Because readdir hands back the shorter home slug first (it's a prefix), a
-  // naive first-seen scan tagged EVERY duplicated conversation with the home
-  // basename ('desti') and mirrored them all into one bucket. The longest slug is
-  // the deepest/real cwd, so it wins — the exact heuristic session-browser.ts
-  // uses to dedup (`projectSlug.length > existing.projectSlug.length`). A session
-  // that appears ONLY under the home slug is a genuine home session and keeps it.
-  const authoritativeSlug = new Map<string, string>(); // sessionId → longest slug
-  const slugFiles = new Map<string, string[]>();
   for (const slug of slugs) {
     const dir = path.join(opts.projectsDir, slug);
     let files: string[] = [];
     // A non-directory entry (or an unreadable dir) just yields no files.
     try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')); } catch { continue; }
-    slugFiles.set(slug, files);
-    for (const file of files) {
-      const sessionId = file.replace(/\.jsonl$/, '');
-      if (!SESSION_UUID_RE.test(sessionId)) continue;
-      const prev = authoritativeSlug.get(sessionId);
-      if (!prev || slug.length > prev.length) authoritativeSlug.set(sessionId, slug);
-    }
-  }
-
-  // PROCESS PASS — each id is handled once, under its authoritative slug only.
-  for (const slug of slugs) {
-    const dir = path.join(opts.projectsDir, slug);
-    const files = slugFiles.get(slug) ?? [];
     for (const file of files) {
       const sessionId = file.replace(/\.jsonl$/, '');
       // Malformed ids never become records (phantom-id guard).
       if (!SESSION_UUID_RE.test(sessionId)) continue;
-      // Skip a less-specific duplicate — a longer slug owns this id (see above).
-      if (authoritativeSlug.get(sessionId) !== slug) continue;
       const jsonlPath = path.join(dir, file);
       // Per-file isolation (review carry-forward): a store lock-timeout throw,
       // an unreadable transcript, or a meta-read error on ONE file must never
       // abort the whole catch-up scan — skip the file, keep scanning.
       try {
-        let size = 0;
-        try { size = fs.statSync(jsonlPath).size; } catch { continue; }
-        if (size < MIN_TRANSCRIPT_BYTES) continue;
+        // Skip FOREIGN-SLUG SYMLINKS. The LEGACY sync / resume-browser machinery
+        // (slug rewriting + foreign-slug symlinks — deleted in Plan 2c, NOT a
+        // Claude Code behavior) symlinks a session's real transcript into the
+        // HOME-dir project slug:
+        //   C--Users-desti/<id>.jsonl  ->  ../C--Users-desti-<proj>/<id>.jsonl
+        // Verified on a real machine: 687 such symlinks, ALL in the home slug.
+        // Following them tags every linked conversation with the home basename
+        // ('desti') and buckets all transcripts together. lstat does NOT follow
+        // the link, so the symlink is detected here and skipped; the real
+        // transcript is processed normally in its true cwd slug. A genuine
+        // home-dir session is a REAL file and is kept.
+        const st = fs.lstatSync(jsonlPath);
+        if (st.isSymbolicLink()) continue;
+        if (st.size < MIN_TRANSCRIPT_BYTES) continue;
 
         const existing = existingById.get(sessionId) ?? null;
         // Gate read: tail timestamp only (wantTitle=false). Computing the title

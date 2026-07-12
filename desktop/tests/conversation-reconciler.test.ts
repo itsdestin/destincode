@@ -296,50 +296,65 @@ describe('reconcile — exact projectKey from known folders', () => {
   });
 });
 
-describe('reconcile — same id under multiple slugs (CC home-dir duplication)', () => {
-  // Found by the single-machine dev smoke test: Claude Code writes a session's
-  // transcript into the HOME-dir project too, so the same id lives under BOTH
-  // 'C--Users-desti' (home) and its real cwd slug 'C--Users-desti-<proj>'.
-  // readdir hands back the shorter home slug first (it's a prefix), so first-seen
-  // tagged EVERY duplicated conversation with the home basename ('desti') and
-  // bucketed them together. The MOST-SPECIFIC (longest) slug must win.
+describe('reconcile — foreign-slug symlinks (legacy machinery) are skipped', () => {
+  // Found by the single-machine dev smoke test on a real ~/.claude/projects: the
+  // LEGACY sync / resume-browser machinery symlinks a session's real transcript
+  // into the HOME-dir project slug ('C--Users-desti/<id>.jsonl' ->
+  // '../C--Users-desti-<proj>/<id>.jsonl'; 687 such symlinks observed, all in the
+  // home slug). Following them tagged EVERY linked conversation with the home
+  // basename ('desti') and bucketed all transcripts together. The reconciler must
+  // detect the symlink (via lstat, which does NOT follow) and skip it, processing
+  // the REAL transcript in its true cwd slug instead. NOT a Claude Code behavior.
 
-  it('uses the longest (most-specific) slug, not the home slug, for a duplicated id', async () => {
-    // Same id in BOTH the home project AND the real youcoded-dev project.
-    writeTranscript(projectsDir, 'C--Users-desti', SID_A);                 // home dup (shorter)
-    writeTranscript(projectsDir, 'C--Users-desti-youcoded-dev', SID_A);    // real cwd (longer)
+  // Windows file symlinks need Developer Mode / admin; skip these tests where the
+  // OS forbids symlink creation (they run on CI/POSIX and on dev machines with it
+  // enabled — the legacy app created 687 here, so it's enabled on the real one).
+  const canSymlink = (() => {
+    const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-symlink-probe-'));
+    try {
+      fs.writeFileSync(path.join(probeDir, 'target'), 'x');
+      fs.symlinkSync('target', path.join(probeDir, 'link'), 'file');
+      return true;
+    } catch { return false; }
+    finally { try { fs.rmSync(probeDir, { recursive: true, force: true }); } catch {} }
+  })();
 
+  it.skipIf(!canSymlink)('skips a home-slug symlink and processes the real transcript in its true slug', () => {
+    // Real transcript in its true cwd slug.
+    writeTranscript(projectsDir, 'C--Users-desti-youcoded-dev', SID_A);
+    // Legacy foreign-slug symlink in the HOME slug pointing at it.
+    const homeDir = path.join(projectsDir, 'C--Users-desti');
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.symlinkSync(
+      path.join('..', 'C--Users-desti-youcoded-dev', `${SID_A}.jsonl`),
+      path.join(homeDir, `${SID_A}.jsonl`),
+      'file',
+    );
+
+    return reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror }).then(async (n) => {
+      // Exactly one record — the symlink was skipped, the real file processed once.
+      expect(n).toBe(1);
+      const rec = await store.get('claude', SID_A);
+      // 'youcoded-dev' slug last segment 'dev' — NOT the home basename 'desti'
+      // (red before the fix, which followed the symlink and yielded 'desti').
+      expect(rec!.projectName).toBe('dev');
+      expect(rec!.transcriptRef).toBe(`claude/transcripts/dev/${SID_A}.jsonl`);
+      // Mirrored once, from the REAL file in the youcoded-dev slug (not the link).
+      expect(mirrorCalls).toHaveLength(1);
+      expect(mirrorCalls[0].key).toBe('dev');
+      expect(mirrorCalls[0].p).toBe(
+        path.join(projectsDir, 'C--Users-desti-youcoded-dev', `${SID_A}.jsonl`),
+      );
+    });
+  });
+
+  it('a REAL file in the home slug (genuine home-dir session) is kept as the home basename', async () => {
+    // No symlink — a session actually run from the home dir. lstat says regular
+    // file, so it is processed and legitimately keyed 'desti'.
+    writeTranscript(projectsDir, 'C--Users-desti', SID_A);
     const n = await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
-
-    // Exactly one record (processed once, under the authoritative slug).
     expect(n).toBe(1);
     const rec = await store.get('claude', SID_A);
-    // 'youcoded-dev' slug's last segment 'dev' — NOT the home basename 'desti'
-    // (red before the fix, which yielded 'desti' and bucketed the mirror there).
-    expect(rec!.projectName).toBe('dev');
-    expect(rec!.transcriptRef).toBe(`claude/transcripts/dev/${SID_A}.jsonl`);
-    // Mirrored exactly once, from the youcoded-dev slug dir, to the 'dev' bucket.
-    expect(mirrorCalls).toHaveLength(1);
-    expect(mirrorCalls[0].key).toBe('dev');
-    expect(mirrorCalls[0].p).toBe(
-      path.join(projectsDir, 'C--Users-desti-youcoded-dev', `${SID_A}.jsonl`),
-    );
-  });
-
-  it('a session ONLY under the home slug keeps the home basename (genuine home session)', async () => {
-    writeTranscript(projectsDir, 'C--Users-desti', SID_A);
-    await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
-    const rec = await store.get('claude', SID_A);
-    expect(rec!.projectName).toBe('desti'); // legitimately a home-dir conversation
-  });
-
-  it('the longest slug wins even when the home (shorter) copy is NEWER', async () => {
-    // Freshness must not let the home dup re-tag the record: the process pass
-    // never touches the home copy at all (authoritative-slug skip).
-    writeTranscript(projectsDir, 'C--Users-desti-youcoded-dev', SID_A, { lastTimestamp: '2026-06-01T10:00:00Z' });
-    writeTranscript(projectsDir, 'C--Users-desti', SID_A, { lastTimestamp: '2026-09-01T10:00:00Z' }); // newer home dup
-    await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
-    const rec = await store.get('claude', SID_A);
-    expect(rec!.projectName).toBe('dev'); // still the real cwd, not 'desti'
+    expect(rec!.projectName).toBe('desti');
   });
 });
