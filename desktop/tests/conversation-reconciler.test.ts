@@ -295,3 +295,51 @@ describe('reconcile — exact projectKey from known folders', () => {
     expect(rec!.projectName).toBe('proj'); // last '-' segment, as before
   });
 });
+
+describe('reconcile — same id under multiple slugs (CC home-dir duplication)', () => {
+  // Found by the single-machine dev smoke test: Claude Code writes a session's
+  // transcript into the HOME-dir project too, so the same id lives under BOTH
+  // 'C--Users-desti' (home) and its real cwd slug 'C--Users-desti-<proj>'.
+  // readdir hands back the shorter home slug first (it's a prefix), so first-seen
+  // tagged EVERY duplicated conversation with the home basename ('desti') and
+  // bucketed them together. The MOST-SPECIFIC (longest) slug must win.
+
+  it('uses the longest (most-specific) slug, not the home slug, for a duplicated id', async () => {
+    // Same id in BOTH the home project AND the real youcoded-dev project.
+    writeTranscript(projectsDir, 'C--Users-desti', SID_A);                 // home dup (shorter)
+    writeTranscript(projectsDir, 'C--Users-desti-youcoded-dev', SID_A);    // real cwd (longer)
+
+    const n = await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
+
+    // Exactly one record (processed once, under the authoritative slug).
+    expect(n).toBe(1);
+    const rec = await store.get('claude', SID_A);
+    // 'youcoded-dev' slug's last segment 'dev' — NOT the home basename 'desti'
+    // (red before the fix, which yielded 'desti' and bucketed the mirror there).
+    expect(rec!.projectName).toBe('dev');
+    expect(rec!.transcriptRef).toBe(`claude/transcripts/dev/${SID_A}.jsonl`);
+    // Mirrored exactly once, from the youcoded-dev slug dir, to the 'dev' bucket.
+    expect(mirrorCalls).toHaveLength(1);
+    expect(mirrorCalls[0].key).toBe('dev');
+    expect(mirrorCalls[0].p).toBe(
+      path.join(projectsDir, 'C--Users-desti-youcoded-dev', `${SID_A}.jsonl`),
+    );
+  });
+
+  it('a session ONLY under the home slug keeps the home basename (genuine home session)', async () => {
+    writeTranscript(projectsDir, 'C--Users-desti', SID_A);
+    await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
+    const rec = await store.get('claude', SID_A);
+    expect(rec!.projectName).toBe('desti'); // legitimately a home-dir conversation
+  });
+
+  it('the longest slug wins even when the home (shorter) copy is NEWER', async () => {
+    // Freshness must not let the home dup re-tag the record: the process pass
+    // never touches the home copy at all (authoritative-slug skip).
+    writeTranscript(projectsDir, 'C--Users-desti-youcoded-dev', SID_A, { lastTimestamp: '2026-06-01T10:00:00Z' });
+    writeTranscript(projectsDir, 'C--Users-desti', SID_A, { lastTimestamp: '2026-09-01T10:00:00Z' }); // newer home dup
+    await reconcile({ projectsDir, topicsDir, store, device: 'Dev1', mirror });
+    const rec = await store.get('claude', SID_A);
+    expect(rec!.projectName).toBe('dev'); // still the real cwd, not 'desti'
+  });
+});
