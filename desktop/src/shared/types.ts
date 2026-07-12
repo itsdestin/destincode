@@ -570,6 +570,15 @@ export interface PastSession {
   /** User-set flags. `complete` hides from resume menu; `priority` pins to top;
    *  `helpful` is informational only. Multiple flags per session are allowed. */
   flags?: Partial<Record<SessionFlagName, boolean>>;
+  /** Last device that ran a turn. Populated on store-fed rows (Conversation
+   *  Store, Phase 2a) so the Resume Browser can show where a conversation ran. */
+  device?: string;
+  /** Provider that owns the conversation: 'claude' | 'native'. Store-fed rows only. */
+  provider?: string;
+  /** True when the conversation's project folder is not present on THIS device
+   *  (a conversation synced in from another device). Resume is disabled for
+   *  these rows — the working directory to resume into doesn't exist here. */
+  missingProject?: boolean;
 }
 
 export interface HistoryMessage {
