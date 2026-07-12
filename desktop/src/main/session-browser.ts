@@ -1,7 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { PastSession, HistoryMessage } from '../shared/types';
+import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
+// ccProjectSlug drive-normalizes before slugifying, so a store originalPath with
+// a lowercase Windows drive still maps to CC's uppercase-drive project dir. Used
+// lazily inside listPastSessions, so the session-browser ↔ project-conversations
+// import cycle is harmless (neither uses the other at module-eval time).
+import { ccProjectSlug } from './project-conversations';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
@@ -249,8 +254,12 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     );
     slugs = statResults.filter((s): s is string => s !== null);
   } catch (err) {
+    // A missing/unreadable projects dir is NORMAL on a fresh secondary device
+    // (store synced, but no local CC transcripts written here yet). Degrade to
+    // an empty legacy scan and fall through to the store union below — remote
+    // conversations must still appear so they're visible "everywhere". (Phase 2a)
     console.warn('[session-browser] Failed to read projects directory:', err);
-    return [];
+    slugs = [];
   }
 
   // Join flag + topic metadata from the synced conversation index
@@ -319,6 +328,76 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
   }
 
   const result = Array.from(deduped.values());
+
+  // Store union (Phase 2a): the Conversation Store is the canonical record;
+  // legacy transcript scanning stays as the fallback until Plan 2c deletes it.
+  // Store rows WIN on display metadata (title/lastActive/flags/device) so a
+  // conversation named on another device reads right here; legacy rows WIN on
+  // projectSlug/projectPath because resume needs the LOCAL slug, which the store
+  // doesn't know for a conversation that never ran on this device. A store
+  // record with no local transcript becomes a NEW row (visible everywhere)
+  // flagged missingProject (folder not on this device) or notSyncedYet
+  // (folder here, transcript not materialized yet) — resume disabled either way.
+  // `deduped` is already keyed by sessionId, so it doubles as the merge index;
+  // mutating a legacy value mutates the same object already in `result`.
+  try {
+    const { getConversationStore } = await import('./conversations/service');
+    const store = getConversationStore();
+    if (store) {
+      const records = await store.list('claude');
+      for (const rec of records) {
+        // LIVE sessions are excluded for the same reason the legacy scan
+        // excludes them: every live session gains a store record within
+        // seconds (live intake upserts on transcript events), and offering
+        // resume on one would spawn a SECOND `claude --resume` against the
+        // transcript the live session is actively appending to.
+        if (activeSessionIds?.has(rec.id)) continue;
+        const legacy = deduped.get(rec.id);
+        // Store flags are { value, updatedAt }; keep only the ON, known flags.
+        const flags: Partial<Record<SessionFlagName, boolean>> = {};
+        for (const [k, v] of Object.entries(rec.flags)) {
+          if (v.value && (k === 'complete' || k === 'priority' || k === 'helpful')) flags[k] = true;
+        }
+        if (legacy) {
+          // Overlay store metadata onto the local row (resume slug/path
+          // untouched). A literal 'Untitled' title is a PLACEHOLDER, not a
+          // name — older clients synced such topic files (see docs/PITFALLS.md
+          // → Resume Browser) — so it must never clobber a real derived name.
+          legacy.name = rec.title && rec.title !== 'Untitled' ? rec.title : legacy.name;
+          legacy.lastModified = Math.max(legacy.lastModified, Date.parse(rec.lastActive) || 0);
+          if (Object.keys(flags).length) legacy.flags = flags;
+          legacy.device = rec.device || undefined;
+          legacy.provider = rec.provider;
+        } else {
+          // Store-only conversation: resolve its project locally. Resume needs
+          // BOTH the project folder AND a materialized transcript in
+          // ~/.claude/projects — a store-only row has no legacy-scanned
+          // transcript by construction, so check the JSONL explicitly;
+          // `claude --resume` on a missing transcript just errors out.
+          const localPath = rec.originalPath && fs.existsSync(rec.originalPath) ? rec.originalPath : null;
+          const transcriptHere = localPath
+            ? fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(localPath), `${rec.id}.jsonl`))
+            : false;
+          result.push({
+            sessionId: rec.id,
+            name: rec.title || 'Untitled',
+            projectSlug: localPath ? ccProjectSlug(localPath) : '',
+            projectPath: localPath ?? rec.originalPath,
+            lastModified: Date.parse(rec.lastActive) || 0,
+            size: 0,
+            ...(Object.keys(flags).length ? { flags } : {}),
+            device: rec.device || undefined,
+            provider: rec.provider,
+            // Two distinct resume-blocked sub-cases so the renderer can word
+            // the note accurately: folder absent vs. transcript not synced yet.
+            ...(localPath ? {} : { missingProject: true }),
+            ...(localPath && !transcriptHere ? { notSyncedYet: true } : {}),
+          });
+        }
+      }
+    }
+  } catch { /* store unavailable — the legacy list stands alone */ }
+
   result.sort((a, b) => b.lastModified - a.lastModified);
   return result;
 }

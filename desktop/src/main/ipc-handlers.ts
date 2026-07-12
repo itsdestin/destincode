@@ -55,6 +55,10 @@ import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { PROJECT_IPC } from './project/ipc-channels';
 import { listProjectConversations, projectConversationHistory } from './project-conversations';
+// Conversation Store (Phase 2a): live intake of transcript activity, session
+// cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
+// desktop id via sessionIdMap below), matching the store's record id.
+import { noteTranscriptEvent, noteSessionStarted, noteTitleChanged, noteFlagChanged } from './conversations/service';
 import { getRepoInfo } from './project-repo';
 import { listContext, readContextFile, writeContextFile } from './project-context';
 
@@ -1690,6 +1694,12 @@ export function registerIpcHandlers(
     if (remoteServer) {
       remoteServer.broadcast({ type: 'transcript:event', payload: event });
     }
+    // Conversation Store (Phase 2a): feed live activity into the record store.
+    // event.sessionId is the DESKTOP id; the store keys by CLAUDE id, so resolve
+    // via sessionIdMap and skip if we haven't seen the mapping yet (a hook event
+    // establishes it — the reconciler backfills anything missed before then).
+    const claudeId = sessionIdMap.get(event.sessionId);
+    if (claudeId) noteTranscriptEvent(claudeId, event);
   });
 
   // Transcript replay: a window that just acquired a session asks for every
@@ -1752,6 +1762,10 @@ export function registerIpcHandlers(
       lastTopics.set(desktopId, initial);
       sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, initial);
       broadcastRename(desktopId, initial);
+      // Conversation Store (Phase 2a): mirror the auto-title into the record.
+      // Keyed by claudeId (the store's record id). This is the only sanctioned
+      // title writer (carry-forward 5) — no user-rename path exists yet.
+      noteTitleChanged(claudeId, initial);
     }
 
     const topicFilePath = path.join(topicDir, `topic-${claudeId}`);
@@ -1765,6 +1779,7 @@ export function registerIpcHandlers(
           lastTopics.set(desktopId, topic);
           sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
           broadcastRename(desktopId, topic);
+          noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through
         }
       });
       watcher.on('error', () => {
@@ -1789,6 +1804,7 @@ export function registerIpcHandlers(
         lastTopics.set(desktopId, topic);
         sendForSession(desktopId, IPC.SESSION_RENAMED, desktopId, topic);
         broadcastRename(desktopId, topic);
+        noteTitleChanged(claudeId, topic); // Conversation Store (Phase 2a) title write-through
       }
     }, 2000);
     topicWatchers.set(desktopId, interval);
@@ -1852,6 +1868,9 @@ export function registerIpcHandlers(
       const sessionInfo = sessionManager.getSession(desktopId);
       if (sessionInfo) {
         transcriptWatcher.startWatching(desktopId, claudeId, sessionInfo.cwd);
+        // Conversation Store (Phase 2a): tell the store this claude session's cwd
+        // so its activity upserts carry projectName/originalPath (local truth).
+        noteSessionStarted(claudeId, sessionInfo.cwd);
       }
     });
   }
@@ -1890,6 +1909,23 @@ export function registerIpcHandlers(
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     try {
       svc.setSessionFlag(resolved, flag, !!value);
+      // Dual-write into the Conversation Store (Phase 2a). The legacy index
+      // above is removed in Plan 2c; until then both carry flags so a rollback
+      // never loses them. safeWrite semantics live inside noteFlagChanged.
+      //
+      // Phantom-record gate (review fix 5): only write when `resolved` is
+      // actually a CLAUDE id. Either the mapping is known (sessionId was a
+      // desktop id → resolved is the mapped claude id), or sessionId is NOT a
+      // live desktop session (Resume Browser rows pass claude ids for past
+      // sessions — safe to write as-is). Without this gate, flagging a LIVE
+      // session before its SessionStart hook establishes the mapping would
+      // seed a flag-only record keyed by the desktop randomUUID — UUID-shaped
+      // (passes the store's id guard), synced to every device, and never
+      // pruned (flagged records are deliberately kept). The legacy index above
+      // keeps the flag either way, so nothing is lost while gated.
+      if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
+        noteFlagChanged(resolved, flag, !!value);
+      }
       const payload = { flag, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
       remoteServer?.broadcast({
