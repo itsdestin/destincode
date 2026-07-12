@@ -9,6 +9,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { reconcile } from '../src/main/conversations/reconciler';
+import { ccProjectSlug } from '../src/main/project-conversations';
 import {
   createConversationStore,
   type ConversationStore,
@@ -236,5 +237,61 @@ describe('reconcile — per-file isolation', () => {
     expect(calls).toBe(2);
     expect(await store.get('claude', SID_A)).not.toBeNull();
     expect(await store.get('claude', SID_B)).not.toBeNull();
+  });
+});
+
+describe('reconcile — exact projectKey from known folders', () => {
+  // The whole-branch review's Finding 1: the slug-last-segment truncation
+  // ('...-youcoded-dev' → 'dev') disagrees with the live path's basename(cwd)
+  // key ('youcoded-dev'), producing an orphan duplicate space transcript and a
+  // cross-device materialize gap. When this device KNOWS the folder, the exact
+  // basename is recovered from its slug.
+
+  it('recovers the exact folder name (not the truncation) for a known hyphenated folder', async () => {
+    // A realistic hyphenated project path; slug is derived the same way CC would
+    // name the on-disk dir, so the test is platform-encoding-agnostic.
+    const folder = path.join('C:', 'Users', 'desti', 'youcoded-dev');
+    const slug = ccProjectSlug(folder); // e.g. 'C--Users-desti-youcoded-dev'
+    writeTranscript(projectsDir, slug, SID_A);
+
+    const n = await reconcile({
+      projectsDir, topicsDir, store, device: 'Dev1', mirror,
+      knownFolders: [folder],
+    });
+
+    expect(n).toBe(1);
+    const rec = await store.get('claude', SID_A);
+    // Exact basename — NOT the last-segment truncation 'dev' (red before the fix).
+    expect(rec!.projectName).toBe('youcoded-dev');
+    expect(rec!.transcriptRef).toBe(`claude/transcripts/youcoded-dev/${SID_A}.jsonl`);
+    // The mirror (space) key matches too — no orphan under 'dev/'.
+    expect(mirrorCalls[0].key).toBe('youcoded-dev');
+  });
+
+  it('matches case-insensitively so folder-path case drift still recovers the name', async () => {
+    // Saved-folder path recorded with different case than CC's on-disk slug —
+    // Windows paths are case-insensitive, so the lowercased map lookup must match.
+    const folder = path.join('C:', 'Users', 'Desti', 'MyApp-Client');
+    const onDiskSlug = ccProjectSlug(folder).toLowerCase(); // CC dir written lowercased
+    writeTranscript(projectsDir, onDiskSlug, SID_A);
+
+    await reconcile({
+      projectsDir, topicsDir, store, device: 'Dev1', mirror,
+      knownFolders: [folder],
+    });
+
+    const rec = await store.get('claude', SID_A);
+    expect(rec!.projectName).toBe('MyApp-Client');
+  });
+
+  it('falls back to the last-segment truncation for an UNKNOWN folder', async () => {
+    // No knownFolders match → the documented truncation fallback is unchanged.
+    writeTranscript(projectsDir, 'C--Users-someone-else-secret-proj', SID_A);
+    await reconcile({
+      projectsDir, topicsDir, store, device: 'Dev1', mirror,
+      knownFolders: [path.join('C:', 'Users', 'desti', 'youcoded-dev')],
+    });
+    const rec = await store.get('claude', SID_A);
+    expect(rec!.projectName).toBe('proj'); // last '-' segment, as before
   });
 });

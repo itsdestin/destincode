@@ -231,8 +231,18 @@ async function materializeSweep(): Promise<void> {
 function runReconcile(): void {
   if (!store) return;
   const s = store;
+  // Known folders let the reconciler recover the EXACT project name for a CC slug
+  // instead of the lossy last-segment truncation, so a bare-`claude` session in a
+  // hyphenated folder ('youcoded-dev') gets the same projectKey the live path
+  // uses — no orphan duplicate transcript, no cross-device materialize gap. Built
+  // fresh per run (one readdir + one JSON read every 30 min — cheap).
+  const knownFolders: string[] = [
+    ...(getManagedRoots()?.listProjects() ?? []).map((p) => p.path),
+  ];
+  try { knownFolders.push(...readFolders().map((f) => f.path)); }
+  catch { /* saved folders unreadable — managed projects still cover most cases */ }
   reconcile({
-    projectsDir, topicsDir, store: s, device,
+    projectsDir, topicsDir, store: s, device, knownFolders,
     // Production mirror closure: the reconciler stays free of transcript-mirror
     // + the Conversations root. Best-effort — a throw here must not abort the scan.
     mirror: (localPath: string, projectKey: string, sessionId: string) => {

@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readSessionTranscriptMeta } from '../session-browser';
+import { ccProjectSlug } from '../project-conversations';
 import type { ConversationStore } from './conversation-store';
 import type { ConversationRecord } from './store-core';
 
@@ -24,16 +25,49 @@ export interface ReconcileOpts {
   // transcript-mirror + the Conversations root. Best-effort — a throw here must
   // not abort the scan (see safeMirror).
   mirror: (localJsonlPath: string, projectKey: string, sessionId: string) => void;
+  // Absolute paths of folders this device knows about (managed projects + saved
+  // folders). Used to recover the EXACT folder name for a CC slug instead of the
+  // lossy last-segment truncation — see resolveProjectName.
+  knownFolders?: string[];
 }
 
-// A CC slug is the cwd with separators flattened to '-' (cwdToProjectSlug).
-// The original path is NOT recoverable in general, so this takes the LAST slug
-// segment — which for a hyphenated folder name is a TRUNCATION, not the
-// basename ('youcoded-dev' slugs to '...-youcoded-dev' and yields 'dev').
-// That's acceptable because the value is internally consistent (transcriptRef
-// and the mirror key use the same string) and the live path corrects it the
-// next time the session runs in the app. Deliberately no attempt to reverse
-// the slug encoding.
+// Build a slug → exact-basename lookup from the device's known folders. The CC
+// slug encodes the whole cwd with separators flattened, so the last segment
+// TRUNCATES hyphenated names ('youcoded-dev' slug → last segment 'dev'). But if
+// this device actually has that folder, ccProjectSlug(folder) reproduces CC's
+// on-disk slug exactly, letting us recover the true basename. WHY it matters:
+// the live/service path keys transcripts by basename(cwd); a mismatched
+// reconciler key produces an ORPHAN duplicate space transcript and a
+// cross-device materialize gap (the record's projectKey never matches the peer's
+// managed project). Keys are lowercased so Windows case drift between a saved
+// folder path and CC's cwd can't miss the match.
+function buildSlugToName(knownFolders: string[] | undefined): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const folder of knownFolders ?? []) {
+    try { m.set(ccProjectSlug(folder).toLowerCase(), path.basename(folder)); }
+    catch { /* unslugifiable path — skip */ }
+  }
+  return m;
+}
+
+// Exact folder name when this device knows the folder; else an existing record's
+// name; else the lossy truncation (corrected by the live path next in-app run).
+function resolveProjectName(
+  existing: ConversationRecord | null,
+  slug: string,
+  slugToName: Map<string, string>,
+): string {
+  return existing?.projectName || slugToName.get(slug.toLowerCase()) || projectNameFromSlug(slug);
+}
+
+// LAST-RESORT fallback used only when the folder is NOT among this device's
+// known folders (see buildSlugToName/resolveProjectName, which recover the exact
+// basename first). A CC slug is the cwd with separators flattened to '-'
+// (cwdToProjectSlug); the original path is not recoverable from the slug alone,
+// so this takes the LAST slug segment — a TRUNCATION for hyphenated names
+// ('...-youcoded-dev' → 'dev'). Acceptable as a fallback because it's internally
+// consistent (transcriptRef and the mirror key use the same string) and the live
+// path corrects it the next time the session runs in the app.
 function projectNameFromSlug(slug: string): string {
   const parts = slug.split('-').filter(Boolean);
   return parts.length ? parts[parts.length - 1] : slug;
@@ -64,6 +98,9 @@ export async function reconcile(opts: ReconcileOpts): Promise<number> {
   let slugs: string[] = [];
   // No projects dir → nothing to reconcile.
   try { slugs = fs.readdirSync(opts.projectsDir); } catch { return 0; }
+
+  // Recover exact folder names for this device's known folders (see the helper).
+  const slugToName = buildSlugToName(opts.knownFolders);
 
   // PERF (review fix): preload ALL existing records in ONE list() pass instead
   // of store.get() per transcript. get() runs heal(), which readdirs the whole
@@ -107,7 +144,7 @@ export async function reconcile(opts: ReconcileOpts): Promise<number> {
         if (existing && lastActive && Date.parse(existing.lastActive) >= Date.parse(lastActive)) {
           // Record already as fresh as the file — leave it, but still mirror
           // (cheap size check inside mirror makes a no-op copy when unchanged).
-          safeMirror(opts, jsonlPath, existing.projectName || projectNameFromSlug(slug), sessionId);
+          safeMirror(opts, jsonlPath, resolveProjectName(existing, slug, slugToName), sessionId);
           continue;
         }
         // Corrupt-transcript guard (review fix): a >500-byte file with NO
@@ -119,7 +156,7 @@ export async function reconcile(opts: ReconcileOpts): Promise<number> {
         // and no mirroring of corrupt bytes into the durable space copy.
         if (!lastActive) continue;
 
-        const projectName = existing?.projectName || projectNameFromSlug(slug);
+        const projectName = resolveProjectName(existing, slug, slugToName);
         // Title resolution only when needed: topic file first (cheap), then the
         // derived first-user-message title via a second meta read with
         // wantTitle=true. The double tail-read on this branch is acceptable —

@@ -35,6 +35,9 @@ const h = vi.hoisted(() => {
     // broadcast() fan-out would.
     syncListeners: new Set<(e: any) => void>(),
     managedRoots: null as any,
+    // Saved folders returned by the mocked readFolders — configurable so the
+    // knownFolders-wiring test can exercise both sources.
+    savedFolders: [] as Array<{ path: string }>,
   };
 });
 
@@ -60,7 +63,7 @@ vi.mock('../src/main/sync-spaces/service', () => ({
   getManagedRoots: () => h.managedRoots,
 }));
 vi.mock('../src/main/saved-folders', () => ({
-  readFolders: () => [],
+  readFolders: () => h.savedFolders,
 }));
 // ccProjectSlug + shared/types are used REAL (pure / type-only).
 
@@ -95,6 +98,7 @@ describe('conversations service composition root', () => {
     h.mirrorIn.mockReset().mockReturnValue({ copied: true } as any);
     h.materializeOut.mockReset().mockReturnValue({ copied: true } as any);
     h.syncSpacesSyncNow.mockReset().mockResolvedValue({ ok: true } as any);
+    h.savedFolders = [];
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-svc-'));
     h.managedRoots = { personalRoot: path.join(tmpRoot, 'Personal'), listProjects: () => [] };
   });
@@ -119,6 +123,23 @@ describe('conversations service composition root', () => {
     expect(opts.topicsDir).toBe(startOpts().topicsDir);
     expect(opts.device).toBe('test-device');
     expect(typeof opts.mirror).toBe('function');
+  });
+
+  // 1b — the reconciler is handed this device's known folders (managed projects
+  // + saved folders) so it can recover exact projectKeys (whole-branch review
+  // Finding 1). Without this wiring the reconciler truncates hyphenated names.
+  it('passes managed + saved folder paths as knownFolders to the reconciler', async () => {
+    h.managedRoots = {
+      personalRoot: path.join(tmpRoot, 'Personal'),
+      listProjects: () => [{ name: 'youcoded-dev', path: 'C:/Users/desti/youcoded-dev' }],
+    };
+    h.savedFolders = [{ path: 'C:/Users/desti/notes' }];
+    await freshService(startOpts());
+    const opts = h.reconcile.mock.calls[0][0];
+    expect(opts.knownFolders).toEqual([
+      'C:/Users/desti/youcoded-dev', // managed project
+      'C:/Users/desti/notes',        // saved folder
+    ]);
   });
 
   // 2 — an event upserts local-truth metadata keyed by the claude id. Asserted
