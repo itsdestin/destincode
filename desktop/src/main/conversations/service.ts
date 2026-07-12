@@ -13,6 +13,7 @@ import { reconcile } from './reconciler';
 import { ccProjectSlug } from '../project-conversations';
 import { onSyncSpacesEvent, syncSpacesSyncNow, getManagedRoots } from '../sync-spaces/service';
 import { readFolders } from '../saved-folders';
+import { resolveLocalProject } from './resolve-local-project';
 import type { TranscriptEvent } from '../../shared/types';
 import type { SpaceSyncEvent } from '../sync-spaces/types';
 
@@ -169,24 +170,27 @@ export function noteFlagChanged(claudeSessionId: string, flag: string, value: bo
   store?.setFlag('claude', claudeSessionId, flag, value).catch(() => { /* carry-forward 1 */ });
 }
 
-// Resolve a record's project to a live on-disk folder. originalPath first (the
-// device that recorded it), then a managed project by name, then a saved folder
-// by basename. null when nothing local matches — that record just isn't
-// materialized on this device (the record itself already synced).
-// The managed/saved lookups are HOISTED by the caller (review fix 2): on a
-// secondary device where originalPath never exists, per-record readdir + JSON
-// reads made the sweep O(records × disk-reads) on EVERY remote turn.
-function resolveLocalProject(
-  rec: { projectName: string; originalPath: string },
-  managed: Map<string, string>,
-  saved: Array<{ path: string }>,
-): string | null {
-  if (rec.originalPath && fs.existsSync(rec.originalPath)) return rec.originalPath;
-  const managedHit = managed.get(rec.projectName);
-  if (managedHit) return managedHit;
-  const hit = saved.find((f) => path.basename(f.path) === rec.projectName);
-  if (hit && fs.existsSync(hit.path)) return hit.path;
-  return null;
+// resolveLocalProject (originalPath → managed-by-name → saved-by-basename) lives
+// in ./resolve-local-project so the Resume Browser can reuse the IDENTICAL logic
+// — see buildLocalProjectResolver below and session-browser.ts. The managed/saved
+// lookups are HOISTED by callers (review fix 2): on a secondary device where
+// originalPath never exists, per-record readdir + JSON reads made the sweep
+// O(records × disk-reads) on EVERY remote turn.
+
+/**
+ * Build a resolver bound to THIS device's managed projects + saved folders, so
+ * a caller (the Resume Browser) resolves a synced record to the SAME local
+ * folder the materialize sweep does. Built ONCE per browse — the managed/saved
+ * reads are cheap but not per-record. Cross-OS safe: a foreign-OS originalPath
+ * that doesn't exist here is skipped in favor of the name/basename fallbacks.
+ */
+export function buildLocalProjectResolver(): (rec: { projectName: string; originalPath: string }) => string | null {
+  const managed = new Map<string, string>(
+    (getManagedRoots()?.listProjects() ?? []).map((p) => [p.name, p.path]),
+  );
+  let saved: Array<{ path: string }> = [];
+  try { saved = readFolders(); } catch { /* saved folders unreadable */ }
+  return (rec) => resolveLocalProject(rec, managed, saved);
 }
 
 async function materializeSweep(): Promise<void> {
