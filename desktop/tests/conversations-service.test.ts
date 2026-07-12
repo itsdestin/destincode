@@ -179,6 +179,58 @@ describe('conversations service composition root', () => {
     void svc;
   });
 
+  // Review fix 1: the sweep must NEVER touch a LIVE session's transcript. A
+  // same-conversation-on-two-devices pull would otherwise materializeOut over
+  // the JSONL Claude Code is actively appending to (Windows EPERM containment
+  // is unreliable — libuv opens with FILE_SHARE_DELETE; on POSIX the rename
+  // always succeeds and CC keeps appending to the unlinked inode → chat view
+  // freezes, local turns lost on handle close).
+  it('the sweep SKIPS records whose id is a live session; others still materialize', async () => {
+    const liveDir = path.join(tmpRoot, 'live-proj');
+    const idleDir = path.join(tmpRoot, 'idle-proj');
+    fs.mkdirSync(liveDir, { recursive: true });
+    fs.mkdirSync(idleDir, { recursive: true });
+    const liveRec = {
+      id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', provider: 'claude',
+      projectName: 'live-proj', originalPath: liveDir,
+      transcriptRef: 'claude/transcripts/live-proj/cccccccc-cccc-cccc-cccc-cccccccccccc.jsonl',
+    };
+    const idleRec = {
+      id: 'dddddddd-dddd-dddd-dddd-dddddddddddd', provider: 'claude',
+      projectName: 'idle-proj', originalPath: idleDir,
+      transcriptRef: 'claude/transcripts/idle-proj/dddddddd-dddd-dddd-dddd-dddddddddddd.jsonl',
+    };
+    h.store.list.mockResolvedValue([liveRec, idleRec] as any);
+    const svc = await freshService(startOpts());
+    svc.noteSessionStarted(liveRec.id, liveDir); // liveRec is a LIVE session here
+    fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+    await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+    expect(h.materializeOut).toHaveBeenCalledTimes(1);
+    expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${idleRec.id}.jsonl`);
+  });
+
+  // Review fix 4: start must be idempotent — a second start without stop must
+  // not leak the first sync-spaces subscription (duplicate sweeps forever) or
+  // the first periodic interval.
+  it('a second start without stop leaves exactly ONE subscription and ONE interval', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    const svc = await import('../src/main/conversations/service');
+    await svc.startConversationStore(startOpts());
+    await svc.startConversationStore(startOpts()); // double start — no stop between
+    // Exactly one sweep per synced event ⇒ store.list called once.
+    h.store.list.mockClear();
+    fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+    await vi.waitFor(() => expect(h.store.list).toHaveBeenCalled());
+    expect(h.store.list).toHaveBeenCalledTimes(1);
+    // Exactly one periodic interval ⇒ one reconcile per 30-min tick.
+    h.reconcile.mockClear();
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(h.reconcile).toHaveBeenCalledTimes(1);
+    svc.stopConversationStore();
+    vi.useRealTimers();
+  });
+
   it('a non-personal or non-updated synced event does NOT materialize', async () => {
     h.store.list.mockResolvedValue([{ id: 'x', provider: 'claude', projectName: 'a', originalPath: '/x', transcriptRef: 'claude/transcripts/a/x.jsonl' }] as any);
     await freshService(startOpts());

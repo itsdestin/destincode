@@ -39,6 +39,11 @@ export function getConversationStore(): ConversationStore | null { return store;
 export async function startConversationStore(opts?: {
   conversationsRoot?: string; projectsDir?: string; topicsDir?: string; device?: string;
 }): Promise<void> {
+  // Idempotent start (review fix 4): a second start without a stop would leak
+  // the first onSyncSpacesEvent subscription (duplicate materialize sweeps
+  // forever) and the first periodic interval. Tearing down first keeps the
+  // module a true singleton regardless of how callers sequence start/stop.
+  stopConversationStore();
   const personalRoot = getManagedRoots()?.personalRoot;
   const root = opts?.conversationsRoot
     ?? (personalRoot ? path.join(personalRoot, 'Conversations') : null);
@@ -168,32 +173,55 @@ export function noteFlagChanged(claudeSessionId: string, flag: string, value: bo
 // device that recorded it), then a managed project by name, then a saved folder
 // by basename. null when nothing local matches — that record just isn't
 // materialized on this device (the record itself already synced).
-function resolveLocalProject(rec: { projectName: string; originalPath: string }): string | null {
+// The managed/saved lookups are HOISTED by the caller (review fix 2): on a
+// secondary device where originalPath never exists, per-record readdir + JSON
+// reads made the sweep O(records × disk-reads) on EVERY remote turn.
+function resolveLocalProject(
+  rec: { projectName: string; originalPath: string },
+  managed: Map<string, string>,
+  saved: Array<{ path: string }>,
+): string | null {
   if (rec.originalPath && fs.existsSync(rec.originalPath)) return rec.originalPath;
-  const roots = getManagedRoots();
-  if (roots) {
-    for (const p of roots.listProjects()) {
-      if (p.name === rec.projectName) return p.path;
-    }
-  }
-  try {
-    const hit = readFolders().find((f) => path.basename(f.path) === rec.projectName);
-    if (hit && fs.existsSync(hit.path)) return hit.path;
-  } catch { /* saved folders unreadable */ }
+  const managedHit = managed.get(rec.projectName);
+  if (managedHit) return managedHit;
+  const hit = saved.find((f) => path.basename(f.path) === rec.projectName);
+  if (hit && fs.existsSync(hit.path)) return hit.path;
   return null;
 }
 
 async function materializeSweep(): Promise<void> {
-  if (!store) return;
+  // Capture the store (review fix 3): stop() mid-sweep nulls the module field,
+  // and every use below an await would otherwise become a swallowed TypeError.
+  const s = store;
+  if (!s) return;
   let records;
-  try { records = await store.list('claude'); } catch { return; }
+  try { records = await s.list('claude'); } catch { return; }
+  // Hoist the project lookups once per sweep (review fix 2) — see
+  // resolveLocalProject's comment for why per-record IO was a real cost.
+  const managed = new Map<string, string>(
+    (getManagedRoots()?.listProjects() ?? []).map((p) => [p.name, p.path]),
+  );
+  let saved: Array<{ path: string }> = [];
+  try { saved = readFolders(); } catch { /* saved folders unreadable */ }
   for (const rec of records) {
     if (!rec.transcriptRef) continue; // no durable copy to materialize from
-    const local = resolveLocalProject(rec);
+    // Review fix 1: NEVER materialize over a LIVE session's transcript. Without
+    // leases (Plan 2b), a same-conversation-on-two-devices pull would replace
+    // the JSONL Claude Code is actively appending to — Windows EPERM containment
+    // is unreliable (libuv opens with FILE_SHARE_DELETE), and on POSIX the
+    // rename always succeeds: CC keeps appending to the unlinked inode, the
+    // TranscriptWatcher's path-read never grows, chat view freezes, and local
+    // turns are lost when the handle closes. Accepted caveat: nothing removes
+    // entries from `sessions` on session exit, so an ended session stays
+    // guarded until restart — fine for 2a because mirrorIn keeps the space
+    // current from the fresher local side; a noteSessionEnded refinement lands
+    // with leases in 2b.
+    if (sessions.has(rec.id)) continue;
+    const local = resolveLocalProject(rec, managed, saved);
     if (!local) continue;
     try {
       materializeOut({
-        spaceTranscriptPath: path.join(store.root(), rec.transcriptRef),
+        spaceTranscriptPath: path.join(s.root(), rec.transcriptRef),
         localJsonlPath: localJsonlPath(local, rec.id),
       });
     } catch { /* per-record isolation — one bad copy must not abort the sweep */ }

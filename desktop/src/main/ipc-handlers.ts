@@ -1912,7 +1912,20 @@ export function registerIpcHandlers(
       // Dual-write into the Conversation Store (Phase 2a). The legacy index
       // above is removed in Plan 2c; until then both carry flags so a rollback
       // never loses them. safeWrite semantics live inside noteFlagChanged.
-      noteFlagChanged(resolved, flag, !!value);
+      //
+      // Phantom-record gate (review fix 5): only write when `resolved` is
+      // actually a CLAUDE id. Either the mapping is known (sessionId was a
+      // desktop id → resolved is the mapped claude id), or sessionId is NOT a
+      // live desktop session (Resume Browser rows pass claude ids for past
+      // sessions — safe to write as-is). Without this gate, flagging a LIVE
+      // session before its SessionStart hook establishes the mapping would
+      // seed a flag-only record keyed by the desktop randomUUID — UUID-shaped
+      // (passes the store's id guard), synced to every device, and never
+      // pruned (flagged records are deliberately kept). The legacy index above
+      // keeps the flag either way, so nothing is lost while gated.
+      if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
+        noteFlagChanged(resolved, flag, !!value);
+      }
       const payload = { flag, value: !!value };
       sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
       remoteServer?.broadcast({
