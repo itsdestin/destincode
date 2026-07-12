@@ -13,9 +13,21 @@ import { createConversationStore } from '../src/main/conversations/conversation-
 // genuine store read path without booting sync-spaces. resetModules re-applies
 // vi.mock automatically, so the harness's per-call reset still works.
 const storeHolder = vi.hoisted(() => ({ current: null as any }));
-vi.mock('../src/main/conversations/service', () => ({
-  getConversationStore: () => storeHolder.current,
-}));
+// Saved folders the mocked buildLocalProjectResolver resolves against. Empty by
+// default → resolution is originalPath-only (the pre-fix behavior most tests
+// assume). A cross-OS test drops THIS device's folder in to exercise the
+// name/basename fallback that fixes cross-device resume.
+const savedHolder = vi.hoisted(() => ({ current: [] as Array<{ path: string }> }));
+vi.mock('../src/main/conversations/service', async () => {
+  // Reuse the REAL resolver so the mock can't drift from production behavior;
+  // managed roots aren't exercised here (empty map), saved folders come from the
+  // per-test holder.
+  const { resolveLocalProject } = await import('../src/main/conversations/resolve-local-project');
+  return {
+    getConversationStore: () => storeHolder.current,
+    buildLocalProjectResolver: () => (rec: any) => resolveLocalProject(rec, new Map(), savedHolder.current),
+  };
+});
 
 let tmpHome: string;
 let origHomedir: typeof os.homedir;
@@ -28,6 +40,7 @@ beforeEach(() => {
   // Isolation: a prior store test must not leak its store into the next test
   // (existing legacy-only tests assert the store branch is dormant).
   storeHolder.current = null;
+  savedHolder.current = [];
 });
 
 afterEach(() => {
@@ -333,6 +346,38 @@ describe('listPastSessions — Conversation Store union (Phase 2a)', () => {
     // transcript — renderer shows "Not synced to this device yet".
     expect(row.notSyncedYet).toBe(true);
     expect(row.missingProject).toBeUndefined();
+  });
+
+  it('resolves a CROSS-OS store-only record by saved-folder basename (two-device dogfood fix 2026-07-12)', async () => {
+    const store = seedStore();
+    // THIS device's copy of the project. Its basename ('youcoded-dev') matches
+    // the record's projectName; the record's originalPath is the OTHER device's
+    // path (a Linux /home/... on the real machine), modeled here as an absolute
+    // path that does not exist locally.
+    const localProj = path.join(tmpHome, 'youcoded-dev');
+    fs.mkdirSync(localProj, { recursive: true });
+    savedHolder.current = [{ path: localProj }];
+    const foreignOriginalPath = path.join(tmpHome, 'other-device-home', 'youcoded-dev'); // never created
+    await store.upsert({
+      id: SID_A,
+      provider: 'claude',
+      projectName: 'youcoded-dev',
+      originalPath: foreignOriginalPath,
+      title: 'Cross-Device Sync Test',
+      lastActive: '2026-07-12T10:43:00Z',
+      device: 'destinsZ13',
+    });
+    const sessions = await listSessions();
+    expect(sessions).toHaveLength(1);
+    const row = sessions[0];
+    // Before the fix, the foreign originalPath resolved to null → the row was
+    // (wrongly) missingProject and, if launched, resume ran in the foreign cwd →
+    // blank spawn + exit. Now it resolves to THIS device's folder: an accurate
+    // 'not synced yet' row (transcript not materialized in this test) carrying a
+    // LOCAL cwd, never the foreign path.
+    expect(row.missingProject).toBeUndefined();
+    expect(row.notSyncedYet).toBe(true);
+    expect(row.projectPath).toBe(localProj);
   });
 
   it('ignores a literal Untitled store title when the legacy row has a real name', async () => {

@@ -341,10 +341,21 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
   // `deduped` is already keyed by sessionId, so it doubles as the merge index;
   // mutating a legacy value mutates the same object already in `result`.
   try {
-    const { getConversationStore } = await import('./conversations/service');
+    const { getConversationStore, buildLocalProjectResolver } = await import('./conversations/service');
     const store = getConversationStore();
     if (store) {
       const records = await store.list('claude');
+      // Resolve a store record's project the SAME way the materialize sweep does
+      // (originalPath → managed-by-name → saved-by-basename). Built ONCE per
+      // browse. Load-bearing for CROSS-DEVICE / CROSS-OS resume: a session made
+      // on another machine carries that machine's originalPath (e.g. a Linux
+      // /home/destin/foo), which doesn't exist here — the old code then handed
+      // resume that foreign path as the cwd, `claude --resume` launched into a
+      // nonexistent dir (silently downgraded to $HOME → wrong slug), and the
+      // session spawned blank and exited. Resolving to THIS device's copy of the
+      // folder makes resume launch in the right cwd where the transcript
+      // materialized. Fix 2026-07-12 (two-device dogfood).
+      const resolveLocal = buildLocalProjectResolver();
       for (const rec of records) {
         // LIVE sessions are excluded for the same reason the legacy scan
         // excludes them: every live session gains a store record within
@@ -374,7 +385,7 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           // ~/.claude/projects — a store-only row has no legacy-scanned
           // transcript by construction, so check the JSONL explicitly;
           // `claude --resume` on a missing transcript just errors out.
-          const localPath = rec.originalPath && fs.existsSync(rec.originalPath) ? rec.originalPath : null;
+          const localPath = resolveLocal(rec);
           const transcriptHere = localPath
             ? fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(localPath), `${rec.id}.jsonl`))
             : false;
