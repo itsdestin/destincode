@@ -25,48 +25,50 @@ import { SnapshotsPanel } from './restore/SnapshotsPanel';
 
 const SYNC_EXPLAINER: { intro: string; sections: ExplainerSection[] } = {
   intro:
-    "Sync saves your YouCoded data — journal entries, encyclopedia, conversations, custom skills, and settings — to a cloud service. It's both a backup and a way to pick up where you left off on a different device.",
+    "YouCoded keeps your work safe in two layers. Cross-device sync is the main one: your conversations, projects, and files live in your own private GitHub, so they're backed up AND kept up to date on every device you use. Extra cloud backups (Google Drive, iCloud) are an optional second copy on top of that.",
   sections: [
     {
-      heading: 'What gets synced',
+      heading: 'Cross-Device Backup & Sync (the main one)',
       paragraphs: [
-        "Your journal, encyclopedia, conversations, custom skills, system config, plans, and specs — basically everything personal that YouCoded stores in your .claude folder.",
-        'Your project code is NOT synced here — that\'s what GitHub is for.',
+        "Turn this on and YouCoded stores your conversations, project folders, and personal files in private GitHub repositories — one per space. That's your primary backup and the way your work follows you from computer to computer.",
+        "It needs a GitHub connection (a one-time sign-in). Changes sync automatically in the background, usually within seconds.",
       ],
     },
     {
-      heading: 'Pick where to store it',
+      heading: 'Spaces',
       bullets: [
-        { term: 'Google Drive', text: 'Stores everything in a Drive folder. You can connect multiple Google accounts (e.g. personal, work, school) — each one syncs independently.' },
-        { term: 'GitHub', text: 'Stores it in a private repository. Best for version history of every change. One GitHub account at a time.' },
-        { term: 'iCloud', text: 'Stores it in your iCloud Drive. Works on macOS and Windows (install iCloud for Windows). One iCloud location at a time.' },
-        { term: 'Mixing backends', text: 'You can connect one GitHub and one iCloud plus as many Google Drive accounts as you want — all running in parallel.' },
+        { term: 'Personal', text: 'Your conversations, memory, skills, and anything in your Personal folder — carried to every device.' },
+        { term: 'Projects', text: 'Each folder you turn sync on for becomes its own space, kept in step across your devices.' },
+        { term: 'Instant sync', text: '"Connected" means changes cross devices almost immediately. If it\'s reconnecting, changes still sync every couple of minutes.' },
       ],
     },
     {
-      heading: 'Auto-sync vs Paused',
+      heading: 'Additional backups (optional)',
+      paragraphs: [
+        "You can add Google Drive or iCloud as a second, independent copy on top of GitHub — belt and suspenders. These don't replace GitHub; cross-device sync still needs it as the primary.",
+      ],
       bullets: [
-        { term: 'Auto-sync (toggle ON)', text: 'Your data is backed up automatically after changes, every 15 minutes. This is the default.' },
-        { term: 'Paused (toggle OFF)', text: 'Auto-backup is paused. The backend stays connected but nothing syncs automatically. Use "Upload now" or "Download now" to sync manually.' },
+        { term: 'Google Drive', text: 'Keeps a copy in a Drive folder. You can connect multiple Google accounts, each backing up independently.' },
+        { term: 'iCloud', text: 'Keeps a copy in your iCloud Drive. Works on macOS and Windows (install iCloud for Windows).' },
+        { term: 'Auto-backup toggle', text: 'Green = backing up automatically after changes. Off = paused; use the row menu\'s "Upload now" to back up by hand.' },
       ],
     },
     {
       heading: 'What the buttons do',
       bullets: [
-        { term: 'Sync Now', text: 'Forces an immediate sync to all auto-sync backends.' },
-        { term: 'Upload now', text: 'Pushes your local data to that specific backend right now.' },
-        { term: 'Download now', text: 'Pulls the latest data from that backend to your device.' },
-        { term: '+ Add backup', text: 'Connect a new cloud storage account.' },
-        { term: 'The toggle switch', text: 'Turns automatic syncing on or off for that backend. Off = paused (manual only).' },
+        { term: 'Sync now', text: 'Pushes and pulls your synced spaces right away instead of waiting for the next automatic cycle.' },
+        { term: 'Back up now', text: 'Forces an immediate copy to your additional backups (Drive/iCloud).' },
+        { term: 'Upload now / Download now', text: 'Per-backup: push your local data up to that backup, or pull its copy down to this device.' },
+        { term: '+ Add a backup', text: 'Connect an extra Drive or iCloud copy.' },
       ],
     },
     {
-      heading: 'Common issues',
+      heading: 'If something looks off',
       bullets: [
+        { term: "Sync won't turn on", text: 'It needs GitHub. If you see a "GitHub CLI / not signed in" message, connect GitHub and try again.' },
         { term: '"No Internet Connection"', text: 'Check your WiFi or cellular and try again.' },
-        { term: '"No Sync Backend Configured"', text: "You haven't added any backup destinations yet. Tap + Add backup." },
-        { term: '"No Recent Sync (>24h)"', text: "It's been more than a day since your last sync. Tap Sync Now." },
-        { term: 'Sync seems stuck', text: 'Open Sync Log and look for ERROR or WARN lines.' },
+        { term: 'A conflict note appeared', text: 'Two devices edited the same file — YouCoded kept both, saving the other device\'s version as a "(from …)" copy next to yours.' },
+        { term: 'Something seems stuck', text: 'Open Sync Log and look for ERROR or WARN lines.' },
       ],
     },
   ],
@@ -309,7 +311,7 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
 
   return (
     <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Sync</h3>
+      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Backup &amp; Sync</h3>
 
       <button
         onClick={() => setOpen(true)}
@@ -626,7 +628,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
       >
         {showInfo ? (
           <SettingsExplainer
-            title="Sync"
+            title="Backup & Sync"
             intro={SYNC_EXPLAINER.intro}
             sections={SYNC_EXPLAINER.sections}
             onBack={() => setShowInfo(false)}
@@ -667,7 +669,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         <div className="flex flex-col h-full">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
-            <h2 className="text-sm font-bold text-fg">Sync Management</h2>
+            <h2 className="text-sm font-bold text-fg">Backup &amp; Sync</h2>
             <div className="flex items-center gap-1">
               <InfoIconButton onClick={() => setShowInfo(true)} />
               <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset">
@@ -678,11 +680,109 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
 
           {/* Scrollable content — padding on inner wrapper so sticky fades sit flush. */}
           <div ref={mainScrollRef} className="scroll-fade flex-1">
-            <div className="px-4 py-4 space-y-5">
+            <div className="px-4 py-4 space-y-6">
 
-            {/* 1. Backend instances list */}
+            {/* ============================================================
+                PRIMARY — Cross-Device Backup & Sync (GitHub). Spec 2026-07-03.
+                One private GitHub repo per space is BOTH the cross-device sync
+                channel and a versioned cloud backup, so it's the headline system
+                and leads the panel; the Drive/iCloud backups below are optional
+                secondary failsafes.
+                FUTURE (spec §11 / Phase 2c): GitHub is removed as a *separate
+                backup backend* and the extra-backup layer becomes a daily
+                Drive/iCloud job. Today the two engines still run side by side —
+                this copy is written to stay correct through that change. Note for
+                dogfood: the GitHub side does not yet carry memory/encyclopedia/
+                skills (2c wires those into the Personal space), so the Drive
+                backup is still load-bearing until then — don't turn it off. */}
+            <section>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold text-fg">Cross-Device Backup &amp; Sync</h3>
+                  <p className="text-[11px] text-fg-muted mt-1 leading-relaxed">
+                    Your conversations, projects, and files are backed up to your private
+                    GitHub and kept in sync on every device you use. Requires a GitHub connection.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                  {/* Plain-word pending state — first enable provisions repos and takes seconds. */}
+                  {enabling && <span className="text-[10px] text-fg-muted">Setting up…</span>}
+                  {/* Green switch = on, matching the per-backup toggles below. */}
+                  <button
+                    role="switch"
+                    aria-checked={!!spacesStatus?.enabled}
+                    disabled={enabling}
+                    onClick={() => void handleSpacesEnable(!spacesStatus?.enabled)}
+                    className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${spacesStatus?.enabled ? 'bg-green-600' : 'bg-inset'} ${enabling ? 'opacity-50 cursor-wait' : 'cursor-pointer'}`}
+                    title={spacesStatus?.enabled ? 'Cross-device sync on — click to turn off' : 'Cross-device sync off — click to turn on'}
+                  >
+                    <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all"
+                      style={{ left: spacesStatus?.enabled ? '18px' : '2px' }} />
+                  </button>
+                </div>
+              </div>
+
+              {spacesStatus?.enabled && (
+                <ul className="mt-3 space-y-1">
+                  {(spacesStatus.spaces?.map((s: any) => (
+                    <li key={s.id} className="text-xs text-fg-2 flex items-center justify-between">
+                      <span>{s.id === 'personal' ? 'Personal' : s.id.replace('project:', '')}</span>
+                      <span className="text-[10px] text-fg-muted">{s.remote ? 'connected' : 'local only'}</span>
+                    </li>
+                  )) ?? [])}
+                </ul>
+              )}
+
+              {/* Instant sync (SyncHub, Plan 1b) — plain words, no status glyphs. */}
+              {spacesStatus?.enabled && spacesStatus?.syncHub && spacesStatus.syncHub !== 'off' && (
+                <p className="text-xs text-fg-muted mt-2">
+                  {spacesStatus.syncHub === 'connected'
+                    ? 'Instant sync: connected'
+                    : 'Instant sync: reconnecting — changes still sync every couple of minutes'}
+                </p>
+              )}
+
+              {spacesStatus?.enabled && visibleSpaceEvents.some((e: any) => e.type === 'conflict') && (
+                <p className="text-xs text-amber-600 mt-2">
+                  Some files had conflicting edits — the other device's copy was kept alongside yours
+                  (look for "(from …)" files).
+                </p>
+              )}
+
+              {/* Error slot stays OUTSIDE the enabled gate: a failed enable attempt
+                  (e.g. gh not installed) sets spacesError / emits an engine error while
+                  enabled is still false, and space-manager's friendly messages are
+                  contractually shown verbatim. */}
+              {(() => {
+                const engineError = [...visibleSpaceEvents].reverse().find((e: any) => e.type === 'error');
+                const msg = spacesError ?? engineError?.message;
+                return msg ? <p className="text-xs text-red-500 mt-2">{msg}</p> : null;
+              })()}
+
+              {spacesStatus?.enabled && (
+                /* .catch: void doesn't swallow rejections — route a failed invoke
+                   (bridge timeout) into the red note slot instead of an unhandled rejection. */
+                <button
+                  onClick={() => void (window as any).claude.syncSpaces.syncNow().catch((err: any) => setSpacesError(String(err?.message ?? err)))}
+                  className="text-xs mt-2 underline text-fg-muted"
+                >
+                  Sync now
+                </button>
+              )}
+            </section>
+
+            {/* Divider between the primary GitHub system and the optional extras. */}
+            <div className="border-t border-edge-dim" />
+
+            {/* ============================================================
+                SECONDARY — Additional cloud backups (Drive/iCloud), optional.
+                Belt-and-suspenders copies on top of the GitHub primary. */}
             <div>
-              <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-2">Your Backups</h3>
+              <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-1">Additional backups · optional</h3>
+              <p className="text-[11px] text-fg-muted mb-3 leading-relaxed">
+                A second copy on top of GitHub — belt and suspenders. GitHub stays your
+                primary; these don't replace it.
+              </p>
 
               {status?.backends && status.backends.length > 0 ? (
                 <div className="space-y-2">
@@ -711,9 +811,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         <div className="text-xs text-fg font-medium truncate">{b.label}</div>
                         <div className="text-[10px] text-fg-faint truncate">
                           {b.lastError ? b.lastError :
-                           b.lastPushEpoch ? `Synced ${timeAgo(b.lastPushEpoch)}` :
+                           b.lastPushEpoch ? `Backed up ${timeAgo(b.lastPushEpoch)}` :
                            !b.syncEnabled ? 'Auto-backup paused' :
-                           'Never synced'}
+                           'Never backed up'}
                         </div>
                         {/* Pending changes badge — only when sync is on but blocked */}
                         {isPending && !actionFeedback[b.id] && (
@@ -798,8 +898,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 </div>
               ) : (
                 <div className="text-center py-6">
-                  <div className="text-fg-muted text-sm mb-1">No backup destinations</div>
-                  <div className="text-fg-faint text-[11px] mb-3">Add one to start protecting your data.</div>
+                  <div className="text-fg-muted text-sm mb-1">No extra backups yet</div>
+                  <div className="text-fg-faint text-[11px] mb-3">GitHub already backs you up — add Drive or iCloud for a second copy.</div>
                 </div>
               )}
 
@@ -808,7 +908,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 onClick={() => setView('add-type')}
                 className="w-full mt-2 border border-dashed border-edge-dim rounded-lg py-3 text-center text-[11px] text-fg-muted hover:text-fg-2 hover:border-edge hover:bg-inset/30 transition-colors"
               >
-                + Add backup
+                + Add a backup
               </button>
 
               {/* Restore snapshots expander — lists pre-restore backups users can undo.
@@ -831,101 +931,40 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               )}
             </div>
 
-            {/* 1b. Synced spaces (spec 2026-07-03) — folder-based cross-device sync,
-                distinct from the cloud backups above. */}
-            <section>
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium text-fg">Synced spaces</h3>
-                <label className="flex items-center gap-2 text-sm text-fg-2">
-                  {/* Plain-word pending state — first enable provisions repos and takes seconds. */}
-                  {enabling && <span className="text-xs text-fg-muted">Setting up…</span>}
-                  <input
-                    type="checkbox"
-                    checked={!!spacesStatus?.enabled}
-                    disabled={enabling}
-                    onChange={e => void handleSpacesEnable(e.target.checked)}
-                  />
-                  Sync across devices
-                </label>
-              </div>
-              {spacesStatus?.enabled && (
-                <ul className="mt-2 space-y-1">
-                  {(spacesStatus.spaces?.map((s: any) => (
-                    <li key={s.id} className="text-sm text-fg-2 flex items-center justify-between">
-                      <span>{s.id === 'personal' ? 'Personal' : s.id.replace('project:', '')}</span>
-                      <span className="text-xs text-fg-muted">{s.remote ? 'connected' : 'local only'}</span>
-                    </li>
-                  )) ?? [])}
-                </ul>
-              )}
-              {/* Instant sync (SyncHub, Plan 1b): whether the live cross-device
-                  signal channel is up. 'off' = sync disabled → render nothing.
-                  Anything but 'connected' (connecting/disconnected) falls back to
-                  the every-couple-of-minutes polling loop, so reassure the user
-                  sync still works while the channel reconnects. Plain words, no
-                  status glyphs. */}
-              {spacesStatus?.syncHub && spacesStatus.syncHub !== 'off' && (
-                <p className="text-xs text-fg-muted mt-2">
-                  {spacesStatus.syncHub === 'connected'
-                    ? 'Instant sync: connected'
-                    : 'Instant sync: reconnecting — changes still sync every couple of minutes'}
-                </p>
-              )}
-              {visibleSpaceEvents.some((e: any) => e.type === 'conflict') && (
-                <p className="text-xs text-amber-600 mt-2">
-                  Some files had conflicting edits — the other device's copy was kept alongside yours
-                  (look for "(from …)" files).
-                </p>
-              )}
-              {/* Error note — one slot, toggle rejection first, else the latest engine
-                  error event. space-manager.ts's friendly messages ("GitHub CLI (gh) is
-                  not installed…") arrive as broadcast {type:'error'} events on the enable
-                  path and are contractually "shown verbatim" here — without this, enable
-                  with gh missing checks the box with zero explanation. */}
-              {(() => {
-                const engineError = [...visibleSpaceEvents].reverse()
-                  .find((e: any) => e.type === 'error');
-                const msg = spacesError ?? engineError?.message;
-                return msg ? <p className="text-xs text-red-500 mt-2">{msg}</p> : null;
-              })()}
-              {/* .catch: void doesn't swallow rejections — route a failed invoke
-                  (bridge timeout) into the red note slot instead of an unhandled rejection. */}
-              <button
-                onClick={() => void (window as any).claude.syncSpaces.syncNow().catch((err: any) => setSpacesError(String(err?.message ?? err)))}
-                className="text-xs mt-2 underline text-fg-muted"
-              >
-                Sync now
-              </button>
-            </section>
-
-            {/* 2. Sync Now bar */}
-            <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-inset/50">
-              <div>
-                <div className="text-xs text-fg font-medium">
-                  {status?.syncInProgress || syncing
-                    ? 'Syncing...'
-                    : status?.lastSyncEpoch
-                      ? `Last synced ${timeAgo(status.lastSyncEpoch)}`
-                      : 'Never synced'}
+            {/* Back up now — forces an immediate copy to the additional backups
+                (sync.force drives the legacy Drive/iCloud/GitHub-backup engine).
+                Only meaningful when at least one extra backup is configured, so it's
+                gated on backends existing. The cross-device "Sync now" is up in the
+                primary section — these are two different actions, hence two verbs. */}
+            {(status?.backends?.length ?? 0) > 0 && (
+              <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-inset/50">
+                <div>
+                  <div className="text-xs text-fg font-medium">
+                    {status?.syncInProgress || syncing
+                      ? 'Backing up…'
+                      : status?.lastSyncEpoch
+                        ? `Last backed up ${timeAgo(status.lastSyncEpoch)}`
+                        : 'Not backed up yet'}
+                  </div>
                 </div>
+                <button
+                  onClick={handleForceSync}
+                  disabled={syncing}
+                  className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
+                    syncing
+                      ? 'bg-blue-500/20 text-blue-300 cursor-wait'
+                      : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer'
+                  }`}
+                >
+                  {syncing ? (
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
+                      Backing up
+                    </span>
+                  ) : 'Back up now'}
+                </button>
               </div>
-              <button
-                onClick={handleForceSync}
-                disabled={syncing}
-                className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
-                  syncing
-                    ? 'bg-blue-500/20 text-blue-300 cursor-wait'
-                    : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer'
-                }`}
-              >
-                {syncing ? (
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-3 h-3 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
-                    Syncing
-                  </span>
-                ) : 'Sync Now'}
-              </button>
-            </div>
+            )}
 
             {/* 3. Warnings — typed SyncWarning objects with title/body/fix-action/stderr */}
             {status?.warnings && status.warnings.length > 0 && (
