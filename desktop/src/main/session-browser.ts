@@ -90,28 +90,30 @@ function resolveSlugToPath(slug: string): string {
 }
 
 /**
- * Recursively resolves slug dash-segments against the filesystem.
- * Tries single segment first; if it doesn't exist as a directory,
- * joins with the next segment via hyphen and retries.
+ * Recursively resolves slug dash-segments against the filesystem, preferring the
+ * LONGEST leading segment that exists as a directory.
+ *
+ * WHY longest-first: a slug can't distinguish a path separator from a hyphen
+ * that's part of a folder's own name — `C--Users-desti-youcoded-dev` could mean
+ * `…\desti\youcoded-dev` OR `…\desti\youcoded\dev`. The old walk tried the
+ * SHORTEST segment first, so whenever a sibling `youcoded` directory also existed
+ * it greedily descended into `…\youcoded\dev` (which doesn't exist) instead of
+ * the real `…\youcoded-dev`. resolveSlugToPath then returned a nonexistent path,
+ * and resume fell back to $HOME (sessions "resumed from the home directory").
+ * Trying the longest existing segment first picks the real hyphenated folder.
+ * Exported for unit testing. Fix 2026-07-12 (two-device dogfood).
  */
-function walkSlugParts(base: string, parts: string[]): string {
-  for (let len = 1; len <= parts.length; len++) {
+export function walkSlugParts(base: string, parts: string[]): string {
+  for (let len = parts.length; len >= 1; len--) {
     const segment = parts.slice(0, len).join('-');
     const candidate = path.join(base, segment);
-
-    if (len === parts.length) {
-      // Last possible grouping — accept whether or not it exists on disk
-      return candidate;
+    let isDir = false;
+    try { isDir = fs.existsSync(candidate) && fs.statSync(candidate).isDirectory(); } catch {}
+    if (isDir) {
+      return len === parts.length ? candidate : walkSlugParts(candidate, parts.slice(len));
     }
-
-    try {
-      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-        return walkSlugParts(candidate, parts.slice(len));
-      }
-    } catch {}
   }
-
-  // Fallback: naive join
+  // Nothing at this level exists on disk — best-guess naive join (unchanged).
   return path.join(base, parts.join('-'));
 }
 
@@ -370,15 +372,28 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           if (v.value && (k === 'complete' || k === 'priority' || k === 'helpful')) flags[k] = true;
         }
         if (legacy) {
-          // Overlay store metadata onto the local row (resume slug/path
-          // untouched). A literal 'Untitled' title is a PLACEHOLDER, not a
-          // name — older clients synced such topic files (see docs/PITFALLS.md
-          // → Resume Browser) — so it must never clobber a real derived name.
+          // Overlay store metadata onto the local row. A literal 'Untitled'
+          // title is a PLACEHOLDER, not a name — older clients synced such topic
+          // files (see docs/PITFALLS.md → Resume Browser) — so it must never
+          // clobber a real derived name.
           legacy.name = rec.title && rec.title !== 'Untitled' ? rec.title : legacy.name;
           legacy.lastModified = Math.max(legacy.lastModified, Date.parse(rec.lastActive) || 0);
           if (Object.keys(flags).length) legacy.flags = flags;
           legacy.device = rec.device || undefined;
           legacy.provider = rec.provider;
+          // Prefer the store's UNAMBIGUOUS project resolution for the resume cwd.
+          // The legacy projectPath came from resolveSlugToPath, a filesystem walk
+          // that can misfire when a folder's name contains hyphens AND a shorter
+          // sibling dir exists (e.g. 'youcoded-dev' vs a stray 'youcoded' → the
+          // walk yielded a nonexistent '…\youcoded\dev' and resume fell back to
+          // $HOME). The store knows the exact projectName, so resolveLocal maps
+          // it by basename with no ambiguity. Only override when that folder
+          // actually holds THIS transcript, so we never point resume elsewhere.
+          const storeLocal = resolveLocal(rec);
+          if (storeLocal && fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(storeLocal), `${rec.id}.jsonl`))) {
+            legacy.projectPath = storeLocal;
+            legacy.projectSlug = ccProjectSlug(storeLocal);
+          }
         } else {
           // Store-only conversation: resolve its project locally. Resume needs
           // BOTH the project folder AND a materialized transcript in
