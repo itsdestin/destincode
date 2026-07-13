@@ -287,12 +287,56 @@ export async function stopSyncSpaces(): Promise<void> {
 
 // ---- IPC-facing functions (also used by remote-server cases) ----
 export async function syncSpacesStatus() {
+  const registry = roots ? readProjectRegistry(roots.personalRoot) : [];
+  const byName = new Map(registry.map((e) => [e.name, e]));
   return {
     enabled: manager?.isEnabled() ?? false,
-    spaces: roots?.spaces().map(s => ({ ...s, remote: manager?.remoteFor(s.id) ?? null })) ?? [],
+    spaces: roots?.spaces().map((s) => {
+      const name = s.id.startsWith('project:') ? s.id.slice('project:'.length) : '';
+      const rec = byName.get(name);
+      return {
+        ...s,
+        remote: manager?.remoteFor(s.id) ?? null,
+        // Read-time overlay (spec §8): synced display name + lifecycle state.
+        displayName: rec?.displayName ?? name,
+        state: rec?.state ?? (s.kind === 'project' ? 'active' : undefined),
+      };
+    }) ?? [],
     recentEvents,
     syncHub: hubStatus, // SyncHub connection state (Plan 1b): 'off' when sync disabled
   };
+}
+
+function repoNameFor(name: string): string {
+  return repoNameForSpace({ id: `project:${name}`, kind: 'project', root: '' });
+}
+
+async function pushPersonal(): Promise<void> {
+  if (!engine || !roots) return;
+  const personal = roots.spaces().find((s) => s.kind === 'personal');
+  if (personal) await engine.syncSpace(personal); // push the registry change to peers
+}
+
+/** Rename = change the SYNCED display name only (no folder move). Propagates via
+ *  the Personal space; peers relabel via the read-time overlay in the status
+ *  payload (spec §8). */
+export async function syncSpacesRenameProject(name: string, displayName: string) {
+  if (!roots) return { ok: false as const, error: 'Sync is still starting up — try again in a moment' };
+  await setProjectDisplayName(roots.personalRoot, name, repoNameFor(name), displayName);
+  await pushPersonal();
+  return { ok: true as const };
+}
+
+/** Stop syncing = tombstone the registry record, push it, then detach the live
+ *  space locally while KEEPING the folder (spec §7). The activeSpaces() gate
+ *  keeps it detached on every future boot; the tombstone stops peers from
+ *  re-materializing and detaches their live space via runDiscovery's toStop. */
+export async function syncSpacesStopProject(name: string) {
+  if (!roots) return { ok: false as const, error: 'Sync is still starting up — try again in a moment' };
+  await setProjectStopped(roots.personalRoot, name, repoNameFor(name));
+  await pushPersonal();
+  if (engine) await engine.removeSpace(`project:${name}`);
+  return { ok: true as const };
 }
 
 export async function syncSpacesEnable(enabled: boolean) {

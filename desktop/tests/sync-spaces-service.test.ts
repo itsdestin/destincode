@@ -488,4 +488,38 @@ describe('sync-spaces service transition serialization', () => {
     expect(engine.added).not.toContain('project:beta'); // gated out
     void svc;
   });
+
+  // ---- Rename + stop + payload overlay (2026-07-12) ----
+
+  it('syncSpacesRenameProject writes displayName + pushes Personal', async () => {
+    h.autoAddSpace = true; h.projects = ['app'];
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    await svc.syncSpacesRenameProject('app', 'Cool App');
+    expect(h.setDisplay).toHaveBeenCalledWith(expect.objectContaining({ name: 'app', dn: 'Cool App' }));
+    // Personal was synced to push the rename (engine.syncSpace called for personal).
+    expect(h.engines[0].synced).toContain('personal');
+  });
+
+  it('syncSpacesStopProject tombstones, pushes Personal, and removes the live space', async () => {
+    h.autoAddSpace = true; h.projects = ['app'];
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    const engine = h.engines[0];
+    await svc.syncSpacesStopProject('app');
+    expect(h.setStopped).toHaveBeenCalledWith(expect.objectContaining({ name: 'app' }));
+    expect(engine.removed).toContain('project:app'); // detached, folder kept
+    expect(h.engines[0].synced).toContain('personal'); // pushed
+  });
+
+  it('status spaces carry displayName + state for synced projects', async () => {
+    h.autoAddSpace = true; h.projects = ['app'];
+    h.registry = [{ schemaVersion: 1, name: 'app', repoName: 'r-app', displayName: 'Cool App', state: 'active', updatedAt: 1 }];
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    const st = await svc.syncSpacesStatus();
+    const row = st.spaces.find((s: any) => s.id === 'project:app');
+    expect(row.displayName).toBe('Cool App');
+    expect(row.state).toBe('active');
+  });
 });
