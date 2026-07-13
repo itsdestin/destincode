@@ -46,4 +46,11 @@ export type SpaceSyncEvent = (
   // real space id) so every consumer's per-space event scan / sync-dot
   // derivation ignores it naturally while keeping the field shape uniform.
   | { type: 'hub-status'; spaceId: 'hub'; status: 'connected' | 'disconnected' }
+  // Cross-device discovery (2026-07-13): the set of managed projects on THIS
+  // device changed — a project was materialized from another device or a stop
+  // tombstone detached one. The renderer refetches its folder/project lists on
+  // this so a newly-synced project appears in the picker + Project View WITHOUT
+  // a manual reopen. spaceId is the affected project (informational). Like
+  // 'hub-status', it never drives sync-dot state.
+  | { type: 'projects-changed'; spaceId: string }
 ) & { at?: number };

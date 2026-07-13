@@ -82,6 +82,20 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
     return () => { cancelled = true; };
   }, [open]);
 
+  // Live-refresh the folder list when cross-device discovery materializes (or
+  // stops) a project while this picker is open (2026-07-13 dogfood fix). Without
+  // this a project synced from another device wouldn't appear until the dropdown
+  // was closed and reopened. Gated on `open` so a closed picker (which refetches
+  // on its next open anyway) doesn't subscribe. onEvent is absent on Android — the
+  // optional-chain no-ops there.
+  useEffect(() => {
+    if (!open) return;
+    const unsubscribe = (window as any).claude.syncSpaces.onEvent?.((e: any) => {
+      if (e?.type === 'projects-changed') void load();
+    });
+    return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, [open, load]);
+
   // Position the portaled dropdown under the trigger, clamped to the viewport.
   // WHY a portal + fixed positioning at all: this picker lives inside the
   // SessionStrip's new-session menu, whose rounded-corner containers use

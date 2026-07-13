@@ -184,12 +184,18 @@ async function runDiscovery(): Promise<void> {
       const plan = planReconcile(registry, localNames, liveNames);
       for (const name of plan.toStop) {
         if (!engine) break;
-        try { await engine.removeSpace(`project:${name}`); } // keep the folder
+        // 'projects-changed' tells the renderer to refetch its folder/project
+        // lists so the detached project's badge updates live (see the event
+        // comment in types.ts). Emitted only on a successful change.
+        try { await engine.removeSpace(`project:${name}`); broadcast({ type: 'projects-changed', spaceId: `project:${name}` }); } // keep the folder
         catch (err: any) { broadcast({ type: 'error', spaceId: `project:${name}`, message: `Could not stop syncing "${name}": ${String(err?.message ?? err)}` }); }
       }
       for (const entry of plan.toMaterialize) {
         if (!engine || !roots) break;
-        try { await materializeProject(entry); }
+        // Emit AFTER a successful materialize so a project synced from another
+        // device shows up in the picker + Project View immediately (dogfood fix,
+        // 2026-07-13) instead of only after a manual reopen.
+        try { await materializeProject(entry); broadcast({ type: 'projects-changed', spaceId: `project:${entry.name}` }); }
         catch (err: any) { broadcast({ type: 'error', spaceId: `project:${entry.name}`, message: `Could not add project "${entry.name}" from another device: ${String(err?.message ?? err)}` }); }
       }
     } while (discoverAgain);
