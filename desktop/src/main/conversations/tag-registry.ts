@@ -8,7 +8,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mutateFileUnderLock } from '../artifacts/cas-write';
 import {
-  StoredTag, TAG_SCHEMA_VERSION, parseTag, mergeTag, normalizeLabel,
+  StoredTag, TAG_SCHEMA_VERSION, parseTag, mergeTag, foldTagConflicts, normalizeLabel,
 } from './tag-registry-core';
 import {
   TagColor, TagRecord, TAG_ID_PREFIX, DEFAULT_TAG_COLOR, isTagColor,
@@ -43,19 +43,31 @@ export function createTagRegistry(tagsRoot: string): TagRegistry {
     return target;
   }
 
-  // Read every *.json under the root, parse, drop nulls (corrupt) and tombstoned.
+  // Read every *.json under the root, parse, drop nulls (corrupt), and FOLD
+  // same-id files into one converged record. The synced git transport
+  // materializes divergent cross-device edits as conflict-copy files
+  // ("tag_<id> (from <device>, <date>).json") that carry the SAME internal id as
+  // the canonical file. Left unfolded they'd surface as DUPLICATE tags — and a
+  // delete-tombstone could be RESURRECTED by an older rename copy. Grouping by
+  // the internal id (not filename) and folding each group through the tested
+  // foldTagConflicts (field-level newest-wins, tombstone dominates, and
+  // order-independent because mergeTag is commutative + associative) converges
+  // every id to one record on read. Mirrors the project-registry / conversation-
+  // store fold-on-read precedent; the copy files are left in place (rare, inert).
   async function readAll(): Promise<StoredTag[]> {
     let names: string[];
     try { names = fs.readdirSync(rootResolved); } catch { return []; }
-    const out: StoredTag[] = [];
+    const groups = new Map<string, StoredTag[]>();
     for (const n of names) {
       if (!n.endsWith('.json') || n.endsWith('.tmp')) continue;
       try {
         const t = parseTag(fs.readFileSync(path.join(rootResolved, n), 'utf8'));
-        if (t) out.push(t);
+        if (!t) continue;
+        const g = groups.get(t.id);
+        if (g) g.push(t); else groups.set(t.id, [t]);
       } catch { /* unreadable — skip */ }
     }
-    return out;
+    return [...groups.values()].map(([first, ...rest]) => foldTagConflicts(first, rest));
   }
 
   async function writeTag(next: StoredTag): Promise<void> {
