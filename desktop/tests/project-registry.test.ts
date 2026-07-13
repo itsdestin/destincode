@@ -95,3 +95,73 @@ describe('project registry store — pure merge', () => {
     expect(ab.displayName).toBe('Y');     // updatedAt 9 wins
   });
 });
+
+// Regression tests for the 2026-07-13 post-merge review findings.
+describe('project registry store — review-fix regressions', () => {
+  it('#1: a project whose folder name contains " (from …)" is its OWN record, not a conflict copy', () => {
+    write('Recipes (from Grandma).json', E({ name: 'Recipes (from Grandma)', displayName: 'Recipes (from Grandma)' }));
+    // Before the fix this was misread as a conflict copy of "Recipes" and skipped entirely.
+    expect(readProjectRegistry(personal).map(e => e.name)).toEqual(['Recipes (from Grandma)']);
+  });
+
+  it('#1: STOP is visible for a paren-named project (would silently fail before the fix)', async () => {
+    write('Config (from work).json', E({ name: 'Config (from work)', displayName: 'Config (from work)', state: 'active', updatedAt: 1 }));
+    await setProjectStopped(personal, 'Config (from work)', 'r');
+    const got = readProjectRegistry(personal);
+    expect(got).toHaveLength(1);
+    expect(got[0].state).toBe('stopped'); // reader sees it → activeManagedSpaces can gate it
+  });
+
+  it('#1: a GENUINE transport conflict copy of a paren-named project still folds', () => {
+    write('Recipes (from Grandma).json', E({ name: 'Recipes (from Grandma)', displayName: 'Recipes (from Grandma)', state: 'active', updatedAt: 10 }));
+    // The engine names a real conflict copy by appending its own " (from <device>, <date>)" suffix.
+    write('Recipes (from Grandma) (from Laptop, 2026-07-13).json', E({ name: 'Recipes (from Grandma)', displayName: 'Recipes (from Grandma)', state: 'stopped', updatedAt: 5 }));
+    const got = readProjectRegistry(personal);
+    expect(got).toHaveLength(1);                          // folded, not two rows
+    expect(got[0].name).toBe('Recipes (from Grandma)');
+    expect(got[0].state).toBe('stopped');                // the copy's tombstone folded in
+  });
+
+  it('#1: a genuine conflict copy of a plain project still folds (no regression)', () => {
+    write('app.json', E({ displayName: 'A', state: 'active', updatedAt: 10 }));
+    write('app (from laptop, 2026-07-13).json', E({ displayName: 'A', state: 'stopped', updatedAt: 5 }));
+    const got = readProjectRegistry(personal);
+    expect(got).toHaveLength(1);
+    expect(got[0].state).toBe('stopped');
+  });
+
+  it('#5: renaming to the identical displayName is a no-op (no mtime churn / redundant push)', async () => {
+    write('app.json', E({ displayName: 'Same', updatedAt: 5 }));
+    const file = path.join(dir(), 'app.json');
+    const m1 = fs.statSync(file).mtimeMs;
+    await new Promise((r) => setTimeout(r, 15));
+    await setProjectDisplayName(personal, 'app', 'r-app', 'Same');
+    expect(fs.statSync(file).mtimeMs).toBe(m1); // skipped
+  });
+
+  it('#5: stopping an already-stopped project is a no-op (no mtime churn)', async () => {
+    write('app.json', E({ state: 'stopped', updatedAt: 5 }));
+    const file = path.join(dir(), 'app.json');
+    const m1 = fs.statSync(file).mtimeMs;
+    await new Promise((r) => setTimeout(r, 15));
+    await setProjectStopped(personal, 'app', 'r-app');
+    expect(fs.statSync(file).mtimeMs).toBe(m1);
+  });
+
+  it('#7: ensureProjectEntry rejects a Windows-reserved name (throws BEFORE writing)', () => {
+    expect(() => ensureProjectEntry(personal, { name: 'con', repoName: 'r' })).toThrow();
+    expect(fs.existsSync(path.join(dir(), 'con.json'))).toBe(false);
+  });
+
+  it('#7: readProjectRegistry skips an over-long name (validateSyncName length cap)', () => {
+    const long = 'x'.repeat(101);
+    write(`${long}.json`, E({ name: long, displayName: long }));
+    ensureProjectEntry(personal, { name: 'ok', repoName: 'r' });
+    expect(readProjectRegistry(personal).map(e => e.name)).toEqual(['ok']); // long one skipped
+  });
+
+  it('#8: a create leaves no leftover .tmp file', () => {
+    ensureProjectEntry(personal, { name: 'fresh', repoName: 'r' });
+    expect(fs.readdirSync(dir()).filter((n) => n.includes('.tmp'))).toEqual([]);
+  });
+});
