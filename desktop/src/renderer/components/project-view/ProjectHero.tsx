@@ -52,6 +52,9 @@ interface HeroSync {
 
 interface ProjectHeroProps {
   project: CentralIndexProject;
+  // Synced display name from the cross-device project registry (2026-07-12),
+  // overlaid at read time — prefer it over the folder name for a synced project.
+  displayName?: string | null;
   stats: HeroStats;
   repo: HeroRepo | null;
   onOpenSwitcher: () => void;
@@ -59,7 +62,7 @@ interface ProjectHeroProps {
   sync: HeroSync | null;             // null → syncSpaces unavailable: render no sync line
   onTurnOnSync: () => void;
   onSyncNow: (spaceId: string) => void;
-  onRenamed: () => void;             // parent refreshes the list after a nickname rename
+  onRenamed: () => void;             // parent refreshes the list after a rename / stop
   canRemove: boolean;                // false for synced projects (move-out is deferred)
   onRemove: () => void;
 }
@@ -91,6 +94,7 @@ import { GitBranchIcon } from './icons';
 
 export function ProjectHero({
   project,
+  displayName,
   stats,
   repo,
   onOpenSwitcher,
@@ -105,22 +109,47 @@ export function ProjectHero({
   const showRepoSlug = !!(repo?.webUrl && repo.owner && repo.name);
   const isElectron = getPlatform() === 'electron';
 
-  // Nickname rename — inline field on the actions row. Resets whenever the
-  // active project changes (keyed on path) so a half-typed name from the last
-  // project doesn't bleed into the next.
+  // The visible name prefers the synced display name over the folder name.
+  const shownName = displayName || project.name;
+  // Folder name = the immutable sync identity, recovered from the space id. Non-
+  // null only for a SYNCED project — that's what routes rename/stop through sync.
+  const syncedFolderName = sync?.spaceId?.startsWith('project:')
+    ? sync.spaceId.slice('project:'.length)
+    : null;
+
+  // Rename — inline field on the actions row. Resets whenever the active project
+  // changes (keyed on path) so a half-typed name from the last project doesn't
+  // bleed into the next. Seeded from the visible (possibly synced) name.
   const [renaming, setRenaming] = useState(false);
-  const [nickname, setNickname] = useState(project.name);
-  useEffect(() => { setNickname(project.name); setRenaming(false); }, [project.path]);
+  const [nickname, setNickname] = useState(shownName);
+  useEffect(() => { setNickname(shownName); setRenaming(false); }, [project.path, shownName]);
   const commitRename = async () => {
     const n = nickname.trim();
     setRenaming(false);
-    if (!n || n === project.name) return;
-    // Nickname only — NEVER the folder on disk. A folder rename would change the
-    // sync identity (the repo name is derived from the folder), which the spec
-    // defers. folders.rename updates the picker nickname, which
-    // buildSavedFolderProjects prefers for the display name.
-    await (window.claude as any).folders.rename(project.path, n).catch(() => {});
+    if (!n || n === shownName) return;
+    if (syncedFolderName) {
+      // Synced project: change the SYNCED display name (propagates to every
+      // device via the Personal space). NEVER the folder on disk — the repo name
+      // is derived from the folder, so a folder move is a deferred flow (spec §15).
+      await (window.claude as any).syncSpaces.renameProject?.(syncedFolderName, n).catch(() => {});
+    } else {
+      // Plain local folder: picker nickname only. folders.rename updates the
+      // nickname, which buildSavedFolderProjects prefers for the display name.
+      await (window.claude as any).folders.rename(project.path, n).catch(() => {});
+    }
     onRenamed();
+  };
+
+  // Stop syncing — consequence-gated (destructive-UI convention): a first click
+  // arms the confirm, a second confirms. Detaches this project's sync on every
+  // device while keeping each local copy; permanent (no Resume — spec §15).
+  const [confirmingStop, setConfirmingStop] = useState(false);
+  useEffect(() => { setConfirmingStop(false); }, [project.path]);
+  const commitStop = async () => {
+    setConfirmingStop(false);
+    if (!syncedFolderName) return;
+    await (window.claude as any).syncSpaces.stopProject?.(syncedFolderName).catch(() => {});
+    onRenamed(); // optimistic refresh; a Personal `synced` event also refreshes
   };
 
   return (
@@ -141,7 +170,7 @@ export function ProjectHero({
           title="Switch project"
         >
           <span className="text-2xl font-semibold text-fg leading-tight whitespace-normal break-words">
-            {project.name}
+            {shownName}
           </span>
           <span className="text-fg-muted group-hover:text-fg shrink-0 mt-1.5">
             <ChevronDown size={18} />
@@ -256,6 +285,25 @@ export function ProjectHero({
             <button type="button" onClick={onRemove} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
               Remove from YouCoded
             </button>
+          ) : syncedFolderName ? (
+            // Stop syncing (spec §10) — consequence-gated destructive action.
+            confirmingStop ? (
+              <span className="inline-flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] text-fg-dim max-w-[22rem]">
+                  Stop syncing “{shownName}”? The folder stays on all your devices, but changes will no longer sync between them. This can’t be undone from here.
+                </span>
+                <button type="button" onClick={() => void commitStop()} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
+                  Stop syncing
+                </button>
+                <button type="button" onClick={() => setConfirmingStop(false)} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors">
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button type="button" onClick={() => setConfirmingStop(true)} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
+                Stop syncing
+              </button>
+            )
           ) : (
             <span className="text-[11px] text-fg-faint">Managed by sync</span>
           )}

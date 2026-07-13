@@ -10,7 +10,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from
 import { createPortal } from 'react-dom';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
-import { syncDotFor, type SyncStatusData } from './sync-dot-state';
+import { syncDotFor, findSpaceFor, type SyncStatusData } from './sync-dot-state';
 
 interface SavedFolder {
   path: string;
@@ -200,6 +200,9 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
               {folders.map((f) => {
                 const isSelected = f.path === value;
                 const dot = syncDotFor(f.path, syncStatus);
+                // Prefer the synced display name (cross-device registry overlay,
+                // 2026-07-12) over the local nickname for a synced project.
+                const shown = ((findSpaceFor(f.path, syncStatus) as any)?.displayName as string | undefined) || f.nickname;
 
                 return (
                   <div
@@ -222,7 +225,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
                         deliberately removed (2026-07-09) — both live in
                         Project View via "Manage projects…". Don't re-add. */}
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs truncate">{f.nickname}</div>
+                      <div className="text-xs truncate">{shown}</div>
                       <div className="text-[10px] text-fg-faint truncate" title={f.path}>
                         {f.path}
                       </div>

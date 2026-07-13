@@ -24,7 +24,8 @@ import { generateThemePreview } from './theme-preview-generator';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend, getSyncService, type SyncWarning } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
-  syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, getManagedRoots,
+  syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
+  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots,
 } from './sync-spaces/service';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
@@ -1962,6 +1963,11 @@ export function registerIpcHandlers(
     // Live-cwd guard input: the folder must not move under a running session.
     syncSpacesImportProject(String(sourcePath ?? ''), String(name ?? ''),
       sessionManager.listSessions().filter(s => s.status !== 'destroyed').map(s => s.cwd)));
+  // Cross-device rename (display-name only) + stop-syncing (2026-07-12).
+  ipcMain.handle(IPC.SYNC_SPACES_RENAME_PROJECT, (_e, p: { name: string; displayName: string }) =>
+    syncSpacesRenameProject(String(p?.name ?? ''), String(p?.displayName ?? '')));
+  ipcMain.handle(IPC.SYNC_SPACES_STOP_PROJECT, (_e, p: { name: string }) =>
+    syncSpacesStopProject(String(p?.name ?? '')));
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));

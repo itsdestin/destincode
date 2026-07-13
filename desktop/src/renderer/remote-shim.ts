@@ -1074,6 +1074,10 @@ export function installShim(): void {
       // Shim wraps args in an object (the established convention).
       importProject: (sourcePath: string, name: string) =>
         invoke('syncspaces:import-project', { sourcePath, name }),
+      // Cross-device rename (display-name only) + stop-syncing (2026-07-12).
+      renameProject: (name: string, displayName: string) =>
+        invoke('syncspaces:rename-project', { name, displayName }),
+      stopProject: (name: string) => invoke('syncspaces:stop-project', { name }),
       onEvent: (cb: (e: unknown) => void) => {
         const handler: Callback = (e: any) => cb(e);
         addListener('syncspaces:event', handler);

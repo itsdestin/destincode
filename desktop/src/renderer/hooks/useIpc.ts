@@ -263,6 +263,9 @@ declare global {
         // Optional spaceId narrows to one space (Project View "Sync now"); omit for all.
         syncNow: (spaceId?: string) => Promise<{ ok: boolean }>;
         createProject: (name: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
+        // Cross-device rename (display-name only) + stop-syncing (2026-07-12).
+        renameProject?: (name: string, displayName: string) => Promise<{ ok: boolean; error?: string }>;
+        stopProject?: (name: string) => Promise<{ ok: boolean; error?: string }>;
         onEvent: (cb: (e: unknown) => void) => () => void;
       };
     };

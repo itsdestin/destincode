@@ -3525,6 +3525,15 @@ class SessionService : Service() {
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
 
+            // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
+            // are desktop-only (Phase 3 on Android). Reply not-implemented so the
+            // shared React UI degrades cleanly instead of timing out.
+            "syncspaces:rename-project",
+            "syncspaces:stop-project" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }
