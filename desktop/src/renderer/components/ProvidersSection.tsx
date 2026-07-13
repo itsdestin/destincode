@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
+import EngineCard from './EngineCard';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
 // test, enable/disable, and remove the model providers the NATIVE runtime binds
@@ -82,10 +83,11 @@ const safeProviders = {
 };
 
 // Plain-language state word for a provider row. No status glyphs (●◐○) anywhere —
-// the app's standing UX rule. Order matters: local-engine is always dormant in
-// Plan A (never ready), so it wins first.
+// the app's standing UX rule. The local-engine row's readiness now derives from
+// `ready` (true once Plan B's llama.cpp engine is installed) — the EngineCard
+// below the row carries the detailed install/status controls.
 function stateWord(p: ProviderStatus): string {
-  if (p.type === 'local-engine') return 'Coming with the local engine';
+  if (p.type === 'local-engine') return p.ready ? 'Installed' : 'Not installed';
   if (!p.enabled) return 'Disabled';
   if (p.ready) return 'Connected';
   // enabled && !ready && not local → the key is missing (ready already accounts
@@ -368,6 +370,10 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
           {note.text}
         </p>
       )}
+
+      {/* Local engine install/status/restart controls live under the local
+          provider row (Plan B). Only this row carries them. */}
+      {isLocal && <EngineCard />}
     </div>
   );
 }
