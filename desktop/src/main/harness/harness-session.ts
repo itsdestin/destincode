@@ -18,7 +18,10 @@ export type ModelFactory = (binding: ModelBinding) => Promise<LanguageModel>;
 
 // v7 stream parts carry the chunk in .text (verified against ai@7.0.22:
 // TextStreamTextDeltaPart / TextStreamReasoningDeltaPart both expose `.text`).
-// Read through ONE accessor so any future field rename stays here.
+// Read through ONE accessor so any future field rename stays here. The
+// `?? part.delta` fallback is for the RAW LanguageModelV4 stream-part shape
+// (which uses `.delta`) — the transformed fullStream we iterate here only ever
+// carries `.text`, so `.delta` never actually fires; it's belt-and-suspenders.
 function deltaText(part: any): string { return part.text ?? part.delta ?? ''; }
 
 // AI SDK finishReason -> CC transcript stopReason names (the bubble footer
@@ -33,6 +36,11 @@ function mapStopReason(finishReason: string | undefined): string {
 }
 const APPROX_CHARS_PER_TOKEN = 4;
 
+// CONCURRENCY PRECONDITION: `send()` is NOT re-entrant. `abort`, `interrupted`,
+// and `history` are single-slot per session — a second send() before the first
+// resolves would corrupt turn state. Callers MUST serialize sends per session
+// (Task 9's NativeSessionHost does). send() hard-throws on overlap so a wiring
+// bug surfaces loudly instead of silently scrambling history.
 export class HarnessSession extends EventEmitter {
   private history: ModelMessage[] = [];
   private abort: AbortController | null = null;
@@ -63,6 +71,12 @@ export class HarnessSession extends EventEmitter {
   private fitToContext(messages: ModelMessage[]): ModelMessage[] {
     const ctx = this.opts.contextLength ?? 32_768;
     const budgetTokens = ctx - (this.opts.harness.limits?.maxTokens ?? 4096) - 1024; // output + margin
+    // Degenerate case: a tiny contextLength (a real Plan B possibility — a small
+    // local model with, say, a 2k window) can make budgetTokens zero or negative.
+    // The `kept.length > 0` gate below means we ALWAYS keep the newest message
+    // regardless of budget, so history collapses to that single message rather
+    // than erroring. That's intentional — one turn through a tiny model beats a
+    // hard failure — so no clamp is applied here.
     let total = Math.ceil(this.opts.harness.systemPrompt.length / APPROX_CHARS_PER_TOKEN);
     const kept: ModelMessage[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -75,6 +89,12 @@ export class HarnessSession extends EventEmitter {
   }
 
   async send(text: string): Promise<void> {
+    // Re-entrancy guard: a non-null abort means a turn is already streaming.
+    // Throw loudly rather than corrupt the single-slot turn state (see the
+    // class-level CONCURRENCY PRECONDITION note).
+    if (this.abort) {
+      throw new Error('HarnessSession.send() called while a turn is already in flight — callers must serialize sends per session.');
+    }
     this.interrupted = false;
     this.emitEvent('user-message', { text });
     this.history.push({ role: 'user', content: text });
@@ -114,6 +134,13 @@ export class HarnessSession extends EventEmitter {
           // will reject once the provider stream tears down. Swallow that late
           // rejection so it doesn't surface as an unhandledRejection.
           nextPromise.catch(() => {});
+          // A plain for-await calls iterator.return() on break, which cancels
+          // the underlying ReadableStream / releases the HTTP reader. We broke
+          // manually, so do it ourselves — otherwise a provider that IGNORES
+          // the abort signal (the exact case this race exists for) leaks the
+          // reader/socket until GC. Only fires on the abort path; the
+          // natural-completion path (step.done) already drained the iterator.
+          iterator.return?.().catch(() => {});
           this.interrupted = true;
           break;
         }

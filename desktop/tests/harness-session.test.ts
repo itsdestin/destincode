@@ -114,4 +114,53 @@ describe('HarnessSession', () => {
     expect(think.data.text).toBe('thinking...');
     expect(think.data.partId).toBeTruthy();
   });
+
+  it('an error PART mid-stream emits session-error and ends the turn (distinct from a factory throw)', async () => {
+    const ERROR_MIDSTREAM = [
+      { type: 'stream-start', warnings: [] },
+      { type: 'text-start', id: 'p1' },
+      { type: 'text-delta', id: 'p1', delta: 'partial ' },
+      { type: 'error', error: new Error('upstream 502 from the provider') },
+    ];
+    const session = new HarnessSession(opts, async () => mockModel(ERROR_MIDSTREAM) as any);
+    const events = collect(session);
+    await session.send('hi');
+    const err = events.find((e) => e.type === 'session-error')!;
+    expect(err.data.text).toMatch(/502/);
+    expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);   // an error is not an interrupt
+    expect(events.find((e) => e.type === 'turn-complete')).toBeUndefined();
+  });
+
+  it('distinct text partIds are preserved per delta (deltas are not all merged under one id)', async () => {
+    const TWO_PARTS = [
+      { type: 'stream-start', warnings: [] },
+      { type: 'text-start', id: 'p1' },
+      { type: 'text-delta', id: 'p1', delta: 'one' },
+      { type: 'text-end', id: 'p1' },
+      { type: 'text-start', id: 'p2' },
+      { type: 'text-delta', id: 'p2', delta: 'two' },
+      { type: 'text-end', id: 'p2' },
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } },
+    ];
+    const session = new HarnessSession(opts, async () => mockModel(TWO_PARTS) as any);
+    const events = collect(session);
+    await session.send('hi');
+    const textEvents = events.filter((e) => e.type === 'assistant-text');
+    expect(textEvents.map((e) => ({ id: e.data.partId, t: e.data.text }))).toEqual([
+      { id: 'p1', t: 'one' },
+      { id: 'p2', t: 'two' },
+    ]);
+  });
+
+  it('send() while a turn is in flight rejects (callers must serialize)', async () => {
+    const never = new ReadableStream({ start() { /* never closes — first turn stays in flight */ } });
+    const model = new MockLanguageModelV4({ doStream: async () => ({ stream: never as any }) });
+    const session = new HarnessSession(opts, async () => model as any);
+    collect(session);
+    const first = session.send('first');   // deliberately NOT awaited — stays in flight
+    await expect(session.send('second')).rejects.toThrow(/serialize/i);
+    // Clean up the dangling first turn so it doesn't leak into other tests.
+    session.interrupt();
+    await first;
+  });
 });
