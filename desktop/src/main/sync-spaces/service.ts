@@ -43,6 +43,12 @@ export function setSyncSpacesAuthStore(store: { getToken(): string | null } | nu
 // transition onto the previous one makes toggles strictly sequential.
 let transition: Promise<void> = Promise.resolve();
 
+// Cross-device project discovery (2026-07-12). Single-flight + one coalesced
+// rerun (mirrors the engine's syncSpace guard) so overlapping triggers (boot,
+// hub-connected, Personal-updated) can't race two createProject calls for one name.
+let discovering = false;
+let discoverAgain = false;
+
 // main.ts wires this to RemoteServer.broadcast so engine events also reach
 // remote browser / Android clients. There is NO central push forwarder in this
 // app — each emit site fans out to BOTH BrowserWindows and remote clients (see
@@ -94,6 +100,16 @@ function broadcast(e: SpaceSyncEvent): void {
       if (space) hubSocket.sendSignal('space-updated', repoNameForSpace(space));
     }
   } catch { /* best-effort — the poll fallback covers it */ }
+
+  // A Personal pull that APPLIED changes may have added/renamed/stopped registry
+  // records — reconcile. Guarded to Personal + updated so it fires only when the
+  // registry could have changed; runDiscovery is single-flight so bursts coalesce.
+  try {
+    if (stamped.type === 'synced' && stamped.updated && roots) {
+      const personal = roots.spaces().find((s) => s.kind === 'personal');
+      if (personal && stamped.spaceId === personal.id) void runDiscovery();
+    }
+  } catch { /* discovery is best-effort — boot/connect retries */ }
 }
 
 /** Called once from main.ts after app ready. Roots always exist (the picker
@@ -110,12 +126,76 @@ export async function startSyncSpaces(getBackupTargets: () => Promise<BackupTarg
   // runIfDue never throws by contract, but resolving the targets (async config
   // read) can — guard so the hourly timer can never become an unhandled reject.
   const runBackup = async () => {
-    try { await backup!.runIfDue(roots!.spaces(), await getBackupTargets(), logFn); }
+    try { await backup!.runIfDue(activeSpaces(), await getBackupTargets(), logFn); }
     catch (e: any) { logFn(`sync-spaces: daily backup check failed: ${String(e?.message ?? e)}`); }
   };
   backupTimer = setInterval(() => { void runBackup(); }, 60 * 60 * 1000);
   (backupTimer as any).unref?.();
   void runBackup();
+}
+
+// The spaces the engine should actually run — spaces() minus stopped projects
+// (spec §7 single enforcement point). Reads the registry on disk each call;
+// cheap (a small dir of tiny files).
+function activeSpaces() {
+  if (!roots) return [];
+  return activeManagedSpaces(readProjectRegistry(roots.personalRoot), roots.spaces());
+}
+
+// Materialize one registered project this device is missing. ORDERING IS
+// LOAD-BEARING (spec §7): ensureRemote FIRST (uses only the id — a gh-auth
+// failure creates NOTHING); createProject makes the empty folder; addSpace makes
+// it a live, poll-retriable space BEFORE the first pull (a failed pull leaves a
+// recoverable empty space, not an orphan); setRemote + syncSpace's first-sync
+// pull adopts origin/main (unborn local main → checkout -B main origin/main).
+async function materializeProject(entry: { name: string; repoName: string }): Promise<void> {
+  if (!engine || !roots || !manager) return;
+  const e = engine;
+  const url = await manager.ensureRemote({ id: `project:${entry.name}`, kind: 'project', root: '' });
+  const created = roots.createProject(entry.name);
+  if (!created.ok) return; // taken locally between plan and now — idempotent no-op
+  const space = roots.spaces().find((s) => s.id === `project:${entry.name}`);
+  if (!space || engine !== e) return; // disabled mid-materialize — next boot/connect adds it
+  await e.addSpace(space);
+  const transport = new GitTransport({ deviceName: os.hostname() });
+  await transport.setRemote(space, url);
+  await e.syncSpace(space);
+}
+
+// Reconcile local projects against the synced registry: materialize missing
+// active projects, detach stopped ones (keeping the folder). Reads the registry
+// ON DISK — callers ensure freshness (startEngine awaits a Personal pull; the
+// broadcast/connected triggers fire after a Personal sync) — rather than syncing
+// Personal itself (which would recurse through the broadcast trigger). Never
+// throws: a per-project failure becomes an error event and retries next
+// boot/connect. Single-flight with one coalesced rerun.
+async function runDiscovery(): Promise<void> {
+  if (!engine || !roots) return;
+  if (discovering) { discoverAgain = true; return; }
+  discovering = true;
+  try {
+    do {
+      discoverAgain = false;
+      if (!engine || !roots) break;
+      const registry = readProjectRegistry(roots.personalRoot);
+      const localNames = roots.listProjects().map((p) => p.name);
+      const liveNames = engine.liveSpaceIds()
+        .filter((id) => id.startsWith('project:')).map((id) => id.slice('project:'.length));
+      const plan = planReconcile(registry, localNames, liveNames);
+      for (const name of plan.toStop) {
+        if (!engine) break;
+        try { await engine.removeSpace(`project:${name}`); } // keep the folder
+        catch (err: any) { broadcast({ type: 'error', spaceId: `project:${name}`, message: `Could not stop syncing "${name}": ${String(err?.message ?? err)}` }); }
+      }
+      for (const entry of plan.toMaterialize) {
+        if (!engine || !roots) break;
+        try { await materializeProject(entry); }
+        catch (err: any) { broadcast({ type: 'error', spaceId: `project:${entry.name}`, message: `Could not add project "${entry.name}" from another device: ${String(err?.message ?? err)}` }); }
+      }
+    } while (discoverAgain);
+  } finally {
+    discovering = false;
+  }
 }
 
 async function startEngine(log: (m: string) => void): Promise<void> {
@@ -126,7 +206,7 @@ async function startEngine(log: (m: string) => void): Promise<void> {
   // leak with nothing left holding a reference to close them.
   const e = new SpaceSyncEngine(transport, { onEvent: broadcast });
   engine = e;
-  for (const space of roots!.spaces()) {
+  for (const space of activeSpaces()) { // stopped projects never re-added (spec §7 gate)
     if (engine !== e) { await e.stop(); return; } // superseded — clean up and bail (no socket created yet)
     try {
       await e.addSpace(space);
@@ -150,6 +230,14 @@ async function startEngine(log: (m: string) => void): Promise<void> {
   // below the check is synchronous, so it can't be re-raced.
   if (engine !== e) return;
 
+  // Cross-device discovery: await a fresh Personal pull so the registry is
+  // current, register this device's own projects, then reconcile.
+  const personalSpace = roots!.spaces().find((s) => s.kind === 'personal');
+  if (personalSpace) { try { await e.syncSpace(personalSpace); } catch { /* offline — poll/connect retries */ } }
+  if (engine !== e) return; // disabled while we synced Personal — bail
+  backfillRegistry();
+  void runDiscovery();
+
   // SyncHub (Plan 1b): instant "something changed" signals between this
   // account's devices. The 120s poll in the engine stays as the fallback —
   // SyncHub being down never blocks sync, it only makes it less instant (spec §6).
@@ -169,7 +257,8 @@ async function startEngine(log: (m: string) => void): Promise<void> {
         hubStatus = 'connected';
         broadcast({ type: 'hub-status', spaceId: 'hub', status: 'connected' });
         // Reconcile-on-connect: pull anything missed while we were offline.
-        if (engine && roots) for (const s of roots.spaces()) void engine.syncSpace(s);
+        if (engine && roots) for (const s of activeSpaces()) void engine.syncSpace(s);
+        void runDiscovery(); // retry any project a prior materialize missed; apply stop tombstones
       } else if (ev.type === 'disconnected') {
         hubStatus = 'disconnected';
         broadcast({ type: 'hub-status', spaceId: 'hub', status: 'disconnected' });

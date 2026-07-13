@@ -419,4 +419,73 @@ describe('sync-spaces service transition serialization', () => {
       expect.objectContaining({ name: 'delta', repoName: 'repo-project:delta' }),
     );
   });
+
+  // ---- Discovery / materialize / stop gate / triggers (2026-07-12) ----
+
+  async function enabledSvc() {
+    h.autoAddSpace = true;
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    return svc;
+  }
+
+  it('discovery materializes a registered active project missing locally', async () => {
+    const svc = await enabledSvc();
+    h.registry = [{ schemaVersion: 1, name: 'gamma', repoName: 'r-gamma', displayName: 'gamma', state: 'active', updatedAt: 1 }];
+    const engine = h.engines[0];
+    engine.added.length = 0;
+    h.hub.opts.onEvent({ type: 'connected' }); // reconcile-on-connect → runDiscovery
+    await vi.waitFor(() => expect(h.projects).toContain('gamma'));
+    expect(engine.added).toContain('project:gamma');
+    void svc;
+  });
+
+  it('discovery skips an already-local project', async () => {
+    h.autoAddSpace = true;
+    h.projects = ['alpha'];
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    h.registry = [{ schemaVersion: 1, name: 'alpha', repoName: 'r-alpha', displayName: 'alpha', state: 'active', updatedAt: 1 }];
+    const before = [...h.projects];
+    h.hub.opts.onEvent({ type: 'connected' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.projects).toEqual(before); // no new create
+    void svc;
+  });
+
+  it('a materialize failure (ensureRemote rejects) emits an error and creates no space', async () => {
+    const svc = await enabledSvc();
+    h.registry = [{ schemaVersion: 1, name: 'gamma', repoName: 'r-gamma', displayName: 'gamma', state: 'active', updatedAt: 1 }];
+    h.ensureRemoteFails = true;
+    const engine = h.engines[0];
+    engine.added.length = 0;
+    h.hub.opts.onEvent({ type: 'connected' });
+    await vi.waitFor(async () => {
+      const st = await svc.syncSpacesStatus();
+      expect(st.recentEvents.some((e: any) => e.type === 'error' && String(e.spaceId).includes('gamma'))).toBe(true);
+    });
+    expect(engine.added).not.toContain('project:gamma');
+    expect(h.projects).not.toContain('gamma');
+    void svc;
+  });
+
+  it('a Personal synced+updated event triggers discovery', async () => {
+    const svc = await enabledSvc();
+    h.registry = [{ schemaVersion: 1, name: 'gamma', repoName: 'r-gamma', displayName: 'gamma', state: 'active', updatedAt: 1 }];
+    // Simulate the engine emitting a Personal-space applied-changes event.
+    h.onEvent!({ type: 'synced', spaceId: 'personal', pushed: false, updated: true });
+    await vi.waitFor(() => expect(h.projects).toContain('gamma'));
+    void svc;
+  });
+
+  it('the active-space gate keeps a stopped project out at engine start', async () => {
+    h.autoAddSpace = true;
+    h.projects = ['beta'];
+    h.registry = [{ schemaVersion: 1, name: 'beta', repoName: 'r-beta', displayName: 'beta', state: 'stopped', updatedAt: 1 }];
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    const engine = h.engines[0];
+    expect(engine.added).not.toContain('project:beta'); // gated out
+    void svc;
+  });
 });
