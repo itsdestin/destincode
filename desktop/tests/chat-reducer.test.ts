@@ -331,6 +331,19 @@ describe('native runtime reducer paths', () => {
     expect(turn.segments[2]).toMatchObject({ type: 'text', content: 'B', partId: 'p2' });
   });
 
+  it('two adjacent text deltas with DIFFERENT partIds do not merge (partId mismatch alone forces a new segment)', () => {
+    // Isolates the last.partId === action.partId clause: both segments are
+    // type 'text' and adjacent (no reasoning between), so the ONLY thing
+    // preventing a merge is the mismatched partId.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't1', text: 'A', timestamp: 1, partId: 'p1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't2', text: 'B', timestamp: 2, partId: 'p2' });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(2);
+    expect(turn.segments[0]).toMatchObject({ type: 'text', content: 'A', partId: 'p1' });
+    expect(turn.segments[1]).toMatchObject({ type: 'text', content: 'B', partId: 'p2' });
+  });
+
   it('events WITHOUT partId keep the whole-block append (CC path untouched)', () => {
     // CC's transcript path sends whole text blocks with no partId — undefined
     // never satisfies the merge predicate, so each stays its own segment.
