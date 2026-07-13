@@ -541,6 +541,10 @@ export class RemoteServer {
         break;
       }
       case 'session:destroy': {
+        // Tear down the native HarnessSession too (mirrors Electron
+        // SESSION_DESTROY) so a native session isn't leaked when destroyed via
+        // remote. No-op for non-native ids; guarded until the stack is wired.
+        await this.nativeRuntime?.nativeHost.destroy(payload.sessionId || payload);
         const result = this.sessionManager.destroySession(payload.sessionId || payload);
         this.respond(client.ws, type, id, result);
         if (result) {
@@ -578,33 +582,56 @@ export class RemoteServer {
         this.respond(client.ws, type, id, this.nativeRuntime ? await this.nativeRuntime.providerRegistry.list() : []);
         break;
       }
+      // The provider CRUD/key/catalog handlers can THROW (bad input, built-in
+      // removal, keychain failure). Each responds an error object on throw so
+      // the remote client's request id resolves instead of hanging to timeout.
       case 'provider:upsert': {
-        const res = this.nativeRuntime ? await this.nativeRuntime.providerRegistry.upsert(payload) : null;
-        this.respond(client.ws, type, id, res);
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.providerRegistry.upsert(payload) : null;
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
         break;
       }
       case 'provider:remove': {
-        if (this.nativeRuntime) await this.nativeRuntime.providerRegistry.remove(payload.id ?? payload);
-        this.respond(client.ws, type, id, true);
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.providerRegistry.remove(payload.id ?? payload);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
         break;
       }
       case 'provider:test': {
-        const res = this.nativeRuntime
-          ? await this.nativeRuntime.providerRegistry.testConnection(payload.id ?? payload)
-          : { ok: false, message: 'Native runtime not available.' };
-        this.respond(client.ws, type, id, res);
+        try {
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.providerRegistry.testConnection(payload.id ?? payload)
+            : { ok: false, message: 'Native runtime not available.' };
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, message: err?.message ?? String(err) });
+        }
         break;
       }
       case 'provider:set-key': {
-        if (this.nativeRuntime) await this.nativeRuntime.providerRegistry.setKey(payload.id, payload.key);
-        this.respond(client.ws, type, id, true);
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.providerRegistry.setKey(payload.id, payload.key);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
         break;
       }
       case 'provider:catalog': {
-        const res = this.nativeRuntime
-          ? await this.nativeRuntime.modelCatalog.get(await this.nativeRuntime.providerRegistry.list())
-          : [];
-        this.respond(client.ws, type, id, res);
+        try {
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.modelCatalog.get(await this.nativeRuntime.providerRegistry.list())
+            : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
         break;
       }
       case 'session:history': {

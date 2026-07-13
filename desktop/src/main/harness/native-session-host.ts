@@ -128,15 +128,24 @@ export class NativeSessionHost extends EventEmitter {
     return this.live.has(sessionId);
   }
 
-  /** Send a user turn. false when the session isn't live (does not throw).
-   *  HarnessSession.send() serializes the turn internally (hard-throws on
-   *  overlap); the host never calls it again until the prior turn's terminal
-   *  event, so callers just await this. */
+  /** Send a user turn. false when the session isn't live OR when the turn
+   *  couldn't start — this method NEVER throws or rejects. HarnessSession.send()
+   *  hard-throws on re-entrancy (a second send while a turn is in flight); the
+   *  host swallows that (and any provider-factory throw) here so the
+   *  fire-and-forget callers (`void nativeHost.send(...)` in ipc-handlers /
+   *  remote-server) can't produce an unhandledRejection — no global handler
+   *  exists. The rejected turn's own transcript is unaffected (the first turn
+   *  keeps streaming; only the overlapping call is dropped). */
   async send(sessionId: string, text: string): Promise<boolean> {
     const entry = this.live.get(sessionId);
     if (!entry) return false;
-    await entry.session.send(text);
-    return true;
+    try {
+      await entry.session.send(text);
+      return true;
+    } catch (err) {
+      log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
+      return false;
+    }
   }
 
   interrupt(sessionId: string): boolean {
@@ -176,18 +185,24 @@ export class NativeSessionHost extends EventEmitter {
     return this.store.list().map((r) => ({ ...r, provider: 'native' as const }));
   }
 
-  /** Graceful teardown of one session: drain pending appends, flush the open
-   *  streaming part, then tear down the HarnessSession. No-op for unknown ids
-   *  (so the SESSION_DESTROY handler can call it for every session id blindly). */
+  /** Graceful teardown of one session. No-op for unknown ids (so the
+   *  SESSION_DESTROY handler can call it for every session id blindly).
+   *
+   *  Order matters — STOP THE SOURCE FIRST:
+   *   1. session.destroy() aborts the in-flight stream AND removeAllListeners()
+   *      — removing our transcript-event listener is what actually stops new
+   *      appends being enqueued (the listener closes over `entry`, so deleting
+   *      the map entry alone would NOT stop re-enqueue mid-stream).
+   *   2. await the appendChain — drain appends already enqueued before step 1.
+   *   3. store.dispose() — flush the buffered open streaming part.
+   *   4. drop the map entry. */
   async destroy(sessionId: string): Promise<void> {
     const entry = this.live.get(sessionId);
     if (!entry) return;
-    // Drop the map entry first so a late transcript-event during the awaits
-    // below can't re-enqueue onto a chain we're about to abandon.
-    this.live.delete(sessionId);
-    await entry.appendChain;          // finish forwarded-but-unpersisted events
+    entry.session.destroy();             // abort stream + remove our listener → no new appends
+    await entry.appendChain;             // drain already-enqueued appends
     await this.store.dispose(sessionId); // flush the buffered open part
-    entry.session.destroy();
+    this.live.delete(sessionId);
   }
 
   /** App-shutdown path: destroy every live session, then flush any residue. */

@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import { app } from 'electron';
 import { SessionInfo, SessionProvider } from '../shared/types';
+import type { ModelBinding } from '../shared/provider-types';
 import { EventEmitter } from 'events';
 import { log } from './logger';
 
@@ -25,7 +26,7 @@ export interface CreateSessionOpts {
   provider?: SessionProvider;
   /** Native-runtime model binding (provider='native' only). Required for a
    *  fresh native session; on resume the binding comes from the stored header. */
-  binding?: { providerId: string; modelId: string };
+  binding?: ModelBinding;
   /** Optional text to prefill into the input bar after the session is selected.
    *  Forwarded into SessionInfo so the renderer can pick it up on session-created. */
   initialInput?: string;

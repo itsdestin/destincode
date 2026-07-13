@@ -2821,6 +2821,11 @@ export function registerIpcHandlers(
     clearInterval(statusInterval);
     clearInterval(usageRefreshInterval);
     transcriptWatcher.stopAll();
+    // Flush + tear down every live native session on quit (best-effort, bounded
+    // to one in-flight streaming part). Fire-and-forget with .catch — cleanup()
+    // is synchronous and callers don't await it, so this mirrors the async
+    // stopSyncSpaces() teardown pattern in main.ts window-all-closed.
+    void nativeHost.destroyAll().catch(() => {});
     for (const [id, watcher] of topicWatchers) {
       if (typeof (watcher as fs.FSWatcher).close === 'function') {
         (watcher as fs.FSWatcher).close();
