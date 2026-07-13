@@ -23,6 +23,7 @@ import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyn
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
 import { startConversationStore, stopConversationStore } from './conversations/service';
+import { startTagRegistry } from './conversations/tag-registry-service';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
@@ -1468,6 +1469,10 @@ app.whenReady().then(async () => {
   // await, so the roots exist by the time this line runs). startConversationStore
   // resolves fast — the first-run reconcile inside is detached (may mirror GBs).
   startConversationStore().catch(e => log('ERROR', 'Main', 'ConversationStore start failed', { error: String(e) }));
+
+  // Tag registry (design §"Storage & sync layout") — same Personal sync space,
+  // resolved after managed roots exist (same ordering as startConversationStore).
+  startTagRegistry();
 
   // Push session JSONL on session close (replaces session-end-sync.sh)
   sessionManager.on('session-exit', (sessionId: string) => {
