@@ -97,6 +97,60 @@ describe('SessionStore', () => {
     expect(store.list()[0].title).toBe('explain quantum tunneling to me');
   });
 
+  it('dispose flushes the in-flight part and clears the open buffer', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'partial', partId: 'p1' }, 'a1') as any);
+    await store.dispose('s-1'); // graceful mid-stream teardown — must persist the part
+    // The part is now on disk...
+    expect(store.readEvents('s-1', HEADER.cwd)).toMatchObject([{ type: 'assistant-text', data: { text: 'partial' } }]);
+    // ...and the open map no longer holds it: a follow-up delta with the SAME
+    // partId opens a FRESH part instead of concatenating onto the disposed one.
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'second', partId: 'p1' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', {}, 't1') as any);
+    const texts = store.readEvents('s-1', HEADER.cwd).filter((e: any) => e.type === 'assistant-text').map((e: any) => e.data.text);
+    expect(texts).toEqual(['partial', 'second']); // two separate parts, not 'partialsecond'
+  });
+
+  it('flushAll flushes open parts across multiple sessions', async () => {
+    const HEADER2: NativeSessionHeader = { ...HEADER, sessionId: 's-2' };
+    const ev2 = (type: string, data: any, uuid: string) => ({ type, sessionId: 's-2', uuid, timestamp: 1720600001000, data });
+    await store.create(HEADER);
+    await store.create(HEADER2);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'one', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER2.cwd, ev2('assistant-text', { text: 'two', partId: 'p1' }, 'b1') as any);
+    await store.flushAll();
+    expect(store.readEvents('s-1', HEADER.cwd)).toMatchObject([{ data: { text: 'one' } }]);
+    expect(store.readEvents('s-2', HEADER2.cwd)).toMatchObject([{ data: { text: 'two' } }]);
+  });
+
+  it('preserves ordering across multiple turns', async () => {
+    await store.create(HEADER);
+    // Turn 1
+    await store.append(HEADER.cwd, ev('user-message', { text: 'q1' }, 'u1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'a1', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', {}, 't1') as any);
+    // Turn 2
+    await store.append(HEADER.cwd, ev('user-message', { text: 'q2' }, 'u2') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'a2', partId: 'p2' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', {}, 't2') as any);
+    const types = store.readEvents('s-1', HEADER.cwd).map((e: any) => e.type);
+    expect(types).toEqual(['user-message', 'assistant-text', 'turn-complete', 'user-message', 'assistant-text', 'turn-complete']);
+  });
+
+  it('coalesces interleaved reasoning/text parts within one turn, in order', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { text: 'think-a', partId: 'r1' }, 'r1a') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { text: '-b', partId: 'r1' }, 'r1b') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'answer', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { text: 'more-think', partId: 'r2' }, 'r2a') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', {}, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-thinking', 'assistant-text', 'assistant-thinking', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'think-a-b', partId: 'r1' });
+    expect((events[1] as any).data).toMatchObject({ text: 'answer', partId: 'p1' });
+    expect((events[2] as any).data).toMatchObject({ text: 'more-think', partId: 'r2' });
+  });
+
   // Clone-semantics pin (Task 7 self-review requirement): the buffered open
   // part must be a CLONE — mutating the caller's event object after append()
   // returns must not change what ends up on disk.

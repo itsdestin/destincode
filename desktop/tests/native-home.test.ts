@@ -83,6 +83,24 @@ describe('NativeHome', () => {
     }
   }, 10_000); // one lock-wait cycle is ~3s; vitest default 5s is too tight for slow CI
 
+  it('readSessionHead returns full parsed lines when the file fits in the window', async () => {
+    await home.appendSessionLine('my-slug', 'abc', { v: 1, sessionId: 'abc' });
+    await home.appendSessionLine('my-slug', 'abc', { type: 'user-message' });
+    expect(home.readSessionHead('my-slug', 'abc')).toEqual([{ v: 1, sessionId: 'abc' }, { type: 'user-message' }]);
+    expect(home.readSessionHead('my-slug', 'missing')).toEqual([]);
+  });
+
+  // Bounded head: with a tiny byte cap, the read stops mid-file. The last line
+  // in the window may be truncated, so it's DROPPED — only whole records the
+  // window fully contains come back (here just line 1, the header).
+  it('readSessionHead drops the truncated trailing record when the read is bounded', async () => {
+    await home.appendSessionLine('my-slug', 'abc', { v: 1, sessionId: 'abc' });
+    await home.appendSessionLine('my-slug', 'abc', { type: 'user-message', text: 'a much longer second line that spills past the cap' });
+    // Cap just past the first line so line 2 is entered but truncated.
+    const head = home.readSessionHead('my-slug', 'abc', 40);
+    expect(head).toEqual([{ v: 1, sessionId: 'abc' }]);
+  });
+
   it('listSessionFiles enumerates slug dirs with mtimes', async () => {
     await home.appendSessionLine('slug-a', 's1', { v: 1 });
     const files = home.listSessionFiles();

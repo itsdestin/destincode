@@ -171,6 +171,55 @@ export class NativeHome {
     return out;
   }
 
+  /**
+   * Bounded head-read: parse at most maxBytes from the START of a session
+   * file. Mirrors the CC Resume-Browser precedent (PITFALLS → Resume Browser:
+   * 256KB head) — list/browse only needs the header (line 1) and the first
+   * user-message (near the top), so reading the whole file is wasteful AND
+   * dangerous: a file that exceeds Node's string cap makes readFileSync throw,
+   * which readSessionLines swallows to [] — silently vanishing that session
+   * from the Resume Browser. Reading a bounded head can't hit the cap.
+   *
+   * The last line in the window may be truncated mid-record, so it's DROPPED
+   * (never parse a half-line); unparseable lines are skipped like
+   * readSessionLines does.
+   */
+  readSessionHead(slug: string, sessionId: string, maxBytes = 262144): unknown[] {
+    const p = this.sessionPath(slug, sessionId);
+    let buf: Buffer;
+    let bytesRead: number;
+    let fileSize: number;
+    try {
+      const fd = fs.openSync(p, 'r');
+      try {
+        fileSize = fs.fstatSync(fd).size;
+        buf = Buffer.alloc(Math.min(maxBytes, fileSize));
+        bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return []; // no such session yet — empty transcript, not an error
+    }
+    const raw = buf.toString('utf8', 0, bytesRead);
+    const lines = raw.split('\n');
+    // If the read was TRUNCATED (didn't reach EOF), the last line is a
+    // possibly-half record — drop it so we never parse a fragment. A full read
+    // leaves a trailing '' after the final newline, which the trim guard below
+    // skips anyway, so only the truncated case needs the pop.
+    if (bytesRead < fileSize) lines.pop();
+    const out: unknown[] = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        out.push(JSON.parse(line));
+      } catch {
+        // Unparseable line — skipped (same policy as readSessionLines).
+      }
+    }
+    return out;
+  }
+
   /** Enumerate every sessions/<slug>/<id>.jsonl with stat info (for browse/resume UIs). */
   listSessionFiles(): SessionFileInfo[] {
     const base = path.join(this.dir, 'sessions');

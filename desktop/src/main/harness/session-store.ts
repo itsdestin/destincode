@@ -85,7 +85,12 @@ export class SessionStore {
       }
       // A different part started: the previous one is complete — flush it,
       // then buffer a CLONE of this event ({...} on both levels so later
-      // caller-side mutation can't reach into what we'll persist).
+      // caller-side mutation can't reach into what we'll persist). The inner
+      // spread is a SHALLOW clone — safe because delta data is text+partId
+      // only; revisit if a coalesced delta ever gains a nested field.
+      // slug is captured on the entry so flush writes to the file this part
+      // opened in (cwd is header-fixed per session, so it never actually
+      // differs, but pinning it keeps flush self-contained).
       await this.flush(event.sessionId);
       this.open.set(event.sessionId, {
         slug,
@@ -112,6 +117,26 @@ export class SessionStore {
     // can't double-flush the same part.
     this.open.delete(sessionId);
     await this.home.appendSessionLine(open.slug, sessionId, open.event);
+  }
+
+  /**
+   * Host is destroying ONE session mid-stream (graceful teardown, not a crash):
+   * persist its in-flight part so the partial text the user saw live survives,
+   * and — since flush() deletes the map entry — drop the buffered reference so
+   * the open map can't leak. Must NOT silently discard the part.
+   */
+  async dispose(sessionId: string): Promise<void> {
+    await this.flush(sessionId);
+  }
+
+  /**
+   * App-shutdown path: flush every session's open part before quit so nothing
+   * in-flight is lost. Snapshot the key set first — flush() mutates the map.
+   */
+  async flushAll(): Promise<void> {
+    for (const id of [...this.open.keys()]) {
+      await this.flush(id);
+    }
   }
 
   /** Line 1 of the session file, validated as a v1 header for this session. */
@@ -146,11 +171,21 @@ export class SessionStore {
     return out;
   }
 
-  /** Every persisted session with header metadata, newest first (Resume Browser). */
+  /**
+   * Every persisted session with header metadata, newest first (Resume Browser).
+   * WHY bounded head-read (mirrors CC's Resume Browser, 256KB head): we need
+   * only the header (line 1) and the first user-message (near the top), so a
+   * full read is wasteful — and worse, a file exceeding Node's string cap
+   * makes a full read throw, which reads back as [] and would silently drop
+   * the session from the list. The tradeoff: a derived title is unavailable if
+   * the first user-message somehow sits past 256KB of transcript, which no real
+   * session does. readEvents (replay) still reads all lines — it genuinely
+   * needs them.
+   */
   list(): NativeSessionListEntry[] {
     const out: NativeSessionListEntry[] = [];
     for (const file of this.home.listSessionFiles()) {
-      const lines = this.home.readSessionLines(file.slug, file.sessionId);
+      const lines = this.home.readSessionHead(file.slug, file.sessionId);
       const header = this.validateHeader(lines[0], file.sessionId);
       if (!header) continue; // torn/foreign file — not a native session we can resume
       // Title precedence (spec §2.6): explicit header title, else derive from
