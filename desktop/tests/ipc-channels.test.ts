@@ -625,7 +625,7 @@ describe('custom tags + notes channel parity', () => {
   const remoteShim = read('../src/renderer/remote-shim.ts');
   const sessionService = read('../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
   const channels = [
-    'session:set-tag', 'session:set-note',
+    'session:set-tag', 'session:set-note', 'session:get-meta',
     'tags:list', 'tags:create', 'tags:update', 'tags:delete',
   ];
   for (const ch of channels) {

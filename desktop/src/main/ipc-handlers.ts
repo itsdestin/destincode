@@ -69,7 +69,7 @@ import { listProjectConversations, projectConversationHistory } from './project-
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteTitleChanged, noteFlagChanged, noteSessionNote } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore } from './conversations/service';
 import { getTagRegistry } from './conversations/tag-registry-service';
 import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
@@ -2151,6 +2151,23 @@ export function registerIpcHandlers(
       remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId: resolved, ...payload } });
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+  });
+
+  // --- Read a live/past session's applied tags + note (session:browse excludes
+  // live sessions, so Plan B's in-session StatusBar element reads meta here) ---
+  ipcMain.handle(IPC.SESSION_GET_META, async (_e, sessionId: string) => {
+    const store = getConversationStore();
+    if (!store) return { tags: [], note: '' };
+    const resolved = sessionIdMap.get(sessionId) || sessionId;
+    try {
+      const rec = await store.get('claude', resolved);
+      if (!rec) return { tags: [], note: '' };
+      const tags: string[] = [];
+      for (const [k, v] of Object.entries(rec.flags)) {
+        if (v.value && k.startsWith('tag:')) tags.push(k.slice(4));
+      }
+      return { tags, note: rec.note || '' };
+    } catch { return { tags: [], note: '' }; }
   });
 
   // --- Sync management ---

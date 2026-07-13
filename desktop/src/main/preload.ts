@@ -101,6 +101,7 @@ const IPC = {
   // Session tags + note (custom user tags, freeform note)
   SESSION_SET_TAG: 'session:set-tag',
   SESSION_SET_NOTE: 'session:set-note',
+  SESSION_GET_META: 'session:get-meta',
   // Tag registry CRUD + change push
   TAGS_LIST: 'tags:list',
   TAGS_CREATE: 'tags:create',
@@ -333,6 +334,9 @@ contextBridge.exposeInMainWorld('claude', {
     // Set the freeform note on a session.
     setNote: (sessionId: string, note: string) =>
       ipcRenderer.invoke(IPC.SESSION_SET_NOTE, sessionId, note),
+    // Read a session's applied tag ids + note (used by the in-session Tag chip).
+    getMeta: (sessionId: string): Promise<{ tags: string[]; note: string }> =>
+      ipcRenderer.invoke(IPC.SESSION_GET_META, sessionId),
   },
   // Tag registry CRUD (custom user-defined tags shared across sessions).
   tags: {

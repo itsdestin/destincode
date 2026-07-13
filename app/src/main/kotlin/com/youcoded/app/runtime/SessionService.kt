@@ -1483,6 +1483,14 @@ class SessionService : Service() {
                 // Picker degrades to "no tags" instead of hanging on a missing handler.
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
             }
+            "session:get-meta" -> {
+                // Read channel — return an EMPTY meta object (not an error) so the
+                // shared-UI in-session Tag chip degrades to "no tags/note" on touch.
+                val payload = org.json.JSONObject()
+                    .put("tags", org.json.JSONArray())
+                    .put("note", "")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
             "tags:create", "tags:update", "tags:delete",
             "session:set-tag", "session:set-note" -> {
                 val payload = org.json.JSONObject()

@@ -710,6 +710,8 @@ export function installShim(): void {
       // Set the freeform note on a past session.
       setNote: (sessionId: string, note: string) =>
         invoke('session:set-note', { sessionId, note }),
+      // Read a session's applied tag ids + note (used by the in-session Tag chip).
+      getMeta: (sessionId: string) => invoke('session:get-meta', { sessionId }),
       sendInput: (sessionId: string, text: string) => fire('session:input', { sessionId, text }),
       resize: (sessionId: string, cols: number, rows: number) => fire('session:resize', { sessionId, cols, rows }),
       signalReady: (sessionId: string) => fire('session:terminal-ready', { sessionId }),

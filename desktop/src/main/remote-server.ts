@@ -691,6 +691,25 @@ export class RemoteServer {
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
+      case 'session:get-meta': {
+        const { getConversationStore } = await import('./conversations/service');
+        const store = getConversationStore();
+        let out = { tags: [] as string[], note: '' };
+        if (store) {
+          try {
+            const rec = await store.get('claude', String(payload?.sessionId));
+            if (rec) {
+              const tags: string[] = [];
+              for (const [k, v] of Object.entries(rec.flags)) {
+                if ((v as any).value && k.startsWith('tag:')) tags.push(k.slice(4));
+              }
+              out = { tags, note: rec.note || '' };
+            }
+          } catch { /* fall through to empty */ }
+        }
+        this.respond(client.ws, type, id, out);
+        break;
+      }
       case 'session:history': {
         const { sessionId: histSessionId, count, all } = payload;
         // Find the JSONL file across all project slugs

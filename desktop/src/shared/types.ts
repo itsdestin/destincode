@@ -749,6 +749,7 @@ export const IPC = {
   // Custom session tags (registry CRUD + application) and per-session notes.
   SESSION_SET_TAG: 'session:set-tag',   // (sessionId, tagId, value)
   SESSION_SET_NOTE: 'session:set-note', // (sessionId, note)
+  SESSION_GET_META: 'session:get-meta', // (sessionId) → { tags, note }
   TAGS_LIST: 'tags:list',
   TAGS_CREATE: 'tags:create',           // (label, color)
   TAGS_UPDATE: 'tags:update',           // (id, { label?, color?, archived? })
