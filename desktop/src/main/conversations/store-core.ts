@@ -81,7 +81,7 @@ export function parseRecord(json: string): ConversationRecord | null {
 
 // Parse an ISO string to epoch ms; unparseable → 0 so it always loses a
 // "newest wins" comparison rather than throwing.
-const ts = (iso: string) => Date.parse(iso) || 0;
+export const ts = (iso: string) => Date.parse(iso) || 0;
 
 // Pick the "later" of two values under a TOTAL order: primary by timestamp,
 // exact ties broken by comparing the two values' JSON text lexicographically.
@@ -109,7 +109,7 @@ const realTitle = (t: string) => (t && t !== 'Untitled' ? t : '');
 // Earliest-claim pick for createdAt, with the same content tiebreak: two
 // different spellings of the same instant must resolve identically on every
 // device, or merged records never byte-converge.
-function earliestOf(x: string, y: string): string {
+export function earliestOf(x: string, y: string): string {
   const tx = ts(x);
   const ty = ts(y);
   if (tx !== ty) return tx < ty ? x : y;
