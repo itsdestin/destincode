@@ -489,6 +489,9 @@ export function ProjectView(props: ProjectViewProps) {
           ? [...(syncStatus?.recentEvents ?? [])].reverse()
               .find((e) => e.spaceId === heroSpace?.id && e.type === 'error')?.message ?? null
           : null,
+        // Review #4: a stopped project must read as a permanent detach, not as
+        // the global sync-off state, and must not re-offer "Stop syncing".
+        stopped: (heroSpace as any)?.state === 'stopped',
       }
     : null;
 
