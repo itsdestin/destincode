@@ -1477,6 +1477,19 @@ class SessionService : Service() {
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
             }
+            "tags:list" -> {
+                // Android tagging UI is deferred (Plan A design §"Cross-platform
+                // parity & Android"). Return an empty registry so a shared-UI Tag
+                // Picker degrades to "no tags" instead of hanging on a missing handler.
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONArray()) }
+            }
+            "tags:create", "tags:update", "tags:delete",
+            "session:set-tag", "session:set-note" -> {
+                val payload = org.json.JSONObject()
+                    .put("ok", false)
+                    .put("error", "not-implemented-on-mobile")
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
             "session:set-flag" -> {
                 // Set a named flag on a past session. Writes the same
                 // conversation-index.json the desktop writes — sync picks it
@@ -1485,7 +1498,9 @@ class SessionService : Service() {
                 val sessionId = msg.payload.optString("sessionId", "")
                 val flag = msg.payload.optString("flag", "")
                 val value = msg.payload.optBoolean("value", false)
-                val allowed = setOf("complete", "priority", "helpful")
+                // 'helpful' retired (2026-07 custom-tags design) — parity with desktop
+                // which dropped it from SESSION_FLAG_NAMES; custom tags supersede it.
+                val allowed = setOf("complete", "priority")
                 if (sessionId.isEmpty() || flag !in allowed) {
                     msg.id?.let {
                         bridgeServer.respond(ws, msg.type, it, JSONObject().apply {
