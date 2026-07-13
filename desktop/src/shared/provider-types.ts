@@ -29,6 +29,9 @@ export interface CatalogModel {
   // USD per 1M tokens — terse to mirror per-1M-token convention; `in` is a JS
   // keyword — destructure as `{ in: input }`.
   pricing?: { in: number; out: number };
+  // Local-engine models only (Plan B/C). fit is Plan C's estimator; Plan B
+  // fills sizeBytes/quant('unknown')/installed(true) from the cache scan.
+  local?: { sizeBytes: number; quant: string; installed: boolean; fit?: 'fits' | 'tight' | 'too-large' };
 }
 
 /** provider:list row — config + derived status, never the key.
