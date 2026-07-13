@@ -2654,15 +2654,18 @@ function AppInner() {
         open={closePromptFor !== null}
         sessionName={sessions.find((s) => s.id === closePromptFor)?.name}
         onCancel={() => setClosePromptFor(null)}
-        onConfirm={(flagsToSet) => {
+        onConfirm={(result) => {
           const id = closePromptFor;
           if (!id) return;
-          // Fire setFlag for each selected tag (fire-and-forget — backend logs
-          // any failure). Main resolves the desktop ID to a Claude session ID
-          // via sessionIdMap before writing conversation-index.json.
-          for (const flag of flagsToSet) {
+          // Reserved flags (priority/complete), custom tags, and the note — each
+          // fire-and-forget; main resolves the desktop id to the Claude id.
+          for (const flag of result.flags) {
             try { (window as any).claude.session.setFlag(id, flag, true); } catch {}
           }
+          for (const tagId of result.tagIds) {
+            try { (window as any).claude.session.setTag(id, tagId, true); } catch {}
+          }
+          if (result.note) { try { (window as any).claude.session.setNote(id, result.note); } catch {} }
           try { window.claude.session.destroy(id); } catch {}
           setClosePromptFor(null);
         }}

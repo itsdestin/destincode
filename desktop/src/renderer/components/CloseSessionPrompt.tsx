@@ -1,24 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
+import { useTagRegistry } from '../hooks/useTagRegistry';
+import { TagPicker } from './tags/TagPicker';
+import { NoteEditor } from './tags/NoteEditor';
 
 // Flag order must match ResumeBrowser's pill order so the UI is consistent.
-type FlagName = 'priority' | 'helpful' | 'complete';
-const FLAG_ORDER: FlagName[] = ['priority', 'helpful', 'complete'];
-const FLAG_LABEL: Record<FlagName, string> = {
-  priority: 'Priority',
-  helpful: 'Helpful',
-  complete: 'Complete',
-};
+type FlagName = 'priority' | 'complete';
+const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
+const FLAG_LABEL: Record<FlagName, string> = { priority: 'Priority', complete: 'Complete' };
 
 interface Props {
   open: boolean;
   sessionName?: string;
   onCancel: () => void;
-  // onConfirm receives the set of flags the user wants set to `true`. Callers
-  // fire one setFlag(flag, true) per entry, then destroy the session. Unmarking
-  // is handled in the resume menu, not here — this prompt only sets flags.
-  onConfirm: (flagsToSet: FlagName[]) => void;
+  // onConfirm receives the reserved flags to set true, the tag ids to apply,
+  // and the note text (empty = none). App fires the corresponding IPC calls.
+  onConfirm: (result: { flags: FlagName[]; tagIds: string[]; note: string }) => void;
 }
 
 // localStorage key used to suppress this prompt permanently. Exported so
@@ -30,18 +28,19 @@ const SUPPRESS_KEY = CLOSE_PROMPT_SUPPRESS_KEY;
 // any combination of Priority, Helpful, Complete in one step. Nothing is
 // pre-selected — the user chooses which flags apply, or closes with none.
 export default function CloseSessionPrompt({ open, sessionName, onCancel, onConfirm }: Props) {
-  const [sel, setSel] = useState<Record<FlagName, boolean>>({
-    priority: false,
-    helpful: false,
-    complete: false,
-  });
+  const [sel, setSel] = useState<Record<FlagName, boolean>>({ priority: false, complete: false });
   // "Don't show again" — persisted to localStorage so the caller can skip this
   // prompt on future closes. Default off so users see it at least once.
   const [dontShowAgain, setDontShowAgain] = useState(false);
+  const registry = useTagRegistry();
+  const [tagIds, setTagIds] = useState<Set<string>>(new Set());
+  const [note, setNote] = useState('');
 
   useEffect(() => {
     if (open) {
-      setSel({ priority: false, helpful: false, complete: false });
+      setSel({ priority: false, complete: false });
+      setTagIds(new Set());
+      setNote('');
       setDontShowAgain(false);
     }
   }, [open]);
@@ -53,13 +52,15 @@ export default function CloseSessionPrompt({ open, sessionName, onCancel, onConf
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Enter') {
-        onConfirm(FLAG_ORDER.filter((f) => sel[f]));
-      }
+      if (e.key !== 'Enter') return;
+      // Don't hijack Enter while the user is typing in the tag search or the note.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      onConfirm({ flags: FLAG_ORDER.filter((f) => sel[f]), tagIds: [...tagIds], note });
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [open, sel, onConfirm]);
+  }, [open, sel, tagIds, note, onConfirm]);
 
   if (!open) return null;
 
@@ -105,6 +106,16 @@ export default function CloseSessionPrompt({ open, sessionName, onCancel, onConf
                 ? 'Complete hides this from the resume menu by default.'
                 : 'Tap a flag to tag this session, or close with none.'}
             </p>
+            <div className="flex flex-col gap-1.5 mt-2">
+              <label className="text-[10px] uppercase tracking-wider text-fg-muted">Tags</label>
+              <TagPicker
+                appliedIds={tagIds}
+                onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
+                registry={registry}
+              />
+              <label className="text-[10px] uppercase tracking-wider text-fg-muted mt-1">Note</label>
+              <NoteEditor value={note} onSave={setNote} />
+            </div>
           </div>
           <div className="px-4 pb-4 flex items-center gap-2 justify-between">
             {/* Don't show again — persists suppress flag to localStorage so App.tsx
@@ -141,7 +152,7 @@ export default function CloseSessionPrompt({ open, sessionName, onCancel, onConf
                   if (dontShowAgain) {
                     localStorage.setItem(SUPPRESS_KEY, '1');
                   }
-                  onConfirm(FLAG_ORDER.filter((f) => sel[f]));
+                  onConfirm({ flags: FLAG_ORDER.filter((f) => sel[f]), tagIds: [...tagIds], note });
                 }}
                 className="text-[11px] font-medium bg-accent text-on-accent px-3 py-1.5 rounded-md hover:opacity-90 transition-opacity"
               >
