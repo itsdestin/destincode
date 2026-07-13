@@ -110,6 +110,26 @@ export class SpaceSyncEngine {
     await st.current;
   }
 
+  /** Ids of the spaces this engine currently watches. Used by the service's
+   *  reconcile to decide which stopped projects have a live space to detach. */
+  liveSpaceIds(): string[] {
+    return [...this.states.keys()];
+  }
+
+  /** Detach ONE space (Stop-syncing) without touching the folder or the others.
+   *  Delete from the map FIRST so a finishing sync's queued rerun early-returns
+   *  in syncSpace (same ordering as stop()); then close the watcher and await any
+   *  in-flight sync (its git subprocesses hold handles in the space root — on
+   *  Windows that blocks folder use until they exit). */
+  async removeSpace(id: string): Promise<void> {
+    const st = this.states.get(id);
+    if (!st) return;
+    this.states.delete(id);
+    if (st.debounce) clearTimeout(st.debounce);
+    await st.watcher.close();
+    if (st.current) await st.current.catch(() => {});
+  }
+
   async stop(): Promise<void> {
     if (this.pollTimer) clearInterval(this.pollTimer);
     // Snapshot then clear FIRST: a finishing sync's queued rerun re-enters
