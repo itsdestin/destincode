@@ -701,7 +701,7 @@ export function installShim(): void {
       loadHistory: (sessionId: string, count?: number, all?: boolean, projectSlug?: string) =>
         invoke('session:history', { sessionId, count, all, projectSlug }),
       switch: (sessionId: string) => invoke('session:switch', { sessionId }),
-      // Set a named flag on a past session (complete, priority, helpful).
+      // Set a named flag on a past session (complete, priority; helpful retired).
       setFlag: (sessionId: string, flag: string, value: boolean) =>
         invoke('session:set-flag', { sessionId, flag, value }),
       // Toggle a custom user tag on a past session.
