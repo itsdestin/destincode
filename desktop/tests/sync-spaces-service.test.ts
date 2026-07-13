@@ -12,9 +12,12 @@ const h = vi.hoisted(() => {
   class FakeEngine {
     stopped = false;
     added: string[] = [];
+    synced: string[] = [];
+    removed: string[] = [];
     // syncSpace is a spy so the per-space / sync-everything tests can assert
-    // which spaces were reconciled.
-    syncSpace = vi.fn(async (_space: { id: string }): Promise<void> => {});
+    // which spaces were reconciled; it also records the target id in `synced`
+    // (survives mockClear) so the rename/stop tests can prove Personal was pushed.
+    syncSpace = vi.fn(async (space: { id: string }): Promise<void> => { this.synced.push(space.id); });
     // Test releases this to let a blocked addSpace proceed — simulates the
     // real engine suspending on chokidar's ready await mid-startEngine.
     releaseAddSpace: (() => void) | null = null;
@@ -31,6 +34,12 @@ const h = vi.hoisted(() => {
       await new Promise<void>((res) => { this.releaseAddSpace = res; });
       this.added.push(space.id);
     }
+    // Cross-device discovery (2026-07-12): liveSpaceIds/removeSpace mirror the
+    // real engine so runDiscovery's plan sees this device's live spaces; `synced`
+    // records every syncSpace target so the rename/stop tests can assert Personal
+    // was pushed, `removed` records detaches so the stop test can assert it.
+    liveSpaceIds(): string[] { return this.added.filter((id) => !this.removed.includes(id)); }
+    async removeSpace(id: string): Promise<void> { this.removed.push(id); }
     async stop(): Promise<void> { this.stopped = true; }
   }
   return {
@@ -39,6 +48,16 @@ const h = vi.hoisted(() => {
     // Default single space keeps the existing serialization tests unchanged;
     // the per-space tests widen this to two projects.
     spaces: [{ id: 'personal', kind: 'personal', root: '/fake/personal' }] as Array<{ id: string; kind: string; root: string }>,
+    // Cross-device discovery (2026-07-12): the stateful ManagedRoots mock derives
+    // its project spaces from this list, so a mid-test createProject is visible to
+    // a later spaces()/listProjects(). `registry` is what the mocked
+    // readProjectRegistry returns; the spies capture registry writes.
+    projects: [] as string[],
+    registry: [] as any[],
+    ensureEntry: vi.fn(),
+    setDisplay: vi.fn(),
+    setStopped: vi.fn(),
+    ensureRemoteFails: false,
     autoAddSpace: false,
     // When true, the fake SpaceManager reports enabled at construction time —
     // makes startSyncSpaces launch its UNCHAINED boot startEngine, the only
@@ -60,13 +79,38 @@ const h = vi.hoisted(() => {
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
 vi.mock('../src/main/sync-spaces/engine', () => ({ SpaceSyncEngine: h.FakeEngine }));
+// Stateful ManagedRoots (2026-07-12): project spaces derive from h.projects so a
+// mid-test createProject is visible to a later spaces()/listProjects(). personal
+// is fixed. (Serialization/per-space tests that set h.spaces are unaffected —
+// spaces() no longer reads it; personal is always present.)
 vi.mock('../src/main/sync-spaces/managed-roots', () => ({
   ManagedRoots: class {
+    readonly personalRoot = '/fake/personal';
+    readonly projectsRoot = '/fake/projects';
+    readonly youcodedRoot = '/fake';
     ensure(): void {}
-    listProjects(): Array<{ name: string; path: string }> { return []; }
-    // Reads the hoisted list live so a test can widen the space set before enable.
-    spaces(): Array<{ id: string; kind: string; root: string }> { return h.spaces; }
+    listProjects(): Array<{ name: string; path: string }> {
+      return h.projects.map((n: string) => ({ name: n, path: `/fake/projects/${n}` }));
+    }
+    createProject(name: string): { ok: true; path: string } | { ok: false; error: string } {
+      if (h.projects.includes(name)) return { ok: false, error: 'A project with that name already exists' };
+      h.projects.push(name);
+      return { ok: true, path: `/fake/projects/${name}` };
+    }
+    spaces(): Array<{ id: string; kind: string; root: string }> {
+      return [
+        { id: 'personal', kind: 'personal', root: '/fake/personal' },
+        ...h.projects.map((n: string) => ({ id: `project:${n}`, kind: 'project', root: `/fake/projects/${n}` })),
+      ];
+    }
   },
+}));
+vi.mock('../src/main/sync-spaces/project-registry', () => ({
+  PROJECT_REGISTRY_SCHEMA: 1,
+  readProjectRegistry: () => h.registry,
+  ensureProjectEntry: (_root: string, input: any) => { h.ensureEntry(input); },
+  setProjectDisplayName: async (_r: string, name: string, repo: string, dn: string) => { h.setDisplay({ name, repo, dn }); },
+  setProjectStopped: async (_r: string, name: string, repo: string) => { h.setStopped({ name, repo }); },
 }));
 vi.mock('../src/main/sync-spaces/space-manager', () => ({
   SpaceManager: class {
@@ -74,7 +118,12 @@ vi.mock('../src/main/sync-spaces/space-manager', () => ({
     isEnabled(): boolean { return this.enabled; }
     setEnabled(v: boolean): void { this.enabled = v; }
     remoteFor(): string | null { return null; }
-    async ensureRemote(): Promise<string> { return 'https://github.com/x/y.git'; }
+    // ensureRemoteFails knob (2026-07-12) simulates a gh-auth failure so the
+    // materialize-failure discovery test can assert nothing is created.
+    async ensureRemote(): Promise<string> {
+      if (h.ensureRemoteFails) throw new Error('gh not signed in');
+      return 'https://github.com/x/y.git';
+    }
   },
   // The real repoNameForSpace hashes the id; the service only needs a stable
   // space-id → repo-name mapping, so a deterministic stub keeps the signal
@@ -128,6 +177,12 @@ describe('sync-spaces service transition serialization', () => {
     // Reset per-test knobs so the serialization tests keep the default single
     // space + blocking addSpace gate they were written against.
     h.spaces = [{ id: 'personal', kind: 'personal', root: '/fake/personal' }];
+    h.projects = [];
+    h.registry = [];
+    h.ensureEntry.mockClear();
+    h.setDisplay.mockClear();
+    h.setStopped.mockClear();
+    h.ensureRemoteFails = false;
     h.autoAddSpace = false;
     h.initialEnabled = false;
     h.onEvent = null;
@@ -183,11 +238,9 @@ describe('sync-spaces service transition serialization', () => {
   // two-project space set so "sync one" vs "sync everything" are distinguishable.
   async function enabledMultiSpaceService() {
     h.autoAddSpace = true;
-    h.spaces = [
-      { id: 'personal', kind: 'personal', root: '/fake/personal' },
-      { id: 'project:alpha', kind: 'project', root: '/fake/alpha' },
-      { id: 'project:beta', kind: 'project', root: '/fake/beta' },
-    ];
+    // Spaces now derive from h.projects (stateful ManagedRoots mock) — personal
+    // is always present.
+    h.projects = ['alpha', 'beta'];
     const svc = await freshService();
     await svc.syncSpacesEnable(true);
     return svc;
@@ -351,5 +404,19 @@ describe('sync-spaces service transition serialization', () => {
     // And the event still landed in recentEvents.
     const st = await svc.syncSpacesStatus();
     expect(st.recentEvents.some((x: any) => x.spaceId === 'project:beta')).toBe(true);
+  });
+
+  // ---- Cross-device project discovery / register (2026-07-12) ----
+
+  it('creating a project registers it (name + deterministic repoName)', async () => {
+    h.autoAddSpace = true;
+    const svc = await freshService();
+    await svc.syncSpacesEnable(true);
+    await svc.syncSpacesCreateProject('delta');
+    // repoNameForSpace is stubbed to `repo-${id}` in this harness, so the
+    // deterministic repo name derived from the project id is 'repo-project:delta'.
+    expect(h.ensureEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'delta', repoName: 'repo-project:delta' }),
+    );
   });
 });

@@ -11,6 +11,8 @@ import { SpaceSyncEngine } from './engine';
 import { DailyBackup, BackupTarget } from './daily-backup';
 import { importProjectFolder } from './import-project';
 import { createSyncHubSocket } from '../sync-hub-socket';
+import { readProjectRegistry, ensureProjectEntry, setProjectDisplayName, setProjectStopped } from './project-registry';
+import { planReconcile, activeManagedSpaces } from './materialization-planner';
 import type { SpaceSyncEvent } from './types';
 
 let roots: ManagedRoots | null = null;
@@ -238,8 +240,27 @@ export async function syncSpacesSyncNow(spaceId?: string) {
   return { ok: true };
 }
 
+// Register a project so peers can discover it. repoName is derived purely from
+// the id, so ensureProjectEntry writes the same file on every device (§8).
+function registerProject(name: string, root: string): void {
+  if (!roots) return;
+  ensureProjectEntry(roots.personalRoot, {
+    name,
+    repoName: repoNameForSpace({ id: `project:${name}`, kind: 'project', root }),
+  });
+}
+
+// One-time on enable: register every project already on this device so
+// pre-existing / sync-was-off projects enter the registry. Idempotent
+// (ensureProjectEntry is create-if-absent — no churn, no clobber).
+function backfillRegistry(): void {
+  if (!roots) return;
+  for (const p of roots.listProjects()) registerProject(p.name, p.path);
+}
+
 export async function syncSpacesCreateProject(name: string) {
   const result = roots!.createProject(name);
+  if (result.ok) registerProject(name, result.path);
   if (result.ok && engine) {
     const space = roots!.spaces().find(s => s.id === `project:${name}`)!;
     try {
@@ -266,6 +287,7 @@ export async function syncSpacesImportProject(sourcePath: string, name: string, 
     projectsRoot: roots.projectsRoot,
     youcodedRoot: roots.youcodedRoot,
   });
+  if (result.ok) registerProject(name, result.path);
   if (result.ok && engine) {
     const space = roots.spaces().find(s => s.id === `project:${name}`);
     if (space) {
