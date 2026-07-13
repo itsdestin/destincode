@@ -17,7 +17,7 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 import { getRestoreService } from './restore-service';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
-import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject } from './sync-spaces/service';
+import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject } from './sync-spaces/service';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
@@ -1136,6 +1136,16 @@ export class RemoteServer {
         this.respond(client.ws, type, id, await syncSpacesImportProject(
           String(payload?.sourcePath ?? ''), String(payload?.name ?? ''),
           this.sessionManager.listSessions().filter(s => s.status !== 'destroyed').map(s => s.cwd)));
+        break;
+      }
+      // Cross-device rename (display-name only) + stop-syncing (2026-07-12).
+      case 'syncspaces:rename-project': {
+        this.respond(client.ws, type, id, await syncSpacesRenameProject(
+          String(payload?.name ?? ''), String(payload?.displayName ?? '')));
+        break;
+      }
+      case 'syncspaces:stop-project': {
+        this.respond(client.ws, type, id, await syncSpacesStopProject(String(payload?.name ?? '')));
         break;
       }
 
