@@ -170,6 +170,10 @@ export function noteFlagChanged(claudeSessionId: string, flag: string, value: bo
   store?.setFlag('claude', claudeSessionId, flag, value).catch(() => { /* carry-forward 1 */ });
 }
 
+export function noteSessionNote(claudeSessionId: string, note: string): void {
+  store?.setNote('claude', claudeSessionId, note).catch(() => { /* carry-forward 1 */ });
+}
+
 // resolveLocalProject (originalPath → managed-by-name → saved-by-basename) lives
 // in ./resolve-local-project so the Resume Browser can reuse the IDENTICAL logic
 // — see buildLocalProjectResolver below and session-browser.ts. The managed/saved
