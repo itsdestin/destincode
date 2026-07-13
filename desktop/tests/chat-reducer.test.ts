@@ -295,3 +295,76 @@ describe('PERMISSION_REQUEST tool matching', () => {
     expect(syn!.status).toBe('awaiting-approval');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Native runtime reducer paths (Task 11): text partId merge + NATIVE_SESSION_ERROR
+// ---------------------------------------------------------------------------
+describe('native runtime reducer paths', () => {
+  let state: ChatState;
+
+  beforeEach(() => {
+    state = initState();
+  });
+
+  it('TRANSCRIPT_ASSISTANT_TEXT with partId merges same-part deltas into one segment', () => {
+    // Native harness streams text as per-token deltas carrying a shared partId;
+    // same partId → append to the last text segment (mirrors reasoning).
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't1', text: 'Hello ', timestamp: 1, partId: 'p1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't2', text: 'world', timestamp: 2, partId: 'p1' });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(1);
+    expect(turn.segments[0]).toMatchObject({ type: 'text', content: 'Hello world', partId: 'p1' });
+  });
+
+  it('does NOT over-merge: a new partId or an interleaved reasoning segment starts a new text segment', () => {
+    // text p1 → reasoning r1 → text p2 → segments types [text, reasoning, text].
+    // The reasoning segment breaks adjacency, and p2 differs from p1 anyway, so
+    // the second text can never merge into the first.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't1', text: 'A', timestamp: 1, partId: 'p1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'r1', text: 'thinking', timestamp: 2, partId: 'rprt_1' });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't2', text: 'B', timestamp: 3, partId: 'p2' });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.map((s) => s.type)).toEqual(['text', 'reasoning', 'text']);
+    expect(turn.segments[0]).toMatchObject({ type: 'text', content: 'A', partId: 'p1' });
+    expect(turn.segments[2]).toMatchObject({ type: 'text', content: 'B', partId: 'p2' });
+  });
+
+  it('events WITHOUT partId keep the whole-block append (CC path untouched)', () => {
+    // CC's transcript path sends whole text blocks with no partId — undefined
+    // never satisfies the merge predicate, so each stays its own segment.
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't1', text: 'first block', timestamp: 1 });
+    state = dispatch(state, { type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 't2', text: 'second block', timestamp: 2 });
+
+    const turn = [...state.get(SESSION)!.assistantTurns.values()][0];
+    expect(turn.segments.length).toBe(2);
+    expect(turn.segments[0]).toMatchObject({ type: 'text', content: 'first block' });
+    expect(turn.segments[1]).toMatchObject({ type: 'text', content: 'second block' });
+  });
+
+  it('NATIVE_SESSION_ERROR ends the turn and surfaces attentionState error + message', () => {
+    state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'do a thing', timestamp: 1 });
+    expect(state.get(SESSION)!.isThinking).toBe(true);
+
+    state = dispatch(state, { type: 'NATIVE_SESSION_ERROR', sessionId: SESSION, message: 'Rate limit exceeded' });
+
+    const session = state.get(SESSION)!;
+    expect(session.isThinking).toBe(false);
+    expect(session.attentionState).toBe('error');
+    expect(session.errorMessage).toBe('Rate limit exceeded');
+    expect(session.currentTurnId).toBeNull();
+  });
+
+  it('the next user prompt clears the error state', () => {
+    state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'first', timestamp: 1 });
+    state = dispatch(state, { type: 'NATIVE_SESSION_ERROR', sessionId: SESSION, message: 'boom' });
+    expect(state.get(SESSION)!.attentionState).toBe('error');
+
+    // Typing again is the retry — clears both attentionState and errorMessage.
+    state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'retry', timestamp: 2 });
+    const session = state.get(SESSION)!;
+    expect(session.attentionState).toBe('ok');
+    expect(session.errorMessage).toBeNull();
+  });
+});

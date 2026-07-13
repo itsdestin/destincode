@@ -850,6 +850,9 @@ function AppInner() {
             // Task 2.4: forward the per-message model from the transcript so the
             // reducer can stamp turn.model on the first text of each turn.
             model: event.data.model,
+            // Native runtime: per-token delta id — same partId merges into the
+            // last text segment (mirror BubbleFeed.tsx, must stay identical).
+            partId: event.data.partId,
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });
@@ -921,6 +924,15 @@ function AppInner() {
           }
           break;
         }
+        case 'session-error':
+          // Native runtime only: a provider/stream failure. End the turn and
+          // surface the 'error' AttentionBanner (mirror BubbleFeed.tsx).
+          batchTranscriptDispatch({
+            type: 'NATIVE_SESSION_ERROR',
+            sessionId: event.sessionId,
+            message: event.data.text ?? 'The model request failed.',
+          });
+          break;
         case 'compact-summary': {
           // Canonical compaction-complete signal — fired by the transcript
           // watcher when Claude Code writes an isCompactSummary entry. Works

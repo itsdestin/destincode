@@ -14,7 +14,11 @@ export interface InteractivePrompt {
 // --- Assistant turn types ---
 
 export type AssistantTurnSegment =
-  | { type: 'text'; content: string; messageId: string }
+  | { type: 'text'; content: string; messageId: string;
+      // Native runtime streams text as per-token deltas merged by partId
+      // (same semantics as reasoning). CC's transcript path sends whole
+      // blocks with no partId — those keep appending as separate segments.
+      partId?: string }
   // Reasoning / extended-thinking content with a text payload. The native
   // harness (Phase 2) streams these for thinking models; CC's transcript
   // path may also carry thinking text in future. Rendered as a collapsible
@@ -136,6 +140,12 @@ export interface SessionChatState {
    */
   attentionState: AttentionState;
   /**
+   * Human-readable provider error backing the 'error' AttentionBanner —
+   * native sessions only. Set by NATIVE_SESSION_ERROR (from a 'session-error'
+   * transcript event), cleared by endTurn() and by the next USER_PROMPT.
+   */
+  errorMessage: string | null;
+  /**
    * Wall-clock of the last non-spinner buffer change (set by classifier).
    * Used to distinguish "spinner is ticking but nothing else is changing"
    * from "buffer is actively producing new output."
@@ -164,6 +174,7 @@ export function createSessionChatState(): SessionChatState {
     lastActivityAt: 0,
     activeTurnToolIds: new Set(),
     attentionState: 'ok',
+    errorMessage: null,
     lastBufferActivityAt: 0,
     compactionPending: null,
   };
@@ -212,6 +223,15 @@ export type ChatAction =
       type: 'SESSION_PROCESS_EXITED';
       sessionId: string;
       exitCode: number;
+    }
+  | {
+      // Native runtime only: a provider/stream failure ended the turn.
+      // Reducer runs endTurn() then overrides attentionState to 'error' and
+      // stashes the message for the AttentionBanner. Fired from a
+      // 'session-error' transcript event (App.tsx / BubbleFeed.tsx).
+      type: 'NATIVE_SESSION_ERROR';
+      sessionId: string;
+      message: string;
     }
   | {
       // Classifier-driven attention state change. Pure state write; no
@@ -283,6 +303,9 @@ export type ChatAction =
       // on the first assistant-text of a turn so the model pill/metadata is
       // visible on in-flight turns (before turn-complete stamps it definitively).
       model?: string;
+      // Native runtime: per-token delta id. Same partId → merge into the last
+      // text segment (mirrors reasoning). CC omits it → whole-block append.
+      partId?: string;
       parentAgentToolUseId?: string;
       agentId?: string;
     }
@@ -408,6 +431,7 @@ export interface SerializedSessionChatState {
   lastActivityAt: number;
   activeTurnToolIds: string[];
   attentionState: AttentionState;
+  errorMessage: string | null;
   lastBufferActivityAt: number;
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
 }
@@ -433,6 +457,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         lastActivityAt: s.lastActivityAt,
         activeTurnToolIds: Array.from(s.activeTurnToolIds),
         attentionState: s.attentionState,
+        errorMessage: s.errorMessage,
         lastBufferActivityAt: s.lastBufferActivityAt,
         compactionPending: s.compactionPending,
       },
@@ -456,6 +481,9 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       lastActivityAt: ser.lastActivityAt,
       activeTurnToolIds: new Set(ser.activeTurnToolIds),
       attentionState: ser.attentionState,
+      // Older remote hosts predate errorMessage — default null so a
+      // pre-field snapshot hydrates without an undefined leaking into state.
+      errorMessage: ser.errorMessage ?? null,
       lastBufferActivityAt: ser.lastBufferActivityAt,
       compactionPending: ser.compactionPending,
     });

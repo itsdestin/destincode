@@ -113,6 +113,9 @@ export function BubbleFeed({ sessionId }: Props) {
             // Forward the per-message model so the reducer can stamp
             // turn.model on the first text of each turn (mirror App.tsx).
             model: event.data.model,
+            // Native runtime: per-token delta id — same partId merges into the
+            // last text segment (mirror App.tsx, must stay identical).
+            partId: event.data.partId,
             // Forward the subagent stamp so the reducer routes subagent
             // events into the parent Agent tool's subagentSegments instead
             // of appending them to the main timeline as separate bubbles.
@@ -195,6 +198,15 @@ export function BubbleFeed({ sessionId }: Props) {
               sessionId: event.sessionId,
             });
           }
+          break;
+        case 'session-error':
+          // Native runtime only: a provider/stream failure. End the turn and
+          // surface the 'error' AttentionBanner (mirror App.tsx).
+          batchDispatch({
+            type: 'NATIVE_SESSION_ERROR',
+            sessionId: event.sessionId,
+            message: event.data.text ?? 'The model request failed.',
+          });
           break;
         // compact-summary: buddy doesn't drive compaction UI (no /compact command),
         // but we still need to close any pending compaction spinner if it was opened

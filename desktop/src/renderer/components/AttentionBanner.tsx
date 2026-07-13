@@ -12,6 +12,12 @@ interface Props {
   /** Anthropic API request ID for the last assistant turn, if any.
    *  Rendered only when state is 'error' or 'session-died' for support correlation. */
   anthropicRequestId?: string | null;
+  /** Provider error text (native runtime). When state==='error' this takes
+   *  precedence over the generic COPY line. */
+  errorMessage?: string | null;
+  /** Retry affordance shown only when state==='error'. Wired to re-send the
+   *  last user message via the native send path (Task 12). */
+  onRetry?: () => void;
 }
 
 const COPY: Record<Props['state'], string> = {
@@ -28,7 +34,7 @@ const COPY: Record<Props['state'], string> = {
 // neutral bubble styling to stay consistent with ThinkingIndicator.
 const DESTRUCTIVE: Props['state'][] = ['session-died', 'error'];
 
-export default function AttentionBanner({ state, anthropicRequestId }: Props) {
+export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry }: Props) {
   const destructive = DESTRUCTIVE.includes(state);
   const bubbleBase = 'flex items-center gap-2 bg-inset rounded-2xl rounded-bl-sm px-4 py-2.5';
   const bubbleClasses = destructive
@@ -46,6 +52,9 @@ export default function AttentionBanner({ state, anthropicRequestId }: Props) {
   // 'stuck' banner where Claude is likely still working. Matches the Props
   // doc comment above.
   const showRequestId = (state === 'session-died' || state === 'error') && !!anthropicRequestId;
+  // Provider error text takes precedence over the generic 'error' COPY line.
+  const line = state === 'error' && errorMessage ? errorMessage : COPY[state];
+  const showRetry = state === 'error' && !!onRetry;
 
   return (
     // in-view: opts the bubble into wallpaper-driven bubble glassmorphism
@@ -55,7 +64,16 @@ export default function AttentionBanner({ state, anthropicRequestId }: Props) {
     <div className="flex flex-col items-start gap-1 px-4 py-1.5 in-view">
       <div className={bubbleClasses}>
         {showSpinner && <BrailleSpinner size="base" />}
-        <span className={textClasses}>{COPY[state]}</span>
+        <span className={textClasses}>{line}</span>
+        {showRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="text-xs underline text-fg-dim hover:text-fg"
+          >
+            Try again
+          </button>
+        )}
       </div>
       {showRequestId && (
         <div className="text-[10.5px] text-fg-muted font-mono mt-1 select-text">

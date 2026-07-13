@@ -625,12 +625,30 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
             {/* Only show thinking indicator when Claude is between tool completion
                 and next text — not when tools are still running or awaiting approval.
                 When the classifier flags a non-ok attention state, swap the
-                spinner for an AttentionBanner tailored to the state. */}
-            {state.isThinking && !hasAwaitingApproval && !hasRunningTools && (
-              state.attentionState === 'ok'
-                ? <ThinkingIndicator />
-                : <AttentionBanner state={state.attentionState} anthropicRequestId={lastTurnRequestId} />
-            )}
+                spinner for an AttentionBanner tailored to the state.
+                Terminal states ('error'/'session-died') persist AFTER the turn
+                ends — endTurn() clears isThinking — so they must render even
+                when !isThinking. 'stuck' only occurs mid-thinking, so it stays
+                gated on the thinking area. */}
+            {(() => {
+              const thinkingArea = state.isThinking && !hasAwaitingApproval && !hasRunningTools;
+              const terminalAttention =
+                state.attentionState === 'error' || state.attentionState === 'session-died';
+              if (thinkingArea && state.attentionState === 'ok') return <ThinkingIndicator />;
+              if (state.attentionState !== 'ok' && (thinkingArea || terminalAttention)) {
+                return (
+                  <AttentionBanner
+                    state={state.attentionState}
+                    anthropicRequestId={lastTurnRequestId}
+                    errorMessage={state.errorMessage}
+                    // TODO(Task 12): wire onRetry to the provider-aware native
+                    // send helper (native-send.ts) to re-send the last user
+                    // message. Left unwired here so no "Try again" button shows yet.
+                  />
+                );
+              }
+              return null;
+            })()}
           </>
         )}
         <div ref={bottomRef} className="h-1" />

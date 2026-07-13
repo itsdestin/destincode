@@ -179,8 +179,10 @@ function endTurn(
     currentTurnId: null,
     activeTurnToolIds: new Set(),
     // Clean slate on turn end. SESSION_PROCESS_EXITED sets 'session-died'
-    // AFTER spreading endTurn() so it overrides this reset.
+    // and NATIVE_SESSION_ERROR sets 'error' + errorMessage AFTER spreading
+    // endTurn() so they override these resets.
     attentionState: 'ok' as const,
+    errorMessage: null,
   };
 }
 
@@ -316,6 +318,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         isThinking: true,
         currentGroupId: null,
         currentTurnId: null,
+        // Typing again after a provider error is the retry — clear the banner
+        // (attentionState + errorMessage) so a fresh turn starts clean.
+        attentionState: 'ok',
+        errorMessage: null,
       });
       return next;
     }
@@ -385,6 +391,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...endTurn(session),
         // Override endTurn's 'ok' reset — this is the state we want to surface.
         attentionState: 'session-died',
+      });
+      return next;
+    }
+
+    // Native runtime: a provider/stream failure ended the turn. endTurn()
+    // resets attentionState to 'ok' and clears errorMessage; we override with
+    // 'error' + the message AFTER the spread — same spread-then-override
+    // pattern SESSION_PROCESS_EXITED uses for 'session-died'.
+    case 'NATIVE_SESSION_ERROR': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, {
+        ...session,
+        ...endTurn(session, action.message),
+        attentionState: 'error',
+        errorMessage: action.message,
       });
       return next;
     }
@@ -498,16 +520,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const turn = assistantTurns.get(currentTurnId)!;
+      // Native runtime: same-partId deltas merge into the last text segment
+      // (identical semantics to the reasoning path). No partId → CC's
+      // whole-block append, unchanged.
+      let segments = turn.segments;
+      const lastIdx = segments.length - 1;
+      const last = lastIdx >= 0 ? segments[lastIdx] : null;
+      if (action.partId && last && last.type === 'text' && last.partId === action.partId) {
+        segments = [...segments.slice(0, lastIdx), { ...last, content: last.content + action.text }];
+      } else {
+        segments = [...segments, { type: 'text', content: action.text, messageId: nextMessageId(), partId: action.partId }];
+      }
       // Task 2.4: Capture model on first text of the turn so the model pill is
       // visible while the turn is in-flight. `?? turn.model` preserves the
       // existing value when a later text chunk arrives without a model, so we
       // never clobber a previously-captured model with null.
       assistantTurns.set(currentTurnId, {
         ...turn,
-        segments: [
-          ...turn.segments,
-          { type: 'text', content: action.text, messageId: nextMessageId() },
-        ],
+        segments,
         model: action.model ?? turn.model,
       });
 
