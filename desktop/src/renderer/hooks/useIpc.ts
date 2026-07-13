@@ -245,6 +245,20 @@ declare global {
       // builds launched with YOUCODED_NATIVE=1; the runtime selector gates on it.
       native: {
         supported: boolean;
+        send: (sessionId: string, text: string) => void;
+        interrupt: (sessionId: string) => void;
+        setBinding: (sessionId: string, binding: { providerId: string; modelId: string }) => Promise<boolean>;
+        sessionsList: () => Promise<any[]>;
+      };
+      // Provider registry — native runtime model providers (desktop-only; the
+      // Android/remote stubs reject with not-implemented).
+      providers: {
+        list: () => Promise<any[]>;
+        upsert: (config: any) => Promise<string>;
+        remove: (id: string) => Promise<boolean>;
+        test: (id: string) => Promise<{ ok: boolean; message: string }>;
+        setKey: (id: string, key: string) => Promise<boolean>;
+        catalog: () => Promise<any[]>;
       };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState

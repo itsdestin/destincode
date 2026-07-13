@@ -970,6 +970,23 @@ contextBridge.exposeInMainWorld('claude', {
   // (run-dev.sh does not set this var itself — it must come from your shell).
   native: {
     supported: process.env.YOUCODED_NATIVE === '1',
+    // Fire-and-forget: match ipcMain.on handlers that destructure { sessionId, text } / { sessionId }.
+    send: (sessionId: string, text: string) => ipcRenderer.send(IPC.NATIVE_SEND, { sessionId, text }),
+    interrupt: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_INTERRUPT, { sessionId }),
+    // Request-response: match the positional ipcMain.handle signatures.
+    setBinding: (sessionId: string, binding: unknown) => ipcRenderer.invoke(IPC.NATIVE_SET_BINDING, sessionId, binding),
+    sessionsList: () => ipcRenderer.invoke(IPC.NATIVE_SESSIONS_LIST),
+  },
+  // Provider registry — CRUD + connection test + model catalog for native
+  // runtime model providers. All request-response; positional args match the
+  // ipcMain.handle signatures in ipc-handlers.ts.
+  providers: {
+    list: () => ipcRenderer.invoke(IPC.PROVIDER_LIST),
+    upsert: (config: unknown) => ipcRenderer.invoke(IPC.PROVIDER_UPSERT, config),
+    remove: (id: string) => ipcRenderer.invoke(IPC.PROVIDER_REMOVE, id),
+    test: (id: string) => ipcRenderer.invoke(IPC.PROVIDER_TEST, id),
+    setKey: (id: string, key: string) => ipcRenderer.invoke(IPC.PROVIDER_SET_KEY, id, key),
+    catalog: () => ipcRenderer.invoke(IPC.PROVIDER_CATALOG),
   },
   // System namespace — platform integrations like hardware back button.
   // Desktop no-op stub: notifyStackState / onBack are only meaningful on

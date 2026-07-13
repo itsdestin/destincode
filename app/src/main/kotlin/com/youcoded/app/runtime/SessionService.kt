@@ -3525,6 +3525,25 @@ class SessionService : Service() {
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
 
+            // Native runtime (YouCoded's first-party harness) + provider registry
+            // are desktop-only in Plan A. Reply not-implemented so the shared React
+            // UI degrades to a "desktop only" state instead of timing out.
+            // native:send / native:interrupt are fire-and-forget (no msg.id) on
+            // desktop; the msg.id?.let guard makes those a no-op here, correctly.
+            "native:send",
+            "native:interrupt",
+            "native:set-binding",
+            "native:sessions-list",
+            "provider:list",
+            "provider:upsert",
+            "provider:remove",
+            "provider:test",
+            "provider:set-key",
+            "provider:catalog" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
             else -> {
                 android.util.Log.w("SessionService", "Unknown bridge message: ${msg.type}")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, MessageRouter.buildErrorResponse("Unknown: ${msg.type}")) }

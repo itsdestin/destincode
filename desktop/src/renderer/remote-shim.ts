@@ -1342,6 +1342,23 @@ export function installShim(): void {
     // so the renderer gates the runtime selector without platform branching.
     native: {
       supported: false,
+      // Object payloads match how remote-server.ts's WS cases read them
+      // (payload.sessionId / payload.text / payload.binding).
+      send: (sessionId: string, text: string) => fire('native:send', { sessionId, text }),
+      interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
+      setBinding: (sessionId: string, binding: unknown) => invoke('native:set-binding', { sessionId, binding }),
+      sessionsList: () => invoke('native:sessions-list'),
+    },
+    // Provider registry — WS transport. upsert sends the config as the whole
+    // payload (remote-server reads `payload` directly); remove/test read
+    // payload.id; set-key reads payload.id + payload.key.
+    providers: {
+      list: () => invoke('provider:list'),
+      upsert: (config: unknown) => invoke('provider:upsert', config),
+      remove: (id: string) => invoke('provider:remove', { id }),
+      test: (id: string) => invoke('provider:test', { id }),
+      setKey: (id: string, key: string) => invoke('provider:set-key', { id, key }),
+      catalog: () => invoke('provider:catalog'),
     },
   };
 }
