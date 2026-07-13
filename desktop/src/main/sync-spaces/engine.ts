@@ -32,6 +32,12 @@ const WATCH_IGNORED = [/(^|[\\/])\.youcoded([\\/]|$)/, /(^|[\\/])node_modules([\
 
 export class SpaceSyncEngine {
   private states = new Map<string, SpaceState>();
+  // Set once in stop(): a latch so an addSpace() suspended on its `await ready`
+  // while the engine is torn down closes its watcher instead of inserting it
+  // into the now-cleared states map — a watcher nothing would ever close, which
+  // keeps syncing after the user turned sync off (until restart). Engines are
+  // single-use, so the latch never needs resetting. (Review #3.)
+  private stopped = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private debounceMs: number;
   private pollMs: number;
@@ -68,6 +74,10 @@ export class SpaceSyncEngine {
       watcher.once('ready', () => resolve());
       watcher.once('error', () => resolve());
     });
+    // Torn down while we awaited 'ready' (disable landed mid-add): close this
+    // watcher and DON'T register it — stop() already snapshotted the states map,
+    // so a set() here would strand a live watcher forever (review #3).
+    if (this.stopped) { await watcher.close(); return; }
     const st: SpaceState = { space, watcher, debounce: null, syncing: false, rerun: false, current: null };
     watcher.on('all', () => this.schedule(st));
     // A watcher that dies after startup (inotify exhaustion, permissions) must
@@ -131,6 +141,7 @@ export class SpaceSyncEngine {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true; // latch: a concurrent addSpace bails after its ready await (review #3)
     if (this.pollTimer) clearInterval(this.pollTimer);
     // Snapshot then clear FIRST: a finishing sync's queued rerun re-enters
     // syncSpace, which early-returns once the state map is empty — otherwise

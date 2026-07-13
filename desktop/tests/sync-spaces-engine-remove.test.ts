@@ -37,4 +37,15 @@ describe('SpaceSyncEngine.removeSpace', () => {
     expect(engine.liveSpaceIds()).toEqual(['project:b']);
     await engine.stop();
   });
+
+  it('#3: addSpace after stop() does not register a space or leak a watcher (stop latch)', async () => {
+    const engine = new SpaceSyncEngine(transport, { pollMs: 0, debounceMs: 50, onEvent: () => {} });
+    await engine.addSpace(mkSpace('project:a'));
+    await engine.stop(); // sets the stop latch
+    // Exercises the SAME guard the real disable-during-materialize race hits: an
+    // addSpace that completes after teardown must bail after its ready await
+    // instead of inserting a watcher nothing will ever close.
+    await engine.addSpace(mkSpace('project:b'));
+    expect(engine.liveSpaceIds()).toEqual([]); // not registered → no orphaned watcher
+  });
 });
