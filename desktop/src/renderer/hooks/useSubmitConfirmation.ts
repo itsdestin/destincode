@@ -168,6 +168,11 @@ export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
     for (const [sessionId, session] of chatState) {
       // Native sessions send in-process (native:send) — no lost-byte failure
       // mode, so never track their pending bubbles for the PTY `\r` retry.
+      // Edge: during teardown the resolver may transiently return undefined
+      // (the SessionInfo already removed while chat state lingers). undefined is
+      // treated as claude/tracked — safe by default (a bare `\r` to a dead
+      // session is a harmless no-op); a native session caught mid-teardown is a
+      // low residual risk, not a correctness bug.
       if (argsRef.current.providerForSession?.(sessionId) === 'native') continue;
       for (const entry of session.timeline) {
         if (entry.kind !== 'user' || !entry.pending) continue;

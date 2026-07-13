@@ -1,4 +1,8 @@
-// One provider-aware send for chat-view surfaces (InputBar, error-banner retry).
+// Provider-aware chat send. Today its ONLY live caller is InputBar's native
+// branch (the native path below). The claude branch and a future error-banner
+// "Try again" caller (Task 11 TODO in ChatView) are reserved — both are tested
+// but not yet wired at a second call site; keep them so the helper stays the
+// single provider-aware send point when those land.
 //
 // Native sessions have NO PTY. They send a plain string over `native:send`
 // (fire-and-forget) and the reply streams back as transcript events — so NONE

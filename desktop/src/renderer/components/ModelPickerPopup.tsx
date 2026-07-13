@@ -131,13 +131,20 @@ interface Props {
   sessionId: string | null;
   currentModel: ModelAlias | null;
   onSelectModel: (m: ModelAlias) => void;
-  /** Runtime backend — Phase 1 replaces this guard with a provider-scoped
-   *  model catalog; in Phase 0 native sessions cannot exist, so this only
-   *  pins the seam. */
+  /** Runtime backend — native sessions get a provider-scoped model catalog
+   *  (setBinding) instead of the Claude alias/effort/fast controls. */
   provider?: 'claude' | 'native';
+  /** Native only — the session's current bound modelId (SessionInfo.model),
+   *  which App keeps current across swaps. Used to highlight the active row
+   *  reliably even when the persisted session header (sessionsList) is stale
+   *  (setBinding is an in-memory swap, not a header rewrite). */
+  currentModelId?: string;
+  /** Native only — called after a successful setBinding so App can refresh its
+   *  record of the session's model (the header pill sources SessionInfo.model). */
+  onNativeModelChanged?: (modelId: string) => void;
 }
 
-export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider }: Props) {
+export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider, currentModelId, onNativeModelChanged }: Props) {
   useEscClose(open, onClose);
   const [fast, setFast] = useState(false);
   const [effort, setEffort] = useState<EffortLevel>('auto');
@@ -154,10 +161,16 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
   const [nativeSearch, setNativeSearch] = useState('');
   const [nativeBinding, setNativeBinding] = useState<{ providerId: string; modelId: string } | null>(null);
+  // Inline error when a model swap (setBinding) fails — the popup stays open so
+  // the user knows the swap did NOT take effect (don't close as if it succeeded).
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const [nativeSwapping, setNativeSwapping] = useState(false);
 
   useEffect(() => {
     if (!open || provider !== 'native') return;
     setNativeSearch('');
+    setNativeError(null);
+    setNativeSwapping(false);
     Promise.all([
       window.claude.providers.catalog().catch(() => []),
       window.claude.providers.list().catch(() => []),
@@ -257,9 +270,27 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
       groups.set(key, arr);
     }
     const selectModel = async (providerId: string, modelId: string) => {
-      if (sessionId) {
-        await window.claude.native.setBinding(sessionId, { providerId, modelId }).catch(() => {});
+      if (!sessionId) { onClose(); return; }
+      setNativeError(null);
+      setNativeSwapping(true);
+      // Await the swap — setBinding resolves false (unknown session) or rejects
+      // on failure. Only close + refresh the header on genuine success; on
+      // failure keep the popup open with an inline error so the user isn't told
+      // the model changed when it didn't.
+      let ok = false;
+      try {
+        ok = await window.claude.native.setBinding(sessionId, { providerId, modelId });
+      } catch {
+        ok = false;
       }
+      setNativeSwapping(false);
+      if (!ok) {
+        setNativeError("Couldn't switch models. The session may have ended — try again.");
+        return;
+      }
+      // #7: keep App's SessionInfo.model current so the header reflects the swap
+      // (setBinding is in-memory, so sessionsList would stay stale otherwise).
+      onNativeModelChanged?.(modelId);
       onClose();
     };
     return createPortal(
@@ -289,6 +320,9 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
             />
           </div>
           <div className="p-5 pt-3 overflow-y-auto space-y-4">
+            {nativeError && (
+              <p className="text-xs text-destructive">{nativeError}</p>
+            )}
             {catalog.length === 0 ? (
               <p className="text-sm text-fg-muted text-center py-4">No models available. Add a provider key in Settings → Providers.</p>
             ) : groups.size === 0 ? (
@@ -299,12 +333,16 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                   <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1.5">{label}</div>
                   <div className="flex flex-col gap-1">
                     {models.map((m) => {
-                      const isCurrent = nativeBinding?.providerId === m.providerId && nativeBinding?.modelId === m.id;
+                      // Prefer App's live SessionInfo.model (updated on every swap)
+                      // over the possibly-stale persisted-header binding.
+                      const activeModelId = currentModelId ?? nativeBinding?.modelId;
+                      const isCurrent = m.id === activeModelId;
                       return (
                         <button
                           key={`${m.providerId}:${m.id}`}
                           onClick={() => selectModel(m.providerId, m.id)}
-                          className={`text-left text-sm rounded px-3 py-2 transition-colors ${
+                          disabled={nativeSwapping}
+                          className={`text-left text-sm rounded px-3 py-2 transition-colors disabled:opacity-50 ${
                             isCurrent ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-2 hover:bg-well'
                           }`}
                         >

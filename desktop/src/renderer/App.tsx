@@ -1850,7 +1850,10 @@ function AppInner() {
       name: 'New Session',
       cwd,
       skipPermissions: dangerous,
-      model: m,
+      // A Claude alias is meaningless for a native session (the harness uses
+      // binding.modelId; SessionManager's native branch ignores `model`), so
+      // omit it to keep the payload honest.
+      model: provider === 'native' ? undefined : m,
       provider: provider || 'claude',
       // Native runtime only — the provider/model binding for the harness. The
       // main handler requires it for a fresh native session (session-manager
@@ -2670,6 +2673,14 @@ function AppInner() {
           (window.claude as any).model?.setPreference(m);
         }}
         provider={currentSession?.provider}
+        // Native model picker — the live bound modelId + a refresh callback so
+        // the header reflects a mid-session swap (SessionInfo.model is the pill's
+        // source; setBinding is in-memory, so we must update it here).
+        currentModelId={currentSession?.provider === 'native' ? currentSession?.model : undefined}
+        onNativeModelChanged={(modelId) => {
+          if (!sessionId) return;
+          setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, model: modelId } : s)));
+        }}
       />
       {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
           Reads from the single `openTasks` useSessionTasks instance declared in AppInner. */}

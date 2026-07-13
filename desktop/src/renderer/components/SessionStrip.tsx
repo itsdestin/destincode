@@ -215,11 +215,22 @@ export default function SessionStrip({
   // openai-compatible endpoints (Ollama, LM Studio, custom) may expose no catalog
   // rows — let the user type the model id directly.
   const needsFreeformModel = selectedProvider?.type === 'openai-compatible' && providerModels.length === 0;
-  const selectedModelId = (binding && binding.providerId === selectedProviderId && binding.modelId)
+  // Validate the stored/selected modelId against the catalog (mirrors the
+  // providerId guard) so a stale localStorage id on a still-ready provider whose
+  // catalog no longer lists it can't create a session bound to a model the
+  // <select> can't display — that mismatch makes languageModel throw on first
+  // send. Freeform ids have no catalog to validate against, so they pass through
+  // as typed (the input keeps the raw value so mid-word spaces survive typing).
+  const selectedModelId = (binding && binding.providerId === selectedProviderId && binding.modelId
+    && (needsFreeformModel || providerModels.some((m) => m.id === binding.modelId)))
     ? binding.modelId
     : (providerModels[0]?.id ?? '');
-  const effectiveBinding = selectedProviderId && selectedModelId
-    ? { providerId: selectedProviderId, modelId: selectedModelId }
+  // Trimmed id used for create / gating / persistence — a whitespace-only
+  // freeform entry ("  ") is truthy but not a real model, so it must NOT pass the
+  // Create gate. Only trimmed at the boundary (never on the displayed value).
+  const resolvedModelId = selectedModelId.trim();
+  const effectiveBinding = selectedProviderId && resolvedModelId
+    ? { providerId: selectedProviderId, modelId: resolvedModelId }
     : null;
   const nativeCreateBlocked = runtime === 'native' && (readyProviders.length === 0 || !effectiveBinding);
   // Launch the new session in its own peer window instead of this one.
