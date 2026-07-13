@@ -1867,7 +1867,7 @@ function AppInner() {
     }
   }, [currentModel]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: 'claude' | 'native') => {
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string) => {
     const cwd = projectPath;
 
     // Native-harness resume: the model binding lives in the session's stored

@@ -3539,7 +3539,11 @@ class SessionService : Service() {
             "provider:remove",
             "provider:test",
             "provider:set-key",
-            "provider:catalog" -> {
+            "provider:catalog",
+            // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
+            // are desktop-only (Phase 3 on Android).
+            "syncspaces:rename-project",
+            "syncspaces:stop-project" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }

@@ -169,6 +169,8 @@ const IPC = {
   SYNC_SPACES_SYNC_NOW: 'syncspaces:sync-now',
   SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
+  SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
+  SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Restore from backup (directional pull — see restore-service.ts)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
@@ -753,6 +755,11 @@ contextBridge.exposeInMainWorld('claude', {
     // Spec §3 import: move an existing folder into ~/YouCoded/Projects/<name>.
     importProject: (sourcePath: string, name: string) =>
       ipcRenderer.invoke(IPC.SYNC_SPACES_IMPORT_PROJECT, sourcePath, name),
+    // Cross-device rename (display-name only) + stop-syncing (2026-07-12).
+    renameProject: (name: string, displayName: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_PROJECT, { name, displayName }),
+    stopProject: (name: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_STOP_PROJECT, { name }),
     // Returns an unsubscribe function — callers MUST invoke it on unmount to
     // avoid leaking listeners across mounts (matches restore.onProgress above).
     onEvent: (cb: (e: unknown) => void) => {

@@ -1,7 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { PastSession, HistoryMessage } from '../shared/types';
+import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
+// ccProjectSlug drive-normalizes before slugifying, so a store originalPath with
+// a lowercase Windows drive still maps to CC's uppercase-drive project dir. Used
+// lazily inside listPastSessions, so the session-browser ↔ project-conversations
+// import cycle is harmless (neither uses the other at module-eval time).
+import { ccProjectSlug } from './project-conversations';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
@@ -85,28 +90,30 @@ function resolveSlugToPath(slug: string): string {
 }
 
 /**
- * Recursively resolves slug dash-segments against the filesystem.
- * Tries single segment first; if it doesn't exist as a directory,
- * joins with the next segment via hyphen and retries.
+ * Recursively resolves slug dash-segments against the filesystem, preferring the
+ * LONGEST leading segment that exists as a directory.
+ *
+ * WHY longest-first: a slug can't distinguish a path separator from a hyphen
+ * that's part of a folder's own name — `C--Users-desti-youcoded-dev` could mean
+ * `…\desti\youcoded-dev` OR `…\desti\youcoded\dev`. The old walk tried the
+ * SHORTEST segment first, so whenever a sibling `youcoded` directory also existed
+ * it greedily descended into `…\youcoded\dev` (which doesn't exist) instead of
+ * the real `…\youcoded-dev`. resolveSlugToPath then returned a nonexistent path,
+ * and resume fell back to $HOME (sessions "resumed from the home directory").
+ * Trying the longest existing segment first picks the real hyphenated folder.
+ * Exported for unit testing. Fix 2026-07-12 (two-device dogfood).
  */
-function walkSlugParts(base: string, parts: string[]): string {
-  for (let len = 1; len <= parts.length; len++) {
+export function walkSlugParts(base: string, parts: string[]): string {
+  for (let len = parts.length; len >= 1; len--) {
     const segment = parts.slice(0, len).join('-');
     const candidate = path.join(base, segment);
-
-    if (len === parts.length) {
-      // Last possible grouping — accept whether or not it exists on disk
-      return candidate;
+    let isDir = false;
+    try { isDir = fs.existsSync(candidate) && fs.statSync(candidate).isDirectory(); } catch {}
+    if (isDir) {
+      return len === parts.length ? candidate : walkSlugParts(candidate, parts.slice(len));
     }
-
-    try {
-      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-        return walkSlugParts(candidate, parts.slice(len));
-      }
-    } catch {}
   }
-
-  // Fallback: naive join
+  // Nothing at this level exists on disk — best-guess naive join (unchanged).
   return path.join(base, parts.join('-'));
 }
 
@@ -249,8 +256,12 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
     );
     slugs = statResults.filter((s): s is string => s !== null);
   } catch (err) {
+    // A missing/unreadable projects dir is NORMAL on a fresh secondary device
+    // (store synced, but no local CC transcripts written here yet). Degrade to
+    // an empty legacy scan and fall through to the store union below — remote
+    // conversations must still appear so they're visible "everywhere". (Phase 2a)
     console.warn('[session-browser] Failed to read projects directory:', err);
-    return [];
+    slugs = [];
   }
 
   // Join flag + topic metadata from the synced conversation index
@@ -319,6 +330,100 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
   }
 
   const result = Array.from(deduped.values());
+
+  // Store union (Phase 2a): the Conversation Store is the canonical record;
+  // legacy transcript scanning stays as the fallback until Plan 2c deletes it.
+  // Store rows WIN on display metadata (title/lastActive/flags/device) so a
+  // conversation named on another device reads right here; legacy rows WIN on
+  // projectSlug/projectPath because resume needs the LOCAL slug, which the store
+  // doesn't know for a conversation that never ran on this device. A store
+  // record with no local transcript becomes a NEW row (visible everywhere)
+  // flagged missingProject (folder not on this device) or notSyncedYet
+  // (folder here, transcript not materialized yet) — resume disabled either way.
+  // `deduped` is already keyed by sessionId, so it doubles as the merge index;
+  // mutating a legacy value mutates the same object already in `result`.
+  try {
+    const { getConversationStore, buildLocalProjectResolver } = await import('./conversations/service');
+    const store = getConversationStore();
+    if (store) {
+      const records = await store.list('claude');
+      // Resolve a store record's project the SAME way the materialize sweep does
+      // (originalPath → managed-by-name → saved-by-basename). Built ONCE per
+      // browse. Load-bearing for CROSS-DEVICE / CROSS-OS resume: a session made
+      // on another machine carries that machine's originalPath (e.g. a Linux
+      // /home/destin/foo), which doesn't exist here — the old code then handed
+      // resume that foreign path as the cwd, `claude --resume` launched into a
+      // nonexistent dir (silently downgraded to $HOME → wrong slug), and the
+      // session spawned blank and exited. Resolving to THIS device's copy of the
+      // folder makes resume launch in the right cwd where the transcript
+      // materialized. Fix 2026-07-12 (two-device dogfood).
+      const resolveLocal = buildLocalProjectResolver();
+      for (const rec of records) {
+        // LIVE sessions are excluded for the same reason the legacy scan
+        // excludes them: every live session gains a store record within
+        // seconds (live intake upserts on transcript events), and offering
+        // resume on one would spawn a SECOND `claude --resume` against the
+        // transcript the live session is actively appending to.
+        if (activeSessionIds?.has(rec.id)) continue;
+        const legacy = deduped.get(rec.id);
+        // Store flags are { value, updatedAt }; keep only the ON, known flags.
+        const flags: Partial<Record<SessionFlagName, boolean>> = {};
+        for (const [k, v] of Object.entries(rec.flags)) {
+          if (v.value && (k === 'complete' || k === 'priority' || k === 'helpful')) flags[k] = true;
+        }
+        if (legacy) {
+          // Overlay store metadata onto the local row. A literal 'Untitled'
+          // title is a PLACEHOLDER, not a name — older clients synced such topic
+          // files (see docs/PITFALLS.md → Resume Browser) — so it must never
+          // clobber a real derived name.
+          legacy.name = rec.title && rec.title !== 'Untitled' ? rec.title : legacy.name;
+          legacy.lastModified = Math.max(legacy.lastModified, Date.parse(rec.lastActive) || 0);
+          if (Object.keys(flags).length) legacy.flags = flags;
+          legacy.device = rec.device || undefined;
+          legacy.provider = rec.provider;
+          // Prefer the store's UNAMBIGUOUS project resolution for the resume cwd.
+          // The legacy projectPath came from resolveSlugToPath, a filesystem walk
+          // that can misfire when a folder's name contains hyphens AND a shorter
+          // sibling dir exists (e.g. 'youcoded-dev' vs a stray 'youcoded' → the
+          // walk yielded a nonexistent '…\youcoded\dev' and resume fell back to
+          // $HOME). The store knows the exact projectName, so resolveLocal maps
+          // it by basename with no ambiguity. Only override when that folder
+          // actually holds THIS transcript, so we never point resume elsewhere.
+          const storeLocal = resolveLocal(rec);
+          if (storeLocal && fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(storeLocal), `${rec.id}.jsonl`))) {
+            legacy.projectPath = storeLocal;
+            legacy.projectSlug = ccProjectSlug(storeLocal);
+          }
+        } else {
+          // Store-only conversation: resolve its project locally. Resume needs
+          // BOTH the project folder AND a materialized transcript in
+          // ~/.claude/projects — a store-only row has no legacy-scanned
+          // transcript by construction, so check the JSONL explicitly;
+          // `claude --resume` on a missing transcript just errors out.
+          const localPath = resolveLocal(rec);
+          const transcriptHere = localPath
+            ? fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(localPath), `${rec.id}.jsonl`))
+            : false;
+          result.push({
+            sessionId: rec.id,
+            name: rec.title || 'Untitled',
+            projectSlug: localPath ? ccProjectSlug(localPath) : '',
+            projectPath: localPath ?? rec.originalPath,
+            lastModified: Date.parse(rec.lastActive) || 0,
+            size: 0,
+            ...(Object.keys(flags).length ? { flags } : {}),
+            device: rec.device || undefined,
+            provider: rec.provider,
+            // Two distinct resume-blocked sub-cases so the renderer can word
+            // the note accurately: folder absent vs. transcript not synced yet.
+            ...(localPath ? {} : { missingProject: true }),
+            ...(localPath && !transcriptHere ? { notSyncedYet: true } : {}),
+          });
+        }
+      }
+    }
+  } catch { /* store unavailable — the legacy list stands alone */ }
+
   result.sort((a, b) => b.lastModified - a.lastModified);
   return result;
 }

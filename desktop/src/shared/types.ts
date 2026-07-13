@@ -582,11 +582,25 @@ export interface PastSession {
   /** User-set flags. `complete` hides from resume menu; `priority` pins to top;
    *  `helpful` is informational only. Multiple flags per session are allowed. */
   flags?: Partial<Record<SessionFlagName, boolean>>;
-  /** Which runtime this past session belongs to. Absent/`'claude'` = a Claude
-   *  Code JSONL transcript (the historical default); `'native'` = a YouCoded
-   *  native-harness session persisted by the NativeSessionHost. Drives the
-   *  Resume Browser badge + which resume path App uses. */
-  provider?: 'claude' | 'native';
+  /** Which runtime owns this past session: `'claude'` (a Claude Code JSONL
+   *  transcript — the historical default) or `'native'` (a YouCoded
+   *  native-harness session persisted by NativeSessionHost). Drives the Resume
+   *  Browser badge + which resume path App uses. Also populated on
+   *  Conversation-Store rows (Phase 2a). Typed `string` (not the `'claude' |
+   *  'native'` union) because store-fed rows assign it from a stored string. */
+  provider?: string;
+  /** Last device that ran a turn. Populated on store-fed rows (Conversation
+   *  Store, Phase 2a) so the Resume Browser can show where a conversation ran. */
+  device?: string;
+  /** True when the conversation's project folder is not present on THIS device
+   *  (a conversation synced in from another device). Resume is disabled for
+   *  these rows — the working directory to resume into doesn't exist here. */
+  missingProject?: boolean;
+  /** True when the project folder IS on this device but the transcript hasn't
+   *  been materialized into ~/.claude/projects yet (sync in flight). Resume is
+   *  disabled — `claude --resume` would error on the missing JSONL. Distinct
+   *  from missingProject so the renderer can word the note accurately. */
+  notSyncedYet?: boolean;
 }
 
 export interface HistoryMessage {
@@ -791,6 +805,8 @@ export const IPC = {
   SYNC_SPACES_SYNC_NOW: 'syncspaces:sync-now',
   SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
+  SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
+  SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',

@@ -152,7 +152,10 @@ export function ProjectSwitcher({
           {filtered.map((p, i) => {
             const isActive = p.id === activeId;
             const isHighlighted = i === highlightIndex;
-            const avatar = p.name.charAt(0).toUpperCase() || '?';
+            // Prefer the synced display name (cross-device registry overlay,
+            // 2026-07-12) over the folder name for a synced project.
+            const shown = ((findSpaceFor(p.path, syncStatus ?? null) as any)?.displayName as string | undefined) || p.name;
+            const avatar = shown.charAt(0).toUpperCase() || '?';
             return (
               // group/relative so the row can host a hover-revealed × delete
               // button (a button cannot nest inside the select button).
@@ -180,7 +183,7 @@ export function ProjectSwitcher({
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
                       <span className="text-[13.5px] font-medium text-fg truncate">
-                        {p.name}
+                        {shown}
                       </span>
                     </span>
                     <span className="block font-mono text-[11px] text-fg-muted truncate" title={p.path}>

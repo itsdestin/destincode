@@ -51,6 +51,13 @@ describe('syncDotFor', () => {
     }));
     expect(d).toEqual({ color: 'green', label: 'Syncs across your devices' });
   });
+  it('gray "Sync stopped" for a stopped project, even while Sync is on', () => {
+    const s = status();
+    s.spaces = s.spaces.map((sp) =>
+      sp.id === 'project:budget-app' ? { ...sp, state: 'stopped' as const } : sp);
+    const d = syncDotFor('C:\\Users\\x\\YouCoded\\Projects\\budget-app', s);
+    expect(d).toEqual({ color: 'gray', label: 'Sync stopped' });
+  });
   it('ignores other spaces\' events', () => {
     const d = syncDotFor('C:\\Users\\x\\YouCoded\\Projects\\budget-app', status({
       recentEvents: [{ type: 'error', spaceId: 'project:other' }],

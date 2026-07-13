@@ -19,6 +19,10 @@ import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
 import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore } from './sync-spaces/service';
+// Conversation Store (Phase 2a): records + transcript sync ride the personal
+// space. Imported statically like the sync-spaces stop so the non-async quit
+// handler can call stopConversationStore() directly.
+import { startConversationStore, stopConversationStore } from './conversations/service';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
@@ -1458,6 +1462,13 @@ app.whenReady().then(async () => {
     (m) => log('INFO', 'SyncSpaces', m),
   ).catch(e => log('ERROR', 'Main', 'SyncSpaces start failed', { error: String(e) }));
 
+  // Conversation Store (Phase 2a): records + transcript sync ride the personal
+  // space. Started after startSyncSpaces because getManagedRoots() must be
+  // populated (its synchronous prologue creates the roots before its first
+  // await, so the roots exist by the time this line runs). startConversationStore
+  // resolves fast — the first-run reconcile inside is detached (may mirror GBs).
+  startConversationStore().catch(e => log('ERROR', 'Main', 'ConversationStore start failed', { error: String(e) }));
+
   // Push session JSONL on session close (replaces session-end-sync.sh)
   sessionManager.on('session-exit', (sessionId: string) => {
     syncService.pushSession(sessionId).catch(e =>
@@ -1476,6 +1487,9 @@ app.on('window-all-closed', () => {
   // .catch, not try/catch: it's an async fn, so a failure arrives as a rejected
   // promise — the old `void` call left that rejection unhandled at quit.
   stopSyncSpaces().catch(() => {});
+  // Stop the Conversation Store (Phase 2a) — unsubscribes the sync-spaces
+  // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
+  try { stopConversationStore(); } catch {}
   // Stop sync service — clears timer, releases locks, removes .app-sync-active marker
   try { setSyncService(null); } catch {}
   app.quit();

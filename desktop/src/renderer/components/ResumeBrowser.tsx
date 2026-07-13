@@ -172,16 +172,26 @@ interface PastSession {
   // is on; `priority` pins the session to the top of its project group;
   // `helpful` is informational only.
   flags?: Partial<Record<FlagName, boolean>>;
-  // Which runtime this session belongs to. Absent/`'claude'` = a Claude Code
-  // transcript; `'native'` = a YouCoded native-harness session. Native rows get
-  // a "YouCoded" badge and skip the CC-only resume options (model / skip-perms).
-  provider?: 'claude' | 'native';
+  // Which runtime owns this session: `'claude'` = a Claude Code transcript;
+  // `'native'` = a YouCoded native-harness session (gets a "YouCoded" badge and
+  // skips the CC-only resume options — model / skip-perms). Typed `string`
+  // because Conversation-Store rows (Phase 2a) populate it from a stored string.
+  provider?: string;
+  // Conversation Store (Phase 2a) fields, present on store-fed rows only.
+  device?: string;   // last device that ran a turn
+  // True when the conversation's project folder is not on THIS device (synced
+  // in from elsewhere). Resume is disabled — there's no cwd to resume into.
+  missingProject?: boolean;
+  // True when the folder IS here but the transcript hasn't been materialized
+  // into ~/.claude/projects yet (sync in flight). Resume is disabled too —
+  // distinct flag so the note can say so accurately.
+  notSyncedYet?: boolean;
 }
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: 'claude' | 'native') => void;
+  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string) => void;
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
 }
@@ -543,11 +553,18 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const renderSessionRow = (s: PastSession, showPath?: boolean) => (
     <div key={s.sessionId}>
       <button
-        onClick={() => handleSelectSession(s.sessionId)}
+        // Resume is disabled for conversations whose project folder isn't on
+        // this device (synced in from elsewhere) OR whose transcript hasn't
+        // synced here yet — either way there's nothing to resume into, so the
+        // row shows a plain-words note instead of expanding.
+        onClick={() => { if (!s.missingProject && !s.notSyncedYet) handleSelectSession(s.sessionId); }}
+        aria-disabled={s.missingProject || s.notSyncedYet || undefined}
         className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${
-          expandedId === s.sessionId
-            ? 'bg-inset text-fg'
-            : 'text-fg-dim hover:bg-inset hover:text-fg'
+          s.missingProject || s.notSyncedYet
+            ? 'text-fg-dim cursor-default'
+            : expandedId === s.sessionId
+              ? 'bg-inset text-fg'
+              : 'text-fg-dim hover:bg-inset hover:text-fg'
         }`}
       >
         <div className="flex-1 min-w-0">
@@ -575,11 +592,20 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               project label since there's no group header; size rides along so
               no info is lost vs. the grouped view. Grouped rows keep size only
               — the group header already names the project. */}
-          <div className="text-[10px] text-fg-faint truncate">
-            {showPath
-              ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
-              : formatSize(s.size)}
-          </div>
+          {s.missingProject || s.notSyncedYet ? (
+            // Plain words, no glyphs (house rule). The conversation is visible
+            // everywhere; resume needs the project folder AND its transcript
+            // present on this device — the two notes say which one is missing.
+            <div className="text-[10px] text-fg-muted truncate">
+              {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
+            </div>
+          ) : (
+            <div className="text-[10px] text-fg-faint truncate">
+              {showPath
+                ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
+                : formatSize(s.size)}
+            </div>
+          )}
         </div>
         <span className="text-[10px] text-fg-faint shrink-0">
           {formatRelativeTime(s.lastModified)}
