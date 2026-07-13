@@ -26,6 +26,7 @@ export interface ConversationStore {
   list(provider: string): Promise<ConversationRecord[]>;
   setFlag(provider: string, id: string, flag: string, value: boolean): Promise<void>;
   setTitle(provider: string, id: string, title: string): Promise<void>;
+  setNote(provider: string, id: string, note: string): Promise<void>;
   root(): string;
 }
 
@@ -114,6 +115,8 @@ export function createConversationStore(conversationsRoot: string): Conversation
       flags: {},
       transcriptRef: p.transcriptRef ?? '',
       createdAt: p.lastActive ?? new Date().toISOString(),
+      note: '',
+      noteUpdatedAt: p.lastActive ?? new Date().toISOString(),
     };
   }
 
@@ -366,6 +369,15 @@ export function createConversationStore(conversationsRoot: string): Conversation
       await mutateRecord(provider, id, (existing) => {
         const base = existing ?? toRecord({ id, provider });
         return { ...base, title };
+      });
+    },
+
+    async setNote(provider, id, note) {
+      // Unlike setTitle, an EMPTY note is a valid value — clearing a note. So we
+      // do not early-return on '' (that's how a user erases a note).
+      await mutateRecord(provider, id, (existing) => {
+        const base = existing ?? toRecord({ id, provider });
+        return { ...base, note, noteUpdatedAt: new Date().toISOString() };
       });
     },
   };

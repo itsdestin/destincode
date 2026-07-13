@@ -28,6 +28,8 @@ function rec(over: Partial<ConversationRecord> = {}): ConversationRecord {
     flags: {},
     transcriptRef: 'claude/transcripts/my-app/sess-1.jsonl',
     createdAt: '2026-07-01T09:00:00.000Z',
+    note: '',
+    noteUpdatedAt: '2026-07-01T09:00:00.000Z',
     ...over,
   };
 }
@@ -400,5 +402,26 @@ describe('foldConflictCopies', () => {
     // REAL-titled inputs, where 'Delta' beats 'Alpha' on the same tiebreak.
     expect(fwd.device).toBe('C-dev');
     expect(fwd.title).toBe('Delta');
+  });
+});
+
+describe('note field', () => {
+  const base = (over: any = {}) => ({
+    schema: 1, id: 'x', provider: 'claude', projectName: '', originalPath: '',
+    title: '', lastActive: '2026-07-13T00:00:00.000Z', device: '', flags: {},
+    transcriptRef: '', createdAt: '2026-07-13T00:00:00.000Z',
+    note: '', noteUpdatedAt: '2026-07-13T00:00:00.000Z', ...over,
+  });
+  it('parses default note when absent', () => {
+    const r = parseRecord(JSON.stringify({ ...base(), note: undefined, noteUpdatedAt: undefined }));
+    expect(r?.note).toBe('');
+  });
+  it('merges the note with the newest noteUpdatedAt, independent of activity', () => {
+    // a has the newer TURN but the OLDER note; b's newer note must still win.
+    const a = base({ lastActive: '2026-07-13T09:00:00.000Z',
+                     note: 'old', noteUpdatedAt: '2026-07-13T01:00:00.000Z' });
+    const b = base({ lastActive: '2026-07-13T02:00:00.000Z',
+                     note: 'new', noteUpdatedAt: '2026-07-13T05:00:00.000Z' });
+    expect(mergeRecords(a, b).note).toBe('new');
   });
 });
