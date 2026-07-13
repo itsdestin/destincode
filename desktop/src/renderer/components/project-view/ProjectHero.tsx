@@ -48,6 +48,9 @@ interface HeroSync {
   spaceId: string | null;
   lastSynced: string | null;
   errorMessage: string | null;
+  // True when this project's registry record is a `stopped` tombstone (review
+  // #4): a permanent detach, distinct from the global "Sync is turned off" state.
+  stopped: boolean;
 }
 
 interface ProjectHeroProps {
@@ -227,7 +230,12 @@ export function ProjectHero({
                 )}
               </>
             )}
-            {sync.dot.color === 'gray' && sync.spaceId && (
+            {sync.dot.color === 'gray' && sync.spaceId && sync.stopped && (
+              // Stopped = permanent tombstone (detached on every device). Distinct
+              // copy so it doesn't falsely promise it'll resume when sync is on.
+              <span className="text-[13px] text-fg-dim">Sync stopped — this project stays on your devices but no longer syncs between them</span>
+            )}
+            {sync.dot.color === 'gray' && sync.spaceId && !sync.stopped && (
               // Managed but global Sync is off — the honesty rule.
               <span className="text-[13px] text-fg-dim">Sync is turned off — this project will sync once you turn it on in Settings</span>
             )}
@@ -285,6 +293,11 @@ export function ProjectHero({
             <button type="button" onClick={onRemove} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
               Remove from YouCoded
             </button>
+          ) : syncedFolderName && sync?.stopped ? (
+            // Already stopped (permanent) — no action to offer, just the state
+            // (review #4: don't re-render a "Stop syncing" button for a project
+            // that's already a tombstone).
+            <span className="text-[11px] text-fg-faint">Sync stopped</span>
           ) : syncedFolderName ? (
             // Stop syncing (spec §10) — consequence-gated destructive action.
             confirmingStop ? (

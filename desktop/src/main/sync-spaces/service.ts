@@ -386,9 +386,21 @@ function registerProject(name: string, root: string): void {
 // One-time on enable: register every project already on this device so
 // pre-existing / sync-was-off projects enter the registry. Idempotent
 // (ensureProjectEntry is create-if-absent — no churn, no clobber).
+//
+// ISOLATE each registration (review #2): registerProject → ensureProjectEntry
+// THROWS on a name isSafeName rejects. `listProjects()` returns ANY directory on
+// disk, and macOS/Linux permit folder names Windows can't (`notes:2026`, a
+// trailing space, …). An un-isolated throw here propagated out of startEngine,
+// so discovery never ran and SyncHub never connected for the whole session while
+// basic space sync (which started earlier) made it LOOK fine. A bad name just
+// can't be a registry filename — skip it and keep going; create/import stay
+// strict (their names are validateSyncName-gated, so they never throw here).
 function backfillRegistry(): void {
   if (!roots) return;
-  for (const p of roots.listProjects()) registerProject(p.name, p.path);
+  for (const p of roots.listProjects()) {
+    try { registerProject(p.name, p.path); }
+    catch (err: any) { logFn(`sync-spaces: skipped registering "${p.name}" (unsafe name): ${String(err?.message ?? err)}`); }
+  }
 }
 
 export async function syncSpacesCreateProject(name: string) {
