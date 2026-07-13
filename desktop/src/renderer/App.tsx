@@ -1867,8 +1867,34 @@ function AppInner() {
     }
   }, [currentModel]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean) => {
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: 'claude' | 'native') => {
     const cwd = projectPath;
+
+    // Native-harness resume: the model binding lives in the session's stored
+    // header, so we send NO binding — SessionManager's native branch tolerates a
+    // missing binding when resumeSessionId is set (it only throws for a FRESH
+    // native session with no binding). The main-side create handler calls
+    // nativeHost.resume(), which wires the session live; we then request a
+    // transcript replay so the chat reducer hydrates from the persisted events
+    // (getHistory returns native events for a live native id).
+    if (provider === 'native') {
+      const nativeSession = await (window.claude.session.create as any)({
+        name: 'Resuming…',
+        cwd,
+        skipPermissions: false, // native sessions have no PTY permission flow
+        provider: 'native',
+        resumeSessionId: claudeSessionId,
+      });
+      if (!nativeSession?.id) return;
+      if (launchInNewWindow) {
+        (window as any).claude?.detach?.openDetached?.({ sessionId: nativeSession.id });
+      }
+      // Hydrate the chat view from disk. Main streams every historical
+      // TRANSCRIPT_EVENT back on the normal channel; uuid dedup absorbs overlap.
+      (window as any).claude?.detach?.requestTranscriptReplay?.(nativeSession.id);
+      return;
+    }
+
     // Use explicitly chosen resume model; fall back to the current session's model
     const m = resumeModel || currentModel;
 

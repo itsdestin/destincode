@@ -6,7 +6,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type TranscriptEvent } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type TranscriptEvent, type PastSession } from '../shared/types';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -1217,13 +1217,24 @@ export function registerIpcHandlers(
     for (const claudeId of sessionIdMap.values()) {
       activeIds.add(claudeId);
     }
-    // TODO(Task 13 — Resume Browser UI): fold nativeHost.list() rows into the
-    // browse results so past native sessions are resumable from the same UI.
-    // Deferred here because PastSession has no `provider` field yet — adding one
-    // (and the native→PastSession mapping) is a typed change the Resume Browser
-    // task owns. Native rows ARE already reachable via IPC.NATIVE_SESSIONS_LIST
-    // (each tagged provider:'native'), so no data is lost in the meantime.
-    return listPastSessions(activeIds);
+    // CC (Claude Code) transcript rows.
+    const ccRows = await listPastSessions(activeIds);
+    // Native-harness rows — map NativeSessionHost.list() entries onto the
+    // PastSession shape (now that PastSession carries `provider`). Native
+    // sessions have no CC auto-title hook, so the store already derived a title
+    // from the first user message; fall back to 'Untitled' when even that is
+    // absent. mtimeMs/sizeBytes stand in for lastModified/size.
+    const nativeRows: PastSession[] = nativeHost.list().map((r) => ({
+      sessionId: r.sessionId,
+      name: r.title ?? 'Untitled',
+      projectSlug: r.slug,
+      projectPath: r.cwd,
+      lastModified: r.mtimeMs,
+      size: r.sizeBytes,
+      provider: 'native' as const,
+    }));
+    // ResumeBrowser re-sorts by lastModified, so a plain concat is fine here.
+    return [...ccRows, ...nativeRows];
   });
 
   ipcMain.handle(IPC.SESSION_HISTORY, async (

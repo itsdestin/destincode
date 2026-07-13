@@ -582,6 +582,11 @@ export interface PastSession {
   /** User-set flags. `complete` hides from resume menu; `priority` pins to top;
    *  `helpful` is informational only. Multiple flags per session are allowed. */
   flags?: Partial<Record<SessionFlagName, boolean>>;
+  /** Which runtime this past session belongs to. Absent/`'claude'` = a Claude
+   *  Code JSONL transcript (the historical default); `'native'` = a YouCoded
+   *  native-harness session persisted by the NativeSessionHost. Drives the
+   *  Resume Browser badge + which resume path App uses. */
+  provider?: 'claude' | 'native';
 }
 
 export interface HistoryMessage {

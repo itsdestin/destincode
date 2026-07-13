@@ -19,6 +19,7 @@ import { BugReportPopup } from './development/BugReportPopup';
 import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
+import ProvidersSection from './ProvidersSection';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -2289,6 +2290,12 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
         <PerformanceButton />
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
+
+        {/* Providers — native-runtime model providers (OpenRouter, direct keys,
+            custom endpoints). Self-gated on native.supported, so it renders
+            nothing in production until Phase 2. Desktop-authoritative — NOT
+            mounted in AndroidSettings. */}
+        <ProvidersSection />
 
         <RemoteButton
           config={config}
