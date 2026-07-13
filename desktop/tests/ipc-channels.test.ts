@@ -614,3 +614,25 @@ describe('native:*/provider:* channel parity', () => {
     for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
   });
 });
+
+// Custom tags + per-session notes (session-tags feature).
+// The channels must exist across all three parity surfaces so the shared
+// React UI works identically on desktop (preload/Electron IPC), remote
+// browsers (remote-shim/WebSocket), and Android (SessionService.kt).
+describe('custom tags + notes channel parity', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, rel), 'utf8');
+  const preload = read('../src/main/preload.ts');
+  const remoteShim = read('../src/renderer/remote-shim.ts');
+  const sessionService = read('../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  const channels = [
+    'session:set-tag', 'session:set-note',
+    'tags:list', 'tags:create', 'tags:update', 'tags:delete',
+  ];
+  for (const ch of channels) {
+    test(`${ch} present in preload, remote-shim, and SessionService.kt`, () => {
+      expect(preload).toContain(ch);
+      expect(remoteShim).toContain(ch);
+      expect(sessionService).toContain(ch);
+    });
+  }
+});
