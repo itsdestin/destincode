@@ -2,6 +2,7 @@ import { app, IpcMain, BrowserWindow, dialog, clipboard, nativeImage, shell, pow
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'crypto';
 import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
@@ -417,6 +418,25 @@ export function registerIpcHandlers(
           // SessionInfo backed by no live HarnessSession.
           if (!resumed && opts.binding) {
             await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding });
+          } else if (!resumed && !opts.binding) {
+            // Resume asked for a session whose saved data is gone, and we have no
+            // binding to start a fresh one under this id — the renderer already
+            // holds a live SessionInfo with an empty chat and no way to know why.
+            // Surface a session-error transcript event on the SAME pipe the host
+            // uses (drives NATIVE_SESSION_ERROR → the error banner). Deferred via
+            // nextTick so it lands AFTER SESSION_CREATED + assignSession, matching
+            // the ordering guarantee the session-created forward relies on.
+            const errEvent: TranscriptEvent = {
+              type: 'session-error',
+              sessionId: info.id,
+              uuid: randomUUID(),
+              timestamp: Date.now(),
+              data: { text: 'This conversation could not be resumed — its saved data is missing.' },
+            };
+            process.nextTick(() => {
+              sendForSession(info.id, IPC.TRANSCRIPT_EVENT, errEvent);
+              remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
+            });
           }
         } else {
           await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding });

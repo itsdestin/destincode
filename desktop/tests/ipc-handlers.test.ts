@@ -135,3 +135,62 @@ describe('skills:uninstall bundled-plugin rejection', () => {
     expect(uninstall).toHaveBeenCalledWith('some-other-plugin');
   });
 });
+
+describe('session:create native resume — missing stored header', () => {
+  // Regression for Task 13 review item 1: resuming a native session whose saved
+  // data is gone (nativeHost.resume() → false) AND with no binding to start a
+  // fresh one must surface a session-error transcript event, or the renderer is
+  // left with a live SessionInfo backed by nothing and a silently empty chat.
+  it('emits a session-error transcript event for the resumed id', async () => {
+    const mockIpcMain = { handle: vi.fn(), on: vi.fn() };
+    const mockSessionManager = {
+      // Mock a NATIVE SessionInfo for the resumed id — createSession's real
+      // native branch uses resumeSessionId AS the id, so we mirror that here.
+      // The id points at a session that was never persisted, so the real
+      // NativeSessionHost.resume() reads no header from disk and returns false.
+      createSession: vi.fn(() => ({ id: 'ghost-native-1', name: 'Resuming…', cwd: '/tmp', status: 'active', provider: 'native' })),
+      destroySession: vi.fn(() => true),
+      listSessions: vi.fn(() => []),
+      sendInput: vi.fn(),
+      resizeSession: vi.fn(),
+      on: vi.fn(),
+    };
+    const mockWindow = { webContents: { send: vi.fn() }, isDestroyed: () => false };
+    const mockSkillProvider = {
+      configStore: { getPackages: vi.fn(() => ({})) },
+      install: vi.fn(),
+      installMany: vi.fn(),
+      ensureBundledPluginsInstalled: vi.fn(),
+      ensureMigrated: vi.fn(),
+    };
+
+    registerIpcHandlers(
+      mockIpcMain as any,
+      mockSessionManager as any,
+      mockWindow as any,
+      mockSkillProvider as any,
+    );
+
+    const handler = (mockIpcMain.handle as any).mock.calls.find(
+      (c: any) => c[0] === 'session:create',
+    )[1];
+
+    // Resume a native id with NO binding → resume() returns false → error path.
+    await handler(
+      { sender: { id: 1 } },
+      { provider: 'native', resumeSessionId: 'ghost-native-1', cwd: '/tmp', name: 'Resuming…', skipPermissions: false },
+    );
+
+    // The error emit is deferred via process.nextTick (so it lands after
+    // SESSION_CREATED + assignSession) — flush one tick before asserting.
+    await new Promise((resolve) => process.nextTick(resolve));
+
+    const errorCall = mockWindow.webContents.send.mock.calls.find(
+      (c: any[]) => c[0] === 'transcript:event' && c[1]?.type === 'session-error',
+    );
+    expect(errorCall).toBeTruthy();
+    expect(errorCall![1].sessionId).toBe('ghost-native-1');
+    expect(typeof errorCall![1].data.text).toBe('string');
+    expect(errorCall![1].data.text.length).toBeGreaterThan(0);
+  });
+});

@@ -17,12 +17,29 @@ import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/
 // it legitimately resolves { ok:false, message } for a failed test, which is a
 // real result to display, not a transport error, so safeTest never throws on
 // ok:false.
+//
+// LATENT REMOTE PARITY GAP (reconcile before Phase 2 ungates this UI on remote):
+// the desktop preload passes provider IPC args POSITIONALLY
+// (invoke(PROVIDER_REMOVE, id), invoke(PROVIDER_SET_KEY, id, key)) and the
+// ipcMain handlers read them positionally, whereas remote-shim.ts wraps them as
+// OBJECTS (invoke('provider:remove', { id }), invoke('provider:set-key', { id,
+// key })). A remote WS route would need to UNWRAP those objects before calling
+// the registry. In Plan A the section is gated on native.supported (hard-false
+// on remote) so this path is never exercised — but when Phase 2 enables it on
+// remote, align the payload shapes (and add the WS route) or remove/set-key
+// silently break over the WebSocket transport.
 
 // A resolved value shaped like a transport error ({ ok:false, ... }). Used only
 // for list/upsert/remove/setKey — NOT test (see module header).
 function errorMessageOf(v: unknown): string | null {
   if (v && typeof v === 'object' && (v as any).ok === false) {
-    return String((v as any).error ?? (v as any).message ?? 'The provider request failed.');
+    // Only trust a STRING error/message — a resolved { ok:false, error:{...} }
+    // (structured error object) would otherwise stringify to "[object Object]".
+    const err = (v as any).error;
+    const msg = (v as any).message;
+    if (typeof err === 'string') return err;
+    if (typeof msg === 'string') return msg;
+    return 'The provider request failed.';
   }
   return null;
 }
@@ -116,22 +133,34 @@ export default function ProvidersSection() {
     <section>
       <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Providers</h3>
 
-      {listError && rows && rows.length === 0 ? (
-        <p className="text-[11px] text-red-500 px-1">Couldn't load providers — {listError}</p>
-      ) : rows === null ? (
+      {rows === null ? (
         // Loading — quiet skeleton (a single muted line) rather than a spinner.
         <p className="text-[11px] text-fg-muted px-1">Loading…</p>
       ) : (
         <div className="space-y-2">
+          {/* Load/refresh error — shown inline with a Retry so a transient
+              failure (including a HARD initial-load failure that leaves rows
+              empty) doesn't strand the user: the Add-provider affordance below
+              still renders, and Retry re-runs list(). */}
+          {listError && (
+            <div className="flex items-center gap-2 px-1">
+              <p className="text-[11px] text-red-500 flex-1">
+                {rows.length === 0
+                  ? `Couldn't load providers — ${listError}`
+                  : `Couldn't refresh — ${listError}`}
+              </p>
+              <button
+                onClick={() => void refresh()}
+                className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
           {rows.map((p) => (
             <ProviderRow key={p.id} provider={p} onChanged={refresh} />
           ))}
-
-          {/* Non-fatal list error while rows are still shown (a refresh failed
-              after an initial success). Surface it without blanking the list. */}
-          {listError && rows.length > 0 && (
-            <p className="text-[10px] text-red-500 px-1">Couldn't refresh — {listError}</p>
-          )}
 
           {adding ? (
             <AddProviderForm onDone={async () => { setAdding(false); await refresh(); }} onCancel={() => setAdding(false)} />
@@ -217,6 +246,9 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       await onChanged();
     } catch (e) {
       setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not remove the provider.' });
+    } finally {
+      // Reset in finally (mirrors saveKey/toggleEnabled): a success that somehow
+      // leaves this row mounted must not strand it permanently disabled.
       setBusy(false);
     }
   };
@@ -346,7 +378,9 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
   const [type, setType] = useState<ProviderType>('anthropic');
   const [label, setLabel] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
-  const [key, setKey] = useState('');
+  // Named apiKey (not `key`) so it doesn't read as React's list `key` prop,
+  // which appears just below on the <option key=…> elements.
+  const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -368,7 +402,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
         enabled: true,
       });
       // If a key was entered, save it against the freshly-minted id.
-      const trimmedKey = key.trim();
+      const trimmedKey = apiKey.trim();
       if (trimmedKey) {
         await safeProviders.setKey(id, trimmedKey);
       }
@@ -430,8 +464,8 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
         <input
           id="add-provider-key"
           type="password"
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
           placeholder="Paste API key"
           className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
         />
