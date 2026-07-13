@@ -12,6 +12,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { LanguageModel } from 'ai';
 import type { ProviderConfig, ProviderStatus, ModelBinding } from '../../shared/provider-types';
+import type { LocalEngineHook } from '../engine/engine-manager';
 import { NativeHome } from '../native-home';
 import { SecretsStore } from './secrets-store';
 
@@ -33,8 +34,10 @@ interface ProvidersFile { v: 1; providers: ProviderConfig[]; }
 
 export class ProviderRegistry {
   constructor(private home: NativeHome, private secrets: SecretsStore,
-              /** Plan B injects the engine's baseUrl here; Plan A leaves it null. */
-              private localBaseUrl: () => string | null = () => null) {}
+              /** Plan B injects the EngineManager hook; null keeps the Plan A
+               *  "coming in a later update" behavior (also what unit tests
+               *  without an engine use). */
+              private localEngine: LocalEngineHook | null = null) {}
 
   /** Seed the built-in entries. Runs under the file lock so two processes
    *  (dev instance + built app share ~/.youcoded) can't double-seed. */
@@ -69,7 +72,7 @@ export class ProviderRegistry {
       const ready =
         p.enabled &&
         (p.type === 'local-engine'
-          ? this.localBaseUrl() !== null // stays false until Plan B ships the engine
+          ? (this.localEngine?.installed() ?? false) // ready = engine installed (running is lazy)
           : keyless || hasKey);
       return { ...p, builtIn, hasKey, ready };
     });
@@ -182,11 +185,17 @@ export class ProviderRegistry {
 
     switch (p.type) {
       case 'local-engine': {
-        const base = this.localBaseUrl();
-        if (base === null) {
+        if (!this.localEngine) {
           throw new Error('Local models are not available yet — the local engine ships in a later update.');
         }
-        return createOpenAICompatible({ name: 'local', baseURL: base })(binding.modelId);
+        // ensureRunning boots the engine on demand (idle-stopped or first use)
+        // and its trackedFetch keeps the idle timer honest for every request.
+        const base = await this.localEngine.ensureRunning();
+        return createOpenAICompatible({
+          name: 'local',
+          baseURL: base,
+          fetch: this.localEngine.fetchImpl(),
+        })(binding.modelId);
       }
       case 'openrouter': {
         const apiKey = await this.keyFor(p);
@@ -250,8 +259,13 @@ export class ProviderRegistry {
       let res: Response;
       switch (p.type) {
         case 'local-engine': {
-          const base = this.localBaseUrl();
-          if (base === null) return { ok: false, message: 'The local engine is not installed yet.' };
+          if (!this.localEngine?.installed()) {
+            return { ok: false, message: 'The local engine is not installed yet.' };
+          }
+          // Boots the engine if needed — a connection test SHOULD prove the
+          // whole path, and idle shutdown reaps it afterwards. A thrown
+          // ensureRunning is caught by the outer try/catch → {ok:false,message}.
+          const base = await this.localEngine.ensureRunning();
           res = await fetch(`${stripSlash(base)}/models`, { signal });
           break;
         }

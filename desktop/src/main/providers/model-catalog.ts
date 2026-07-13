@@ -32,13 +32,16 @@ function isObj(x: unknown): x is Record<string, any> {
 export class ModelCatalog {
   private readonly ttlMs: number;
   private readonly cachePath: string;
+  // Plan B: injected by ipc-handlers as () => engineManager.catalogModels().
+  private readonly localModels: (() => Promise<CatalogModel[]>) | null;
   constructor(cacheDir: string, private fetchImpl: FetchLike = fetch as any,
               // opts.ttlMs is TEST-ONLY (same convention as SecretsStore's
               // maxRetries) — lets the stale-fallback tests force expiry
               // without poking private fields. Production callers omit it.
-              opts?: { ttlMs?: number }) {
+              opts?: { ttlMs?: number; localModels?: () => Promise<CatalogModel[]> }) {
     this.cachePath = path.join(cacheDir, CACHE_FILE);
     this.ttlMs = opts?.ttlMs ?? TTL_MS;
+    this.localModels = opts?.localModels ?? null;
   }
 
   /** null on missing/corrupt. Unlike providers.json (user data — read errors
@@ -175,9 +178,13 @@ export class ModelCatalog {
         out.push(...this.openrouterModels(cache.openrouter, p.id));
       } else if (MODELSDEV_KEY[p.type]) {
         out.push(...this.modelsdevModels(cache.modelsdev, MODELSDEV_KEY[p.type], p.id));
+      } else if (p.type === 'local-engine' && this.localModels) {
+        // Plan B: rows come from the engine manager (GET /models when the
+        // engine runs, cache scan when stopped). Failure degrades to "no
+        // local rows" — get() keeps its never-throws contract.
+        try { out.push(...await this.localModels()); } catch { /* engine unavailable */ }
       }
-      // local-engine (Plan B) and openai-compatible (user types a model id)
-      // have no catalog source in Plan A.
+      // openai-compatible custom endpoints still have no catalog (user types a model id).
     }
     return out;
   }
