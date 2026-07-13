@@ -39,19 +39,34 @@ export function resolveTrackedPath(recordedPath: string, projectRoot: string): T
     return { kind: 'internal', path: fwdPath.slice(fwdRoot.length + 1), absolutePath: null };
   }
 
-  // 2. Cross-device remap: the transcript recorded ANOTHER device's absolute path.
-  //    The project folder name is byte-identical across devices (it IS the sync
-  //    identity), so find it as a path segment and rebuild the relative tail
-  //    against this device's root. Case-insensitive match tolerates Windows
-  //    drive/case drift; the identical folder name makes a false hit unlikely,
-  //    and checkExistence catches any that slip through (they read "deleted",
-  //    same as today — not worse).
-  const rootBase = fwdRoot.split('/').pop() || '';
-  if (rootBase) {
-    const segs = fwdPath.split('/');
-    const idx = segs.findIndex((s) => s.toLowerCase() === rootBase.toLowerCase());
-    if (idx >= 0 && idx < segs.length - 1) {
-      return { kind: 'internal', path: segs.slice(idx + 1).join('/'), absolutePath: null };
+  // 2. Cross-device remap: the transcript recorded ANOTHER device's absolute
+  //    path. The project folder name is byte-identical across devices (it IS the
+  //    sync identity), so find it as a path segment and rebuild the relative
+  //    tail against this device's root.
+  //
+  //    GATED on a cross-OS signal (Windows drive path vs POSIX). WHY: a
+  //    same-OS external file whose path merely CONTAINS the project folder name
+  //    as a segment (e.g. project "docs", external `/home/x/other/docs/readme.md`)
+  //    must NOT be reclassified as internal — that turns a valid, openable
+  //    external file into a phantom "deleted" artifact, which is WORSE than
+  //    leaving it external. On-disk existence is the only fully-reliable
+  //    same-OS distinguisher, and this pure helper can't touch disk. The cross-OS
+  //    case (the real cross-device pair here: Windows GalaxyBook ↔ Linux) is
+  //    unambiguous and safe. Known limitation: two devices on the SAME OS with
+  //    different home dirs aren't remapped — those files read "deleted"
+  //    (unchanged from before this fix); covering that needs an on-disk check
+  //    (follow-up). Same-username same-OS devices have identical paths → step 1.
+  const recordedIsWindows = /^[a-zA-Z]:[\\/]/.test(recordedPath);
+  const rootIsWindows = /^[a-zA-Z]:[\\/]/.test(projectRoot);
+  if (recordedIsWindows !== rootIsWindows) {
+    const rootBase = fwdRoot.split('/').pop() || '';
+    if (rootBase) {
+      const segs = fwdPath.split('/');
+      // Case-insensitive tolerates Windows drive/case drift across the OS boundary.
+      const idx = segs.findIndex((s) => s.toLowerCase() === rootBase.toLowerCase());
+      if (idx >= 0 && idx < segs.length - 1) {
+        return { kind: 'internal', path: segs.slice(idx + 1).join('/'), absolutePath: null };
+      }
     }
   }
 

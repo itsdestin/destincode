@@ -400,10 +400,14 @@ export function ProjectView(props: ProjectViewProps) {
               setProjects(res.projects);
               // Keep the current selection stable across the refresh (match by
               // path — a synth project's id becomes a ULID once it gains an index
-              // entry); auto-select the first project if nothing is selected yet.
+              // entry). Return the FRESH matching object, not the stale `prev`, so
+              // the selected project's own counts/displayName/state update too.
+              // Auto-select the first project only if nothing is selected yet.
               setActiveProject((prev) => {
-                if (prev && res.projects.some((p: CentralIndexProject) => p.path === prev.path)) return prev;
-                return prev ?? (res.projects.length > 0 ? res.projects[0] : null);
+                if (prev) {
+                  return res.projects.find((p: CentralIndexProject) => p.path === prev.path) ?? prev;
+                }
+                return res.projects.length > 0 ? res.projects[0] : null;
               });
             })
             .catch(() => { /* next natural refresh recovers the list */ });

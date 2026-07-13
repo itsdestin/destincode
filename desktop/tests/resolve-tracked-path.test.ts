@@ -40,10 +40,25 @@ describe('resolveTrackedPath', () => {
     });
   });
 
-  it('CROSS-DEVICE with a different Windows home → remapped internal', () => {
+  it('SAME-OS different home (both Windows) → NOT remapped, stays external', () => {
+    // Known limitation: the cross-OS gate can't safely remap here (no on-disk
+    // check in a pure helper). Reads "deleted" — unchanged from before the fix,
+    // never worse. Same-USERNAME same-OS devices hit step 1 (identical paths).
     expect(resolveTrackedPath('C:\\Users\\Destin\\YouCoded\\Projects\\cook\\recipe.md',
       'C:\\Users\\desti\\YouCoded\\Projects\\cook')).toEqual({
-      kind: 'internal', path: 'recipe.md', absolutePath: null,
+      kind: 'external', path: 'recipe.md',
+      absolutePath: 'C:/Users/Destin/YouCoded/Projects/cook/recipe.md',
+    });
+  });
+
+  it('REGRESSION GUARD: same-OS external whose path contains the project name → external', () => {
+    // The bug this guards: without the cross-OS gate, project "docs" would remap
+    // this real, existing external file to internal `readme.md` → phantom
+    // "deleted" (WORSE than external, which is openable).
+    expect(resolveTrackedPath('/home/desti/other-repo/docs/readme.md',
+      '/home/desti/YouCoded/Projects/docs')).toEqual({
+      kind: 'external', path: 'readme.md',
+      absolutePath: '/home/desti/other-repo/docs/readme.md',
     });
   });
 
@@ -70,9 +85,11 @@ describe('resolveTrackedPath', () => {
     });
   });
 
-  it('case-insensitive project-name match (Windows drive/case drift)', () => {
+  it('CROSS-DEVICE case-insensitive project-name match (Windows→Linux, case drift)', () => {
+    // Windows-recorded (capital Cook) resumed on Linux (lowercase cook): cross-OS
+    // gate fires, case-insensitive segment match still finds it.
     expect(resolveTrackedPath('C:\\Users\\desti\\YouCoded\\Projects\\Cook\\recipe.md',
-      'c:\\users\\desti\\youcoded\\projects\\cook')).toEqual({
+      '/home/desti/youcoded/projects/cook')).toEqual({
       kind: 'internal', path: 'recipe.md', absolutePath: null,
     });
   });

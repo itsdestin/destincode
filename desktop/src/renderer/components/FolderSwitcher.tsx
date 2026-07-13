@@ -86,8 +86,9 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
   // stops) a project while this picker is open (2026-07-13 dogfood fix). Without
   // this a project synced from another device wouldn't appear until the dropdown
   // was closed and reopened. Gated on `open` so a closed picker (which refetches
-  // on its next open anyway) doesn't subscribe. onEvent is absent on Android — the
-  // optional-chain no-ops there.
+  // on its next open anyway) doesn't subscribe. On Android onEvent exists
+  // (remote-shim defines it) but never fires (no syncspaces handlers) — inert
+  // there; the optional-chain is just belt-and-suspenders.
   useEffect(() => {
     if (!open) return;
     const unsubscribe = (window as any).claude.syncSpaces.onEvent?.((e: any) => {

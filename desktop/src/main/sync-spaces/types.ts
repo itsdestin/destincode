@@ -50,7 +50,9 @@ export type SpaceSyncEvent = (
   // device changed — a project was materialized from another device or a stop
   // tombstone detached one. The renderer refetches its folder/project lists on
   // this so a newly-synced project appears in the picker + Project View WITHOUT
-  // a manual reopen. spaceId is the affected project (informational). Like
-  // 'hub-status', it never drives sync-dot state.
-  | { type: 'projects-changed'; spaceId: string }
+  // a manual reopen. spaceId is the SENTINEL 'projects' (NOT a real project id)
+  // — exactly like 'hub-status' uses 'hub' — so `latestEventFor()` in
+  // sync-dot-state never surfaces it for a real space and can't mask that
+  // space's error/synced event. Consumers match on `type`, never spaceId.
+  | { type: 'projects-changed'; spaceId: 'projects' }
 ) & { at?: number };
