@@ -28,7 +28,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean) => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }) => void;
   onCloseSession: (id: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
   onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
@@ -174,6 +174,65 @@ export default function SessionStrip({
   const [runtime, setRuntime] = useState<Runtime>('claude');
   const nativeSupported = !isAndroid() && !isRemoteMode()
     && (window as any).claude?.native?.supported === true;
+  // Native-runtime binding picker state (Phase 1). Providers + model catalog are
+  // loaded lazily when the YouCoded runtime is selected; the chosen binding is
+  // seeded from (and persisted to) localStorage so the last choice sticks.
+  const [providersList, setProvidersList] = useState<Array<{ id: string; type: string; label: string; ready: boolean }>>([]);
+  const [modelCatalog, setModelCatalog] = useState<Array<{ id: string; providerId: string; label: string }>>([]);
+  const [binding, setBinding] = useState<{ providerId: string; modelId: string } | null>(() => {
+    try {
+      const raw = localStorage.getItem('youcoded-last-binding');
+      if (raw) {
+        const b = JSON.parse(raw);
+        if (b && typeof b.providerId === 'string' && typeof b.modelId === 'string') return b;
+      }
+    } catch { /* corrupt entry — ignore */ }
+    return null;
+  });
+
+  // Load providers + catalog when the native runtime is selected in the form.
+  useEffect(() => {
+    if (!nativeSupported || runtime !== 'native' || !showNewForm) return;
+    let cancelled = false;
+    Promise.all([
+      window.claude.providers.list().catch(() => []),
+      window.claude.providers.catalog().catch(() => []),
+    ]).then(([list, cat]) => {
+      if (cancelled) return;
+      setProvidersList(Array.isArray(list) ? list : []);
+      setModelCatalog(Array.isArray(cat) ? cat : []);
+    });
+    return () => { cancelled = true; };
+  }, [nativeSupported, runtime, showNewForm]);
+
+  // Derived binding selection (pure — no state writes, so no update loop).
+  const readyProviders = providersList.filter((p) => p.ready);
+  const selectedProviderId = (binding && readyProviders.some((p) => p.id === binding.providerId))
+    ? binding.providerId
+    : (readyProviders[0]?.id ?? '');
+  const selectedProvider = readyProviders.find((p) => p.id === selectedProviderId);
+  const providerModels = modelCatalog.filter((m) => m.providerId === selectedProviderId);
+  // openai-compatible endpoints (Ollama, LM Studio, custom) may expose no catalog
+  // rows — let the user type the model id directly.
+  const needsFreeformModel = selectedProvider?.type === 'openai-compatible' && providerModels.length === 0;
+  // Validate the stored/selected modelId against the catalog (mirrors the
+  // providerId guard) so a stale localStorage id on a still-ready provider whose
+  // catalog no longer lists it can't create a session bound to a model the
+  // <select> can't display — that mismatch makes languageModel throw on first
+  // send. Freeform ids have no catalog to validate against, so they pass through
+  // as typed (the input keeps the raw value so mid-word spaces survive typing).
+  const selectedModelId = (binding && binding.providerId === selectedProviderId && binding.modelId
+    && (needsFreeformModel || providerModels.some((m) => m.id === binding.modelId)))
+    ? binding.modelId
+    : (providerModels[0]?.id ?? '');
+  // Trimmed id used for create / gating / persistence — a whitespace-only
+  // freeform entry ("  ") is truthy but not a real model, so it must NOT pass the
+  // Create gate. Only trimmed at the boundary (never on the displayed value).
+  const resolvedModelId = selectedModelId.trim();
+  const effectiveBinding = selectedProviderId && resolvedModelId
+    ? { providerId: selectedProviderId, modelId: resolvedModelId }
+    : null;
+  const nativeCreateBlocked = runtime === 'native' && (readyProviders.length === 0 || !effectiveBinding);
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -350,13 +409,27 @@ export default function SessionStrip({
   }, []);
 
   const handleCreate = useCallback(() => {
-    onCreateSession(newCwd, dangerous, newModel, 'claude', launchInNewWindow);
+    // Native runtime carries a provider/model binding; a missing binding is
+    // already guarded by the disabled Create button, so bail defensively.
+    if (runtime === 'native') {
+      if (!effectiveBinding) return;
+      try { localStorage.setItem('youcoded-last-binding', JSON.stringify(effectiveBinding)); } catch { /* storage full/blocked — non-fatal */ }
+    }
+    onCreateSession(
+      newCwd,
+      dangerous,
+      newModel,
+      runtime,
+      launchInNewWindow,
+      runtime === 'native' ? (effectiveBinding ?? undefined) : undefined,
+    );
     setMenuOpen(false);
     setShowNewForm(false);
     setDangerous(defaultSkipPermissions || false);
     setNewModel(defaultModel || 'sonnet');
     setLaunchInNewWindow(false);
-  }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel]);
+    setRuntime('claude');
+  }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, runtime, effectiveBinding]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
 
@@ -983,36 +1056,87 @@ export default function SessionStrip({
                     </button>
                     <button
                       type="button"
-                      disabled
-                      title="The YouCoded runtime arrives in a future update"
-                      className="px-3 py-1 text-xs bg-panel text-fg-faint cursor-not-allowed"
+                      onClick={() => setRuntime('native')}
+                      className={`px-3 py-1 text-xs ${runtime === 'native' ? 'bg-accent text-on-accent' : 'bg-panel text-fg hover:bg-inset'}`}
                     >
                       YouCoded
                     </button>
                   </div>
-                  <p className="text-[10px] text-fg-faint mt-1">YouCoded runtime — coming soon</p>
                 </div>
               )}
-              {/* Model selector */}
-              <div>
-                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
-                <div className="flex gap-1">
-                  {MODELS.map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setNewModel(m)}
-                      className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors flex items-center justify-center ${
-                        newModel === m
-                          ? 'bg-accent text-on-accent font-medium'
-                          : 'bg-inset text-fg-dim hover:bg-edge'
-                      }`}
-                    >
-                      {MODEL_LABELS[m] || m}
-                      <ModelInfoTooltip model={m} />
-                    </button>
-                  ))}
+              {/* Native binding picker — provider + model. Replaces the Claude
+                  alias selector below when the YouCoded runtime is chosen. */}
+              {nativeSupported && runtime === 'native' && (
+                <div className="flex flex-col gap-2">
+                  {readyProviders.length === 0 ? (
+                    <p className="text-[10px] text-fg-faint">Add a provider key in Settings → Providers first.</p>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Provider</label>
+                        <select
+                          value={selectedProviderId}
+                          onChange={(e) => {
+                            const pid = e.target.value;
+                            const firstModel = modelCatalog.find((m) => m.providerId === pid)?.id ?? '';
+                            setBinding({ providerId: pid, modelId: firstModel });
+                          }}
+                          className="w-full bg-inset text-fg text-xs rounded-sm px-2 py-1 border border-edge"
+                        >
+                          {readyProviders.map((p) => (
+                            <option key={p.id} value={p.id}>{p.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                        {needsFreeformModel ? (
+                          <input
+                            type="text"
+                            value={selectedModelId}
+                            placeholder="e.g. llama3.1"
+                            onChange={(e) => setBinding({ providerId: selectedProviderId, modelId: e.target.value })}
+                            className="w-full bg-inset text-fg text-xs rounded-sm px-2 py-1 border border-edge"
+                          />
+                        ) : (
+                          <select
+                            value={selectedModelId}
+                            onChange={(e) => setBinding({ providerId: selectedProviderId, modelId: e.target.value })}
+                            className="w-full bg-inset text-fg text-xs rounded-sm px-2 py-1 border border-edge"
+                          >
+                            {providerModels.map((m) => (
+                              <option key={m.id} value={m.id}>{m.label}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
-              </div>
+              )}
+              {/* Model selector (Claude aliases) — hidden for the native runtime,
+                  which chooses a model via the provider/model binding picker above. */}
+              {runtime !== 'native' && (
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                  <div className="flex gap-1">
+                    {MODELS.map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => setNewModel(m)}
+                        className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors flex items-center justify-center ${
+                          newModel === m
+                            ? 'bg-accent text-on-accent font-medium'
+                            : 'bg-inset text-fg-dim hover:bg-edge'
+                        }`}
+                      >
+                        {MODEL_LABELS[m] || m}
+                        <ModelInfoTooltip model={m} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* Skip Permissions */}
               <div className="flex items-center justify-between">
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
@@ -1043,7 +1167,8 @@ export default function SessionStrip({
               )}
               <button
                 onClick={handleCreate}
-                className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors ${
+                disabled={nativeCreateBlocked}
+                className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                   dangerous
                     ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
                     : 'bg-accent hover:bg-accent text-on-accent'

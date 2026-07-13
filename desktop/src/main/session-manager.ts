@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import { app } from 'electron';
 import { SessionInfo, SessionProvider } from '../shared/types';
+import type { ModelBinding } from '../shared/provider-types';
 import { EventEmitter } from 'events';
 import { log } from './logger';
 
@@ -23,6 +24,9 @@ export interface CreateSessionOpts {
   model?: string;
   /** Which CLI backend to launch — defaults to 'claude' */
   provider?: SessionProvider;
+  /** Native-runtime model binding (provider='native' only). Required for a
+   *  fresh native session; on resume the binding comes from the stored header. */
+  binding?: ModelBinding;
   /** Optional text to prefill into the input bar after the session is selected.
    *  Forwarded into SessionInfo so the renderer can pick it up on session-created. */
   initialInput?: string;
@@ -30,7 +34,10 @@ export interface CreateSessionOpts {
 
 interface ManagedSession {
   info: SessionInfo;
-  worker: ChildProcess;
+  // Native sessions have NO PTY worker — their turn loop lives in a
+  // HarnessSession owned by NativeSessionHost (ipc-handlers wires it up after
+  // createSession returns). Every `session.worker.X` access is guarded.
+  worker?: ChildProcess;
 }
 
 export class SessionManager extends EventEmitter {
@@ -42,7 +49,6 @@ export class SessionManager extends EventEmitter {
   }
 
   createSession(opts: CreateSessionOpts): SessionInfo {
-    const id = randomUUID();
     const provider: SessionProvider = opts.provider || 'claude';
     // Resolve CWD: fall back to home directory if empty or nonexistent.
     const cwdExists = !!opts.cwd && fs.existsSync(opts.cwd);
@@ -58,13 +64,37 @@ export class SessionManager extends EventEmitter {
     }
     const resolvedCwd = cwdExists ? opts.cwd! : os.homedir();
 
-    // Build Claude CLI args. The 'native' provider (platform roadmap Phase 1+)
-    // never reaches this PTY path — SessionManager will branch before the
-    // worker spawn once the native harness exists. Guarded here so a stray
-    // native create fails loudly instead of spawning a broken PTY.
-    if (provider !== 'claude') {
-      throw new Error(`SessionManager: provider '${provider}' has no runtime yet (Phase 1)`);
+    // Native branch (platform roadmap Phase 1): no PTY worker — the turn loop
+    // runs in a HarnessSession that ipc-handlers starts AFTER this returns
+    // (SessionManager stays PTY-focused; it does not construct HarnessSession).
+    // On resume the id MUST equal the resumed id so the HarnessSession the host
+    // rebuilds and the SessionInfo the renderer holds share one identity.
+    if (provider === 'native') {
+      // Resume reads the binding from the stored session header; a fresh native
+      // session must be given one up front.
+      if (!opts.resumeSessionId && !opts.binding) {
+        throw new Error('SessionManager: a new native session requires a model binding.');
+      }
+      const nativeId = opts.resumeSessionId || randomUUID();
+      const nativeInfo: SessionInfo = {
+        id: nativeId,
+        name: opts.name,
+        cwd: resolvedCwd,
+        permissionMode: 'normal',
+        skipPermissions: false,
+        status: 'active',
+        createdAt: Date.now(),
+        provider: 'native',
+        model: opts.binding?.modelId,
+        ...(opts.initialInput !== undefined ? { initialInput: opts.initialInput } : {}),
+      };
+      this.sessions.set(nativeId, { info: nativeInfo });
+      this.emit('session-created', nativeInfo);
+      return nativeInfo;
     }
+
+    const id = randomUUID();
+    // Build Claude CLI args.
     const args: string[] = [];
     if (opts.skipPermissions) {
       args.push('--dangerously-skip-permissions');
@@ -187,26 +217,30 @@ export class SessionManager extends EventEmitter {
     if (!session) return false;
     session.info.status = 'destroyed';
     this.sessions.delete(id);
+    // Uniform teardown: native sessions (no worker) still emit session-exit so
+    // downstream cleanup (window release, remote broadcast) runs identically.
     this.emit('session-exit', id, 0);
-    try {
-      session.worker.send({ type: 'kill' });
-      session.worker.disconnect();
-    } catch {
-      // Worker IPC already closed (e.g., process crashed or exited)
+    if (session.worker) {
+      try {
+        session.worker.send({ type: 'kill' });
+        session.worker.disconnect();
+      } catch {
+        // Worker IPC already closed (e.g., process crashed or exited)
+      }
     }
     return true;
   }
 
   sendInput(id: string, text: string): boolean {
     const session = this.sessions.get(id);
-    if (!session) return false;
+    if (!session || !session.worker) return false; // native sessions have no PTY
     try { session.worker.send({ type: 'input', data: text }); } catch { return false; }
     return true;
   }
 
   resizeSession(id: string, cols: number, rows: number): boolean {
     const session = this.sessions.get(id);
-    if (!session) return false;
+    if (!session || !session.worker) return false; // native sessions have no PTY
     try { session.worker.send({ type: 'resize', cols, rows }); } catch { return false; }
     return true;
   }

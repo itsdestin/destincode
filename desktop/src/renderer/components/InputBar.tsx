@@ -11,6 +11,7 @@ import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-disp
 import type { UsageSnapshot } from '../state/chat-types';
 import { hasPendingInteraction } from '../state/pty-input-gate';
 import { buildOutgoingMessage } from './outgoing-message';
+import { sendChatMessage } from './native-send';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { isAndroid } from '../platform';
 
@@ -42,6 +43,9 @@ interface Props {
    *  Consumed exactly once per session ID via a consumed-set ref — safe to
    *  receive as a prop without triggering repeated fills on re-renders. */
   initialInput?: string;
+  /** Runtime backend of the active session. Native sessions have no PTY, so the
+   *  send path routes through native:send instead of the PTY paste machinery. */
+  provider?: 'claude' | 'native';
 }
 
 interface Attachment {
@@ -61,7 +65,7 @@ function fileNameFromPath(p: string): string {
   return p.replace(/\\/g, '/').split('/').pop() || p;
 }
 
-const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput }, ref) {
+const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -229,10 +233,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // menu keystrokes — the trailing \r would press Enter on the highlighted
       // option, silently answering the prompt with the user's text lost.
       // Refuse the send (keeping the draft) and tell the user why.
-      const session = getSessionState?.(sessionId);
-      if (session && hasPendingInteraction(session)) {
-        onToast?.('Claude is waiting for your response — answer the prompt first.');
-        return false;
+      //
+      // Native sessions have no PTY and no Ink select menu — the pending-
+      // interaction gate is a PTY-only concern, so skip it. (A provider/stream
+      // failure surfaces on the error banner instead of blocking sends.)
+      if (provider !== 'native') {
+        const session = getSessionState?.(sessionId);
+        if (session && hasPendingInteraction(session)) {
+          onToast?.('Claude is waiting for your response — answer the prompt first.');
+          return false;
+        }
       }
 
       // Route slash commands through the central dispatcher BEFORE attachment
@@ -249,8 +259,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       });
       if (dispatchResult.handled) {
         if (dispatchResult.alsoSendToPty) {
-          // For commands like /clear and /compact that still need Claude Code's own state to change.
-          window.claude.session.sendInput(sessionId, dispatchResult.alsoSendToPty);
+          if (provider === 'native') {
+            // Native sessions have no PTY to forward to, and the harness has no
+            // slash-command layer yet. Tell the user rather than silently dropping.
+            onToast?.("Slash commands aren't available for YouCoded-runtime sessions yet.");
+          } else {
+            // For commands like /clear and /compact that still need Claude Code's own state to change.
+            window.claude.session.sendInput(sessionId, dispatchResult.alsoSendToPty);
+          }
         }
         return true;
       }
@@ -276,6 +292,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         // content string can't be split back out of.
         attachments: files.map((f) => f.path),
       });
+
+      // Native runtime: no PTY. Send the plain string over native:send and
+      // RETURN before any of the PTY paste machinery below (56-byte chunking,
+      // FILE_GAP_MS scheduling, trailing `\r`). The optimistic bubble dedups
+      // because sendChatMessage's native join reproduces outgoing.content
+      // exactly (same filePaths + sanitized text). See native-send.ts.
+      if (provider === 'native') {
+        sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
+        return true;
+      }
 
       // Sending strategy:
       //
@@ -307,7 +333,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       }, submitStart);
       return true;
     },
-    [sessionId, disabled, dispatch, view, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker],
+    [sessionId, disabled, dispatch, view, provider, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker],
   );
 
   // Auto-resize textarea to fit content, up to 3 lines then scroll

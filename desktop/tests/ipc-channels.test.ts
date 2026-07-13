@@ -23,8 +23,13 @@ describe('IPC channel consistency', () => {
       preloadChannels.add(match[1]);
     }
 
-    // Also extract channels from the preload IPC constant object
-    const preloadIpcBlock = preloadSource.match(/const IPC\s*=\s*\{([^}]+)\}/s);
+    // Also extract channels from the preload IPC constant object.
+    // Anchor the capture to the block's `} as const;` terminator at line start —
+    // the old `[^}]+` pattern stopped at the FIRST `}`, which occurs inside a
+    // mid-block comment ("Caller passes a {x,y} offset"), silently truncating
+    // the extracted block to ~1/3 of its keys and skipping the parity check
+    // for everything after it.
+    const preloadIpcBlock = preloadSource.match(/const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
     if (preloadIpcBlock) {
       const constPattern = /:\s*'([^']+)'/g;
       while ((match = constPattern.exec(preloadIpcBlock[1])) !== null) {
@@ -32,9 +37,11 @@ describe('IPC channel consistency', () => {
       }
     }
 
-    // Extract channel strings from types.ts IPC object
+    // Extract channel strings from types.ts IPC object. Same terminator-anchored
+    // pattern as the preload extraction above — the types block has no stray `}`
+    // today, but a future comment containing one would silently truncate it too.
     const typesChannels = new Set<string>();
-    const typesIpcBlock = typesSource.match(/export const IPC\s*=\s*\{([^}]+)\}/s);
+    const typesIpcBlock = typesSource.match(/export const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
     if (typesIpcBlock) {
       const typesPattern = /:\s*'([^']+)'/g;
       while ((match = typesPattern.exec(typesIpcBlock[1])) !== null) {
@@ -574,5 +581,36 @@ describe('native runtime capability parity', () => {
     const src = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
     expect(src).toMatch(/native:\s*\{/);
     expect(src).toMatch(/supported:\s*false/);
+  });
+});
+
+describe('native:*/provider:* channel parity', () => {
+  const NEW_TYPES = [
+    'native:send', 'native:interrupt', 'native:set-binding', 'native:sessions-list',
+    'provider:list', 'provider:upsert', 'provider:remove', 'provider:test', 'provider:set-key', 'provider:catalog',
+  ];
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'native:send': 'IPC.NATIVE_SEND', 'native:interrupt': 'IPC.NATIVE_INTERRUPT',
+    'native:set-binding': 'IPC.NATIVE_SET_BINDING', 'native:sessions-list': 'IPC.NATIVE_SESSIONS_LIST',
+    'provider:list': 'IPC.PROVIDER_LIST', 'provider:upsert': 'IPC.PROVIDER_UPSERT',
+    'provider:remove': 'IPC.PROVIDER_REMOVE', 'provider:test': 'IPC.PROVIDER_TEST',
+    'provider:set-key': 'IPC.PROVIDER_SET_KEY', 'provider:catalog': 'IPC.PROVIDER_CATALOG',
+  };
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from preload.ts`).toBe(true);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts (literal or IPC constant)', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
   });
 });

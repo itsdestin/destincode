@@ -10,6 +10,9 @@ import type { HookRelay } from './hook-relay';
 import type { RemoteConfig } from './remote-config';
 import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
+import type { NativeSessionHost } from './harness/native-session-host';
+import type { ProviderRegistry } from './providers/provider-registry';
+import type { ModelCatalog } from './providers/model-catalog';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory } from './session-browser';
@@ -57,6 +60,11 @@ export class RemoteServer {
   // Provider injected at construction — called when new clients connect to get the full chat state.
   // Task 6 wires this into replayBuffers(); declared here so the field exists before that step.
   private requestSnapshot: () => Promise<SerializedChatState>;
+  // Native runtime stack — injected by ipc-handlers via setNativeRuntime() AFTER
+  // it constructs the instances (they can't be built at RemoteServer construction
+  // time because they live in the ipc-handlers scope). Null until wired; the
+  // native:* / provider:* WS cases no-op until then.
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog } | null = null;
 
   constructor(
     private sessionManager: SessionManager,
@@ -70,6 +78,13 @@ export class RemoteServer {
     // Default is a no-op that returns an empty snapshot — allows the server to
     // be constructed before the main window exists (e.g. during first-run setup).
     this.requestSnapshot = opts?.requestSnapshot ?? (() => Promise.resolve({ sessions: [] }));
+  }
+
+  /** Injected by ipc-handlers after it constructs the native stack, so remote
+   *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
+   *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog }): void {
+    this.nativeRuntime = rt;
   }
 
   private loadTokens(): void {
@@ -526,6 +541,10 @@ export class RemoteServer {
         break;
       }
       case 'session:destroy': {
+        // Tear down the native HarnessSession too (mirrors Electron
+        // SESSION_DESTROY) so a native session isn't leaked when destroyed via
+        // remote. No-op for non-native ids; guarded until the stack is wired.
+        await this.nativeRuntime?.nativeHost.destroy(payload.sessionId || payload);
         const result = this.sessionManager.destroySession(payload.sessionId || payload);
         this.respond(client.ws, type, id, result);
         if (result) {
@@ -547,6 +566,72 @@ export class RemoteServer {
         const activeIds = new Set(this.sessionManager.listSessions().map(s => s.id));
         const sessions = await listPastSessions(activeIds);
         this.respond(client.ws, type, id, sessions);
+        break;
+      }
+      // --- Native runtime (Phase 1 Plan A) — same instances as Electron IPC ---
+      case 'native:set-binding': {
+        const ok = this.nativeRuntime ? await this.nativeRuntime.nativeHost.setBinding(payload.sessionId, payload.binding) : false;
+        this.respond(client.ws, type, id, ok);
+        break;
+      }
+      case 'native:sessions-list': {
+        this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
+        break;
+      }
+      case 'provider:list': {
+        this.respond(client.ws, type, id, this.nativeRuntime ? await this.nativeRuntime.providerRegistry.list() : []);
+        break;
+      }
+      // The provider CRUD/key/catalog handlers can THROW (bad input, built-in
+      // removal, keychain failure). Each responds an error object on throw so
+      // the remote client's request id resolves instead of hanging to timeout.
+      case 'provider:upsert': {
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.providerRegistry.upsert(payload) : null;
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'provider:remove': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.providerRegistry.remove(payload.id ?? payload);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'provider:test': {
+        try {
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.providerRegistry.testConnection(payload.id ?? payload)
+            : { ok: false, message: 'Native runtime not available.' };
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, message: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'provider:set-key': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.providerRegistry.setKey(payload.id, payload.key);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'provider:catalog': {
+        try {
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.modelCatalog.get(await this.nativeRuntime.providerRegistry.list())
+            : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
         break;
       }
       case 'session:history': {
@@ -1344,6 +1429,16 @@ export class RemoteServer {
       // --- Fire-and-forget ---
       case 'session:input': {
         this.sessionManager.sendInput(payload.sessionId, payload.text);
+        break;
+      }
+      // Native runtime I/O — fire-and-forget (no response), mirrors NATIVE_SEND
+      // / NATIVE_INTERRUPT. The host serializes sends and no-ops unknown ids.
+      case 'native:send': {
+        if (this.nativeRuntime) void this.nativeRuntime.nativeHost.send(payload.sessionId, payload.text);
+        break;
+      }
+      case 'native:interrupt': {
+        this.nativeRuntime?.nativeHost.interrupt(payload.sessionId);
         break;
       }
       case 'session:resize': {

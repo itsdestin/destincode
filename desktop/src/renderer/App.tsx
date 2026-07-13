@@ -352,6 +352,8 @@ function AppInner() {
   useSubmitConfirmation({
     activeSessionId: sessionId,
     activeViewMode: sessionId ? viewModes.get(sessionId) ?? 'chat' : 'chat',
+    // Native sessions never enter the PTY-only `\r` retry path.
+    providerForSession: (sid) => sessions.find((s) => s.id === sid)?.provider,
   });
   // Drives --vvp-offset from window.visualViewport so the input bar stays glued
   // to the top of the soft keyboard on Android / mobile browsers.
@@ -850,6 +852,9 @@ function AppInner() {
             // Task 2.4: forward the per-message model from the transcript so the
             // reducer can stamp turn.model on the first text of each turn.
             model: event.data.model,
+            // Native runtime: per-token delta id — same partId merges into the
+            // last text segment (mirror BubbleFeed.tsx, must stay identical).
+            partId: event.data.partId,
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });
@@ -921,6 +926,15 @@ function AppInner() {
           }
           break;
         }
+        case 'session-error':
+          // Native runtime only: a provider/stream failure. End the turn and
+          // surface the 'error' AttentionBanner (mirror BubbleFeed.tsx).
+          batchTranscriptDispatch({
+            type: 'NATIVE_SESSION_ERROR',
+            sessionId: event.sessionId,
+            message: event.data.text ?? 'The model request failed.',
+          });
+          break;
         case 'compact-summary': {
           // Canonical compaction-complete signal — fired by the transcript
           // watcher when Claude Code writes an isCompactSummary entry. Works
@@ -1829,15 +1843,22 @@ function AppInner() {
     [sessionId, dispatch, viewModes, getUsageSnapshot, guardedPtySend],
   );
 
-  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean) => {
+  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }) => {
     // Use the explicitly chosen model; fall back to the current session's model
     const m = sessionModel || currentModel;
     const info = await (window.claude.session.create as any)({
       name: 'New Session',
       cwd,
       skipPermissions: dangerous,
-      model: m,
+      // A Claude alias is meaningless for a native session (the harness uses
+      // binding.modelId; SessionManager's native branch ignores `model`), so
+      // omit it to keep the payload honest.
+      model: provider === 'native' ? undefined : m,
       provider: provider || 'claude',
+      // Native runtime only — the provider/model binding for the harness. The
+      // main handler requires it for a fresh native session (session-manager
+      // throws otherwise); undefined for claude sessions.
+      binding: provider === 'native' ? binding : undefined,
     });
     // Launch-in-new-window: hand the freshly-created session off to a peer
     // window via the same ownership-transfer path used by drag-detach.
@@ -1846,8 +1867,34 @@ function AppInner() {
     }
   }, [currentModel]);
 
-  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean) => {
+  const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string) => {
     const cwd = projectPath;
+
+    // Native-harness resume: the model binding lives in the session's stored
+    // header, so we send NO binding — SessionManager's native branch tolerates a
+    // missing binding when resumeSessionId is set (it only throws for a FRESH
+    // native session with no binding). The main-side create handler calls
+    // nativeHost.resume(), which wires the session live; we then request a
+    // transcript replay so the chat reducer hydrates from the persisted events
+    // (getHistory returns native events for a live native id).
+    if (provider === 'native') {
+      const nativeSession = await (window.claude.session.create as any)({
+        name: 'Resuming…',
+        cwd,
+        skipPermissions: false, // native sessions have no PTY permission flow
+        provider: 'native',
+        resumeSessionId: claudeSessionId,
+      });
+      if (!nativeSession?.id) return;
+      if (launchInNewWindow) {
+        (window as any).claude?.detach?.openDetached?.({ sessionId: nativeSession.id });
+      }
+      // Hydrate the chat view from disk. Main streams every historical
+      // TRANSCRIPT_EVENT back on the normal channel; uuid dedup absorbs overlap.
+      (window as any).claude?.detach?.requestTranscriptReplay?.(nativeSession.id);
+      return;
+    }
+
     // Use explicitly chosen resume model; fall back to the current session's model
     const m = resumeModel || currentModel;
 
@@ -1927,10 +1974,14 @@ function AppInner() {
   const escPassthroughStateRef = useRef<{
     activeSessionId: string;
     viewMode: 'chat' | 'terminal';
-  }>({ activeSessionId: '', viewMode: 'chat' });
+    provider: 'claude' | 'native' | undefined;
+  }>({ activeSessionId: '', viewMode: 'chat', provider: 'claude' });
   escPassthroughStateRef.current = {
     activeSessionId: sessionId ?? '',
     viewMode: currentViewMode,
+    // Inlined (not currentSession, which is declared below) — this ref is
+    // assigned during render before currentSession exists.
+    provider: sessions.find((s) => s.id === sessionId)?.provider,
   };
 
   useEffect(() => {
@@ -1943,6 +1994,13 @@ function AppInner() {
         hasActiveSession: !!s.activeSessionId,
       });
       if (!forward) return;
+      // Native sessions have no PTY — interrupt the in-process harness stream
+      // directly. (native.interrupt is the provider-side equivalent of the ESC
+      // byte; a raw \x1b would go nowhere.)
+      if (s.provider === 'native') {
+        window.claude.native.interrupt(s.activeSessionId);
+        return;
+      }
       // One byte to the PTY — Claude Code treats it as an interrupt.
       // Single-byte writes do NOT trigger Ink's 500ms paste-mode coalescing,
       // so no chunking or pacing is needed. See docs/PITFALLS.md -> "PTY Writes".
@@ -2401,7 +2459,7 @@ function AppInner() {
                 {/* TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
                     ChatInputBar when minimal={isTerminalTouch}, slotted in
                     the QuickChips position so both modes share one container. */}
-                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} />
+                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
                     usage: statusData.usage,
@@ -2641,6 +2699,14 @@ function AppInner() {
           (window.claude as any).model?.setPreference(m);
         }}
         provider={currentSession?.provider}
+        // Native model picker — the live bound modelId + a refresh callback so
+        // the header reflects a mid-session swap (SessionInfo.model is the pill's
+        // source; setBinding is in-memory, so we must update it here).
+        currentModelId={currentSession?.provider === 'native' ? currentSession?.model : undefined}
+        onNativeModelChanged={(modelId) => {
+          if (!sessionId) return;
+          setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, model: modelId } : s)));
+        }}
       />
       {/* Open Tasks popup — rendered at App root so it escapes any inner stacking context.
           Reads from the single `openTasks` useSessionTasks instance declared in AppInner. */}
@@ -2719,9 +2785,9 @@ function AppInner() {
 // getUsageSnapshot lets /cost and /usage snapshot live stats from App state.
 import type { UsageSnapshot } from './state/chat-types';
 import type { SessionChatState } from './state/chat-types';
-const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?: ViewMode; onOpenDrawer: (searchMode: boolean) => void; onCloseDrawer?: () => void; onDrawerSearch?: (query: string) => void; disabled?: boolean; minimal?: boolean; onResumeCommand?: () => void; getUsageSnapshot?: (sessionId: string) => UsageSnapshot | null; onOpenPreferences?: () => void; onToast?: (msg: string) => void; getSessionState?: (sessionId: string) => SessionChatState | undefined; onOpenModelPicker?: () => void; initialInput?: string }>(
-  function ChatInputBar({ sessionId, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, disabled, minimal, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput }, ref) {
-    return <InputBar ref={ref} sessionId={sessionId} view={view} onOpenDrawer={onOpenDrawer} onCloseDrawer={onCloseDrawer} onDrawerSearch={onDrawerSearch} disabled={disabled} minimal={minimal} onResumeCommand={onResumeCommand} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={onOpenPreferences} onToast={onToast} getSessionState={getSessionState} onOpenModelPicker={onOpenModelPicker} initialInput={initialInput} />;
+const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?: ViewMode; onOpenDrawer: (searchMode: boolean) => void; onCloseDrawer?: () => void; onDrawerSearch?: (query: string) => void; disabled?: boolean; minimal?: boolean; onResumeCommand?: () => void; getUsageSnapshot?: (sessionId: string) => UsageSnapshot | null; onOpenPreferences?: () => void; onToast?: (msg: string) => void; getSessionState?: (sessionId: string) => SessionChatState | undefined; onOpenModelPicker?: () => void; initialInput?: string; provider?: 'claude' | 'native' }>(
+  function ChatInputBar({ sessionId, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, disabled, minimal, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
+    return <InputBar ref={ref} sessionId={sessionId} view={view} onOpenDrawer={onOpenDrawer} onCloseDrawer={onCloseDrawer} onDrawerSearch={onDrawerSearch} disabled={disabled} minimal={minimal} onResumeCommand={onResumeCommand} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={onOpenPreferences} onToast={onToast} getSessionState={getSessionState} onOpenModelPicker={onOpenModelPicker} initialInput={initialInput} provider={provider} />;
   },
 );
 

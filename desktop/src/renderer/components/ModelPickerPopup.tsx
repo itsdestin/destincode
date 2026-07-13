@@ -131,13 +131,20 @@ interface Props {
   sessionId: string | null;
   currentModel: ModelAlias | null;
   onSelectModel: (m: ModelAlias) => void;
-  /** Runtime backend — Phase 1 replaces this guard with a provider-scoped
-   *  model catalog; in Phase 0 native sessions cannot exist, so this only
-   *  pins the seam. */
+  /** Runtime backend — native sessions get a provider-scoped model catalog
+   *  (setBinding) instead of the Claude alias/effort/fast controls. */
   provider?: 'claude' | 'native';
+  /** Native only — the session's current bound modelId (SessionInfo.model),
+   *  which App keeps current across swaps. Used to highlight the active row
+   *  reliably even when the persisted session header (sessionsList) is stale
+   *  (setBinding is an in-memory swap, not a header rewrite). */
+  currentModelId?: string;
+  /** Native only — called after a successful setBinding so App can refresh its
+   *  record of the session's model (the header pill sources SessionInfo.model). */
+  onNativeModelChanged?: (modelId: string) => void;
 }
 
-export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider }: Props) {
+export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider, currentModelId, onNativeModelChanged }: Props) {
   useEscClose(open, onClose);
   const [fast, setFast] = useState(false);
   const [effort, setEffort] = useState<EffortLevel>('auto');
@@ -145,6 +152,41 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   // Enabling fast mode is a paid action (API billing, not Pro/Max subscription) —
   // gate behind an explicit confirmation popup so it can't be flipped accidentally.
   const [fastConfirmOpen, setFastConfirmOpen] = useState(false);
+
+  // Native-runtime picker state. For native sessions the popup shows a
+  // provider-scoped model catalog (grouped by provider) instead of the Claude
+  // alias + effort + fast controls. Hooks live here unconditionally (before any
+  // early return) to keep hook order stable across provider values.
+  const [catalog, setCatalog] = useState<Array<{ id: string; providerId: string; label: string }>>([]);
+  const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
+  const [nativeSearch, setNativeSearch] = useState('');
+  const [nativeBinding, setNativeBinding] = useState<{ providerId: string; modelId: string } | null>(null);
+  // Inline error when a model swap (setBinding) fails — the popup stays open so
+  // the user knows the swap did NOT take effect (don't close as if it succeeded).
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const [nativeSwapping, setNativeSwapping] = useState(false);
+
+  useEffect(() => {
+    if (!open || provider !== 'native') return;
+    setNativeSearch('');
+    setNativeError(null);
+    setNativeSwapping(false);
+    Promise.all([
+      window.claude.providers.catalog().catch(() => []),
+      window.claude.providers.list().catch(() => []),
+      (window.claude.native.sessionsList?.() ?? Promise.resolve([])).catch(() => []),
+    ]).then(([cat, list, sessions]) => {
+      setCatalog(Array.isArray(cat) ? cat : []);
+      const labels: Record<string, string> = {};
+      if (Array.isArray(list)) for (const p of list) if (p?.id) labels[p.id] = p.label ?? p.id;
+      setProviderLabels(labels);
+      // Current binding for the highlighted row — sessionsList carries the
+      // per-session header binding keyed by sessionId.
+      const row = Array.isArray(sessions) ? sessions.find((s: any) => s?.sessionId === sessionId) : null;
+      const b = row?.binding;
+      setNativeBinding(b && b.providerId && b.modelId ? { providerId: b.providerId, modelId: b.modelId } : null);
+    }).catch(() => {});
+  }, [open, provider, sessionId]);
 
   // Load persisted state when opening. We don't live-sync with external changes
   // (Claude Code doesn't broadcast these); the popup is the source of truth
@@ -207,10 +249,117 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
 
   if (!open) return null;
 
-  // Native sessions get a provider-scoped picker in Phase 1. Until then
-  // (and they can't be created yet), render nothing rather than a Claude
-  // alias list that would send /model down a nonexistent PTY.
-  if (provider === 'native') return null;
+  // Native sessions get a provider-scoped model catalog (grouped by provider),
+  // NOT the Claude alias/effort/fast controls (those are PTY /model, /fast,
+  // /effort writes that a native session has no PTY for). Selecting a model
+  // calls native.setBinding for a mid-session model swap.
+  if (provider === 'native') {
+    const q = nativeSearch.trim().toLowerCase();
+    const filtered = q
+      ? catalog.filter((m) =>
+          m.label.toLowerCase().includes(q) ||
+          m.id.toLowerCase().includes(q) ||
+          (providerLabels[m.providerId] ?? '').toLowerCase().includes(q))
+      : catalog;
+    // Group by provider label, preserving catalog order.
+    const groups = new Map<string, typeof catalog>();
+    for (const m of filtered) {
+      const key = providerLabels[m.providerId] ?? m.providerId;
+      const arr = groups.get(key) ?? [];
+      arr.push(m);
+      groups.set(key, arr);
+    }
+    const selectModel = async (providerId: string, modelId: string) => {
+      if (!sessionId) { onClose(); return; }
+      setNativeError(null);
+      setNativeSwapping(true);
+      // Await the swap — setBinding resolves false (unknown session) or rejects
+      // on failure. Only close + refresh the header on genuine success; on
+      // failure keep the popup open with an inline error so the user isn't told
+      // the model changed when it didn't.
+      let ok = false;
+      try {
+        ok = await window.claude.native.setBinding(sessionId, { providerId, modelId });
+      } catch {
+        ok = false;
+      }
+      setNativeSwapping(false);
+      if (!ok) {
+        setNativeError("Couldn't switch models. The session may have ended — try again.");
+        return;
+      }
+      // #7: keep App's SessionInfo.model current so the header reflects the swap
+      // (setBinding is in-memory, so sessionsList would stay stale otherwise).
+      onNativeModelChanged?.(modelId);
+      onClose();
+    };
+    return createPortal(
+      <>
+        <Scrim layer={2} onClick={onClose} />
+        <OverlayPanel
+          layer={2}
+          role="dialog"
+          aria-modal={true}
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md w-[calc(100%-2rem)] max-h-[80vh] flex flex-col"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-5 py-3 border-b border-edge">
+            <h3 className="text-sm font-semibold text-fg">Model</h3>
+            <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="px-5 pt-3">
+            <input
+              value={nativeSearch}
+              onChange={(e) => setNativeSearch(e.target.value)}
+              placeholder="Search models…"
+              className="w-full bg-inset text-fg text-sm rounded px-3 py-1.5 border border-edge outline-none focus:border-accent"
+            />
+          </div>
+          <div className="p-5 pt-3 overflow-y-auto space-y-4">
+            {nativeError && (
+              <p className="text-xs text-destructive">{nativeError}</p>
+            )}
+            {catalog.length === 0 ? (
+              <p className="text-sm text-fg-muted text-center py-4">No models available. Add a provider key in Settings → Providers.</p>
+            ) : groups.size === 0 ? (
+              <p className="text-sm text-fg-muted text-center py-4">No models match your search.</p>
+            ) : (
+              [...groups.entries()].map(([label, models]) => (
+                <section key={label}>
+                  <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-1.5">{label}</div>
+                  <div className="flex flex-col gap-1">
+                    {models.map((m) => {
+                      // Prefer App's live SessionInfo.model (updated on every swap)
+                      // over the possibly-stale persisted-header binding.
+                      const activeModelId = currentModelId ?? nativeBinding?.modelId;
+                      const isCurrent = m.id === activeModelId;
+                      return (
+                        <button
+                          key={`${m.providerId}:${m.id}`}
+                          onClick={() => selectModel(m.providerId, m.id)}
+                          disabled={nativeSwapping}
+                          className={`text-left text-sm rounded px-3 py-2 transition-colors disabled:opacity-50 ${
+                            isCurrent ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-2 hover:bg-well'
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))
+            )}
+          </div>
+        </OverlayPanel>
+      </>,
+      document.body,
+    );
+  }
 
   // "max" effort is top-tier-only (Opus 1M + Fable); disable the button otherwise.
   const maxAllowed = currentModel != null && MAX_EFFORT_MODELS.includes(currentModel);

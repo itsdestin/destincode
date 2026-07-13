@@ -13,7 +13,7 @@ declare global {
   interface Window {
     claude: {
       session: {
-        create: (opts: { name: string; cwd: string; skipPermissions: boolean; cols?: number; rows?: number }) => Promise<any>;
+        create: (opts: { name: string; cwd: string; skipPermissions: boolean; cols?: number; rows?: number; model?: string; provider?: 'claude' | 'native'; resumeSessionId?: string; binding?: { providerId: string; modelId: string } }) => Promise<any>;
         destroy: (sessionId: string) => Promise<boolean>;
         list: () => Promise<any[]>;
         sendInput: (sessionId: string, text: string) => void;
@@ -245,6 +245,20 @@ declare global {
       // builds launched with YOUCODED_NATIVE=1; the runtime selector gates on it.
       native: {
         supported: boolean;
+        send: (sessionId: string, text: string) => void;
+        interrupt: (sessionId: string) => void;
+        setBinding: (sessionId: string, binding: { providerId: string; modelId: string }) => Promise<boolean>;
+        sessionsList: () => Promise<any[]>;
+      };
+      // Provider registry — native runtime model providers (desktop-only; the
+      // Android/remote stubs reject with not-implemented).
+      providers: {
+        list: () => Promise<any[]>;
+        upsert: (config: any) => Promise<string>;
+        remove: (id: string) => Promise<boolean>;
+        test: (id: string) => Promise<{ ok: boolean; message: string }>;
+        setKey: (id: string, key: string) => Promise<boolean>;
+        catalog: () => Promise<any[]>;
       };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState

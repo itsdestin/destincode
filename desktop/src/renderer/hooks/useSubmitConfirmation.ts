@@ -41,6 +41,12 @@ interface UseSubmitConfirmationArgs {
   // view-mode gate inside attemptRetry for the rationale.
   activeSessionId: string | null;
   activeViewMode: 'chat' | 'terminal';
+  // Resolves a session's runtime backend. Native sessions have no PTY and no
+  // lost-byte failure mode — the whole `\r` recovery mechanism is
+  // Claude/PTY-specific — so their pending bubbles are never tracked here. A
+  // stray `\r` would be a nonsense write for a native session anyway. Optional
+  // for callers that only ever run claude sessions.
+  providerForSession?: (sessionId: string) => 'claude' | 'native' | undefined;
 }
 
 /**
@@ -160,6 +166,14 @@ export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
     const seen = new Set<string>();
 
     for (const [sessionId, session] of chatState) {
+      // Native sessions send in-process (native:send) — no lost-byte failure
+      // mode, so never track their pending bubbles for the PTY `\r` retry.
+      // Edge: during teardown the resolver may transiently return undefined
+      // (the SessionInfo already removed while chat state lingers). undefined is
+      // treated as claude/tracked — safe by default (a bare `\r` to a dead
+      // session is a harmless no-op); a native session caught mid-teardown is a
+      // low residual risk, not a correctness bug.
+      if (argsRef.current.providerForSession?.(sessionId) === 'native') continue;
       for (const entry of session.timeline) {
         if (entry.kind !== 'user' || !entry.pending) continue;
         const messageId = entry.message.id;

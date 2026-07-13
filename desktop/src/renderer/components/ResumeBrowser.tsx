@@ -172,9 +172,13 @@ interface PastSession {
   // is on; `priority` pins the session to the top of its project group;
   // `helpful` is informational only.
   flags?: Partial<Record<FlagName, boolean>>;
+  // Which runtime owns this session: `'claude'` = a Claude Code transcript;
+  // `'native'` = a YouCoded native-harness session (gets a "YouCoded" badge and
+  // skips the CC-only resume options — model / skip-perms). Typed `string`
+  // because Conversation-Store rows (Phase 2a) populate it from a stored string.
+  provider?: string;
   // Conversation Store (Phase 2a) fields, present on store-fed rows only.
   device?: string;   // last device that ran a turn
-  provider?: string; // 'claude' | 'native'
   // True when the conversation's project folder is not on THIS device (synced
   // in from elsewhere). Resume is disabled — there's no cwd to resume into.
   missingProject?: boolean;
@@ -187,7 +191,7 @@ interface PastSession {
 interface Props {
   open: boolean;
   onClose: () => void;
-  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean) => void;
+  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string) => void;
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
 }
@@ -424,7 +428,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   };
 
   const handleConfirmResume = (s: PastSession) => {
-    onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow);
+    // Native sessions reuse the binding stored in their header — the CC-only
+    // model / skip-permissions choices are irrelevant, so pass the current
+    // (default) values but tag the row's provider so App takes the native path.
+    onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow, s.provider);
     onClose();
   };
 
@@ -433,41 +440,51 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const renderExpandedOptions = (s: PastSession) => (
     <div className="px-4 pb-2">
       <div className="rounded-lg bg-inset/50 border border-edge-dim p-3 flex flex-col gap-2">
-        {/* Model selector */}
-        <div>
-          <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
-          <div className="flex gap-1">
-            {MODELS.map((m) => (
-              <button
-                key={m}
-                onClick={() => setResumeModel(m)}
-                className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
-                  resumeModel === m
-                    ? 'bg-accent text-on-accent font-medium'
-                    : 'bg-inset text-fg-dim hover:bg-edge'
-                }`}
-              >
-                {MODEL_LABELS[m] || m}
-              </button>
-            ))}
-          </div>
-        </div>
+        {/* Model + Skip Permissions are Claude-Code-only. A native session
+            resumes with the model binding stored in its header (there's nothing
+            to choose here) and has no PTY permission flow, so both are hidden
+            for native rows. */}
+        {s.provider !== 'native' ? (
+          <>
+            {/* Model selector */}
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+              <div className="flex gap-1">
+                {MODELS.map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setResumeModel(m)}
+                    className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                      resumeModel === m
+                        ? 'bg-accent text-on-accent font-medium'
+                        : 'bg-inset text-fg-dim hover:bg-edge'
+                    }`}
+                  >
+                    {MODEL_LABELS[m] || m}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        {/* Skip Permissions */}
-        <div className="flex items-center justify-between">
-          <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
-            Skip Permissions
-            <SkipPermissionsInfoTooltip />
-          </label>
-          <button
-            onClick={() => setResumeDangerous(!resumeDangerous)}
-            className={`w-8 h-4.5 rounded-full relative transition-colors ${resumeDangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
-          >
-            <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${resumeDangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-          </button>
-        </div>
-        {resumeDangerous && (
-          <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+            {/* Skip Permissions */}
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] uppercase tracking-wider text-fg-muted inline-flex items-center">
+                Skip Permissions
+                <SkipPermissionsInfoTooltip />
+              </label>
+              <button
+                onClick={() => setResumeDangerous(!resumeDangerous)}
+                className={`w-8 h-4.5 rounded-full relative transition-colors ${resumeDangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
+              >
+                <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${resumeDangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
+              </button>
+            </div>
+            {resumeDangerous && (
+              <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+            )}
+          </>
+        ) : (
+          <p className="text-[10px] text-fg-muted">Resumes with this conversation's saved model.</p>
         )}
 
         {/* Launch in new window — hidden on remote/Android (single-window) */}
@@ -512,17 +529,23 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         </div>
 
-        {/* Resume button */}
-        <button
-          onClick={() => handleConfirmResume(s)}
-          className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors ${
-            resumeDangerous
-              ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
-              : 'bg-accent hover:bg-accent text-on-accent'
-          }`}
-        >
-          {resumeDangerous ? 'Resume (Dangerous)' : 'Resume Session'}
-        </button>
+        {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
+            native sessions have no PTY permission flow, so it never applies. */}
+        {(() => {
+          const dangerous = s.provider !== 'native' && resumeDangerous;
+          return (
+            <button
+              onClick={() => handleConfirmResume(s)}
+              className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors ${
+                dangerous
+                  ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
+                  : 'bg-accent hover:bg-accent text-on-accent'
+              }`}
+            >
+              {dangerous ? 'Resume (Dangerous)' : 'Resume Session'}
+            </button>
+          );
+        })()}
       </div>
     </div>
   );
@@ -555,6 +578,14 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 title={FLAG_LABEL[f]}
               >{FLAG_BADGE[f]}</span>
             ))}
+            {/* Runtime badge — native (YouCoded harness) sessions only. Plain
+                word, no glyph; distinguishes them from Claude Code transcripts. */}
+            {s.provider === 'native' && (
+              <span
+                className="text-[9px] px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
+                title="YouCoded native session"
+              >YouCoded</span>
+            )}
             <span className="truncate">{s.name}</span>
           </div>
           {/* Second line: in flat (chronological) mode each row carries its

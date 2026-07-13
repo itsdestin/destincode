@@ -2,11 +2,12 @@ import { app, IpcMain, BrowserWindow, dialog, clipboard, nativeImage, shell, pow
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'crypto';
 import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type TranscriptEvent, type PastSession } from '../shared/types';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -14,6 +15,15 @@ import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
 import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
+// Native runtime (platform roadmap Phase 1 Plan A) — the first-party harness
+// stack: provider CRUD + key management, model catalog, and the live-session
+// registry that owns HarnessSessions and their persistence.
+import { NativeHome } from './native-home';
+import { SecretsStore } from './providers/secrets-store';
+import { ProviderRegistry } from './providers/provider-registry';
+import { ModelCatalog } from './providers/model-catalog';
+import { SessionStore } from './harness/session-store';
+import { NativeSessionHost } from './harness/native-session-host';
 import { resolveMappingAction } from './session-id-mapping';
 import { listPastSessions, loadHistory } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
@@ -400,6 +410,46 @@ export function registerIpcHandlers(
   // Session CRUD
   ipcMain.handle(IPC.SESSION_CREATE, async (event, opts) => {
     const info = sessionManager.createSession(opts);
+    // Native sessions have no PTY worker — start (or resume) their HarnessSession
+    // in the host now that createSession has minted the SessionInfo. The native
+    // branch of createSession uses resumeSessionId AS the id, so info.id already
+    // equals the resumed id and the host rebuilds the matching session.
+    if (info.provider === 'native') {
+      try {
+        if (opts.resumeSessionId) {
+          const resumed = await nativeHost.resume(opts.resumeSessionId, info.cwd);
+          // No stored file (e.g. resuming an id that was never persisted) → start
+          // a fresh session under the same id so the renderer isn't left with a
+          // SessionInfo backed by no live HarnessSession.
+          if (!resumed && opts.binding) {
+            await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding });
+          } else if (!resumed && !opts.binding) {
+            // Resume asked for a session whose saved data is gone, and we have no
+            // binding to start a fresh one under this id — the renderer already
+            // holds a live SessionInfo with an empty chat and no way to know why.
+            // Surface a session-error transcript event on the SAME pipe the host
+            // uses (drives NATIVE_SESSION_ERROR → the error banner). Deferred via
+            // nextTick so it lands AFTER SESSION_CREATED + assignSession, matching
+            // the ordering guarantee the session-created forward relies on.
+            const errEvent: TranscriptEvent = {
+              type: 'session-error',
+              sessionId: info.id,
+              uuid: randomUUID(),
+              timestamp: Date.now(),
+              data: { text: 'This conversation could not be resumed — its saved data is missing.' },
+            };
+            process.nextTick(() => {
+              sendForSession(info.id, IPC.TRANSCRIPT_EVENT, errEvent);
+              remoteServer?.broadcast({ type: 'transcript:event', payload: errEvent });
+            });
+          }
+        } else {
+          await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding });
+        }
+      } catch (e) {
+        log('ERROR', 'IPC', 'native session start failed', { sessionId: info.id, error: String(e) });
+      }
+    }
     // Assign the new session to the calling window so per-session events (transcript,
     // pty output, permission prompts) route here once Task 1.4 migrates the emits.
     //
@@ -429,6 +479,9 @@ export function registerIpcHandlers(
   }
 
   ipcMain.handle(IPC.SESSION_DESTROY, async (_event, sessionId: string) => {
+    // Idempotent + no-op for non-native ids: flushes/tears down the native
+    // HarnessSession if this id is live, otherwise returns immediately.
+    await nativeHost.destroy(sessionId);
     const result = sessionManager.destroySession(sessionId);
     if (result) {
       // Explicit user-initiated destroy → treat as clean exit (0). The
@@ -1189,7 +1242,24 @@ export function registerIpcHandlers(
     for (const claudeId of sessionIdMap.values()) {
       activeIds.add(claudeId);
     }
-    return listPastSessions(activeIds);
+    // CC (Claude Code) transcript rows.
+    const ccRows = await listPastSessions(activeIds);
+    // Native-harness rows — map NativeSessionHost.list() entries onto the
+    // PastSession shape (now that PastSession carries `provider`). Native
+    // sessions have no CC auto-title hook, so the store already derived a title
+    // from the first user message; fall back to 'Untitled' when even that is
+    // absent. mtimeMs/sizeBytes stand in for lastModified/size.
+    const nativeRows: PastSession[] = nativeHost.list().map((r) => ({
+      sessionId: r.sessionId,
+      name: r.title ?? 'Untitled',
+      projectSlug: r.slug,
+      projectPath: r.cwd,
+      lastModified: r.mtimeMs,
+      size: r.sizeBytes,
+      provider: 'native' as const,
+    }));
+    // ResumeBrowser re-sorts by lastModified, so a plain concat is fine here.
+    return [...ccRows, ...nativeRows];
   });
 
   ipcMain.handle(IPC.SESSION_HISTORY, async (
@@ -1703,17 +1773,69 @@ export function registerIpcHandlers(
     if (claudeId) noteTranscriptEvent(claudeId, event);
   });
 
+  // --- Native runtime stack (Phase 1 Plan A, Task 9) ---
+  // NativeHome is the single writer for ~/.youcoded/; SecretsStore keeps API
+  // keys in Electron's safeStorage-encrypted userData (NOT in the syncable home
+  // dir). ProviderRegistry.init() seeds the built-in providers under the file
+  // lock (fire-and-forget — list/languageModel read on demand). The catalog's
+  // contextLengthFor feeds HarnessSession's context-window sizing.
+  const nativeHome = new NativeHome();
+  const secretsStore = new SecretsStore(app.getPath('userData'));
+  const providerRegistry = new ProviderRegistry(nativeHome, secretsStore);
+  void providerRegistry.init();
+  const modelCatalog = new ModelCatalog(app.getPath('userData'));
+  const nativeHost = new NativeSessionHost(
+    new SessionStore(nativeHome),
+    (binding) => providerRegistry.languageModel(binding),
+    async (binding) => modelCatalog.contextLengthFor(binding, await providerRegistry.list()),
+  );
+
+  // Native transcript events ride the SAME channel as CC's — the reducer
+  // consumes an identical event shape regardless of runtime.
+  nativeHost.on('transcript-event', (event: TranscriptEvent) => {
+    sendForSession(event.sessionId, IPC.TRANSCRIPT_EVENT, event);
+    if (remoteServer) {
+      remoteServer.broadcast({ type: 'transcript:event', payload: event });
+    }
+  });
+
+  // Give the remote server access to the native stack so its WS clients reach
+  // the SAME instances (mirrors how setLastTopic / broadcastStatusData push
+  // ipc-handler-owned state into remoteServer — no global needed).
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog });
+
   // Transcript replay: a window that just acquired a session asks for every
   // historical event so its reducer can hydrate. Events stream back on the
   // normal TRANSCRIPT_EVENT channel (uuid dedup handles overlap with live).
   // We send directly to the requesting window — NOT via sendForSession —
   // because ownership has already transferred to them by the time this fires.
   ipcMain.on(IPC.TRANSCRIPT_REPLAY, (evt, { sessionId }: { sessionId: string }) => {
-    const events = transcriptWatcher.getHistory(sessionId);
+    // Native sessions replay from the SessionStore; getHistory returns null for
+    // non-native ids so CC's watcher stays the source for claude sessions.
+    const events = nativeHost.getHistory(sessionId) ?? transcriptWatcher.getHistory(sessionId);
     for (const ev of events) {
       evt.sender.send(IPC.TRANSCRIPT_EVENT, ev);
     }
   });
+
+  // --- Native runtime IPC (Phase 1 Plan A) ---
+  // Fire-and-forget I/O (no response): send + interrupt. The host serializes
+  // sends per session and never throws for unknown ids.
+  ipcMain.on(IPC.NATIVE_SEND, (_e, { sessionId, text }: { sessionId: string; text: string }) => {
+    void nativeHost.send(sessionId, text);
+  });
+  ipcMain.on(IPC.NATIVE_INTERRUPT, (_e, { sessionId }: { sessionId: string }) => {
+    nativeHost.interrupt(sessionId);
+  });
+  ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => nativeHost.setBinding(sessionId, binding));
+  ipcMain.handle(IPC.NATIVE_SESSIONS_LIST, async () => nativeHost.list());
+  // Provider management (Settings → Providers).
+  ipcMain.handle(IPC.PROVIDER_LIST, async () => providerRegistry.list());
+  ipcMain.handle(IPC.PROVIDER_UPSERT, async (_e, config: any) => providerRegistry.upsert(config));
+  ipcMain.handle(IPC.PROVIDER_REMOVE, async (_e, id: string) => { await providerRegistry.remove(id); return true; });
+  ipcMain.handle(IPC.PROVIDER_TEST, async (_e, id: string) => providerRegistry.testConnection(id));
+  ipcMain.handle(IPC.PROVIDER_SET_KEY, async (_e, id: string, key: string) => { await providerRegistry.setKey(id, key); return true; });
+  ipcMain.handle(IPC.PROVIDER_CATALOG, async () => modelCatalog.get(await providerRegistry.list()));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens
   // to detect compaction completion (pending → COMPACTION_COMPLETE).
   transcriptWatcher.on('transcript-shrink', (payload: any) => {
@@ -2772,6 +2894,11 @@ export function registerIpcHandlers(
     clearInterval(statusInterval);
     clearInterval(usageRefreshInterval);
     transcriptWatcher.stopAll();
+    // Flush + tear down every live native session on quit (best-effort, bounded
+    // to one in-flight streaming part). Fire-and-forget with .catch — cleanup()
+    // is synchronous and callers don't await it, so this mirrors the async
+    // stopSyncSpaces() teardown pattern in main.ts window-all-closed.
+    void nativeHost.destroyAll().catch(() => {});
     for (const [id, watcher] of topicWatchers) {
       if (typeof (watcher as fs.FSWatcher).close === 'function') {
         (watcher as fs.FSWatcher).close();

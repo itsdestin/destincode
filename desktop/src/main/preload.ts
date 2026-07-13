@@ -276,6 +276,21 @@ const IPC = {
   SYSTEM_NOTIFY_STACK_STATE: 'system:notify-stack-state',
   SYSTEM_BACK: 'system:back',
   APP_RESTART: 'app:restart',
+  // ---- Native runtime Plan A (Phase 1): session I/O + provider management ----
+  // Mirrors src/shared/types.ts — the sandboxed preload can't import it.
+  // tests/ipc-channels.test.ts extracts BOTH full IPC blocks (anchored to the
+  // `} as const;` terminator) and asserts value equality for every key the two
+  // blocks share, so drift on these constants fails the test.
+  NATIVE_SEND: 'native:send',
+  NATIVE_INTERRUPT: 'native:interrupt',
+  NATIVE_SET_BINDING: 'native:set-binding',
+  NATIVE_SESSIONS_LIST: 'native:sessions-list',
+  PROVIDER_LIST: 'provider:list',
+  PROVIDER_UPSERT: 'provider:upsert',
+  PROVIDER_REMOVE: 'provider:remove',
+  PROVIDER_TEST: 'provider:test',
+  PROVIDER_SET_KEY: 'provider:set-key',
+  PROVIDER_CATALOG: 'provider:catalog',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -962,6 +977,23 @@ contextBridge.exposeInMainWorld('claude', {
   // (run-dev.sh does not set this var itself — it must come from your shell).
   native: {
     supported: process.env.YOUCODED_NATIVE === '1',
+    // Fire-and-forget: match ipcMain.on handlers that destructure { sessionId, text } / { sessionId }.
+    send: (sessionId: string, text: string) => ipcRenderer.send(IPC.NATIVE_SEND, { sessionId, text }),
+    interrupt: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_INTERRUPT, { sessionId }),
+    // Request-response: match the positional ipcMain.handle signatures.
+    setBinding: (sessionId: string, binding: unknown) => ipcRenderer.invoke(IPC.NATIVE_SET_BINDING, sessionId, binding),
+    sessionsList: () => ipcRenderer.invoke(IPC.NATIVE_SESSIONS_LIST),
+  },
+  // Provider registry — CRUD + connection test + model catalog for native
+  // runtime model providers. All request-response; positional args match the
+  // ipcMain.handle signatures in ipc-handlers.ts.
+  providers: {
+    list: () => ipcRenderer.invoke(IPC.PROVIDER_LIST),
+    upsert: (config: unknown) => ipcRenderer.invoke(IPC.PROVIDER_UPSERT, config),
+    remove: (id: string) => ipcRenderer.invoke(IPC.PROVIDER_REMOVE, id),
+    test: (id: string) => ipcRenderer.invoke(IPC.PROVIDER_TEST, id),
+    setKey: (id: string, key: string) => ipcRenderer.invoke(IPC.PROVIDER_SET_KEY, id, key),
+    catalog: () => ipcRenderer.invoke(IPC.PROVIDER_CATALOG),
   },
   // System namespace — platform integrations like hardware back button.
   // Desktop no-op stub: notifyStackState / onBack are only meaningful on

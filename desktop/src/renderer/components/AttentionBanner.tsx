@@ -12,19 +12,29 @@ interface Props {
   /** Anthropic API request ID for the last assistant turn, if any.
    *  Rendered only when state is 'error' or 'session-died' for support correlation. */
   anthropicRequestId?: string | null;
+  /** Provider error text (native runtime). When state==='error' this takes
+   *  precedence over the generic COPY line. */
+  errorMessage?: string | null;
+  /** Retry affordance shown only when state==='error'. Wired to re-send the
+   *  last user message via the native send path (Task 12). */
+  onRetry?: () => void;
 }
 
 const COPY: Record<Props['state'], string> = {
   'stuck': 'Still waiting on Claude — check Terminal view if this persists.',
   'session-died': 'Session ended unexpectedly.',
+  // 'error' is native-runtime only (dispatcher: NATIVE_SESSION_ERROR, added in
+  // Phase 1 Plan A). The detailed provider message rides the 'session-error'
+  // transcript event; this banner copy stays generic.
+  'error': 'The model provider returned an error — this turn has ended.',
 };
 
 // Destructive states pick up the L3 destructive ring tokens so they read as
 // "something went wrong" rather than just a nudge. Other states reuse the
 // neutral bubble styling to stay consistent with ThinkingIndicator.
-const DESTRUCTIVE: Props['state'][] = ['session-died'];
+const DESTRUCTIVE: Props['state'][] = ['session-died', 'error'];
 
-export default function AttentionBanner({ state, anthropicRequestId }: Props) {
+export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry }: Props) {
   const destructive = DESTRUCTIVE.includes(state);
   const bubbleBase = 'flex items-center gap-2 bg-inset rounded-2xl rounded-bl-sm px-4 py-2.5';
   const bubbleClasses = destructive
@@ -33,13 +43,18 @@ export default function AttentionBanner({ state, anthropicRequestId }: Props) {
   const textClasses = destructive
     ? 'text-sm text-fg-2'
     : 'text-sm text-fg-muted italic';
-  // Show the spinner for every state except session-died — that one signals
-  // the process is gone, so a spinning indicator would be misleading.
-  const showSpinner = state !== 'session-died';
-  // Only surface the request ID on session-died: it's strictly a support
-  // correlation aid, so we hide it during the benign 'stuck' banner where
-  // Claude is likely still working.
-  const showRequestId = state === 'session-died' && !!anthropicRequestId;
+  // Show the spinner only while Claude might still be working ('stuck').
+  // session-died and error both mean the turn is over — a spinning indicator
+  // would be misleading.
+  const showSpinner = state === 'stuck';
+  // Surface the request ID on terminal failures only (session-died / error):
+  // it's strictly a support-correlation aid, so we hide it during the benign
+  // 'stuck' banner where Claude is likely still working. Matches the Props
+  // doc comment above.
+  const showRequestId = (state === 'session-died' || state === 'error') && !!anthropicRequestId;
+  // Provider error text takes precedence over the generic 'error' COPY line.
+  const line = state === 'error' && errorMessage ? errorMessage : COPY[state];
+  const showRetry = state === 'error' && !!onRetry;
 
   return (
     // in-view: opts the bubble into wallpaper-driven bubble glassmorphism
@@ -49,7 +64,16 @@ export default function AttentionBanner({ state, anthropicRequestId }: Props) {
     <div className="flex flex-col items-start gap-1 px-4 py-1.5 in-view">
       <div className={bubbleClasses}>
         {showSpinner && <BrailleSpinner size="base" />}
-        <span className={textClasses}>{COPY[state]}</span>
+        <span className={textClasses}>{line}</span>
+        {showRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="text-xs underline text-fg-dim hover:text-fg"
+          >
+            Try again
+          </button>
+        )}
       </div>
       {showRequestId && (
         <div className="text-[10.5px] text-fg-muted font-mono mt-1 select-text">

@@ -3525,9 +3525,23 @@ class SessionService : Service() {
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
 
+            // Native runtime (YouCoded's first-party harness) + provider registry
+            // are desktop-only in Plan A. Reply not-implemented so the shared React
+            // UI degrades to a "desktop only" state instead of timing out.
+            // native:send / native:interrupt are fire-and-forget (no msg.id) on
+            // desktop; the msg.id?.let guard makes those a no-op here, correctly.
+            "native:send",
+            "native:interrupt",
+            "native:set-binding",
+            "native:sessions-list",
+            "provider:list",
+            "provider:upsert",
+            "provider:remove",
+            "provider:test",
+            "provider:set-key",
+            "provider:catalog",
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
-            // are desktop-only (Phase 3 on Android). Reply not-implemented so the
-            // shared React UI degrades cleanly instead of timing out.
+            // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",
             "syncspaces:stop-project" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
