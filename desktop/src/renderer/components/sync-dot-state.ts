@@ -7,7 +7,9 @@
 
 export interface SyncStatusData {
   enabled: boolean;
-  spaces: Array<{ id: string; root: string }>;
+  // `displayName`/`state` are the read-time overlay from the cross-device project
+  // registry (2026-07-12): a stopped project reads as detached, not errored.
+  spaces: Array<{ id: string; root: string; displayName?: string; state?: 'active' | 'stopped' }>;
   // Engine events since app boot (last 50). `at` is stamped at broadcast time
   // (ms epoch); older payloads may lack it.
   recentEvents: Array<{ type: string; spaceId: string; at?: number; message?: string }>;
@@ -20,7 +22,7 @@ export interface SyncDot { color: 'green' | 'red' | 'gray'; label: string }
 // here; root-vs-root equality only needs slash/case folding.)
 const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 
-export function findSpaceFor(folderPath: string, status: SyncStatusData | null): { id: string; root: string } | null {
+export function findSpaceFor(folderPath: string, status: SyncStatusData | null): SyncStatusData['spaces'][number] | null {
   if (!status) return null;
   return status.spaces.find((s) => norm(s.root) === norm(folderPath)) ?? null;
 }
@@ -36,6 +38,9 @@ export function syncDotFor(folderPath: string, status: SyncStatusData | null): S
   if (!status) return null; // status() rejected (e.g. Android) — render no dot at all
   const space = findSpaceFor(folderPath, status);
   if (!space) return { color: 'gray', label: 'Only on this computer' };
+  // A stopped project is detached on every device (permanent tombstone) — it
+  // reads as "not syncing", never as an error, regardless of the global toggle.
+  if (space.state === 'stopped') return { color: 'gray', label: 'Sync stopped' };
   if (!status.enabled) return { color: 'gray', label: 'Sync is turned off — will sync once you turn on Sync in Settings' };
   const last = latestEventFor(space.id, status);
   if (last?.type === 'error') return { color: 'red', label: "Sync isn't working — open Manage projects" };

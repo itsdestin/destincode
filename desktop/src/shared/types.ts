@@ -788,6 +788,8 @@ export const IPC = {
   SYNC_SPACES_SYNC_NOW: 'syncspaces:sync-now',
   SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
+  SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
+  SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',

@@ -522,6 +522,7 @@ export function ProjectView(props: ProjectViewProps) {
             {activeProject ? (
               <ProjectHero
                 project={activeProject}
+                displayName={(heroSpace as any)?.displayName ?? null}
                 stats={heroStats}
                 repo={heroRepo}
                 onOpenSwitcher={() => setSwitcherOpen(true)}
