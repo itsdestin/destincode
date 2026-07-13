@@ -216,6 +216,9 @@ function handleMessage(data: string): void {
     case 'session:meta-changed':
       dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value });
       break;
+    case 'tags:changed':
+      dispatchEvent('tags:changed', undefined, payload || {});
+      break;
     case 'session:permission-mode':
       // Android-only: corrects React's optimistic Shift+Tab cycling state.
       // Desktop uses pty:output text detection in App.tsx, but Android doesn't
@@ -701,10 +704,25 @@ export function installShim(): void {
       // Set a named flag on a past session (complete, priority, helpful).
       setFlag: (sessionId: string, flag: string, value: boolean) =>
         invoke('session:set-flag', { sessionId, flag, value }),
+      // Toggle a custom user tag on a past session.
+      setTag: (sessionId: string, tagId: string, value: boolean) =>
+        invoke('session:set-tag', { sessionId, tagId, value }),
+      // Set the freeform note on a past session.
+      setNote: (sessionId: string, note: string) =>
+        invoke('session:set-note', { sessionId, note }),
       sendInput: (sessionId: string, text: string) => fire('session:input', { sessionId, text }),
       resize: (sessionId: string, cols: number, rows: number) => fire('session:resize', { sessionId, cols, rows }),
       signalReady: (sessionId: string) => fire('session:terminal-ready', { sessionId }),
       respondToPermission: (requestId: string, decision: object) => invoke('permission:respond', { requestId, decision }),
+    },
+    // Tag registry CRUD (custom user-defined tags shared across sessions).
+    // Args wrapped as objects to match this transport's handler read-shape
+    // (preload passes them positionally — intentional, mirrors setFlag).
+    tags: {
+      list: () => invoke('tags:list'),
+      create: (label: string, color: string) => invoke('tags:create', { label, color }),
+      update: (id: string, patch: object) => invoke('tags:update', { id, patch }),
+      delete: (id: string) => invoke('tags:delete', { id }),
     },
     on: {
       sessionCreated: (cb: Callback) => addListener('session:created', cb),
@@ -724,6 +742,8 @@ export function installShim(): void {
       statusData: (cb: Callback) => addListener('status:data', cb),
       sessionRenamed: (cb: Callback) => addListener('session:renamed', cb),
       sessionMetaChanged: (cb: Callback) => addListener('session:meta-changed', cb),
+      // Pushed when the tag registry changes (create/update/delete).
+      tagsChanged: (cb: Callback) => addListener('tags:changed', cb),
       // Android-only push event — see remote-shim handleMessage above for rationale.
       sessionPermissionMode: (cb: Callback) => addListener('session:permission-mode', cb),
       uiAction: (cb: Callback) => addListener('ui:action:received', cb),
