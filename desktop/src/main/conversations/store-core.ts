@@ -92,7 +92,10 @@ const ts = (iso: string) => Date.parse(iso) || 0;
 // comparison is arbitrary but symmetric and stable across devices, which is
 // all a lattice join needs. Max under a total order is commutative AND
 // associative, so folds converge regardless of copy order.
-function laterOf<T>(x: T, y: T, tx: number, ty: number): T {
+// Exported so the project-registry store (cross-device project discovery,
+// 2026-07-12) can reuse the same content-tiebroken lattice-join pick for its
+// displayName last-writer-wins merge.
+export function laterOf<T>(x: T, y: T, tx: number, ty: number): T {
   if (tx !== ty) return tx > ty ? x : y;
   return JSON.stringify(x) >= JSON.stringify(y) ? x : y;
 }
