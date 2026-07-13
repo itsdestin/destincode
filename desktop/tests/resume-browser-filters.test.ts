@@ -32,7 +32,8 @@ const baseFilter: FilterState = {
   showComplete: false,
   stickyComplete: new Set(),
   selectedProjects: new Set(),
-  selectedTags: new Set(),
+  selectedTagIds: new Set(),
+  tagLabelById: {},
 };
 
 describe('applyFilters', () => {
@@ -82,33 +83,16 @@ describe('applyFilters', () => {
     expect(out.map((s) => s.sessionId).sort()).toEqual(['a', 'c']);
   });
 
-  it('empty selectedTags = no tag narrowing', () => {
-    const a = session({ sessionId: 'a', flags: { priority: true } });
-    const b = session({ sessionId: 'b' });
-    const out = applyFilters([a, b], baseFilter);
-    expect(out.map((s) => s.sessionId).sort()).toEqual(['a', 'b']);
-  });
-
-  it('non-empty selectedTags = OR match across selected flags', () => {
-    const a = session({ sessionId: 'a', flags: { priority: true } });
-    const b = session({ sessionId: 'b', flags: { helpful: true } });
-    const c = session({ sessionId: 'c' });
-    const out = applyFilters([a, b, c], { ...baseFilter, selectedTags: new Set(['priority', 'helpful']) });
-    expect(out.map((s) => s.sessionId).sort()).toEqual(['a', 'b']);
-    const onlyPriority = applyFilters([a, b, c], { ...baseFilter, selectedTags: new Set(['priority']) });
-    expect(onlyPriority.map((s) => s.sessionId)).toEqual(['a']);
-  });
-
   it('all filters compose AND', () => {
-    const a = session({ sessionId: 'a', name: 'good', projectPath: '/p1', flags: { priority: true } });
-    const b = session({ sessionId: 'b', name: 'good', projectPath: '/p2', flags: { priority: true } });
-    const c = session({ sessionId: 'c', name: 'bad', projectPath: '/p1', flags: { priority: true } });
-    const d = session({ sessionId: 'd', name: 'good', projectPath: '/p1' });
+    const a = session({ sessionId: 'a', name: 'good', projectPath: '/p1', tags: ['tag_x'] });
+    const b = session({ sessionId: 'b', name: 'good', projectPath: '/p2', tags: ['tag_x'] });
+    const c = session({ sessionId: 'c', name: 'bad', projectPath: '/p1', tags: ['tag_x'] });
+    const d = session({ sessionId: 'd', name: 'good', projectPath: '/p1', tags: [] });
     const out = applyFilters([a, b, c, d], {
       ...baseFilter,
       search: 'good',
       selectedProjects: new Set(['/p1']),
-      selectedTags: new Set(['priority']),
+      selectedTagIds: new Set(['tag_x']),
     });
     expect(out.map((s) => s.sessionId)).toEqual(['a']);
   });
@@ -215,5 +199,28 @@ describe('getAvailableProjects', () => {
     const out = getAvailableProjects([session({ projectPath: '/p', lastModified: 42 })]);
     // Strict shape: only { path, label, count }, no 'recent' / 'lastModified' leak.
     expect(Object.keys(out[0]).sort()).toEqual(['count', 'label', 'path']);
+  });
+});
+
+describe('custom-tag filter', () => {
+  it('keeps only sessions carrying a selected tag', () => {
+    const a = session({ sessionId: 'a', tags: ['tag_1'] });
+    const b = session({ sessionId: 'b', tags: ['tag_2'] });
+    const out = applyFilters([a, b], { ...baseFilter, selectedTagIds: new Set(['tag_1']) });
+    expect(out.map((x) => x.sessionId)).toEqual(['a']);
+  });
+});
+
+describe('search over note + tag labels', () => {
+  it('matches the note text', () => {
+    const a = session({ sessionId: 'a', note: 'oauth callback bug' });
+    const b = session({ sessionId: 'b' });
+    expect(applyFilters([a, b], { ...baseFilter, search: 'oauth' }).map((x) => x.sessionId)).toEqual(['a']);
+  });
+  it('matches an applied tag label via tagLabelById', () => {
+    const a = session({ sessionId: 'a', tags: ['tag_1'] });
+    const b = session({ sessionId: 'b' });
+    const out = applyFilters([a, b], { ...baseFilter, search: 'auth', tagLabelById: { tag_1: 'Auth rewrite' } });
+    expect(out.map((x) => x.sessionId)).toEqual(['a']);
   });
 });

@@ -6,7 +6,7 @@
 // Mirrors the FlagName + PastSession type defined inline in ResumeBrowser.tsx.
 // Kept structurally compatible (PastSessionLike is a subset) so the component
 // can pass its own typed sessions in directly.
-export type FlagName = 'priority' | 'helpful' | 'complete';
+export type FlagName = 'priority' | 'complete';
 
 export interface PastSessionLike {
   sessionId: string;
@@ -16,6 +16,8 @@ export interface PastSessionLike {
   lastModified: number;
   size: number;
   flags?: Partial<Record<FlagName, boolean>>;
+  tags?: string[];      // applied custom-tag ids
+  note?: string;
 }
 
 export interface FilterState {
@@ -23,12 +25,14 @@ export interface FilterState {
   showComplete: boolean;
   stickyComplete: Set<string>;
   selectedProjects: Set<string>;
-  selectedTags: Set<FlagName>;
+  selectedTagIds: Set<string>;          // custom-tag ids (replaces the old flag-tag set)
+  tagLabelById: Record<string, string>; // id → label, for search
 }
 
-// Apply Show Complete + sticky + project + tag + search, in that order.
+// Apply Show Complete + sticky + project + custom-tag + search, in that order.
 // Order matches the existing inline pipeline in ResumeBrowser.tsx so the
-// refactor is a behaviour-preserving lift.
+// refactor is a behaviour-preserving lift. Search matches name, projectPath,
+// the session note, and any applied-tag label (resolved via tagLabelById).
 export function applyFilters<T extends PastSessionLike>(sessions: T[], state: FilterState): T[] {
   const completeFiltered = state.showComplete
     ? sessions
@@ -38,20 +42,19 @@ export function applyFilters<T extends PastSessionLike>(sessions: T[], state: Fi
     ? completeFiltered
     : completeFiltered.filter((s) => state.selectedProjects.has(s.projectPath));
 
-  const tagFiltered = state.selectedTags.size === 0
+  const tagFiltered = state.selectedTagIds.size === 0
     ? projectFiltered
-    : projectFiltered.filter((s) => {
-        for (const tag of state.selectedTags) {
-          if (s.flags?.[tag]) return true;
-        }
-        return false;
-      });
+    : projectFiltered.filter((s) => (s.tags ?? []).some((id) => state.selectedTagIds.has(id)));
 
   if (!state.search.trim()) return tagFiltered;
   const q = state.search.toLowerCase();
-  return tagFiltered.filter(
-    (s) => s.name.toLowerCase().includes(q) || s.projectPath.toLowerCase().includes(q),
-  );
+  return tagFiltered.filter((s) => {
+    if (s.name.toLowerCase().includes(q)) return true;
+    if (s.projectPath.toLowerCase().includes(q)) return true;
+    if ((s.note ?? '').toLowerCase().includes(q)) return true;
+    // Applied-tag labels (resolved via the id→label map).
+    return (s.tags ?? []).some((id) => (state.tagLabelById[id] ?? '').toLowerCase().includes(q));
+  });
 }
 
 // Pure sort: priority sessions pinned to top, then lastModified by direction.
