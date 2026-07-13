@@ -69,7 +69,9 @@ import { listProjectConversations, projectConversationHistory } from './project-
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteTitleChanged, noteFlagChanged } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteTitleChanged, noteFlagChanged, noteSessionNote } from './conversations/service';
+import { getTagRegistry } from './conversations/tag-registry-service';
+import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
 import { listContext, readContextFile, writeContextFile } from './project-context';
 
@@ -140,6 +142,14 @@ export function registerIpcHandlers(
     // webContents was destroyed, the event is silently dropped — the fallback
     // is only taken when no recipients were identified at all.
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
+  };
+
+  // Registry-wide push (not session-scoped): notify every window. Mirrors the
+  // getAllWindows loop already used for 'appearance:sync' / 'update:progress'.
+  const broadcastToAllWindows = (channel: string, payload: any) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload);
+    }
   };
 
   // --- Theme file watcher ---
@@ -2059,6 +2069,88 @@ export function registerIpcHandlers(
     } catch (e: any) {
       return { ok: false, error: e?.message || String(e) };
     }
+  });
+
+  // --- Tag registry CRUD ---
+  ipcMain.handle(IPC.TAGS_LIST, async () => {
+    const reg = getTagRegistry();
+    if (!reg) return [];
+    try { return await reg.list(); } catch { return []; }
+  });
+
+  ipcMain.handle(IPC.TAGS_CREATE, async (_e, label: string, color: string) => {
+    const reg = getTagRegistry();
+    if (!reg) return { ok: false, error: 'tag registry unavailable' };
+    const c: TagColor = isTagColor(color) ? color : 'tag-gray';
+    try {
+      const tag = await reg.create(String(label ?? ''), c);
+      remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
+      // Notify local windows too (buddy window + main share the registry).
+      broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      return { ok: true, tag };
+    } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+  });
+
+  ipcMain.handle(IPC.TAGS_UPDATE, async (_e, id: string, patch: { label?: string; color?: string; archived?: boolean }) => {
+    const reg = getTagRegistry();
+    if (!reg) return { ok: false, error: 'tag registry unavailable' };
+    const clean: { label?: string; color?: TagColor; archived?: boolean } = {};
+    if (patch?.label !== undefined) clean.label = String(patch.label);
+    if (patch?.color !== undefined) clean.color = isTagColor(patch.color) ? patch.color : 'tag-gray';
+    if (patch?.archived !== undefined) clean.archived = !!patch.archived;
+    try {
+      const tag = await reg.update(String(id), clean);
+      remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
+      broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      return { ok: true, tag };
+    } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+  });
+
+  ipcMain.handle(IPC.TAGS_DELETE, async (_e, id: string) => {
+    const reg = getTagRegistry();
+    if (!reg) return { ok: false, error: 'tag registry unavailable' };
+    try {
+      await reg.delete(String(id));
+      remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
+      broadcastToAllWindows(IPC.TAGS_CHANGED, {});
+      return { ok: true };
+    } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+  });
+
+  // --- Apply/remove a tag on a session (writes tag:<id> into the store flag map) ---
+  ipcMain.handle(IPC.SESSION_SET_TAG, async (_e, sessionId: string, tagId: string, value: boolean) => {
+    if (typeof tagId !== 'string' || !tagId.startsWith('tag_')) {
+      return { ok: false, error: `invalid tag id: ${tagId}` };
+    }
+    const resolved = sessionIdMap.get(sessionId) || sessionId;
+    const key = tagFlagKey(tagId);
+    try {
+      // Same phantom-record gate as SESSION_SET_FLAG: only write the store when
+      // `resolved` is a known CLAUDE id or a non-live session.
+      if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
+        noteFlagChanged(resolved, key, !!value);
+      }
+      const payload = { flag: key, value: !!value };
+      sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
+      remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId: resolved, ...payload } });
+      return { ok: true };
+    } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+  });
+
+  // --- Set/clear a session note ---
+  ipcMain.handle(IPC.SESSION_SET_NOTE, async (_e, sessionId: string, note: string) => {
+    const resolved = sessionIdMap.get(sessionId) || sessionId;
+    const text = String(note ?? '');
+    if (text.length > 8000) return { ok: false, error: 'note exceeds 8000 characters' };
+    try {
+      if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
+        noteSessionNote(resolved, text);
+      }
+      const payload = { note: text };
+      sendForSession(resolved, IPC.SESSION_META_CHANGED, resolved, payload);
+      remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId: resolved, ...payload } });
+      return { ok: true };
+    } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
   });
 
   // --- Sync management ---
