@@ -44,8 +44,19 @@ export class SessionManager extends EventEmitter {
   createSession(opts: CreateSessionOpts): SessionInfo {
     const id = randomUUID();
     const provider: SessionProvider = opts.provider || 'claude';
-    // Resolve CWD: fall back to home directory if empty or nonexistent
-    const resolvedCwd = (opts.cwd && fs.existsSync(opts.cwd)) ? opts.cwd : os.homedir();
+    // Resolve CWD: fall back to home directory if empty or nonexistent.
+    const cwdExists = !!opts.cwd && fs.existsSync(opts.cwd);
+    // Diagnostic (2026-07-12): a RESUME whose cwd was provided but doesn't exist
+    // means upstream row resolution produced a bad path — silently falling back
+    // to $HOME then runs `claude --resume` in the WRONG project (this is exactly
+    // how the greedy-slug bug surfaced as "every session resumed from home"). The
+    // Resume Browser now gates resume on resolvable rows and the slug walk is
+    // fixed, so this should be rare; the warning makes any regression VISIBLE
+    // instead of a silent wrong-directory resume. Behavior is unchanged.
+    if (!cwdExists && opts.cwd && opts.resumeSessionId) {
+      console.warn(`[session-manager] resume ${opts.resumeSessionId}: cwd "${opts.cwd}" does not exist — falling back to home; resume may open the wrong project`);
+    }
+    const resolvedCwd = cwdExists ? opts.cwd! : os.homedir();
 
     // Build Claude CLI args. The 'native' provider (platform roadmap Phase 1+)
     // never reaches this PTY path — SessionManager will branch before the
