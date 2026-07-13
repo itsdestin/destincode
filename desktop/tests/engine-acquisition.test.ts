@@ -137,4 +137,15 @@ describe('EngineAcquisition', () => {
     await expect(acq.install(badAsset, () => {})).rejects.toThrow(/did not contain/);
     expect(acq.installed()).toBeNull();
   });
+
+  it('a write-stream failure rejects the install cleanly (never an unhandled crash)', async () => {
+    fs.mkdirSync(engineRoot, { recursive: true });
+    // Plant a DIRECTORY where the .download file must be written → the write
+    // stream errors (EISDIR/EPERM). The install must reject, not throw an
+    // unhandled stream 'error' that would crash the main process.
+    fs.mkdirSync(path.join(engineRoot, `${asset.assetName}.download`), { recursive: true });
+    const acq = new EngineAcquisition(engineRoot, fetchServing(archivePath));
+    await expect(acq.install(asset, () => {})).rejects.toThrow();
+    expect(acq.installed()).toBeNull();
+  });
 });

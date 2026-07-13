@@ -167,4 +167,33 @@ describe('EngineSupervisor', () => {
     const models = await sup.listModels();
     expect(models).toEqual([{ id: 'foo-Q4_K_M', sizeBytes: null, loaded: true }]);
   });
+
+  it('ensureRunning during an in-flight stop WAITS for it, then respawns (no URL to the dying server)', async () => {
+    const first = makeFakeChild();
+    const second = makeFakeChild();
+    // Make the first child's kill NOT exit immediately, so stop() stays
+    // in-flight and we can probe ensureRunning during the teardown window.
+    let releaseExit!: () => void;
+    (first as any).kill = vi.fn(() => {
+      new Promise<void>((r) => { releaseExit = r; }).then(() => first.emit('exit', 0));
+      return true;
+    });
+    mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    sup = makeSupervisor(healthAfter(0));
+    await sup.ensureRunning();
+    expect(sup.status()).toBe('running');
+
+    const stopP = sup.stop();          // in-flight until releaseExit()
+    const ensureP = sup.ensureRunning(); // must NOT resolve with the old URL yet
+    let ensured = false;
+    void ensureP.then(() => { ensured = true; });
+    await Promise.resolve();
+    expect(ensured).toBe(false);        // still waiting for the stop to finish
+
+    releaseExit();                      // stop completes → ensureRunning respawns
+    await stopP;
+    await ensureP;
+    expect(mockSpawn).toHaveBeenCalledTimes(2); // spawned a fresh server, didn't reuse the dying one
+    expect(sup.status()).toBe('running');
+  });
 });

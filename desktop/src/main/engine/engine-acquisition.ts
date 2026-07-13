@@ -161,11 +161,19 @@ export class EngineAcquisition {
     const lenHeader = res.headers.get('content-length');
     const totalBytes = lenHeader ? Number(lenHeader) + start : null;
     const ws = fs.createWriteStream(dest, { flags: start > 0 ? 'a' : 'w' });
+    // A write-stream 'error' emitted OUTSIDE a pending write callback (disk
+    // full, EACCES, an async flush during end()) is otherwise unhandled — and
+    // an unhandled stream 'error' crashes the Electron main process. Capture it
+    // and surface it as a normal rejected install instead. Engine archives are
+    // hundreds of MB, so disk-full mid-download is a real path.
+    let streamError: Error | null = null;
+    ws.on('error', (e: Error) => { streamError = e; });
     const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     let received = start;
     let lastEmit = 0;
     try {
       for (;;) {
+        if (streamError) throw streamError;
         const { done, value } = await reader.read();
         if (done) break;
         received += value.byteLength;
@@ -180,8 +188,11 @@ export class EngineAcquisition {
       }
       onProgress({ kind: 'download', receivedBytes: received, totalBytes });
     } finally {
+      await reader.cancel().catch(() => {}); // release the response body on any exit path
       await new Promise<void>((resolve) => ws.end(() => resolve()));
     }
+    // A flush error surfacing only at end() must fail the install, not pass silently.
+    if (streamError) throw streamError;
   }
 }
 

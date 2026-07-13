@@ -41,6 +41,7 @@ export class EngineSupervisor extends EventEmitter {
   private child: ChildProcess | null = null;
   private state: EngineRunState = 'stopped';
   private startPromise: Promise<string> | null = null; // single-flight ensureRunning
+  private stopPromise: Promise<void> | null = null;    // single-flight stop (idle/restart)
   private crashTimes: number[] = [];
   private inFlight = 0;
   private lastActivity = Date.now();
@@ -71,6 +72,14 @@ export class EngineSupervisor extends EventEmitter {
    *  flight: concurrent callers share one spawn. Throws plain language — the
    *  messages surface in the chat error banner via the registry. */
   ensureRunning(): Promise<string> {
+    // A stop is in flight (idle shutdown or restart). The dying child still
+    // holds the port for up to ~2s, and its state is briefly still 'running' —
+    // so we must NOT hand back that stale baseUrl (the AI SDK would hit a
+    // server being killed → ECONNREFUSED mid-turn) NOR spawn a second server
+    // on the same port. Wait for the stop to finish, then (re)start cleanly.
+    if (this.stopPromise) {
+      return this.stopPromise.then(() => this.ensureRunning());
+    }
     if (this.state === 'running') {
       this.touch();
       return Promise.resolve(this.baseUrl()!);
@@ -161,7 +170,16 @@ export class EngineSupervisor extends EventEmitter {
     this.emit('crashed', { exitCode: code });
   }
 
-  async stop(): Promise<void> {
+  /** Single-flight: concurrent callers (idle timer + restart + app-quit) share
+   *  ONE teardown. ensureRunning() awaits this.stopPromise so no one restarts
+   *  the engine while the old child is still releasing the port. */
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this._stop().finally(() => { this.stopPromise = null; });
+    return this.stopPromise;
+  }
+
+  private async _stop(): Promise<void> {
     this.disarmIdleTimer();
     if (!this.child) {
       if (this.state !== 'error') this.state = 'stopped';
@@ -171,8 +189,10 @@ export class EngineSupervisor extends EventEmitter {
     const child = this.child;
     child.kill();
     await new Promise<void>((resolve) => {
-      child.once('exit', () => resolve());
-      setTimeout(resolve, 2_000); // best-effort — don't hang app quit
+      let done = false;
+      const finish = () => { if (!done) { done = true; clearTimeout(timer); resolve(); } };
+      child.once('exit', finish);
+      const timer = setTimeout(finish, 2_000); // best-effort — don't hang app quit
     });
     this.child = null;
     this.state = 'stopped';
