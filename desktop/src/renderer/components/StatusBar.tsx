@@ -12,6 +12,8 @@ import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
 import OpenTasksChip from './OpenTasksChip';
+import { isAndroid } from '../platform';
+import { SessionTagsChip } from './tags/SessionTagsChip';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -173,6 +175,7 @@ type WidgetId =
   | 'cache-hit-rate' | 'active-ratio' | 'output-speed'
   | 'announcement'
   | 'open-tasks'
+  | 'session-tags'
   | 'restore-progress';
 
 // Widget categories and definitions with info tooltips
@@ -181,6 +184,7 @@ interface WidgetDef {
   id: WidgetId;
   label: string;
   defaultVisible: boolean;
+  locked?: boolean;     // core control — always on, non-toggleable in the config menu
   description: string;  // Shown in (i) tooltip in config popup
   bestFor: string;      // Who benefits most from this widget
 }
@@ -213,6 +217,14 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
   {
     name: 'Session',
     widgets: [
+      {
+        id: 'session-tags',
+        label: 'Tags & Note',
+        defaultVisible: true,
+        locked: true,
+        description: 'Tag the current session and attach a freeform note. Always shown next to the model and permission controls.',
+        bestFor: 'Everyone. Organize and annotate sessions so they\'re easy to find and resume later.',
+      },
       {
         id: 'context',
         label: 'Context %',
@@ -507,25 +519,28 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                     return (
                       <div key={w.id}>
                         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-inset transition-colors">
-                          {/* Toggle checkbox */}
+                          {/* Toggle checkbox — locked widgets (fixed controls)
+                              render always-checked and non-interactive. */}
                           <button
-                            onClick={() => toggle(w.id)}
-                            className="flex items-center gap-2 flex-1 text-left"
+                            onClick={() => { if (!w.locked) toggle(w.id); }}
+                            disabled={w.locked}
+                            className={`flex items-center gap-2 flex-1 text-left ${w.locked ? 'cursor-default' : ''}`}
                           >
                             <span
                               className={`w-3.5 h-3.5 rounded-sm border flex-shrink-0 flex items-center justify-center transition-colors ${
-                                visible.has(w.id)
+                                (w.locked || visible.has(w.id))
                                   ? 'bg-accent border-accent text-on-accent'
                                   : 'border-edge-dim'
                               }`}
                             >
-                              {visible.has(w.id) && (
+                              {(w.locked || visible.has(w.id)) && (
                                 <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor">
                                   <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z" />
                                 </svg>
                               )}
                             </span>
                             <span className="text-[11px] text-fg">{w.label}</span>
+                            {w.locked && <span className="text-[9px] text-fg-faint">always on</span>}
                           </button>
 
                           {/* Pencil — Theme widget only. Opens the cycle editor
@@ -701,6 +716,10 @@ export default function StatusBar({
           <span className="hidden sm:inline">{PERMISSION_DISPLAY[permissionMode].label}</span>
         </button>
       )}
+
+      {/* Session tags & note — fixed control (design §"In-session surface").
+          Hidden on Android (touch UI deferred); shown on desktop + remote. */}
+      {!isAndroid() && <SessionTagsChip sessionId={sessionId ?? null} />}
 
       {/* Open Tasks chip — hidden when 0 open OR when widget is toggled off.
           Counts are derived at App root to share one useSessionTasks instance
