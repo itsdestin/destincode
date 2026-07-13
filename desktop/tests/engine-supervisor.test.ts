@@ -61,6 +61,7 @@ describe('EngineSupervisor', () => {
     expect(args).toEqual([
       '--host', '127.0.0.1', '--port', '9999',
       '--no-webui', '--jinja',
+      '--models-dir', 'C:/fake/cache', // discovers dropped GGUFs (LLAMA_CACHE alone doesn't)
       '--models-max', '2',
       '-c', '32768',
     ]);
@@ -158,7 +159,9 @@ describe('EngineSupervisor', () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
       if (String(url).endsWith('/models')) {
-        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'foo-Q4_K_M', status: 'loaded' }] }) } as any;
+        // Real b9992 shape: status is an OBJECT {value}, not a bare string.
+        // Pinned by probe-models.mjs + docs/engine-dependencies.md.
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'foo-Q4_K_M', status: { value: 'loaded' } }], object: 'list' }) } as any;
       }
       return { ok: false, status: 404 } as any;
     });

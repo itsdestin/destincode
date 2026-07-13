@@ -111,10 +111,18 @@ export class EngineSupervisor extends EventEmitter {
         // --jinja from day one: Phase 2 tool calling requires it, and keeping
         // the spawn shape constant means Phase 2 changes no process contract.
         '--jinja',
+        // --models-dir is what makes the router DISCOVER our dropped GGUFs and
+        // auto-load them by filename id (verified b9992). LLAMA_CACHE alone does
+        // NOT — it only tracks -hf auto-downloads (Plan C), so without this the
+        // router serves ZERO models and every send 400s. Points at the same
+        // cache dir so a dropped GGUF and an -hf pull live side by side.
+        '--models-dir', this.opts.cacheDir,
         '--models-max', String(MODELS_MAX),
         '-c', String(this.opts.contextSize),
       ],
       {
+        // LLAMA_CACHE kept for the Plan C -hf download path; --models-dir above
+        // is what serves manually-placed GGUFs today.
         env: { ...process.env, ...(this.opts.env ?? {}), LLAMA_CACHE: this.opts.cacheDir },
         stdio: ['ignore', 'pipe', 'pipe'],
       }
@@ -281,10 +289,15 @@ export class EngineSupervisor extends EventEmitter {
       for (const row of rows) {
         const id = typeof row?.id === 'string' ? row.id : typeof row?.name === 'string' ? row.name : null;
         if (!id) continue; // skip malformed
+        // b9992's /models reports status as an OBJECT ({value:'loaded'|'unloaded'
+        // |'loading'}), NOT a bare string. Handle both so a schema shift either
+        // way still reads. (/models rows carry no size — cache scan provides it.)
+        const statusValue = typeof row?.status === 'object' && row?.status
+          ? row.status.value : row?.status;
         out.push({
           id,
           sizeBytes: typeof row?.size === 'number' ? row.size : null,
-          loaded: row?.status === 'loaded',
+          loaded: statusValue === 'loaded',
         });
       }
       return out;
