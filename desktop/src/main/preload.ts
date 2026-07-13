@@ -391,11 +391,14 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.SESSION_RENAMED, handler);
       return handler;
     },
-    // Pushed when a session's metadata changes (currently: complete flag)
+    // Pushed when a session's metadata changes (flags, applied tags, or note).
+    // Returns an UNSUBSCRIBE fn (not the raw handler) so callers can clean up via
+    // `off()` — matches tagsChanged below; the leak fix for the tags hooks depends
+    // on this being consistent across preload + remote-shim.
     sessionMetaChanged: (cb: (sessionId: string, meta: { flag: string; value: boolean }) => void) => {
       const handler = (_e: IpcRendererEvent, sid: string, meta: any) => cb(sid, meta);
       ipcRenderer.on(IPC.SESSION_META_CHANGED, handler);
-      return handler;
+      return () => ipcRenderer.removeListener(IPC.SESSION_META_CHANGED, handler);
     },
     // Pushed when the tag registry changes (create/update/delete) so open UIs refresh.
     tagsChanged: (cb: (payload: any) => void) => {

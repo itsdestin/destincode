@@ -743,9 +743,11 @@ export function installShim(): void {
       hookEvent: (cb: Callback) => addListener('hook:event', cb),
       statusData: (cb: Callback) => addListener('status:data', cb),
       sessionRenamed: (cb: Callback) => addListener('session:renamed', cb),
-      sessionMetaChanged: (cb: Callback) => addListener('session:meta-changed', cb),
+      // Return UNSUBSCRIBE fns (not the raw cb) so the tag hooks' off() cleanup
+      // actually removes the listener — parity with preload, prevents leaks.
+      sessionMetaChanged: (cb: Callback) => { addListener('session:meta-changed', cb); return () => removeListener('session:meta-changed', cb); },
       // Pushed when the tag registry changes (create/update/delete).
-      tagsChanged: (cb: Callback) => addListener('tags:changed', cb),
+      tagsChanged: (cb: Callback) => { addListener('tags:changed', cb); return () => removeListener('tags:changed', cb); },
       // Android-only push event — see remote-shim handleMessage above for rationale.
       sessionPermissionMode: (cb: Callback) => addListener('session:permission-mode', cb),
       uiAction: (cb: Callback) => addListener('ui:action:received', cb),

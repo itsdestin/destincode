@@ -2658,14 +2658,16 @@ function AppInner() {
           const id = closePromptFor;
           if (!id) return;
           // Reserved flags (priority/complete), custom tags, and the note — each
-          // fire-and-forget; main resolves the desktop id to the Claude id.
+          // fire-and-forget; main resolves the desktop id to the Claude id. The
+          // .catch() swallows an IPC rejection (remote timeout) so it can't
+          // surface as an unhandled promise rejection.
           for (const flag of result.flags) {
-            try { (window as any).claude.session.setFlag(id, flag, true); } catch {}
+            try { Promise.resolve((window as any).claude.session.setFlag(id, flag, true)).catch(() => {}); } catch {}
           }
           for (const tagId of result.tagIds) {
-            try { (window as any).claude.session.setTag(id, tagId, true); } catch {}
+            try { Promise.resolve((window as any).claude.session.setTag(id, tagId, true)).catch(() => {}); } catch {}
           }
-          if (result.note) { try { (window as any).claude.session.setNote(id, result.note); } catch {} }
+          if (result.note) { try { Promise.resolve((window as any).claude.session.setNote(id, result.note)).catch(() => {}); } catch {} }
           try { window.claude.session.destroy(id); } catch {}
           setClosePromptFor(null);
         }}

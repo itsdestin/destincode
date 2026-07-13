@@ -417,7 +417,8 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         return next;
       }));
     });
-    // Desktop preload returns the raw handler; remote-shim returns an unsubscribe fn.
+    // Both preload and remote-shim return an unsubscribe fn for this channel,
+    // so calling off() actually removes the listener (no per-open leak).
     return () => {
       try { if (typeof off === 'function') off(); } catch {}
     };

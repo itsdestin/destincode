@@ -39,13 +39,15 @@ export function useSessionMeta(sessionId: string | null): SessionMetaApi {
   const setTag = useCallback((tagId: string, next: boolean) => {
     if (!sessionId) return;
     setTags((prev) => { const s = new Set(prev); if (next) s.add(tagId); else s.delete(tagId); return s; });
-    try { (window as any).claude.session.setTag(sessionId, tagId, next); } catch { /* backend logs */ }
+    // Fire-and-forget; Promise.resolve(...).catch swallows an IPC rejection
+    // (remote timeout / Android) so it can't surface as an unhandled rejection.
+    try { Promise.resolve((window as any).claude.session.setTag(sessionId, tagId, next)).catch(() => {}); } catch { /* backend logs */ }
   }, [sessionId]);
 
   const setNote = useCallback((text: string) => {
     if (!sessionId) return;
     setNoteState(text);
-    try { (window as any).claude.session.setNote(sessionId, text); } catch { /* backend logs */ }
+    try { Promise.resolve((window as any).claude.session.setNote(sessionId, text)).catch(() => {}); } catch { /* backend logs */ }
   }, [sessionId]);
 
   return { tags, note, setTag, setNote };
