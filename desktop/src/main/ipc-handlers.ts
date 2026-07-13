@@ -2767,6 +2767,16 @@ export function registerIpcHandlers(
       // Mirror the folder picker's first-use seed so a fresh install isn't empty.
       saved = [{ path: os.homedir(), nickname: 'Home', addedAt: Date.now() }];
     }
+    // Managed sync projects always appear in Project View, exactly like the
+    // session picker's FOLDERS_LIST synthesizes them (2026-07-13 dogfood fix).
+    // WHY: a project materialized by cross-device discovery is created in the
+    // main process and is NEVER written to youcoded-folders.json, and it has no
+    // central-index entry until it gains a tracked artifact — so without this it
+    // showed in the picker but was invisible here. Append at the END so a saved
+    // entry for the same path wins (keeps the user's nickname); buildSavedFolder-
+    // Projects dedups by canonical path (first-wins) and reuses any index entry.
+    const managed = getManagedRoots()?.listProjects() ?? [];
+    for (const p of managed) saved.push({ path: p.path, nickname: p.name, addedAt: 0 });
     const indexProjects = await listProjects(CLAUDE_DIR);
     const projects = buildSavedFolderProjects(saved, indexProjects);
 
