@@ -45,6 +45,7 @@ import { AppIcon, WelcomeAppIcon, ThemeMascot } from './components/Icons';
 import CommandDrawer from './components/CommandDrawer';
 import { TerminalScrollButtons } from './components/TerminalToolbar';
 import TrustGate, { useTrustGateActive } from './components/TrustGate';
+import MovedGate from './components/MovedGate';
 import SettingsPanel from './components/SettingsPanel';
 import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
@@ -192,6 +193,30 @@ function AppInner() {
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
   const [resumeInfo, setResumeInfo] = useState<Map<string, { claudeSessionId: string; projectSlug: string }>>(new Map());
   const [resumeRequested, setResumeRequested] = useState(false);
+  // Plan 2b "Moved Gate" (2026-07-14). Sessions another device took over: we keep
+  // the pill and render <MovedGate> (instead of chat/terminal) when it's clicked.
+  // The RENDER reads `movedSessions` state; the `destroyedHandler` — registered
+  // once in a mount effect whose only dep is the stable `dispatch`, so its closure
+  // captured `movedSessions` at mount (permanently the initial empty Map) — reads
+  // `movedSessionsRef.current` instead. recordMoved/clearMoved keep the state and
+  // the ref in lockstep, the ref updated synchronously so the destroy handler
+  // (which fires ms after the moved push) reliably sees the entry.
+  type MovedInfo = { device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string };
+  const [movedSessions, setMovedSessions] = useState<Map<string, MovedInfo>>(new Map());
+  const movedSessionsRef = useRef(movedSessions);
+  const recordMoved = useCallback((sessionId: string, info: MovedInfo) => {
+    const next = new Map(movedSessionsRef.current);
+    next.set(sessionId, info);
+    movedSessionsRef.current = next;
+    setMovedSessions(next);
+  }, []);
+  const clearMoved = useCallback((sessionId: string) => {
+    if (!movedSessionsRef.current.has(sessionId)) return;
+    const next = new Map(movedSessionsRef.current);
+    next.delete(sessionId);
+    movedSessionsRef.current = next;
+    setMovedSessions(next);
+  }, []);
   // Conversation-lease takeover dialog (Plan 2b Task 9). When resuming a
   // conversation held live on another device, we ask before yanking it here.
   // The resume flow AWAITS the user's choice via a promise resolved by the
@@ -734,6 +759,21 @@ function AppInner() {
     });
 
     const destroyedHandler = window.claude.on.sessionDestroyed((id: string, exitCode: number = 0) => {
+      // Plan 2b Moved Gate: this session was TAKEN OVER, not closed. Keep its pill
+      // (so clicking it hits the gate), skip the "session died" banner
+      // (SESSION_PROCESS_EXITED), and DON'T wipe chat state (SESSION_REMOVE) — the
+      // gate replaces the view; state is freed on Exit/Resume. Read the REF, not
+      // `movedSessions`: this handler's mount-effect closure captured the state at
+      // mount (empty), so a state read here would never see the moved entry.
+      if (movedSessionsRef.current.has(id)) {
+        // Drop from the aux maps (inert once the gate owns the view). Dropping
+        // initializedSessions also keeps the input bar disabled as defence-in-depth.
+        setViewModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+        setPermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+        setSessionModels((prev) => { const n = new Map(prev); n.delete(id); return n; });
+        setInitializedSessions((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
+        return;
+      }
       // Fire BEFORE removing the session from state — the reducer needs the
       // current SessionChatState to decide whether this warrants a 'session-died'
       // banner (in-flight tools OR nonzero exit). SESSION_REMOVE below wipes it.
@@ -1007,12 +1047,19 @@ function AppInner() {
       );
     });
 
-    // Plan 2b Task 10: another device took over this session's lease. Drop a
-    // "this conversation moved to <device>" marker into the timeline so the
-    // user understands why chat activity stopped here. The reducer ends the
-    // in-flight turn cleanly (endTurn) as part of SESSION_MOVED.
-    const movedHandler = (window.claude.on as any).sessionMoved?.((payload: { sessionId: string; device?: string }) => {
+    // Plan 2b Moved Gate: another device took over this session's lease. Record
+    // it so its pill survives the imminent destroy and clicking it renders
+    // <MovedGate>. Still dispatch SESSION_MOVED for its endTurn effect (cleanly
+    // stops any 'thinking' state on the now-dead session). The push carries the
+    // resume params so the gate's "Resume on this device" needs no extra lookup.
+    const movedHandler = (window.claude.on as any).sessionMoved?.((payload: { sessionId: string; device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string }) => {
       if (!payload?.sessionId) return;
+      recordMoved(payload.sessionId, {
+        device: payload.device,
+        claudeSessionId: payload.claudeSessionId,
+        projectSlug: payload.projectSlug,
+        projectPath: payload.projectPath,
+      });
       dispatch({ type: 'SESSION_MOVED', sessionId: payload.sessionId, device: payload.device });
     });
 
@@ -1887,6 +1934,24 @@ function AppInner() {
     }
   }, [currentModel]);
 
+  // Client-side removal for a session that is ALREADY dead in the main process
+  // (Moved Gate Exit/Resume, where `session.destroy()` would no-op and emit no
+  // session:destroyed event). Mirrors destroyedHandler's state cleanup MINUS the
+  // death banner (SESSION_PROCESS_EXITED) — the session moved, it didn't die.
+  const removeSessionLocally = useCallback((id: string) => {
+    setSessions((prev) => {
+      const remaining = prev.filter((s) => s.id !== id);
+      setSessionId((curr) => (curr !== id ? curr : (remaining.length > 0 ? remaining[remaining.length - 1].id : null)));
+      return remaining;
+    });
+    setViewModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+    setPermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+    setSessionModels((prev) => { const n = new Map(prev); n.delete(id); return n; });
+    setInitializedSessions((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
+    dispatch({ type: 'SESSION_REMOVE', sessionId: id });
+    clearMoved(id);
+  }, [dispatch, clearMoved]);
+
   const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string) => {
     const cwd = projectPath;
 
@@ -2229,6 +2294,10 @@ function AppInner() {
   }, [trustGateActive, sessionId]);
 
   const sessionInitialized = sessionId ? initializedSessions.has(sessionId) : true;
+  // Plan 2b Moved Gate: when the active session was taken over by another device,
+  // its info lives here and we render <MovedGate> over the content instead of the
+  // (now-dead) chat/terminal view.
+  const movedGate = sessionId ? movedSessions.get(sessionId) : undefined;
 
   // Show a "something may be wrong" hint after 15s of waiting on initialization.
   // Resets whenever the active session changes or the session becomes initialized.
@@ -2468,7 +2537,7 @@ function AppInner() {
               {/* Initializing overlay — shown before Claude is ready, but only in chat view.
                  Terminal view must stay accessible during init so the user can interact there.
                  z-10: must stay below glassmorphism chrome (z-20) so header/bottom bars remain accessible */}
-              {!sessionInitialized && sessionId && currentViewMode !== 'terminal' && (
+              {!sessionInitialized && sessionId && currentViewMode !== 'terminal' && !movedGate && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-canvas">
                   <ThemeMascot variant="idle" fallback={AppIcon} className="w-16 h-16 text-fg-dim mb-6 animate-pulse" />
                   <p className="text-sm text-fg-dim font-medium">Initializing session...</p>
@@ -2481,6 +2550,31 @@ function AppInner() {
                 </div>
               )}
               {trustGateActive && sessionId && <TrustGate sessionId={sessionId} />}
+              {/* Plan 2b Moved Gate — covers the content area for a taken-over
+                 session (the ChatView/TerminalView below are dead). z-10 like
+                 TrustGate so the header strip stays reachable to switch away. */}
+              {movedGate && sessionId && (
+                <MovedGate
+                  device={movedGate.device}
+                  // Resume from a remote browser would run on the HOST, not here —
+                  // hide it there to avoid the semantic oddity; local desktop always shows it.
+                  canResume={!isRemoteMode()}
+                  onExit={() => removeSessionLocally(sessionId)}
+                  onResume={() => {
+                    // Capture resume params BEFORE removeSessionLocally clears the entry.
+                    const info = movedSessionsRef.current.get(sessionId);
+                    // Drop the dead pill first so resume creates a fresh one (no duplicate).
+                    removeSessionLocally(sessionId);
+                    if (info?.claudeSessionId && info.projectSlug && info.projectPath) {
+                      void handleResumeSession(info.claudeSessionId, info.projectSlug, info.projectPath);
+                    } else {
+                      // Main couldn't resolve the resume params (no cwd) — fall back
+                      // to the Resume Browser so the user isn't stranded.
+                      setResumeRequested(true);
+                    }
+                  }}
+                />
+              )}
               {currentViewMode === 'chat' && (
                 <CommandDrawer
                   open={drawerOpen}
@@ -2506,7 +2600,7 @@ function AppInner() {
                 {/* TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
                     ChatInputBar when minimal={isTerminalTouch}, slotted in
                     the QuickChips position so both modes share one container. */}
-                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
+                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
                     usage: statusData.usage,
