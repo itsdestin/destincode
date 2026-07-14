@@ -37,8 +37,9 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
-  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots,
+  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled,
 } from './sync-spaces/service';
+import { readDevices, renameDevice } from './sync-spaces/device-registry';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
@@ -67,11 +68,14 @@ import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { PROJECT_IPC } from './project/ipc-channels';
-import { listProjectConversations, projectConversationHistory } from './project-conversations';
+import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore, flushSessionToSpace } from './conversations/service';
+// Plan 2b Task 8: holder-side takeover — when another device requests a session
+// this device holds, cleanly interrupt/flush/release/move/destroy it.
+import { createHolderTakeover } from './conversations/takeover';
 import { getTagRegistry } from './conversations/tag-registry-service';
 import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
@@ -96,6 +100,21 @@ export function registerIpcHandlers(
   // Multi-window ownership: when a session is created via IPC, assign it to
   // the calling renderer's window so subsequent per-session events route there.
   windowRegistry?: import('./window-registry').WindowRegistry,
+  // Plan 2b Task 8 (optional): the lease client + a setter main.ts uses to
+  // receive the holder-side takeover handler (which needs the local sessionIdMap,
+  // built inside this function). Absent → lease lifecycle wiring is skipped
+  // entirely (nothing breaks — acquire/release/takeover simply don't run).
+  leaseWiring?: {
+    client: import('./conversations/lease-client').LeaseClient;
+    setHolderTakeover: (fn: (sessionId: string, from?: { deviceId: string; device: string }) => void) => void;
+    // Plan 2b Task 9: the requester-side takeover flow, built in main.ts (where
+    // deviceId + hubLeaseRequest + materializeOne + syncSpacesSyncNow are all
+    // reachable). The three lease IPC handlers below are thin passthroughs to it.
+    requester: import('./conversations/takeover').RequesterTakeoverType;
+    // Plan 2b Task 11: this machine's device id, so the list-devices handler can
+    // mark the current device with self:true.
+    deviceId: string;
+  },
 ) {
   // Broadcast a non-session-scoped event to every renderer. Status data, UI
   // actions, and similar globals must reach every window — not just window 1.
@@ -1248,11 +1267,14 @@ export function registerIpcHandlers(
 
   // --- Session browser (resume) ---
   ipcMain.handle(IPC.SESSION_BROWSE, async () => {
-    // Collect active Claude Code session IDs so we can exclude them
+    // Collect active Claude Code session IDs so we can exclude them.
+    // Bug 1 (2026-07-13 dogfood): a stale sessionIdMap entry (missed exit event,
+    // or a create+resume pair leaving two desktop ids on one claude id) hid a
+    // CLOSED session from the browser until restart. Filter to mappings whose
+    // desktop session actually still exists — the map is a cache, not truth.
     const activeIds = new Set<string>();
-    // sessionIdMap is already defined in this scope — maps desktop ID → Claude ID
-    for (const claudeId of sessionIdMap.values()) {
-      activeIds.add(claudeId);
+    for (const [desktopId, claudeId] of sessionIdMap.entries()) {
+      if (sessionManager.getSession(desktopId)) activeIds.add(claudeId);
     }
     // CC (Claude Code) transcript rows.
     const ccRows = await listPastSessions(activeIds);
@@ -1756,6 +1778,36 @@ export function registerIpcHandlers(
   // Maps desktop session ID → Claude Code session ID
   const sessionIdMap = new Map<string, string>();
 
+  // Holder-side takeover (Plan 2b Task 8): when another device requests this
+  // session, cleanly interrupt, flush the final turn to the space, release the
+  // lease, tell the UI it moved, and end the local session. Wired here because
+  // the reverse-map (claude id → desktop id) needs sessionIdMap; sendForSession is
+  // in scope for the dual-path renderer + remote push.
+  if (leaseWiring) {
+    const pushMoved = (desktopId: string, device?: string) => {
+      // Enrich the push so the renderer's MovedGate can offer "Resume on this
+      // device" without a second lookup. At push time (step 7) the holder session
+      // still exists — destroy is step 8 — so both the claude id and the live
+      // session's cwd are available. projectSlug mirrors how the Resume Browser
+      // derives it (ccProjectSlug of the cwd) so handleResumeSession's history
+      // load + resumeInfo land on the right CC project dir.
+      const claudeSessionId = sessionIdMap.get(desktopId);
+      const info = sessionManager.getSession(desktopId);
+      const projectPath = info?.cwd;
+      const projectSlug = projectPath ? ccProjectSlug(projectPath) : undefined;
+      const payload = { sessionId: desktopId, device, claudeSessionId, projectSlug, projectPath };
+      sendForSession(desktopId, IPC.SESSION_MOVED, payload);          // owning renderer window
+      remoteServer?.broadcast({ type: IPC.SESSION_MOVED, payload }); // remote clients
+    };
+    const holderTakeover = createHolderTakeover({
+      sessionManager, sessionIdMap, leaseClient: leaseWiring.client,
+      flushSessionToSpace, pushMoved,
+    });
+    // Fire-and-forget from a hub event — the handler never throws (each step is
+    // try/caught inside createHolderTakeover), so void is safe.
+    leaseWiring.setHolderTakeover((sid, from) => { void holderTakeover(sid, from); });
+  }
+
   // `lastAttentionBySession` is declared alongside the other status-value
   // caches above buildStatusData(); the listener that writes into it is
   // registered here where the handler block begins.
@@ -1822,6 +1874,13 @@ export function registerIpcHandlers(
   // the SAME instances (mirrors how setLastTopic / broadcastStatusData push
   // ipc-handler-owned state into remoteServer — no global needed).
   remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager });
+
+  // Plan 2b Task 11: give the remote server the SAME lease client/requester +
+  // deviceId so its WS clients reach the identical lease/device state the
+  // Electron IPC handlers use (mirrors setNativeRuntime). Absent when sync is off.
+  if (leaseWiring && remoteServer) {
+    remoteServer.setLeaseWiring({ client: leaseWiring.client, requester: leaseWiring.requester, deviceId: leaseWiring.deviceId });
+  }
 
   // Transcript replay: a window that just acquired a session asks for every
   // historical event so its reducer can hydrate. Events stream back on the
@@ -2018,6 +2077,11 @@ export function registerIpcHandlers(
       // coupled to the remap.
       if (current) {
         teardownSessionWatchers(desktopId);
+        // 2b: /clear rotates the CC session id WITHOUT firing session-exit, so the
+        // pre-rotation claudeId's lease + its 30s renew timer would otherwise leak
+        // (renewing a dead id every 30s until app quit). Release it here.
+        // Idempotent + best-effort; release() never rejects, .catch guards a future change.
+        void leaseWiring?.client.release(current).catch(() => { /* best-effort */ });
       }
 
       sessionIdMap.set(desktopId, claudeId);
@@ -2030,6 +2094,20 @@ export function registerIpcHandlers(
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
         noteSessionStarted(claudeId, sessionInfo.cwd);
+        // 2b Task 8: this device now owns the session — take the lease.
+        // Fire-and-forget: a denied (ok:false) result would only mean another
+        // device holds it, but the sanctioned resume path already ran takeover
+        // BEFORE spawn, so we never block session start on the lease. acquire()
+        // never rejects, but the .catch keeps a future change from leaking one.
+        //
+        // Gate on sync being ENABLED: leases coordinate CROSS-DEVICE writers, which
+        // only exist for a synced conversation. Without this, every CC SessionStart
+        // (even for users who never enabled sync) took an optimistic local hold with
+        // a 30s renew timer writing Personal/Leases/*.json — wasteful and creates a
+        // Leases/ dir for no reason. Release on session-exit stays UNCONDITIONAL
+        // (idempotent — harmless if never acquired) so a session that acquired while
+        // sync was on still releases if sync later flips off.
+        if (isSyncSpacesEnabled()) void leaseWiring?.client.acquire(claudeId).catch(() => { /* never-block */ });
       }
     });
   }
@@ -2042,6 +2120,13 @@ export function registerIpcHandlers(
     if (claudeId) {
       fs.unlink(path.join(os.homedir(), '.claude', `.context-${claudeId}`), () => {});
       fs.unlink(path.join(os.homedir(), '.claude', `.session-stats-${claudeId}.json`), () => {});
+      // 2b (Bug 2 Part 2): release the conversation-store materialize guard +
+      // apply any peer version now that this session ended — no restart needed.
+      // Resolved from the map BEFORE the delete below, so the claude id is known.
+      noteSessionEnded(claudeId);
+      // 2b Task 8: drop our lease so another device can acquire. Idempotent +
+      // best-effort; release() never rejects, .catch guards a future change.
+      void leaseWiring?.client.release(claudeId).catch(() => { /* best-effort */ });
     }
     sessionIdMap.delete(sessionId);
     lastAttentionBySession.delete(sessionId);
@@ -2225,6 +2310,33 @@ export function registerIpcHandlers(
     syncSpacesRenameProject(String(p?.name ?? ''), String(p?.displayName ?? '')));
   ipcMain.handle(IPC.SYNC_SPACES_STOP_PROJECT, (_e, p: { name: string }) =>
     syncSpacesStopProject(String(p?.name ?? '')));
+
+  // Conversation-lease takeover (Plan 2b Task 9). Thin passthroughs to the lease
+  // client (query) and the requester flow (takeover/force) built in main.ts.
+  // When lease wiring is absent (sync disabled), every handler degrades to a
+  // "free / error" answer so the renderer's resume gate proceeds unblocked
+  // (spec §3 never-block).
+  ipcMain.handle(IPC.SYNC_SPACES_LEASE_QUERY, (_e, p: { claudeSessionId: string }) =>
+    leaseWiring?.client.query(String(p?.claudeSessionId ?? '')) ?? { held: false, source: 'none' });
+  ipcMain.handle(IPC.SYNC_SPACES_LEASE_TAKEOVER, (_e, p: { claudeSessionId: string }) =>
+    leaseWiring?.requester.takeover(String(p?.claudeSessionId ?? '')) ?? { outcome: 'error' });
+  ipcMain.handle(IPC.SYNC_SPACES_LEASE_FORCE, (_e, p: { claudeSessionId: string }) =>
+    leaseWiring?.requester.force(String(p?.claudeSessionId ?? '')) ?? { ok: false });
+
+  // Device registry (Plan 2b spec §10a): the "Your devices" list (Task 12 UI
+  // consumes these). self:true marks the current machine so the UI can label it.
+  ipcMain.handle(IPC.SYNC_SPACES_LIST_DEVICES, () => {
+    const pr = getManagedRoots()?.personalRoot;
+    if (!pr) return [];
+    const selfId = leaseWiring?.deviceId ?? '';
+    return readDevices(pr).map((d) => ({ ...d, self: d.id === selfId }));
+  });
+  ipcMain.handle(IPC.SYNC_SPACES_RENAME_DEVICE, async (_e, p: { id: string; name: string }) => {
+    const pr = getManagedRoots()?.personalRoot;
+    if (!pr) return { ok: false };
+    try { await renameDevice(pr, String(p?.id ?? ''), String(p?.name ?? '')); return { ok: true }; }
+    catch { return { ok: false }; }
+  });
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));

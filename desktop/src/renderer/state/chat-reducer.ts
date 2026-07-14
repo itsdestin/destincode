@@ -411,6 +411,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    // Plan 2b: another device took over this session's lease. See the inline
+    // comment below — as of the "Moved Gate" follow-up this only ends the turn
+    // cleanly; the user-facing surface moved to App.tsx's MovedGate.
+    case 'SESSION_MOVED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      // Plan 2b "Moved Gate" (2026-07-14): SESSION_MOVED now ONLY ends the
+      // in-flight turn cleanly (endTurn — attention resets to 'ok', NOT a
+      // terminal error). It NO LONGER appends a timeline marker: the holder side
+      // destroys the session immediately after (SESSION_REMOVE wipes the whole
+      // chat state, so any appended marker was deleted back-to-back and never
+      // rendered). The user-facing "this session was taken over on <device>"
+      // surface is now App.tsx's MovedGate (a full-page gate over the session),
+      // driven off the enriched session:moved push — not this reducer.
+      next.set(action.sessionId, { ...session, ...endTurn(session) });
+      return next;
+    }
+
     // Pure state write from the classifier driver hook. Gated by the hook
     // itself (only dispatches when mapped state differs), so no guard needed.
     case 'ATTENTION_STATE_CHANGED': {

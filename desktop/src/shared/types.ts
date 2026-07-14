@@ -701,6 +701,10 @@ export const IPC = {
   // Main -> Renderer
   SESSION_CREATED: 'session:created',
   SESSION_DESTROYED: 'session:destroyed',
+  // Plan 2b Task 8: pushed to the renderer + remote when another device took over
+  // a conversation this device held — the holder-side takeover ends the local
+  // session and the UI shows a "moved to <device>" banner.
+  SESSION_MOVED: 'session:moved',
   PTY_OUTPUT: 'pty:output',
   HOOK_EVENT: 'hook:event',
   SESSION_RENAMED: 'session:renamed',
@@ -821,6 +825,14 @@ export const IPC = {
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
   SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
+  // Conversation-lease takeover (Plan 2b Task 9). query = who holds this session;
+  // takeover = ask-hand-off-then-poll-and-acquire; force = overwrite a stale lease.
+  SYNC_SPACES_LEASE_QUERY: 'syncspaces:lease-query',
+  SYNC_SPACES_LEASE_TAKEOVER: 'syncspaces:lease-takeover',
+  SYNC_SPACES_LEASE_FORCE: 'syncspaces:lease-force',
+  // Device registry (Plan 2b spec §10a) — the "Your devices" list + rename.
+  SYNC_SPACES_LIST_DEVICES: 'syncspaces:list-devices',
+  SYNC_SPACES_RENAME_DEVICE: 'syncspaces:rename-device',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',

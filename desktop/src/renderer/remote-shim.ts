@@ -213,6 +213,13 @@ function handleMessage(data: string): void {
     case 'session:renamed':
       dispatchEvent('session:renamed', payload.sessionId, payload.name);
       break;
+    case 'session:moved':
+      // Plan 2b — another device took over this session's lease. Forward the
+      // whole payload ({ sessionId, device?, claudeSessionId?, projectSlug?,
+      // projectPath? }) so App.tsx's MovedGate can show it and offer Resume
+      // (parity with preload's enriched sessionMoved).
+      dispatchEvent('session:moved', payload);
+      break;
     case 'session:meta-changed':
       dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value });
       break;
@@ -749,6 +756,9 @@ export function installShim(): void {
       hookEvent: (cb: Callback) => addListener('hook:event', cb),
       statusData: (cb: Callback) => addListener('status:data', cb),
       sessionRenamed: (cb: Callback) => addListener('session:renamed', cb),
+      // Plan 2b Task 10 — "this conversation moved to <device>" push (parity
+      // with preload's sessionMoved). Returns the cb so off() can remove it.
+      sessionMoved: (cb: Callback) => addListener('session:moved', cb),
       // Return UNSUBSCRIBE fns (not the raw cb) so the tag hooks' off() cleanup
       // actually removes the listener — parity with preload, prevents leaks.
       sessionMetaChanged: (cb: Callback) => { addListener('session:meta-changed', cb); return () => removeListener('session:meta-changed', cb); },
@@ -1108,6 +1118,18 @@ export function installShim(): void {
       renameProject: (name: string, displayName: string) =>
         invoke('syncspaces:rename-project', { name, displayName }),
       stopProject: (name: string) => invoke('syncspaces:stop-project', { name }),
+      // Conversation-lease takeover (Plan 2b Task 9). Same shape as preload for
+      // parity (PITFALLS rule) so a remote browser doesn't crash when the resume
+      // dialog calls leaseQuery. Remote-server routing lands in Task 11 — until
+      // then these reject/time out and the renderer resume gate degrades (proceeds
+      // with the resume, never hard-blocks — spec §3 never-block).
+      leaseQuery: (claudeSessionId: string) => invoke('syncspaces:lease-query', { claudeSessionId }),
+      leaseTakeover: (claudeSessionId: string) => invoke('syncspaces:lease-takeover', { claudeSessionId }),
+      leaseForce: (claudeSessionId: string) => invoke('syncspaces:lease-force', { claudeSessionId }),
+      // Device registry (Plan 2b spec §10a). Object-payload invoke over WS to
+      // match the shim's convention; routed by remote-server (Task 11).
+      listDevices: () => invoke('syncspaces:list-devices'),
+      renameDevice: (id: string, name: string) => invoke('syncspaces:rename-device', { id, name }),
       onEvent: (cb: (e: unknown) => void) => {
         const handler: Callback = (e: any) => cb(e);
         addListener('syncspaces:event', handler);

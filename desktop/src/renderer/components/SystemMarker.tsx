@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import type { SystemMarker as SystemMarkerData } from '../state/chat-types';
 
-// Thin horizontal divider used for /clear and /compact markers. Permanent —
-// user sees "these messages end here" when scrolling back. Deliberately quiet
-// styling so it doesn't compete with actual conversation content.
+// Thin horizontal divider used for /clear and /compact markers.
+// Permanent — user sees "these messages end here" when scrolling back.
+// Deliberately quiet styling so it doesn't compete with actual conversation content.
 //
 // When a /compact marker carries a `summary` (CC-produced conversation summary
 // from the isCompactSummary line), clicking the label toggles an inline panel

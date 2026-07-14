@@ -18,11 +18,21 @@ import { FirstRunManager } from './first-run';
 import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
-import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore } from './sync-spaces/service';
+import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore, hubLeaseRequest, setSyncSpacesLeaseEventListener, getManagedRoots, syncSpacesSyncNow } from './sync-spaces/service';
+// Plan 2b Task 8: conversation-lease lifecycle. The lease client coordinates
+// which device "holds" a conversation so two devices don't append to the same
+// transcript. Constructed in the main process (needs userData-scoped device id).
+import { getDeviceIdentity } from './device-identity';
+import { createLeaseClient, type LeaseClient } from './conversations/lease-client';
+// Plan 2b Task 9: the requester-side takeover flow (ask-hand-off, poll, pull,
+// acquire). Built here where deviceId + hubLeaseRequest + materializeOne +
+// syncSpacesSyncNow are all reachable, then passed to registerIpcHandlers.
+import { createRequesterTakeover } from './conversations/takeover';
+import { upsertSelf } from './sync-spaces/device-registry';
 // Conversation Store (Phase 2a): records + transcript sync ride the personal
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
-import { startConversationStore, stopConversationStore } from './conversations/service';
+import { startConversationStore, stopConversationStore, materializeOne } from './conversations/service';
 import { startTagRegistry } from './conversations/tag-registry-service';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
@@ -82,6 +92,14 @@ let mainWindow: BrowserWindow | null = null;
 // when the last main window closes (spec §7.6).
 let buddyManagerRef: BuddyWindowManager | null = null;
 let cleanupIpcHandlers: (() => void) | null = null;
+// Plan 2b Task 8: the conversation-lease client + this install's device identity.
+// Constructed inside createWindow (before registerIpcHandlers) but referenced
+// again in the app-ready sync block, so they live at module scope. The holder
+// takeover handler is routed through a mutable ref that ipc-handlers fills in
+// (it needs sessionIdMap, which is local to registerIpcHandlers).
+let leaseClient: LeaseClient | null = null;
+let deviceIdentity: { id: string } | null = null;
+const holderTakeoverRef: { fn: (sessionId: string, from?: { deviceId: string; device: string }) => void } = { fn: () => {} };
 const sessionManager = new SessionManager();
 
 // Multi-window ownership: maps sessionId -> windowId and tracks leader for
@@ -603,7 +621,37 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
 function createWindow(firstRunManager?: FirstRunManager) {
   mainWindow = createAppWindow({ maximize: true });
 
-  cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry);
+  // Plan 2b Task 8: construct the conversation-lease client. Lazy accessors —
+  // the hub socket + managed roots don't exist yet at this point (they're wired
+  // in the app-ready sync block below), so hubRequest/personalRoot read them
+  // lazily. onTakeoverRequest routes through holderTakeoverRef, which
+  // registerIpcHandlers fills in (it owns sessionIdMap).
+  deviceIdentity = getDeviceIdentity(app.getPath('userData'));
+  leaseClient = createLeaseClient({
+    deviceId: deviceIdentity.id,
+    deviceName: os.hostname(),
+    personalRoot: () => getManagedRoots()?.personalRoot ?? null,
+    hubRequest: hubLeaseRequest,
+    onTakeoverRequest: (sid, from) => holderTakeoverRef.fn(sid, from),
+  });
+
+  // Plan 2b Task 9: build the requester-side takeover flow. It reuses the SAME
+  // lease client (takeover/query/acquire), nudges a personal-space sync, pulls the
+  // peer's final turn via materializeOne, and force-acquires through the hub
+  // directly (the reviewed lease client has no force method). "Held by US" is now
+  // decided inside query() via the per-install deviceId (self flag), so no
+  // selfDevice label is threaded here — a hostname label would collide when two
+  // installs share a hostname (the dev instance + built app dogfood gate).
+  const requester = createRequesterTakeover({
+    leaseClient,
+    syncNow: () => syncSpacesSyncNow('personal'),
+    materializeOne: (id) => materializeOne(id),
+    forceAcquire: (id) => hubLeaseRequest('force-acquire', id, deviceIdentity!.id),
+    delay: (ms) => new Promise((r) => setTimeout(r, ms)),
+  });
+
+  cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
+    { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester, deviceId: deviceIdentity.id });
 
   if (firstRunManager) {
     registerFirstRunIpc(mainWindow, firstRunManager);
@@ -1445,6 +1493,11 @@ app.whenReady().then(async () => {
   // lazily per-connect so sign-in/out mid-session is picked up without a restart.
   // Must be set before startSyncSpaces so a sync enabled at boot can connect.
   setSyncSpacesAuthStore(marketplaceAuthStore);
+  // Plan 2b Task 8: route hub takeover-requests to the lease client, which
+  // filters to sessions THIS device actually holds before driving the handoff.
+  setSyncSpacesLeaseEventListener((ev) => {
+    if (ev.kind === 'takeover-request') leaseClient?.handleTakeoverRequest(ev.sessionId, ev.from);
+  });
   startSyncSpaces(
     async () => {
       // Daily dated backup targets come from the SAME backend config the legacy
@@ -1462,6 +1515,14 @@ app.whenReady().then(async () => {
     },
     (m) => log('INFO', 'SyncSpaces', m),
   ).catch(e => log('ERROR', 'Main', 'SyncSpaces start failed', { error: String(e) }));
+
+  // Device registry (spec §10a, Plan 2b): stamp this device's own record
+  // (friendly name + lastSeen) on launch so Task 12's "Your devices" list is
+  // never empty. No-op when sync is off (no personal root yet).
+  try {
+    const pr = getManagedRoots()?.personalRoot;
+    if (pr && deviceIdentity) void upsertSelf(pr, { id: deviceIdentity.id, platform: process.platform }).catch(() => { /* best-effort */ });
+  } catch { /* sync not configured */ }
 
   // Conversation Store (Phase 2a): records + transcript sync ride the personal
   // space. Started after startSyncSpaces because getManagedRoots() must be
@@ -1495,6 +1556,9 @@ app.on('window-all-closed', () => {
   // Stop the Conversation Store (Phase 2a) — unsubscribes the sync-spaces
   // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
   try { stopConversationStore(); } catch {}
+  // Plan 2b Task 8: tear down the lease client so its per-session renew timers
+  // don't linger past a hard quit (destroy clears all held timers). Sync fn.
+  try { leaseClient?.destroy(); } catch {}
   // Stop sync service — clears timer, releases locks, removes .app-sync-active marker
   try { setSyncService(null); } catch {}
   app.quit();

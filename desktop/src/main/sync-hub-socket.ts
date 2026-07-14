@@ -33,13 +33,24 @@ export type WebSocketCtor = new (
   opts: { headers: Record<string, string> },
 ) => SyncHubWebSocketLike;
 
+// Who currently holds a session lease (returned on lease-result, and carried in
+// takeover-request events as `from`). expiresAt is an epoch-ms deadline.
+export interface LeaseHolder { deviceId: string; device: string; expiresAt: number }
+
+// The reply to a request() call — mapped from a server `lease-result` frame.
+// `holder` is the current lease owner (or null when the op cleared/failed).
+export interface LeaseResult { ok: boolean; op: string; sessionId: string; holder: LeaseHolder | null }
+
 // The single event shape the consumer (Task 5 service wiring) sees. Replay and
 // live signals collapse to the same 'signal' event — device/at are dropped
-// because the engine only needs "some space changed, go sync it".
+// because the engine only needs "some space changed, go sync it". `lease-event`
+// carries UNSOLICITED server pushes (another device released/took a lease, or is
+// asking us to hand one over) — these are not tied to a request() reqId.
 export type SyncHubEvent =
   | { type: 'connected' }
   | { type: 'disconnected' }
-  | { type: 'signal'; kind: string; spaceKey: string };
+  | { type: 'signal'; kind: string; spaceKey: string }
+  | { type: 'lease-event'; kind: 'released' | 'taken' | 'takeover-request'; sessionId: string; device?: string; from?: { deviceId: string; device: string } };
 
 export interface SyncHubSocketOpts {
   getToken: () => string | null;
@@ -51,6 +62,10 @@ export interface SyncHubSocketOpts {
 export interface SyncHubSocket {
   setDesired(want: boolean): void;
   sendSignal(kind: string, spaceKey: string): boolean;
+  // Request/response lease op (acquire/release/takeover). Resolves the matching
+  // server `lease-result` by reqId; resolves null on timeout, when not connected,
+  // or when the socket goes down mid-flight — NEVER blocks the caller.
+  request(op: string, sessionId: string, deviceId: string): Promise<LeaseResult | null>;
   isConnected(): boolean;
   destroy(): void;
 }
@@ -66,6 +81,21 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
   let attempts = 0;
   let pingTimer: NodeJS.Timeout | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
+
+  // In-flight lease requests, keyed by the client-generated reqId. A matching
+  // server `lease-result` (or the 5s timeout) removes the entry and resolves it.
+  let reqCounter = 0;
+  const pending = new Map<string, { resolve: (r: LeaseResult | null) => void; timer: NodeJS.Timeout }>();
+
+  // Resolve EVERY in-flight request to null and clear the map. Called from all
+  // teardown paths (handleDown / setDesired(false) / destroy) so a request that
+  // was awaiting a reply when the socket died never hangs forever across a
+  // reconnect — the never-block guarantee. The caller sees null (treat as "no
+  // answer"), same as a timeout.
+  function failAllPending() {
+    for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); }
+    pending.clear();
+  }
 
   function clearTimers() {
     if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
@@ -116,6 +146,16 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
         } else if (msg && msg.type === 'signal' && msg.kind && msg.spaceKey) {
           // Same guard on live frames — never hand the consumer undefined fields.
           opts.onEvent({ type: 'signal', kind: msg.kind, spaceKey: msg.spaceKey });
+        } else if (msg && msg.type === 'lease-result' && typeof msg.reqId === 'string' && pending.has(msg.reqId)) {
+          // Correlate the reply to its request() promise by reqId. An unknown
+          // reqId (stale/duplicate) matches nothing and is dropped harmlessly.
+          const p = pending.get(msg.reqId)!; pending.delete(msg.reqId); clearTimeout(p.timer);
+          p.resolve({ ok: !!msg.ok, op: msg.op, sessionId: msg.sessionId, holder: msg.holder ?? null });
+        } else if (msg && msg.type === 'lease-event' && msg.kind && msg.sessionId) {
+          // Unsolicited server push (not tied to a reqId) — forward to the
+          // consumer. Per-field guard mirrors the signal branch: no kind/sessionId
+          // means we never hand the consumer undefined fields.
+          opts.onEvent({ type: 'lease-event', kind: msg.kind, sessionId: msg.sessionId, device: msg.device, from: msg.from });
         }
         // pong (or any other frame): ignore — pings are fire-and-forget liveness.
       } catch { /* non-JSON frame: ignore */ }
@@ -133,6 +173,7 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
 
   function handleDown() {
     clearTimers();
+    failAllPending(); // socket died — a request awaiting a reply must resolve null, not hang across the reconnect
     ws = null;
     opts.onEvent({ type: 'disconnected' });
     if (desired) {
@@ -158,6 +199,7 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
       desired = want;
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       if (want) { connect(); return; }
+      failAllPending(); // intentional teardown — resolve any in-flight request to null so the caller never blocks on a socket we're closing
       const s = ws;
       ws = null;
       clearTimers();
@@ -180,8 +222,24 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
       }
       return false;
     },
+    // Request/response lease op. Sends a {type:'lease', op, sessionId, deviceId,
+    // reqId} frame and resolves the matching server `lease-result` by reqId.
+    // NEVER blocks the caller: resolves null immediately when not connected, on a
+    // 5s timeout, if the send throws, or if the socket goes down mid-flight
+    // (failAllPending). The consumer treats null as "no answer / fall back".
+    request(op, sessionId, deviceId) {
+      if (ws === null || ws.readyState !== WebSocket.OPEN) return Promise.resolve(null); // never-block
+      const reqId = `r${++reqCounter}`;
+      return new Promise<LeaseResult | null>((resolve) => {
+        const timer = setTimeout(() => { pending.delete(reqId); resolve(null); }, 5_000);
+        timer.unref?.(); // don't keep the Electron main process alive just for a lease timeout
+        pending.set(reqId, { resolve, timer });
+        try { ws!.send(JSON.stringify({ type: 'lease', op, sessionId, deviceId, reqId })); }
+        catch { pending.delete(reqId); clearTimeout(timer); resolve(null); }
+      });
+    },
     // True only when a socket exists AND finished its handshake.
     isConnected() { return ws !== null && ws.readyState === WebSocket.OPEN; },
-    destroy() { desired = false; clearTimers(); try { ws?.close(); } catch { /* noop */ } ws = null; },
+    destroy() { desired = false; clearTimers(); failAllPending(); try { ws?.close(); } catch { /* noop */ } ws = null; },
   };
 }

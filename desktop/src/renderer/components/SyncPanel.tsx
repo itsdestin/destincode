@@ -111,6 +111,32 @@ function timeAgo(epoch: number): string {
   return `${days}d ago`;
 }
 
+// Relative time from a MILLISECOND epoch (the device registry stores lastSeen in
+// ms, unlike the sync backends above which use seconds). Plain words on purpose —
+// the "Your devices" list is spec'd as plain text with no status glyphs.
+function relativeMs(ms: number): string {
+  if (!ms || !Number.isFinite(ms)) return 'unknown';
+  const seconds = Math.floor((Date.now() - ms) / 1000);
+  if (seconds < 45) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+// Map process.platform to a plain, human word. Empty string (unknown platform)
+// falls through to '' so the caller can omit it rather than print a raw code.
+function platformLabel(p: string): string {
+  switch (p) {
+    case 'win32': return 'Windows';
+    case 'darwin': return 'macOS';
+    case 'linux': return 'Linux';
+    default: return p || '';
+  }
+}
+
 // Map the derived sync display state to a status-dot tailwind class.
 // All three helpers keep the dot, label, and badge in lock-step — the old
 // time-only derivation could read "Synced 3m ago" while the popup showed
@@ -769,6 +795,14 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                   Sync now
                 </button>
               )}
+
+              {/* Your devices (Plan 2b spec §10a) — the synced device registry.
+                  Plain text only (no status dots/glyphs — user preference); the
+                  current machine is marked "(this device)" and each name is an
+                  inline-editable nickname. Gated on sync being on: the registry
+                  lives inside the Personal space, so there's nothing to list until
+                  sync has a personal root. */}
+              <YourDevices enabled={!!spacesStatus?.enabled} />
             </section>
 
             {/* Divider between the primary GitHub system and the optional extras. */}
@@ -1202,6 +1236,106 @@ function ConfirmDialog({
       </OverlayPanel>
     </>,
     document.body,
+  );
+}
+
+// --- "Your devices" list (Plan 2b spec §10a) ---
+// Shows every device in the synced device registry: friendly (inline-editable)
+// name, "last seen <relative>", and a plain "(this device)" suffix for the
+// current machine. Deliberately PLAIN TEXT — no status dots or ●◐○ glyphs
+// (the section is spec'd plain, and the owner dislikes status glyphs).
+
+interface DeviceRow {
+  schemaVersion: number;
+  id: string;
+  name: string;
+  platform: string;
+  lastSeen: number;
+  updatedAt: number;
+  self: boolean; // marks THIS machine (matched by deviceId in the main handler)
+}
+
+function YourDevices({ enabled }: { enabled: boolean }) {
+  // null = not loaded yet; [] = loaded-but-empty (sync off / no personal root).
+  const [devices, setDevices] = useState<DeviceRow[] | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+
+  const load = useCallback(async () => {
+    // Method-exists guard: on remote / older Android without the handler the
+    // invoke is absent, so degrade to an empty list instead of throwing.
+    const fn = window.claude?.syncSpaces?.listDevices;
+    if (typeof fn !== 'function') { setDevices([]); return; }
+    try { setDevices(await fn()); } catch { setDevices([]); }
+  }, []);
+
+  // Load on mount and whenever sync flips on — the first enable provisions the
+  // Personal space that backs the registry, so the list can go empty → populated.
+  useEffect(() => { void load(); }, [load, enabled]);
+
+  const commitRename = useCallback(async (id: string) => {
+    const name = draft.trim();
+    setEditingId(null);
+    // Reject empty/whitespace (the store no-ops on empty anyway) and skip a
+    // no-op rename so we don't fire a pointless invoke + refetch.
+    if (!name) return;
+    const current = devices?.find(d => d.id === id);
+    if (current && current.name === name) return;
+    const fn = window.claude?.syncSpaces?.renameDevice;
+    if (typeof fn !== 'function') return;
+    try { await fn(id, name); } catch {}
+    // Re-fetch so the merged/synced name (fold-on-read authoritative) is shown.
+    await load();
+  }, [draft, devices, load]);
+
+  if (!enabled) return null;
+
+  return (
+    <div className="mt-3">
+      <h4 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-1.5">Your devices</h4>
+      {devices !== null && devices.length === 0 ? (
+        <p className="text-[11px] text-fg-muted">No devices yet — they appear here once sync has run.</p>
+      ) : (
+        <ul className="space-y-1">
+          {(devices ?? []).map(d => {
+            const plat = platformLabel(d.platform);
+            const activity = d.self ? 'active now' : `last seen ${relativeMs(d.lastSeen)}`;
+            const right = plat ? `${plat} · ${activity}` : activity;
+            return (
+              <li key={d.id} className="flex items-center justify-between gap-2">
+                <div className="min-w-0 flex items-center gap-1.5">
+                  {editingId === d.id ? (
+                    <input
+                      value={draft}
+                      autoFocus
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void commitRename(d.id);
+                        if (e.key === 'Escape') setEditingId(null); // cancel — no rename
+                      }}
+                      onBlur={() => void commitRename(d.id)}
+                      className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none min-w-0"
+                    />
+                  ) : (
+                    // Click the name to edit — it's just a nickname, so no confirm gate.
+                    <button
+                      type="button"
+                      onClick={() => { setEditingId(d.id); setDraft(d.name); }}
+                      className="text-xs text-fg-2 hover:text-fg truncate text-left"
+                      title="Click to rename this device"
+                    >
+                      {d.name}
+                    </button>
+                  )}
+                  {d.self && <span className="text-[10px] text-fg-muted shrink-0">(this device)</span>}
+                </div>
+                <span className="text-[10px] text-fg-muted shrink-0">{right}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

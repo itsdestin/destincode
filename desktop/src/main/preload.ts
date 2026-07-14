@@ -26,6 +26,8 @@ const IPC = {
   PTY_RAW_BYTES: 'pty:raw-bytes',
   HOOK_EVENT: 'hook:event',
   SESSION_RENAMED: 'session:renamed',
+  // Plan 2b Task 10 — pushed when another device takes over a session's lease.
+  SESSION_MOVED: 'session:moved',
   DIALOG_OPEN_FILE: 'dialog:open-file',
   DIALOG_OPEN_FOLDER: 'dialog:open-folder',
   DIALOG_OPEN_SOUND: 'dialog:open-sound',
@@ -181,6 +183,13 @@ const IPC = {
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
   SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
+  // Conversation-lease takeover (Plan 2b Task 9) — inlined literals (preload can't import).
+  SYNC_SPACES_LEASE_QUERY: 'syncspaces:lease-query',
+  SYNC_SPACES_LEASE_TAKEOVER: 'syncspaces:lease-takeover',
+  SYNC_SPACES_LEASE_FORCE: 'syncspaces:lease-force',
+  // Device registry (Plan 2b spec §10a) — inlined literals (preload can't import).
+  SYNC_SPACES_LIST_DEVICES: 'syncspaces:list-devices',
+  SYNC_SPACES_RENAME_DEVICE: 'syncspaces:rename-device',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Restore from backup (directional pull — see restore-service.ts)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
@@ -396,6 +405,17 @@ contextBridge.exposeInMainWorld('claude', {
     sessionRenamed: (cb: (sessionId: string, name: string) => void) => {
       const handler = (_e: IpcRendererEvent, sid: string, name: string) => cb(sid, name);
       ipcRenderer.on(IPC.SESSION_RENAMED, handler);
+      return handler;
+    },
+    // Plan 2b — another device took over this session's lease. Payload carries
+    // the desktop sessionId + the new holder's device label, PLUS the resume
+    // params (claudeSessionId / projectSlug / projectPath) so App.tsx's MovedGate
+    // can offer "Resume on this device" directly. Returns the raw handler so
+    // callers unsubscribe via off('session:moved', handler) — mirrors
+    // sessionRenamed and stays parity with remote-shim.
+    sessionMoved: (cb: (payload: { sessionId: string; device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string }) => void) => {
+      const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
+      ipcRenderer.on(IPC.SESSION_MOVED, handler);
       return handler;
     },
     // Pushed when a session's metadata changes (flags, applied tags, or note).
@@ -802,6 +822,20 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_PROJECT, { name, displayName }),
     stopProject: (name: string) =>
       ipcRenderer.invoke(IPC.SYNC_SPACES_STOP_PROJECT, { name }),
+    // Conversation-lease takeover (Plan 2b Task 9). The Resume Browser calls
+    // leaseQuery before resuming a store-backed row; if held elsewhere it offers
+    // leaseTakeover (ask-hand-off), falling back to leaseForce on timeout.
+    leaseQuery: (claudeSessionId: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_QUERY, { claudeSessionId }),
+    leaseTakeover: (claudeSessionId: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_TAKEOVER, { claudeSessionId }),
+    leaseForce: (claudeSessionId: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_FORCE, { claudeSessionId }),
+    // Device registry (Plan 2b spec §10a): the "Your devices" list marks the
+    // current machine with self:true; renameDevice sets a friendly label.
+    listDevices: () => ipcRenderer.invoke(IPC.SYNC_SPACES_LIST_DEVICES),
+    renameDevice: (id: string, name: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_DEVICE, { id, name }),
     // Returns an unsubscribe function — callers MUST invoke it on unmount to
     // avoid leaking listeners across mounts (matches restore.onProgress above).
     onEvent: (cb: (e: unknown) => void) => {

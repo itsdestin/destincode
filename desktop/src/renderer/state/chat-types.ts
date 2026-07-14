@@ -83,7 +83,7 @@ export interface SystemMarker {
   id: string;
   timestamp: number;
   label: string;                                // e.g. "Conversation cleared"
-  variant?: 'clear' | 'compact' | 'info';       // For styling hooks
+  variant?: 'clear' | 'compact' | 'info'; // For styling hooks
   // Optional long-form text the marker can reveal on click. Currently only
   // set on compact markers — the actual conversation summary CC produced.
   summary?: string;
@@ -232,6 +232,18 @@ export type ChatAction =
       type: 'NATIVE_SESSION_ERROR';
       sessionId: string;
       message: string;
+    }
+  | {
+      // Plan 2b: another device took over this session's lease. The holder side
+      // ends the local turn cleanly (endTurn — attention resets to 'ok', NOT a
+      // terminal error state). As of the "Moved Gate" follow-up (2026-07-14) this
+      // no longer appends a timeline marker — the session is destroyed immediately
+      // after, which would wipe any marker. The user-facing surface is App.tsx's
+      // MovedGate, driven off the enriched 'session:moved' push. `device` is the
+      // new holder's label (may be absent → generic "another device").
+      type: 'SESSION_MOVED';
+      sessionId: string;
+      device?: string;
     }
   | {
       // Classifier-driven attention state change. Pure state write; no

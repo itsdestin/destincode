@@ -290,6 +290,22 @@ declare global {
         // Cross-device rename (display-name only) + stop-syncing (2026-07-12).
         renameProject?: (name: string, displayName: string) => Promise<{ ok: boolean; error?: string }>;
         stopProject?: (name: string) => Promise<{ ok: boolean; error?: string }>;
+        // Conversation-lease takeover (Plan 2b Task 9). Optional so remote/Android
+        // builds predating these members still typecheck; the Resume Browser gate
+        // guards every call. leaseQuery answers who holds the session; leaseTakeover
+        // asks the holder to hand off then polls+acquires; leaseForce overwrites a
+        // stale lease when the holder is unresponsive.
+        // `self` is derived in the main process from the per-install deviceId, so
+        // the resume gate can skip the takeover dialog for OUR OWN held lease.
+        leaseQuery?: (claudeSessionId: string) => Promise<{ held: boolean; device?: string; deviceId?: string; self?: boolean; source?: string }>;
+        leaseTakeover?: (claudeSessionId: string) => Promise<{ outcome: 'acquired' | 'timeout' | 'error' }>;
+        leaseForce?: (claudeSessionId: string) => Promise<{ ok: boolean }>;
+        // Device registry (Plan 2b spec §10a): the "Your devices" list. Optional so
+        // remote / older Android builds without the handler still typecheck — every
+        // caller keeps a `typeof fn === 'function'` runtime guard. listDevices marks
+        // the current machine with self:true; renameDevice sets a friendly label.
+        listDevices?: () => Promise<Array<{ schemaVersion: number; id: string; name: string; platform: string; lastSeen: number; updatedAt: number; self: boolean }>>;
+        renameDevice?: (id: string, name: string) => Promise<{ ok: boolean }>;
         onEvent: (cb: (e: unknown) => void) => () => void;
       };
     };

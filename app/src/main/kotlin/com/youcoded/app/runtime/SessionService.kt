@@ -3570,7 +3570,16 @@ class SessionService : Service() {
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
             // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",
-            "syncspaces:stop-project" -> {
+            "syncspaces:stop-project",
+            // Plan 2b — conversation leases/takeover + device registry are
+            // desktop-only (Android has no lease/takeover). The shared React UI
+            // degrades: these invokes reject fast with this stub instead of
+            // 30s-timing-out. (session:moved is a PUSH event — no request handler.)
+            "syncspaces:lease-query",
+            "syncspaces:lease-takeover",
+            "syncspaces:lease-force",
+            "syncspaces:list-devices",
+            "syncspaces:rename-device" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }

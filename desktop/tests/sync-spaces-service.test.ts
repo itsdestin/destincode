@@ -73,6 +73,10 @@ const h = vi.hoisted(() => {
       sendSignal: vi.fn(() => true),
       isConnected: vi.fn(() => false),
       destroy: vi.fn(),
+      // Lease transport (Task 8): hubLeaseRequest routes through this when the
+      // socket exists. Default resolves a fake LeaseResult so the passthrough
+      // test can assert it reached the socket.
+      request: vi.fn(async (_op: string, sessionId: string, deviceId: string) => ({ ok: true, op: _op, sessionId, holder: { deviceId, device: 'd', expiresAt: 0 } })),
     },
   };
 });
@@ -149,6 +153,7 @@ vi.mock('../src/main/sync-hub-socket', () => ({
       sendSignal: h.hub.sendSignal,
       isConnected: h.hub.isConnected,
       destroy: h.hub.destroy,
+      request: h.hub.request,
     };
   },
 }));
@@ -193,6 +198,7 @@ describe('sync-spaces service transition serialization', () => {
     h.hub.sendSignal.mockClear();
     h.hub.isConnected.mockClear();
     h.hub.destroy.mockClear();
+    h.hub.request.mockClear();
   });
 
   it('disable issued mid-start waits for the start, then stops that engine (no interleave)', async () => {
@@ -521,5 +527,33 @@ describe('sync-spaces service transition serialization', () => {
     const row = st.spaces.find((s: any) => s.id === 'project:app');
     expect(row.displayName).toBe('Cool App');
     expect(row.state).toBe('active');
+  });
+
+  // ---- Lease bridge (Task 8): hubLeaseRequest passthrough + lease-event facade ----
+
+  it('hubLeaseRequest resolves null when no hub socket exists (sync disabled)', async () => {
+    const svc = await freshService(); // not enabled → no hub socket created
+    await expect(svc.hubLeaseRequest('get', 's1', 'dev-a')).resolves.toBeNull();
+  });
+
+  it('hubLeaseRequest routes through the hub socket when enabled', async () => {
+    const svc = await enabledMultiSpaceService();
+    const res = await svc.hubLeaseRequest('acquire', 's2', 'dev-a');
+    expect(h.hub.request).toHaveBeenCalledWith('acquire', 's2', 'dev-a');
+    expect(res).toMatchObject({ ok: true, op: 'acquire', sessionId: 's2' });
+  });
+
+  it('a hub lease-event reaches the registered lease-event listener', async () => {
+    const svc = await enabledMultiSpaceService();
+    const received: any[] = [];
+    svc.setSyncSpacesLeaseEventListener((ev: any) => received.push(ev));
+    const leaseEvent = { type: 'lease-event', kind: 'takeover-request', sessionId: 's3', from: { deviceId: 'dev-b', device: 'Laptop-B' } };
+    h.hub.opts.onEvent(leaseEvent);
+    expect(received).toEqual([leaseEvent]);
+    // Non-lease events (signal/connected/disconnected) must NOT reach it.
+    received.length = 0;
+    h.hub.opts.onEvent({ type: 'connected' });
+    expect(received).toEqual([]);
+    svc.setSyncSpacesLeaseEventListener(null); // clean up module facade
   });
 });
