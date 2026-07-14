@@ -563,8 +563,8 @@ export interface SkillComponents {
 
 // Known session flag names. Add new flags here + in the renderer's pill list.
 // Server-side validation rejects any flag name not in this union.
-export type SessionFlagName = 'complete' | 'priority' | 'helpful';
-export const SESSION_FLAG_NAMES: SessionFlagName[] = ['complete', 'priority', 'helpful'];
+export type SessionFlagName = 'complete' | 'priority';
+export const SESSION_FLAG_NAMES: SessionFlagName[] = ['complete', 'priority'];
 
 export interface PastSession {
   /** Claude Code's internal session ID (JSONL filename without extension) */
@@ -579,8 +579,8 @@ export interface PastSession {
   lastModified: number;
   /** File size in bytes — proxy for conversation length */
   size: number;
-  /** User-set flags. `complete` hides from resume menu; `priority` pins to top;
-   *  `helpful` is informational only. Multiple flags per session are allowed. */
+  /** User-set flags. `complete` hides from resume menu; `priority` pins to top.
+   *  Multiple flags per session are allowed. */
   flags?: Partial<Record<SessionFlagName, boolean>>;
   /** Which runtime owns this past session: `'claude'` (a Claude Code JSONL
    *  transcript — the historical default) or `'native'` (a YouCoded
@@ -589,6 +589,11 @@ export interface PastSession {
    *  Conversation-Store rows (Phase 2a). Typed `string` (not the `'claude' |
    *  'native'` union) because store-fed rows assign it from a stored string. */
   provider?: string;
+  /** Applied custom-tag ids (from the conversation store's `tag:<id>` flag
+   *  keys). Resolved to labels/colors by the renderer via the tag registry. */
+  tags?: string[];
+  /** User's freeform note for this session ('' / absent = none). */
+  note?: string;
   /** Last device that ran a turn. Populated on store-fed rows (Conversation
    *  Store, Phase 2a) so the Resume Browser can show where a conversation ran. */
   device?: string;
@@ -741,6 +746,15 @@ export const IPC = {
   SESSION_SET_FLAG: 'session:set-flag',
   // Broadcast when session metadata changes (carries a flag + value)
   SESSION_META_CHANGED: 'session:meta-changed',
+  // Custom session tags (registry CRUD + application) and per-session notes.
+  SESSION_SET_TAG: 'session:set-tag',   // (sessionId, tagId, value)
+  SESSION_SET_NOTE: 'session:set-note', // (sessionId, note)
+  SESSION_GET_META: 'session:get-meta', // (sessionId) → { tags, note }
+  TAGS_LIST: 'tags:list',
+  TAGS_CREATE: 'tags:create',           // (label, color)
+  TAGS_UPDATE: 'tags:update',           // (id, { label?, color?, archived? })
+  TAGS_DELETE: 'tags:delete',           // (id)
+  TAGS_CHANGED: 'tags:changed',         // push: registry mutated
   // Folder switcher
   FOLDERS_LIST: 'folders:list',
   FOLDERS_ADD: 'folders:add',

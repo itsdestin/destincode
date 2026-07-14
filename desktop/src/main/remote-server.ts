@@ -635,6 +635,82 @@ export class RemoteServer {
         }
         break;
       }
+      case 'tags:list': {
+        const { getTagRegistry } = await import('./conversations/tag-registry-service');
+        const reg = getTagRegistry();
+        const list = reg ? await reg.list().catch(() => []) : [];
+        this.respond(client.ws, type, id, list);
+        break;
+      }
+      case 'tags:create': {
+        const { getTagRegistry } = await import('./conversations/tag-registry-service');
+        const reg = getTagRegistry();
+        if (!reg) { this.respond(client.ws, type, id, { ok: false, error: 'tag registry unavailable' }); break; }
+        try {
+          const tag = await reg.create(String(payload?.label ?? ''), payload?.color);
+          this.broadcast({ type: 'tags:changed', payload: {} });
+          this.respond(client.ws, type, id, { ok: true, tag });
+        } catch (e: any) { this.respond(client.ws, type, id, { ok: false, error: e?.message || String(e) }); }
+        break;
+      }
+      case 'tags:update': {
+        const { getTagRegistry } = await import('./conversations/tag-registry-service');
+        const reg = getTagRegistry();
+        if (!reg) { this.respond(client.ws, type, id, { ok: false, error: 'tag registry unavailable' }); break; }
+        try {
+          const tag = await reg.update(String(payload?.id), payload?.patch ?? {});
+          this.broadcast({ type: 'tags:changed', payload: {} });
+          this.respond(client.ws, type, id, { ok: true, tag });
+        } catch (e: any) { this.respond(client.ws, type, id, { ok: false, error: e?.message || String(e) }); }
+        break;
+      }
+      case 'tags:delete': {
+        const { getTagRegistry } = await import('./conversations/tag-registry-service');
+        const reg = getTagRegistry();
+        if (!reg) { this.respond(client.ws, type, id, { ok: false, error: 'tag registry unavailable' }); break; }
+        try {
+          await reg.delete(String(payload?.id));
+          this.broadcast({ type: 'tags:changed', payload: {} });
+          this.respond(client.ws, type, id, { ok: true });
+        } catch (e: any) { this.respond(client.ws, type, id, { ok: false, error: e?.message || String(e) }); }
+        break;
+      }
+      case 'session:set-tag': {
+        const { noteFlagChanged } = await import('./conversations/service');
+        const { tagFlagKey } = await import('../shared/tags');
+        const tagId = String(payload?.tagId ?? '');
+        if (!tagId.startsWith('tag_')) { this.respond(client.ws, type, id, { ok: false, error: 'invalid tag id' }); break; }
+        noteFlagChanged(String(payload?.sessionId), tagFlagKey(tagId), !!payload?.value);
+        this.respond(client.ws, type, id, { ok: true });
+        break;
+      }
+      case 'session:set-note': {
+        const { noteSessionNote } = await import('./conversations/service');
+        const text = String(payload?.note ?? '');
+        if (text.length > 8000) { this.respond(client.ws, type, id, { ok: false, error: 'note too long' }); break; }
+        noteSessionNote(String(payload?.sessionId), text);
+        this.respond(client.ws, type, id, { ok: true });
+        break;
+      }
+      case 'session:get-meta': {
+        const { getConversationStore } = await import('./conversations/service');
+        const store = getConversationStore();
+        let out = { tags: [] as string[], note: '' };
+        if (store) {
+          try {
+            const rec = await store.get('claude', String(payload?.sessionId));
+            if (rec) {
+              const tags: string[] = [];
+              for (const [k, v] of Object.entries(rec.flags)) {
+                if ((v as any).value && k.startsWith('tag:')) tags.push(k.slice(4));
+              }
+              out = { tags, note: rec.note || '' };
+            }
+          } catch { /* fall through to empty */ }
+        }
+        this.respond(client.ws, type, id, out);
+        break;
+      }
       // Local engine (Plan B). status is sync; install/restart resolve to a
       // fresh status() so the remote client mirrors the desktop IPC contract.
       case 'engine:status': {

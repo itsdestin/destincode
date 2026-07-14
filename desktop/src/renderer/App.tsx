@@ -2639,16 +2639,25 @@ function AppInner() {
       <CloseSessionPrompt
         open={closePromptFor !== null}
         sessionName={sessions.find((s) => s.id === closePromptFor)?.name}
+        sessionId={closePromptFor}
         onCancel={() => setClosePromptFor(null)}
-        onConfirm={(flagsToSet) => {
+        onConfirm={(result) => {
           const id = closePromptFor;
           if (!id) return;
-          // Fire setFlag for each selected tag (fire-and-forget — backend logs
-          // any failure). Main resolves the desktop ID to a Claude session ID
-          // via sessionIdMap before writing conversation-index.json.
-          for (const flag of flagsToSet) {
-            try { (window as any).claude.session.setFlag(id, flag, true); } catch {}
+          // Reserved flags to set + the TAG DELTA (only what the user toggled off
+          // the preloaded baseline) + the note if it changed — each fire-and-forget;
+          // main resolves the desktop id to the Claude id. The .catch() swallows an
+          // IPC rejection (remote timeout) so it can't become an unhandled rejection.
+          for (const flag of result.flags) {
+            try { Promise.resolve((window as any).claude.session.setFlag(id, flag, true)).catch(() => {}); } catch {}
           }
+          for (const tagId of result.addTagIds) {
+            try { Promise.resolve((window as any).claude.session.setTag(id, tagId, true)).catch(() => {}); } catch {}
+          }
+          for (const tagId of result.removeTagIds) {
+            try { Promise.resolve((window as any).claude.session.setTag(id, tagId, false)).catch(() => {}); } catch {}
+          }
+          if (result.noteChanged) { try { Promise.resolve((window as any).claude.session.setNote(id, result.note)).catch(() => {}); } catch {} }
           try { window.claude.session.destroy(id); } catch {}
           setClosePromptFor(null);
         }}

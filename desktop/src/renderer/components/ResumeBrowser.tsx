@@ -13,6 +13,10 @@ import {
   type FilterState,
   type FlagName,
 } from './resume-browser-filters';
+import { useTagRegistry } from '../hooks/useTagRegistry';
+import { TagPicker } from './tags/TagPicker';
+import { TagChip } from './tags/TagChip';
+import { NoteEditor } from './tags/NoteEditor';
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
@@ -141,25 +145,14 @@ function useDropdownReposition(
 
 // FlagName is imported from resume-browser-filters.ts (single source of truth).
 // Kept in sync with SESSION_FLAG_NAMES in shared/types.ts; that module is
-// CommonJS so we don't import it directly. FLAG_ORDER fixes the pill / badge
-// ordering in the UI (Priority first, Helpful, then Complete).
-const FLAG_ORDER: FlagName[] = ['priority', 'helpful', 'complete'];
+// CommonJS so we don't import it directly. FLAG_ORDER fixes the reserved-flag
+// toggle ordering in the UI (Priority first, then Complete). The old
+// informational flag is retired; custom tags are handled separately now.
+const FLAG_ORDER: FlagName[] = ['priority', 'complete'];
 const FLAG_LABEL: Record<FlagName, string> = {
   priority: 'Priority',
-  helpful: 'Helpful',
   complete: 'Complete',
 };
-// Compact glyph shown in the session-row badge for each flag.
-const FLAG_BADGE: Record<FlagName, string> = {
-  priority: '▲',
-  helpful: '●',
-  complete: '✓',
-};
-// Tags filter exposes only Priority + Helpful — Complete is owned by the
-// Show Complete header toggle. Tags pill dropdown + label both iterate this
-// constant; adding a custom tag in the future is a list extension here, not
-// a UI rewrite.
-const TAG_FILTER_OPTIONS: ReadonlyArray<Exclude<FlagName, 'complete'>> = ['priority', 'helpful'] as const;
 
 interface PastSession {
   sessionId: string;
@@ -168,10 +161,11 @@ interface PastSession {
   projectPath: string;
   lastModified: number;
   size: number;
-  // User-set flags — multiple allowed. `complete` hides unless Show Complete
-  // is on; `priority` pins the session to the top of its project group;
-  // `helpful` is informational only.
+  // Reserved flags — multiple allowed. `complete` hides unless Show Complete
+  // is on; `priority` pins the session to the top of its project group.
   flags?: Partial<Record<FlagName, boolean>>;
+  tags?: string[];   // applied custom-tag ids
+  note?: string;
   // Which runtime owns this session: `'claude'` = a Claude Code transcript;
   // `'native'` = a YouCoded native-harness session (gets a "YouCoded" badge and
   // skips the CC-only resume options — model / skip-perms). Typed `string`
@@ -197,6 +191,8 @@ interface Props {
 }
 
 export default function ResumeBrowser({ open, onClose, onResume, defaultModel, defaultSkipPermissions }: Props) {
+  // Live tag registry — drives the Tag Picker, chips, and custom-tag filter.
+  const registry = useTagRegistry();
   const [sessions, setSessions] = useState<PastSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -236,7 +232,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // (empty Sets, sortDir='desc') produce identical behaviour to the prior
   // hard-coded filter pipeline.
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
-  const [selectedTags, setSelectedTags] = useState<Set<FlagName>>(new Set());
+  const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set());
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   // Tracks which filter pill's dropdown is currently open. null = both closed.
@@ -254,7 +250,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setStickyComplete(new Set());
       // Reset filter pills each open — current spec: no persistence.
       setSelectedProjects(new Set());
-      setSelectedTags(new Set());
+      setSelectedTagIds(new Set());
       setSortDir('desc');
       setLoading(true);
       (window as any).claude.session.browse()
@@ -303,10 +299,11 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       showComplete,
       stickyComplete,
       selectedProjects,
-      selectedTags,
+      selectedTagIds,
+      tagLabelById: Object.fromEntries(registry.tags.map((t) => [t.id, t.label])),
     };
     return applyFilters(sessions, state);
-  }, [sessions, search, showComplete, stickyComplete, selectedProjects, selectedTags]);
+  }, [sessions, search, showComplete, stickyComplete, selectedProjects, selectedTagIds, registry.tags]);
 
   // Group by project path ONLY when the user has narrowed via the Projects
   // pill — the default view is pure chronological (each row carries its own
@@ -338,19 +335,8 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     return `Projects (${selectedList.length})`;
   }, [selectedProjects, availableProjects]);
 
-  // Trigger label for the Tags pill: 0 → "Tags"; 1 → flag label; 2 → "A + B".
-  // Iterates TAG_FILTER_OPTIONS so adding a custom tag is a list extension
-  // there rather than a memo edit here.
-  const tagsLabel = useMemo(() => {
-    if (selectedTags.size === 0) return 'Tags';
-    return TAG_FILTER_OPTIONS
-      .filter((tag) => selectedTags.has(tag))
-      .map((tag) => FLAG_LABEL[tag])
-      .join(' + ');
-  }, [selectedTags]);
-
   // Portal-anchored dropdown positions. Dropdown widths match the className
-  // (Projects: w-64 = 256px, Tags: w-44 = 176px). Keep these in sync if the
+  // (Projects: w-64 = 256px, Tags: w-52 = 208px). Keep these in sync if the
   // className width changes.
   // The position is captured synchronously inside each pill's onClick handler
   // (not via useLayoutEffect) so the dropdown can render in the same React
@@ -361,7 +347,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   // Reposition while open (resize / scroll updates only — not the initial
   // measurement, which is sync in the click handler).
   useDropdownReposition(openPill === 'projects', projectsTriggerRef, 256, setProjectsDropdownPos);
-  useDropdownReposition(openPill === 'tags', tagsTriggerRef, 176, setTagsDropdownPos);
+  useDropdownReposition(openPill === 'tags', tagsTriggerRef, 208, setTagsDropdownPos);
 
   // Clear stale position state when the dropdown closes via outside-click or
   // ESC (the click handlers do this themselves, but those external paths
@@ -397,20 +383,42 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     }
   };
 
+  // Apply/remove a custom tag on a past session (optimistic + persist).
+  const toggleTag = async (sessionId: string, tagId: string, next: boolean) => {
+    setSessions((prev) => prev.map((s) =>
+      s.sessionId === sessionId
+        ? { ...s, tags: next ? [...new Set([...(s.tags ?? []), tagId])] : (s.tags ?? []).filter((t) => t !== tagId) }
+        : s));
+    try { await (window as any).claude.session.setTag(sessionId, tagId, next); } catch (e) { console.error('resume: setTag failed', e); }
+  };
+
+  const saveNote = async (sessionId: string, note: string) => {
+    setSessions((prev) => prev.map((s) => s.sessionId === sessionId ? { ...s, note } : s));
+    try { await (window as any).claude.session.setNote(sessionId, note); } catch (e) { console.error('resume: setNote failed', e); }
+  };
+
   // Listen for cross-tab / cross-device meta changes while the browser is open.
   useEffect(() => {
     if (!open) return;
     const sub = (window as any).claude?.on?.sessionMetaChanged;
     if (!sub) return;
-    const off = sub((sid: string, meta: { flag?: string; value?: boolean }) => {
-      if (!meta?.flag) return;
-      setSessions((prev) => prev.map((s) =>
-        s.sessionId === sid
-          ? { ...s, flags: { ...(s.flags || {}), [meta.flag as FlagName]: !!meta.value } }
-          : s,
-      ));
+    const off = sub((sid: string, meta: { flag?: string; value?: boolean; note?: string }) => {
+      setSessions((prev) => prev.map((s) => {
+        if (s.sessionId !== sid) return s;
+        let next = s;
+        if (meta.flag && meta.flag.startsWith('tag:')) {
+          const id = meta.flag.slice(4);
+          const tags = meta.value ? [...new Set([...(s.tags ?? []), id])] : (s.tags ?? []).filter((t) => t !== id);
+          next = { ...next, tags };
+        } else if (meta.flag === 'priority' || meta.flag === 'complete') {
+          next = { ...next, flags: { ...(next.flags || {}), [meta.flag]: !!meta.value } };
+        }
+        if (typeof meta.note === 'string') next = { ...next, note: meta.note };
+        return next;
+      }));
     });
-    // Desktop preload returns the raw handler; remote-shim returns an unsubscribe fn.
+    // Both preload and remote-shim return an unsubscribe fn for this channel,
+    // so calling off() actually removes the listener (no per-open leak).
     return () => {
       try { if (typeof off === 'function') off(); } catch {}
     };
@@ -500,9 +508,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         )}
 
-        {/* Flags — one row of multi-select pills (Priority / Helpful / Complete).
-            Complete can be toggled on with Show Complete off; the row stays
-            visible until the menu is closed and reopened (stickyComplete). */}
+        {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
         <div>
           <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
           <div className="flex gap-1">
@@ -511,14 +517,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               return (
                 <button
                   key={flag}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleFlag(s.sessionId, flag, !active);
-                  }}
+                  onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
                   className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
-                    active
-                      ? 'bg-accent text-on-accent font-medium'
-                      : 'bg-inset text-fg-dim hover:bg-edge'
+                    active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
                   }`}
                   aria-pressed={active}
                 >
@@ -527,6 +528,22 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               );
             })}
           </div>
+        </div>
+
+        {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
+        <div onClick={(e) => e.stopPropagation()}>
+          <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
+          <TagPicker
+            appliedIds={new Set(s.tags ?? [])}
+            onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
+            registry={registry}
+          />
+        </div>
+
+        {/* Note — stopPropagation so editing doesn't collapse the row. */}
+        <div onClick={(e) => e.stopPropagation()}>
+          <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
+          <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
         </div>
 
         {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
@@ -569,15 +586,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       >
         <div className="flex-1 min-w-0">
           <div className="text-sm truncate flex items-center gap-1.5">
-            {/* Compact per-flag badges before the name. Priority sits leftmost so
-                it reads like an at-a-glance pin marker. */}
-            {FLAG_ORDER.filter((f) => s.flags?.[f]).map((f) => (
-              <span
-                key={f}
-                className="text-[9px] leading-none px-1 py-[1px] rounded-sm bg-accent text-on-accent shrink-0"
-                title={FLAG_LABEL[f]}
-              >{FLAG_BADGE[f]}</span>
-            ))}
             {/* Runtime badge — native (YouCoded harness) sessions only. Plain
                 word, no glyph; distinguishes them from Claude Code transcripts. */}
             {s.provider === 'native' && (
@@ -588,6 +596,18 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             )}
             <span className="truncate">{s.name}</span>
           </div>
+          {/* Reserved-flag indicators + custom-tag chips, AFTER the name. */}
+          {(s.flags?.priority || s.flags?.complete || (s.tags && s.tags.length > 0) || s.note) && (
+            <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+              {s.flags?.priority && <span className="text-[9px] text-accent" title="Priority">Priority</span>}
+              {s.flags?.complete && <span className="text-[9px] text-fg-faint" title="Complete">Complete</span>}
+              {(s.tags ?? []).map((id) => {
+                const t = registry.byId.get(id);
+                return t ? <TagChip key={id} tag={t} /> : null;
+              })}
+              {s.note && <span className="text-[9px] text-fg-faint" title={s.note}>📝 note</span>}
+            </div>
+          )}
           {/* Second line: in flat (chronological) mode each row carries its
               project label since there's no group header; size rides along so
               no info is lost vs. the grouped view. Grouped rows keep size only
@@ -733,58 +753,46 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 document.body,
               )}
 
-              {/* Tags: multi-select dropdown over the per-session flag set. Priority + Helpful only;
-                  Complete stays owned by the Show Complete toggle in the header. Dropdown is
-                  portaled to escape the OverlayPanel's overflow:hidden clipping. */}
+              {/* Tags: multi-select dropdown over the user's custom tags. Portaled
+                  to escape the OverlayPanel's overflow:hidden clipping. */}
               <FilterPill
                 buttonRef={tagsTriggerRef}
-                active={selectedTags.size > 0}
+                active={selectedTagIds.size > 0}
                 hasPopup
                 expanded={openPill === 'tags'}
                 onClick={(e) => {
                   e.stopPropagation();
-                  // Measure synchronously — see Projects onClick comment.
-                  if (openPill === 'tags') {
-                    setOpenPill(null);
-                    setTagsDropdownPos(null);
-                  } else {
-                    setTagsDropdownPos(measureDropdown(tagsTriggerRef, 176));
-                    setOpenPill('tags');
-                  }
+                  if (openPill === 'tags') { setOpenPill(null); setTagsDropdownPos(null); }
+                  else { setTagsDropdownPos(measureDropdown(tagsTriggerRef, 208)); setOpenPill('tags'); }
                 }}
               >
-                <span>{tagsLabel}</span>
+                <span>{selectedTagIds.size === 0 ? 'Tags' : `${selectedTagIds.size} tag${selectedTagIds.size > 1 ? 's' : ''}`}</span>
                 <span className="text-fg-faint text-[9px]">▾</span>
               </FilterPill>
               {openPill === 'tags' && tagsDropdownPos && createPortal(
                 <div
                   ref={tagsDropdownRef}
-                  className="layer-surface w-44 max-w-[calc(100vw-1rem)] overflow-hidden"
-                  style={{
-                    position: 'fixed',
-                    top: tagsDropdownPos.top,
-                    left: tagsDropdownPos.left,
-                    zIndex: 60,
-                  }}
+                  className="layer-surface w-52 max-w-[calc(100vw-1rem)] max-h-64 overflow-y-auto"
+                  style={{ position: 'fixed', top: tagsDropdownPos.top, left: tagsDropdownPos.left, zIndex: 60 }}
                 >
-                  {TAG_FILTER_OPTIONS.map((tag) => {
-                    const checked = selectedTags.has(tag);
+                  {registry.tags.filter((t) => !t.archived).length === 0 && (
+                    <div className="px-2.5 py-1.5 text-xs text-fg-faint">No tags yet.</div>
+                  )}
+                  {registry.tags.filter((t) => !t.archived).map((t) => {
+                    const checked = selectedTagIds.has(t.id);
                     return (
                       <button
-                        key={tag}
+                        key={t.id}
                         type="button"
-                        onClick={() => {
-                          setSelectedTags((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(tag)) next.delete(tag);
-                            else next.add(tag);
-                            return next;
-                          });
-                        }}
+                        onClick={() => setSelectedTagIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(t.id)) next.delete(t.id); else next.add(t.id);
+                          return next;
+                        })}
                         className="w-full text-left px-2.5 py-1.5 text-xs flex items-center gap-2 hover:bg-inset transition-colors text-fg-2"
                       >
                         <span className={`w-3 h-3 shrink-0 rounded-sm border ${checked ? 'bg-accent border-accent' : 'border-edge'}`} />
-                        <span className="flex-1">{FLAG_LABEL[tag]}</span>
+                        <TagChip tag={t} />
                       </button>
                     );
                   })}

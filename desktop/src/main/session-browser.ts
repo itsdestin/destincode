@@ -48,6 +48,24 @@ function readIndexMeta(): {
   return { flags, topics };
 }
 
+// Pure: turn a store record's flag map + note into the PastSession-facing shape.
+// Reserved flags stay booleans; `tag:<id>` keys become the tags[] list; unknown
+// flags (including retired `helpful`) are ignored. Exported for unit testing.
+export function extractStoreMeta(rec: { flags: Record<string, { value: boolean }>; note?: string }): {
+  flags: Partial<Record<SessionFlagName, boolean>>;
+  tags: string[];
+  note?: string;
+} {
+  const flags: Partial<Record<SessionFlagName, boolean>> = {};
+  const tags: string[] = [];
+  for (const [k, v] of Object.entries(rec.flags || {})) {
+    if (!v?.value) continue;
+    if (k === 'complete' || k === 'priority') flags[k] = true;
+    else if (k.startsWith('tag:')) tags.push(k.slice(4));
+  }
+  return { flags, tags, ...(rec.note ? { note: rec.note } : {}) };
+}
+
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 /** Retry an async operation up to `attempts` times with a short delay between tries. */
@@ -297,7 +315,14 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           ? topicName
           : (meta.fallbackTitle ?? 'Untitled');
 
-        const joinedFlags = indexMeta.flags[sessionId];
+        // Filter a stale legacy `helpful` (retired in Task 8) so it never reaches
+        // the renderer. Collapse an empty result back to undefined to preserve the
+        // "only attach flags when present" behavior below (an empty {} is truthy).
+        const rawFlags = indexMeta.flags[sessionId];
+        const filtered = rawFlags
+          ? Object.fromEntries(Object.entries(rawFlags).filter(([k]) => k === 'complete' || k === 'priority'))
+          : undefined;
+        const joinedFlags = filtered && Object.keys(filtered).length ? filtered : undefined;
         return {
           sessionId,
           name,
@@ -366,11 +391,9 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
         // transcript the live session is actively appending to.
         if (activeSessionIds?.has(rec.id)) continue;
         const legacy = deduped.get(rec.id);
-        // Store flags are { value, updatedAt }; keep only the ON, known flags.
-        const flags: Partial<Record<SessionFlagName, boolean>> = {};
-        for (const [k, v] of Object.entries(rec.flags)) {
-          if (v.value && (k === 'complete' || k === 'priority' || k === 'helpful')) flags[k] = true;
-        }
+        // Store flags are { value, updatedAt }; extractStoreMeta keeps the ON
+        // reserved flags, turns `tag:<id>` keys into tags[], and passes the note.
+        const { flags, tags, note } = extractStoreMeta(rec);
         if (legacy) {
           // Overlay store metadata onto the local row. A literal 'Untitled'
           // title is a PLACEHOLDER, not a name — older clients synced such topic
@@ -379,6 +402,8 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
           legacy.name = rec.title && rec.title !== 'Untitled' ? rec.title : legacy.name;
           legacy.lastModified = Math.max(legacy.lastModified, Date.parse(rec.lastActive) || 0);
           if (Object.keys(flags).length) legacy.flags = flags;
+          if (tags.length) legacy.tags = tags;
+          if (note) legacy.note = note;
           legacy.device = rec.device || undefined;
           legacy.provider = rec.provider;
           // Prefer the store's UNAMBIGUOUS project resolution for the resume cwd.
@@ -412,6 +437,8 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
             lastModified: Date.parse(rec.lastActive) || 0,
             size: 0,
             ...(Object.keys(flags).length ? { flags } : {}),
+            ...(tags.length ? { tags } : {}),
+            ...(note ? { note } : {}),
             device: rec.device || undefined,
             provider: rec.provider,
             // Two distinct resume-blocked sub-cases so the renderer can word

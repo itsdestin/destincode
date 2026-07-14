@@ -416,3 +416,22 @@ describe('listPastSessions — Conversation Store union (Phase 2a)', () => {
     expect(sessions[0].name).toBe('survives a broken store read');
   });
 });
+
+describe('extractStoreMeta', () => {
+  it('surfaces tag:<id> flags as tags[] and note from the store record', async () => {
+    const rec: any = {
+      flags: {
+        priority: { value: true, updatedAt: 'x' },
+        helpful: { value: true, updatedAt: 'x' },          // ignored now
+        'tag:tag_1': { value: true, updatedAt: 'x' },
+        'tag:tag_2': { value: false, updatedAt: 'x' },     // off — excluded
+      },
+      note: 'left off mid-refactor',
+    };
+    const { extractStoreMeta } = await import('../src/main/session-browser');
+    const meta = extractStoreMeta(rec);
+    expect(meta.flags).toEqual({ priority: true });        // helpful dropped
+    expect(meta.tags).toEqual(['tag_1']);
+    expect(meta.note).toBe('left off mid-refactor');
+  });
+});

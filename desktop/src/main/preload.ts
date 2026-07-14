@@ -98,6 +98,16 @@ const IPC = {
   SESSION_SET_FLAG: 'session:set-flag',
   // Pushed when session metadata (a flag value) changes so open browsers refresh
   SESSION_META_CHANGED: 'session:meta-changed',
+  // Session tags + note (custom user tags, freeform note)
+  SESSION_SET_TAG: 'session:set-tag',
+  SESSION_SET_NOTE: 'session:set-note',
+  SESSION_GET_META: 'session:get-meta',
+  // Tag registry CRUD + change push
+  TAGS_LIST: 'tags:list',
+  TAGS_CREATE: 'tags:create',
+  TAGS_UPDATE: 'tags:update',
+  TAGS_DELETE: 'tags:delete',
+  TAGS_CHANGED: 'tags:changed',
   // Folder switcher
   FOLDERS_LIST: 'folders:list',
   FOLDERS_ADD: 'folders:add',
@@ -325,6 +335,22 @@ contextBridge.exposeInMainWorld('claude', {
     // Persists in conversation-index.json and rides the existing sync pipeline.
     setFlag: (sessionId: string, flag: string, value: boolean) =>
       ipcRenderer.invoke(IPC.SESSION_SET_FLAG, sessionId, flag, value),
+    // Toggle a custom user tag on a session (persists in conversation-index.json).
+    setTag: (sessionId: string, tagId: string, value: boolean) =>
+      ipcRenderer.invoke(IPC.SESSION_SET_TAG, sessionId, tagId, value),
+    // Set the freeform note on a session.
+    setNote: (sessionId: string, note: string) =>
+      ipcRenderer.invoke(IPC.SESSION_SET_NOTE, sessionId, note),
+    // Read a session's applied tag ids + note (used by the in-session Tag chip).
+    getMeta: (sessionId: string): Promise<{ tags: string[]; note: string }> =>
+      ipcRenderer.invoke(IPC.SESSION_GET_META, sessionId),
+  },
+  // Tag registry CRUD (custom user-defined tags shared across sessions).
+  tags: {
+    list: () => ipcRenderer.invoke('tags:list'),
+    create: (label: string, color: string) => ipcRenderer.invoke('tags:create', label, color),
+    update: (id: string, patch: object) => ipcRenderer.invoke('tags:update', id, patch),
+    delete: (id: string) => ipcRenderer.invoke('tags:delete', id),
   },
   on: {
     sessionCreated: (cb: (info: any) => void) => {
@@ -372,11 +398,20 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.SESSION_RENAMED, handler);
       return handler;
     },
-    // Pushed when a session's metadata changes (currently: complete flag)
+    // Pushed when a session's metadata changes (flags, applied tags, or note).
+    // Returns an UNSUBSCRIBE fn (not the raw handler) so callers can clean up via
+    // `off()` — matches tagsChanged below; the leak fix for the tags hooks depends
+    // on this being consistent across preload + remote-shim.
     sessionMetaChanged: (cb: (sessionId: string, meta: { flag: string; value: boolean }) => void) => {
       const handler = (_e: IpcRendererEvent, sid: string, meta: any) => cb(sid, meta);
       ipcRenderer.on(IPC.SESSION_META_CHANGED, handler);
-      return handler;
+      return () => ipcRenderer.removeListener(IPC.SESSION_META_CHANGED, handler);
+    },
+    // Pushed when the tag registry changes (create/update/delete) so open UIs refresh.
+    tagsChanged: (cb: (payload: any) => void) => {
+      const handler = (_e: any, payload: any) => cb(payload);
+      ipcRenderer.on('tags:changed', handler);
+      return () => ipcRenderer.removeListener('tags:changed', handler);
     },
     // Shape parity with remote-shim — desktop never fires this push event
     // (mode detection runs in App.tsx via pty:output text matching), so this

@@ -1,0 +1,50 @@
+// src/renderer/hooks/useTagRegistry.ts
+// Live view of the tag registry. Loads via window.claude.tags.list() and
+// refetches whenever a tags:changed push arrives (any window/device mutation).
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { TagRecord, TagColor } from '../../shared/tags';
+
+export interface TagRegistryApi {
+  tags: TagRecord[];                 // non-deleted; includes archived
+  byId: Map<string, TagRecord>;
+  loading: boolean;
+  reload: () => void;
+  create: (label: string, color: TagColor) => Promise<TagRecord | null>;
+  update: (id: string, patch: { label?: string; color?: TagColor; archived?: boolean }) => Promise<void>;
+  remove: (id: string) => Promise<void>;
+}
+
+export function useTagRegistry(): TagRegistryApi {
+  const [tags, setTags] = useState<TagRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(() => {
+    Promise.resolve((window as any).claude.tags.list())
+      .then((list: TagRecord[]) => setTags(Array.isArray(list) ? list : []))
+      .catch(() => setTags([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    reload();
+    const off = (window as any).claude.on?.tagsChanged?.(() => reload());
+    return () => { if (typeof off === 'function') off(); };
+  }, [reload]);
+
+  const create = useCallback(async (label: string, color: TagColor) => {
+    const res: any = await (window as any).claude.tags.create(label, color);
+    reload();
+    return res?.ok ? (res.tag as TagRecord) : null;
+  }, [reload]);
+
+  const update = useCallback(async (id: string, patch: { label?: string; color?: TagColor; archived?: boolean }) => {
+    await (window as any).claude.tags.update(id, patch); reload();
+  }, [reload]);
+
+  const remove = useCallback(async (id: string) => {
+    await (window as any).claude.tags.delete(id); reload();
+  }, [reload]);
+
+  const byId = useMemo(() => new Map(tags.map((t) => [t.id, t])), [tags]);
+  return { tags, byId, loading, reload, create, update, remove };
+}

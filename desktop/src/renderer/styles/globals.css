@@ -39,6 +39,19 @@
   --radius-2xl: 24px;
   --radius-full: 9999px;
   --radius-toggle: calc(var(--radius-md) - 2px);
+  /* Custom session-tag palette (design §"Color palette"). Fixed mid-tone hues
+     that read legibly on both light and dark themes; TagChip tints them via
+     color-mix so they sit on any theme surface without per-theme overrides. */
+  --tag-red: #E5484D;
+  --tag-orange: #E8730C;
+  --tag-amber: #C99700;
+  --tag-green: #2E9B57;
+  --tag-teal: #12A594;
+  --tag-blue: #3B82C4;
+  --tag-indigo: #5B5BD6;
+  --tag-purple: #8E4EC6;
+  --tag-pink: #D6409F;
+  --tag-gray: #7A7F87;
 }
 
 /* ─── Dark ─── */

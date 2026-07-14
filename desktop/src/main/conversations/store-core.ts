@@ -24,6 +24,8 @@ export interface ConversationRecord {
   flags: Record<string, FlagState>;
   transcriptRef: string;         // space-relative, e.g. 'claude/transcripts/<key>/<id>.jsonl'
   createdAt: string;             // ISO-8601
+  note: string;                  // user freeform note; '' means none
+  noteUpdatedAt: string;         // ISO — own timestamp for independent merge
 }
 
 // Keep only well-formed FlagState entries. A malformed flag (string value,
@@ -76,12 +78,20 @@ export function parseRecord(json: string): ConversationRecord | null {
       typeof raw.createdAt === 'string' && !Number.isNaN(Date.parse(raw.createdAt))
         ? raw.createdAt
         : raw.lastActive,
+    note: typeof raw.note === 'string' ? raw.note : '',
+    // Absent/corrupt noteUpdatedAt → createdAt, so an old record never claims a
+    // note edit it didn't make.
+    noteUpdatedAt:
+      typeof raw.noteUpdatedAt === 'string' && !Number.isNaN(Date.parse(raw.noteUpdatedAt))
+        ? raw.noteUpdatedAt
+        : (typeof raw.createdAt === 'string' && !Number.isNaN(Date.parse(raw.createdAt))
+            ? raw.createdAt : raw.lastActive),
   };
 }
 
 // Parse an ISO string to epoch ms; unparseable → 0 so it always loses a
 // "newest wins" comparison rather than throwing.
-const ts = (iso: string) => Date.parse(iso) || 0;
+export const ts = (iso: string) => Date.parse(iso) || 0;
 
 // Pick the "later" of two values under a TOTAL order: primary by timestamp,
 // exact ties broken by comparing the two values' JSON text lexicographically.
@@ -109,7 +119,7 @@ const realTitle = (t: string) => (t && t !== 'Untitled' ? t : '');
 // Earliest-claim pick for createdAt, with the same content tiebreak: two
 // different spellings of the same instant must resolve identically on every
 // device, or merged records never byte-converge.
-function earliestOf(x: string, y: string): string {
+export function earliestOf(x: string, y: string): string {
   const tx = ts(x);
   const ty = ts(y);
   if (tx !== ty) return tx < ty ? x : y;
@@ -148,9 +158,17 @@ export function mergeRecords(a: ConversationRecord, b: ConversationRecord): Conv
   // a heuristic and is NOT associative — foldConflictCopies compensates with
   // a set-based title pick over its original inputs.
   const title = realTitle(newer.title) || realTitle(older.title) || newer.title || older.title;
+  // Note is NOT activity-coupled (unlike title): a note edit on an idle device
+  // must not lose to a busier device's newer turn. Pick by noteUpdatedAt alone.
+  const notePick = laterOf(
+    { v: a.note, at: a.noteUpdatedAt }, { v: b.note, at: b.noteUpdatedAt },
+    ts(a.noteUpdatedAt), ts(b.noteUpdatedAt),
+  );
   return {
     ...newer,
     title,
+    note: notePick.v,
+    noteUpdatedAt: notePick.at,
     flags,
     // createdAt is the conversation's birth — keep the earliest claim
     // (content-tiebroken on equal instants, see earliestOf).
@@ -212,5 +230,12 @@ export function foldConflictCopies(
     titled.length > 0
       ? titled.reduce((x, y) => laterOf(x, y, ts(x.lastActive), ts(y.lastActive))).title
       : folded.title;
-  return { ...base, title, flags: folded.flags, createdAt: folded.createdAt };
+  return {
+    ...base,
+    title,
+    flags: folded.flags,
+    createdAt: folded.createdAt,
+    note: folded.note,
+    noteUpdatedAt: folded.noteUpdatedAt,
+  };
 }
