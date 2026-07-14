@@ -202,6 +202,10 @@ function AppInner() {
   const takeoverResolveRef = useRef<((choice: boolean) => void) | null>(null);
   const askTakeover = useCallback((device: string, phase: 'confirm' | 'force') =>
     new Promise<boolean>((resolve) => {
+      // Reentrancy guard: only one resolver slot exists. If a second resume opens
+      // a dialog while one is pending, resolve the prior one as "declined" so its
+      // awaiting handleResumeSession returns cleanly instead of hanging forever.
+      takeoverResolveRef.current?.(false);
       takeoverResolveRef.current = resolve;
       setTakeoverPrompt({ device, phase });
     }), []);

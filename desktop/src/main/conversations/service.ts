@@ -298,7 +298,7 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
 
 // Poll the local transcript size until it holds steady across one probe interval.
 // Returns true if it went quiescent, false on timeout (still growing at
-// QUIESCE_MAX_MS). Shared by materializeEndedSession (space->local direction:
+// QUIESCE_MAX_MS). Shared by materializeOne (space->local direction:
 // skip on timeout) and flushSessionToSpace (local->space direction: push anyway).
 async function waitForQuiescence(localPath: string): Promise<boolean> {
   const started = Date.now();
@@ -317,7 +317,7 @@ async function waitForQuiescence(localPath: string): Promise<boolean> {
 // wait for CC to finish flushing the interrupted turn, then push the local
 // transcript into the space so the REQUESTER pulls the FINAL turn. mirrorIn
 // (local->space) is grow-only and never touches CC's open local file, so pushing
-// even on a quiescence TIMEOUT is safe (unlike materializeEndedSession's
+// even on a quiescence TIMEOUT is safe (unlike materializeOne's
 // space->local direction, which must skip on timeout to avoid clobbering the file
 // CC still has open).
 export async function flushSessionToSpace(claudeSessionId: string): Promise<void> {
