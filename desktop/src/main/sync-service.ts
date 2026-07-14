@@ -34,6 +34,10 @@ import {
   writeWarnings,
 } from './sync-state';
 import { classifyPushError, decidePersonalSyncRemoteAction, extractStderr, truncateStderr } from './sync-error-classifier';
+// Why: dated daily snapshots reuse the SAME once-per-UTC-day gate helpers as the
+// spaces daily-backup (single source of truth) plus the pure tiered-retention core.
+import { datedFolderName, isBackupDue } from './sync-spaces/daily-backup';
+import { snapshotsToDelete } from './snapshot-retention';
 
 const execFileAsync = promisify(execFile);
 
@@ -49,6 +53,15 @@ interface PushResult {
   success: boolean;
   errors: number;
   backends: string[];  // IDs of backends that were pushed to
+}
+
+// Once-per-UTC-day gate for the dated ~/.claude snapshot, computed ONCE per
+// push() cycle and shared by pushDrive + pushiCloud so both write into the SAME
+// dated folder on a given day and the daily stamp isn't double-consumed.
+interface SnapshotGate {
+  due: boolean;   // is a new snapshot due today? (marker != today)
+  dated: string;  // YYYY-MM-DD folder name for today's snapshot
+  now: Date;      // the instant push() computed the gate (used for age-based pruning)
 }
 
 // Per-flag storage shape. updatedAt drives cross-device merge (latest writer wins)
@@ -133,6 +146,10 @@ export class SyncService extends EventEmitter {
   private configPath: string;
   private localConfigPath: string;
   private syncMarkerPath: string;
+  // Why: separate once-per-UTC-day stamp for the dated ~/.claude snapshot copy —
+  // distinct from the 15-min .sync-marker debounce so the snapshot runs at most
+  // once per day even though push() is still called every 15 minutes.
+  private snapshotMarkerPath: string;
   private pullMarkerPath: string;
   private lockDir: string;
   private backupLogPath: string;
@@ -167,6 +184,7 @@ export class SyncService extends EventEmitter {
     this.configPath = path.join(this.claudeDir, 'toolkit-state', 'config.json');
     this.localConfigPath = path.join(this.claudeDir, 'toolkit-state', 'config.local.json');
     this.syncMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.sync-marker');
+    this.snapshotMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.snapshot-marker');
     this.pullMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.session-sync-marker');
     this.lockDir = path.join(this.claudeDir, 'toolkit-state', '.sync-lock');
     this.backupLogPath = path.join(this.claudeDir, 'backup.log');
@@ -646,13 +664,25 @@ export class SyncService extends EventEmitter {
   // =========================================================================
 
   // Accepts a BackendInstance so multiple Drive accounts can use different rclone remotes
-  private async pushDrive(instance: BackendInstance): Promise<number> {
+  private async pushDrive(instance: BackendInstance, snapshot: SnapshotGate): Promise<number> {
     const rcloneRemote = instance.config.rcloneRemote || 'gdrive';
     const driveRoot = instance.config.DRIVE_ROOT || 'Claude';
-    const remoteBase = `${rcloneRemote}:${driveRoot}/Backup/personal`;
+    const backupRoot = `${rcloneRemote}:${driveRoot}/Backup`;
+    // Why: dated-not-flat — the ~/.claude set is now snapshotted into a per-day
+    // folder Backup/<YYYY-MM-DD>/... instead of overwriting one flat Backup/personal
+    // tree, so history is retained and pruned by age (see snapshot-retention.ts).
+    const remoteBase = `${backupRoot}/${snapshot.dated}/personal`;
     const sysRemote = `${remoteBase}/system-backup`;
     let errors = 0;
     let firstFailStderr = '';
+
+    // Why: daily-stamp gating — push() still fires every 15 min, but the actual
+    // snapshot copy runs at most once per UTC day. After today's snapshot is
+    // written we no-op (success) so we don't re-upload the whole set every cycle.
+    if (!snapshot.due) {
+      this.logBackup('INFO', 'Drive snapshot skipped — already done today', 'sync.push.drive');
+      return 0;
+    }
 
     // Memory files — per project key
     const projectsDir = path.join(this.claudeDir, 'projects');
@@ -702,37 +732,11 @@ export class SyncService extends EventEmitter {
       }
     }
 
-    // Conversations — snapshot to temp dir first to avoid races with subagents
-    if (this.dirExists(projectsDir)) {
-      const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-conv-'));
-      try {
-        for (const slugName of fs.readdirSync(projectsDir)) {
-          const slugDir = path.join(projectsDir, slugName);
-          if (!this.dirExists(slugDir)) continue;
-          // Skip symlinked slug dirs (foreign device slugs)
-          try { if (fs.lstatSync(slugDir).isSymbolicLink()) continue; } catch { continue; }
-
-          // Find real .jsonl files (not symlinks)
-          const jsonlFiles = fs.readdirSync(slugDir).filter(f => f.endsWith('.jsonl') && !fs.lstatSync(path.join(slugDir, f)).isSymbolicLink());
-          if (jsonlFiles.length === 0) continue;
-
-          const snapSlugDir = path.join(snapDir, slugName);
-          fs.mkdirSync(snapSlugDir, { recursive: true });
-          for (const f of jsonlFiles) {
-            fs.copyFileSync(path.join(slugDir, f), path.join(snapSlugDir, f));
-          }
-
-          const r = await this.rclone(['copy', snapSlugDir + '/', `${remoteBase}/conversations/${slugName}/`, '--checksum', '--include', '*.jsonl']);
-          if (r.code !== 0) {
-            this.logBackup('WARN', `Drive push conversations/${slugName} failed`, 'sync.push.drive', { stderr: truncateStderr(r.stderr || '') });
-            if (!firstFailStderr && r.stderr) firstFailStderr = r.stderr;
-            errors++;
-          }
-        }
-      } finally {
-        fs.rmSync(snapDir, { recursive: true, force: true });
-      }
-    }
+    // Why: conversations-excluded-because-spaces-cover-them — the Conversation
+    // Store + mirrored CC transcripts now ride the Personal SYNC SPACE, which the
+    // spaces daily-backup (sync-spaces/daily-backup.ts) snapshots to Backup/spaces/
+    // <date>/. Copying conversations here too would duplicate that data, so the
+    // former per-slug conversation copy block was removed from the dated snapshot.
 
     // System config
     const sysFiles: [string, string][] = [
@@ -764,6 +768,21 @@ export class SyncService extends EventEmitter {
     if (this.fileExists(this.conversationIndexPath)) {
       await this.rclone(['copyto', this.conversationIndexPath, `${sysRemote}/conversation-index.json`, '--checksum']);
     }
+
+    // Why: tiered pruning of old dated snapshots. List the dated dirs under
+    // Backup/, decide which to delete via the pure retention core, then purge
+    // each by its EXACT dated path — NEVER a wildcard — so a bad name can't wipe
+    // sibling data (unparseable names are never returned for deletion anyway).
+    try {
+      const lsf = await this.rclone(['lsf', '--dirs-only', `${backupRoot}/`]);
+      if (lsf.code === 0) {
+        const names = lsf.stdout.split('\n').map(s => s.replace(/\/$/, '').trim()).filter(Boolean);
+        for (const name of snapshotsToDelete(names, snapshot.now)) {
+          const r = await this.rclone(['purge', `${backupRoot}/${name}`]);
+          if (r.code === 0) this.logBackup('INFO', `Drive snapshot pruned ${name}`, 'sync.push.drive');
+        }
+      }
+    } catch { /* pruning is best-effort — never fail a snapshot over cleanup */ }
 
     if (errors > 0) {
       await this.recordBackendFailure(instance, firstFailStderr);
@@ -941,14 +960,26 @@ export class SyncService extends EventEmitter {
   // =========================================================================
 
   // Accepts a BackendInstance for per-instance iCloud path support
-  private async pushiCloud(instance: BackendInstance): Promise<number> {
+  private async pushiCloud(instance: BackendInstance, snapshot: SnapshotGate): Promise<number> {
     const icloudPath = this.resolveICloudPath(instance);
     if (!icloudPath) {
       this.logBackup('ERROR', 'iCloud Drive folder not found', 'sync.push.icloud');
       return 1;
     }
 
-    fs.mkdirSync(icloudPath, { recursive: true });
+    // Why: daily-stamp gating — same as Drive. The 15-min push() timer still calls
+    // us, but the snapshot copy runs at most once per UTC day; after today's is
+    // written we no-op (success) rather than re-copying the whole set every cycle.
+    if (!snapshot.due) {
+      this.logBackup('INFO', 'iCloud snapshot skipped — already done today', 'sync.push.icloud');
+      return 0;
+    }
+
+    // Why: dated-not-flat — snapshot into <YouCoded>/Backup/<YYYY-MM-DD>/... instead
+    // of overwriting the files directly under the iCloud folder, so history is
+    // retained and pruned by age below (mirrors the Drive layout).
+    const datedRoot = path.join(icloudPath, 'Backup', snapshot.dated);
+    fs.mkdirSync(datedRoot, { recursive: true });
     let errors = 0;
     let firstFailStderr = '';
 
@@ -958,7 +989,7 @@ export class SyncService extends EventEmitter {
       for (const projectKey of fs.readdirSync(projectsDir)) {
         const memoryDir = path.join(projectsDir, projectKey, 'memory');
         if (!this.dirExists(memoryDir)) continue;
-        const dest = path.join(icloudPath, 'memory', projectKey);
+        const dest = path.join(datedRoot, 'memory', projectKey);
         fs.mkdirSync(dest, { recursive: true });
         try {
           await this.rsyncOrCp(memoryDir, dest);
@@ -974,7 +1005,7 @@ export class SyncService extends EventEmitter {
     const claudeMd = path.join(this.claudeDir, 'CLAUDE.md');
     if (this.fileExists(claudeMd)) {
       try {
-        fs.copyFileSync(claudeMd, path.join(icloudPath, 'CLAUDE.md'));
+        fs.copyFileSync(claudeMd, path.join(datedRoot, 'CLAUDE.md'));
       } catch (e) {
         this.logBackup('WARN', 'iCloud push CLAUDE.md failed', 'sync.push.icloud', { stderr: truncateStderr(String(e)) });
         if (!firstFailStderr) firstFailStderr = String(e);
@@ -985,7 +1016,7 @@ export class SyncService extends EventEmitter {
     // Encyclopedia
     const encDir = path.join(this.claudeDir, 'encyclopedia');
     if (this.dirExists(encDir)) {
-      const dest = path.join(icloudPath, 'encyclopedia');
+      const dest = path.join(datedRoot, 'encyclopedia');
       fs.mkdirSync(dest, { recursive: true });
       try {
         await this.rsyncOrCp(encDir, dest);
@@ -1007,7 +1038,7 @@ export class SyncService extends EventEmitter {
         const skillDir = path.join(skillsDir, skillName);
         if (!this.dirExists(skillDir) || this.isToolkitOwned(skillDir)) continue;
         if (!this.shouldSyncSkill(skillName)) continue;
-        const dest = path.join(icloudPath, 'skills', skillName);
+        const dest = path.join(datedRoot, 'skills', skillName);
         fs.mkdirSync(dest, { recursive: true });
         try {
           await this.rsyncOrCp(skillDir, dest);
@@ -1023,39 +1054,15 @@ export class SyncService extends EventEmitter {
       }
     }
 
-    // Conversations — aggregate per-conversation-file errors the same way as skills.
-    if (this.dirExists(projectsDir)) {
-      let convStderr = '';
-      let convErrors = 0;
-      for (const slugName of fs.readdirSync(projectsDir)) {
-        const slugDir = path.join(projectsDir, slugName);
-        if (!this.dirExists(slugDir)) continue;
-        try { if (fs.lstatSync(slugDir).isSymbolicLink()) continue; } catch { continue; }
-        const jsonlFiles = fs.readdirSync(slugDir).filter(f => {
-          if (!f.endsWith('.jsonl')) return false;
-          try { return !fs.lstatSync(path.join(slugDir, f)).isSymbolicLink(); } catch { return false; }
-        });
-        for (const f of jsonlFiles) {
-          const dest = path.join(icloudPath, 'conversations', slugName);
-          fs.mkdirSync(dest, { recursive: true });
-          try {
-            fs.copyFileSync(path.join(slugDir, f), path.join(dest, f));
-          } catch (e) {
-            if (!convStderr) convStderr = String(e);
-            convErrors++;
-          }
-        }
-      }
-      if (convErrors > 0) {
-        this.logBackup('WARN', `iCloud push conversations failed (${convErrors} file(s))`, 'sync.push.icloud', { stderr: truncateStderr(convStderr) });
-        if (!firstFailStderr) firstFailStderr = convStderr;
-        errors++;
-      }
-    }
+    // Why: conversations-excluded-because-spaces-cover-them — the Conversation
+    // Store + mirrored CC transcripts ride the Personal SYNC SPACE, which the
+    // spaces daily-backup snapshots separately (Backup/spaces/<date>/). Copying
+    // them here too would duplicate that data, so the former per-slug conversation
+    // copy block was removed from the dated snapshot.
 
     // System config — aggregate sys-file and plans/specs/index errors into
     // one "system-config" warning since they share a fix path (disk/permission).
-    const sysPath = path.join(icloudPath, 'system-backup');
+    const sysPath = path.join(datedRoot, 'system-backup');
     fs.mkdirSync(sysPath, { recursive: true });
     let sysStderr = '';
     let sysErrors = 0;
@@ -1101,6 +1108,19 @@ export class SyncService extends EventEmitter {
       if (!firstFailStderr) firstFailStderr = sysStderr;
       errors++;
     }
+
+    // Why: tiered pruning of old dated snapshots. Read the dated dirs under
+    // <YouCoded>/Backup/, decide which to delete via the pure retention core,
+    // then fs.rm each by its EXACT dated path — NEVER a glob/wildcard — so a bad
+    // name can't remove sibling data (unparseable names are never returned).
+    try {
+      const backupDir = path.join(icloudPath, 'Backup');
+      const names = await fs.promises.readdir(backupDir);
+      for (const name of snapshotsToDelete(names, snapshot.now)) {
+        await fs.promises.rm(path.join(backupDir, name), { recursive: true, force: true });
+        this.logBackup('INFO', `iCloud snapshot pruned ${name}`, 'sync.push.icloud');
+      }
+    } catch { /* pruning is best-effort — never fail a snapshot over cleanup */ }
 
     if (errors > 0) {
       await this.recordBackendFailure(instance, firstFailStderr);
@@ -1168,6 +1188,22 @@ export class SyncService extends EventEmitter {
 
         if (instances.length === 0) return { success: true, errors: 0, backends: [] };
 
+        // Why: compute the daily snapshot gate ONCE per push() cycle (not per
+        // backend) so Drive AND iCloud write into the SAME dated folder today and
+        // the once-per-day stamp isn't double-consumed. github ignores it.
+        let snapshotMarker: string | null = null;
+        try { snapshotMarker = fs.readFileSync(this.snapshotMarkerPath, 'utf8').trim(); } catch { /* first run */ }
+        const snapshotNow = new Date();
+        const snapshot: SnapshotGate = {
+          due: isBackupDue(snapshotMarker, snapshotNow),
+          dated: datedFolderName(snapshotNow),
+          now: snapshotNow,
+        };
+        // Only stamp the marker if a snapshot backend actually had a chance to run
+        // today — otherwise a github-only cycle would consume the day and skip the
+        // real snapshot when a Drive/iCloud backend is added later that same day.
+        const hasSnapshotBackend = instances.some(i => i.type === 'drive' || i.type === 'icloud');
+
         let totalErrors = 0;
         const pushedIds: string[] = [];
 
@@ -1175,9 +1211,9 @@ export class SyncService extends EventEmitter {
           try {
             let backendErrors = 0;
             switch (instance.type) {
-              case 'drive': backendErrors = await this.pushDrive(instance); break;
+              case 'drive': backendErrors = await this.pushDrive(instance, snapshot); break;
               case 'github': backendErrors = await this.pushGithub(instance); break;
-              case 'icloud': backendErrors = await this.pushiCloud(instance); break;
+              case 'icloud': backendErrors = await this.pushiCloud(instance, snapshot); break;
             }
             totalErrors += backendErrors;
             pushedIds.push(instance.id);
@@ -1194,6 +1230,15 @@ export class SyncService extends EventEmitter {
             await this.recordBackendFailure(instance, String(e));
             totalErrors++;
           }
+        }
+
+        // Why: write the daily snapshot stamp ONCE, after both Drive+iCloud have
+        // had their turn this cycle, so repeated 15-min push() calls no-op the
+        // snapshot copy until the next UTC day. Best-effort like daily-backup's
+        // marker — a read-only ~/.claude must not fail the whole push.
+        if (snapshot.due && hasSnapshotBackend) {
+          try { fs.writeFileSync(this.snapshotMarkerPath, snapshot.dated); }
+          catch (e) { this.logBackup('WARN', `Could not write snapshot marker: ${String(e)}`, 'sync.push'); }
         }
 
         // Write backup-meta.json on success
