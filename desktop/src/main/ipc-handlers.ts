@@ -23,6 +23,8 @@ import { SecretsStore } from './providers/secrets-store';
 import { ProviderRegistry } from './providers/provider-registry';
 import { ModelCatalog } from './providers/model-catalog';
 import { EngineManager } from './engine/engine-manager';
+import { ModelManager } from './models/model-manager';
+import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
@@ -1818,10 +1820,16 @@ export function registerIpcHandlers(
     }
   });
 
+  // Plan C: model manager (curated catalog, HF search, downloads, detectors).
+  // Constructed here — BEFORE setNativeRuntime — so remote WS clients reach the
+  // SAME instance via the native-runtime injection below (the models:* handlers
+  // themselves are registered further down, next to the engine block).
+  const modelManager = new ModelManager(nativeHome, engineManager, app.getPath('userData'));
+
   // Give the remote server access to the native stack so its WS clients reach
   // the SAME instances (mirrors how setLastTopic / broadcastStatusData push
   // ipc-handler-owned state into remoteServer — no global needed).
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager });
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager });
 
   // Transcript replay: a window that just acquired a session asks for every
   // historical event so its reducer can hydrate. Events stream back on the
@@ -1872,6 +1880,23 @@ export function registerIpcHandlers(
     send(IPC.ENGINE_STATUS_CHANGED, s);
     remoteServer?.broadcast({ type: 'engine:status-changed', payload: s });
   });
+  // --- Model manager IPC (Plan C) ---
+  // Download progress fans out to every window + remotes on one push channel,
+  // mirroring the engine install-progress emitter above.
+  modelManager.on('download-progress', (p) => {
+    send(IPC.MODELS_DOWNLOAD_PROGRESS, p);
+    remoteServer?.broadcast({ type: 'models:download-progress', payload: p });
+  });
+  ipcMain.handle(IPC.ENGINE_SET_BACKEND, async (_e, backend: string) => { await engineManager.setBackend(backend as any); return engineManager.status(); });
+  ipcMain.handle(IPC.MODELS_CURATED, async () => modelManager.curatedList());
+  ipcMain.handle(IPC.MODELS_SEARCH, async (_e, query: string) => modelManager.search(query));
+  ipcMain.handle(IPC.MODELS_QUANTS, async (_e, repo: string) => modelManager.quants(repo));
+  ipcMain.handle(IPC.MODELS_DOWNLOAD, async (_e, repo: string, quant: any) => modelManager.download(repo, quant));
+  ipcMain.handle(IPC.MODELS_DOWNLOAD_CANCEL, async (_e, downloadId: string) => { modelManager.cancel(downloadId); return true; });
+  ipcMain.handle(IPC.MODELS_DELETE, async (_e, id: string) => { await engineManager.deleteModel(id); return true; });
+  ipcMain.handle(IPC.MODELS_INSTALLED, async () => engineManager.installedModels());
+  ipcMain.handle(IPC.ENDPOINTS_DETECT, async () =>
+    detectEndpoints(fetch, ((await providerRegistry.list()) as any[])));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens
   // to detect compaction completion (pending → COMPACTION_COMPLETE).
   transcriptWatcher.on('transcript-shrink', (payload: any) => {

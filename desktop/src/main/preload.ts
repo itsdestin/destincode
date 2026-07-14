@@ -1066,6 +1066,25 @@ contextBridge.exposeInMainWorld('claude', {
       return () => ipcRenderer.removeListener(IPC.ENGINE_STATUS_CHANGED, listener);
     },
   },
+  // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
+  // detectors, engine backend switch. Download progress pushes return an
+  // unsubscribe, matching engine.onInstallProgress above.
+  models: {
+    curated: () => ipcRenderer.invoke(IPC.MODELS_CURATED),
+    search: (query: string) => ipcRenderer.invoke(IPC.MODELS_SEARCH, query),
+    quants: (repo: string) => ipcRenderer.invoke(IPC.MODELS_QUANTS, repo),
+    download: (repo: string, quant: unknown) => ipcRenderer.invoke(IPC.MODELS_DOWNLOAD, repo, quant),
+    downloadCancel: (downloadId: string) => ipcRenderer.invoke(IPC.MODELS_DOWNLOAD_CANCEL, downloadId),
+    delete: (id: string) => ipcRenderer.invoke(IPC.MODELS_DELETE, id),
+    installed: () => ipcRenderer.invoke(IPC.MODELS_INSTALLED),
+    detectEndpoints: () => ipcRenderer.invoke(IPC.ENDPOINTS_DETECT),
+    setBackend: (backend: string) => ipcRenderer.invoke(IPC.ENGINE_SET_BACKEND, backend),
+    onDownloadProgress: (cb: (p: unknown) => void) => {
+      const listener = (_e: unknown, p: unknown) => cb(p);
+      ipcRenderer.on(IPC.MODELS_DOWNLOAD_PROGRESS, listener);
+      return () => ipcRenderer.removeListener(IPC.MODELS_DOWNLOAD_PROGRESS, listener);
+    },
+  },
   // System namespace — platform integrations like hardware back button.
   // Desktop no-op stub: notifyStackState / onBack are only meaningful on
   // Android, where MainActivity uses them to enable/disable

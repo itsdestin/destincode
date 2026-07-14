@@ -270,6 +270,21 @@ declare global {
         onInstallProgress: (cb: (p: any) => void) => () => void;
         onStatusChanged: (cb: (s: any) => void) => () => void;
       };
+      // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
+      // detectors, engine backend switch. Task 9's Local Models panel consumes
+      // these. onDownloadProgress returns an unsubscribe.
+      models: {
+        curated: () => Promise<any[]>;
+        search: (query: string) => Promise<any[]>;
+        quants: (repo: string) => Promise<any[]>;
+        download: (repo: string, quant: any) => Promise<{ downloadId: string }>;
+        downloadCancel: (downloadId: string) => Promise<boolean>;
+        delete: (id: string) => Promise<boolean>;
+        installed: () => Promise<any[]>;
+        detectEndpoints: () => Promise<any[]>;
+        setBackend: (backend: string) => Promise<any>;
+        onDownloadProgress: (cb: (p: any) => void) => () => void;
+      };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState
       // enables/disables OnBackPressedCallback and onBack subscribes to

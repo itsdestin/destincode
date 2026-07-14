@@ -3567,6 +3567,17 @@ class SessionService : Service() {
             "engine:status",
             "engine:install",
             "engine:restart",
+            // Model manager (Plan C) — curated catalog, HF search, downloads,
+            // endpoint detectors, backend switch. Desktop-only; no Android runtime.
+            "engine:set-backend",
+            "models:curated",
+            "models:search",
+            "models:quants",
+            "models:download",
+            "models:download-cancel",
+            "models:delete",
+            "models:installed",
+            "endpoints:detect",
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
             // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",
