@@ -10,7 +10,7 @@
 // behavior. Windows dir junctions (fs.symlinkSync(target, path, 'junction'))
 // always work without privilege; genuine FILE symlinks may need admin, so that
 // one case is guarded with a try/skip (junction cases always run).
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -151,21 +151,8 @@ describe('sweepProjectSymlinks', () => {
     expect(res).toEqual({ removed: 0, failed: 0 });
   });
 
-  // Per-entry isolation: a real slug dir with several links plus one unreadable
-  // entry — the failure increments `failed` but the rest still get swept. We
-  // simulate an unreadable entry by pointing at a slug path that throws on
-  // readdir (a FILE where a dir is expected inside the loop is not it; instead we
-  // make one entry's lstat throw by removing it mid-iteration is racy, so we use
-  // a slug whose child is a broken junction whose removeLink still succeeds).
-  //
-  // The robust, deterministic simulation: create two junction links (both
-  // removable) and one entry that is a symlink to a NON-EXISTENT target. lstat
-  // still reports it as a symlink (lstat doesn't follow), so it IS removed — that
-  // proves broken links are handled, not skipped. To force a genuine per-entry
-  // failure we make removeLink fail by pre-locking... which is platform-fragile.
-  // Simplest deterministic failure: a slug ENTRY that is a directory we cannot
-  // readdir is not needed — the per-entry catch is around lstat+removeLink. We
-  // assert the loop CONTINUES past a broken link and still processes siblings.
+  // Asserts the loop continues past a broken/dangling link and still removes
+  // every sibling link, while leaving a real file in the same slug dir intact.
   it('processes every link even when siblings are broken/dangling', () => {
     const homeSlug = slugDir('C--Users-desti');
 
@@ -195,6 +182,46 @@ describe('sweepProjectSymlinks', () => {
     expect(fs.existsSync(path.join(homeSlug, 'l1.jsonl'))).toBe(false);
     expect(fs.existsSync(path.join(homeSlug, 'l2.jsonl'))).toBe(false);
     expect(fs.existsSync(path.join(homeSlug, 'l3.jsonl'))).toBe(false);
+  });
+
+  // Failure accounting: force removal to throw for ONE specific link (both the
+  // unlink AND the rmdir fallback fail), then assert (a) `failed` >= 1 and (b) a
+  // SIBLING link in the SAME slug dir is still removed — proving the per-entry
+  // try/catch keeps the loop going past a throw.
+  it('counts a failed removal and still sweeps siblings in the same slug dir', () => {
+    const homeSlug = slugDir('C--Users-desti');
+    const t1 = path.join(targetsDir, 'boom');
+    const t2 = path.join(targetsDir, 'sibling');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.mkdirSync(t2, { recursive: true });
+    const doomedLink = path.join(homeSlug, 'boom.jsonl');
+    const siblingLink = path.join(homeSlug, 'sibling.jsonl');
+    fs.symlinkSync(t1, doomedLink, 'junction');
+    fs.symlinkSync(t2, siblingLink, 'junction');
+
+    const realUnlink = fs.unlinkSync;
+    const realRmdir = fs.rmdirSync;
+    // Both removal calls throw for the doomed path only; everything else falls
+    // through to the real implementation so the sibling link truly gets removed.
+    const unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(((p: fs.PathLike) => {
+      if (String(p) === doomedLink) throw new Error('EPERM: simulated unlink failure');
+      return (realUnlink as typeof fs.unlinkSync)(p);
+    }) as typeof fs.unlinkSync);
+    const rmdirSpy = vi.spyOn(fs, 'rmdirSync').mockImplementation(((p: fs.PathLike, opts?: fs.RmDirOptions) => {
+      if (String(p) === doomedLink) throw new Error('EPERM: simulated rmdir failure');
+      return (realRmdir as (p: fs.PathLike, o?: fs.RmDirOptions) => void)(p, opts);
+    }) as typeof fs.rmdirSync);
+
+    try {
+      const res = sweepProjectSymlinks(projectsDir);
+      expect(res.failed).toBeGreaterThanOrEqual(1);       // doomed link counted as failed
+      expect(res.removed).toBeGreaterThanOrEqual(1);       // sibling still removed
+      expect(fs.existsSync(siblingLink)).toBe(false);      // loop continued past the throw
+      expect(fs.existsSync(doomedLink)).toBe(true);        // doomed link survived (both calls threw)
+    } finally {
+      unlinkSpy.mockRestore();
+      rmdirSpy.mockRestore();
+    }
   });
 
   // Non-directory entries at the top level (a stray file directly under projects)
