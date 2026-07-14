@@ -159,6 +159,40 @@ describe('lease-client', () => {
     expect(hubRequest).not.toHaveBeenCalledWith('renew', 's1', DEVICE_ID);
   });
 
+  it('transient-null renew keeps the lease and keeps renewing', async () => {
+    hubRequest.mockResolvedValue(okResult('acquire', 's1', Date.now() + 300_000));
+    await client.acquire('s1');
+
+    // Next renew: hub transiently disconnected (null). Lease must NOT drop.
+    hubRequest.mockClear();
+    hubRequest.mockResolvedValue(null);
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+
+    expect(hubRequest).toHaveBeenCalledWith('renew', 's1', DEVICE_ID);
+    expect(client.isHeld('s1')).toBe(true);
+    // File fallback still present and fresh (local-clock deadline in the future).
+    const file = leaseFilePath(tmpRoot, 's1');
+    expect(fs.existsSync(file)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).expiresAt).toBeGreaterThan(Date.now());
+
+    // A SECOND renew is attempted on the next tick — the timer kept running.
+    hubRequest.mockClear();
+    hubRequest.mockResolvedValue(okResult('renew', 's1', Date.now() + 300_000));
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+    expect(hubRequest).toHaveBeenCalledWith('renew', 's1', DEVICE_ID);
+    expect(client.isHeld('s1')).toBe(true);
+  });
+
+  it('query treats a malformed lease file as free', async () => {
+    hubRequest.mockResolvedValue(null);
+    const dir = path.join(tmpRoot, 'Leases');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(leaseFilePath(tmpRoot, 's1'), '{ not json');
+
+    const r = await client.query('s1');
+    expect(r).toEqual({ held: false, source: 'none' });
+  });
+
   it('destroy clears all renew timers', async () => {
     hubRequest.mockResolvedValue(okResult('acquire', 's1', Date.now() + 300_000));
     await client.acquire('s1');

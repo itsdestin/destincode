@@ -63,6 +63,13 @@ interface LeaseFileContent { deviceId: string; device: string; expiresAt: number
 export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
   // sessionId -> renew timer. Membership IS "this device holds the lease".
   const held = new Map<string, NodeJS.Timeout>();
+  // sessionId -> monotonically-increasing generation. Bumped on every acquire /
+  // fresh renew loop. A renew tick captures the gen it was scheduled under and
+  // bails if the current gen has moved on — this is what makes a re-acquire
+  // genuinely idempotent even if a PRIOR tick for the same session is still
+  // awaiting hubRequest (its resumed schedule() would otherwise leak a second
+  // heartbeat loop, double-renewing).
+  const gen = new Map<string, number>();
 
   // ---- lease-file helpers (all best-effort, all try/caught) ----
 
@@ -102,12 +109,20 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
 
   // ---- renew timer ----
 
+  // Clears the renew TIMER only — it does NOT remove `held`/`gen` membership.
+  // Callers must pair it with `held.delete(sessionId)` (and let the gen bump on
+  // the next acquire) to fully release the session.
   function stopTimer(sessionId: string): void {
     const t = held.get(sessionId);
     if (t) clearTimeout(t);
   }
 
   function startRenewTimer(sessionId: string): void {
+    // Bump the generation so any in-flight tick from a prior loop becomes a
+    // no-op when it resumes. `myGen` is captured by this loop's schedule/tick.
+    const myGen = (gen.get(sessionId) ?? 0) + 1;
+    gen.set(sessionId, myGen);
+
     // Self-rescheduling setTimeout (not setInterval) so an async renew that runs
     // long can't stack overlapping renews. Each tick reschedules itself.
     const schedule = () => {
@@ -120,8 +135,13 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
       // The whole body is wrapped so an unexpected throw in a timer callback can
       // never become a fatal unhandled rejection in Electron main.
       try {
+        // Stale-generation guard: a re-acquire (or fresh renew loop) since this
+        // tick was scheduled means we're an orphaned loop — bail silently so we
+        // never leak a second heartbeat that double-renews.
+        if (gen.get(sessionId) !== myGen) return;
         if (!held.has(sessionId)) return; // released/destroyed between scheduling and firing
         const r = await opts.hubRequest('renew', sessionId, opts.deviceId);
+        if (gen.get(sessionId) !== myGen) return; // superseded while the renew was in flight
         if (!held.has(sessionId)) return; // released while the renew was in flight
 
         if (r && !r.ok) {
@@ -148,8 +168,9 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
         schedule(); // reschedule the next heartbeat only if we still hold it
       } catch {
         // Swallow — a renew failure must never crash main. Reschedule so a one-off
-        // error doesn't silently kill the heartbeat.
-        if (held.has(sessionId)) schedule();
+        // error doesn't silently kill the heartbeat, but only if we're still the
+        // live loop (gen unchanged) and still hold the session.
+        if (gen.get(sessionId) === myGen && held.has(sessionId)) schedule();
       }
     }
 
@@ -174,7 +195,10 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
       // OPTIMISTICALLY: sync must never block on the hub, so we take a local hold
       // and let the next renew reconcile once the hub is back.
       const expiresAt = res?.holder?.expiresAt ?? Date.now() + LEASE_TTL_MS;
-      stopTimer(sessionId); // idempotent: restart cleanly if re-acquiring the same session
+      // Genuinely idempotent re-acquire: stopTimer clears the old timer, and
+      // startRenewTimer bumps the generation so any PRIOR renew tick still
+      // awaiting hubRequest becomes a no-op when it resumes (no leaked 2nd loop).
+      stopTimer(sessionId);
       held.delete(sessionId);
       writeLeaseFile(sessionId, expiresAt);
       startRenewTimer(sessionId);
@@ -221,7 +245,10 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
       // Only act if THIS device currently holds the session — otherwise the
       // request isn't for us (the hub broadcasts to the whole account).
       if (!held.has(sessionId)) return;
-      opts.onTakeoverRequest(sessionId, from);
+      // The callback is caller-supplied (untrusted) and dispatched synchronously
+      // from the service's hub-event handler — a throw here would propagate to
+      // Electron main. Swallow so a bad handler can never crash the process.
+      try { opts.onTakeoverRequest(sessionId, from); } catch { /* never crash main */ }
     },
 
     isHeld(sessionId) { return held.has(sessionId); },
