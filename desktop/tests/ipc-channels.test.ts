@@ -547,6 +547,13 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     ['syncspaces:import-project', 'IPC.SYNC_SPACES_IMPORT_PROJECT'],
     ['syncspaces:rename-project', 'IPC.SYNC_SPACES_RENAME_PROJECT'],
     ['syncspaces:stop-project', 'IPC.SYNC_SPACES_STOP_PROJECT'],
+    // Plan 2b Task 11 — conversation leases + device registry. Full four-surface
+    // desktop parity (preload / remote-shim / ipc-handlers constant / remote-server).
+    ['syncspaces:lease-query', 'IPC.SYNC_SPACES_LEASE_QUERY'],
+    ['syncspaces:lease-takeover', 'IPC.SYNC_SPACES_LEASE_TAKEOVER'],
+    ['syncspaces:lease-force', 'IPC.SYNC_SPACES_LEASE_FORCE'],
+    ['syncspaces:list-devices', 'IPC.SYNC_SPACES_LIST_DEVICES'],
+    ['syncspaces:rename-device', 'IPC.SYNC_SPACES_RENAME_DEVICE'],
   ];
   const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
   const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
@@ -563,6 +570,36 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
   it('syncspaces:event push channel present in preload + remote-shim', () => {
     expect(preload).toContain('syncspaces:event');
     expect(shim).toContain('syncspaces:event');
+  });
+
+  // Plan 2b Task 11 — the five lease/device REQUEST channels also have an Android
+  // stub (SessionService.kt returns not-implemented-on-mobile) so a mobile invoke
+  // rejects fast instead of 30s-timing-out. Assert the Kotlin stub covers all five.
+  const kotlinPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  const leaseDeviceRequestChannels = [
+    'syncspaces:lease-query',
+    'syncspaces:lease-takeover',
+    'syncspaces:lease-force',
+    'syncspaces:list-devices',
+    'syncspaces:rename-device',
+  ];
+  if (fs.existsSync(kotlinPath)) {
+    const kotlin = fs.readFileSync(kotlinPath, 'utf8');
+    for (const ch of leaseDeviceRequestChannels) {
+      it(`${ch} has an Android not-implemented-on-mobile stub in SessionService.kt`, () => {
+        expect(kotlin).toContain(`"${ch}"`);
+      });
+    }
+  } else {
+    it.skip('SessionService.kt not found — skipping Android lease/device stub check', () => {});
+  }
+
+  // session:moved is a PUSH event (Task 8 broadcasts it), NOT a request — so it
+  // has no ipc-handlers/Kotlin request handler. Assert only the two surfaces that
+  // CONSUME it: preload (ipcRenderer.on) + remote-shim (addListener push routing).
+  it('session:moved push channel present in preload + remote-shim', () => {
+    expect(preload).toContain('session:moved');
+    expect(shim).toContain('session:moved');
   });
 });
 

@@ -21,7 +21,8 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 import { getRestoreService } from './restore-service';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
-import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject } from './sync-spaces/service';
+import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
+import { readDevices, renameDevice } from './sync-spaces/device-registry';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
@@ -66,6 +67,16 @@ export class RemoteServer {
   // time because they live in the ipc-handlers scope). Null until wired; the
   // native:* / provider:* WS cases no-op until then.
   private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager } | null = null;
+  // Plan 2b Task 11: conversation-lease + device wiring, injected by ipc-handlers
+  // via setLeaseWiring() AFTER main.ts builds the lease client/requester (they
+  // live in the whenReady scope, not reachable at RemoteServer construction).
+  // Null until wired; the syncspaces:lease-*/device WS cases degrade the same
+  // way the desktop handlers do (free/error) so a remote resume never hard-blocks.
+  private leaseWiring: {
+    client: import('./conversations/lease-client').LeaseClient;
+    requester: import('./conversations/takeover').RequesterTakeoverType;
+    deviceId: string;
+  } | null = null;
 
   constructor(
     private sessionManager: SessionManager,
@@ -86,6 +97,17 @@ export class RemoteServer {
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
   setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager }): void {
     this.nativeRuntime = rt;
+  }
+
+  /** Injected by ipc-handlers after main.ts builds the lease client/requester,
+   *  so remote WS clients reach the SAME lease state the Electron IPC handlers
+   *  use (mirrors setNativeRuntime). deviceId marks self in list-devices. */
+  setLeaseWiring(w: {
+    client: import('./conversations/lease-client').LeaseClient;
+    requester: import('./conversations/takeover').RequesterTakeoverType;
+    deviceId: string;
+  }): void {
+    this.leaseWiring = w;
   }
 
   private loadTokens(): void {
@@ -1332,6 +1354,44 @@ export class RemoteServer {
       }
       case 'syncspaces:stop-project': {
         this.respond(client.ws, type, id, await syncSpacesStopProject(String(payload?.name ?? '')));
+        break;
+      }
+      // Conversation-lease takeover (Plan 2b Task 9/11). Thin passthroughs to the
+      // lease client (query) and requester flow (takeover/force), matching the
+      // desktop ipc handlers. When wiring is absent (sync disabled) they degrade
+      // to a free/error answer so the remote resume gate proceeds (spec §3 never-block).
+      case 'syncspaces:lease-query': {
+        // query() is async — await before respond (unlike ipcMain.handle, respond
+        // doesn't unwrap promises).
+        this.respond(client.ws, type, id,
+          (await this.leaseWiring?.client.query(String(payload?.claudeSessionId ?? ''))) ?? { held: false, source: 'none' });
+        break;
+      }
+      case 'syncspaces:lease-takeover': {
+        this.respond(client.ws, type, id,
+          (await this.leaseWiring?.requester.takeover(String(payload?.claudeSessionId ?? ''))) ?? { outcome: 'error' });
+        break;
+      }
+      case 'syncspaces:lease-force': {
+        this.respond(client.ws, type, id,
+          (await this.leaseWiring?.requester.force(String(payload?.claudeSessionId ?? ''))) ?? { ok: false });
+        break;
+      }
+      // Device registry (Plan 2b spec §10a). readDevices/renameDevice are direct
+      // service-level calls (like the syncspaces:* rows above); self:true marks
+      // the current machine via the injected deviceId.
+      case 'syncspaces:list-devices': {
+        const pr = getManagedRoots()?.personalRoot;
+        const selfId = this.leaseWiring?.deviceId ?? '';
+        this.respond(client.ws, type, id,
+          pr ? readDevices(pr).map((d) => ({ ...d, self: d.id === selfId })) : []);
+        break;
+      }
+      case 'syncspaces:rename-device': {
+        const pr = getManagedRoots()?.personalRoot;
+        if (!pr) { this.respond(client.ws, type, id, { ok: false }); break; }
+        try { await renameDevice(pr, String(payload?.id ?? ''), String(payload?.name ?? '')); this.respond(client.ws, type, id, { ok: true }); }
+        catch { this.respond(client.ws, type, id, { ok: false }); }
         break;
       }
 

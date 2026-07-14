@@ -1125,6 +1125,10 @@ export function installShim(): void {
       leaseQuery: (claudeSessionId: string) => invoke('syncspaces:lease-query', { claudeSessionId }),
       leaseTakeover: (claudeSessionId: string) => invoke('syncspaces:lease-takeover', { claudeSessionId }),
       leaseForce: (claudeSessionId: string) => invoke('syncspaces:lease-force', { claudeSessionId }),
+      // Device registry (Plan 2b spec §10a). Object-payload invoke over WS to
+      // match the shim's convention; routed by remote-server (Task 11).
+      listDevices: () => invoke('syncspaces:list-devices'),
+      renameDevice: (id: string, name: string) => invoke('syncspaces:rename-device', { id, name }),
       onEvent: (cb: (e: unknown) => void) => {
         const handler: Callback = (e: any) => cb(e);
         addListener('syncspaces:event', handler);

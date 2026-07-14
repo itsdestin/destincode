@@ -39,6 +39,7 @@ import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
   syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots,
 } from './sync-spaces/service';
+import { readDevices, renameDevice } from './sync-spaces/device-registry';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
@@ -110,6 +111,9 @@ export function registerIpcHandlers(
     // deviceId + hubLeaseRequest + materializeOne + syncSpacesSyncNow are all
     // reachable). The three lease IPC handlers below are thin passthroughs to it.
     requester: import('./conversations/takeover').RequesterTakeoverType;
+    // Plan 2b Task 11: this machine's device id, so the list-devices handler can
+    // mark the current device with self:true.
+    deviceId: string;
   },
 ) {
   // Broadcast a non-session-scoped event to every renderer. Status data, UI
@@ -1861,6 +1865,13 @@ export function registerIpcHandlers(
   // ipc-handler-owned state into remoteServer — no global needed).
   remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager });
 
+  // Plan 2b Task 11: give the remote server the SAME lease client/requester +
+  // deviceId so its WS clients reach the identical lease/device state the
+  // Electron IPC handlers use (mirrors setNativeRuntime). Absent when sync is off.
+  if (leaseWiring && remoteServer) {
+    remoteServer.setLeaseWiring({ client: leaseWiring.client, requester: leaseWiring.requester, deviceId: leaseWiring.deviceId });
+  }
+
   // Transcript replay: a window that just acquired a session asks for every
   // historical event so its reducer can hydrate. Events stream back on the
   // normal TRANSCRIPT_EVENT channel (uuid dedup handles overlap with live).
@@ -2288,6 +2299,21 @@ export function registerIpcHandlers(
     leaseWiring?.requester.takeover(String(p?.claudeSessionId ?? '')) ?? { outcome: 'error' });
   ipcMain.handle(IPC.SYNC_SPACES_LEASE_FORCE, (_e, p: { claudeSessionId: string }) =>
     leaseWiring?.requester.force(String(p?.claudeSessionId ?? '')) ?? { ok: false });
+
+  // Device registry (Plan 2b spec §10a): the "Your devices" list (Task 12 UI
+  // consumes these). self:true marks the current machine so the UI can label it.
+  ipcMain.handle(IPC.SYNC_SPACES_LIST_DEVICES, () => {
+    const pr = getManagedRoots()?.personalRoot;
+    if (!pr) return [];
+    const selfId = leaseWiring?.deviceId ?? '';
+    return readDevices(pr).map((d) => ({ ...d, self: d.id === selfId }));
+  });
+  ipcMain.handle(IPC.SYNC_SPACES_RENAME_DEVICE, async (_e, p: { id: string; name: string }) => {
+    const pr = getManagedRoots()?.personalRoot;
+    if (!pr) return { ok: false };
+    try { await renameDevice(pr, String(p?.id ?? ''), String(p?.name ?? '')); return { ok: true }; }
+    catch { return { ok: false }; }
+  });
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));

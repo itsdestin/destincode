@@ -650,7 +650,7 @@ function createWindow(firstRunManager?: FirstRunManager) {
   });
 
   cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
-    { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester });
+    { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester, deviceId: deviceIdentity.id });
 
   if (firstRunManager) {
     registerFirstRunIpc(mainWindow, firstRunManager);

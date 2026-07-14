@@ -187,6 +187,9 @@ const IPC = {
   SYNC_SPACES_LEASE_QUERY: 'syncspaces:lease-query',
   SYNC_SPACES_LEASE_TAKEOVER: 'syncspaces:lease-takeover',
   SYNC_SPACES_LEASE_FORCE: 'syncspaces:lease-force',
+  // Device registry (Plan 2b spec §10a) — inlined literals (preload can't import).
+  SYNC_SPACES_LIST_DEVICES: 'syncspaces:list-devices',
+  SYNC_SPACES_RENAME_DEVICE: 'syncspaces:rename-device',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Restore from backup (directional pull — see restore-service.ts)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
@@ -827,6 +830,11 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_TAKEOVER, { claudeSessionId }),
     leaseForce: (claudeSessionId: string) =>
       ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_FORCE, { claudeSessionId }),
+    // Device registry (Plan 2b spec §10a): the "Your devices" list marks the
+    // current machine with self:true; renameDevice sets a friendly label.
+    listDevices: () => ipcRenderer.invoke(IPC.SYNC_SPACES_LIST_DEVICES),
+    renameDevice: (id: string, name: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_DEVICE, { id, name }),
     // Returns an unsubscribe function — callers MUST invoke it on unmount to
     // avoid leaking listeners across mounts (matches restore.onProgress above).
     onEvent: (cb: (e: unknown) => void) => {
