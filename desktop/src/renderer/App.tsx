@@ -1007,6 +1007,15 @@ function AppInner() {
       );
     });
 
+    // Plan 2b Task 10: another device took over this session's lease. Drop a
+    // "this conversation moved to <device>" marker into the timeline so the
+    // user understands why chat activity stopped here. The reducer ends the
+    // in-flight turn cleanly (endTurn) as part of SESSION_MOVED.
+    const movedHandler = (window.claude.on as any).sessionMoved?.((payload: { sessionId: string; device?: string }) => {
+      if (!payload?.sessionId) return;
+      dispatch({ type: 'SESSION_MOVED', sessionId: payload.sessionId, device: payload.device });
+    });
+
     // Permission-mode detection (per-session) is wired up in a dedicated
     // effect below, scoped to the current sessions list. Previously this used
     // a global pty:output listener; that channel is no longer broadcast
@@ -1248,6 +1257,7 @@ function AppInner() {
       window.claude.off('session:destroyed', destroyedHandler);
       window.claude.off('hook:event', hookHandler);
       window.claude.off('session:renamed', renamedHandler);
+      if (movedHandler) window.claude.off('session:moved', movedHandler);
       window.claude.off('status:data', statusHandler);
       if (transcriptHandler) window.claude.off('transcript:event', transcriptHandler);
       if (shrinkHandler) window.claude.off('transcript:shrink', shrinkHandler);

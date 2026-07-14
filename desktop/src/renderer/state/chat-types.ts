@@ -83,7 +83,9 @@ export interface SystemMarker {
   id: string;
   timestamp: number;
   label: string;                                // e.g. "Conversation cleared"
-  variant?: 'clear' | 'compact' | 'info';       // For styling hooks
+  // 'moved' marks a "this conversation moved to <device>" divider — dropped in
+  // when another device takes over the session lease (Plan 2b Task 10).
+  variant?: 'clear' | 'compact' | 'info' | 'moved'; // For styling hooks
   // Optional long-form text the marker can reveal on click. Currently only
   // set on compact markers — the actual conversation summary CC produced.
   summary?: string;
@@ -232,6 +234,17 @@ export type ChatAction =
       type: 'NATIVE_SESSION_ERROR';
       sessionId: string;
       message: string;
+    }
+  | {
+      // Plan 2b Task 10: another device took over this session's lease. The
+      // holder side ends the local turn cleanly (endTurn — attention resets to
+      // 'ok', NOT a terminal error state) and appends a permanent "moved"
+      // system marker so the user sees why chat activity stopped here. Pushed
+      // from the main process as 'session:moved'; device is the new holder's
+      // label (may be absent → generic "another device").
+      type: 'SESSION_MOVED';
+      sessionId: string;
+      device?: string;
     }
   | {
       // Classifier-driven attention state change. Pure state write; no

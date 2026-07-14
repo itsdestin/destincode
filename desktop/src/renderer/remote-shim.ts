@@ -213,6 +213,12 @@ function handleMessage(data: string): void {
     case 'session:renamed':
       dispatchEvent('session:renamed', payload.sessionId, payload.name);
       break;
+    case 'session:moved':
+      // Plan 2b Task 10 — another device took over this session's lease.
+      // Forward the whole { sessionId, device? } payload so App.tsx can drop
+      // the "this conversation moved to <device>" marker (parity with preload).
+      dispatchEvent('session:moved', payload);
+      break;
     case 'session:meta-changed':
       dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value });
       break;
@@ -749,6 +755,9 @@ export function installShim(): void {
       hookEvent: (cb: Callback) => addListener('hook:event', cb),
       statusData: (cb: Callback) => addListener('status:data', cb),
       sessionRenamed: (cb: Callback) => addListener('session:renamed', cb),
+      // Plan 2b Task 10 — "this conversation moved to <device>" push (parity
+      // with preload's sessionMoved). Returns the cb so off() can remove it.
+      sessionMoved: (cb: Callback) => addListener('session:moved', cb),
       // Return UNSUBSCRIBE fns (not the raw cb) so the tag hooks' off() cleanup
       // actually removes the listener — parity with preload, prevents leaks.
       sessionMetaChanged: (cb: Callback) => { addListener('session:meta-changed', cb); return () => removeListener('session:meta-changed', cb); },

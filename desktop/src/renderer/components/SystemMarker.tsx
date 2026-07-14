@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
 import type { SystemMarker as SystemMarkerData } from '../state/chat-types';
 
-// Thin horizontal divider used for /clear and /compact markers. Permanent —
-// user sees "these messages end here" when scrolling back. Deliberately quiet
-// styling so it doesn't compete with actual conversation content.
+// Thin horizontal divider used for /clear, /compact, and "moved" markers.
+// Permanent — user sees "these messages end here" when scrolling back.
+// Deliberately quiet styling so it doesn't compete with actual conversation content.
 //
 // When a /compact marker carries a `summary` (CC-produced conversation summary
 // from the isCompactSummary line), clicking the label toggles an inline panel
 // that reveals the full summary. Replaces CC's terminal "ctrl+o" affordance,
 // which never worked inside YouCoded because the chat view consumes that key.
+//
+// Plan 2b Task 10 — a `variant: 'moved'` marker ("This conversation moved to
+// <device>") carries no summary, so it renders through the plain non-expandable
+// branch below (no chevron). The label text is the whole signal.
 
 interface Props {
   marker: SystemMarkerData;

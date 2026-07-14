@@ -25,6 +25,15 @@ function nextTurnId(): string {
   return `turn-${++turnCounter}`;
 }
 
+let markerCounter = 0;
+// Stable, unique id for system-marker timeline entries generated inside the
+// reducer (e.g. SESSION_MOVED). Most markers carry an id from the action
+// (CLEAR_TIMELINE / COMPACTION_COMPLETE), but the moved marker's push event
+// doesn't include one — mirror the counter idiom used for messages/turns.
+function nextMarkerId(): string {
+  return `marker-${++markerCounter}`;
+}
+
 /**
  * Key-order-independent JSON serialization, used to compare a permission
  * hook's `tool_input` against a transcript tool's `input`. The two arrive
@@ -407,6 +416,36 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...endTurn(session, action.message),
         attentionState: 'error',
         errorMessage: action.message,
+      });
+      return next;
+    }
+
+    // Plan 2b Task 10: another device took over this session's lease. End the
+    // local turn cleanly (endTurn resets attentionState to 'ok' — the moved
+    // marker is the signal, NOT a terminal error banner) and append a permanent
+    // "moved" divider. Same spread-then-override shape as SESSION_PROCESS_EXITED,
+    // except we override the TIMELINE (which endTurn never touches) instead of
+    // attentionState — so the appended marker survives the endTurn spread.
+    case 'SESSION_MOVED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, {
+        ...session,
+        ...endTurn(session),
+        timeline: [
+          ...session.timeline,
+          {
+            kind: 'system-marker',
+            marker: {
+              id: nextMarkerId(),
+              timestamp: Date.now(),
+              // No summary → SystemMarker renders it as a plain (non-expandable)
+              // divider. Falls back to a generic label when no device is known.
+              label: `This conversation moved to ${action.device ?? 'another device'}`,
+              variant: 'moved',
+            },
+          },
+        ],
       });
       return next;
     }

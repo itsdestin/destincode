@@ -26,6 +26,8 @@ const IPC = {
   PTY_RAW_BYTES: 'pty:raw-bytes',
   HOOK_EVENT: 'hook:event',
   SESSION_RENAMED: 'session:renamed',
+  // Plan 2b Task 10 — pushed when another device takes over a session's lease.
+  SESSION_MOVED: 'session:moved',
   DIALOG_OPEN_FILE: 'dialog:open-file',
   DIALOG_OPEN_FOLDER: 'dialog:open-folder',
   DIALOG_OPEN_SOUND: 'dialog:open-sound',
@@ -400,6 +402,16 @@ contextBridge.exposeInMainWorld('claude', {
     sessionRenamed: (cb: (sessionId: string, name: string) => void) => {
       const handler = (_e: IpcRendererEvent, sid: string, name: string) => cb(sid, name);
       ipcRenderer.on(IPC.SESSION_RENAMED, handler);
+      return handler;
+    },
+    // Plan 2b Task 10 — another device took over this session's lease. Payload
+    // is { sessionId, device? }; App.tsx dispatches SESSION_MOVED to drop the
+    // "this conversation moved to <device>" marker. Returns the raw handler so
+    // callers unsubscribe via off('session:moved', handler) — mirrors
+    // sessionRenamed and stays parity with remote-shim.
+    sessionMoved: (cb: (payload: { sessionId: string; device?: string }) => void) => {
+      const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
+      ipcRenderer.on(IPC.SESSION_MOVED, handler);
       return handler;
     },
     // Pushed when a session's metadata changes (flags, applied tags, or note).
