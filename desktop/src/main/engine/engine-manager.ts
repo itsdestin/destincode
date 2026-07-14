@@ -7,16 +7,20 @@
 //   - catalogModels() — ModelCatalog's local source for the model picker
 import { EventEmitter } from 'events';
 import * as path from 'path';
+import * as fs from 'fs'; // Plan C: deleteModel needs fs.rmSync for model files
 import { NativeHome } from '../native-home';
 import { EngineAcquisition, InstalledEngine } from './engine-acquisition';
 import { EngineSupervisor } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
 import { readEngineConfig, updateEngineConfig } from './engine-config';
+import { scanGgufCache } from './cache-scan';
+import { parseGgufName, quantDescription } from '../models/quant-parser';
 import type {
   EngineBackend, EngineInstallProgress, EngineStatus,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
+import type { InstalledLocalModel } from '../../shared/model-manager-types';
 
 /** What ProviderRegistry's local-engine branch consumes (replaces Plan A's
  *  bare localBaseUrl callback). Defined here, imported by provider-registry. */
@@ -202,6 +206,67 @@ export class EngineManager extends EventEmitter {
       contextLength: cfg.contextSize,
       local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true },
     }));
+  }
+
+  /** Plan C: switch GPU backend. Downloads that backend's build if missing
+   *  (progress rides the same install-progress event), verifies it boots,
+   *  THEN records the choice — a failed switch leaves config untouched. */
+  async setBackend(backend: EngineBackend): Promise<void> {
+    const asset = pickAsset(process.platform, process.arch, backend);
+    if (!asset) {
+      throw new Error(`That backend is not available for this platform (${process.platform}/${process.arch}).`);
+    }
+    const onProgress = (p: EngineInstallProgress) => this.emit('install-progress', p);
+    const installed = await this.acquisition.install(asset, onProgress);
+    await this.verifyBoot(installed);
+    await updateEngineConfig(this.home, { backend });
+    this.emit('status-changed');
+  }
+
+  /** Plan C: installed models with quant metadata (spec §4.5). lastUsedAt +
+   *  defaultForTier were CUT from v1 (Amendment 2026-07-14 G). */
+  async installedModels(): Promise<InstalledLocalModel[]> {
+    const cfg = readEngineConfig(this.home);
+    return scanGgufCache(cfg.cacheDir).map((m) => {
+      const parsed = parseGgufName(`${m.id}.gguf`);
+      return {
+        id: m.id,
+        sizeBytes: m.sizeBytes ?? 0,   // scanGgufCache sums all parts for a split model
+        quant: parsed?.quant ?? null,
+        quantDescription: parsed ? quantDescription(parsed.quant) : null,
+        parts: parsed?.part?.of ?? 1,
+      };
+    });
+  }
+
+  // noteModelUsed / setDefaultForTier were CUT from v1 (Amendment 2026-07-14 G).
+  // Do NOT reintroduce until the model picker actually consumes a per-tier
+  // default — a write-only stat would just be dead state.
+
+  /** Plan C: delete a model (all parts). Best-effort /models/unload first so
+   *  the router isn't serving a file we're removing; file deletion proceeds
+   *  regardless (the router tolerates a vanished file on next request). */
+  async deleteModel(id: string): Promise<void> {
+    const cfg = readEngineConfig(this.home);
+    if (this.supervisor?.status() === 'running') {
+      try {
+        await (this.opts.fetchImpl ?? fetch)(`http://127.0.0.1:${this.port}/models/unload`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: id }),
+        });
+      } catch { /* best-effort */ }
+    }
+    // A multi-part id points at part 00001 — delete every sibling part.
+    const partMatch = /-(\d{5})-of-(\d{5})$/.exec(id);
+    const names = partMatch
+      ? Array.from({ length: Number(partMatch[2]) }, (_, i) =>
+          `${id.replace(/-\d{5}-of-\d{5}$/, '')}-${String(i + 1).padStart(5, '0')}-of-${partMatch[2]}.gguf`)
+      : [`${id}.gguf`];
+    for (const name of names) {
+      fs.rmSync(path.join(cfg.cacheDir, name), { force: true });
+      fs.rmSync(path.join(cfg.cacheDir, `${name}.partial`), { force: true });
+    }
+    this.emit('status-changed');
   }
 
   /** App-quit teardown — registered next to nativeHost.destroyAll(). */

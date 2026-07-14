@@ -77,4 +77,32 @@ describe('EngineManager', () => {
       local: { sizeBytes: 4, quant: 'unknown', installed: true },
     }]);
   });
+
+  it('installedModels(): quant parsing + summed multi-part size + parts', async () => {
+    plantInstall();
+    const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, 'M-UD-Q4_K_XL-00001-of-00002.gguf'), Buffer.alloc(2));
+    fs.writeFileSync(path.join(cacheDir, 'M-UD-Q4_K_XL-00002-of-00002.gguf'), Buffer.alloc(3));
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir } }));
+    const mgr = new EngineManager(home, userData, 9999);
+    const models = await mgr.installedModels();
+    // sizeBytes is summed across parts (scanGgufCache folds part 2 into part 1).
+    expect(models).toEqual([{
+      id: 'M-UD-Q4_K_XL-00001-of-00002', sizeBytes: 5,
+      quant: 'UD-Q4_K_XL', quantDescription: expect.stringMatching(/unsloth/i),
+      parts: 2,
+    }]);
+  });
+
+  it('deleteModel(): removes every part + partials', async () => {
+    plantInstall();
+    const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
+    for (const n of ['M-UD-Q4_K_XL-00001-of-00002.gguf', 'M-UD-Q4_K_XL-00002-of-00002.gguf']) {
+      fs.writeFileSync(path.join(cacheDir, n), Buffer.alloc(1));
+    }
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir } }));
+    const mgr = new EngineManager(home, userData, 9999);
+    await mgr.deleteModel('M-UD-Q4_K_XL-00001-of-00002');
+    expect(fs.readdirSync(cacheDir)).toEqual([]);
+  });
 });
