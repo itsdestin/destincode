@@ -3563,6 +3563,10 @@ class SessionService : Service() {
             "provider:test",
             "provider:set-key",
             "provider:catalog",
+            // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
+            "engine:status",
+            "engine:install",
+            "engine:restart",
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
             // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",

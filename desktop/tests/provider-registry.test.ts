@@ -8,6 +8,7 @@ import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os'
 import { NativeHome } from '../src/main/native-home';
 import { SecretsStore } from '../src/main/providers/secrets-store';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
+import type { LocalEngineHook } from '../src/main/engine/engine-manager';
 
 describe('ProviderRegistry', () => {
   let root: string; let reg: ProviderRegistry; let secrets: SecretsStore;
@@ -110,5 +111,49 @@ describe('ProviderRegistry', () => {
     const row = (await reg.list()).find((p) => p.id === id)!;
     expect(row.label).toBe('After');
     expect(row.baseUrl).toBe('http://localhost:1234/v1');
+  });
+
+  describe('local-engine hook (Plan B)', () => {
+    function makeHook(overrides: Partial<LocalEngineHook> = {}): LocalEngineHook {
+      return {
+        installed: () => true,
+        ensureRunning: async () => 'http://127.0.0.1:9999/v1',
+        fetchImpl: () => fetch,
+        ...overrides,
+      };
+    }
+
+    it('list(): local provider ready tracks hook.installed()', async () => {
+      const withEngine = new ProviderRegistry(new NativeHome(root), secrets, makeHook());
+      await withEngine.init();
+      expect((await withEngine.list()).find((p) => p.id === 'local')?.ready).toBe(true);
+
+      const without = new ProviderRegistry(new NativeHome(root), secrets, makeHook({ installed: () => false }));
+      expect((await without.list()).find((p) => p.id === 'local')?.ready).toBe(false);
+    });
+
+    it('languageModel(local): awaits ensureRunning before returning a handle', async () => {
+      const ensure = vi.fn(async () => 'http://127.0.0.1:9999/v1');
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook({ ensureRunning: ensure }));
+      await reg.init();
+      await reg.languageModel({ providerId: 'local', modelId: 'tiny-Q4_K_M' });
+      expect(ensure).toHaveBeenCalledTimes(1);
+    });
+
+    it('languageModel(local): surfaces the hook install-guidance error verbatim', async () => {
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook({
+        ensureRunning: async () => { throw new Error('Local models need a one-time engine install — open Settings → Providers and press Install.'); },
+      }));
+      await reg.init();
+      await expect(reg.languageModel({ providerId: 'local', modelId: 'x' }))
+        .rejects.toThrow(/one-time engine install/);
+    });
+
+    it('languageModel(local): with NO hook, keeps Plan A behavior (not-available error)', async () => {
+      const reg = new ProviderRegistry(new NativeHome(root), secrets);
+      await reg.init();
+      await expect(reg.languageModel({ providerId: 'local', modelId: 'x' }))
+        .rejects.toThrow(/not available yet/);
+    });
   });
 });

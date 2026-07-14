@@ -13,6 +13,7 @@ import type { SerializedChatState } from '../renderer/state/chat-types';
 import type { NativeSessionHost } from './harness/native-session-host';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
+import type { EngineManager } from './engine/engine-manager';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory } from './session-browser';
@@ -64,7 +65,7 @@ export class RemoteServer {
   // it constructs the instances (they can't be built at RemoteServer construction
   // time because they live in the ipc-handlers scope). Null until wired; the
   // native:* / provider:* WS cases no-op until then.
-  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog } | null = null;
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager } | null = null;
 
   constructor(
     private sessionManager: SessionManager,
@@ -83,7 +84,7 @@ export class RemoteServer {
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
-  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog }): void {
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager }): void {
     this.nativeRuntime = rt;
   }
 
@@ -708,6 +709,30 @@ export class RemoteServer {
           } catch { /* fall through to empty */ }
         }
         this.respond(client.ws, type, id, out);
+        break;
+      }
+      // Local engine (Plan B). status is sync; install/restart resolve to a
+      // fresh status() so the remote client mirrors the desktop IPC contract.
+      case 'engine:status': {
+        this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.engineManager.status() : null);
+        break;
+      }
+      case 'engine:install': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.install();
+          this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'engine:restart': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.restart();
+          this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
         break;
       }
       case 'session:history': {

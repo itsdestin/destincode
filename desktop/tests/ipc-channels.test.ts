@@ -636,3 +636,31 @@ describe('custom tags + notes channel parity', () => {
     });
   }
 });
+
+// Local llama.cpp engine (Plan B, Task 9). The engine:* IPC surface must carry
+// identical channel strings across all four parity files. ipc-handlers.ts
+// references the IPC.ENGINE_* CONSTANTS (not literal strings), so its assertion
+// checks the constant identifiers. The two push channels are broadcast-only —
+// no Kotlin handler, so SessionService.kt only stubs the request-response ones.
+describe('engine:* channel parity (Plan B)', () => {
+  const channels = ['engine:status', 'engine:install', 'engine:restart'];
+  const pushChannels = ['engine:install-progress', 'engine:status-changed'];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('preload exposes every engine channel (request + push)', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const ch of [...channels, ...pushChannels]) expect(src).toContain(`'${ch}'`);
+  });
+  it('remote-shim exposes every engine channel (request + push)', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const ch of [...channels, ...pushChannels]) expect(src).toContain(`'${ch}'`);
+  });
+  it('ipc-handlers registers every request-response engine channel', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const c of ['ENGINE_STATUS', 'ENGINE_INSTALL', 'ENGINE_RESTART']) expect(src).toContain(`IPC.${c}`);
+  });
+  it('SessionService.kt stubs every request-response engine channel', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const ch of channels) expect(src).toContain(`"${ch}"`);
+  });
+});

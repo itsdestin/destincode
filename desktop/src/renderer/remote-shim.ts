@@ -275,6 +275,12 @@ function handleMessage(data: string): void {
       // the workspace. We forward the raw payload so the cb receives a string.
       dispatchEvent('dev:install-progress', payload);
       break;
+    case 'engine:install-progress':
+      dispatchEvent('engine:install-progress', payload);
+      break;
+    case 'engine:status-changed':
+      dispatchEvent('engine:status-changed', payload);
+      break;
     case 'system:back':
       // Android hardware back press → routed to useDismissTop via the
       // window.claude.system.onBack subscriber registered in App.tsx. No
@@ -1387,6 +1393,24 @@ export function installShim(): void {
       test: (id: string) => invoke('provider:test', { id }),
       setKey: (id: string, key: string) => invoke('provider:set-key', { id, key }),
       catalog: () => invoke('provider:catalog'),
+    },
+    // Local llama.cpp engine (Plan B). Server pushes engine:install-progress /
+    // engine:status-changed via the WS dispatcher; subscriptions return an
+    // unsubscribe, matching provider/dev patterns above.
+    engine: {
+      status: () => invoke('engine:status'),
+      install: () => invoke('engine:install'),
+      restart: () => invoke('engine:restart'),
+      onInstallProgress: (cb: (p: unknown) => void) => {
+        const handler: Callback = (payload: any) => cb(payload);
+        addListener('engine:install-progress', handler);
+        return () => removeListener('engine:install-progress', handler);
+      },
+      onStatusChanged: (cb: (s: unknown) => void) => {
+        const handler: Callback = (payload: any) => cb(payload);
+        addListener('engine:status-changed', handler);
+        return () => removeListener('engine:status-changed', handler);
+      },
     },
   };
 }

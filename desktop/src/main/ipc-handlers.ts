@@ -22,6 +22,8 @@ import { NativeHome } from './native-home';
 import { SecretsStore } from './providers/secrets-store';
 import { ProviderRegistry } from './providers/provider-registry';
 import { ModelCatalog } from './providers/model-catalog';
+import { EngineManager } from './engine/engine-manager';
+import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
 import { resolveMappingAction } from './session-id-mapping';
@@ -1791,9 +1793,16 @@ export function registerIpcHandlers(
   // contextLengthFor feeds HarnessSession's context-window sizing.
   const nativeHome = new NativeHome();
   const secretsStore = new SecretsStore(app.getPath('userData'));
-  const providerRegistry = new ProviderRegistry(nativeHome, secretsStore);
+  // Plan B: the local engine. EngineManager owns acquisition + supervision; its
+  // hook makes the 'local' provider real and its listModels feeds the model
+  // picker. ENGINE_PORT rides the shifted-port scheme so the dev instance and
+  // the built app never fight over one llama-server.
+  const engineManager = new EngineManager(nativeHome, app.getPath('userData'), ENGINE_PORT);
+  const providerRegistry = new ProviderRegistry(nativeHome, secretsStore, engineManager.registryHook());
   void providerRegistry.init();
-  const modelCatalog = new ModelCatalog(app.getPath('userData'));
+  const modelCatalog = new ModelCatalog(app.getPath('userData'), undefined, {
+    localModels: () => engineManager.catalogModels(),
+  });
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     (binding) => providerRegistry.languageModel(binding),
@@ -1812,7 +1821,7 @@ export function registerIpcHandlers(
   // Give the remote server access to the native stack so its WS clients reach
   // the SAME instances (mirrors how setLastTopic / broadcastStatusData push
   // ipc-handler-owned state into remoteServer — no global needed).
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog });
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager });
 
   // Transcript replay: a window that just acquired a session asks for every
   // historical event so its reducer can hydrate. Events stream back on the
@@ -1846,6 +1855,23 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.PROVIDER_TEST, async (_e, id: string) => providerRegistry.testConnection(id));
   ipcMain.handle(IPC.PROVIDER_SET_KEY, async (_e, id: string, key: string) => { await providerRegistry.setKey(id, key); return true; });
   ipcMain.handle(IPC.PROVIDER_CATALOG, async () => modelCatalog.get(await providerRegistry.list()));
+  // --- Local engine IPC (Plan B) ---
+  // install/restart resolve to a fresh status() so the caller doesn't need a
+  // second round-trip. The push emitters below keep every window + remote in
+  // sync during long installs and on any run-state transition.
+  ipcMain.handle(IPC.ENGINE_STATUS, async () => engineManager.status());
+  ipcMain.handle(IPC.ENGINE_INSTALL, async () => { await engineManager.install(); return engineManager.status(); });
+  ipcMain.handle(IPC.ENGINE_RESTART, async () => { await engineManager.restart(); return engineManager.status(); });
+  // Push: install progress + run-state transitions → every window + remotes.
+  engineManager.on('install-progress', (p) => {
+    send(IPC.ENGINE_INSTALL_PROGRESS, p);
+    remoteServer?.broadcast({ type: 'engine:install-progress', payload: p });
+  });
+  engineManager.on('status-changed', () => {
+    const s = engineManager.status();
+    send(IPC.ENGINE_STATUS_CHANGED, s);
+    remoteServer?.broadcast({ type: 'engine:status-changed', payload: s });
+  });
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens
   // to detect compaction completion (pending → COMPACTION_COMPLETE).
   transcriptWatcher.on('transcript-shrink', (payload: any) => {
@@ -2876,6 +2902,16 @@ export function registerIpcHandlers(
       // Mirror the folder picker's first-use seed so a fresh install isn't empty.
       saved = [{ path: os.homedir(), nickname: 'Home', addedAt: Date.now() }];
     }
+    // Managed sync projects always appear in Project View, exactly like the
+    // session picker's FOLDERS_LIST synthesizes them (2026-07-13 dogfood fix).
+    // WHY: a project materialized by cross-device discovery is created in the
+    // main process and is NEVER written to youcoded-folders.json, and it has no
+    // central-index entry until it gains a tracked artifact — so without this it
+    // showed in the picker but was invisible here. Append at the END so a saved
+    // entry for the same path wins (keeps the user's nickname); buildSavedFolder-
+    // Projects dedups by canonical path (first-wins) and reuses any index entry.
+    const managed = getManagedRoots()?.listProjects() ?? [];
+    for (const p of managed) saved.push({ path: p.path, nickname: p.name, addedAt: 0 });
     const indexProjects = await listProjects(CLAUDE_DIR);
     const projects = buildSavedFolderProjects(saved, indexProjects);
 
@@ -3008,6 +3044,7 @@ export function registerIpcHandlers(
     // is synchronous and callers don't await it, so this mirrors the async
     // stopSyncSpaces() teardown pattern in main.ts window-all-closed.
     void nativeHost.destroyAll().catch(() => {});
+    void engineManager.stopAll().catch(() => {}); // never leave an orphaned llama-server on quit
     for (const [id, watcher] of topicWatchers) {
       if (typeof (watcher as fs.FSWatcher).close === 'function') {
         (watcher as fs.FSWatcher).close();

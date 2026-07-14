@@ -24,6 +24,7 @@ import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { categorizeArtifact } from '../shared/artifacts/categorization';
+import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
@@ -1163,49 +1164,34 @@ function AppInner() {
         if (already) return;
       }
 
-      // Determine internal vs external by path comparison. The Session Drawer
-      // shows BOTH (a session's activity log includes anything Claude touched).
-      // The Project View filters externals out unless they're in manualIncludes.
-      const normPath = targetPath.replace(/\\/g, '/').toLowerCase();
-      const normRoot = projectRoot.replace(/\\/g, '/').toLowerCase();
-      const isInternal = normPath.startsWith(normRoot + '/') || normPath === normRoot;
+      // Determine internal vs external. The Session Drawer shows BOTH (a
+      // session's activity log includes anything Claude touched); Project View
+      // filters externals out unless they're in manualIncludes.
+      //
+      // resolveTrackedPath also REMAPS cross-device paths: a resumed conversation
+      // replays a transcript whose absolute paths were recorded on ANOTHER device
+      // (Windows `C:\…\<project>\file` resumed on Linux). Without the remap those
+      // synced files mis-filed as external → showed "deleted" in the artifact
+      // viewer even though the file is right there under the local root.
+      const resolved = resolveTrackedPath(targetPath, projectRoot);
 
       // Read → 'read' (viewed, not modified); Write → 'create'; Edit/MultiEdit → 'edit'.
       const versionType: 'create' | 'edit' | 'read' =
         isRead ? 'read' : toolName === 'Write' ? 'create' : 'edit';
 
-      let appendArgs: {
+      const appendArgs: {
         path: string;
         kind: 'internal' | 'external';
         absolutePath: string | null;
         type: 'create' | 'edit' | 'read';
         author: 'agent';
+      } = {
+        path: resolved.path,
+        kind: resolved.kind,
+        absolutePath: resolved.absolutePath,
+        type: versionType,
+        author: 'agent',
       };
-      if (isInternal) {
-        // Compute the relative path using the forward-slash forms (same length
-        // as the originals, so the index is correct regardless of case).
-        const fwdPath = targetPath.replace(/\\/g, '/');
-        const fwdRoot = projectRoot.replace(/\\/g, '/');
-        const relativePath = normPath === normRoot ? '' : fwdPath.slice(fwdRoot.length + 1);
-        appendArgs = {
-          path: relativePath,
-          kind: 'internal',
-          absolutePath: null,
-          type: versionType,
-          author: 'agent',
-        };
-      } else {
-        // External: store absolute path canonical, use basename as display path.
-        const fwdPath = targetPath.replace(/\\/g, '/');
-        const basename = fwdPath.split('/').pop() || fwdPath;
-        appendArgs = {
-          path: basename,
-          kind: 'external',
-          absolutePath: fwdPath,
-          type: versionType,
-          author: 'agent',
-        };
-      }
       ((window.claude as any).artifacts?.appendVersion?.(projectRoot, event.sessionId, appendArgs) ?? Promise.resolve())
         .catch((e: any) => console.error('[artifact-tracker] appendVersion failed', e))
         .finally(() => {

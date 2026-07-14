@@ -301,6 +301,13 @@ const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
+  ENGINE_STATUS: 'engine:status',
+  ENGINE_INSTALL: 'engine:install',
+  ENGINE_RESTART: 'engine:restart',
+  // Push events (no id): install progress + run-state transitions.
+  ENGINE_INSTALL_PROGRESS: 'engine:install-progress',
+  ENGINE_STATUS_CHANGED: 'engine:status-changed',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -1029,6 +1036,23 @@ contextBridge.exposeInMainWorld('claude', {
     test: (id: string) => ipcRenderer.invoke(IPC.PROVIDER_TEST, id),
     setKey: (id: string, key: string) => ipcRenderer.invoke(IPC.PROVIDER_SET_KEY, id, key),
     catalog: () => ipcRenderer.invoke(IPC.PROVIDER_CATALOG),
+  },
+  // Local llama.cpp engine (Plan B). Progress/status pushes return an
+  // unsubscribe, matching every other on* subscription in this file.
+  engine: {
+    status: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_STATUS),
+    install: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_INSTALL),
+    restart: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_RESTART),
+    onInstallProgress: (cb: (p: unknown) => void) => {
+      const listener = (_e: unknown, p: unknown) => cb(p);
+      ipcRenderer.on(IPC.ENGINE_INSTALL_PROGRESS, listener);
+      return () => ipcRenderer.removeListener(IPC.ENGINE_INSTALL_PROGRESS, listener);
+    },
+    onStatusChanged: (cb: (s: unknown) => void) => {
+      const listener = (_e: unknown, s: unknown) => cb(s);
+      ipcRenderer.on(IPC.ENGINE_STATUS_CHANGED, listener);
+      return () => ipcRenderer.removeListener(IPC.ENGINE_STATUS_CHANGED, listener);
+    },
   },
   // System namespace — platform integrations like hardware back button.
   // Desktop no-op stub: notifyStackState / onBack are only meaningful on

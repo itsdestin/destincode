@@ -590,12 +590,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   }, [claude, refreshSpacesStatus]);
 
   // Recent sync events for DISPLAY only. `hub-status` entries drive the
-  // "Instant sync" status line below (that's their surface); routing the
-  // conflict/error notices through this filtered list keeps them out of those
-  // surfaces so they never render as noise. The raw events stay in
-  // spacesStatus.recentEvents — only the display is filtered.
+  // "Instant sync" status line below (that's their surface); `projects-changed`
+  // is a pure list-refresh signal (2026-07-13) with no user-facing notice.
+  // Filtering both out keeps the conflict/error notices clean. The raw events
+  // stay in spacesStatus.recentEvents — only the display is filtered.
   const visibleSpaceEvents = ((spacesStatus?.recentEvents ?? []) as any[])
-    .filter(e => e.type !== 'hub-status');
+    .filter(e => e.type !== 'hub-status' && e.type !== 'projects-changed');
 
   if (loading) {
     // Overlay layer L2 — theme-driven via Scrim/OverlayPanel (matches SettingsPanel popups).

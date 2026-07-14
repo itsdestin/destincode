@@ -378,13 +378,40 @@ export function ProjectView(props: ProjectViewProps) {
     if (!state.projectViewOpen) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsubscribe = (window.claude as any).syncSpaces.onEvent(() => {
+    let listChanged = false; // a coalesced 'projects-changed' arrived this batch
+    const unsubscribe = (window.claude as any).syncSpaces.onEvent((e: any) => {
+      // 'projects-changed' means the managed-project SET changed (a project was
+      // materialized/stopped by cross-device discovery) — refetch the project
+      // LIST too, not just the sync-status dots (2026-07-13 dogfood fix). Without
+      // this, a project synced from another device wouldn't appear in Project
+      // View until it was closed and reopened.
+      if (e?.type === 'projects-changed') listChanged = true;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
         (window.claude as any).syncSpaces.status()
           .then((s: SyncStatusData) => { if (!cancelled) setSyncStatus(s); })
           .catch(() => { if (!cancelled) setSyncStatus(null); });
+        if (listChanged) {
+          listChanged = false;
+          (window.claude as any).artifacts.listProjectsIndex({ withCounts: true })
+            .then((res: any) => {
+              if (cancelled || !res?.ok) return;
+              setProjects(res.projects);
+              // Keep the current selection stable across the refresh (match by
+              // path — a synth project's id becomes a ULID once it gains an index
+              // entry). Return the FRESH matching object, not the stale `prev`, so
+              // the selected project's own counts/displayName/state update too.
+              // Auto-select the first project only if nothing is selected yet.
+              setActiveProject((prev) => {
+                if (prev) {
+                  return res.projects.find((p: CentralIndexProject) => p.path === prev.path) ?? prev;
+                }
+                return res.projects.length > 0 ? res.projects[0] : null;
+              });
+            })
+            .catch(() => { /* next natural refresh recovers the list */ });
+        }
       }, 500);
     });
     return () => {

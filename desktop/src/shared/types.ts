@@ -915,6 +915,13 @@ export const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
+  ENGINE_STATUS: 'engine:status',
+  ENGINE_INSTALL: 'engine:install',
+  ENGINE_RESTART: 'engine:restart',
+  // Push events (no id): install progress + run-state transitions.
+  ENGINE_INSTALL_PROGRESS: 'engine:install-progress',
+  ENGINE_STATUS_CHANGED: 'engine:status-changed',
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.

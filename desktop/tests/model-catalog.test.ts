@@ -151,4 +151,23 @@ describe('ModelCatalog', () => {
     expect(fetchMock.mock.calls.length).toBe(callsBefore + 2); // both retried
     expect(second.some((m) => m.providerId === 'anth1')).toBe(true); // gap filled
   });
+
+  describe('local models source (Plan B)', () => {
+    it('get(): merges injected local models for an enabled local-engine provider', async () => {
+      const localRows = [{ id: 'tiny-Q4_K_M', providerId: 'local', label: 'tiny-Q4_K_M', contextLength: 8192 }];
+      const cat = new ModelCatalog(dir, fetchMock, { localModels: async () => localRows });
+      const models = await cat.get([
+        { id: 'local', type: 'local-engine', label: 'Local', enabled: true, builtIn: true, hasKey: false, ready: true } as any,
+      ]);
+      expect(models).toEqual(localRows);
+    });
+
+    it('get(): a throwing local source degrades to no local rows (never rejects)', async () => {
+      const cat = new ModelCatalog(dir, fetchMock, { localModels: async () => { throw new Error('boom'); } });
+      const models = await cat.get([
+        { id: 'local', type: 'local-engine', label: 'Local', enabled: true, builtIn: true, hasKey: false, ready: true } as any,
+      ]);
+      expect(models).toEqual([]);
+    });
+  });
 });
