@@ -71,7 +71,7 @@ import { listProjectConversations, projectConversationHistory } from './project-
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore } from './conversations/service';
 import { getTagRegistry } from './conversations/tag-registry-service';
 import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
@@ -1248,11 +1248,14 @@ export function registerIpcHandlers(
 
   // --- Session browser (resume) ---
   ipcMain.handle(IPC.SESSION_BROWSE, async () => {
-    // Collect active Claude Code session IDs so we can exclude them
+    // Collect active Claude Code session IDs so we can exclude them.
+    // Bug 1 (2026-07-13 dogfood): a stale sessionIdMap entry (missed exit event,
+    // or a create+resume pair leaving two desktop ids on one claude id) hid a
+    // CLOSED session from the browser until restart. Filter to mappings whose
+    // desktop session actually still exists — the map is a cache, not truth.
     const activeIds = new Set<string>();
-    // sessionIdMap is already defined in this scope — maps desktop ID → Claude ID
-    for (const claudeId of sessionIdMap.values()) {
-      activeIds.add(claudeId);
+    for (const [desktopId, claudeId] of sessionIdMap.entries()) {
+      if (sessionManager.getSession(desktopId)) activeIds.add(claudeId);
     }
     // CC (Claude Code) transcript rows.
     const ccRows = await listPastSessions(activeIds);
@@ -2042,6 +2045,10 @@ export function registerIpcHandlers(
     if (claudeId) {
       fs.unlink(path.join(os.homedir(), '.claude', `.context-${claudeId}`), () => {});
       fs.unlink(path.join(os.homedir(), '.claude', `.session-stats-${claudeId}.json`), () => {});
+      // 2b (Bug 2 Part 2): release the conversation-store materialize guard +
+      // apply any peer version now that this session ended — no restart needed.
+      // Resolved from the map BEFORE the delete below, so the claude id is known.
+      noteSessionEnded(claudeId);
     }
     sessionIdMap.delete(sessionId);
     lastAttentionBySession.delete(sessionId);

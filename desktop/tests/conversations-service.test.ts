@@ -8,6 +8,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+// Real (pure) — used to compute the exact on-disk transcript path the service
+// derives, so the quiescence tests can grow the same file the loop stats.
+import { ccProjectSlug } from '../src/main/project-conversations';
 
 // vi.mock factories are hoisted above imports, so shared fake state must be
 // created via vi.hoisted for the factories to close over it.
@@ -91,6 +94,7 @@ describe('conversations service composition root', () => {
     vi.useRealTimers();
     h.syncListeners.clear();
     h.store.upsert.mockReset().mockResolvedValue({ id: 'x' } as any);
+    h.store.get.mockReset().mockResolvedValue(null as any);
     h.store.list.mockReset().mockResolvedValue([]);
     h.store.setFlag.mockReset().mockResolvedValue(undefined as any);
     h.store.setTitle.mockReset().mockResolvedValue(undefined as any);
@@ -228,6 +232,113 @@ describe('conversations service composition root', () => {
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut).toHaveBeenCalledTimes(1);
     expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${idleRec.id}.jsonl`);
+  });
+
+  // Bug 2 Part 2 (Plan 2b Task 7): noteSessionEnded releases the per-session
+  // materialize guard. A record that was SKIPPED while its session was live
+  // must materialize once the session ends — proven here via the full sweep
+  // (store.get returns null by default, so the targeted materialize is a no-op
+  // and the sweep is the sole materializer).
+  it('noteSessionEnded releases the guard so a later sweep materializes the record', async () => {
+    const dir = path.join(tmpRoot, 'ended-proj');
+    fs.mkdirSync(dir, { recursive: true });
+    const rec = {
+      id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', provider: 'claude',
+      projectName: 'ended-proj', originalPath: dir,
+      transcriptRef: 'claude/transcripts/ended-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
+    };
+    h.store.list.mockResolvedValue([rec] as any);
+    const svc = await freshService(startOpts());
+    svc.noteSessionStarted(rec.id, dir); // now LIVE → guarded
+    fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.materializeOut).not.toHaveBeenCalled(); // skipped while live
+    svc.noteSessionEnded(rec.id); // releases the guard
+    fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+    await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+    expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${rec.id}.jsonl`);
+  });
+
+  // The targeted materialize gates on the LOCAL transcript being quiescent:
+  // session-exit fires before CC finishes flushing its final turn, so the copy
+  // waits until the file's size stops changing across one probe interval.
+  it('materialize-after-end waits for the local file size to stabilize', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    const svc = await import('../src/main/conversations/service');
+    await svc.startConversationStore(startOpts());
+    const dir = path.join(tmpRoot, 'quiesce-proj');
+    fs.mkdirSync(dir, { recursive: true });
+    const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    const rec = {
+      id, provider: 'claude', projectName: 'quiesce-proj', originalPath: dir,
+      transcriptRef: `claude/transcripts/quiesce-proj/${id}.jsonl`,
+    };
+    h.store.get.mockResolvedValue(rec as any);
+    // The exact on-disk path the loop stats — mirror localJsonlPath's derivation.
+    const localPath = path.join(startOpts().projectsDir, ccProjectSlug(dir), `${id}.jsonl`);
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    fs.writeFileSync(localPath, 'aaaa'); // initial size
+
+    svc.noteSessionStarted(id, dir);
+    svc.noteSessionEnded(id);            // kicks the async targeted materialize
+    await vi.advanceTimersByTimeAsync(0); // flush get() → first stat → arm probe
+    // Grow the file mid-wait: the next probe sees a DIFFERENT size, so the copy
+    // must NOT have happened yet.
+    fs.writeFileSync(localPath, 'aaaabbbbcccc');
+    await vi.advanceTimersByTimeAsync(750); // probe 2: size changed → keep waiting
+    expect(h.materializeOut).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(750); // probe 3: size stable → copy now
+    expect(h.materializeOut).toHaveBeenCalledTimes(1);
+    expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toBe(localPath);
+    svc.stopConversationStore();
+    vi.useRealTimers();
+  });
+
+  // The targeted materialize touches ONLY the ended session's record — it is
+  // NOT a full-store scan (that's materializeSweep's job).
+  it('materialize-after-end is targeted to the ended session only', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    const svc = await import('../src/main/conversations/service');
+    await svc.startConversationStore(startOpts());
+    const dirA = path.join(tmpRoot, 'targ-a');
+    const dirB = path.join(tmpRoot, 'targ-b');
+    fs.mkdirSync(dirA, { recursive: true });
+    fs.mkdirSync(dirB, { recursive: true });
+    const recA = {
+      id: 'aaaa1111-aaaa-aaaa-aaaa-aaaaaaaaaaaa', provider: 'claude',
+      projectName: 'targ-a', originalPath: dirA,
+      transcriptRef: 'claude/transcripts/targ-a/aaaa1111-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl',
+    };
+    const recB = {
+      id: 'bbbb2222-bbbb-bbbb-bbbb-bbbbbbbbbbbb', provider: 'claude',
+      projectName: 'targ-b', originalPath: dirB,
+      transcriptRef: 'claude/transcripts/targ-b/bbbb2222-bbbb-bbbb-bbbb-bbbbbbbbbbbb.jsonl',
+    };
+    // get resolves the requested id; list (the sweep path) would return BOTH —
+    // asserting a single materializeOut proves the ended path never full-scans.
+    h.store.get.mockImplementation(async (_p: string, gid: string) => (gid === recA.id ? recA : recB) as any);
+    h.store.list.mockResolvedValue([recA, recB] as any);
+
+    svc.noteSessionStarted(recA.id, dirA);
+    svc.noteSessionEnded(recA.id);
+    await vi.advanceTimersByTimeAsync(0);   // flush get() → first stat (absent → size 0) → arm probe
+    await vi.advanceTimersByTimeAsync(750); // probe 2: size 0 stable → copy recA only
+    expect(h.materializeOut).toHaveBeenCalledTimes(1);
+    expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${recA.id}.jsonl`);
+    svc.stopConversationStore();
+    vi.useRealTimers();
+  });
+
+  // Store not started (or stopped) → noteSessionEnded must be a silent no-op,
+  // never a throw (it's called from the session-exit IPC handler).
+  it('noteSessionEnded with no store is a no-op and never throws', async () => {
+    vi.resetModules();
+    const svc = await import('../src/main/conversations/service');
+    // store is null (startConversationStore never called this module instance).
+    expect(() => svc.noteSessionEnded('claude-no-store')).not.toThrow();
+    expect(h.materializeOut).not.toHaveBeenCalled();
   });
 
   // Review fix 4: start must be idempotent — a second start without stop must

@@ -19,6 +19,12 @@ import type { SpaceSyncEvent } from '../sync-spaces/types';
 
 const ACTIVITY_DEBOUNCE_MS = 5_000;
 const RECONCILE_INTERVAL_MS = 30 * 60_000; // slow tick; the startup scan is the load-bearing one
+// Bug 2 Part 2 (Plan 2b): session-exit fires BEFORE the PTY worker actually dies,
+// so CC may still be flushing its final turn to the local transcript. Before the
+// targeted materialize copies a peer's version over the local file, wait for the
+// local file to stop growing — two equal-size stats this far apart = CC done.
+const QUIESCE_PROBE_MS = 750;   // gap between size probes
+const QUIESCE_MAX_MS = 6_000;   // give up waiting; skip this round (reconciler/startup sweep catch up)
 
 interface SessionCtx { cwd: string }
 
@@ -234,6 +240,54 @@ async function materializeSweep(): Promise<void> {
       });
     } catch { /* per-record isolation — one bad copy must not abort the sweep */ }
   }
+}
+
+// Bug 2 Part 2 (Plan 2b Task 7): called from the session-exit IPC handler when a
+// CLAUDE session ends. Releases the per-session materialize guard `sessions` sets
+// (so the record stops being skipped by materializeSweep) AND applies any peer
+// version immediately — no app restart needed, which was the Bug-2 symptom. The
+// companion lease release lands in Task 8.
+export function noteSessionEnded(claudeSessionId: string): void {
+  const ctx = sessions.get(claudeSessionId);
+  sessions.delete(claudeSessionId); // release the materialize guard FIRST — even if the rest bails
+  if (!store) return;
+  // The targeted materialize is gated on the local transcript being quiescent
+  // (CC may still be flushing) and never full-scans — see materializeEndedSession.
+  void materializeEndedSession(claudeSessionId, ctx?.cwd).catch(() => { /* never reject in main */ });
+}
+
+// Targeted equivalent of materializeSweep for ONE just-ended session: resolve its
+// local project, wait for the local transcript to go quiescent, then pull a
+// larger peer version over it (grow-only, same as the sweep). Isolated so an
+// ended session applies a peer edit without waiting for the 30-min reconcile tick.
+async function materializeEndedSession(id: string, cwd?: string): Promise<void> {
+  const s = store; if (!s) return;
+  let rec; try { rec = await s.get('claude', id); } catch { return; }
+  if (!rec?.transcriptRef) return;
+  // Hoist the project lookups once (same rationale as materializeSweep).
+  const managed = new Map<string, string>((getManagedRoots()?.listProjects() ?? []).map((p) => [p.name, p.path]));
+  let saved: Array<{ path: string }> = [];
+  try { saved = readFolders(); } catch { /* saved folders unreadable */ }
+  const local = cwd ?? resolveLocalProject(rec, managed, saved);
+  if (!local) return;
+  const localPath = localJsonlPath(local, id);
+  // Quiescence: poll size until it holds steady across one probe interval, or
+  // give up at QUIESCE_MAX_MS (the reconciler/startup sweep catch up later).
+  const started = Date.now();
+  let prev = -1;
+  while (Date.now() - started < QUIESCE_MAX_MS) {
+    let size = 0;
+    try { size = fs.statSync(localPath).size; } catch { size = 0; } // absent local is quiescent (size 0 stable)
+    if (size === prev) break;
+    prev = size;
+    await new Promise((r) => setTimeout(r, QUIESCE_PROBE_MS));
+  }
+  // Re-opened during the wait — the live guard wins; do NOT touch the transcript
+  // CC is now appending to (the sweep's live-session invariant).
+  if (sessions.has(id)) return;
+  try {
+    materializeOut({ spaceTranscriptPath: path.join(s.root(), rec.transcriptRef), localJsonlPath: localPath });
+  } catch { /* grow-only copy failed — startup sweep catches up */ }
 }
 
 function runReconcile(): void {
