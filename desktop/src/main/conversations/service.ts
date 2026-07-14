@@ -264,24 +264,34 @@ async function materializeEndedSession(id: string, cwd?: string): Promise<void> 
   const s = store; if (!s) return;
   let rec; try { rec = await s.get('claude', id); } catch { return; }
   if (!rec?.transcriptRef) return;
-  // Hoist the project lookups once (same rationale as materializeSweep).
-  const managed = new Map<string, string>((getManagedRoots()?.listProjects() ?? []).map((p) => [p.name, p.path]));
-  let saved: Array<{ path: string }> = [];
-  try { saved = readFolders(); } catch { /* saved folders unreadable */ }
-  const local = cwd ?? resolveLocalProject(rec, managed, saved);
+  // Resolve the local project. On the common path cwd is known (learned via
+  // noteSessionStarted), so only pay for the managed/saved-folder reads on the
+  // cwd miss (a session that ended without ever being announced here).
+  let local = cwd;
+  if (!local) {
+    const managed = new Map<string, string>((getManagedRoots()?.listProjects() ?? []).map((p) => [p.name, p.path]));
+    let saved: Array<{ path: string }> = [];
+    try { saved = readFolders(); } catch { /* saved folders unreadable */ }
+    local = resolveLocalProject(rec, managed, saved) ?? undefined;
+  }
   if (!local) return;
   const localPath = localJsonlPath(local, id);
-  // Quiescence: poll size until it holds steady across one probe interval, or
-  // give up at QUIESCE_MAX_MS (the reconciler/startup sweep catch up later).
+  // Quiescence: poll size until it holds steady across one probe interval. If it
+  // never stabilizes before QUIESCE_MAX_MS, CC is still flushing — SKIP this
+  // round (never rename over a transcript CC still has open: POSIX detaches the
+  // inode and CC keeps appending to it → chat freeze + lost turns). The
+  // reconciler/startup sweep catch up once the local file is quiet.
   const started = Date.now();
+  let quiesced = false;
   let prev = -1;
   while (Date.now() - started < QUIESCE_MAX_MS) {
     let size = 0;
     try { size = fs.statSync(localPath).size; } catch { size = 0; } // absent local is quiescent (size 0 stable)
-    if (size === prev) break;
+    if (size === prev) { quiesced = true; break; }
     prev = size;
     await new Promise((r) => setTimeout(r, QUIESCE_PROBE_MS));
   }
+  if (!quiesced) return; // timed out still growing — skip, do NOT materialize
   // Re-opened during the wait — the live guard wins; do NOT touch the transcript
   // CC is now appending to (the sweep's live-session invariant).
   if (sessions.has(id)) return;

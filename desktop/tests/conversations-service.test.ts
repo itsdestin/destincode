@@ -331,6 +331,67 @@ describe('conversations service composition root', () => {
     vi.useRealTimers();
   });
 
+  // Data-loss guard: if the local transcript NEVER stops growing before
+  // QUIESCE_MAX_MS, CC is still flushing — the materialize must SKIP, never
+  // rename over the file CC still has open (POSIX inode-detach → chat freeze +
+  // lost turns). The reconciler/startup sweep catch up once it's quiet.
+  it('materialize-after-end SKIPS (does not materialize) when the file never stabilizes', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    const svc = await import('../src/main/conversations/service');
+    await svc.startConversationStore(startOpts());
+    const dir = path.join(tmpRoot, 'grow-forever');
+    fs.mkdirSync(dir, { recursive: true });
+    const id = '11111111-1111-1111-1111-111111111111';
+    const rec = {
+      id, provider: 'claude', projectName: 'grow-forever', originalPath: dir,
+      transcriptRef: `claude/transcripts/grow-forever/${id}.jsonl`,
+    };
+    h.store.get.mockResolvedValue(rec as any);
+    // Make statSync report an ever-growing size on EVERY probe so quiescence is
+    // never reached (simulates CC still flushing the whole time).
+    let sz = 100;
+    const statSpy = vi.spyOn(fs, 'statSync').mockImplementation(() => ({ size: (sz += 100) } as any));
+
+    svc.noteSessionStarted(id, dir);
+    svc.noteSessionEnded(id);
+    // Advance well past QUIESCE_MAX_MS (6s) — every probe sees a bigger size.
+    for (let i = 0; i < 12; i++) await vi.advanceTimersByTimeAsync(750);
+    expect(h.materializeOut).not.toHaveBeenCalled();
+
+    statSpy.mockRestore();
+    svc.stopConversationStore();
+    vi.useRealTimers();
+  });
+
+  // Re-open guard: if the SAME session restarts during the quiescence wait, the
+  // live guard wins — the targeted materialize must NOT touch the transcript CC
+  // is now appending to again.
+  it('materialize-after-end skips when the session is re-opened during the wait', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    const svc = await import('../src/main/conversations/service');
+    await svc.startConversationStore(startOpts());
+    const dir = path.join(tmpRoot, 'reopen-proj');
+    fs.mkdirSync(dir, { recursive: true });
+    const id = '22222222-2222-2222-2222-222222222222';
+    const rec = {
+      id, provider: 'claude', projectName: 'reopen-proj', originalPath: dir,
+      transcriptRef: `claude/transcripts/reopen-proj/${id}.jsonl`,
+    };
+    h.store.get.mockResolvedValue(rec as any);
+    // Local file absent (size 0), so it would reach quiescence on probe 2 — but
+    // we re-open the session first, and the post-wait guard must win.
+    svc.noteSessionStarted(id, dir);
+    svc.noteSessionEnded(id);              // deletes guard, kicks async materialize
+    await vi.advanceTimersByTimeAsync(0);  // flush get() → first probe (size 0) → arm sleep
+    svc.noteSessionStarted(id, dir);       // session re-opens mid-wait → re-adds the guard
+    await vi.advanceTimersByTimeAsync(750); // probe 2: size 0 stable → quiesced, but guard is set
+    expect(h.materializeOut).not.toHaveBeenCalled();
+    svc.stopConversationStore();
+    vi.useRealTimers();
+  });
+
   // Store not started (or stopped) → noteSessionEnded must be a silent no-op,
   // never a throw (it's called from the session-exit IPC handler).
   it('noteSessionEnded with no store is a no-op and never throws', async () => {
