@@ -1537,6 +1537,9 @@ app.on('window-all-closed', () => {
   // Stop the Conversation Store (Phase 2a) — unsubscribes the sync-spaces
   // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
   try { stopConversationStore(); } catch {}
+  // Plan 2b Task 8: tear down the lease client so its per-session renew timers
+  // don't linger past a hard quit (destroy clears all held timers). Sync fn.
+  try { leaseClient?.destroy(); } catch {}
   // Stop sync service — clears timer, releases locks, removes .app-sync-active marker
   try { setSyncService(null); } catch {}
   app.quit();

@@ -107,6 +107,19 @@ describe('createHolderTakeover', () => {
     ]);
   });
 
+  it('never throws when pushMoved throws AND still runs destroy (step 8)', async () => {
+    const deps = makeDeps({ liveDesktopIds: ['d1'] });
+    deps.sessionIdMap.set('d1', 'c1');
+    // pushMoved can throw synchronously (remoteServer.broadcast -> ws.send on a
+    // socket mid-teardown). The handler must swallow it AND still destroy.
+    (deps.pushMoved as any) = vi.fn((did: string) => { deps.order.push(`push:${did}`); throw new Error('ws send failed'); });
+    const handler = createHolderTakeover(deps as any);
+    await expect(handler('c1', { deviceId: 'x', device: 'X' })).resolves.toBeUndefined();
+    // Step 8 still runs after the guarded push throw — no half-done handoff.
+    expect(deps.sessionManager.destroySession).toHaveBeenCalledWith('d1');
+    expect(deps.order).toEqual(['interrupt:d1:"\\u001b"', 'flush:c1', 'release:c1', 'push:d1', 'destroy:d1']);
+  });
+
   it('never throws even when the lease release rejects', async () => {
     const deps = makeDeps({ liveDesktopIds: ['d1'] });
     deps.sessionIdMap.set('d1', 'c1');

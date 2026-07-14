@@ -32,41 +32,54 @@ export interface HolderTakeoverDeps {
 export function createHolderTakeover(deps: HolderTakeoverDeps):
   (claudeId: string, from?: { deviceId: string; device: string }) => Promise<void> {
   return async (claudeId, from) => {
-    // 1. Reverse-map the claude id to the LIVE desktop session(s) holding it. A
-    //    stale map entry (missed exit) is filtered out by the getSession check.
-    const liveDesktopIds = [...deps.sessionIdMap.entries()]
-      .filter(([, cid]) => cid === claudeId)
-      .map(([did]) => did)
-      .filter((did) => deps.sessionManager.getSession(did) !== undefined);
+    // Outer backstop (belt-and-suspenders): every step below is ALSO individually
+    // try/caught, but this guarantees the never-throw contract even if step 1's
+    // sessionIdMap/getSession lookup itself throws — the handler is invoked
+    // fire-and-forget (`void holderTakeover(...)`), so any escape would become an
+    // unhandled rejection in Electron main.
+    try {
+      // 1. Reverse-map the claude id to the LIVE desktop session(s) holding it. A
+      //    stale map entry (missed exit) is filtered out by the getSession check.
+      const liveDesktopIds = [...deps.sessionIdMap.entries()]
+        .filter(([, cid]) => cid === claudeId)
+        .map(([did]) => did)
+        .filter((did) => deps.sessionManager.getSession(did) !== undefined);
 
-    // 2. We don't actually hold it live — just release the lease (idempotent) and
-    //    stop. Nothing to interrupt / flush / move.
-    if (liveDesktopIds.length === 0) {
+      // 2. We don't actually hold it live — just release the lease (idempotent) and
+      //    stop. Nothing to interrupt / flush / move.
+      if (liveDesktopIds.length === 0) {
+        try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
+        return;
+      }
+      // Pick-first is deliberate: the rare same-claudeId-in-two-live-windows case
+      // hands off only the first holder (the others' leases drop on their own exit).
+      const desktopId = liveDesktopIds[0];
+
+      // 3. Interrupt the in-flight turn. Single ESC byte — safe to write directly
+      //    per PITFALLS "Keyboard Routing" (single-byte writes reach Ink as a fresh
+      //    keystroke regardless of timing; no paste-classification applies).
+      try { deps.sessionManager.sendInput(desktopId, '\x1b'); } catch { /* best-effort */ }
+
+      // 4-5. Wait for CC to finish flushing the interrupted turn, mirror local->space,
+      //      and nudge a personal-space sync. MIRROR-BEFORE-RELEASE is load-bearing:
+      //      the requester pulls the moment it sees the release, so the final turn
+      //      must already be in the space (flushSessionToSpace does both steps).
+      try { await deps.flushSessionToSpace(claudeId); } catch { /* best-effort */ }
+
+      // 6. Release the lease so the requester can acquire. Idempotent + best-effort.
       try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
-      return;
-    }
-    const desktopId = liveDesktopIds[0];
 
-    // 3. Interrupt the in-flight turn. Single ESC byte — safe to write directly
-    //    per PITFALLS "Keyboard Routing" (single-byte writes reach Ink as a fresh
-    //    keystroke regardless of timing; no paste-classification applies).
-    try { deps.sessionManager.sendInput(desktopId, '\x1b'); } catch { /* best-effort */ }
+      // 7. Tell the renderer + remote this conversation moved. BEFORE destroy, while
+      //    the session still exists so the "moved to <device>" banner can attach.
+      //    Guarded: pushMoved fans out to remoteServer.broadcast -> ws.send in a
+      //    loop, which can THROW synchronously if a remote socket is mid-teardown
+      //    (readyState checked, then transitions to CLOSING). An escape here would
+      //    skip step 8 (leaving the local CC session alive → half-done handoff).
+      try { deps.pushMoved(desktopId, from?.device); } catch { /* best-effort */ }
 
-    // 4-5. Wait for CC to finish flushing the interrupted turn, mirror local->space,
-    //      and nudge a personal-space sync. MIRROR-BEFORE-RELEASE is load-bearing:
-    //      the requester pulls the moment it sees the release, so the final turn
-    //      must already be in the space (flushSessionToSpace does both steps).
-    try { await deps.flushSessionToSpace(claudeId); } catch { /* best-effort */ }
-
-    // 6. Release the lease so the requester can acquire. Idempotent + best-effort.
-    try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
-
-    // 7. Tell the renderer + remote this conversation moved. BEFORE destroy, while
-    //    the session still exists so the "moved to <device>" banner can attach.
-    deps.pushMoved(desktopId, from?.device);
-
-    // 8. End the holder's session — fires session-exit -> Task 7 cleanup +
-    //    idempotent lease release.
-    try { deps.sessionManager.destroySession(desktopId); } catch { /* best-effort */ }
+      // 8. End the holder's session — fires session-exit -> Task 7 cleanup +
+      //    idempotent lease release.
+      try { deps.sessionManager.destroySession(desktopId); } catch { /* best-effort */ }
+    } catch { /* never surface out of a fire-and-forget hub-event handler */ }
   };
 }
