@@ -701,6 +701,10 @@ export const IPC = {
   // Main -> Renderer
   SESSION_CREATED: 'session:created',
   SESSION_DESTROYED: 'session:destroyed',
+  // Plan 2b Task 8: pushed to the renderer + remote when another device took over
+  // a conversation this device held — the holder-side takeover ends the local
+  // session and the UI shows a "moved to <device>" banner.
+  SESSION_MOVED: 'session:moved',
   PTY_OUTPUT: 'pty:output',
   HOOK_EVENT: 'hook:event',
   SESSION_RENAMED: 'session:renamed',

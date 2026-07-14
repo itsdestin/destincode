@@ -392,6 +392,46 @@ describe('conversations service composition root', () => {
     vi.useRealTimers();
   });
 
+  // Plan 2b Task 8: flushSessionToSpace waits for the local transcript to go
+  // quiescent, then mirrors local->space and nudges a personal-space sync. Used
+  // by the holder-side takeover to push the FINAL interrupted turn before the
+  // lease releases. Unlike materializeEndedSession it pushes REGARDLESS of the
+  // quiescence result (mirrorIn is grow-only, never touches CC's open file).
+  it('flushSessionToSpace mirrors local->space after quiescence and pushes personal', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    const svc = await import('../src/main/conversations/service');
+    await svc.startConversationStore(startOpts());
+    const dir = path.join(tmpRoot, 'flush-proj');
+    fs.mkdirSync(dir, { recursive: true });
+    const id = '33333333-3333-3333-3333-333333333333';
+    // Seed the local transcript at the exact path the service derives, stable size.
+    const localPath = path.join(startOpts().projectsDir, ccProjectSlug(dir), `${id}.jsonl`);
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    fs.writeFileSync(localPath, 'the-final-turn');
+
+    svc.noteSessionStarted(id, dir); // learn the cwd so flush can locate the file
+    const p = svc.flushSessionToSpace(id);
+    await vi.advanceTimersByTimeAsync(0);   // first stat → arm the probe sleep
+    await vi.advanceTimersByTimeAsync(750); // probe 2: size stable → quiescent → mirror + push
+    await p;
+    expect(h.mirrorIn).toHaveBeenCalledTimes(1);
+    expect(h.mirrorIn.mock.calls[0][0].localJsonlPath).toBe(localPath);
+    // Space transcript path is <root>/claude/transcripts/<projectKey>/<id>.jsonl.
+    expect(h.mirrorIn.mock.calls[0][0].spaceTranscriptPath).toContain(`${id}.jsonl`);
+    expect(h.syncSpacesSyncNow).toHaveBeenCalledWith('personal');
+    svc.stopConversationStore();
+    vi.useRealTimers();
+  });
+
+  // No known cwd for the id → flush is a silent no-op (can't locate the transcript).
+  it('flushSessionToSpace with no known session is a no-op', async () => {
+    const svc = await freshService(startOpts());
+    await svc.flushSessionToSpace('never-announced');
+    expect(h.mirrorIn).not.toHaveBeenCalled();
+    expect(h.syncSpacesSyncNow).not.toHaveBeenCalled();
+  });
+
   // Store not started (or stopped) → noteSessionEnded must be a silent no-op,
   // never a throw (it's called from the session-exit IPC handler).
   it('noteSessionEnded with no store is a no-op and never throws', async () => {

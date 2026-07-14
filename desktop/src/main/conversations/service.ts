@@ -276,28 +276,53 @@ async function materializeEndedSession(id: string, cwd?: string): Promise<void> 
   }
   if (!local) return;
   const localPath = localJsonlPath(local, id);
-  // Quiescence: poll size until it holds steady across one probe interval. If it
-  // never stabilizes before QUIESCE_MAX_MS, CC is still flushing — SKIP this
-  // round (never rename over a transcript CC still has open: POSIX detaches the
-  // inode and CC keeps appending to it → chat freeze + lost turns). The
-  // reconciler/startup sweep catch up once the local file is quiet.
-  const started = Date.now();
-  let quiesced = false;
-  let prev = -1;
-  while (Date.now() - started < QUIESCE_MAX_MS) {
-    let size = 0;
-    try { size = fs.statSync(localPath).size; } catch { size = 0; } // absent local is quiescent (size 0 stable)
-    if (size === prev) { quiesced = true; break; }
-    prev = size;
-    await new Promise((r) => setTimeout(r, QUIESCE_PROBE_MS));
-  }
-  if (!quiesced) return; // timed out still growing — skip, do NOT materialize
+  // Quiescence: if it never stabilizes before QUIESCE_MAX_MS, CC is still
+  // flushing — SKIP this round (never rename over a transcript CC still has open:
+  // POSIX detaches the inode and CC keeps appending to it → chat freeze + lost
+  // turns). The reconciler/startup sweep catch up once the local file is quiet.
+  if (!(await waitForQuiescence(localPath))) return; // timed out still growing — skip, do NOT materialize
   // Re-opened during the wait — the live guard wins; do NOT touch the transcript
   // CC is now appending to (the sweep's live-session invariant).
   if (sessions.has(id)) return;
   try {
     materializeOut({ spaceTranscriptPath: path.join(s.root(), rec.transcriptRef), localJsonlPath: localPath });
   } catch { /* grow-only copy failed — startup sweep catches up */ }
+}
+
+// Poll the local transcript size until it holds steady across one probe interval.
+// Returns true if it went quiescent, false on timeout (still growing at
+// QUIESCE_MAX_MS). Shared by materializeEndedSession (space->local direction:
+// skip on timeout) and flushSessionToSpace (local->space direction: push anyway).
+async function waitForQuiescence(localPath: string): Promise<boolean> {
+  const started = Date.now();
+  let prev = -1;
+  while (Date.now() - started < QUIESCE_MAX_MS) {
+    let size = 0;
+    try { size = fs.statSync(localPath).size; } catch { size = 0; } // absent local is quiescent (size 0 stable)
+    if (size === prev) return true;
+    prev = size;
+    await new Promise((r) => setTimeout(r, QUIESCE_PROBE_MS));
+  }
+  return false;
+}
+
+// Holder-side takeover step 4-5 (Plan 2b Task 8): after the holder interrupts,
+// wait for CC to finish flushing the interrupted turn, then push the local
+// transcript into the space so the REQUESTER pulls the FINAL turn. mirrorIn
+// (local->space) is grow-only and never touches CC's open local file, so pushing
+// even on a quiescence TIMEOUT is safe (unlike materializeEndedSession's
+// space->local direction, which must skip on timeout to avoid clobbering the file
+// CC still has open).
+export async function flushSessionToSpace(claudeSessionId: string): Promise<void> {
+  const s = store; if (!s) return;
+  const ctx = sessions.get(claudeSessionId);
+  if (!ctx) return; // no cwd known — can't locate the transcript
+  const key = path.basename(ctx.cwd);
+  const localPath = localJsonlPath(ctx.cwd, claudeSessionId);
+  await waitForQuiescence(localPath); // best-effort wait; push regardless of the result
+  try { mirrorIn({ localJsonlPath: localPath, spaceTranscriptPath: spaceTranscriptPath(key, claudeSessionId) }); }
+  catch { /* best-effort; the reconciler re-mirrors */ }
+  try { await Promise.resolve(syncSpacesSyncNow('personal')); } catch { /* the poll covers a miss */ }
 }
 
 function runReconcile(): void {

@@ -11,6 +11,7 @@ import { SpaceSyncEngine } from './engine';
 import { DailyBackup, BackupTarget } from './daily-backup';
 import { importProjectFolder } from './import-project';
 import { createSyncHubSocket } from '../sync-hub-socket';
+import type { LeaseResult, SyncHubEvent } from '../sync-hub-socket';
 import { readProjectRegistry, ensureProjectEntry, setProjectDisplayName, setProjectStopped } from './project-registry';
 import { planReconcile, activeManagedSpaces } from './materialization-planner';
 import type { SpaceSyncEvent } from './types';
@@ -36,6 +37,24 @@ let authStore: { getToken(): string | null } | null = null;
 export function setSyncSpacesAuthStore(store: { getToken(): string | null } | null): void {
   authStore = store;
 }
+
+// Lease client bridge (Plan 2b Task 8). The lease client lives in main.ts (it
+// needs sessionIdMap via ipc-handlers), but the hub SOCKET lives here — so this
+// module exposes a thin passthrough for the client's request() transport, and a
+// listener facade to forward the hub's UNSOLICITED lease-events back to the
+// client. Both are narrow facades so service.ts never imports the lease client.
+
+// Route a lease op to the hub socket. Returns null when the hub is down (the
+// lease client treats null as "no answer" and falls back to its file / never-block).
+export function hubLeaseRequest(op: string, sessionId: string, deviceId: string): Promise<LeaseResult | null> {
+  return hubSocket?.request(op, sessionId, deviceId) ?? Promise.resolve(null);
+}
+
+type LeaseEvent = Extract<SyncHubEvent, { type: 'lease-event' }>;
+let leaseEventListener: ((ev: LeaseEvent) => void) | null = null;
+// main.ts wires this to leaseClient.handleTakeoverRequest so a hub takeover-request
+// reaches the holder. Kept as a facade so service.ts doesn't import the lease client.
+export function setSyncSpacesLeaseEventListener(fn: ((ev: LeaseEvent) => void) | null): void { leaseEventListener = fn; }
 
 // Why: enable(true) racing enable(false) (two windows, or panel double-click)
 // would otherwise interleave — the disable stops the half-started engine and
@@ -273,6 +292,10 @@ async function startEngine(log: (m: string) => void): Promise<void> {
       } else if (ev.type === 'disconnected') {
         hubStatus = 'disconnected';
         broadcast({ type: 'hub-status', spaceId: 'hub', status: 'disconnected' });
+      } else if (ev.type === 'lease-event') {
+        // DO-pushed lease notification (released/taken/takeover-request). Forward
+        // to main.ts's listener (the lease client filters by held session).
+        leaseEventListener?.(ev);
       }
     },
   });

@@ -71,7 +71,10 @@ import { listProjectConversations, projectConversationHistory } from './project-
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
-import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore } from './conversations/service';
+import { noteTranscriptEvent, noteSessionStarted, noteSessionEnded, noteTitleChanged, noteFlagChanged, noteSessionNote, getConversationStore, flushSessionToSpace } from './conversations/service';
+// Plan 2b Task 8: holder-side takeover — when another device requests a session
+// this device holds, cleanly interrupt/flush/release/move/destroy it.
+import { createHolderTakeover } from './conversations/takeover';
 import { getTagRegistry } from './conversations/tag-registry-service';
 import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
@@ -96,6 +99,14 @@ export function registerIpcHandlers(
   // Multi-window ownership: when a session is created via IPC, assign it to
   // the calling renderer's window so subsequent per-session events route there.
   windowRegistry?: import('./window-registry').WindowRegistry,
+  // Plan 2b Task 8 (optional): the lease client + a setter main.ts uses to
+  // receive the holder-side takeover handler (which needs the local sessionIdMap,
+  // built inside this function). Absent → lease lifecycle wiring is skipped
+  // entirely (nothing breaks — acquire/release/takeover simply don't run).
+  leaseWiring?: {
+    client: import('./conversations/lease-client').LeaseClient;
+    setHolderTakeover: (fn: (sessionId: string, from?: { deviceId: string; device: string }) => void) => void;
+  },
 ) {
   // Broadcast a non-session-scoped event to every renderer. Status data, UI
   // actions, and similar globals must reach every window — not just window 1.
@@ -1759,6 +1770,26 @@ export function registerIpcHandlers(
   // Maps desktop session ID → Claude Code session ID
   const sessionIdMap = new Map<string, string>();
 
+  // Holder-side takeover (Plan 2b Task 8): when another device requests this
+  // session, cleanly interrupt, flush the final turn to the space, release the
+  // lease, tell the UI it moved, and end the local session. Wired here because
+  // the reverse-map (claude id → desktop id) needs sessionIdMap; sendForSession is
+  // in scope for the dual-path renderer + remote push.
+  if (leaseWiring) {
+    const pushMoved = (desktopId: string, device?: string) => {
+      const payload = { sessionId: desktopId, device };
+      sendForSession(desktopId, IPC.SESSION_MOVED, payload);          // owning renderer window
+      remoteServer?.broadcast({ type: IPC.SESSION_MOVED, payload }); // remote clients
+    };
+    const holderTakeover = createHolderTakeover({
+      sessionManager, sessionIdMap, leaseClient: leaseWiring.client,
+      flushSessionToSpace, pushMoved,
+    });
+    // Fire-and-forget from a hub event — the handler never throws (each step is
+    // try/caught inside createHolderTakeover), so void is safe.
+    leaseWiring.setHolderTakeover((sid, from) => { void holderTakeover(sid, from); });
+  }
+
   // `lastAttentionBySession` is declared alongside the other status-value
   // caches above buildStatusData(); the listener that writes into it is
   // registered here where the handler block begins.
@@ -2033,6 +2064,12 @@ export function registerIpcHandlers(
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
         noteSessionStarted(claudeId, sessionInfo.cwd);
+        // 2b Task 8: this device now owns the session — take the lease.
+        // Fire-and-forget: a denied (ok:false) result would only mean another
+        // device holds it, but the sanctioned resume path already ran takeover
+        // BEFORE spawn, so we never block session start on the lease. acquire()
+        // never rejects, but the .catch keeps a future change from leaking one.
+        void leaseWiring?.client.acquire(claudeId).catch(() => { /* never-block */ });
       }
     });
   }
@@ -2049,6 +2086,9 @@ export function registerIpcHandlers(
       // apply any peer version now that this session ended — no restart needed.
       // Resolved from the map BEFORE the delete below, so the claude id is known.
       noteSessionEnded(claudeId);
+      // 2b Task 8: drop our lease so another device can acquire. Idempotent +
+      // best-effort; release() never rejects, .catch guards a future change.
+      void leaseWiring?.client.release(claudeId).catch(() => { /* best-effort */ });
     }
     sessionIdMap.delete(sessionId);
     lastAttentionBySession.delete(sessionId);
