@@ -74,23 +74,32 @@ export function createGithubConnect(
 
   // The single in-flight flow's abort handle. Non-null only while a flow runs.
   let controller: AbortController | null = null;
-  // Guard so a late failure after cancel (or any double-settle) can't fire
-  // emitDone twice for one flow.
-  let settled = false;
-
-  const finish = (p: ConnectDonePayload) => {
-    if (settled) return;
-    settled = true;
-    controller = null;
-    emitDone(p);
-  };
+  // Monotonic id identifying the CURRENT flow. Each start() bumps it, which both
+  // supersedes any prior flow (its finish becomes a no-op) and, once a flow
+  // finishes, blocks that same flow from settling twice. This is per-flow rather
+  // than a single shared `settled` bool because the orchestrator is a singleton
+  // shared by desktop AND remote clients: two connect-starts without an
+  // intervening cancel (double-click, or desktop+remote racing) must not let an
+  // aborted old flow emit a spurious 'cancelled' that also blocks the new flow.
+  let activeFlowId = 0;
 
   async function start(): Promise<ConnectStartResult> {
-    // A new flow supersedes any prior one — abort it so its poll can't also
-    // settle. (start() is the modal opening; there should be at most one.)
+    // A new flow supersedes any prior one — abort it AND bump the id so its
+    // detached chain's finish() becomes a no-op (only an explicit user cancel of
+    // the CURRENT flow should emit). (start() is the modal opening; at most one.)
     controller?.abort();
-    controller = new AbortController();
-    settled = false;
+    const myId = ++activeFlowId;
+    const myController = new AbortController();
+    controller = myController;
+
+    // Settles THIS flow exactly once. A superseded flow (myId !== activeFlowId)
+    // is silenced; a completed flow bumps the id so it can't re-settle.
+    const finish = (p: ConnectDonePayload) => {
+      if (myId !== activeFlowId) return;
+      activeFlowId++;
+      if (controller === myController) controller = null;
+      emitDone(p);
+    };
 
     // startDeviceFlow throws Error('network') — let it reject start() so the
     // modal shows the network-error state immediately (no flow to run).
@@ -98,11 +107,11 @@ export function createGithubConnect(
     try {
       flow = await startDeviceFlow();
     } catch (err) {
-      controller = null;
+      if (controller === myController) controller = null;
       throw err;
     }
 
-    const signal = controller.signal;
+    const signal = myController.signal;
 
     // Detached background chain: poll → login → detect → emitDone. We do NOT
     // await this; start() returns the render fields immediately. Any throw maps

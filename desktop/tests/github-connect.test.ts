@@ -158,6 +158,35 @@ describe('createGithubConnect', () => {
     expect(calls).toHaveLength(0);
   });
 
+  test('a superseding start() silences the aborted prior flow (no spurious cancelled, new flow still settles)', async () => {
+    // The orchestrator is a singleton shared by desktop + remote. Two starts
+    // without an intervening cancel (double-click / racing clients) must not let
+    // the aborted first flow emit a 'cancelled' that also blocks the second.
+    const { emit, calls } = deferredDone();
+    // First flow's poll rejects 'cancelled' the moment its signal aborts.
+    const pollA: GithubConnectDeps['pollForToken'] = (_dc, opts) =>
+      new Promise((_res, reject) => {
+        opts.signal?.addEventListener('abort', () => reject(new Error('cancelled')));
+      });
+    // Second flow succeeds.
+    let poll = pollA;
+    const gc = createGithubConnect(emit, {
+      startDeviceFlow: fakeStartDeviceFlow,
+      pollForToken: (dc, opts) => poll(dc, opts),
+      completeLogin: async () => {},
+      detectGh: async () => ({ installed: true, authed: true, login: 'octocat' }),
+    });
+
+    await gc.start();                 // flow A begins polling
+    poll = async () => ({ token: SECRET }); // flow B will succeed
+    await gc.start();                 // supersedes A (aborts it)
+    // Let A's abort-rejection and B's success both flush.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+
+    // Exactly ONE emit — flow B's success — and NOT A's spurious 'cancelled'.
+    expect(calls).toEqual([{ ok: true, login: 'octocat' }]);
+  });
+
   test('emitDone fires at most once per flow (cancel after success is a no-op)', async () => {
     const { emit, done, calls } = deferredDone();
     const gc = createGithubConnect(emit, {
