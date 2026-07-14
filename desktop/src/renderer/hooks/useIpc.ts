@@ -267,6 +267,8 @@ declare global {
         status: () => Promise<any>;
         install: () => Promise<any>;
         restart: () => Promise<any>;
+        // Plan C context-length knob — persists -c and reboots the engine.
+        setContext: (contextSize: number) => Promise<any>;
         onInstallProgress: (cb: (p: any) => void) => () => void;
         onStatusChanged: (cb: (s: any) => void) => () => void;
       };

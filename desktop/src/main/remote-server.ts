@@ -752,6 +752,15 @@ export class RemoteServer {
         }
         break;
       }
+      case 'engine:set-context': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.setContext((payload.contextSize ?? payload) as number);
+          this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
       case 'models:curated': {
         try {
           const res = this.nativeRuntime ? await this.nativeRuntime.modelManager.curatedList() : [];

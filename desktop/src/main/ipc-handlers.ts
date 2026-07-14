@@ -1888,6 +1888,7 @@ export function registerIpcHandlers(
     remoteServer?.broadcast({ type: 'models:download-progress', payload: p });
   });
   ipcMain.handle(IPC.ENGINE_SET_BACKEND, async (_e, backend: string) => { await engineManager.setBackend(backend as any); return engineManager.status(); });
+  ipcMain.handle(IPC.ENGINE_SET_CONTEXT, async (_e, contextSize: number) => { await engineManager.setContext(contextSize); return engineManager.status(); });
   ipcMain.handle(IPC.MODELS_CURATED, async () => modelManager.curatedList());
   ipcMain.handle(IPC.MODELS_SEARCH, async (_e, query: string) => modelManager.search(query));
   ipcMain.handle(IPC.MODELS_QUANTS, async (_e, repo: string) => modelManager.quants(repo));

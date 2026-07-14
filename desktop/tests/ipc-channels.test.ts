@@ -674,6 +674,7 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
   const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
   const channels: Array<[string, string]> = [
     ['engine:set-backend', 'ENGINE_SET_BACKEND'],
+    ['engine:set-context', 'ENGINE_SET_CONTEXT'],
     ['models:curated', 'MODELS_CURATED'],
     ['models:search', 'MODELS_SEARCH'],
     ['models:quants', 'MODELS_QUANTS'],

@@ -13,6 +13,7 @@ interface EngineStatusView {
   state: 'not-installed' | 'stopped' | 'starting' | 'running' | 'error';
   errorMessage?: string;
   cacheDir: string;
+  contextSize: number;   // Plan C: the context-length knob binds to this
 }
 
 type Progress =
@@ -23,7 +24,13 @@ type Progress =
 // Bytes → whole MB for the download progress line.
 const mb = (n: number) => `${Math.round(n / 1048576)} MB`;
 
-export default function EngineCard() {
+// A cuda asset only ships for Windows x64 (engine-pin.ts). The renderer can't
+// probe the asset table, so the "Switch to CUDA" button gates on Windows +
+// not-already-cuda; on the rare Windows arm64 box setBackend surfaces a plain
+// "not available for this platform" error instead of silently doing nothing.
+const isWindows = typeof navigator !== 'undefined' && /win/i.test(navigator.platform);
+
+export default function EngineCard({ showDetails = false }: { showDetails?: boolean }) {
   const [status, setStatus] = useState<EngineStatusView | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [busy, setBusy] = useState(false);
@@ -39,13 +46,30 @@ export default function EngineCard() {
     return () => { alive = false; offP(); offS(); };
   }, []);
 
-  // Shared runner for install/restart: sets busy, surfaces any thrown error,
-  // and clears the transient progress line when the action settles.
+  // Context-length knob draft (Plan C, showDetails). Re-syncs whenever the
+  // engine's configured contextSize changes (initial load, push, or a commit).
+  const [ctxDraft, setCtxDraft] = useState<number | null>(null);
+  useEffect(() => { if (status) setCtxDraft(status.contextSize); }, [status?.contextSize]);
+
+  // Shared runner for install/restart/setContext/setBackend: sets busy,
+  // surfaces any thrown error, and clears the transient progress line when the
+  // action settles.
   const run = async (fn: () => Promise<any>) => {
     setBusy(true); setError(null);
     try { setStatus(await fn()); }
     catch (e: any) { setError(e?.message ?? String(e)); }
     finally { setBusy(false); setProgress(null); }
+  };
+
+  // Commit the context-length knob. Reverts an invalid value (< 1024 or NaN)
+  // and no-ops when unchanged, so a blur/Enter can't needlessly reboot the
+  // engine (setContext restarts a running server).
+  const commitContext = async () => {
+    if (ctxDraft == null || !status) return;
+    const n = Math.floor(ctxDraft);
+    if (!Number.isFinite(n) || n < 1024) { setCtxDraft(status.contextSize); return; }
+    if (n === status.contextSize) return;
+    await run(() => window.claude.engine.setContext(n));
   };
 
   if (!status) return null;
@@ -94,6 +118,49 @@ export default function EngineCard() {
         <p className="mt-2 text-[10px] text-fg-dim">{progress.kind === 'verify' ? 'Verifying download…' : 'Unpacking…'}</p>
       )}
       {error && <p className="mt-2 text-[10px] text-red-500">{error}</p>}
+
+      {/* Extra controls for the Local Models panel (Plan C). Only shown once the
+          engine is installed — nothing to configure before that. */}
+      {showDetails && status.installed && (
+        <div className="mt-3 pt-3 border-t border-edge-dim space-y-2.5">
+          {/* Backend line + optional CUDA switch (Windows only). */}
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-fg-dim">Using: {status.backend ?? 'default'}</p>
+            {isWindows && status.backend !== 'cuda' && (
+              <button
+                onClick={() => run(() => window.claude.models.setBackend('cuda'))}
+                disabled={busy}
+                className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 shrink-0"
+              >
+                Switch to CUDA (faster on NVIDIA)
+              </button>
+            )}
+          </div>
+
+          {/* Context-length knob. Commits on Enter or blur. */}
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="engine-context-size" className="text-[11px] text-fg-dim">Context length (tokens)</label>
+            <input
+              id="engine-context-size"
+              type="number"
+              min={1024}
+              step={1024}
+              value={ctxDraft ?? ''}
+              disabled={busy}
+              onChange={(e) => setCtxDraft(e.target.value === '' ? null : Number(e.target.value))}
+              onBlur={() => void commitContext()}
+              onKeyDown={(e) => { if (e.key === 'Enter') void commitContext(); }}
+              className="w-24 text-xs bg-inset border border-edge-dim rounded-lg px-2.5 py-1.5 text-fg focus:outline-none focus:border-accent disabled:opacity-60"
+            />
+          </div>
+
+          {/* Cache location — read-only. */}
+          <div>
+            <p className="text-[10px] text-fg-muted mb-0.5">Models are stored in</p>
+            <p className="text-[10px] text-fg-dim font-mono break-all">{status.cacheDir}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

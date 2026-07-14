@@ -83,8 +83,27 @@ export class EngineManager extends EventEmitter {
         ? 'The engine crashed repeatedly and was stopped. Press "Restart engine" to try again.'
         : undefined,
       cacheDir: cfg.cacheDir,
+      contextSize: cfg.contextSize,   // Plan C: the knob binds to this value
       port: this.port,
     };
+  }
+
+  /** Plan C (Amendment I): the context-length knob. Persists the new -c and
+   *  reboots a running engine so the change takes effect immediately. */
+  async setContext(contextSize: number): Promise<void> {
+    if (!Number.isFinite(contextSize) || contextSize < 1024) {
+      throw new Error('Context length must be at least 1024 tokens.');
+    }
+    await updateEngineConfig(this.home, { contextSize: Math.floor(contextSize) });
+    // A running engine keeps its old -c until rebooted; restart now so the knob
+    // does what it says. The supervisorBinary = null is REQUIRED (K6):
+    // rebuildSupervisor dedups on binaryPath, so a plain restart() would return
+    // early and keep the OLD contextSize — nulling forces a rebuild with the
+    // fresh config on the next ensureRunning. stop() is single-flight (Plan B),
+    // so a send in the kill window is coordinated; only avoid applying this
+    // mid-stream (a context change is inherently disruptive).
+    if (this.supervisor) { await this.supervisor.stop(); this.supervisorBinary = null; }
+    this.emit('status-changed');
   }
 
   /** Install the pinned engine for this machine. Vulkan-first on win/linux

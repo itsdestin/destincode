@@ -1055,6 +1055,8 @@ contextBridge.exposeInMainWorld('claude', {
     status: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_STATUS),
     install: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_INSTALL),
     restart: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_RESTART),
+    // Plan C context-length knob — persists -c and reboots the engine.
+    setContext: (contextSize: number): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_SET_CONTEXT, contextSize),
     onInstallProgress: (cb: (p: unknown) => void) => {
       const listener = (_e: unknown, p: unknown) => cb(p);
       ipcRenderer.on(IPC.ENGINE_INSTALL_PROGRESS, listener);

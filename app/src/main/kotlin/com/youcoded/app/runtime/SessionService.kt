@@ -3567,6 +3567,7 @@ class SessionService : Service() {
             "engine:status",
             "engine:install",
             "engine:restart",
+            "engine:set-context",   // Plan C context-length knob — desktop-only
             // Model manager (Plan C) — curated catalog, HF search, downloads,
             // endpoint detectors, backend switch. Desktop-only; no Android runtime.
             "engine:set-backend",

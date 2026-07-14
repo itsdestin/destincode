@@ -13,6 +13,7 @@ export interface EngineStatus {
   state: EngineRunState;
   errorMessage?: string;             // plain language; present when state === 'error'
   cacheDir: string;                  // where GGUF models live (LLAMA_CACHE)
+  contextSize: number;               // configured -c (Plan C context-length knob reads this)
   port: number;
 }
 

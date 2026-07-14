@@ -20,6 +20,7 @@ import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ProvidersSection from './ProvidersSection';
+import LocalModelsSection from './LocalModelsSection';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -2296,6 +2297,12 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
             nothing in production until Phase 2. Desktop-authoritative — NOT
             mounted in AndroidSettings. */}
         <ProvidersSection />
+
+        {/* Local Models — the Plan C model manager (engine controls, curated
+            catalog, installed models, HF search, local-app detectors).
+            Self-gated on native.supported, so it renders nothing in production
+            until Phase 2. Desktop-authoritative — NOT mounted in AndroidSettings. */}
+        <LocalModelsSection />
 
         <RemoteButton
           config={config}
