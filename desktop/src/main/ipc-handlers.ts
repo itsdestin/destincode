@@ -106,6 +106,10 @@ export function registerIpcHandlers(
   leaseWiring?: {
     client: import('./conversations/lease-client').LeaseClient;
     setHolderTakeover: (fn: (sessionId: string, from?: { deviceId: string; device: string }) => void) => void;
+    // Plan 2b Task 9: the requester-side takeover flow, built in main.ts (where
+    // deviceId + hubLeaseRequest + materializeOne + syncSpacesSyncNow are all
+    // reachable). The three lease IPC handlers below are thin passthroughs to it.
+    requester: import('./conversations/takeover').RequesterTakeoverType;
   },
 ) {
   // Broadcast a non-session-scoped event to every renderer. Status data, UI
@@ -2272,6 +2276,18 @@ export function registerIpcHandlers(
     syncSpacesRenameProject(String(p?.name ?? ''), String(p?.displayName ?? '')));
   ipcMain.handle(IPC.SYNC_SPACES_STOP_PROJECT, (_e, p: { name: string }) =>
     syncSpacesStopProject(String(p?.name ?? '')));
+
+  // Conversation-lease takeover (Plan 2b Task 9). Thin passthroughs to the lease
+  // client (query) and the requester flow (takeover/force) built in main.ts.
+  // When lease wiring is absent (sync disabled), every handler degrades to a
+  // "free / error" answer so the renderer's resume gate proceeds unblocked
+  // (spec §3 never-block).
+  ipcMain.handle(IPC.SYNC_SPACES_LEASE_QUERY, (_e, p: { claudeSessionId: string }) =>
+    leaseWiring?.client.query(String(p?.claudeSessionId ?? '')) ?? { held: false, source: 'none' });
+  ipcMain.handle(IPC.SYNC_SPACES_LEASE_TAKEOVER, (_e, p: { claudeSessionId: string }) =>
+    leaseWiring?.requester.takeover(String(p?.claudeSessionId ?? '')) ?? { outcome: 'error' });
+  ipcMain.handle(IPC.SYNC_SPACES_LEASE_FORCE, (_e, p: { claudeSessionId: string }) =>
+    leaseWiring?.requester.force(String(p?.claudeSessionId ?? '')) ?? { ok: false });
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));

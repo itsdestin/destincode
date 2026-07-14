@@ -83,3 +83,74 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
     } catch { /* never surface out of a fire-and-forget hub-event handler */ }
   };
 }
+
+// Requester-side takeover flow (Plan 2b Task 9). When the user clicks "resume" on
+// a conversation another device holds, THIS device asks the holder to hand off,
+// waits for the lease to free, then pulls the peer's final turn and acquires the
+// lease itself. Extracted as an injected-deps factory (same shape as the holder
+// flow) so the poll loop is unit-testable with fake timers.
+//
+// spec §3 NEVER-BLOCK: this must NEVER throw. On any error the caller degrades to
+// a warning dialog and proceeds with the resume anyway — a lease hiccup must not
+// stop a user from opening their conversation.
+export interface RequesterTakeoverDeps {
+  leaseClient: {
+    takeover(sessionId: string): Promise<unknown>;
+    query(sessionId: string): Promise<{ held: boolean; device?: string }>;
+    acquire(sessionId: string): Promise<unknown>;
+  };
+  syncNow: () => Promise<unknown> | unknown;            // syncSpacesSyncNow('personal')
+  materializeOne: (sessionId: string) => Promise<void>; // pull the peer's final turn into the local CC transcript
+  forceAcquire: (sessionId: string) => Promise<unknown>;// hub op 'force-acquire' — overwrite a stale lease
+  delay: (ms: number) => Promise<void>;                 // injectable so tests drive the poll with fake timers
+  selfDevice: string;                                   // this device's label — a query holder === self counts as free
+}
+
+export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' }
+
+// The requester object's type — referenced by ipc-handlers' leaseWiring param so
+// main.ts can build the flow and pass it through without a circular import.
+export type RequesterTakeoverType = ReturnType<typeof createRequesterTakeover>;
+
+export function createRequesterTakeover(deps: RequesterTakeoverDeps) {
+  const POLL_MS = 1_000, MAX_MS = 10_000;
+  return {
+    async takeover(sessionId: string): Promise<RequesterOutcome> {
+      try {
+        // Broadcast the request; the holder answers by releasing its lease.
+        await deps.leaseClient.takeover(sessionId);
+        const started = Date.now();
+        // Poll until the lease frees (held:false, or the holder is now us) or we
+        // hit the 10s budget. Checking free BEFORE the first sleep means an
+        // already-free lease returns fast without a wasted poll interval.
+        while (Date.now() - started < MAX_MS) {
+          const q = await deps.leaseClient.query(sessionId);
+          if (!q.held || q.device === deps.selfDevice) {
+            // Free: nudge a personal-space sync so the holder's final turn is in
+            // the space, pull it into the local CC transcript, then claim the
+            // lease. Each downstream step is best-effort — a miss self-heals via
+            // the startup sweep / next renew; we still report 'acquired'.
+            await Promise.resolve(deps.syncNow()).catch(() => {});
+            try { await deps.materializeOne(sessionId); } catch { /* best-effort; startup sweep catches up */ }
+            await deps.leaseClient.acquire(sessionId).catch(() => {});
+            return { outcome: 'acquired' };
+          }
+          await deps.delay(POLL_MS);
+        }
+        // Holder never released within the budget — the caller offers a force.
+        return { outcome: 'timeout' };
+      } catch { return { outcome: 'error' }; }
+    },
+    async force(sessionId: string): Promise<{ ok: boolean }> {
+      try {
+        // Overwrite the stale lease outright (the holder is presumed unresponsive),
+        // then pull the latest we have. force-acquire goes through the hub directly
+        // (the reviewed lease-client has no force method — see main.ts wiring).
+        await deps.forceAcquire(sessionId);
+        await Promise.resolve(deps.syncNow()).catch(() => {});
+        try { await deps.materializeOne(sessionId); } catch { /* best-effort */ }
+        return { ok: true };
+      } catch { return { ok: false }; }
+    },
+  };
+}

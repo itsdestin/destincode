@@ -825,6 +825,11 @@ export const IPC = {
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
   SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
+  // Conversation-lease takeover (Plan 2b Task 9). query = who holds this session;
+  // takeover = ask-hand-off-then-poll-and-acquire; force = overwrite a stale lease.
+  SYNC_SPACES_LEASE_QUERY: 'syncspaces:lease-query',
+  SYNC_SPACES_LEASE_TAKEOVER: 'syncspaces:lease-takeover',
+  SYNC_SPACES_LEASE_FORCE: 'syncspaces:lease-force',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',

@@ -19,6 +19,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
   fable: 'Fable',
 };
 import ErrorBoundary from './components/ErrorBoundary';
+import { Scrim, OverlayPanel } from './components/overlays/Overlay';
 import GamePanel from './components/game/GamePanel';
 import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
@@ -191,6 +192,25 @@ function AppInner() {
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
   const [resumeInfo, setResumeInfo] = useState<Map<string, { claudeSessionId: string; projectSlug: string }>>(new Map());
   const [resumeRequested, setResumeRequested] = useState(false);
+  // Conversation-lease takeover dialog (Plan 2b Task 9). When resuming a
+  // conversation held live on another device, we ask before yanking it here.
+  // The resume flow AWAITS the user's choice via a promise resolved by the
+  // dialog buttons (takeoverResolveRef), so handleResumeSession stays one linear
+  // async function instead of splitting across callbacks. phase 'confirm' is the
+  // first ask; 'force' is the "holder isn't responding — take over anyway?" ask.
+  const [takeoverPrompt, setTakeoverPrompt] = useState<{ device: string; phase: 'confirm' | 'force' } | null>(null);
+  const takeoverResolveRef = useRef<((choice: boolean) => void) | null>(null);
+  const askTakeover = useCallback((device: string, phase: 'confirm' | 'force') =>
+    new Promise<boolean>((resolve) => {
+      takeoverResolveRef.current = resolve;
+      setTakeoverPrompt({ device, phase });
+    }), []);
+  const resolveTakeover = useCallback((choice: boolean) => {
+    setTakeoverPrompt(null);
+    const r = takeoverResolveRef.current;
+    takeoverResolveRef.current = null;
+    r?.(choice);
+  }, []);
   // Shown when the user closes an active session — offers to mark it complete
   // in one step so it's hidden from the resume menu by default.
   const [closePromptFor, setClosePromptFor] = useState<string | null>(null);
@@ -1856,6 +1876,34 @@ function AppInner() {
   const handleResumeSession = useCallback(async (claudeSessionId: string, projectSlug: string, projectPath: string, resumeModel?: string, resumeDangerous?: boolean, launchInNewWindow?: boolean, provider?: string) => {
     const cwd = projectPath;
 
+    // Plan 2b Task 9 — conversation-lease takeover gate. Before resuming, ask the
+    // hub whether this conversation is actively held on another device. If so,
+    // offer to take over here (the holder hands off), falling back to a
+    // force-takeover if the holder doesn't respond. NEVER hard-blocks the resume:
+    // any lease error just proceeds (spec §3 never-block).
+    //
+    // Self-device decision: we can't cheaply get THIS device's hostname in the
+    // renderer, so we gate the dialog on "a lease exists at all" (q.held) rather
+    // than comparing q.device to self. If the lease turns out to be OUR OWN, the
+    // main-side takeover flow (which DOES know selfDevice) sees held===self, treats
+    // it as free, and returns 'acquired' fast with no real handoff — so offering
+    // takeover on a self-held lease is harmless.
+    try {
+      const q = await window.claude.syncSpaces?.leaseQuery?.(claudeSessionId);
+      if (q?.held) {
+        const device = q.device || 'another device';
+        const confirmed = await askTakeover(device, 'confirm');
+        if (!confirmed) return; // "Never mind" — abort the resume
+        const r = await window.claude.syncSpaces?.leaseTakeover?.(claudeSessionId);
+        if (r?.outcome === 'timeout') {
+          const forced = await askTakeover(device, 'force');
+          if (!forced) return; // "Never mind" — abort
+          await window.claude.syncSpaces?.leaseForce?.(claudeSessionId);
+        }
+        // 'acquired' or 'error' -> fall through and resume (never-block).
+      }
+    } catch { /* never-block: a lease query/takeover failure must not stop the resume */ }
+
     // Native-harness resume: the model binding lives in the session's stored
     // header, so we send NO binding — SessionManager's native branch tolerates a
     // missing binding when resumeSessionId is set (it only throws for a FRESH
@@ -1915,7 +1963,7 @@ function AppInner() {
     } catch (err) {
       console.error('Failed to load history:', err);
     }
-  }, [dispatch, currentModel]);
+  }, [dispatch, currentModel, askTakeover]);
 
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
 
@@ -2753,6 +2801,44 @@ function AppInner() {
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-panel border border-edge text-sm text-fg shadow-lg">
           {toast}
         </div>
+      )}
+      {/* Plan 2b Task 9 — conversation-lease takeover confirm dialog. L2 popup via
+          the shared Scrim/OverlayPanel primitives (theme-driven scrim/blur/shadow;
+          PITFALLS → Overlays). Plain words, no status glyphs. 'confirm' asks to
+          take a live session over; 'force' asks after the holder didn't respond. */}
+      {takeoverPrompt && (
+        <>
+          <Scrim layer={2} onClick={() => resolveTakeover(false)} />
+          <OverlayPanel
+            layer={2}
+            role="dialog"
+            aria-modal
+            aria-label="Take over conversation"
+            className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(92vw,26rem)] p-5"
+          >
+            <p className="text-sm text-fg mb-4">
+              {takeoverPrompt.phase === 'confirm'
+                ? `This session is active on ${takeoverPrompt.device} — take over here?`
+                : `${takeoverPrompt.device} isn't responding — take over anyway?`}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg border border-edge text-sm text-fg-2 hover:bg-inset"
+                onClick={() => resolveTakeover(false)}
+              >
+                Never mind
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg bg-accent text-on-accent text-sm hover:opacity-90"
+                onClick={() => resolveTakeover(true)}
+              >
+                Take over
+              </button>
+            </div>
+          </OverlayPanel>
+        </>
       )}
       <ZoomOverlay
         zoomPercent={zoomPercent}

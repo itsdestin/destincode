@@ -18,17 +18,21 @@ import { FirstRunManager } from './first-run';
 import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
-import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore, hubLeaseRequest, setSyncSpacesLeaseEventListener, getManagedRoots } from './sync-spaces/service';
+import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore, hubLeaseRequest, setSyncSpacesLeaseEventListener, getManagedRoots, syncSpacesSyncNow } from './sync-spaces/service';
 // Plan 2b Task 8: conversation-lease lifecycle. The lease client coordinates
 // which device "holds" a conversation so two devices don't append to the same
 // transcript. Constructed in the main process (needs userData-scoped device id).
 import { getDeviceIdentity } from './device-identity';
 import { createLeaseClient, type LeaseClient } from './conversations/lease-client';
+// Plan 2b Task 9: the requester-side takeover flow (ask-hand-off, poll, pull,
+// acquire). Built here where deviceId + hubLeaseRequest + materializeOne +
+// syncSpacesSyncNow are all reachable, then passed to registerIpcHandlers.
+import { createRequesterTakeover } from './conversations/takeover';
 import { upsertSelf } from './sync-spaces/device-registry';
 // Conversation Store (Phase 2a): records + transcript sync ride the personal
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
-import { startConversationStore, stopConversationStore } from './conversations/service';
+import { startConversationStore, stopConversationStore, materializeOne } from './conversations/service';
 import { startTagRegistry } from './conversations/tag-registry-service';
 import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
@@ -631,8 +635,22 @@ function createWindow(firstRunManager?: FirstRunManager) {
     onTakeoverRequest: (sid, from) => holderTakeoverRef.fn(sid, from),
   });
 
+  // Plan 2b Task 9: build the requester-side takeover flow. It reuses the SAME
+  // lease client (takeover/query/acquire), nudges a personal-space sync, pulls the
+  // peer's final turn via materializeOne, and force-acquires through the hub
+  // directly (the reviewed lease client has no force method). selfDevice matches
+  // the lease client's deviceName so a lease held by US counts as free.
+  const requester = createRequesterTakeover({
+    leaseClient,
+    syncNow: () => syncSpacesSyncNow('personal'),
+    materializeOne: (id) => materializeOne(id),
+    forceAcquire: (id) => hubLeaseRequest('force-acquire', id, deviceIdentity!.id),
+    delay: (ms) => new Promise((r) => setTimeout(r, ms)),
+    selfDevice: os.hostname(),
+  });
+
   cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
-    { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; } });
+    { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester });
 
   if (firstRunManager) {
     registerFirstRunIpc(mainWindow, firstRunManager);

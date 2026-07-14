@@ -252,15 +252,22 @@ export function noteSessionEnded(claudeSessionId: string): void {
   sessions.delete(claudeSessionId); // release the materialize guard FIRST — even if the rest bails
   if (!store) return;
   // The targeted materialize is gated on the local transcript being quiescent
-  // (CC may still be flushing) and never full-scans — see materializeEndedSession.
-  void materializeEndedSession(claudeSessionId, ctx?.cwd).catch(() => { /* never reject in main */ });
+  // (CC may still be flushing) and never full-scans — see materializeOne.
+  void materializeOne(claudeSessionId, ctx?.cwd).catch(() => { /* never reject in main */ });
 }
 
-// Targeted equivalent of materializeSweep for ONE just-ended session: resolve its
-// local project, wait for the local transcript to go quiescent, then pull a
-// larger peer version over it (grow-only, same as the sweep). Isolated so an
-// ended session applies a peer edit without waiting for the 30-min reconcile tick.
-async function materializeEndedSession(id: string, cwd?: string): Promise<void> {
+// Targeted equivalent of materializeSweep for ONE session: resolve its local
+// project, wait for the local transcript to go quiescent, then pull a larger peer
+// version over it (grow-only, same as the sweep). Isolated so an ended session
+// applies a peer edit without waiting for the 30-min reconcile tick.
+//
+// Plan 2b Task 9: EXPORTED and renamed from materializeEndedSession because the
+// REQUESTER-side takeover flow reuses it — after a holder releases a lease, the
+// requester pulls the peer's final turn into the local CC transcript with this.
+// For the requester there's no live local session (sessions.has(id) is false and
+// the local file is stale/absent), so it quiesces immediately; cwd is undefined
+// so it resolves the project via resolveLocalProject.
+export async function materializeOne(id: string, cwd?: string): Promise<void> {
   const s = store; if (!s) return;
   let rec; try { rec = await s.get('claude', id); } catch { return; }
   if (!rec?.transcriptRef) return;

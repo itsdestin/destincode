@@ -1108,6 +1108,14 @@ export function installShim(): void {
       renameProject: (name: string, displayName: string) =>
         invoke('syncspaces:rename-project', { name, displayName }),
       stopProject: (name: string) => invoke('syncspaces:stop-project', { name }),
+      // Conversation-lease takeover (Plan 2b Task 9). Same shape as preload for
+      // parity (PITFALLS rule) so a remote browser doesn't crash when the resume
+      // dialog calls leaseQuery. Remote-server routing lands in Task 11 — until
+      // then these reject/time out and the renderer resume gate degrades (proceeds
+      // with the resume, never hard-blocks — spec §3 never-block).
+      leaseQuery: (claudeSessionId: string) => invoke('syncspaces:lease-query', { claudeSessionId }),
+      leaseTakeover: (claudeSessionId: string) => invoke('syncspaces:lease-takeover', { claudeSessionId }),
+      leaseForce: (claudeSessionId: string) => invoke('syncspaces:lease-force', { claudeSessionId }),
       onEvent: (cb: (e: unknown) => void) => {
         const handler: Callback = (e: any) => cb(e);
         addListener('syncspaces:event', handler);

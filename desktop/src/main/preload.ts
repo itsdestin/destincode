@@ -181,6 +181,10 @@ const IPC = {
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
   SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
+  // Conversation-lease takeover (Plan 2b Task 9) — inlined literals (preload can't import).
+  SYNC_SPACES_LEASE_QUERY: 'syncspaces:lease-query',
+  SYNC_SPACES_LEASE_TAKEOVER: 'syncspaces:lease-takeover',
+  SYNC_SPACES_LEASE_FORCE: 'syncspaces:lease-force',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Restore from backup (directional pull — see restore-service.ts)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
@@ -802,6 +806,15 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_PROJECT, { name, displayName }),
     stopProject: (name: string) =>
       ipcRenderer.invoke(IPC.SYNC_SPACES_STOP_PROJECT, { name }),
+    // Conversation-lease takeover (Plan 2b Task 9). The Resume Browser calls
+    // leaseQuery before resuming a store-backed row; if held elsewhere it offers
+    // leaseTakeover (ask-hand-off), falling back to leaseForce on timeout.
+    leaseQuery: (claudeSessionId: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_QUERY, { claudeSessionId }),
+    leaseTakeover: (claudeSessionId: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_TAKEOVER, { claudeSessionId }),
+    leaseForce: (claudeSessionId: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_LEASE_FORCE, { claudeSessionId }),
     // Returns an unsubscribe function — callers MUST invoke it on unmount to
     // avoid leaking listeners across mounts (matches restore.onProgress above).
     onEvent: (cb: (e: unknown) => void) => {

@@ -290,6 +290,14 @@ declare global {
         // Cross-device rename (display-name only) + stop-syncing (2026-07-12).
         renameProject?: (name: string, displayName: string) => Promise<{ ok: boolean; error?: string }>;
         stopProject?: (name: string) => Promise<{ ok: boolean; error?: string }>;
+        // Conversation-lease takeover (Plan 2b Task 9). Optional so remote/Android
+        // builds predating these members still typecheck; the Resume Browser gate
+        // guards every call. leaseQuery answers who holds the session; leaseTakeover
+        // asks the holder to hand off then polls+acquires; leaseForce overwrites a
+        // stale lease when the holder is unresponsive.
+        leaseQuery?: (claudeSessionId: string) => Promise<{ held: boolean; device?: string; source?: string }>;
+        leaseTakeover?: (claudeSessionId: string) => Promise<{ outcome: 'acquired' | 'timeout' | 'error' }>;
+        leaseForce?: (claudeSessionId: string) => Promise<{ ok: boolean }>;
         onEvent: (cb: (e: unknown) => void) => () => void;
       };
     };
