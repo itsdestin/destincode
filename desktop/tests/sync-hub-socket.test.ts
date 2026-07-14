@@ -297,4 +297,139 @@ describe('sync-hub-socket state machine', () => {
     expect(inst.sent).toEqual([]); // no leaked ping timer
     sock.destroy();
   });
+
+  // ---- Task 5: lease request/response frames + request correlation ----
+
+  // Helper: pull the reqId the client generated out of the frame it sent, so the
+  // test can echo back a matching lease-result (the client owns the reqId).
+  function sentReqId(inst: FakeSocket): string {
+    const last = JSON.parse(inst.sent[inst.sent.length - 1]);
+    return last.reqId;
+  }
+
+  // Lease 1: request() on an OPEN socket sends a {type:'lease',...} frame and
+  // resolves the matching lease-result (by reqId) with the holder mapped.
+  it('request sends a lease frame and resolves the matching lease-result by reqId', async () => {
+    const { sock } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+
+    const p = sock.request('acquire', 'sess-1', 'dev-1');
+    const frame = JSON.parse(inst.sent[inst.sent.length - 1]);
+    expect(frame).toMatchObject({ type: 'lease', op: 'acquire', sessionId: 'sess-1', deviceId: 'dev-1' });
+    expect(typeof frame.reqId).toBe('string');
+
+    const holder = { deviceId: 'dev-2', device: 'Other', expiresAt: 999 };
+    inst.emit('message', JSON.stringify({
+      type: 'lease-result', reqId: frame.reqId, op: 'acquire', sessionId: 'sess-1', ok: true, holder,
+    }));
+    await expect(p).resolves.toEqual({ ok: true, op: 'acquire', sessionId: 'sess-1', holder });
+    sock.destroy();
+  });
+
+  // Lease 2: a lease-result whose reqId does NOT match must not resolve the
+  // pending request. The correct reqId (or the 5s timeout) still resolves it.
+  it('does not resolve a request on a mismatched reqId', async () => {
+    const { sock } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+
+    const p = sock.request('acquire', 'sess-1', 'dev-1');
+    let settled: unknown = 'PENDING';
+    void p.then((v) => { settled = v; });
+
+    // Wrong reqId → ignored, promise still pending.
+    inst.emit('message', JSON.stringify({ type: 'lease-result', reqId: 'r-nope', op: 'acquire', sessionId: 'sess-1', ok: true, holder: null }));
+    await Promise.resolve();
+    expect(settled).toBe('PENDING');
+
+    // Correct reqId → resolves.
+    const reqId = sentReqId(inst);
+    inst.emit('message', JSON.stringify({ type: 'lease-result', reqId, op: 'acquire', sessionId: 'sess-1', ok: false, holder: null }));
+    await Promise.resolve();
+    expect(settled).toEqual({ ok: false, op: 'acquire', sessionId: 'sess-1', holder: null });
+    sock.destroy();
+  });
+
+  // Lease 3: a request with no matching response times out to null after 5s.
+  it('request times out to null after 5s', async () => {
+    const { sock } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+
+    const p = sock.request('acquire', 'sess-1', 'dev-1');
+    vi.advanceTimersByTime(5_000);
+    await expect(p).resolves.toBeNull();
+    sock.destroy();
+  });
+
+  // Lease 4: request() resolves null immediately (never-block) when not connected.
+  it('request resolves null immediately when not connected', async () => {
+    const { sock } = makeSocket(() => 'tok');
+    // No socket at all.
+    await expect(sock.request('acquire', 'sess-1', 'dev-1')).resolves.toBeNull();
+
+    // Connecting (not OPEN yet) → still null, no frame sent.
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    await expect(sock.request('acquire', 'sess-1', 'dev-1')).resolves.toBeNull();
+    expect(inst.sent).toEqual([]);
+    sock.destroy();
+  });
+
+  // Lease 5a: a pending request is resolved to null when the socket goes down
+  // (unexpected close → handleDown → failAllPending). A stranded request must
+  // never hang across a reconnect.
+  it('resolves a pending request to null when the socket goes down', async () => {
+    const { sock } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+
+    const p = sock.request('acquire', 'sess-1', 'dev-1');
+    inst.emit('close', 1006, 'blip'); // drives handleDown → failAllPending
+    await expect(p).resolves.toBeNull();
+    sock.destroy();
+  });
+
+  // Lease 5b: intentional teardown (setDesired(false)) also fails pending requests.
+  it('resolves a pending request to null on setDesired(false)', async () => {
+    const { sock } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+
+    const p = sock.request('acquire', 'sess-1', 'dev-1');
+    sock.setDesired(false); // intentional teardown → failAllPending
+    await expect(p).resolves.toBeNull();
+    sock.destroy();
+  });
+
+  // Lease 6: lease-event frames emit as SyncHubEvents (unsolicited server pushes,
+  // not tied to a reqId).
+  it('emits lease-event frames as onEvent lease-event', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+
+    inst.emit('message', JSON.stringify({ type: 'lease-event', kind: 'released', sessionId: 's', device: 'D' }));
+    expect(events[events.length - 1]).toEqual({ type: 'lease-event', kind: 'released', sessionId: 's', device: 'D' });
+
+    inst.emit('message', JSON.stringify({
+      type: 'lease-event', kind: 'takeover-request', sessionId: 's2', from: { deviceId: 'dev-2', device: 'Other' },
+    }));
+    expect(events[events.length - 1]).toEqual({
+      type: 'lease-event', kind: 'takeover-request', sessionId: 's2', from: { deviceId: 'dev-2', device: 'Other' },
+    });
+
+    // Malformed lease-event (missing sessionId) emits nothing.
+    const before = events.length;
+    inst.emit('message', JSON.stringify({ type: 'lease-event', kind: 'released' }));
+    expect(events.length).toBe(before);
+    sock.destroy();
+  });
 });
