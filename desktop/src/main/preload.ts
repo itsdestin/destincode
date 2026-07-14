@@ -407,12 +407,13 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on(IPC.SESSION_RENAMED, handler);
       return handler;
     },
-    // Plan 2b Task 10 — another device took over this session's lease. Payload
-    // is { sessionId, device? }; App.tsx dispatches SESSION_MOVED to drop the
-    // "this conversation moved to <device>" marker. Returns the raw handler so
+    // Plan 2b — another device took over this session's lease. Payload carries
+    // the desktop sessionId + the new holder's device label, PLUS the resume
+    // params (claudeSessionId / projectSlug / projectPath) so App.tsx's MovedGate
+    // can offer "Resume on this device" directly. Returns the raw handler so
     // callers unsubscribe via off('session:moved', handler) — mirrors
     // sessionRenamed and stays parity with remote-shim.
-    sessionMoved: (cb: (payload: { sessionId: string; device?: string }) => void) => {
+    sessionMoved: (cb: (payload: { sessionId: string; device?: string; claudeSessionId?: string; projectSlug?: string; projectPath?: string }) => void) => {
       const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
       ipcRenderer.on(IPC.SESSION_MOVED, handler);
       return handler;

@@ -68,7 +68,7 @@ import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { PROJECT_IPC } from './project/ipc-channels';
-import { listProjectConversations, projectConversationHistory } from './project-conversations';
+import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
 // Conversation Store (Phase 2a): live intake of transcript activity, session
 // cwd, title and flag changes. Keyed by CLAUDE session id (resolved from the
 // desktop id via sessionIdMap below), matching the store's record id.
@@ -1785,7 +1785,17 @@ export function registerIpcHandlers(
   // in scope for the dual-path renderer + remote push.
   if (leaseWiring) {
     const pushMoved = (desktopId: string, device?: string) => {
-      const payload = { sessionId: desktopId, device };
+      // Enrich the push so the renderer's MovedGate can offer "Resume on this
+      // device" without a second lookup. At push time (step 7) the holder session
+      // still exists — destroy is step 8 — so both the claude id and the live
+      // session's cwd are available. projectSlug mirrors how the Resume Browser
+      // derives it (ccProjectSlug of the cwd) so handleResumeSession's history
+      // load + resumeInfo land on the right CC project dir.
+      const claudeSessionId = sessionIdMap.get(desktopId);
+      const info = sessionManager.getSession(desktopId);
+      const projectPath = info?.cwd;
+      const projectSlug = projectPath ? ccProjectSlug(projectPath) : undefined;
+      const payload = { sessionId: desktopId, device, claudeSessionId, projectSlug, projectPath };
       sendForSession(desktopId, IPC.SESSION_MOVED, payload);          // owning renderer window
       remoteServer?.broadcast({ type: IPC.SESSION_MOVED, payload }); // remote clients
     };

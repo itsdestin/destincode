@@ -214,9 +214,10 @@ function handleMessage(data: string): void {
       dispatchEvent('session:renamed', payload.sessionId, payload.name);
       break;
     case 'session:moved':
-      // Plan 2b Task 10 — another device took over this session's lease.
-      // Forward the whole { sessionId, device? } payload so App.tsx can drop
-      // the "this conversation moved to <device>" marker (parity with preload).
+      // Plan 2b — another device took over this session's lease. Forward the
+      // whole payload ({ sessionId, device?, claudeSessionId?, projectSlug?,
+      // projectPath? }) so App.tsx's MovedGate can show it and offer Resume
+      // (parity with preload's enriched sessionMoved).
       dispatchEvent('session:moved', payload);
       break;
     case 'session:meta-changed':
