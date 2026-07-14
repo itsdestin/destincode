@@ -25,15 +25,6 @@ function nextTurnId(): string {
   return `turn-${++turnCounter}`;
 }
 
-let markerCounter = 0;
-// Stable, unique id for system-marker timeline entries generated inside the
-// reducer (e.g. SESSION_MOVED). Most markers carry an id from the action
-// (CLEAR_TIMELINE / COMPACTION_COMPLETE), but the moved marker's push event
-// doesn't include one — mirror the counter idiom used for messages/turns.
-function nextMarkerId(): string {
-  return `marker-${++markerCounter}`;
-}
-
 /**
  * Key-order-independent JSON serialization, used to compare a permission
  * hook's `tool_input` against a transcript tool's `input`. The two arrive
@@ -420,33 +411,21 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
-    // Plan 2b Task 10: another device took over this session's lease. End the
-    // local turn cleanly (endTurn resets attentionState to 'ok' — the moved
-    // marker is the signal, NOT a terminal error banner) and append a permanent
-    // "moved" divider. Same spread-then-override shape as SESSION_PROCESS_EXITED,
-    // except we override the TIMELINE (which endTurn never touches) instead of
-    // attentionState — so the appended marker survives the endTurn spread.
+    // Plan 2b: another device took over this session's lease. See the inline
+    // comment below — as of the "Moved Gate" follow-up this only ends the turn
+    // cleanly; the user-facing surface moved to App.tsx's MovedGate.
     case 'SESSION_MOVED': {
       const session = next.get(action.sessionId);
       if (!session) return state;
-      next.set(action.sessionId, {
-        ...session,
-        ...endTurn(session),
-        timeline: [
-          ...session.timeline,
-          {
-            kind: 'system-marker',
-            marker: {
-              id: nextMarkerId(),
-              timestamp: Date.now(),
-              // No summary → SystemMarker renders it as a plain (non-expandable)
-              // divider. Falls back to a generic label when no device is known.
-              label: `This conversation moved to ${action.device ?? 'another device'}`,
-              variant: 'moved',
-            },
-          },
-        ],
-      });
+      // Plan 2b "Moved Gate" (2026-07-14): SESSION_MOVED now ONLY ends the
+      // in-flight turn cleanly (endTurn — attention resets to 'ok', NOT a
+      // terminal error). It NO LONGER appends a timeline marker: the holder side
+      // destroys the session immediately after (SESSION_REMOVE wipes the whole
+      // chat state, so any appended marker was deleted back-to-back and never
+      // rendered). The user-facing "this session was taken over on <device>"
+      // surface is now App.tsx's MovedGate (a full-page gate over the session),
+      // driven off the enriched session:moved push — not this reducer.
+      next.set(action.sessionId, { ...session, ...endTurn(session) });
       return next;
     }
 

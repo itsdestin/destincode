@@ -2,10 +2,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { chatReducer } from '../src/renderer/state/chat-reducer';
 import { ChatState, ChatAction } from '../src/renderer/state/chat-types';
 
-// Plan 2b Task 10 — SESSION_MOVED ("this conversation moved to <device>") banner.
-// When another device takes over a session lease, the holder side ends the local
-// turn cleanly and drops a permanent "moved" system marker into the timeline so
-// the user understands why chat activity stopped here.
+// Plan 2b SESSION_MOVED — another device took over this session's lease.
+//
+// As of the "Moved Gate" follow-up (2026-07-14) SESSION_MOVED ONLY ends the
+// in-flight turn cleanly (endTurn); it NO LONGER appends a timeline marker. The
+// holder destroys the session immediately after, so any appended marker would be
+// wiped by SESSION_REMOVE back-to-back and never render. The user-facing
+// "this session was taken over on <device>" surface is App.tsx's MovedGate, not
+// the timeline. These tests pin that endTurn still runs and NO marker is added.
 
 const SESSION = 'test-session';
 
@@ -25,7 +29,7 @@ describe('SESSION_MOVED reducer action', () => {
     state = initState();
   });
 
-  it('mid-turn: clears isThinking, fails running tools with "Turn ended", appends a moved marker', () => {
+  it('mid-turn: clears isThinking, fails running tools with "Turn ended", appends NO marker', () => {
     // Start a turn + emit a tool so there is in-flight state to tear down.
     state = dispatch(state, {
       type: 'TRANSCRIPT_USER_MESSAGE',
@@ -45,6 +49,8 @@ describe('SESSION_MOVED reducer action', () => {
     expect(state.get(SESSION)!.isThinking).toBe(true);
     expect(state.get(SESSION)!.toolCalls.get('tool-1')!.status).toBe('running');
 
+    const timelineLenBefore = state.get(SESSION)!.timeline.length;
+
     state = dispatch(state, {
       type: 'SESSION_MOVED',
       sessionId: SESSION,
@@ -60,17 +66,14 @@ describe('SESSION_MOVED reducer action', () => {
     // Attention resets to 'ok' — this is a clean turn end, NOT a terminal error state.
     expect(session.attentionState).toBe('ok');
 
-    // A moved system marker was appended, carrying the device name.
+    // NO system marker is appended (the Moved Gate is the surface now) and the
+    // timeline length is otherwise unchanged.
     const markers = session.timeline.filter((e) => e.kind === 'system-marker');
-    expect(markers.length).toBe(1);
-    const marker = (markers[0] as { kind: 'system-marker'; marker: any }).marker;
-    expect(marker.variant).toBe('moved');
-    expect(marker.label).toContain('MacBook Pro');
-    // Not expandable — no summary.
-    expect(marker.summary).toBeUndefined();
+    expect(markers.length).toBe(0);
+    expect(session.timeline.length).toBe(timelineLenBefore);
   });
 
-  it('idle: appends only the marker, no spurious tool changes', () => {
+  it('idle: no marker, no spurious tool changes', () => {
     const before = state.get(SESSION)!;
     expect(before.isThinking).toBe(false);
     expect(before.timeline.length).toBe(0);
@@ -85,23 +88,7 @@ describe('SESSION_MOVED reducer action', () => {
     expect(session.toolCalls.size).toBe(0);
     expect(session.isThinking).toBe(false);
     const markers = session.timeline.filter((e) => e.kind === 'system-marker');
-    expect(markers.length).toBe(1);
-    const marker = (markers[0] as { kind: 'system-marker'; marker: any }).marker;
-    expect(marker.variant).toBe('moved');
-    expect(marker.label).toContain('Linux Desktop');
-  });
-
-  it('missing device: falls back to a generic "another device" label', () => {
-    state = dispatch(state, {
-      type: 'SESSION_MOVED',
-      sessionId: SESSION,
-    });
-    const session = state.get(SESSION)!;
-    const markers = session.timeline.filter((e) => e.kind === 'system-marker');
-    expect(markers.length).toBe(1);
-    const marker = (markers[0] as { kind: 'system-marker'; marker: any }).marker;
-    expect(marker.variant).toBe('moved');
-    expect(marker.label).toContain('another device');
+    expect(markers.length).toBe(0);
   });
 
   it('unknown sessionId: returns state unchanged (no throw)', () => {
