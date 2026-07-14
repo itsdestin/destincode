@@ -8,7 +8,7 @@ import os from 'os';
 import path from 'path';
 import {
   readDevices, upsertSelf, renameDevice,
-  mergeDeviceEntries, DEVICE_REGISTRY_SCHEMA, type DeviceRecord,
+  mergeDeviceEntries, foldDeviceEntries, DEVICE_REGISTRY_SCHEMA, type DeviceRecord,
 } from '../src/main/sync-spaces/device-registry';
 
 let personal: string;
@@ -101,6 +101,20 @@ describe('device registry store — I/O', () => {
     write('future.json', { schemaVersion: 999, id: 'future', name: 'x', platform: 'p', lastSeen: 1, updatedAt: 1 });
     expect(readDevices(personal).map((e) => e.id).sort()).toEqual(['dev-1']);
   });
+
+  it('skips a file whose name does not match its content id (filename↔id guard)', () => {
+    // File is named dev-1.json but its parsed content id is dev-2 — a mangled /
+    // mislabeled file that must NOT fold into either device.
+    write('dev-1.json', E({ id: 'dev-2', name: 'Mislabeled' }));
+    expect(readDevices(personal)).toEqual([]);
+  });
+
+  it('renameDevice to an empty name is refused — stored name unchanged', async () => {
+    write('dev-1.json', E({ name: 'Keep Me', updatedAt: 5 }));
+    await renameDevice(personal, 'dev-1', '   '); // whitespace-only → refused
+    const got = readDevices(personal)[0];
+    expect(got.name).toBe('Keep Me'); // empty names are rejected on read, so we never write one
+  });
 });
 
 describe('device registry store — pure merge', () => {
@@ -113,5 +127,32 @@ describe('device registry store — pure merge', () => {
     expect(ab.name).toBe('B');       // updatedAt 9 wins
     expect(ab.lastSeen).toBe(100);   // max
     expect(ab.updatedAt).toBe(9);    // max
+  });
+
+  it('mergeDeviceEntries is commutative through the equal-updatedAt content tiebreak', () => {
+    // Same updatedAt, different name/platform: laterOf falls back to the JSON
+    // content comparison, which must pick the SAME winner regardless of arg order.
+    const a = E({ name: 'Alpha', platform: 'linux', updatedAt: 7 });
+    const b = E({ name: 'Beta', platform: 'darwin', updatedAt: 7 });
+    const ab = mergeDeviceEntries(a, b);
+    const ba = mergeDeviceEntries(b, a);
+    expect(ab).toEqual(ba);                 // deterministic tiebreak → convergent
+    expect(['Alpha', 'Beta']).toContain(ab.name);
+    // platform rides with the name-winner, so the winning pair stays consistent.
+    expect(ab.platform).toBe(ab.name === 'Alpha' ? 'linux' : 'darwin');
+  });
+
+  it('foldDeviceEntries is associative / order-independent across 3 copies', () => {
+    // Equal updatedAt forces the content tiebreak for name; lastSeen is a plain
+    // max. Any permutation of the same three copies must fold identically.
+    const a = E({ name: 'A', platform: 'win32', lastSeen: 10, updatedAt: 7 });
+    const b = E({ name: 'B', platform: 'linux', lastSeen: 30, updatedAt: 7 });
+    const c = E({ name: 'C', platform: 'darwin', lastSeen: 20, updatedAt: 7 });
+    const abc = foldDeviceEntries([a, b, c]);
+    const cba = foldDeviceEntries([c, b, a]);
+    const bca = foldDeviceEntries([b, c, a]);
+    expect(abc).toEqual(cba);
+    expect(abc).toEqual(bca);
+    expect(abc.lastSeen).toBe(30); // max across all three
   });
 });

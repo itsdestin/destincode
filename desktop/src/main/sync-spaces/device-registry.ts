@@ -182,6 +182,9 @@ export function upsertSelf(
  *  somehow absent. Skips the write when the name already matches (no churn). */
 export function renameDevice(personalRoot: string, id: string, name: string): Promise<void> {
   return mutateCanonical(personalRoot, id, (cur) => {
+    // Refuse an empty name: empty names are rejected on read (parseEntry requires
+    // a non-empty name), so writing one would silently disappear on the next read.
+    if (!name.trim()) return null;
     if (cur && cur.name === name) return null; // no change — skip
     const now = Date.now();
     return {
