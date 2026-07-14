@@ -1,0 +1,124 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import { ModelDownloader } from '../src/main/models/model-downloader';
+import type { DownloadProgress, QuantOption } from '../src/shared/model-manager-types';
+
+let dir: string;
+beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-')); });
+afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+const PART1 = Buffer.from('part-one-bytes');
+const PART2 = Buffer.from('part-two-bytes!!');
+const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
+
+/** Serves resolve URLs by trailing filename, honoring Range. */
+function fetchServing(bodies: Record<string, Buffer>): typeof fetch {
+  return (async (url: any, init?: any) => {
+    const name = decodeURIComponent(String(url).split('/').pop()!);
+    const buf = bodies[name];
+    if (!buf) return new Response(null, { status: 404 });
+    let start = 0;
+    const range = init?.headers?.Range as string | undefined;
+    if (range) start = Number(/bytes=(\d+)-/.exec(range)?.[1] ?? 0);
+    const body = buf.subarray(start);
+    return new Response(new Blob([body]).stream(), {
+      status: start > 0 ? 206 : 200,
+      headers: { 'content-length': String(body.length) },
+    });
+  }) as typeof fetch;
+}
+
+function quantOpt(withSha = true): QuantOption {
+  return {
+    quant: 'UD-Q4_K_XL', description: 'x',
+    files: ['sub/M-UD-Q4_K_XL-00001-of-00002.gguf', 'sub/M-UD-Q4_K_XL-00002-of-00002.gguf'],
+    totalSizeBytes: PART1.length + PART2.length,
+    sha256ByFile: {
+      'sub/M-UD-Q4_K_XL-00001-of-00002.gguf': withSha ? sha(PART1) : null,
+      'sub/M-UD-Q4_K_XL-00002-of-00002.gguf': withSha ? sha(PART2) : null,
+    },
+  };
+}
+const bodies = {
+  'M-UD-Q4_K_XL-00001-of-00002.gguf': PART1,
+  'M-UD-Q4_K_XL-00002-of-00002.gguf': PART2,
+};
+
+describe('ModelDownloader', () => {
+  it('downloads all parts FLAT into the cache dir (basenames), verifies sha256, reports done', async () => {
+    const dl = new ModelDownloader(dir, fetchServing(bodies));
+    const events: DownloadProgress[] = [];
+    const id = dl.start('unsloth/M-GGUF', quantOpt(), (p) => events.push(p));
+    await dl.wait(id);
+    // Flat basenames → cache-scan/router discovery sees them (Plan B convention).
+    expect(fs.readFileSync(path.join(dir, 'M-UD-Q4_K_XL-00001-of-00002.gguf'))).toEqual(PART1);
+    expect(fs.readFileSync(path.join(dir, 'M-UD-Q4_K_XL-00002-of-00002.gguf'))).toEqual(PART2);
+    const last = events[events.length - 1];
+    expect(last.state).toBe('done');
+    expect(last.receivedBytes).toBe(PART1.length + PART2.length);
+    expect(events.some((e) => e.state === 'verifying')).toBe(true);
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
+  });
+
+  it('resumes a part from its .partial file via Range', async () => {
+    fs.writeFileSync(path.join(dir, 'M-UD-Q4_K_XL-00001-of-00002.gguf.partial'), PART1.subarray(0, 5));
+    const fetchImpl = vi.fn(fetchServing(bodies));
+    const dl = new ModelDownloader(dir, fetchImpl as any);
+    const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
+    await dl.wait(id);
+    expect(fs.readFileSync(path.join(dir, 'M-UD-Q4_K_XL-00001-of-00002.gguf'))).toEqual(PART1);
+    const firstCall = fetchImpl.mock.calls.find((c) => String(c[0]).includes('00001'));
+    expect((firstCall![1] as any).headers.Range).toBe('bytes=5-');
+  });
+
+  it('sha256 mismatch → error state, bad file deleted, nothing published', async () => {
+    const bad = quantOpt();
+    bad.sha256ByFile['sub/M-UD-Q4_K_XL-00001-of-00002.gguf'] = '0'.repeat(64);
+    const dl = new ModelDownloader(dir, fetchServing(bodies));
+    const events: DownloadProgress[] = [];
+    const id = dl.start('unsloth/M-GGUF', bad, (p) => events.push(p));
+    await expect(dl.wait(id)).rejects.toThrow(/integrity/);
+    expect(events[events.length - 1].state).toBe('error');
+    expect(fs.existsSync(path.join(dir, 'M-UD-Q4_K_XL-00001-of-00002.gguf'))).toBe(false);
+  });
+
+  it('cancel: stops the stream, emits cancelled, KEEPS the .partial for resume', async () => {
+    // A fetch whose body streams 4 bytes every 20ms until the abort signal
+    // fires. The fake MUST honor init.signal (K3) — real fetch rejects the
+    // in-flight read on abort; without this the loop never breaks and the test
+    // hangs to timeout instead of asserting cancellation.
+    const fetchImpl = (async (_url: any, init?: any) => {
+      const signal: AbortSignal = init.signal;
+      return new Response(new ReadableStream({
+        pull(c) {
+          if (signal.aborted) { c.error(new DOMException('Aborted', 'AbortError')); return; }
+          c.enqueue(new Uint8Array(4));
+          return new Promise<void>((resolve, reject) => {
+            const t = setTimeout(resolve, 20);
+            signal.addEventListener('abort',
+              () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); },
+              { once: true });
+          });
+        },
+      }), { status: 200, headers: { 'content-length': '99999' } });
+    }) as any;
+    const dl = new ModelDownloader(dir, fetchImpl);
+    const events: DownloadProgress[] = [];
+    const id = dl.start('unsloth/M-GGUF', quantOpt(false), (p) => events.push(p));
+    await new Promise((r) => setTimeout(r, 60));
+    dl.cancel(id);
+    await expect(dl.wait(id)).rejects.toThrow(/cancel/i);
+    expect(events[events.length - 1].state).toBe('cancelled');
+    expect(fs.existsSync(path.join(dir, 'M-UD-Q4_K_XL-00001-of-00002.gguf.partial'))).toBe(true);
+  });
+
+  it('refuses a second concurrent download of the same repo+quant', async () => {
+    const dl = new ModelDownloader(dir, fetchServing(bodies));
+    const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
+    expect(() => dl.start('unsloth/M-GGUF', quantOpt(), () => {})).toThrow(/already/i);
+    await dl.wait(id);
+  });
+});

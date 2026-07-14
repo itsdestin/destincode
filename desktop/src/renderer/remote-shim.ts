@@ -294,6 +294,10 @@ function handleMessage(data: string): void {
     case 'engine:status-changed':
       dispatchEvent('engine:status-changed', payload);
       break;
+    case 'models:download-progress':
+      // WHY: models.onDownloadProgress subscribers listen on this channel.
+      dispatchEvent('models:download-progress', payload);
+      break;
     case 'system:back':
       // Android hardware back press → routed to useDismissTop via the
       // window.claude.system.onBack subscriber registered in App.tsx. No
@@ -1444,6 +1448,9 @@ export function installShim(): void {
       status: () => invoke('engine:status'),
       install: () => invoke('engine:install'),
       restart: () => invoke('engine:restart'),
+      // Plan C context-length knob. Object payload matches remote-server's
+      // WS case read (payload.contextSize).
+      setContext: (contextSize: number) => invoke('engine:set-context', { contextSize }),
       onInstallProgress: (cb: (p: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('engine:install-progress', handler);
@@ -1453,6 +1460,26 @@ export function installShim(): void {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('engine:status-changed', handler);
         return () => removeListener('engine:status-changed', handler);
+      },
+    },
+    // Model manager (Plan C) — WS transport. Positional-ish payloads match how
+    // remote-server.ts's WS cases read them (payload.query / payload.repo /
+    // payload.quant / payload.downloadId / payload.id / payload.backend). The
+    // server pushes models:download-progress via the WS dispatcher above.
+    models: {
+      curated: () => invoke('models:curated'),
+      search: (query: string) => invoke('models:search', { query }),
+      quants: (repo: string) => invoke('models:quants', { repo }),
+      download: (repo: string, quant: unknown) => invoke('models:download', { repo, quant }),
+      downloadCancel: (downloadId: string) => invoke('models:download-cancel', { downloadId }),
+      delete: (id: string) => invoke('models:delete', { id }),
+      installed: () => invoke('models:installed'),
+      detectEndpoints: () => invoke('endpoints:detect'),
+      setBackend: (backend: string) => invoke('engine:set-backend', { backend }),
+      onDownloadProgress: (cb: (p: unknown) => void) => {
+        const handler: Callback = (payload: any) => cb(payload);
+        addListener('models:download-progress', handler);
+        return () => removeListener('models:download-progress', handler);
       },
     },
   };

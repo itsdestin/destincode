@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
-import EngineCard from './EngineCard';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
 // test, enable/disable, and remove the model providers the NATIVE runtime binds
@@ -371,9 +370,11 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
         </p>
       )}
 
-      {/* Local engine install/status/restart controls live under the local
-          provider row (Plan B). Only this row carries them. */}
-      {isLocal && <EngineCard />}
+      {/* Local engine install/status/restart controls moved to the Local Models
+          section (Plan C) — the local row just points there now. */}
+      {isLocal && (
+        <p className="text-[10px] text-fg-muted mt-2">Managed in Local Models below.</p>
+      )}
     </div>
   );
 }

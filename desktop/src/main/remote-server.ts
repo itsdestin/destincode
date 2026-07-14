@@ -14,6 +14,8 @@ import type { NativeSessionHost } from './harness/native-session-host';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { EngineManager } from './engine/engine-manager';
+import type { ModelManager } from './models/model-manager';
+import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory } from './session-browser';
@@ -71,7 +73,9 @@ export class RemoteServer {
   // it constructs the instances (they can't be built at RemoteServer construction
   // time because they live in the ipc-handlers scope). Null until wired; the
   // native:* / provider:* WS cases no-op until then.
-  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager } | null = null;
+  // Merge note: nativeRuntime carries modelManager (Plan C) AND the leaseWiring
+  // field (Plan 2b) — both were added independently on master and this branch.
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager } | null = null;
   // Plan 2b Task 11: conversation-lease + device wiring, injected by ipc-handlers
   // via setLeaseWiring() AFTER main.ts builds the lease client/requester (they
   // live in the whenReady scope, not reachable at RemoteServer construction).
@@ -100,7 +104,7 @@ export class RemoteServer {
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
-  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager }): void {
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager }): void {
     this.nativeRuntime = rt;
   }
 
@@ -757,6 +761,104 @@ export class RemoteServer {
         try {
           if (this.nativeRuntime) await this.nativeRuntime.engineManager.restart();
           this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      // Model manager (Plan C). Every handler can throw (network, HF API, disk
+      // guard, bad input) so each responds an error object on throw — the remote
+      // client's request id resolves instead of hanging to timeout. Payloads are
+      // objects matching remote-shim's invoke() calls (payload.query / .repo /
+      // .quant / .downloadId / .id / .backend). download-progress is broadcast
+      // from ipc-handlers' emitter; no per-case push needed here.
+      case 'engine:set-backend': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.setBackend((payload.backend ?? payload) as any);
+          this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'engine:set-context': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.setContext((payload.contextSize ?? payload) as number);
+          this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:curated': {
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.modelManager.curatedList() : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:search': {
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.modelManager.search(payload.query ?? payload) : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:quants': {
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.modelManager.quants(payload.repo ?? payload) : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:download': {
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.modelManager.download(payload.repo, payload.quant) : null;
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:download-cancel': {
+        try {
+          this.nativeRuntime?.modelManager.cancel(payload.downloadId ?? payload);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:delete': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.deleteModel(payload.id ?? payload);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:installed': {
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.engineManager.installedModels() : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'endpoints:detect': {
+        try {
+          const res = this.nativeRuntime
+            ? await detectEndpoints(fetch, await this.nativeRuntime.providerRegistry.list())
+            : [];
+          this.respond(client.ws, type, id, res);
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
         }

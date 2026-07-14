@@ -750,3 +750,44 @@ describe('engine:* channel parity (Plan B)', () => {
     for (const ch of channels) expect(src).toContain(`"${ch}"`);
   });
 });
+
+// Self-contained like the engine:* describe (Amendment 2026-07-14 I): each test
+// reads its own source. ipc-handlers uses the IPC.* CONSTANTS, so its check
+// asserts the constant identifier — NOT the literal 'models:*' string, which
+// never appears there and would always fail. Task 9 EXTENDS this `channels`
+// array with ['engine:set-context','ENGINE_SET_CONTEXT'] when it wires the knob.
+describe('models:* + engine:set-* channel parity (Plan C)', () => {
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  const channels: Array<[string, string]> = [
+    ['engine:set-backend', 'ENGINE_SET_BACKEND'],
+    ['engine:set-context', 'ENGINE_SET_CONTEXT'],
+    ['models:curated', 'MODELS_CURATED'],
+    ['models:search', 'MODELS_SEARCH'],
+    ['models:quants', 'MODELS_QUANTS'],
+    ['models:download', 'MODELS_DOWNLOAD'],
+    ['models:download-cancel', 'MODELS_DOWNLOAD_CANCEL'],
+    ['models:delete', 'MODELS_DELETE'],
+    ['models:installed', 'MODELS_INSTALLED'],
+    ['endpoints:detect', 'ENDPOINTS_DETECT'],
+  ];
+  const pushChannels = ['models:download-progress'];
+
+  it('preload exposes every channel (request + push)', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const [ch] of channels) expect(src).toContain(`'${ch}'`);
+    for (const ch of pushChannels) expect(src).toContain(`'${ch}'`);
+  });
+  it('remote-shim exposes every channel (request + push)', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const [ch] of channels) expect(src).toContain(`'${ch}'`);
+    for (const ch of pushChannels) expect(src).toContain(`'${ch}'`);
+  });
+  it('ipc-handlers registers every request-response channel via its IPC.* constant', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const [, konst] of channels) expect(src).toContain(`IPC.${konst}`);
+  });
+  it('SessionService.kt stubs every request-response channel', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const [ch] of channels) expect(src).toContain(`"${ch}"`);
+  });
+});
