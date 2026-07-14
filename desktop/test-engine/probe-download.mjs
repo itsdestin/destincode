@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+// Probe: our downloader's flat-basename cache naming is served by the router,
+// for BOTH single-file AND MULTI-PART models (Amendment 2026-07-14 H). Downloads
+// a REAL tiny unsloth GGUF (~0.4GB) once, ALSO splits it with llama-gguf-split,
+// and asserts llama-server lists + serves both under the filename-derived ids
+// cache-scan.ts computes. The large-tier defaults (gpt-oss-120b, Qwen3.5-122B)
+// are multi-part and can't be validated on a 32GB machine — this deterministic
+// split is the ONLY cheap verification of that path. Re-run on engine pin bumps.
+// usage: node probe-download.mjs --binary <llama-server>
+import { spawn, spawnSync } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const argv = process.argv.slice(2);
+const binary = argv[argv.indexOf('--binary') + 1];
+if (!binary) { console.error('usage: probe-download.mjs --binary <llama-server>'); process.exit(1); }
+const here = path.dirname(fileURLToPath(import.meta.url));
+const cacheDir = path.join(here, 'cache');
+fs.mkdirSync(cacheDir, { recursive: true });
+
+const REPO = 'unsloth/Qwen3-0.6B-GGUF';
+const FILE = 'Qwen3-0.6B-Q4_K_M.gguf';
+const dest = path.join(cacheDir, FILE);
+if (!fs.existsSync(dest)) {
+  console.log(`downloading ${REPO}/${FILE} (~0.4GB, one-time)…`);
+  const res = await fetch(`https://huggingface.co/${REPO}/resolve/main/${FILE}`);
+  if (!res.ok) { console.error(`FAIL: HF download HTTP ${res.status}`); process.exit(1); }
+  fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+}
+
+// Split the single gguf into a flat multi-part set with the SIBLING
+// llama-gguf-split binary (same archive as llama-server). of-count can vary by
+// build/size, so we discover the actual 00001 part rather than hardcoding it.
+const splitBin = binary.replace(/llama-server(\.exe)?$/i, (_m, ext) => `llama-gguf-split${ext ?? ''}`);
+if (!fs.readdirSync(cacheDir).some((f) => /SPLIT-00001-of-\d{5}\.gguf$/.test(f))) {
+  for (const f of fs.readdirSync(cacheDir)) if (/SPLIT-\d{5}-of-\d{5}\.gguf$/.test(f)) fs.rmSync(path.join(cacheDir, f));
+  console.log('splitting into parts with llama-gguf-split…');
+  const sp = spawnSync(splitBin, ['--split', '--split-max-size', '250M', dest, path.join(cacheDir, 'Qwen3-0.6B-SPLIT')], { stdio: 'inherit' });
+  if (sp.status !== 0) { console.error('FAIL: llama-gguf-split exited nonzero'); process.exit(1); }
+}
+const firstPart = fs.readdirSync(cacheDir).find((f) => /SPLIT-00001-of-\d{5}\.gguf$/.test(f));
+if (!firstPart) { console.error('FAIL: split produced no 00001 part'); process.exit(1); }
+const expectedSingleId = FILE.replace(/\.gguf$/i, '');
+const expectedSplitId = firstPart.replace(/\.gguf$/i, '');  // == cache-scan's id for a split model
+
+const PORT = 9974;
+// The spawn MUST mirror engine-supervisor.ts — crucially `--models-dir <cacheDir>`.
+// Plan B verified (b9992) that the router discovers flat GGUFs from --models-dir,
+// NOT from LLAMA_CACHE (which only tracks -hf auto-downloads). WITHOUT it, /models
+// returns [] and this probe would FALSELY fail — do not "fix" the downloader in
+// response; the missing flag is the bug. See docs/engine-dependencies.md.
+const child = spawn(binary, ['--host', '127.0.0.1', '--port', String(PORT), '--no-webui', '--jinja', '--models-dir', cacheDir, '--models-max', '4', '-c', '4096'],
+  { env: { ...process.env, LLAMA_CACHE: cacheDir }, stdio: ['ignore', 'inherit', 'inherit'] });
+const deadline = Date.now() + 30_000;
+while (Date.now() < deadline) {
+  try { if ((await fetch(`http://127.0.0.1:${PORT}/health`)).ok) break; } catch {}
+  await new Promise((r) => setTimeout(r, 250));
+}
+const models = await (await fetch(`http://127.0.0.1:${PORT}/models`)).json();
+const ids = (models.data ?? models.models ?? models ?? []).map((m) => m.id ?? m.name);
+console.log('router ids:', ids);
+for (const [label, id] of [['single-file', expectedSingleId], ['multi-part', expectedSplitId]]) {
+  if (!ids.includes(id)) {
+    child.kill();
+    console.error(`FAIL: router does not serve the ${label} id '${id}' — flat-basename naming drifted; fix model-downloader/cache-scan + engine-dependencies.md`);
+    process.exit(1);
+  }
+}
+// Chat round-trip against the MULTI-PART model — proves a split model actually
+// LOADS + serves under its part-1 id, not merely lists.
+const chat = await fetch(`http://127.0.0.1:${PORT}/v1/chat/completions`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ model: expectedSplitId, messages: [{ role: 'user', content: 'Say: pong' }] }),
+});
+const out = await chat.json();
+child.kill();
+console.log('multi-part reply:', JSON.stringify(out.choices?.[0]?.message?.content ?? null));
+if (chat.status !== 200) { console.error('FAIL: multi-part chat round-trip'); process.exit(1); }
+console.log(`PASS: single-file ('${expectedSingleId}') AND multi-part ('${expectedSplitId}') GGUFs are discovered and served under their filename ids`);

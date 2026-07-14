@@ -114,15 +114,41 @@ Observed b9992 shape:
 - Windows unpack MUST use System32 `bsdtar` (reads both `.zip` and `.tar.gz`); a
   bare `tar` on PATH can resolve to Git's GNU tar, which cannot read `.zip`.
 
-### GGUF cache layout (cache-scan.ts, Plan C downloader)
+### GGUF cache layout + downloader naming contract (cache-scan.ts, Plan C model-downloader.ts)
 
 Flat `*.gguf` files in `--models-dir` (== the configured `cacheDir`). Multi-part
 split sets follow `<name>-00001-of-000NN.gguf`; the model is addressed through its
 first part and cache-scan sums the parts' sizes into one entry.
 
+- **Downloader flat-basename contract (Plan C):** `model-downloader.ts` writes each
+  HF file into the cache dir under its BASENAME (repo subfolders collapsed) — that
+  is exactly what `--models-dir` discovery + `cache-scan.ts`'s `ggufIdFromFileName`
+  read, so the router-served id == the downloaded filename minus `.gguf`. NEVER
+  rename downloaded files or change how split parts are named without re-running
+  `probe-download.mjs`.
+- **Multi-part router-id VERIFIED (Amendment H):** `probe-download.mjs` downloads a
+  real ~0.4 GB unsloth GGUF, ALSO splits it with the sibling `llama-gguf-split`
+  (same archive as `llama-server`), drops both flat in the cache, and asserts the
+  router LISTS + SERVES both the single-file id AND the `-00001-of-00002` split id,
+  with a real chat round-trip against the split model. This is the only cheap check
+  of the large-tier (gpt-oss-120b / Qwen3.5-122B) multi-part path, which can't be
+  downloaded on a 32 GB dev box. **PASS on b9992** (Windows x64 Vulkan,
+  `Qwen3-0.6B-Q4_K_M` single + `Qwen3-0.6B-SPLIT-00001-of-00002`), 2026-07-14 —
+  router discovered both ids from `--models-dir` and served the split model.
+- **Router hot-reload of `--models-dir` after boot — NOT yet verified live.** The
+  router discovers GGUFs at BOOT; whether a file downloaded AFTER boot appears in
+  `GET /models` (→ `catalogModels()` → the new-session picker's Local group)
+  without an engine restart is an open live-acceptance item (Amendment K2). The
+  Installed list (`scanGgufCache`) updates instantly regardless; the documented
+  mitigation is an engine restart (or a `scanGgufCache` fallback in the local
+  catalog source) after a download so a just-downloaded model is immediately
+  selectable. Resolve on Destin's dev machine during the Plan C live pass.
+
 ## Verification
 
 `desktop/test-engine/` holds dev-run smoke probes (spawn the real engine, assert
 health + `/models` parity + a streamed tool-less chat round-trip). Re-run all
-three on every engine bump — analogous to `test-conpty/` on a CC bump. All three
-PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
+three on every engine bump — analogous to `test-conpty/` on a CC bump. The
+original three PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
+`probe-download.mjs` (Plan C: flat-basename ↔ router-id for single AND multi-part)
+PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine bump.
