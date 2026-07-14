@@ -92,20 +92,45 @@ describe('lease-client', () => {
     expect(hubRequest).not.toHaveBeenCalledWith('renew', 's1', DEVICE_ID);
   });
 
-  it('query prefers the hub result', async () => {
+  it('query prefers the hub result (holder is another device -> self:false)', async () => {
     hubRequest.mockResolvedValue({ ok: true, op: 'get', sessionId: 's1', holder: { deviceId: 'dev-B', device: 'phone-B', expiresAt: Date.now() + 100 } });
     const r = await client.query('s1');
-    expect(r).toEqual({ held: true, device: 'phone-B', expiresAt: expect.any(Number), source: 'hub' });
+    // deviceId carried through; self false because holder deviceId !== our DEVICE_ID.
+    expect(r).toEqual({ held: true, device: 'phone-B', deviceId: 'dev-B', self: false, expiresAt: expect.any(Number), source: 'hub' });
   });
 
-  it('query falls back to an unexpired lease file when the hub returns null', async () => {
+  it('query hub result with OUR deviceId reports self:true (label is irrelevant)', async () => {
+    // Same-label collision guard: even if the holder label differs, self keys on
+    // the per-install deviceId. Here deviceId === DEVICE_ID -> self:true.
+    hubRequest.mockResolvedValue({ ok: true, op: 'get', sessionId: 's1', holder: { deviceId: DEVICE_ID, device: 'some-other-label', expiresAt: Date.now() + 100 } });
+    const r = await client.query('s1');
+    expect(r).toEqual({ held: true, device: 'some-other-label', deviceId: DEVICE_ID, self: true, expiresAt: expect.any(Number), source: 'hub' });
+  });
+
+  it('query hub free reports self:false', async () => {
+    hubRequest.mockResolvedValue({ ok: true, op: 'get', sessionId: 's1', holder: null });
+    const r = await client.query('s1');
+    expect(r).toEqual({ held: false, self: false, source: 'hub' });
+  });
+
+  it('query falls back to an unexpired lease file when the hub returns null (self:false for another device)', async () => {
     hubRequest.mockResolvedValue(null);
     const dir = path.join(tmpRoot, 'Leases');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(leaseFilePath(tmpRoot, 's1'), JSON.stringify({ deviceId: 'dev-B', device: 'phone-B', expiresAt: Date.now() + 100_000 }));
 
     const r = await client.query('s1');
-    expect(r).toEqual({ held: true, device: 'phone-B', expiresAt: expect.any(Number), source: 'file' });
+    expect(r).toEqual({ held: true, device: 'phone-B', deviceId: 'dev-B', self: false, expiresAt: expect.any(Number), source: 'file' });
+  });
+
+  it('query file fallback with OUR deviceId reports self:true', async () => {
+    hubRequest.mockResolvedValue(null);
+    const dir = path.join(tmpRoot, 'Leases');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(leaseFilePath(tmpRoot, 's1'), JSON.stringify({ deviceId: DEVICE_ID, device: DEVICE_NAME, expiresAt: Date.now() + 100_000 }));
+
+    const r = await client.query('s1');
+    expect(r).toEqual({ held: true, device: DEVICE_NAME, deviceId: DEVICE_ID, self: true, expiresAt: expect.any(Number), source: 'file' });
   });
 
   it('query treats an expired lease file as free', async () => {
@@ -115,13 +140,13 @@ describe('lease-client', () => {
     fs.writeFileSync(leaseFilePath(tmpRoot, 's1'), JSON.stringify({ deviceId: 'dev-B', device: 'phone-B', expiresAt: Date.now() - 1000 }));
 
     const r = await client.query('s1');
-    expect(r).toEqual({ held: false, source: 'none' });
+    expect(r).toEqual({ held: false, self: false, source: 'none' });
   });
 
   it('query with hub null and no file reports free', async () => {
     hubRequest.mockResolvedValue(null);
     const r = await client.query('s1');
-    expect(r).toEqual({ held: false, source: 'none' });
+    expect(r).toEqual({ held: false, self: false, source: 'none' });
   });
 
   it('handleTakeoverRequest invokes the callback only for a HELD session', async () => {
@@ -190,7 +215,7 @@ describe('lease-client', () => {
     fs.writeFileSync(leaseFilePath(tmpRoot, 's1'), '{ not json');
 
     const r = await client.query('s1');
-    expect(r).toEqual({ held: false, source: 'none' });
+    expect(r).toEqual({ held: false, self: false, source: 'none' });
   });
 
   it('destroy clears all renew timers', async () => {

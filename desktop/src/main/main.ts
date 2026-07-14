@@ -638,15 +638,16 @@ function createWindow(firstRunManager?: FirstRunManager) {
   // Plan 2b Task 9: build the requester-side takeover flow. It reuses the SAME
   // lease client (takeover/query/acquire), nudges a personal-space sync, pulls the
   // peer's final turn via materializeOne, and force-acquires through the hub
-  // directly (the reviewed lease client has no force method). selfDevice matches
-  // the lease client's deviceName so a lease held by US counts as free.
+  // directly (the reviewed lease client has no force method). "Held by US" is now
+  // decided inside query() via the per-install deviceId (self flag), so no
+  // selfDevice label is threaded here — a hostname label would collide when two
+  // installs share a hostname (the dev instance + built app dogfood gate).
   const requester = createRequesterTakeover({
     leaseClient,
     syncNow: () => syncSpacesSyncNow('personal'),
     materializeOne: (id) => materializeOne(id),
     forceAcquire: (id) => hubLeaseRequest('force-acquire', id, deviceIdentity!.id),
     delay: (ms) => new Promise((r) => setTimeout(r, ms)),
-    selfDevice: os.hostname(),
   });
 
   cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,

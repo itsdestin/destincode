@@ -37,7 +37,7 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
-  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots,
+  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled,
 } from './sync-spaces/service';
 import { readDevices, renameDevice } from './sync-spaces/device-registry';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
@@ -2067,6 +2067,11 @@ export function registerIpcHandlers(
       // coupled to the remap.
       if (current) {
         teardownSessionWatchers(desktopId);
+        // 2b: /clear rotates the CC session id WITHOUT firing session-exit, so the
+        // pre-rotation claudeId's lease + its 30s renew timer would otherwise leak
+        // (renewing a dead id every 30s until app quit). Release it here.
+        // Idempotent + best-effort; release() never rejects, .catch guards a future change.
+        void leaseWiring?.client.release(current).catch(() => { /* best-effort */ });
       }
 
       sessionIdMap.set(desktopId, claudeId);
@@ -2084,7 +2089,15 @@ export function registerIpcHandlers(
         // device holds it, but the sanctioned resume path already ran takeover
         // BEFORE spawn, so we never block session start on the lease. acquire()
         // never rejects, but the .catch keeps a future change from leaking one.
-        void leaseWiring?.client.acquire(claudeId).catch(() => { /* never-block */ });
+        //
+        // Gate on sync being ENABLED: leases coordinate CROSS-DEVICE writers, which
+        // only exist for a synced conversation. Without this, every CC SessionStart
+        // (even for users who never enabled sync) took an optimistic local hold with
+        // a 30s renew timer writing Personal/Leases/*.json — wasteful and creates a
+        // Leases/ dir for no reason. Release on session-exit stays UNCONDITIONAL
+        // (idempotent — harmless if never acquired) so a session that acquired while
+        // sync was on still releases if sync later flips off.
+        if (isSyncSpacesEnabled()) void leaseWiring?.client.acquire(claudeId).catch(() => { /* never-block */ });
       }
     });
   }

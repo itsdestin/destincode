@@ -1891,20 +1891,19 @@ function AppInner() {
     const cwd = projectPath;
 
     // Plan 2b Task 9 — conversation-lease takeover gate. Before resuming, ask the
-    // hub whether this conversation is actively held on another device. If so,
+    // hub whether this conversation is actively held on ANOTHER device. If so,
     // offer to take over here (the holder hands off), falling back to a
     // force-takeover if the holder doesn't respond. NEVER hard-blocks the resume:
     // any lease error just proceeds (spec §3 never-block).
     //
-    // Self-device decision: we can't cheaply get THIS device's hostname in the
-    // renderer, so we gate the dialog on "a lease exists at all" (q.held) rather
-    // than comparing q.device to self. If the lease turns out to be OUR OWN, the
-    // main-side takeover flow (which DOES know selfDevice) sees held===self, treats
-    // it as free, and returns 'acquired' fast with no real handoff — so offering
-    // takeover on a self-held lease is harmless.
+    // Self-device decision: the query result's `self` flag is computed in the
+    // main process from the per-install deviceId (NOT the hostname label). We gate
+    // the dialog on "held AND not self" so a lease left over from OUR OWN install
+    // (e.g. after an unclean shutdown) resumes straight through instead of popping
+    // a confusing "active on <your-own-hostname>" takeover dialog.
     try {
       const q = await window.claude.syncSpaces?.leaseQuery?.(claudeSessionId);
-      if (q?.held) {
+      if (q?.held && !q.self) {
         const device = q.device || 'another device';
         const confirmed = await askTakeover(device, 'confirm');
         if (!confirmed) return; // "Never mind" — abort the resume

@@ -319,6 +319,16 @@ export async function stopSyncSpaces(): Promise<void> {
   engine = null;
 }
 
+// Cheap SYNCHRONOUS "is sync on?" check. Reads the same enable flag
+// syncSpacesStatus() exposes, without the async project-registry read that
+// function does. Used by the CC SessionStart lease-acquire gate so we don't take
+// a lease (+ 30s renew timer + Personal/Leases writes) for users who never
+// enabled sync — leases only coordinate CROSS-DEVICE writers, which only exist
+// once a conversation is actually synced.
+export function isSyncSpacesEnabled(): boolean {
+  return manager?.isEnabled() ?? false;
+}
+
 // ---- IPC-facing functions (also used by remote-server cases) ----
 export async function syncSpacesStatus() {
   const registry = roots ? readProjectRegistry(roots.personalRoot) : [];

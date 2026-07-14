@@ -96,14 +96,18 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
 export interface RequesterTakeoverDeps {
   leaseClient: {
     takeover(sessionId: string): Promise<unknown>;
-    query(sessionId: string): Promise<{ held: boolean; device?: string }>;
+    // `self` (deviceId-derived, from the lease client) is the correct "held by
+    // US" signal — NOT `device`, which is the hostname label and collides when
+    // two installs share a hostname (dev instance + built app is this plan's own
+    // dogfood gate). Keying self-identity on the label would make one install
+    // treat the OTHER's lease as its own and skip the real handoff.
+    query(sessionId: string): Promise<{ held: boolean; device?: string; self?: boolean }>;
     acquire(sessionId: string): Promise<unknown>;
   };
   syncNow: () => Promise<unknown> | unknown;            // syncSpacesSyncNow('personal')
   materializeOne: (sessionId: string) => Promise<void>; // pull the peer's final turn into the local CC transcript
   forceAcquire: (sessionId: string) => Promise<unknown>;// hub op 'force-acquire' — overwrite a stale lease
   delay: (ms: number) => Promise<void>;                 // injectable so tests drive the poll with fake timers
-  selfDevice: string;                                   // this device's label — a query holder === self counts as free
 }
 
 export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' }
@@ -125,7 +129,11 @@ export function createRequesterTakeover(deps: RequesterTakeoverDeps) {
         // already-free lease returns fast without a wasted poll interval.
         while (Date.now() - started < MAX_MS) {
           const q = await deps.leaseClient.query(sessionId);
-          if (!q.held || q.device === deps.selfDevice) {
+          // Free (nobody holds it) OR the holder is US (self, keyed on deviceId —
+          // see RequesterTakeoverDeps.query for why not the label). Two installs
+          // sharing a hostname now serialize correctly: each recognizes only its
+          // OWN deviceId as self, so the requester waits for a genuine release.
+          if (!q.held || q.self) {
             // Free: nudge a personal-space sync so the holder's final turn is in
             // the space, pull it into the local CC transcript, then claim the
             // lease. Each downstream step is best-effort — a miss self-heals via

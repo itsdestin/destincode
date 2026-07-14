@@ -1264,7 +1264,7 @@ function YourDevices({ enabled }: { enabled: boolean }) {
   const load = useCallback(async () => {
     // Method-exists guard: on remote / older Android without the handler the
     // invoke is absent, so degrade to an empty list instead of throwing.
-    const fn = (window as any).claude?.syncSpaces?.listDevices;
+    const fn = window.claude?.syncSpaces?.listDevices;
     if (typeof fn !== 'function') { setDevices([]); return; }
     try { setDevices(await fn()); } catch { setDevices([]); }
   }, []);
@@ -1281,7 +1281,7 @@ function YourDevices({ enabled }: { enabled: boolean }) {
     if (!name) return;
     const current = devices?.find(d => d.id === id);
     if (current && current.name === name) return;
-    const fn = (window as any).claude?.syncSpaces?.renameDevice;
+    const fn = window.claude?.syncSpaces?.renameDevice;
     if (typeof fn !== 'function') return;
     try { await fn(id, name); } catch {}
     // Re-fetch so the merged/synced name (fold-on-read authoritative) is shown.

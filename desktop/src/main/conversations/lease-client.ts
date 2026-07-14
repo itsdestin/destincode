@@ -41,6 +41,14 @@ export interface LeaseClientOpts {
 export interface LeaseQueryResult {
   held: boolean;
   device?: string;
+  // The per-install device id of the holder (NOT the label). `self` is derived
+  // from it — a caller MUST NOT infer self-identity from `device` (the hostname
+  // label), which collides when two installs share a hostname (the dev instance
+  // + built app, or two same-hostname machines). deviceId is unique per install.
+  deviceId?: string;
+  // True when the holder is THIS install (holder deviceId === our deviceId). This
+  // is the correct "is it me?" signal — see deviceId above for why the label isn't.
+  self?: boolean;
   expiresAt?: number;
   source: 'hub' | 'file' | 'none';
 }
@@ -220,18 +228,34 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
       catch { r = null; }
 
       if (r !== null) {
-        // Hub answered — authoritative.
-        if (r.holder) return { held: true, device: r.holder.device, expiresAt: r.holder.expiresAt, source: 'hub' };
-        return { held: false, source: 'hub' };
+        // Hub answered — authoritative. `self` keys on the per-install deviceId,
+        // never the hostname label (which collides across installs).
+        if (r.holder) return {
+          held: true,
+          device: r.holder.device,
+          deviceId: r.holder.deviceId,
+          expiresAt: r.holder.expiresAt,
+          self: r.holder.deviceId === opts.deviceId,
+          source: 'hub',
+        };
+        return { held: false, self: false, source: 'hub' };
       }
 
       // Hub down — consult the file fallback with the 300s stale rule (local clock).
+      // The lease file stores the holder's deviceId too, so self keys on it here as well.
       const file = readLeaseFile(sessionId);
       if (file && file.expiresAt > Date.now()) {
-        return { held: true, device: file.device, expiresAt: file.expiresAt, source: 'file' };
+        return {
+          held: true,
+          device: file.device,
+          deviceId: file.deviceId,
+          expiresAt: file.expiresAt,
+          self: file.deviceId === opts.deviceId,
+          source: 'file',
+        };
       }
       // Missing or expired file => free.
-      return { held: false, source: 'none' };
+      return { held: false, self: false, source: 'none' };
     },
 
     async takeover(sessionId) {

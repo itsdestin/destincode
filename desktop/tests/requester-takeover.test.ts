@@ -11,8 +11,10 @@ import { createRequesterTakeover } from '../src/main/conversations/takeover';
 // log so tests can assert BOTH which steps ran and in WHAT order.
 function makeDeps(opts: {
   // query returns these results in sequence; the last one repeats forever.
-  queryResults: Array<{ held: boolean; device?: string }>;
-  selfDevice?: string;
+  // `self` is the deviceId-derived "held by US" flag the lease client computes —
+  // the requester keys on it, NOT on the `device` label (which collides across
+  // installs that share a hostname).
+  queryResults: Array<{ held: boolean; device?: string; self?: boolean }>;
   takeoverThrows?: boolean;
   queryThrows?: boolean;
   forceThrows?: boolean;
@@ -42,7 +44,6 @@ function makeDeps(opts: {
     }),
     // Real timer-backed delay so vi.advanceTimersByTimeAsync drives the poll.
     delay: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
-    selfDevice: opts.selfDevice ?? 'This-Device',
   };
   return deps;
 }
@@ -77,12 +78,36 @@ describe('createRequesterTakeover', () => {
     expect(deps.order).toEqual(['takeover:c1', 'syncNow', 'materialize:c1', 'acquire:c1']);
   });
 
-  it('takeover: a lease held by US (device === selfDevice) counts as free', async () => {
-    const deps = makeDeps({ queryResults: [{ held: true, device: 'This-Device' }], selfDevice: 'This-Device' });
+  it('takeover: a lease held by US (self:true, deviceId match) counts as free', async () => {
+    // The lease client sets self:true when the holder's deviceId === our deviceId.
+    const deps = makeDeps({ queryResults: [{ held: true, device: 'This-Device', self: true }] });
     const flow = createRequesterTakeover(deps as any);
     const res = await flow.takeover('c1');
     expect(res).toEqual({ outcome: 'acquired' });
     expect(deps.order).toContain('acquire:c1');
+  });
+
+  it('takeover: a DIFFERENT install with the SAME device label is NOT self — the requester waits, never short-circuits', async () => {
+    // Two installs share a hostname (the dev instance + built app dogfood gate,
+    // or two same-hostname machines). The holder's label equals ours but its
+    // per-install deviceId differs, so the lease client returns self:false. The
+    // requester MUST NOT treat this as free — it polls until a genuine release,
+    // here never happening, so it times out.
+    //
+    // Regression guard: the OLD label-based check (`q.device === selfDevice`)
+    // would see device 'This-Device' === selfDevice 'This-Device' → treat it as
+    // free → syncNow/materialize/acquire immediately → outcome 'acquired'. This
+    // test asserts the opposite, so it FAILS against the old label-based code.
+    const deps = makeDeps({ queryResults: [{ held: true, device: 'This-Device', self: false }] });
+    const flow = createRequesterTakeover(deps as any);
+    const p = flow.takeover('c1');
+    await vi.advanceTimersByTimeAsync(11_000);
+    const res = await p;
+    expect(res).toEqual({ outcome: 'timeout' });
+    // Did NOT short-circuit on a same-label lease: no free-path work ran.
+    expect(deps.leaseClient.acquire).not.toHaveBeenCalled();
+    expect(deps.syncNow).not.toHaveBeenCalled();
+    expect(deps.materializeOne).not.toHaveBeenCalled();
   });
 
   it('takeover: holder never releases -> timeout after 10s (no acquire)', async () => {
