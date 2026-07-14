@@ -274,13 +274,22 @@ function RecommendedCard({
 }) {
   const chosenQuant = card?.state === 'ready' ? card.chosen.quant : model.quantDefault;
   const dl = activeDownload(downloads, model.hfRepo, chosenQuant);
+  // WHY: download() throws the purpose-built disk-guard refusal ("Not enough
+  // free space…") and "already downloading" — surface them or the click is a
+  // silent no-op + a renderer unhandledrejection.
+  const [dlError, setDlError] = useState<string | null>(null);
 
   const startDownload = async () => {
     // download() takes the QuantOption OBJECT — prefer the resolved one, else
     // the stashed default-quant option.
     const opt = card?.state === 'ready' ? card.chosen : quantOptsByKeyRef.current[key(model.hfRepo, model.quantDefault)];
     if (!opt) return; // still resolving — button is disabled in this state anyway
-    await window.claude.models.download(model.hfRepo, opt);
+    setDlError(null); // clear any prior failure before retrying
+    try {
+      await window.claude.models.download(model.hfRepo, opt);
+    } catch (e) {
+      setDlError(e instanceof Error ? e.message : 'Could not start the download.');
+    }
   };
 
   return (
@@ -317,6 +326,9 @@ function RecommendedCard({
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
+      {/* Download-start failure (disk-guard refusal, already-downloading) —
+          shown verbatim; the guard message is designed to be user-facing. */}
+      {dlError && <p className="text-[10px] text-red-500 mt-1.5">{dlError}</p>}
     </div>
   );
 }
@@ -367,13 +379,18 @@ function InstalledModels({
 function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefresh: () => Promise<void> }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  // WHY: a failed delete used to leave the confirm strip open with no feedback.
+  const [delError, setDelError] = useState<string | null>(null);
 
   const doDelete = async () => {
     setBusy(true);
+    setDelError(null);
     try {
       await window.claude.models.delete(model.id);
       setConfirming(false);
       await onRefresh();
+    } catch (e) {
+      setDelError(e instanceof Error ? e.message : 'Could not delete the model.');
     } finally {
       setBusy(false);
     }
@@ -421,6 +438,7 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
               {busy ? 'Deleting…' : 'Delete model'}
             </button>
           </div>
+          {delError && <p className="text-[10px] text-red-500">{delError}</p>}
         </div>
       )}
     </div>
@@ -680,6 +698,19 @@ function SearchHit({
 
 function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFit; downloads: Record<string, DownloadProgress> }) {
   const dl = activeDownload(downloads, repo, q.quant);
+  // WHY: same as the recommended card — the disk-guard / already-downloading
+  // throws must reach the user instead of vanishing into an unhandledrejection.
+  const [dlError, setDlError] = useState<string | null>(null);
+
+  const startDownload = async () => {
+    setDlError(null); // clear any prior failure before retrying
+    try {
+      await window.claude.models.download(repo, q);
+    } catch (e) {
+      setDlError(e instanceof Error ? e.message : 'Could not start the download.');
+    }
+  };
+
   return (
     <div className="px-2 py-1.5 rounded-md bg-well">
       <div className="flex items-center justify-between gap-3">
@@ -694,7 +725,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
         </div>
         {!dl && (
           <button
-            onClick={() => void window.claude.models.download(repo, q)}
+            onClick={() => void startDownload()}
             className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
           >
             Download
@@ -702,6 +733,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
+      {dlError && <p className="text-[10px] text-red-500 mt-1">{dlError}</p>}
     </div>
   );
 }
@@ -717,6 +749,8 @@ function OtherLocalApps() {
   const [hits, setHits] = useState<DetectedEndpoint[] | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [added, setAdded] = useState<Record<string, boolean>>({});
+  // WHY: an upsert failure used to be a silent no-op — surface it per hit.
+  const [addError, setAddError] = useState<Record<string, string>>({});
 
   const detect = async () => {
     setDetecting(true);
@@ -728,13 +762,18 @@ function OtherLocalApps() {
   const addEndpoint = async (hit: DetectedEndpoint) => {
     // Register the detected server as an openai-compatible provider — the user
     // then manages it in the Providers section above.
-    await window.claude.providers.upsert({
-      type: 'openai-compatible',
-      label: hit.label,
-      baseUrl: hit.baseUrl,
-      enabled: true,
-    });
-    setAdded((prev) => ({ ...prev, [hit.baseUrl]: true }));
+    setAddError((prev) => { const n = { ...prev }; delete n[hit.baseUrl]; return n; });
+    try {
+      await window.claude.providers.upsert({
+        type: 'openai-compatible',
+        label: hit.label,
+        baseUrl: hit.baseUrl,
+        enabled: true,
+      });
+      setAdded((prev) => ({ ...prev, [hit.baseUrl]: true }));
+    } catch (e) {
+      setAddError((prev) => ({ ...prev, [hit.baseUrl]: e instanceof Error ? e.message : 'Could not add this endpoint.' }));
+    }
   };
 
   return (
@@ -767,6 +806,9 @@ function OtherLocalApps() {
                       </p>
                       {isAdded && (
                         <p className="text-[10px] text-fg-muted mt-0.5">Added — manage it in Providers above.</p>
+                      )}
+                      {addError[hit.baseUrl] && (
+                        <p className="text-[10px] text-red-500 mt-0.5">{addError[hit.baseUrl]}</p>
                       )}
                     </div>
                     {!isAdded && (
