@@ -264,6 +264,12 @@ function handleMessage(data: string): void {
       // Broadcast (no sessionId).
       dispatchEvent('syncspaces:event', payload);
       break;
+    case 'github:connect-done':
+      // Connect-GitHub device flow settled on the host. Payload is
+      // {ok, login?, error?} — the token NEVER travels over the WS. Flows to
+      // window.claude.github.onConnectDone(). Broadcast (no sessionId).
+      dispatchEvent('github:connect-done', payload);
+      break;
     case 'chat:hydrate':
       // Full chat state snapshot sent by the host when a remote client connects.
       // Dispatched into the chat reducer via window.claude.on.chatHydrate in App.tsx.
@@ -1134,6 +1140,21 @@ export function installShim(): void {
         const handler: Callback = (e: any) => cb(e);
         addListener('syncspaces:event', handler);
         return () => removeListener('syncspaces:event', handler);
+      },
+    },
+    // Connect-GitHub modal (device-flow auth). Same shared shape as preload's
+    // window.claude.github so the modal renders identically on remote browsers.
+    // The whole flow is main-process; the shim just relays requests + the
+    // connect-done push. Token never crosses the WS (only status/login/error do).
+    github: {
+      status: () => invoke('github:status'),
+      connectStart: () => invoke('github:connect-start'),
+      connectCancel: () => invoke('github:connect-cancel'),
+      installGh: () => invoke('github:install-gh'),
+      onConnectDone: (cb: (payload: { ok: boolean; login?: string; error?: string }) => void) => {
+        const handler: Callback = (p: any) => cb(p);
+        addListener('github:connect-done', handler);
+        return () => removeListener('github:connect-done', handler);
       },
     },
     folders: {

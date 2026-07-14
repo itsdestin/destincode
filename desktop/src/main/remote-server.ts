@@ -24,6 +24,11 @@ import { getRestoreService } from './restore-service';
 import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
 import { readDevices, renameDevice } from './sync-spaces/device-registry';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
+// Connect-GitHub modal (device-flow auth). status/install are stateless direct
+// calls; connect start/cancel drive the shared orchestrator singleton created in
+// ipc-handlers (its emitDone broadcasts github:connect-done to remote clients).
+import { detectGh, installGh } from './github-auth';
+import { getGithubConnect } from './github-connect';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
 const HOOK_BUFFER_SIZE = 10_000; // ~10MB max, covers full conversations without excessive memory
@@ -1392,6 +1397,30 @@ export class RemoteServer {
         if (!pr) { this.respond(client.ws, type, id, { ok: false }); break; }
         try { await renameDevice(pr, String(payload?.id ?? ''), String(payload?.name ?? '')); this.respond(client.ws, type, id, { ok: true }); }
         catch { this.respond(client.ws, type, id, { ok: false }); }
+        break;
+      }
+
+      // Connect-GitHub modal (device-flow auth) — remote browser parity. The flow
+      // is all main-process; the browser just renders the code/URL and waits for
+      // the github:connect-done broadcast. The access token never crosses the WS.
+      case 'github:status': {
+        this.respond(client.ws, type, id, await detectGh());
+        break;
+      }
+      case 'github:connect-start': {
+        // Drives the shared orchestrator singleton; completion arrives as the
+        // github:connect-done broadcast (fanned out to every client).
+        const gc = getGithubConnect();
+        this.respond(client.ws, type, id, gc ? await gc.start() : { error: 'unavailable' });
+        break;
+      }
+      case 'github:connect-cancel': {
+        getGithubConnect()?.cancel();
+        this.respond(client.ws, type, id, { ok: true });
+        break;
+      }
+      case 'github:install-gh': {
+        this.respond(client.ws, type, id, await installGh());
         break;
       }
 
