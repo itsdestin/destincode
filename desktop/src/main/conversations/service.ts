@@ -68,6 +68,25 @@ export async function startConversationStore(opts?: {
   // potentially GBs of transcripts (serial copies); awaiting it here would block
   // app startup. runReconcile swallows its own failures.
   runReconcile();
+
+  // Catch-up materialize on startup (2026-07-13 two-device dogfood fix, Part 1).
+  // The space->local sweep is otherwise ONLY triggered by a fresh Personal
+  // 'synced+updated' event (see the subscription above). So a PEER device's
+  // transcript that already landed in this device's local space during a PREVIOUS
+  // run — either while its session was still guarded, or before this store was
+  // watching — was never written into the local Claude Code projects dir the app
+  // resumes from. Result: the conversation looked permanently stale on this
+  // device (the continuation sat in the space, unseen). Running one sweep at
+  // startup applies any already-synced peer version on launch. Detached +
+  // never-throws, exactly like runReconcile above.
+  //
+  // Scope: this is the INBOUND-on-startup catch-up ONLY. Releasing the live guard
+  // and re-sweeping the moment a session CLOSES (so a peer version applies without
+  // needing a restart) is deferred to Plan 2b — it needs leases to be safe (see
+  // the guard comment inside materializeSweep for why materializing over a live
+  // transcript is dangerous without single-writer guarantees).
+  void materializeSweep();
+
   reconcileTimer = setInterval(() => { runReconcile(); }, RECONCILE_INTERVAL_MS);
   reconcileTimer.unref?.();
 }
