@@ -260,6 +260,16 @@ declare global {
         setKey: (id: string, key: string) => Promise<boolean>;
         catalog: () => Promise<any[]>;
       };
+      // Local llama.cpp engine (Plan B). install() streams progress via
+      // onInstallProgress; onStatusChanged pushes state transitions
+      // (not-installed → starting → running / error). EngineCard consumes these.
+      engine: {
+        status: () => Promise<any>;
+        install: () => Promise<any>;
+        restart: () => Promise<any>;
+        onInstallProgress: (cb: (p: any) => void) => () => void;
+        onStatusChanged: (cb: (s: any) => void) => () => void;
+      };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState
       // enables/disables OnBackPressedCallback and onBack subscribes to

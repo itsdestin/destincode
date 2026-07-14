@@ -1,0 +1,3 @@
+# Downloaded GGUF models + any unpacked engine binaries used for local probing.
+cache/
+engine/
