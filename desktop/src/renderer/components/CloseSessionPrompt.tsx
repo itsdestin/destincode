@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
@@ -13,10 +13,13 @@ const FLAG_LABEL: Record<FlagName, string> = { priority: 'Priority', complete: '
 interface Props {
   open: boolean;
   sessionName?: string;
+  sessionId?: string | null;
   onCancel: () => void;
-  // onConfirm receives the reserved flags to set true, the tag ids to apply,
-  // and the note text (empty = none). App fires the corresponding IPC calls.
-  onConfirm: (result: { flags: FlagName[]; tagIds: string[]; note: string }) => void;
+  // onConfirm receives the reserved flags to set true, plus the TAG DELTA and the
+  // note. The prompt preloads the session's current tags/note (so already-applied
+  // tags stay selected) and reports only what the user changed off that baseline:
+  // addTagIds/removeTagIds are the tags toggled on/off; noteChanged gates the write.
+  onConfirm: (result: { flags: FlagName[]; addTagIds: string[]; removeTagIds: string[]; note: string; noteChanged: boolean }) => void;
 }
 
 // localStorage key used to suppress this prompt permanently. Exported so
@@ -24,10 +27,10 @@ interface Props {
 export const CLOSE_PROMPT_SUPPRESS_KEY = 'youcoded-close-prompt-disabled';
 const SUPPRESS_KEY = CLOSE_PROMPT_SUPPRESS_KEY;
 
-// Shown when the user closes an active session. Lets them tag the session with
-// any combination of Priority, Helpful, Complete in one step. Nothing is
-// pre-selected — the user chooses which flags apply, or closes with none.
-export default function CloseSessionPrompt({ open, sessionName, onCancel, onConfirm }: Props) {
+// Shown when the user closes an active session. Preloads the session's current
+// tags + note (so applied tags stay selected — nothing changes unless the user
+// toggles it), and lets them set Priority/Complete in the same step.
+export default function CloseSessionPrompt({ open, sessionName, sessionId, onCancel, onConfirm }: Props) {
   const [sel, setSel] = useState<Record<FlagName, boolean>>({ priority: false, complete: false });
   // "Don't show again" — persisted to localStorage so the caller can skip this
   // prompt on future closes. Default off so users see it at least once.
@@ -35,15 +38,41 @@ export default function CloseSessionPrompt({ open, sessionName, onCancel, onConf
   const registry = useTagRegistry();
   const [tagIds, setTagIds] = useState<Set<string>>(new Set());
   const [note, setNote] = useState('');
+  // The session's tags/note as loaded on open — the baseline for the delta, so
+  // Cancel changes nothing and Confirm only writes what the user toggled.
+  const [original, setOriginal] = useState<{ tags: Set<string>; note: string }>({ tags: new Set(), note: '' });
 
+  // On open, preload the session's current tags + note so already-applied tags
+  // stay SELECTED. Reserved flags still default off — they're a "mark on close"
+  // action, not existing state we read back.
   useEffect(() => {
-    if (open) {
-      setSel({ priority: false, complete: false });
-      setTagIds(new Set());
-      setNote('');
-      setDontShowAgain(false);
-    }
-  }, [open]);
+    if (!open) return;
+    setSel({ priority: false, complete: false });
+    setDontShowAgain(false);
+    if (!sessionId) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); return; }
+    let cancelled = false;
+    Promise.resolve((window as any).claude.session.getMeta(sessionId))
+      .then((m: { tags: string[]; note: string }) => {
+        if (cancelled) return;
+        const tags = new Set(m?.tags ?? []);
+        setTagIds(new Set(tags));
+        setNote(m?.note ?? '');
+        setOriginal({ tags, note: m?.note ?? '' });
+      })
+      .catch(() => { if (!cancelled) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); } });
+    return () => { cancelled = true; };
+  }, [open, sessionId]);
+
+  // Reserved flags to set + the tag delta (add/remove vs. the loaded baseline) +
+  // the note. useCallback keeps a stable identity so the Enter effect below
+  // doesn't re-subscribe its keydown listener every render.
+  const buildResult = useCallback(() => ({
+    flags: FLAG_ORDER.filter((f) => sel[f]),
+    addTagIds: [...tagIds].filter((id) => !original.tags.has(id)),
+    removeTagIds: [...original.tags].filter((id) => !tagIds.has(id)),
+    note,
+    noteChanged: note !== original.note,
+  }), [sel, tagIds, note, original]);
 
   // ESC is routed through the central useEscClose stack so overlay LIFO and
   // chat-passthrough preventDefault work uniformly. Enter still needs its own
@@ -56,11 +85,11 @@ export default function CloseSessionPrompt({ open, sessionName, onCancel, onConf
       // Don't hijack Enter while the user is typing in the tag search or the note.
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-      onConfirm({ flags: FLAG_ORDER.filter((f) => sel[f]), tagIds: [...tagIds], note });
+      onConfirm(buildResult());
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [open, sel, tagIds, note, onConfirm]);
+  }, [open, buildResult, onConfirm]);
 
   if (!open) return null;
 
@@ -152,7 +181,7 @@ export default function CloseSessionPrompt({ open, sessionName, onCancel, onConf
                   if (dontShowAgain) {
                     localStorage.setItem(SUPPRESS_KEY, '1');
                   }
-                  onConfirm({ flags: FLAG_ORDER.filter((f) => sel[f]), tagIds: [...tagIds], note });
+                  onConfirm(buildResult());
                 }}
                 className="text-[11px] font-medium bg-accent text-on-accent px-3 py-1.5 rounded-md hover:opacity-90 transition-opacity"
               >
