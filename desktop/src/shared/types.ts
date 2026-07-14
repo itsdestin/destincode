@@ -834,6 +834,15 @@ export const IPC = {
   SYNC_SPACES_LIST_DEVICES: 'syncspaces:list-devices',
   SYNC_SPACES_RENAME_DEVICE: 'syncspaces:rename-device',
   SYNC_SPACES_EVENT: 'syncspaces:event',
+  // Connect-GitHub modal (device-flow auth) — lets non-developers connect GitHub
+  // in-app so enabling Sync never dead-ends on "gh not installed / not signed in".
+  // status/install are plain request-response; connect-start kicks off main-side
+  // device-flow polling and pushes GITHUB_CONNECT_DONE when it settles.
+  GITHUB_STATUS: 'github:status',
+  GITHUB_CONNECT_START: 'github:connect-start',
+  GITHUB_CONNECT_CANCEL: 'github:connect-cancel',
+  GITHUB_INSTALL_GH: 'github:install-gh',
+  GITHUB_CONNECT_DONE: 'github:connect-done', // push: {ok, login?, error?}
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',
   WINDOW_DIRECTORY_UPDATED: 'window:directory-updated',

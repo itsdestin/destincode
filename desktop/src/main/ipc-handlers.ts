@@ -40,6 +40,10 @@ import {
   syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled,
 } from './sync-spaces/service';
 import { readDevices, renameDevice } from './sync-spaces/device-registry';
+// Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
+// createGithubConnect is the stateful orchestrator that owns the in-flight flow.
+import { detectGh, installGh } from './github-auth';
+import { createGithubConnect, setGithubConnect } from './github-connect';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
@@ -2337,6 +2341,21 @@ export function registerIpcHandlers(
     try { await renameDevice(pr, String(p?.id ?? ''), String(p?.name ?? '')); return { ok: true }; }
     catch { return { ok: false }; }
   });
+
+  // Connect-GitHub modal (device-flow auth). ONE orchestrator holds the single
+  // in-flight flow; its emitDone fans the connect-done push out to BOTH the
+  // Electron windows (send) and remote clients (remoteServer.broadcast) — the
+  // same dual path as session:moved. The access token never enters this payload.
+  const githubConnect = createGithubConnect((payload) => {
+    send(IPC.GITHUB_CONNECT_DONE, payload);
+    remoteServer?.broadcast({ type: IPC.GITHUB_CONNECT_DONE, payload });
+  });
+  // Register as the process-wide singleton so remote clients drive the SAME flow.
+  setGithubConnect(githubConnect);
+  ipcMain.handle(IPC.GITHUB_STATUS, () => detectGh());
+  ipcMain.handle(IPC.GITHUB_CONNECT_START, () => githubConnect.start());
+  ipcMain.handle(IPC.GITHUB_CONNECT_CANCEL, () => { githubConnect.cancel(); return { ok: true }; });
+  ipcMain.handle(IPC.GITHUB_INSTALL_GH, () => installGh());
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));

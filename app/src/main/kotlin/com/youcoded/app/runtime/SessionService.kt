@@ -3579,7 +3579,15 @@ class SessionService : Service() {
             "syncspaces:lease-takeover",
             "syncspaces:lease-force",
             "syncspaces:list-devices",
-            "syncspaces:rename-device" -> {
+            "syncspaces:rename-device",
+            // Connect-GitHub modal (device-flow auth) is desktop-only. Android
+            // signs into GitHub via its own gh-auth flow; the shared React modal
+            // degrades — these invokes reject fast with this stub instead of
+            // 30s-timing-out. (github:connect-done is a PUSH event — no handler.)
+            "github:status",
+            "github:connect-start",
+            "github:connect-cancel",
+            "github:install-gh" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }

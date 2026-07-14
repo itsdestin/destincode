@@ -603,6 +603,55 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
   });
 });
 
+// Connect-GitHub modal (device-flow auth, 2026-07-14). The four REQUEST channels
+// have full four-surface desktop parity (preload inlined literal / remote-shim
+// invoke literal / ipc-handlers IPC.* constant / remote-server switch case) plus
+// an Android not-implemented-on-mobile stub so a mobile invoke rejects fast. The
+// github:connect-done PUSH event is asserted only where it's CONSUMED (preload +
+// remote-shim) — same treatment as session:moved.
+describe('github:* channel parity (desktop surfaces)', () => {
+  const channels: Array<[string, string]> = [
+    ['github:status', 'IPC.GITHUB_STATUS'],
+    ['github:connect-start', 'IPC.GITHUB_CONNECT_START'],
+    ['github:connect-cancel', 'IPC.GITHUB_CONNECT_CANCEL'],
+    ['github:install-gh', 'IPC.GITHUB_INSTALL_GH'],
+  ];
+  const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
+  const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
+  const handlers = fs.readFileSync(path.join(__dirname, '../src/main/ipc-handlers.ts'), 'utf8');
+  const remoteServer = fs.readFileSync(path.join(__dirname, '../src/main/remote-server.ts'), 'utf8');
+  for (const [ch, constant] of channels) {
+    it(`${ch} present in preload, remote-shim, ipc-handlers, remote-server`, () => {
+      expect(preload).toContain(ch);
+      expect(shim).toContain(ch);
+      expect(handlers).toContain(constant);
+      expect(remoteServer).toContain(ch);
+    });
+  }
+
+  // The four request channels also carry an Android stub (SessionService.kt
+  // returns not-implemented-on-mobile) so a mobile invoke rejects fast.
+  const kotlinPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  if (fs.existsSync(kotlinPath)) {
+    const kotlin = fs.readFileSync(kotlinPath, 'utf8');
+    for (const [ch] of channels) {
+      it(`${ch} has an Android not-implemented-on-mobile stub in SessionService.kt`, () => {
+        expect(kotlin).toContain(`"${ch}"`);
+      });
+    }
+  } else {
+    it.skip('SessionService.kt not found — skipping Android github stub check', () => {});
+  }
+
+  // github:connect-done is a PUSH event (main broadcasts it when the flow settles),
+  // NOT a request — no Kotlin/ipc-handlers request handler. Assert only the two
+  // surfaces that CONSUME it: preload (ipcRenderer.on) + remote-shim (dispatch).
+  it('github:connect-done push channel present in preload + remote-shim', () => {
+    expect(preload).toContain('github:connect-done');
+    expect(shim).toContain('github:connect-done');
+  });
+});
+
 // Native runtime capability flag (platform roadmap Phase 0 seam).
 // preload and remote-shim must both expose window.claude.native.supported —
 // the renderer gates the runtime selector on it without platform branching.

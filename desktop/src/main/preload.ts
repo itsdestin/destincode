@@ -191,6 +191,12 @@ const IPC = {
   SYNC_SPACES_LIST_DEVICES: 'syncspaces:list-devices',
   SYNC_SPACES_RENAME_DEVICE: 'syncspaces:rename-device',
   SYNC_SPACES_EVENT: 'syncspaces:event',
+  // Connect-GitHub modal (device-flow auth) — inlined literals (preload can't import).
+  GITHUB_STATUS: 'github:status',
+  GITHUB_CONNECT_START: 'github:connect-start',
+  GITHUB_CONNECT_CANCEL: 'github:connect-cancel',
+  GITHUB_INSTALL_GH: 'github:install-gh',
+  GITHUB_CONNECT_DONE: 'github:connect-done',
   // Restore from backup (directional pull — see restore-service.ts)
   SYNC_RESTORE_LIST_VERSIONS: 'sync:restore:list-versions',
   SYNC_RESTORE_PREVIEW: 'sync:restore:preview',
@@ -842,6 +848,25 @@ contextBridge.exposeInMainWorld('claude', {
       const listener = (_: unknown, e: unknown) => cb(e);
       ipcRenderer.on(IPC.SYNC_SPACES_EVENT, listener);
       return () => ipcRenderer.removeListener(IPC.SYNC_SPACES_EVENT, listener);
+    },
+  },
+  // Connect-GitHub modal (device-flow auth). All the real work happens in the
+  // main process (github-auth.ts + github-connect.ts); this namespace just relays
+  // requests and the connect-done push event. The access token NEVER crosses this
+  // boundary — only the public status/login/error fields do.
+  github: {
+    status: () => ipcRenderer.invoke(IPC.GITHUB_STATUS),
+    // Returns {userCode, verificationUri, expiresAt} AND begins main-side polling;
+    // completion arrives via onConnectDone below.
+    connectStart: () => ipcRenderer.invoke(IPC.GITHUB_CONNECT_START),
+    connectCancel: () => ipcRenderer.invoke(IPC.GITHUB_CONNECT_CANCEL),
+    installGh: () => ipcRenderer.invoke(IPC.GITHUB_INSTALL_GH),
+    // Push subscription — returns an unsubscribe function (callers MUST invoke it
+    // on unmount to avoid leaking listeners across modal open/close cycles).
+    onConnectDone: (cb: (payload: { ok: boolean; login?: string; error?: string }) => void) => {
+      const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
+      ipcRenderer.on(IPC.GITHUB_CONNECT_DONE, handler);
+      return () => ipcRenderer.removeListener(IPC.GITHUB_CONNECT_DONE, handler);
     },
   },
   getFavorites: () => ipcRenderer.invoke('favorites:get'),

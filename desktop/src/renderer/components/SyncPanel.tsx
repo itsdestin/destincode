@@ -20,6 +20,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { RestoreWizard } from './restore/RestoreWizard';
 import { SnapshotsPanel } from './restore/SnapshotsPanel';
+import ConnectGithubModal from './ConnectGithubModal';
 
 // --- Explainer content (updated for V2 multi-instance model) ---
 
@@ -420,6 +421,19 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // First enable provisions GitHub repos and can take seconds — without a
   // visible pending state the checkbox reads as "didn't take" to a non-developer.
   const [enabling, setEnabling] = useState(false);
+  // GitHub connection state (device-flow modal). Sync's primary channel needs a
+  // GitHub sign-in; we surface a "Connect GitHub…" affordance whenever the
+  // structured github:status reports not-authed (NOT by parsing space-manager's
+  // error strings — those are a pinned UI contract we display verbatim).
+  const [githubStatus, setGithubStatus] = useState<{ installed: boolean; authed: boolean; login?: string } | null>(null);
+  const [showConnectGithub, setShowConnectGithub] = useState(false);
+  // When an enable attempt fails on a GitHub problem, remember it so a
+  // successful connect can re-kick enable automatically ("everything appears"
+  // without a second click).
+  const wasMidEnableRef = useRef(false);
+  // Latest handleSpacesEnable, so handleGithubConnected can re-invoke it without
+  // a declaration-order / stale-closure problem (the callback is defined below).
+  const handleSpacesEnableRef = useRef<((enabled: boolean) => Promise<void>) | null>(null);
 
   const claude = (window as any).claude;
 
@@ -600,6 +614,26 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     return () => { off?.(); };
   }, [refreshSpacesStatus]);
 
+  // GitHub connection status. Method-exists guard so an older shim / Android
+  // (no handler) degrades to null (unknown → no affordance) instead of throwing.
+  const refreshGithubStatus = useCallback(async () => {
+    const fn = (window as any).claude?.github?.status;
+    if (typeof fn !== 'function') { setGithubStatus(null); return; }
+    try { setGithubStatus(await fn()); } catch { setGithubStatus(null); }
+  }, []);
+  useEffect(() => { void refreshGithubStatus(); }, [refreshGithubStatus]);
+
+  // Called by the modal after a successful connect: refresh both GitHub and
+  // sync status, and if the user was mid-enable (an enable failed on a GitHub
+  // problem), re-run enable so sync lights up without a second click.
+  const handleGithubConnected = useCallback(async () => {
+    await refreshGithubStatus();
+    if (wasMidEnableRef.current) {
+      wasMidEnableRef.current = false;
+      await handleSpacesEnableRef.current?.(true);
+    }
+  }, [refreshGithubStatus]);
+
   // Enable/disable toggle. try/catch: on rejection, surface the message in the
   // red note slot and re-fetch status so the checkbox reflects reality instead
   // of silently staying out of sync with the engine.
@@ -608,12 +642,21 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     try {
       setSpacesStatus(await claude.syncSpaces.enable(enabled));
       setSpacesError(null);
+      wasMidEnableRef.current = false;
     } catch (err: any) {
       setSpacesError(String(err?.message ?? err));
+      // Remember an enable-turn-on that failed so a subsequent GitHub connect
+      // can re-kick it automatically. (Enable also emits a provisioning error
+      // event when gh is missing / not signed in — same recovery target.)
+      if (enabled) wasMidEnableRef.current = true;
       await refreshSpacesStatus();
+      // A failed enable is very often a GitHub problem — refresh github:status
+      // so the "Connect GitHub…" affordance next to the error note is accurate.
+      await refreshGithubStatus();
     }
     setEnabling(false);
-  }, [claude, refreshSpacesStatus]);
+  }, [claude, refreshSpacesStatus, refreshGithubStatus]);
+  useEffect(() => { handleSpacesEnableRef.current = handleSpacesEnable; }, [handleSpacesEnable]);
 
   // Recent sync events for DISPLAY only. `hub-status` entries drive the
   // "Instant sync" status line below (that's their surface); `projects-changed`
@@ -748,6 +791,25 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 </div>
               </div>
 
+              {/* GitHub connection line. Shown whenever we know the status:
+                  a plain "connected as <login>" when authed (no status glyph),
+                  or a "Connect GitHub…" affordance when not. Gates on the
+                  structured github:status, never on the error strings. */}
+              {githubStatus && (
+                githubStatus.authed ? (
+                  <p className="text-xs text-fg-muted mt-2">
+                    GitHub connected{githubStatus.login ? <> as <span className="text-fg-2">{githubStatus.login}</span></> : ''}
+                  </p>
+                ) : (
+                  <button
+                    onClick={() => setShowConnectGithub(true)}
+                    className="text-xs mt-2 text-accent hover:underline"
+                  >
+                    Connect GitHub…
+                  </button>
+                )
+              )}
+
               {spacesStatus?.enabled && (
                 <ul className="mt-3 space-y-1">
                   {(spacesStatus.spaces?.map((s: any) => (
@@ -782,7 +844,24 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               {(() => {
                 const engineError = [...visibleSpaceEvents].reverse().find((e: any) => e.type === 'error');
                 const msg = spacesError ?? engineError?.message;
-                return msg ? <p className="text-xs text-red-500 mt-2">{msg}</p> : null;
+                if (!msg) return null;
+                // Keep the raw message verbatim (space-manager's friendly strings
+                // are a pinned UI contract). The "Connect GitHub…" button is an
+                // ADDITIVE affordance, gated on the structured not-authed state —
+                // NOT on parsing the error text.
+                return (
+                  <div className="mt-2 space-y-1">
+                    <p className="text-xs text-red-500">{msg}</p>
+                    {githubStatus && !githubStatus.authed && (
+                      <button
+                        onClick={() => setShowConnectGithub(true)}
+                        className="text-xs text-accent hover:underline"
+                      >
+                        Connect GitHub…
+                      </button>
+                    )}
+                  </div>
+                );
               })()}
 
               {spacesStatus?.enabled && (
@@ -1138,6 +1217,16 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         </div>
         )}
       </OverlayPanel>
+
+      {/* Connect-GitHub device-flow modal. Own L2 overlay so it sits above the
+          sync popup. onConnected refreshes github status + re-kicks a failed
+          enable; every close path aborts main's poll inside the modal. */}
+      {showConnectGithub && (
+        <ConnectGithubModal
+          onClose={() => setShowConnectGithub(false)}
+          onConnected={() => { void handleGithubConnected(); }}
+        />
+      )}
 
       {/* Restore-from-backup wizard — own modal layer so it overlays the sync popup.
           Refreshes sync status on close so lastPush/lastError reflect the restore. */}
