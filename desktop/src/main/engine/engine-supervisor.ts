@@ -121,8 +121,10 @@ export class EngineSupervisor extends EventEmitter {
         '-c', String(this.opts.contextSize),
       ],
       {
-        // LLAMA_CACHE kept for the Plan C -hf download path; --models-dir above
-        // is what serves manually-placed GGUFs today.
+        // --models-dir above is what serves the GGUFs (both hand-placed and
+        // Plan C's flat HTTP downloads). LLAMA_CACHE only matters for
+        // llama-server's own -hf auto-download path, which nothing uses yet —
+        // it's effectively vestigial (kept harmlessly). See engine-dependencies.md.
         env: { ...process.env, ...(this.opts.env ?? {}), LLAMA_CACHE: this.opts.cacheDir },
         stdio: ['ignore', 'pipe', 'pipe'],
       }

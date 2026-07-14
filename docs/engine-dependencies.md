@@ -48,11 +48,17 @@ Exact router-mode arg list (no `-m`):
   `cache-scan.ts`'s `ggufIdFromFileName`, so the engine-off list (cache scan) and
   the engine-on list (`GET /models`) agree. Pinned by `probe-models.mjs`
   (router ids == scan ids).
-- **`LLAMA_CACHE`** (still set in the env) only tracks `-hf` AUTO-DOWNLOADED models
-  in a structured layout; `--cache-list` shows `0` for a flat dropped GGUF. It is
-  kept for the Plan C `-hf`/`-hff` download path — NOT the current bring-your-own
-  GGUF UX. (Plan C: an `-hf` pull may surface via the cache/preset mechanism
-  rather than `--models-dir`; re-probe when Plan C wires downloads.)
+- **`LLAMA_CACHE`** (still set in the env) only tracks `llama-server`'s own `-hf`
+  AUTO-DOWNLOADED models in a structured layout; `--cache-list` shows `0` for a
+  flat dropped GGUF. It is effectively **vestigial**: Plan C does NOT use
+  `llama-server --hf` — its downloader (`model-downloader.ts`) fetches HF files
+  over plain HTTP and writes them FLAT into this same cache dir, so Plan C models
+  land under `--models-dir` discovery exactly like a hand-placed GGUF. So
+  `--models-dir` covers BOTH bring-your-own AND Plan C downloads; `LLAMA_CACHE`
+  is kept harmlessly, and should be revisited only if some future path actually
+  invokes `-hf`. (Any new probe — including Plan C's `probe-download.mjs` — MUST
+  spawn with `--models-dir`, or it falsely reports empty and mis-blames the
+  downloader.)
 - **`--models-preset PATH`** (INI) and `--cache-list` exist but are unused today.
 
 ### Health / readiness (engine-supervisor readiness poll)
