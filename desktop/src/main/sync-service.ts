@@ -113,7 +113,6 @@ function migrateEntry(entry: ConversationIndexEntry): ConversationIndexEntry {
 // --- Constants ---
 
 const PUSH_DEBOUNCE_MIN = 15;
-const INDEX_PRUNE_DAYS = 30;
 // 10 min — generous because individual conversation slugs can grow to
 // hundreds of MB (one user has a 25 MB single .jsonl in a 156 MB slug).
 // The previous 60s value silently killed rclone mid-upload on big slugs,
@@ -126,12 +125,6 @@ const RCLONE_TIMEOUT = 10 * 60 * 1000;
 // gates the actual dated copy: net effect is at most ONE dated ~/.claude
 // snapshot per day, produced automatically.
 const SNAPSHOT_POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-
-// Canonical Claude Code session id. The auto-title flow has the in-session
-// model hand-type `echo "Title" > topics/topic-<id>` — a typo'd id creates a
-// phantom index entry pointing at no transcript (seen in the wild:
-// `3f3a5cccc-…`, nine c's). Gate the topic scan + prune on this shape.
-const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // --- SyncService ---
 
@@ -968,8 +961,12 @@ export class SyncService extends EventEmitter {
     this.pushing = true;
 
     try {
-      // Update conversation index before push
-      this.updateConversationIndex();
+      // Plan 2c: the legacy conversation-index is FROZEN — no longer maintained
+      // on push. The Conversation Store (~/YouCoded/Personal/Conversations/) is
+      // authoritative for titles + flags now; the index file stays readable for
+      // residual legacy-only rows (session-browser's readIndexMeta / readTopic
+      // fallback). Full index retirement (delete the read path + file) is
+      // deferred to a future task. (was: this.updateConversationIndex())
 
       // Acquire lock
       if (!this.acquireLock()) {
@@ -1073,145 +1070,14 @@ export class SyncService extends EventEmitter {
   }
 
   // =========================================================================
-  // Conversation Index Management
+  // Conversation Index Management (FROZEN — read-only after Plan 2c)
   // =========================================================================
-
-  /** Scan topic files and upsert into conversation-index.json. */
-  updateConversationIndex(): void {
-    const topicsDir = path.join(this.claudeDir, 'topics');
-    if (!this.dirExists(topicsDir)) return;
-
-    // Read existing index
-    let index: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-    if (!index.sessions) index.sessions = {};
-
-    const slug = this.getCurrentSlug();
-    const device = os.hostname();
-    const now = Date.now();
-    const pruneThreshold = now - INDEX_PRUNE_DAYS * 24 * 60 * 60 * 1000;
-
-    // Scan topic files
-    let files: string[];
-    try { files = fs.readdirSync(topicsDir); } catch { return; }
-
-    for (const file of files) {
-      if (!file.startsWith('topic-')) continue;
-      const sessionId = file.replace(/^topic-/, '');
-      // Phantom-id guard: don't CREATE a new index entry from a topic file
-      // whose id isn't a canonical UUID (these come from auto-title-write
-      // typos and point at no transcript). But still allow updating an entry
-      // that already exists under a non-UUID id — setSessionFlag() can seed
-      // one legitimately (a user tagged the session before its topic file
-      // existed; the flag-bearing entry must get its real topic). The prune
-      // loop below self-heals leftover flagless non-UUID rows.
-      if (!SESSION_UUID_RE.test(sessionId) && !index.sessions[sessionId]) continue;
-      const filePath = path.join(topicsDir, file);
-
-      try {
-        const topic = fs.readFileSync(filePath, 'utf8').trim();
-        if (!topic || topic === 'New Session') continue;
-
-        const stat = fs.statSync(filePath);
-        const lastActive = stat.mtime.toISOString();
-
-        // Lift any v1 legacy fields into flags before comparing / merging.
-        const existing = index.sessions[sessionId]
-          ? migrateEntry(index.sessions[sessionId])
-          : undefined;
-
-        // Only upsert if newer than existing entry
-        if (existing && new Date(existing.lastActive).getTime() >= stat.mtimeMs) {
-          // Still write back the migrated form in case legacy fields were present.
-          if (existing !== index.sessions[sessionId]) index.sessions[sessionId] = existing;
-          continue;
-        }
-
-        // Preserve user-set flags across topic-file-driven upserts so a topic
-        // rename doesn't clobber complete/priority/helpful.
-        index.sessions[sessionId] = {
-          topic,
-          lastActive,
-          slug,
-          device,
-          ...(existing?.flags ? { flags: { ...existing.flags } } : {}),
-        };
-      } catch {}
-    }
-
-    // Prune old entries, but skip epoch-sentinel entries. Those are seeded by
-    // setSessionFlag() when a user tags a session before its topic file exists;
-    // epoch is older than any prune threshold, so without this guard the
-    // pending entry (and its flag) would be deleted immediately on next push.
-    // Also self-heal phantom entries: malformed session ids carry no
-    // transcript and were created by title-write typos — but only delete them
-    // when they hold NO user flags (deleting a user's tag is worse than
-    // carrying a dead row).
-    for (const [sid, entry] of Object.entries(index.sessions)) {
-      const migrated = migrateEntry(entry);
-      const hasFlags = Object.keys(migrated.flags || {}).length > 0;
-      if (!SESSION_UUID_RE.test(sid) && !hasFlags) {
-        delete index.sessions[sid];
-        continue;
-      }
-      const ts = new Date(entry.lastActive).getTime();
-      if (ts === 0) continue;
-      if (ts < pruneThreshold) {
-        delete index.sessions[sid];
-      }
-    }
-
-    this.atomicWrite(this.conversationIndexPath, JSON.stringify(index, null, 2));
-  }
-
-  /** Merge a remote conversation index with the local one. Base entry fields
-   *  follow latest-lastActive-wins; each flag merges independently by its own
-   *  updatedAt so marking/unmarking on any device doesn't need fresher activity. */
-  mergeConversationIndex(remotePath: string): void {
-    const remote: ConversationIndex = this.readJson(remotePath) || { version: 1, sessions: {} };
-    const local: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-
-    const merged: ConversationIndex = { version: 1, sessions: { ...local.sessions } };
-
-    for (const [sid, rawRemote] of Object.entries(remote.sessions || {})) {
-      const remoteEntry = migrateEntry(rawRemote);
-      const rawLocal = merged.sessions[sid];
-      const localEntry = rawLocal ? migrateEntry(rawLocal) : undefined;
-
-      // Base entry: latest lastActive wins for topic/slug/device.
-      let baseEntry: ConversationIndexEntry;
-      if (!localEntry || new Date(remoteEntry.lastActive).getTime() > new Date(localEntry.lastActive).getTime()) {
-        baseEntry = { ...remoteEntry };
-      } else {
-        baseEntry = { ...localEntry };
-      }
-
-      // Per-flag merge. Union of all flag names seen on either side; whichever
-      // side has the larger updatedAt wins for that flag.
-      const flagNames = new Set<string>([
-        ...Object.keys(localEntry?.flags || {}),
-        ...Object.keys(remoteEntry.flags || {}),
-      ]);
-      const mergedFlags: Record<string, SessionFlagState> = {};
-      for (const name of flagNames) {
-        const l = localEntry?.flags?.[name];
-        const r = remoteEntry.flags?.[name];
-        const lTs = l ? new Date(l.updatedAt).getTime() : 0;
-        const rTs = r ? new Date(r.updatedAt).getTime() : 0;
-        const winner = rTs > lTs ? r : l;
-        if (winner) mergedFlags[name] = winner;
-      }
-      if (Object.keys(mergedFlags).length > 0) baseEntry.flags = mergedFlags;
-      else delete baseEntry.flags;
-
-      // Never write legacy fields — the migrated shape is the canonical form now.
-      delete (baseEntry as any).complete;
-      delete (baseEntry as any).completeUpdatedAt;
-
-      merged.sessions[sid] = baseEntry;
-    }
-
-    this.atomicWrite(this.conversationIndexPath, JSON.stringify(merged, null, 2));
-  }
+  //
+  // The legacy conversation-index.json WRITE methods (updateConversationIndex,
+  // mergeConversationIndex, setSessionFlag) were deleted in Plan 2c. Titles +
+  // flags are now owned by the Conversation Store. Only getAllSessionFlags
+  // (read-only) survives here; session-browser reads the frozen index directly
+  // (readIndexMeta / readTopic fallback) for residual legacy-only rows.
 
   /** Read all session flags (from the normalized index, migrating legacy fields).
    *  Returns { sessionId: { flagName: boolean } } for flags whose value is truthy. */
@@ -1228,62 +1094,6 @@ export class SyncService extends EventEmitter {
       if (Object.keys(onFlags).length > 0) out[sid] = onFlags;
     }
     return out;
-  }
-
-  /** Set a named flag on a session. Fresh updatedAt timestamp so cross-device
-   *  merge honors latest-writer-wins per-flag. Creates the entry if missing.
-   *
-   *  Seeding an unknown session is the tricky case: a naive "lastActive: now"
-   *  seed corrupted cross-device merge (local bare stub beat real remote entry
-   *  by mere seconds) and blocked the next topic scan from writing the real
-   *  topic (scan skips when existing.lastActive >= file.mtime). Fix: try the
-   *  topic file first; if absent, seed lastActive=epoch so the next scan wins
-   *  and cross-device merge picks the peer's real entry. Epoch-seeded entries
-   *  are protected from the age-based prune in updateConversationIndex(). */
-  setSessionFlag(sessionId: string, flag: string, value: boolean): void {
-    const index: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-    if (!index.sessions) index.sessions = {};
-
-    const now = new Date().toISOString();
-    const existing = index.sessions[sessionId]
-      ? migrateEntry(index.sessions[sessionId])
-      : null;
-
-    if (existing) {
-      const flags = { ...(existing.flags || {}) };
-      flags[flag] = { value: !!value, updatedAt: now };
-      index.sessions[sessionId] = { ...existing, flags };
-    } else {
-      // Try to populate from the topic file if it already exists on disk.
-      const topicFilePath = path.join(this.claudeDir, 'topics', `topic-${sessionId}`);
-      let topic = 'Untitled';
-      let lastActive = new Date(0).toISOString();   // epoch = "pending topic scan"
-      let slug = '';
-      try {
-        const stat = fs.statSync(topicFilePath);
-        const content = fs.readFileSync(topicFilePath, 'utf8').trim();
-        if (content && content !== 'New Session') {
-          topic = content;
-          lastActive = stat.mtime.toISOString();
-          slug = this.getCurrentSlug();
-        }
-      } catch {
-        // Topic file doesn't exist yet — stick with the epoch sentinel.
-      }
-
-      index.sessions[sessionId] = {
-        topic,
-        lastActive,
-        slug,
-        device: os.hostname(),
-        flags: { [flag]: { value: !!value, updatedAt: now } },
-      };
-    }
-
-    this.atomicWrite(this.conversationIndexPath, JSON.stringify(index, null, 2));
-    // NOTE: the 30s-debounced index-only backup push was removed
-    // (sync-legacy-demolition). The tag is persisted locally here; it now travels
-    // via the sync-spaces conversation store, not the legacy backup path.
   }
 
   // =========================================================================

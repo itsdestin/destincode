@@ -2138,24 +2138,22 @@ export function registerIpcHandlers(
   });
 
   // Set a named flag on a session (complete, priority, helpful). Persists in
-  // conversation-index.json via SyncService (so it rides the existing
-  // backup/downsync pipeline) and broadcasts SESSION_META_CHANGED so any open
-  // resume browser refreshes. Accepts either a Claude session ID (as stored in
-  // the index) or a desktop session ID — the desktop ID is resolved via
+  // the Conversation Store (~/YouCoded/Personal/Conversations/) via
+  // noteFlagChanged, and broadcasts SESSION_META_CHANGED so any open resume
+  // browser refreshes. Accepts either a Claude session ID (as stored in the
+  // store) or a desktop session ID — the desktop ID is resolved via
   // sessionIdMap. Unknown flag names are rejected server-side so a typo
   // surfaces as an error rather than silently writing dead data.
   ipcMain.handle(IPC.SESSION_SET_FLAG, async (_event, sessionId: string, flag: string, value: boolean) => {
-    const svc = getSyncService();
-    if (!svc) return { ok: false, error: 'sync service unavailable' };
     if (!SESSION_FLAG_NAMES.includes(flag as SessionFlagName)) {
       return { ok: false, error: `unknown flag: ${flag}` };
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     try {
-      svc.setSessionFlag(resolved, flag, !!value);
-      // Dual-write into the Conversation Store (Phase 2a). The legacy index
-      // above is removed in Plan 2c; until then both carry flags so a rollback
-      // never loses them. safeWrite semantics live inside noteFlagChanged.
+      // Plan 2c: flags are STORE-ONLY now. The legacy conversation-index
+      // dual-write (svc.setSessionFlag) was removed — the Conversation Store is
+      // the sole authority for flags; the frozen legacy index is read-only for
+      // residual legacy-only rows. safeWrite semantics live inside noteFlagChanged.
       //
       // Phantom-record gate (review fix 5): only write when `resolved` is
       // actually a CLAUDE id. Either the mapping is known (sessionId was a
@@ -2165,8 +2163,10 @@ export function registerIpcHandlers(
       // session before its SessionStart hook establishes the mapping would
       // seed a flag-only record keyed by the desktop randomUUID — UUID-shaped
       // (passes the store's id guard), synced to every device, and never
-      // pruned (flagged records are deliberately kept). The legacy index above
-      // keeps the flag either way, so nothing is lost while gated.
+      // pruned (flagged records are deliberately kept). When gated out, the
+      // flag re-applies once the SessionStart hook establishes the mapping and
+      // the user (or a re-flag) drives it again — the store is store-only now,
+      // so there's no legacy index still catching it in the meantime.
       if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
         noteFlagChanged(resolved, flag, !!value);
       }

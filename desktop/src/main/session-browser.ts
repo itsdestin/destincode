@@ -17,11 +17,14 @@ const CONVERSATION_INDEX_PATH = path.join(CLAUDE_DIR, 'conversation-index.json')
  *  map AND the topic (display name). Lifts v1 legacy `complete` into the flags
  *  shape so older entries still show up.
  *
- *  The conversation index is the *durable* name store — it keeps a session's
- *  topic for 30 days (INDEX_PRUNE_DAYS) and syncs across devices. The
- *  `topics/topic-<id>` files are the *ephemeral* store — pruned by the
- *  auto-title hook and never synced. The Resume Browser reads the file first
- *  and falls back to `topics` here when the file is gone (see readTopic). */
+ *  As of Plan 2c the conversation index is FROZEN (read-only) — the Conversation
+ *  Store is now the durable, cross-device name/flag store. This read path stays
+ *  purely for residual legacy-only rows that predate the store: it holds whatever
+ *  topics/flags were written before the index was frozen. The `topics/topic-<id>`
+ *  files are the *ephemeral* store — pruned by the auto-title hook and never
+ *  synced. The Resume Browser reads the topic file first and falls back to this
+ *  frozen index here when the file is gone (see readTopic), then the store
+ *  overlay in listPastSessions wins over both for store-backed rows. */
 function readIndexMeta(): {
   flags: Record<string, Record<string, boolean>>;
   topics: Record<string, string>;
@@ -395,10 +398,16 @@ export async function listPastSessions(activeSessionIds?: Set<string>): Promise<
         // reserved flags, turns `tag:<id>` keys into tags[], and passes the note.
         const { flags, tags, note } = extractStoreMeta(rec);
         if (legacy) {
-          // Overlay store metadata onto the local row. A literal 'Untitled'
-          // title is a PLACEHOLDER, not a name — older clients synced such topic
-          // files (see docs/PITFALLS.md → Resume Browser) — so it must never
-          // clobber a real derived name.
+          // Overlay store metadata onto the local row. TITLE PRECEDENCE for a
+          // STORE-BACKED row (Plan 2c — store is authoritative for titles):
+          //   1. record.title (the store)  ← FIRST, wins whenever it's a real name
+          //   2. legacy.name (topic file > frozen index > transcript-derived > 'Untitled')
+          // i.e. the store title wins outright; the topic/index/derived chain is
+          // only a fallback when the store has no real title. A literal 'Untitled'
+          // store title is a PLACEHOLDER, not a name — older clients synced such
+          // topic files (see docs/PITFALLS.md → Resume Browser) — so it must never
+          // clobber a real derived name; it falls through to legacy.name instead.
+          // (Legacy, non-store rows below keep the pure topic>index>derived chain.)
           legacy.name = rec.title && rec.title !== 'Untitled' ? rec.title : legacy.name;
           legacy.lastModified = Math.max(legacy.lastModified, Date.parse(rec.lastActive) || 0);
           if (Object.keys(flags).length) legacy.flags = flags;
