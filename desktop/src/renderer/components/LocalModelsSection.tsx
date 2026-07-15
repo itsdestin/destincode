@@ -1,8 +1,9 @@
 // Settings → Local Models (Phase 1 Plan C, Task 9). The in-app local-model
-// manager: engine controls, a curated catalog, installed models, a Hugging Face
-// search, and detectors for other local apps (Ollama / LM Studio). Desktop-only
-// surface — the whole section is gated on window.claude.native.supported so
-// production builds (native.supported false until Phase 2) render nothing.
+// manager: engine controls, ONE search-driven model browser (recommended +
+// installed by default, filtering + Hugging Face search as you type), and
+// detectors for other local apps (Ollama / LM Studio). Desktop-only surface —
+// the whole section is gated on window.claude.native.supported so production
+// builds (native.supported false until Phase 2) render nothing.
 //
 // Styling mirrors ProvidersSection: bg-well / bg-inset cards, border-edge-dim,
 // plain-word status (never ●◐○ glyphs), consequence-gated destructive actions.
@@ -10,7 +11,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
-  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelTier,
+  InstalledLocalModel, DetectedEndpoint, HFSearchHit,
 } from '../../shared/model-manager-types';
 
 // quants() decorates every option with a GPU-aware fit label.
@@ -28,40 +29,25 @@ function fitColor(fit: FitEstimate['fit']): string {
   return fit === 'fits' ? 'text-green-600' : fit === 'tight' ? 'text-amber-500' : 'text-red-500';
 }
 
-const TIERS: { tier: ModelTier; label: string }[] = [
-  { tier: 'small', label: 'Small' },
-  { tier: 'everyday', label: 'Everyday' },
-  { tier: 'large', label: 'Large' },
-];
-
 // The few quants a non-technical user should see first (spec §4 — a raw 15–24
 // row list is hostile). Everything else hides behind "Show all N".
 const RECOMMENDED_QUANTS = new Set(['UD-Q4_K_XL', 'Q4_K_M', 'Q8_0']);
 
 const key = (repo: string, quant: string) => `${repo}::${quant}`;
 
-// Per-curated-card resolution state (size + fit resolved LAZILY per repo).
-type CardState =
-  | { state: 'loading' }
-  | { state: 'ready'; chosen: QuantWithFit }
-  | { state: 'unavailable' };
-
-export default function LocalModelsSection() {
+export default function LocalModelsSection({ embedded = false }: { embedded?: boolean } = {}) {
   // Gate the ENTIRE section on native support (same pattern as ProvidersSection).
   const supported = window.claude?.native?.supported === true;
 
-  // ── Download progress (section-level, routed to cards/rows by downloadId) ──
-  // One subscription; every card + installed in-progress row reads this map.
+  // One download subscription for the whole section; routed to rows by downloadId.
   const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({});
   // Full QuantOption objects, keyed repo::quant. download() takes the OBJECT
   // (not a string), and part-1-basename (for Discard's delete) comes from its
-  // files[]. Populated whenever we fetch quants (card fetch or search expand).
+  // files[]. Populated whenever a card resolves its quants; shared with the browser.
   const quantOptsByKeyRef = useRef<Record<string, QuantWithFit>>({});
 
   const [curated, setCurated] = useState<CuratedModel[] | null>(null);
   const [installed, setInstalled] = useState<InstalledLocalModel[] | null>(null);
-  const [cards, setCards] = useState<Record<string, CardState>>({});
-  const cardsRef = useRef<Record<string, CardState>>({}); // mirror for dedup
 
   const refreshInstalled = useCallback(async () => {
     try { setInstalled(await window.claude.models.installed() as InstalledLocalModel[]); }
@@ -81,65 +67,31 @@ export default function LocalModelsSection() {
     return off;
   }, [supported, refreshInstalled]);
 
-  const setCard = useCallback((repo: string, val: CardState) => {
-    cardsRef.current = { ...cardsRef.current, [repo]: val };
-    setCards(cardsRef.current);
-  }, []);
-
-  // Resolve a curated card's default-quant size + fit lazily. Skips a repo that
-  // is already loading/ready (unless forced by a retry tap). One dead repo can
-  // never blank the whole section — a rejected quants() maps to 'unavailable'.
-  const fetchQuantsFor = useCallback(async (model: CuratedModel, force = false) => {
-    const repo = model.hfRepo;
-    const cur = cardsRef.current[repo];
-    if (!force && cur && (cur.state === 'loading' || cur.state === 'ready')) return;
-    setCard(repo, { state: 'loading' });
-    try {
-      const opts = await window.claude.models.quants(repo) as QuantWithFit[];
-      // Stash every option so download()/resume()/part1Id can resolve later.
-      for (const o of opts) quantOptsByKeyRef.current[key(repo, o.quant)] = o;
-      const chosen = opts.find((o) => o.quant === model.quantDefault) ?? opts[0];
-      setCard(repo, chosen ? { state: 'ready', chosen } : { state: 'unavailable' });
-    } catch {
-      setCard(repo, { state: 'unavailable' });
-    }
-  }, [setCard]);
-
   if (!supported) return null;
 
   return (
     <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Local Models</h3>
+      {!embedded && (
+        <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Local Models</h3>
+      )}
 
       <div className="space-y-4">
-        {/* 1 — Engine card (with the Plan C detail controls). */}
+        {/* Engine controls (install / backend / context length). */}
         <EngineCard showDetails />
 
-        {/* 2 — Recommended models, grouped by tier. */}
-        <RecommendedModels
+        {/* One search-driven browser: installed + recommended by default, then
+            filters those AND searches Hugging Face as the user types. Replaces
+            the old separate Recommended / Installed / Add-from-HF sections. */}
+        <ModelBrowser
           curated={curated}
-          cards={cards}
-          downloads={downloads}
-          quantOptsByKeyRef={quantOptsByKeyRef}
-          onEnsureQuants={fetchQuantsFor}
-        />
-
-        {/* 3 — Installed models + in-progress/partial downloads. */}
-        <InstalledModels
           installed={installed}
           downloads={downloads}
           quantOptsByKeyRef={quantOptsByKeyRef}
-          onRefresh={refreshInstalled}
+          onRefreshInstalled={refreshInstalled}
           setDownloads={setDownloads}
         />
 
-        {/* 4 — Add from Hugging Face (search). */}
-        <HuggingFaceSearch
-          downloads={downloads}
-          quantOptsByKeyRef={quantOptsByKeyRef}
-        />
-
-        {/* 5 — Other local apps (Ollama / LM Studio). */}
+        {/* Other local apps (Ollama / LM Studio). */}
         <OtherLocalApps />
       </div>
     </section>
@@ -155,7 +107,7 @@ function activeDownload(downloads: Record<string, DownloadProgress>, repo: strin
   );
 }
 
-// A small progress line + Cancel, shared by cards and search rows.
+// A small progress line + Cancel, shared by cards and rows.
 function DownloadProgressRow({ dl }: { dl: DownloadProgress }) {
   const pct = dl.totalBytes > 0 ? Math.min(100, Math.round((dl.receivedBytes / dl.totalBytes) * 100)) : 0;
   return (
@@ -179,202 +131,298 @@ function DownloadProgressRow({ dl }: { dl: DownloadProgress }) {
   );
 }
 
-// ── 2. Recommended models ────────────────────────────────────────────────────
+// ── Model browser (recommended + installed + search, one filterable list) ────
 
-function RecommendedModels({
-  curated, cards, downloads, quantOptsByKeyRef, onEnsureQuants,
+function ModelBrowser({
+  curated, installed, downloads, quantOptsByKeyRef, onRefreshInstalled, setDownloads,
 }: {
   curated: CuratedModel[] | null;
-  cards: Record<string, CardState>;
+  installed: InstalledLocalModel[] | null;
   downloads: Record<string, DownloadProgress>;
   quantOptsByKeyRef: React.MutableRefObject<Record<string, QuantWithFit>>;
-  onEnsureQuants: (model: CuratedModel, force?: boolean) => Promise<void>;
+  onRefreshInstalled: () => Promise<void>;
+  setDownloads: React.Dispatch<React.SetStateAction<Record<string, DownloadProgress>>>;
 }) {
-  // Expand the FIRST non-empty tier by default so the panel shows content
-  // without a click, but the others stay collapsed to cap the quants() fan-out.
-  const [expanded, setExpanded] = useState<Record<ModelTier, boolean>>({ small: false, everyday: false, large: false });
-  const didInit = useRef(false);
+  const [query, setQuery] = useState('');
+  // Hugging Face results for the current query (null = not searched this query).
+  const [hfHits, setHfHits] = useState<HFSearchHit[] | null>(null);
+  const [hfState, setHfState] = useState<'idle' | 'loading' | 'error'>('idle');
+  // Which repo is expanded to reveal its full quant list (one at a time).
+  const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
 
-  const modelsFor = useCallback((tier: ModelTier) => (curated ?? []).filter((m) => m.tier === tier), [curated]);
-
-  // Default-expand + fetch the first non-empty tier once curated lands.
+  // Debounced Hugging Face search. Empty/short query clears HF results so the
+  // list falls back to installed + recommended only.
   useEffect(() => {
-    if (!curated || didInit.current) return;
-    const first = TIERS.find(({ tier }) => modelsFor(tier).length > 0);
-    if (!first) { didInit.current = true; return; }
-    didInit.current = true;
-    setExpanded((prev) => ({ ...prev, [first.tier]: true }));
-    for (const m of modelsFor(first.tier)) void onEnsureQuants(m);
-  }, [curated, modelsFor, onEnsureQuants]);
+    const q = query.trim();
+    if (q.length < 2) { setHfHits(null); setHfState('idle'); return; }
+    let alive = true;
+    setHfState('loading');
+    const t = setTimeout(async () => {
+      try {
+        const hits = await window.claude.models.search(q) as HFSearchHit[];
+        if (alive) { setHfHits(hits); setHfState('idle'); }
+      } catch {
+        if (alive) { setHfHits([]); setHfState('error'); }
+      }
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [query]);
 
-  const toggleTier = (tier: ModelTier) => {
-    setExpanded((prev) => {
-      const next = !prev[tier];
-      // On first expand, resolve size + fit for that tier's cards only.
-      if (next) for (const m of modelsFor(tier)) void onEnsureQuants(m);
-      return { ...prev, [tier]: next };
-    });
-  };
+  const q = query.trim().toLowerCase();
+  const matches = (...fields: (string | null | undefined)[]) =>
+    !q || fields.some((f) => (f ?? '').toLowerCase().includes(q));
+
+  // Installed (filtered) + in-progress / partial downloads.
+  const installedFiltered = (installed ?? []).filter((m) => matches(m.id, m.quant, m.quantDescription));
+  const partials = Object.values(downloads).filter((d) => d.state !== 'done' && matches(d.repo, d.quant));
+
+  // Recommended (filtered).
+  const curatedFiltered = (curated ?? []).filter((m) => matches(m.label, m.hfRepo, m.notes));
+
+  // Hugging Face matches that aren't already a recommended card (deduped).
+  const curatedRepos = new Set((curated ?? []).map((c) => c.hfRepo.toLowerCase()));
+  const hfFiltered = (hfHits ?? []).filter((h) => !curatedRepos.has(h.repo.toLowerCase()));
+
+  const searching = q.length >= 2;
+  const nothing =
+    installedFiltered.length === 0 && partials.length === 0 && curatedFiltered.length === 0 &&
+    (!searching || (hfState === 'idle' && hfFiltered.length === 0));
+
+  const toggle = (repo: string) => setExpandedRepo((cur) => (cur === repo ? null : repo));
 
   return (
     <div className="rounded-lg border border-edge-dim bg-well px-3 py-2.5">
-      <p className="text-xs text-fg font-medium mb-2">Recommended models</p>
-      {curated === null ? (
+      <p className="text-xs text-fg font-medium mb-2.5">Models</p>
+
+      {/* Search — filters recommended/installed locally, searches Hugging Face. */}
+      <div className="relative mb-3">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search models (e.g. qwen, llama)…"
+          aria-label="Search models"
+          className="w-full text-xs bg-inset border border-edge-dim rounded-lg pl-3 pr-8 py-2 text-fg focus:outline-none focus:border-accent"
+        />
+        {query && (
+          <button
+            onClick={() => setQuery('')}
+            aria-label="Clear search"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-muted hover:text-fg"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {curated === null || installed === null ? (
         <p className="text-[11px] text-fg-muted px-1">Loading…</p>
-      ) : curated.length === 0 ? (
-        <p className="text-[11px] text-fg-muted px-1">No recommendations available.</p>
       ) : (
         <div className="space-y-3">
-          {TIERS.map(({ tier, label }) => {
-            const models = modelsFor(tier);
-            if (models.length === 0) return null;
-            const isOpen = expanded[tier];
-            return (
-              <div key={tier}>
-                <button
-                  onClick={() => toggleTier(tier)}
-                  className="w-full flex items-center gap-1.5 text-left"
-                >
-                  <svg className={`w-3 h-3 text-fg-muted transition-transform ${isOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
-                  <span className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">{label}</span>
-                </button>
-                {isOpen && (
-                  <div className="space-y-2 mt-2">
-                    {models.map((m) => (
-                      <RecommendedCard
-                        key={m.id}
-                        model={m}
-                        card={cards[m.hfRepo]}
-                        downloads={downloads}
-                        quantOptsByKeyRef={quantOptsByKeyRef}
-                        onRetry={() => void onEnsureQuants(m, true)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {/* Installed (+ in-progress) */}
+          {(installedFiltered.length > 0 || partials.length > 0) && (
+            <div className="space-y-2">
+              <p className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Installed</p>
+              {installedFiltered.map((m) => (
+                <InstalledRow key={m.id} model={m} onRefresh={onRefreshInstalled} />
+              ))}
+              {partials.map((dl) => (
+                <PartialRow
+                  key={dl.downloadId}
+                  dl={dl}
+                  quantOptsByKeyRef={quantOptsByKeyRef}
+                  onRefresh={onRefreshInstalled}
+                  setDownloads={setDownloads}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Recommended (label changes to "matches" while filtering) */}
+          {curatedFiltered.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">
+                {q ? 'Recommended matches' : 'Recommended'}
+              </p>
+              {curatedFiltered.map((m) => (
+                <RepoCard
+                  key={m.id}
+                  repo={m.hfRepo}
+                  label={m.label}
+                  sub={m.notes}
+                  preferredQuant={m.quantDefault}
+                  autoResolve            /* curated: resolve size/fit up front */
+                  downloads={downloads}
+                  quantOptsByKeyRef={quantOptsByKeyRef}
+                  expanded={expandedRepo === m.hfRepo}
+                  onToggle={() => toggle(m.hfRepo)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Hugging Face — only while actively searching */}
+          {searching && (
+            <div className="space-y-2">
+              <p className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">More on Hugging Face</p>
+              {hfState === 'loading' && <p className="text-[11px] text-fg-muted px-1">Searching Hugging Face…</p>}
+              {hfState === 'error' && <p className="text-[11px] text-red-500 px-1">Couldn't reach Hugging Face.</p>}
+              {hfState === 'idle' && hfFiltered.length === 0 && (
+                <p className="text-[11px] text-fg-muted px-1">No other models found.</p>
+              )}
+              {hfFiltered.map((h) => (
+                <RepoCard
+                  key={h.repo}
+                  repo={h.repo}
+                  label={h.repo}
+                  sub={`${h.downloads.toLocaleString()} downloads`}
+                  autoResolve={false}    /* HF: resolve only when expanded (caps fan-out) */
+                  downloads={downloads}
+                  quantOptsByKeyRef={quantOptsByKeyRef}
+                  expanded={expandedRepo === h.repo}
+                  onToggle={() => toggle(h.repo)}
+                />
+              ))}
+            </div>
+          )}
+
+          {nothing && <p className="text-[11px] text-fg-muted px-1">No models match “{query}”.</p>}
         </div>
       )}
     </div>
   );
 }
 
-function RecommendedCard({
-  model, card, downloads, quantOptsByKeyRef, onRetry,
+// One model repo — used for both recommended (autoResolve) and Hugging Face
+// (resolve-on-expand) rows. Collapsed: name + a quick Download of the default
+// quant. Expanded: the full quant list (recommended-first, "Show all N").
+function RepoCard({
+  repo, label, sub, preferredQuant, autoResolve, downloads, quantOptsByKeyRef, expanded, onToggle,
 }: {
-  model: CuratedModel;
-  card: CardState | undefined;
+  repo: string;
+  label: string;
+  sub?: string;
+  preferredQuant?: string;
+  autoResolve: boolean;
   downloads: Record<string, DownloadProgress>;
   quantOptsByKeyRef: React.MutableRefObject<Record<string, QuantWithFit>>;
-  onRetry: () => void;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
-  const chosenQuant = card?.state === 'ready' ? card.chosen.quant : model.quantDefault;
-  const dl = activeDownload(downloads, model.hfRepo, chosenQuant);
-  // WHY: download() throws the purpose-built disk-guard refusal ("Not enough
-  // free space…") and "already downloading" — surface them or the click is a
-  // silent no-op + a renderer unhandledrejection.
+  const [quants, setQuants] = useState<QuantWithFit[] | null>(null);
+  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [showAll, setShowAll] = useState(false);
+  // WHY: download() throws the disk-guard refusal + "already downloading" —
+  // surface them or the click is a silent no-op + a renderer unhandledrejection.
   const [dlError, setDlError] = useState<string | null>(null);
 
-  const startDownload = async () => {
-    // download() takes the QuantOption OBJECT — prefer the resolved one, else
-    // the stashed default-quant option.
-    const opt = card?.state === 'ready' ? card.chosen : quantOptsByKeyRef.current[key(model.hfRepo, model.quantDefault)];
-    if (!opt) return; // still resolving — button is disabled in this state anyway
-    setDlError(null); // clear any prior failure before retrying
+  const loadQuants = useCallback(async () => {
+    setLoadState('loading');
     try {
-      await window.claude.models.download(model.hfRepo, opt);
-    } catch (e) {
-      setDlError(e instanceof Error ? e.message : 'Could not start the download.');
+      const opts = await window.claude.models.quants(repo) as QuantWithFit[];
+      // Stash every option so download()/resume()/part1Id can resolve later.
+      for (const o of opts) quantOptsByKeyRef.current[key(repo, o.quant)] = o;
+      setQuants(opts);
+      setLoadState('idle');
+    } catch {
+      setLoadState('error');
     }
+  }, [repo, quantOptsByKeyRef]);
+
+  // Curated cards resolve size/fit up front; HF cards resolve on first expand.
+  // One dead repo can never blank the list — a rejected quants() shows a retry.
+  useEffect(() => {
+    if ((autoResolve || expanded) && quants === null && loadState === 'idle') void loadQuants();
+  }, [autoResolve, expanded, quants, loadState, loadQuants]);
+
+  // The default quant to quick-download: the preferred one, else a recommended
+  // one, else the first.
+  const chosen = quants
+    ? ((preferredQuant && quants.find((o) => o.quant === preferredQuant))
+        || quants.find((o) => RECOMMENDED_QUANTS.has(o.quant))
+        || quants[0])
+    : undefined;
+  const dl = chosen ? activeDownload(downloads, repo, chosen.quant) : undefined;
+
+  const startDefault = async () => {
+    if (!chosen) return;
+    setDlError(null);
+    try { await window.claude.models.download(repo, chosen); }
+    catch (e) { setDlError(e instanceof Error ? e.message : 'Could not start the download.'); }
   };
+
+  // Recommended quants first; the rest hide behind "Show all N".
+  const recommended = (quants ?? []).filter((x) => RECOMMENDED_QUANTS.has(x.quant));
+  const rest = (quants ?? []).filter((x) => !RECOMMENDED_QUANTS.has(x.quant));
+  const visible = showAll ? [...recommended, ...rest] : (recommended.length > 0 ? recommended : (quants ?? []).slice(0, 3));
+  const hiddenCount = (quants ?? []).length - visible.length;
 
   return (
     <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-fg font-medium truncate">{model.label}</p>
-          {model.notes && <p className="text-[10px] text-fg-muted">{model.notes}</p>}
-          {/* Lazy size + fit line. */}
-          {(!card || card.state === 'loading') && (
-            <p className="text-[10px] text-fg-muted mt-0.5">Checking size…</p>
-          )}
-          {card?.state === 'ready' && (
-            <p className="text-[10px] mt-0.5">
-              <span className="text-fg-dim">{gb(card.chosen.totalSizeBytes)} · {card.chosen.quant}</span>
-              {' · '}
-              <span className={fitColor(card.chosen.fit.fit)}>{card.chosen.fit.label}</span>
-            </p>
-          )}
-          {card?.state === 'unavailable' && (
-            <button onClick={onRetry} className="text-[10px] text-amber-500 mt-0.5 hover:underline text-left">
-              Couldn't reach Hugging Face for this model — tap to retry
-            </button>
-          )}
-        </div>
-        {!dl && (
+      <div className="flex items-start gap-2">
+        <button onClick={onToggle} className="flex items-start gap-2 min-w-0 flex-1 text-left">
+          <svg className={`w-3 h-3 mt-1 text-fg-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs text-fg font-medium truncate">{label}</p>
+            {sub && <p className="text-[10px] text-fg-muted truncate">{sub}</p>}
+            {loadState === 'loading' && quants === null && (
+              <p className="text-[10px] text-fg-muted mt-0.5">Checking size…</p>
+            )}
+            {chosen && (
+              <p className="text-[10px] mt-0.5">
+                <span className="text-fg-dim">{gb(chosen.totalSizeBytes)} · {chosen.quant}</span>
+                {' · '}
+                <span className={fitColor(chosen.fit.fit)}>{chosen.fit.label}</span>
+              </p>
+            )}
+            {loadState === 'error' && quants === null && (
+              <p className="text-[10px] text-amber-500 mt-0.5">Couldn't reach Hugging Face — expand to retry</p>
+            )}
+          </div>
+        </button>
+        {chosen && !dl && (
           <button
-            onClick={() => void startDownload()}
-            disabled={card?.state !== 'ready'}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed shrink-0"
+            onClick={() => void startDefault()}
+            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
           >
             Download
           </button>
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
-      {/* Download-start failure (disk-guard refusal, already-downloading) —
-          shown verbatim; the guard message is designed to be user-facing. */}
-      {dlError && <p className="text-[10px] text-red-500 mt-1.5">{dlError}</p>}
-    </div>
-  );
-}
+      {dlError && <p className="text-[10px] text-red-500 mt-1">{dlError}</p>}
 
-// ── 3. Installed models ──────────────────────────────────────────────────────
-
-function InstalledModels({
-  installed, downloads, quantOptsByKeyRef, onRefresh, setDownloads,
-}: {
-  installed: InstalledLocalModel[] | null;
-  downloads: Record<string, DownloadProgress>;
-  quantOptsByKeyRef: React.MutableRefObject<Record<string, QuantWithFit>>;
-  onRefresh: () => Promise<void>;
-  setDownloads: React.Dispatch<React.SetStateAction<Record<string, DownloadProgress>>>;
-}) {
-  // In-progress / partial downloads (anything not 'done'): shown with Resume /
-  // Discard so a cancelled or crashed download isn't stranded on disk.
-  const partials = Object.values(downloads).filter((d) => d.state !== 'done');
-
-  return (
-    <div className="rounded-lg border border-edge-dim bg-well px-3 py-2.5">
-      <p className="text-xs text-fg font-medium mb-2">Installed models</p>
-
-      {installed === null ? (
-        <p className="text-[11px] text-fg-muted px-1">Loading…</p>
-      ) : installed.length === 0 && partials.length === 0 ? (
-        <p className="text-[11px] text-fg-muted px-1">No models downloaded yet.</p>
-      ) : (
-        <div className="space-y-2">
-          {installed?.map((m) => (
-            <InstalledRow key={m.id} model={m} onRefresh={onRefresh} />
-          ))}
-          {partials.map((dl) => (
-            <PartialRow
-              key={dl.downloadId}
-              dl={dl}
-              quantOptsByKeyRef={quantOptsByKeyRef}
-              onRefresh={onRefresh}
-              setDownloads={setDownloads}
-            />
-          ))}
+      {/* Expanded: the full quant list. */}
+      {expanded && (
+        <div className="mt-2 pl-5">
+          {loadState === 'loading' && <p className="text-[10px] text-fg-muted px-1">Loading versions…</p>}
+          {loadState === 'error' && (
+            <button onClick={() => void loadQuants()} className="text-[10px] text-amber-500 hover:underline px-1">
+              Couldn't reach Hugging Face — tap to retry
+            </button>
+          )}
+          {quants !== null && loadState !== 'loading' && (
+            <div className="space-y-1.5">
+              {visible.map((qq) => (
+                <QuantDownloadRow key={qq.quant} repo={repo} q={qq} downloads={downloads} />
+              ))}
+              {!showAll && hiddenCount > 0 && (
+                <button onClick={() => setShowAll(true)} className="text-[10px] text-fg-2 hover:underline px-1">
+                  Show all {(quants ?? []).length}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
+
+// ── Installed rows ───────────────────────────────────────────────────────────
 
 function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefresh: () => Promise<void> }) {
   const [confirming, setConfirming] = useState(false);
@@ -546,160 +594,10 @@ function PartialRow({
   );
 }
 
-// ── 4. Add from Hugging Face ─────────────────────────────────────────────────
-
-function HuggingFaceSearch({
-  downloads, quantOptsByKeyRef,
-}: {
-  downloads: Record<string, DownloadProgress>;
-  quantOptsByKeyRef: React.MutableRefObject<Record<string, QuantWithFit>>;
-}) {
-  const [query, setQuery] = useState('');
-  const [hits, setHits] = useState<HFSearchHit[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
-
-  const runSearch = async () => {
-    const q = query.trim();
-    if (!q) return;
-    setSearching(true);
-    setError(null);
-    setExpandedRepo(null);
-    try {
-      setHits(await window.claude.models.search(q) as HFSearchHit[]);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Search failed');
-      setHits([]);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  return (
-    <div className="rounded-lg border border-edge-dim bg-well px-3 py-2.5">
-      <p className="text-xs text-fg font-medium mb-2">Add from Hugging Face</p>
-
-      <div className="flex items-center gap-2">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') void runSearch(); }}
-          placeholder="Search GGUF models (e.g. qwen)"
-          aria-label="Search Hugging Face models"
-          className="flex-1 text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
-        />
-        <button
-          onClick={() => void runSearch()}
-          disabled={searching || query.trim().length === 0}
-          className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed shrink-0"
-        >
-          {searching ? 'Searching…' : 'Search'}
-        </button>
-      </div>
-
-      {error && <p className="text-[10px] text-red-500 mt-2">{error}</p>}
-
-      {hits !== null && !error && (
-        hits.length === 0 ? (
-          <p className="text-[11px] text-fg-muted mt-2 px-1">No models found.</p>
-        ) : (
-          <div className="space-y-2 mt-2">
-            {hits.map((hit) => (
-              <SearchHit
-                key={hit.repo}
-                hit={hit}
-                expanded={expandedRepo === hit.repo}
-                onToggle={() => setExpandedRepo((cur) => (cur === hit.repo ? null : hit.repo))}
-                downloads={downloads}
-                quantOptsByKeyRef={quantOptsByKeyRef}
-              />
-            ))}
-          </div>
-        )
-      )}
-    </div>
-  );
-}
-
-function SearchHit({
-  hit, expanded, onToggle, downloads, quantOptsByKeyRef,
-}: {
-  hit: HFSearchHit;
-  expanded: boolean;
-  onToggle: () => void;
-  downloads: Record<string, DownloadProgress>;
-  quantOptsByKeyRef: React.MutableRefObject<Record<string, QuantWithFit>>;
-}) {
-  const [quants, setQuants] = useState<QuantWithFit[] | null>(null);
-  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
-  const [showAll, setShowAll] = useState(false);
-
-  const loadQuants = useCallback(async () => {
-    setLoadState('loading');
-    try {
-      const opts = await window.claude.models.quants(hit.repo) as QuantWithFit[];
-      for (const o of opts) quantOptsByKeyRef.current[key(hit.repo, o.quant)] = o;
-      setQuants(opts);
-      setLoadState('idle');
-    } catch {
-      setLoadState('error');
-    }
-  }, [hit.repo, quantOptsByKeyRef]);
-
-  // Fetch quants the first time the hit is expanded.
-  useEffect(() => {
-    if (expanded && quants === null && loadState === 'idle') void loadQuants();
-  }, [expanded, quants, loadState, loadQuants]);
-
-  // Recommended quants first; the rest hide behind "Show all N".
-  const recommended = (quants ?? []).filter((q) => RECOMMENDED_QUANTS.has(q.quant));
-  const rest = (quants ?? []).filter((q) => !RECOMMENDED_QUANTS.has(q.quant));
-  const visible = showAll ? [...recommended, ...rest] : (recommended.length > 0 ? recommended : (quants ?? []).slice(0, 3));
-  const hiddenCount = (quants ?? []).length - visible.length;
-
-  return (
-    <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-      <button onClick={onToggle} className="w-full flex items-center gap-2 text-left">
-        <svg className={`w-3 h-3 text-fg-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-fg font-medium truncate">{hit.repo}</p>
-          <p className="text-[10px] text-fg-muted">{hit.downloads.toLocaleString()} downloads</p>
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="mt-2">
-          {loadState === 'loading' && <p className="text-[10px] text-fg-muted px-1">Loading versions…</p>}
-          {loadState === 'error' && (
-            <button onClick={() => void loadQuants()} className="text-[10px] text-amber-500 hover:underline px-1">
-              Couldn't reach Hugging Face — tap to retry
-            </button>
-          )}
-          {quants !== null && loadState !== 'loading' && (
-            <div className="space-y-1.5">
-              {visible.map((q) => (
-                <QuantDownloadRow key={q.quant} repo={hit.repo} q={q} downloads={downloads} />
-              ))}
-              {!showAll && hiddenCount > 0 && (
-                <button onClick={() => setShowAll(true)} className="text-[10px] text-fg-2 hover:underline px-1">
-                  Show all {(quants ?? []).length}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFit; downloads: Record<string, DownloadProgress> }) {
   const dl = activeDownload(downloads, repo, q.quant);
-  // WHY: same as the recommended card — the disk-guard / already-downloading
-  // throws must reach the user instead of vanishing into an unhandledrejection.
+  // WHY: same as the repo card — the disk-guard / already-downloading throws
+  // must reach the user instead of vanishing into an unhandledrejection.
   const [dlError, setDlError] = useState<string | null>(null);
 
   const startDownload = async () => {
@@ -738,7 +636,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
   );
 }
 
-// ── 5. Other local apps ──────────────────────────────────────────────────────
+// ── Other local apps ──────────────────────────────────────────────────────────
 
 const APP_NAME: Record<DetectedEndpoint['kind'], string> = {
   ollama: 'Ollama',
