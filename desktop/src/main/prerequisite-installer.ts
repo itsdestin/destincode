@@ -42,13 +42,23 @@ try { const w = require('which'); whichSync = w.sync; } catch { /* noop */ }
  * git URL, version flags, base64-ish API key) — none contain `cmd.exe`
  * metacharacters (& | > < ^ %), so `shell: true`'s relaxed quoting is safe.
  */
+/**
+ * Pure shell-flag decision for {@link runCommand} — exported for pinning tests.
+ * Returns true ONLY on Windows AND when the resolved command is a `.cmd`/`.bat`
+ * shim (the CVE-2024-27980 EINVAL case). Real `.exe`/bare paths return false so
+ * they keep the no-shell (`shell:false`) no-injection guarantee. Extracted so a
+ * unit test can pin the decision without spawning real processes.
+ */
+export function shouldUseShell(cmd: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
+}
+
 function runCommand(
   cmd: string,
   args: string[] = [],
   opts: ExecFileOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  const needsShell =
-    process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
+  const needsShell = shouldUseShell(cmd, process.platform);
   // Cast: we never pass `encoding: 'buffer'`, so stdout/stderr are strings.
   // The `shell: boolean` field is supported at runtime but the overloads in
   // @types/node default to the buffer-or-string union, so we narrow it here.
@@ -165,7 +175,8 @@ function persistPathToShellProfiles(dir: string): void {
  * Hardcoding System32 prevents relying on the app's potentially stale or
  * corrupted environment PATH to find the registry tool.
  */
-function getRegPath(): string {
+// exported for pinning tests (the quoted/unquoted asymmetry vs getPowerShellPath is load-bearing)
+export function getRegPath(): string {
   const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
   const regPath = path.join(systemRoot, 'System32', 'reg.exe');
   return fs.existsSync(regPath) ? `"${regPath}"` : 'reg';
@@ -183,7 +194,8 @@ function getRegPath(): string {
  * the filename and CreateProcess fails with ENOENT — verified empirically on
  * 2026-05-21 (the bug shipped briefly in the first PATH-hardening pass).
  */
-function getPowerShellPath(): string {
+// exported for pinning tests (must stay UNQUOTED — see the WHY comment above)
+export function getPowerShellPath(): string {
   const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
   const psPath = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   return fs.existsSync(psPath) ? psPath : 'powershell';
