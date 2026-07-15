@@ -36,4 +36,8 @@ export interface EngineModel {
   sizeBytes: number | null;
   loaded: boolean;         // convenience: state === 'loaded'. False from a cache scan.
   state: EngineModelState; // 'unloaded' when derived from a cache scan (engine not running)
+  /** While state === 'loading': bytes of the model resident in RAM so far (the
+   *  model child's VmRSS, monotonic + clamped to sizeBytes) — drives the "N GB /
+   *  M GB" progress bar. Undefined off Linux or when not loading. */
+  loadedBytes?: number;
 }
