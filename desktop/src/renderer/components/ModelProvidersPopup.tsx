@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
@@ -7,6 +7,7 @@ import { InfoPopover } from './InfoPopover';
 import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
+import type { ProviderStatus } from '../../shared/provider-types';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -167,7 +168,10 @@ function ClaudeCodeBlock({
     return () => { alive = false; };
   }, []);
 
-  const claudePrereq = state?.prerequisites.find((p) => p.name === 'claude');
+  // Guard `prerequisites` too — getState() can resolve to a state whose array
+  // is absent (e.g. a profile that never ran first-run), and `state?.` alone
+  // would still call .find on undefined.
+  const claudePrereq = state?.prerequisites?.find((p) => p.name === 'claude');
   const installed = claudePrereq?.status === 'installed';
   const signedIn = state?.authComplete === true;
 
@@ -236,10 +240,39 @@ function ClaudeCodeBlock({
 // ── 2. OpenRouter ────────────────────────────────────────────────────────────
 
 function OpenRouterBlock() {
+  // The OpenRouter builtin provider (stable id 'openrouter'). undefined = still
+  // loading; null = not found (shouldn't happen — it's builtin).
+  const [openrouter, setOpenrouter] = useState<ProviderStatus | null | undefined>(undefined);
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [testNote, setTestNote] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await window.claude.providers.list() as ProviderStatus[];
+      setOpenrouter(list.find((p) => p.id === 'openrouter' || p.type === 'openrouter') ?? null);
+    } catch {
+      setOpenrouter(null);
+    }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const connected = openrouter?.hasKey === true;
+
+  const runTest = async () => {
+    if (!openrouter) return;
+    setTestNote(null);
+    try {
+      const res: any = await window.claude.providers.test(openrouter.id);
+      setTestNote({ tone: res?.ok ? 'ok' : 'bad', text: res?.message ?? (res?.ok ? 'Connected.' : 'Could not verify the key.') });
+    } catch (e) {
+      setTestNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not test the connection.' });
+    }
+  };
+
   return (
     <section>
       <SectionHeader
-        title="OpenRouter"
+        title="OpenRouter/API"
         info={{
           label: 'About OpenRouter',
           body: (
@@ -250,36 +283,176 @@ function OpenRouterBlock() {
               </p>
               <p>
                 Instead of making a separate account with each one, you get one API key and YouCoded routes
-                your sessions through it. You pay OpenRouter directly for what you use.
+                your sessions through it. You pay OpenRouter directly for what you use. You can also add your
+                own direct provider keys or a custom endpoint below.
               </p>
             </>
           ),
         }}
       />
 
-      <div className="bg-well border border-edge-dim rounded-lg px-3 py-2.5 mb-3">
-        <p className="text-[11px] text-fg-dim leading-relaxed mb-2">To connect OpenRouter:</p>
-        <ol className="text-[11px] text-fg-2 leading-relaxed space-y-1 list-decimal pl-4">
-          <li>
-            Create a free account at{' '}
+      {/* OpenRouter connect state — the "To connect…" instructions + key entry
+          now live inside the Connect modal, not an always-on banner. */}
+      <div className="bg-inset/50 rounded-lg px-3 py-2.5 mb-3">
+        <div className="flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-fg font-medium">OpenRouter</p>
+            <p className="text-[10px] text-fg-muted">
+              {openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
+            </p>
+          </div>
+          <button
+            onClick={() => { setTestNote(null); setConnectOpen(true); }}
+            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
+          >
+            {connected ? 'Replace key' : 'Connect to OpenRouter'}
+          </button>
+        </div>
+        {connected && (
+          <div className="flex items-center gap-1.5 mt-2">
             <button
-              onClick={() => void window.claude.shell.openExternal('https://openrouter.ai')}
-              className="text-accent hover:underline"
+              onClick={() => void runTest()}
+              className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
             >
-              openrouter.ai
+              Test
             </button>
-            .
-          </li>
-          <li>Add a little credit and create an API key.</li>
-          <li>Paste the key into the OpenRouter row below and press Test.</li>
-        </ol>
+          </div>
+        )}
+        {testNote && (
+          <p className={`text-[10px] mt-2 ${testNote.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
+            {testNote.text}
+          </p>
+        )}
       </div>
 
-      {/* The actual provider controls — OpenRouter row, other direct-key
-          providers, and custom endpoints. Embedded: no standalone header, and
-          the local-engine row is hidden (it lives in Local Models below). */}
+      {/* Other API providers — direct keys (Anthropic/OpenAI/Google) + custom
+          endpoints. Embedded hides the openrouter + local-engine rows. */}
       <ProvidersSection embedded />
+
+      {connectOpen && openrouter && (
+        <ConnectOpenRouterModal
+          providerId={openrouter.id}
+          hasKey={connected}
+          onClose={() => setConnectOpen(false)}
+          onSaved={refresh}
+        />
+      )}
     </section>
+  );
+}
+
+// Mini modal: the "how to connect" steps + the API-key textbox, opened by the
+// Connect-to-OpenRouter button. Layer 3 so it stacks above the L2 Model
+// Providers popup. Saving sets the key and verifies it before closing.
+function ConnectOpenRouterModal({
+  providerId, hasKey, onClose, onSaved,
+}: {
+  providerId: string;
+  hasKey: boolean;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  useEscClose(true, onClose);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null);
+
+  const save = async () => {
+    const value = keyDraft.trim();
+    if (!value) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      await window.claude.providers.setKey(providerId, value);
+      // Verify immediately so the user gets a real Connected/failed signal.
+      const res: any = await window.claude.providers.test(providerId);
+      const ok = !!res?.ok;
+      setNote({ tone: ok ? 'ok' : 'bad', text: res?.message ?? (ok ? 'Connected.' : 'Saved, but the key could not be verified.') });
+      await onSaved();
+      if (ok) { setKeyDraft(''); setTimeout(onClose, 700); } // brief success flash, then close
+    } catch (e) {
+      setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not save the key.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <>
+      <Scrim layer={3} onClick={onClose} />
+      <OverlayPanel
+        layer={3}
+        role="dialog"
+        aria-modal={true}
+        aria-labelledby="connect-openrouter-title"
+        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-sm w-[calc(100%-2rem)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="shrink-0 border-b border-edge flex items-center justify-between px-4 py-3">
+          <h3 id="connect-openrouter-title" className="text-sm font-semibold text-fg">
+            {hasKey ? 'Replace OpenRouter key' : 'Connect OpenRouter'}
+          </h3>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          <ol className="text-[11px] text-fg-2 leading-relaxed space-y-1 list-decimal pl-4">
+            <li>
+              Create a free account at{' '}
+              <button
+                onClick={() => void window.claude.shell.openExternal('https://openrouter.ai')}
+                className="text-accent hover:underline"
+              >
+                openrouter.ai
+              </button>
+              .
+            </li>
+            <li>Add a little credit and create an API key.</li>
+            <li>Paste the key below and press Connect.</li>
+          </ol>
+
+          <input
+            type="password"
+            autoFocus
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void save(); }}
+            placeholder="Paste your OpenRouter API key"
+            aria-label="OpenRouter API key"
+            className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
+          />
+
+          {note && (
+            <p className={`text-[10px] ${note.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>{note.text}</p>
+          )}
+
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={onClose}
+              className="flex-1 text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => void save()}
+              disabled={busy || keyDraft.trim().length === 0}
+              className="flex-1 text-xs font-medium py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {busy ? 'Connecting…' : 'Connect'}
+            </button>
+          </div>
+        </div>
+      </OverlayPanel>
+    </>,
+    document.body,
   );
 }
 

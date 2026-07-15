@@ -103,10 +103,12 @@ const ADD_TYPE_OPTIONS: { value: ProviderType; label: string; needsBaseUrl?: boo
   { value: 'openai-compatible', label: 'Custom endpoint (OpenAI-compatible)', needsBaseUrl: true },
 ];
 
-// `embedded`: rendered inside the Model Providers popup, which supplies its own
-// "OpenRouter & other providers" heading and already gates on native support —
-// so we drop the standalone <h3> AND hide the local-engine row (its controls
-// live in the popup's Local Models section, not here).
+// `embedded`: rendered inside the Model Providers popup's "OpenRouter/API"
+// section, which supplies its own heading + a dedicated OpenRouter connect flow
+// and already gates on native support — so we drop the standalone <h3> AND hide
+// BOTH the local-engine row (managed in Local Models) and the openrouter row
+// (managed by the section's own Connect-to-OpenRouter control). What's left is
+// the "add your own API provider" list.
 export default function ProvidersSection({ embedded = false }: { embedded?: boolean } = {}) {
   // Gate the ENTIRE section on native support — hidden in production until
   // Phase 2 ungates. Read once (it's a static boolean, no IPC round-trip).
@@ -134,8 +136,11 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
 
   if (!supported) return null;
 
-  // In embedded mode the local-engine row is hidden (managed in Local Models).
-  const visibleRows = rows === null ? null : (embedded ? rows.filter((p) => p.type !== 'local-engine') : rows);
+  // In embedded mode the local-engine row (managed in Local Models) AND the
+  // openrouter row (managed by the section's own Connect control) are hidden.
+  const visibleRows = rows === null
+    ? null
+    : (embedded ? rows.filter((p) => p.type !== 'local-engine' && p.type !== 'openrouter') : rows);
 
   return (
     <section>
