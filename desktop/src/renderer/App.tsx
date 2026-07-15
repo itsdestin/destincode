@@ -724,7 +724,7 @@ function AppInner() {
     return unsubscribe;
   }, []);
 
-  // Native local-model residency → per-session ModelStateBanner (2026-07-14).
+  // Native local-model residency → per-session ModelLoadingBar (2026-07-14).
   // Main joins per-model engine state with session→model and pushes each native
   // session its bound model's state (loaded/loading/sleeping/unloaded).
   useEffect(() => {

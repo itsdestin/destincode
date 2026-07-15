@@ -413,7 +413,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     // Native model residency changed (loaded/loading/sleeping/unloaded). Purely
     // informational — does NOT touch the turn/attention machinery. Drives the
-    // ModelStateBanner (unloaded → reload; loading → loading indicator).
+    // ModelLoadingBar (unloaded → reload; loading → loading indicator).
     case 'NATIVE_MODEL_STATE_CHANGED': {
       const session = next.get(action.sessionId);
       if (!session) return state;
