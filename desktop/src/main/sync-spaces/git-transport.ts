@@ -11,20 +11,27 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { DEFAULT_IGNORES, MAX_SYNC_FILE_BYTES, conflictCopyName } from './guards';
+import { nextGcCounter } from './gc-policy';
 import type { PullResult, PushResult, SpaceVersion, SyncSpace, SyncTransport } from './types';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT = 5 * 60 * 1000; // mirrors sync-service.ts GIT_TIMEOUT
+const DEFAULT_GC_INTERVAL = 50;    // run a local git gc every 50th successful sync (spec §7)
+// Bound the recursive size walk so a pathological repo can never hang the probe.
+const SIZE_WALK_MAX_ENTRIES = 200_000;
 
 interface ExecResult { code: number; stdout: string; stderr: string; }
 
 export class GitTransport implements SyncTransport {
   private deviceName: string;
   private maxFileBytes: number;
+  private gcInterval: number;
 
-  constructor(opts: { deviceName: string; maxFileBytes?: number }) {
+  constructor(opts: { deviceName: string; maxFileBytes?: number; gcInterval?: number }) {
     this.deviceName = opts.deviceName;
     this.maxFileBytes = opts.maxFileBytes ?? MAX_SYNC_FILE_BYTES;
+    // Injectable so tests can force a gc after a couple of syncs instead of 50.
+    this.gcInterval = opts.gcInterval ?? DEFAULT_GC_INTERVAL;
   }
 
   private gitDir(space: SyncSpace): string {
@@ -227,5 +234,65 @@ export class GitTransport implements SyncTransport {
       const [commit, date, message] = line.split('\x1f');
       return { commit, date, message };
     });
+  }
+
+  private gcCounterFile(space: SyncSpace): string {
+    // Lives NEXT TO sync.git in the hidden dir — NOT in config.json, which is
+    // per-user/syncable; a maintenance counter is strictly per-device state.
+    return path.join(space.root, '.youcoded', 'gc-counter');
+  }
+
+  /** Increment the persisted per-space sync counter and, every Nth sync, run a
+   *  LOCAL `git gc --auto --quiet`. The hidden repos grow unbounded from
+   *  append-only transcript re-commits with no repack; this reclaims local disk
+   *  and keeps push sizes sane. WHY this is safe: `git gc` only repacks THIS
+   *  device's objects — it NEVER rewrites history (no force-push, no
+   *  filter-branch), so it can never desync a peer. Best-effort throughout: a
+   *  gc failure is swallowed (it just retries in another N syncs) and this
+   *  method never throws, so maintenance can't break a sync. */
+  async maybeGc(space: SyncSpace): Promise<void> {
+    const file = this.gcCounterFile(space);
+    let prev = 0;
+    try { prev = parseInt(fs.readFileSync(file, 'utf8').trim(), 10); } catch { /* missing/corrupt → 0 */ }
+    const { counter, shouldGc } = nextGcCounter(prev, this.gcInterval);
+    // Persist the incremented counter FIRST, even if gc then fails, so we don't
+    // retry gc every single sync after one failure.
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, String(counter));
+    } catch { /* can't persist → next sync recomputes from stale/absent file, harmless */ }
+    if (!shouldGc) return;
+    try {
+      // Inherits GIT_DIR/GIT_WORK_TREE via git(); --auto lets git skip if the
+      // repo doesn't actually need repacking, --quiet suppresses progress noise.
+      await this.git(space, ['gc', '--auto', '--quiet']);
+    } catch { /* best-effort; retries in another N syncs */ }
+  }
+
+  /** Recursive byte size of <root>/.youcoded/sync.git — feeds the engine's
+   *  large-history warning. Bounded (entry cap) and best-effort: returns 0 on
+   *  any error or a missing repo, and returns whatever was summed so far if the
+   *  walk trips its bound (a partial-but-nonzero size still trips the warning). */
+  async gitDirSizeBytes(space: SyncSpace): Promise<number> {
+    const root = this.gitDir(space);
+    let total = 0;
+    let visited = 0;
+    const walk = (dir: string): void => {
+      if (visited >= SIZE_WALK_MAX_ENTRIES) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (visited >= SIZE_WALK_MAX_ENTRIES) return;
+        visited++;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.isFile()) { try { total += fs.statSync(full).size; } catch { /* raced away */ } }
+      }
+    };
+    try {
+      if (!fs.existsSync(root)) return 0;
+      walk(root);
+    } catch { return 0; }
+    return total;
   }
 }

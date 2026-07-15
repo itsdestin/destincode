@@ -46,4 +46,45 @@ describe('GitTransport specifics', () => {
     expect(r.oversize).toEqual(['big.bin']);
     await h.cleanup();
   }, 30000);
+
+  it('maybeGc advances the persisted counter and gc runs on the Nth sync without throwing', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    // Force a gc every 2nd call so we don't need 50 iterations.
+    const t = new GitTransport({ deviceName: 'T', gcInterval: 2 });
+    const counterFile = path.join(a.root, '.youcoded', 'gc-counter');
+
+    // Give the repo real objects so `git gc` has something to consider.
+    fs.writeFileSync(path.join(a.root, 'f.md'), 'v1');
+    await t.push(a, 'c1');
+
+    await t.maybeGc(a);
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('1'); // 1 % 2 !== 0, no gc yet
+    await t.maybeGc(a);
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('2'); // 2 % 2 === 0, gc ran
+    await t.maybeGc(a);
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('3');
+
+    // Corrupt counter file → treated as 0, so next write is 1 (never throws).
+    fs.writeFileSync(counterFile, 'not-a-number');
+    await expect(t.maybeGc(a)).resolves.toBeUndefined();
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('1');
+    await h.cleanup();
+  }, 30000);
+
+  it('gitDirSizeBytes returns >0 for a real repo and 0 for a missing dir', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    const t = new GitTransport({ deviceName: 'T' });
+    fs.writeFileSync(path.join(a.root, 'f.md'), 'content');
+    await t.push(a, 'commit');
+    const size = await t.gitDirSizeBytes(a);
+    expect(size).toBeGreaterThan(0);
+
+    // A space whose .youcoded/sync.git doesn't exist reports 0.
+    const empty: SyncSpace = { id: 'project:none', kind: 'project', root: path.join(a.root, 'nope') };
+    fs.mkdirSync(empty.root, { recursive: true });
+    expect(await t.gitDirSizeBytes(empty)).toBe(0);
+    await h.cleanup();
+  }, 30000);
 });

@@ -9,8 +9,14 @@ import type { SpaceSyncEvent, SyncSpace, SyncTransport } from './types';
 interface EngineOpts {
   debounceMs?: number;  // default 15s (spec §8)
   pollMs?: number;      // default 120s (spec §6 degradation path); 0 disables
+  sizeWarnBytes?: number; // default 500MB; injectable so tests can use a low threshold
   onEvent: (e: SpaceSyncEvent) => void;
 }
+
+// Warn once per launch when a space's hidden sync history exceeds this. Remote
+// history compaction stays a MANUAL, deferred procedure (spec §7) — we never
+// automate a force-push or peer re-clone.
+const SIZE_WARN_BYTES = 500 * 1024 * 1024;
 
 interface SpaceState {
   space: SyncSpace;
@@ -41,11 +47,17 @@ export class SpaceSyncEngine {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private debounceMs: number;
   private pollMs: number;
+  private sizeWarnBytes: number;
+  // One-per-LAUNCH dedup for the large-history warning: this Set lives as long
+  // as the engine instance, so a space that's already over the threshold emits
+  // the warning exactly once instead of on every sync.
+  private warnedLargeSpaces = new Set<string>();
   private onEvent: (e: SpaceSyncEvent) => void;
 
   constructor(private transport: SyncTransport, opts: EngineOpts) {
     this.debounceMs = opts.debounceMs ?? 15_000;
     this.pollMs = opts.pollMs ?? 120_000;
+    this.sizeWarnBytes = opts.sizeWarnBytes ?? SIZE_WARN_BYTES;
     this.onEvent = opts.onEvent;
     if (this.pollMs > 0) {
       this.pollTimer = setInterval(() => {
@@ -109,6 +121,21 @@ export class SpaceSyncEngine {
         const push = await this.transport.push(space, `sync from ${space.id}`);
         if (push.oversize.length) this.onEvent({ type: 'oversize', spaceId: space.id, files: push.oversize });
         this.onEvent({ type: 'synced', spaceId: space.id, pushed: push.pushed, updated: pull.updated });
+        // Post-sync maintenance (spec §7). Wrapped so a repack/probe failure can
+        // NEVER break a sync — the sync already succeeded above.
+        try {
+          // LOCAL git gc every Nth sync: repacks THIS device's history only,
+          // never rewrites it, so it can't desync peers. No-op on transports
+          // (future YouCoded Cloud) that don't implement it.
+          await this.transport.maybeGc?.(space);
+          // One-per-launch large-history warning. Remote/history compaction stays
+          // a MANUAL deferred procedure — we never automate a force-push.
+          const size = (await this.transport.gitDirSizeBytes?.(space)) ?? 0;
+          if (size > this.sizeWarnBytes && !this.warnedLargeSpaces.has(space.id)) {
+            this.warnedLargeSpaces.add(space.id);
+            this.onEvent({ type: 'error', spaceId: space.id, message: `Sync history for ${space.id} is large (${Math.round(size / 1e6)} MB) — see docs` });
+          }
+        } catch { /* maintenance is best-effort; the sync itself already succeeded */ }
       } catch (e: any) {
         this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e) });
       } finally {

@@ -90,6 +90,37 @@ describe('SpaceSyncEngine', () => {
     await engine.stop();
   });
 
+  it('warns ONCE per launch when the hidden history exceeds the size threshold', async () => {
+    const t = fakeTransport();
+    (t as any).maybeGc = vi.fn(async () => {});
+    (t as any).gitDirSizeBytes = vi.fn(async () => 600); // > injected 500-byte threshold
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { debounceMs: 50, pollMs: 0, sizeWarnBytes: 500, onEvent: e => events.push(e) });
+    const space: SyncSpace = { id: 'project:big', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    // Two independent syncs — the warning must fire on the first only.
+    await engine.syncSpace(space);
+    await engine.syncSpace(space);
+    const warnings = events.filter(e => e.type === 'error' && /is large/.test((e as any).message));
+    expect(warnings.length).toBe(1);
+    expect((t as any).maybeGc).toHaveBeenCalled();
+    await engine.stop();
+  });
+
+  it('a maybeGc failure never breaks the sync (best-effort maintenance)', async () => {
+    const t = fakeTransport();
+    (t as any).maybeGc = vi.fn(async () => { throw new Error('gc boom'); });
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { debounceMs: 50, pollMs: 0, onEvent: e => events.push(e) });
+    const space: SyncSpace = { id: 'project:x', kind: 'project', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    // The sync still reports success; the gc throw is swallowed (no error event).
+    expect(events.some(e => e.type === 'synced')).toBe(true);
+    expect(events.some(e => e.type === 'error')).toBe(false);
+    await engine.stop();
+  });
+
   it('emits error events instead of throwing (never-block, spec §13)', async () => {
     const t = fakeTransport();
     (t.push as any).mockImplementation(async () => { throw new Error('boom'); });

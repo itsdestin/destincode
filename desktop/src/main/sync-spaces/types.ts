@@ -32,6 +32,16 @@ export interface SyncTransport {
   push(space: SyncSpace, message: string): Promise<PushResult>;
   pull(space: SyncSpace): Promise<PullResult>;
   history(space: SyncSpace, limit?: number): Promise<SpaceVersion[]>;
+  // Maintenance hooks (spec §7 "known limit"). OPTIONAL so a future non-git
+  // transport (YouCoded Cloud) needn't implement local repack/sizing — the
+  // engine calls them with `?.` and treats absence as a no-op.
+  /** After every Nth successful sync, run a LOCAL `git gc` to repack the hidden
+   *  history. Best-effort; never throws. Never rewrites history (no force-push /
+   *  filter-branch), so it cannot desync peers — it only shrinks local disk. */
+  maybeGc?(space: SyncSpace): Promise<void>;
+  /** Recursive byte size of the hidden sync repo, for the large-history warning.
+   *  Bounded + best-effort; returns 0 on error / missing repo. */
+  gitDirSizeBytes?(space: SyncSpace): Promise<number>;
 }
 
 // `at` is stamped by service.broadcast() at emit time (ms epoch). Optional so
