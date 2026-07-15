@@ -3579,6 +3579,13 @@ class SessionService : Service() {
             "models:delete",
             "models:installed",
             "endpoints:detect",
+            // Model memory lifecycle (2026-07-14) — per-model residency, memory
+            // guard, [Reload Model]. Desktop-only; no Android runtime. The push
+            // events engine:models-changed / native:model-state are outbound-only
+            // (no inbound handler needed).
+            "engine:models",
+            "models:memory-check",
+            "models:load",
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
             // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",

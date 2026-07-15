@@ -23,6 +23,7 @@ import { SecretsStore } from './providers/secrets-store';
 import { ProviderRegistry } from './providers/provider-registry';
 import { ModelCatalog } from './providers/model-catalog';
 import { EngineManager } from './engine/engine-manager';
+import type { EngineModel as EngineModelType } from '../shared/engine-types';
 import { ModelManager } from './models/model-manager';
 import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
@@ -1943,6 +1944,30 @@ export function registerIpcHandlers(
     send(IPC.ENGINE_STATUS_CHANGED, s);
     remoteServer?.broadcast({ type: 'engine:status-changed', payload: s });
   });
+  // --- Per-model residency → per-session model-state coordinator (2026-07-14) ---
+  // #1: when the last session using a model releases it, unload it immediately.
+  nativeHost.setModelReleasedHandler((modelId) => { void engineManager.unloadModel(modelId); });
+  // Join per-model residency (engine) with session→model (host): push each live
+  // native session its bound model's state so ChatView can show the unloaded /
+  // loading banner (#4/#5). Only push on change per session.
+  const lastSessionModelState = new Map<string, string>();
+  engineManager.on('models-changed', (models: EngineModelType[]) => {
+    for (const m of models) {
+      const payload = { modelId: m.id, state: m.state, sizeBytes: m.sizeBytes };
+      for (const sessionId of nativeHost.sessionsForModel(m.id)) {
+        if (lastSessionModelState.get(sessionId) === m.state) continue;
+        lastSessionModelState.set(sessionId, m.state);
+        const full = { sessionId, ...payload };
+        sendForSession(sessionId, IPC.NATIVE_MODEL_STATE, full);
+        remoteServer?.broadcast({ type: 'native:model-state', payload: full });
+      }
+    }
+  });
+  // Whole live per-model state (initial fetch for the coordinator's consumers).
+  ipcMain.handle(IPC.ENGINE_MODELS, async () => engineManager.liveModels());
+  // #2 create-time / swap-time memory guard; #4 [Reload Model].
+  ipcMain.handle(IPC.MODELS_MEMORY_CHECK, async (_e, modelId: string) => modelManager.memoryCheck(modelId));
+  ipcMain.handle(IPC.MODELS_LOAD, async (_e, modelId: string) => { await engineManager.loadModel(modelId); return true; });
   // --- Model manager IPC (Plan C) ---
   // Download progress fans out to every window + remotes on one push channel,
   // mirroring the engine install-progress emitter above.

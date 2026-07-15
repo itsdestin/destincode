@@ -18,7 +18,7 @@ describe('scanGgufCache', () => {
     touch('notes.txt');
     const models = scanGgufCache(dir);
     expect(models).toEqual([
-      { id: 'Qwen3-4B-Instruct-2507-UD-Q4_K_XL', sizeBytes: 16, loaded: false },
+      { id: 'Qwen3-4B-Instruct-2507-UD-Q4_K_XL', sizeBytes: 16, loaded: false, state: 'unloaded' },
     ]);
   });
 
@@ -27,7 +27,7 @@ describe('scanGgufCache', () => {
     touch('Big-Model-UD-Q4_K_XL-00002-of-00002.gguf', 20);
     const models = scanGgufCache(dir);
     expect(models).toEqual([
-      { id: 'Big-Model-UD-Q4_K_XL-00001-of-00002', sizeBytes: 30, loaded: false },
+      { id: 'Big-Model-UD-Q4_K_XL-00001-of-00002', sizeBytes: 30, loaded: false, state: 'unloaded' },
     ]);
   });
 

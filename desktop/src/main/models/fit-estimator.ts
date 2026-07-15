@@ -41,6 +41,61 @@ export function estimateFit(
   return { fit: 'too-large', label: 'Too large for this machine' };
 }
 
+/** Create-time / swap-time memory guard (2026-07-14). Answers "is it safe to
+ *  load THIS model given what's already resident?" Distinct from estimateFit,
+ *  which asks "could this machine ever run it?". Decision (Destin): BLOCK only
+ *  when clearly too large (won't fit even alone); otherwise WARN with a
+ *  "show more" detail explaining LRU eviction + swap. PURE — caller injects
+ *  os.totalmem(), gpu VRAM, and the summed footprint of loaded models. */
+export interface MemoryVerdict {
+  verdict: 'ok' | 'tight' | 'too-large';
+  headline: string; // short warning row; '' when verdict === 'ok'
+  detail: string;   // "show more" explanation; '' when verdict === 'ok'
+}
+
+export function checkMemoryForLoad(args: {
+  chosenBytes: number;
+  totalMemBytes: number;
+  totalVramBytes: number | null;
+  /** Σ sizeBytes of models already loaded/loading, EXCLUDING the chosen one. */
+  loadedBytes: number;
+}): MemoryVerdict {
+  const { chosenBytes, totalMemBytes, totalVramBytes, loadedBytes } = args;
+  // Unified-memory machines (APU/iGPU) report null VRAM (it IS system RAM), so
+  // capacity is just totalMem — never double-counted. A dedicated GPU adds VRAM.
+  const capacity = totalMemBytes + (totalVramBytes ?? 0);
+  const g = (n: number) => (n / GB).toFixed(1);
+
+  // BLOCK: clearly too large — can't fit even alone on a fresh machine.
+  if (estimateFit(chosenBytes, totalMemBytes, totalVramBytes).fit === 'too-large') {
+    return {
+      verdict: 'too-large',
+      headline: 'This model is too large for this computer.',
+      detail:
+        `${g(chosenBytes)} GB (plus working memory) is more than the ${g(capacity)} GB this ` +
+        `computer can hold, even on its own. It would fail to load or run extremely slowly. ` +
+        `Try a smaller model or a more compressed version (a lower "quant").`,
+    };
+  }
+
+  // WARN: fits alone, but adding it to what's already loaded over-commits memory.
+  const combined = chosenBytes + loadedBytes + OVERHEAD_BYTES;
+  if (loadedBytes > 0 && combined > capacity * 0.85) {
+    return {
+      verdict: 'tight',
+      headline: 'This may use more memory than you have free.',
+      detail:
+        `You currently have about ${g(loadedBytes)} GB of models loaded. Adding this ` +
+        `${g(chosenBytes)} GB model can push past your ${g(capacity)} GB of memory. ` +
+        `YouCoded keeps at most 2 models in memory at once, so an older model will be ` +
+        `unloaded to make room. If things still don't fit, your computer falls back to ` +
+        `slower disk-backed memory (swap) and replies get slower. You can still continue.`,
+    };
+  }
+
+  return { verdict: 'ok', headline: '', detail: '' };
+}
+
 /** Pre-download disk guard (spec §4.3). Returns null when OK, else a
  *  plain-language refusal. 5% margin covers the in-flight .partial file. */
 export function checkDiskSpace(downloadBytes: number, freeBytes: number): string | null {

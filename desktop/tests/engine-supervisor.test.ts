@@ -104,6 +104,7 @@ describe('EngineSupervisor', () => {
       '--no-webui', '--jinja',
       '--models-dir', 'C:/fake/cache', // discovers dropped GGUFs (LLAMA_CACHE alone doesn't)
       '--models-max', '2',
+      '--sleep-idle-seconds', '300', // per-model 5-min auto-sleep (2026-07-14)
       '-c', '32768',
     ]);
     expect(args).not.toContain('-m'); // router mode = no model arg
@@ -209,7 +210,46 @@ describe('EngineSupervisor', () => {
     sup = makeSupervisor(fetchImpl);
     await sup.ensureRunning();
     const models = await sup.listModels();
-    expect(models).toEqual([{ id: 'foo-Q4_K_M', sizeBytes: null, loaded: true }]);
+    expect(models).toEqual([{ id: 'foo-Q4_K_M', sizeBytes: null, loaded: true, state: 'loaded' }]);
+  });
+
+  it('listModels maps /models status.value → EngineModelState (unknown → unloaded)', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { id: 'a', status: { value: 'loaded' } },
+          { id: 'b', status: { value: 'sleeping' } },
+          { id: 'c', status: { value: 'loading' } },
+          { id: 'd', status: { value: 'unloaded' } },
+          { id: 'e', status: { value: 'some-future-state' } },
+        ] }) } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    const byId = Object.fromEntries((await sup.listModels()).map((m) => [m.id, m.state]));
+    expect(byId).toEqual({ a: 'loaded', b: 'sleeping', c: 'loading', d: 'unloaded', e: 'unloaded' });
+  });
+
+  it('emits models-changed after boot with the live model set (drives the per-session banner)', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'a', status: { value: 'loaded' } }] }) } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+    sup = makeSupervisor(fetchImpl);
+    const changed: any[] = [];
+    sup.on('models-changed', (m) => changed.push(m));
+    await sup.ensureRunning();
+    await new Promise((r) => setTimeout(r, 30)); // let the initial poll tick resolve
+    expect(changed.length).toBeGreaterThan(0);
+    expect(changed[changed.length - 1][0]).toMatchObject({ id: 'a', state: 'loaded' });
   });
 
   it('ensureRunning during an in-flight stop WAITS for it, then respawns (no URL to the dying server)', async () => {

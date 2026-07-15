@@ -955,6 +955,12 @@ export const IPC = {
   MODELS_DELETE: 'models:delete',
   MODELS_INSTALLED: 'models:installed',
   ENDPOINTS_DETECT: 'endpoints:detect',
+  // ---- Model memory lifecycle (2026-07-14): per-model residency + guards ----
+  ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state
+  ENGINE_MODELS_CHANGED: 'engine:models-changed', // push → EngineModel[] on any state change
+  NATIVE_MODEL_STATE: 'native:model-state',       // push → per-session bound-model state
+  MODELS_MEMORY_CHECK: 'models:memory-check',     // invoke(modelId) → MemoryVerdict
+  MODELS_LOAD: 'models:load',                     // invoke(modelId) → true ([Reload Model])
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.

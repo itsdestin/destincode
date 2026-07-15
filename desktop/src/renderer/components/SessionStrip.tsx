@@ -205,6 +205,10 @@ export default function SessionStrip({
     return () => { cancelled = true; };
   }, [nativeSupported, runtime, showNewForm]);
 
+  // Create-time memory guard (#2, 2026-07-14) — local-engine models only.
+  const [memVerdict, setMemVerdict] = useState<{ verdict: 'ok' | 'tight' | 'too-large'; headline: string; detail: string } | null>(null);
+  const [memDetailOpen, setMemDetailOpen] = useState(false);
+
   // Derived binding selection (pure — no state writes, so no update loop).
   const readyProviders = providersList.filter((p) => p.ready);
   const selectedProviderId = (binding && readyProviders.some((p) => p.id === binding.providerId))
@@ -232,7 +236,22 @@ export default function SessionStrip({
   const effectiveBinding = selectedProviderId && resolvedModelId
     ? { providerId: selectedProviderId, modelId: resolvedModelId }
     : null;
-  const nativeCreateBlocked = runtime === 'native' && (readyProviders.length === 0 || !effectiveBinding);
+  // Ask main whether this local model fits given what's already resident. Runs
+  // only for the local-engine provider (cloud models don't consume our memory).
+  // liveModels() falls back to a cache scan when the engine is off, so this is
+  // cheap and never boots the engine. Decision (Destin): block only 'too-large'.
+  const isLocalEngine = runtime === 'native' && selectedProviderId === 'local';
+  useEffect(() => {
+    let cancelled = false;
+    setMemDetailOpen(false);
+    if (!isLocalEngine || !resolvedModelId) { setMemVerdict(null); return; }
+    (window.claude.models as any).memoryCheck?.(resolvedModelId)
+      .then((v: any) => { if (!cancelled) setMemVerdict(v && v.verdict ? v : null); })
+      .catch(() => { if (!cancelled) setMemVerdict(null); });
+    return () => { cancelled = true; };
+  }, [isLocalEngine, resolvedModelId]);
+  const memBlocked = memVerdict?.verdict === 'too-large';
+  const nativeCreateBlocked = runtime === 'native' && (readyProviders.length === 0 || !effectiveBinding || memBlocked);
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -1110,6 +1129,35 @@ export default function SessionStrip({
                           </select>
                         )}
                       </div>
+                      {/* Memory guard (#2): block only when clearly too large;
+                          otherwise a warning with a "Show more" detail (overflow
+                          + LRU eviction). local-engine models only. */}
+                      {memVerdict && memVerdict.verdict !== 'ok' && (
+                        <div
+                          className={`text-[11px] rounded-sm px-2 py-1.5 border ${
+                            memVerdict.verdict === 'too-large'
+                              ? 'border-[var(--destructive)] text-fg-2'
+                              : 'border-edge bg-well text-fg-dim'
+                          }`}
+                        >
+                          <div className="flex items-start gap-1.5">
+                            <span aria-hidden>{memVerdict.verdict === 'too-large' ? '⛔' : '⚠️'}</span>
+                            <div className="flex-1 min-w-0">
+                              <span>{memVerdict.headline}</span>{' '}
+                              <button
+                                type="button"
+                                onClick={() => setMemDetailOpen((o) => !o)}
+                                className="underline text-fg-muted hover:text-fg whitespace-nowrap"
+                              >
+                                {memDetailOpen ? 'Show less' : 'Show more'}
+                              </button>
+                              {memDetailOpen && (
+                                <p className="mt-1 text-fg-muted leading-snug">{memVerdict.detail}</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

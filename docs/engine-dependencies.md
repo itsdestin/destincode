@@ -46,6 +46,11 @@ Exact router-mode arg list (no `-m`):
   stderr so a startup exit surfaces the engine's REAL message instead of a guess.
 - **`--models-max 2`** — the router's LRU default is 4; 2 bounds RAM on consumer
   machines while keeping chat↔utility switching cheap.
+- **`--sleep-idle-seconds 300` (2026-07-14)** — the router frees an idle model's
+  memory after 5 min (status → `'sleeping'`) and wakes it on the next request.
+  Verified b9992. FINER-grained than the engine-wide idle stop (`idleMs`, 10 min)
+  which tears down the whole process — the two are complementary. `SLEEP_IDLE_SECONDS`
+  in `engine-supervisor.ts`; the flag presence is pinned in `engine-supervisor.test.ts`.
 - **`--jinja`** from day one so Phase 2 tool calling needs no process-shape change.
 - **`-c` is inherited by every loaded model instance** — confirmed: the router
   writes each model's preset with `ctx-size = <-c>` (seen in `/models` `status`).
@@ -88,13 +93,21 @@ Observed b9992 shape:
     "architecture": { "input_modalities": ["text"], "output_modalities": ["text"] },
     "source": "models_dir", "can_remove": false } ] }
 ```
-- **`status` is an OBJECT `{value: 'loaded'|'unloaded'|'loading'}`, NOT a bare
-  string.** `listModels` reads `row.status.value` (with a string fallback). The
-  original `row.status === 'loaded'` was always false. Regression-pinned in
+- **`status` is an OBJECT `{value: 'loaded'|'unloaded'|'loading'|'sleeping'}`, NOT
+  a bare string.** `listModels` maps `row.status.value` → `EngineModelState` via
+  `mapModelState` (unknown → `'unloaded'`, the safe default). `'sleeping'` is
+  produced by `--sleep-idle-seconds` (below). Regression-pinned in
   `engine-supervisor.test.ts`.
-- **No `size` field** on `/models` rows — `sizeBytes` comes from the cache scan.
-- `POST /models/load` / `/models/unload` take `{"model":"<id>"}` (unused in Plan B;
-  auto-load on first chat request is what we rely on).
+- **No `size` field** on `/models` rows — `sizeBytes` comes from the cache scan,
+  merged in by id (the loading banner needs the model size).
+- **Per-model state polling (2026-07-14):** the supervisor polls `GET /models`
+  every ~1.5s while running and emits `models-changed` only on an (id→state)
+  diff (llama-server has no push channel). `ipc-handlers` joins this with the
+  session→model ref-count and pushes `native:model-state` per session → the
+  ChatView unloaded/loading banner. Cheap localhost GET; timer is `.unref()`'d.
+- `POST /models/unload` takes `{"model":"<id>"}` — used to free a model the
+  moment its last session releases it (`NativeSessionHost` ref-count → 0, #1).
+  `loadModel` warms a model via a 1-token `/v1/chat/completions` ([Reload Model]).
 
 ### `/v1/chat/completions` streaming (harness via @ai-sdk/openai-compatible; probe-chat.mjs)
 

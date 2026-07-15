@@ -74,7 +74,7 @@ describe('EngineManager', () => {
       providerId: 'local',
       label: 'tiny-Q4_K_M',
       contextLength: 8192, // the -c we spawn with, NOT the model's trained max
-      local: { sizeBytes: 4, quant: 'unknown', installed: true },
+      local: { sizeBytes: 4, quant: 'unknown', installed: true, state: 'unloaded' },
     }]);
   });
 

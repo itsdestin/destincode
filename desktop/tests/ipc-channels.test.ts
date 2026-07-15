@@ -791,3 +791,34 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     for (const [ch] of channels) expect(src).toContain(`"${ch}"`);
   });
 });
+
+// Model memory lifecycle (2026-07-14): per-model residency push + memory guard
+// + [Reload Model]. Same self-contained parity shape as the Plan B/C describes.
+describe('model memory lifecycle channel parity (2026-07-14)', () => {
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  const invokeChannels: Array<[string, string]> = [
+    ['engine:models', 'ENGINE_MODELS'],
+    ['models:memory-check', 'MODELS_MEMORY_CHECK'],
+    ['models:load', 'MODELS_LOAD'],
+  ];
+  const pushChannels = ['engine:models-changed', 'native:model-state'];
+
+  it('preload exposes every channel (request + push)', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const [ch] of invokeChannels) expect(src).toContain(`'${ch}'`);
+    for (const ch of pushChannels) expect(src).toContain(`'${ch}'`);
+  });
+  it('remote-shim exposes every channel (request + push)', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const [ch] of invokeChannels) expect(src).toContain(`'${ch}'`);
+    for (const ch of pushChannels) expect(src).toContain(`'${ch}'`);
+  });
+  it('ipc-handlers registers every request-response channel via its IPC.* constant', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const [, konst] of invokeChannels) expect(src).toContain(`IPC.${konst}`);
+  });
+  it('SessionService.kt stubs every request-response channel', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const [ch] of invokeChannels) expect(src).toContain(`"${ch}"`);
+  });
+});

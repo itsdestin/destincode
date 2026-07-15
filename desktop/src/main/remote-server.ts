@@ -853,6 +853,35 @@ export class RemoteServer {
         }
         break;
       }
+      case 'engine:models': {
+        try {
+          const res = this.nativeRuntime ? await this.nativeRuntime.engineManager.liveModels() : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:memory-check': {
+        try {
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.modelManager.memoryCheck(payload.modelId ?? payload)
+            : { verdict: 'ok', headline: '', detail: '' };
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:load': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.loadModel(payload.modelId ?? payload);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
       case 'endpoints:detect': {
         try {
           const res = this.nativeRuntime

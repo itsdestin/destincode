@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateFit, checkDiskSpace } from '../src/main/models/fit-estimator';
+import { estimateFit, checkDiskSpace, checkMemoryForLoad } from '../src/main/models/fit-estimator';
 
 const GB = 1024 ** 3;
 
@@ -54,5 +54,40 @@ describe('checkDiskSpace', () => {
   it('passes when free space exceeds size + 5% margin, fails below', () => {
     expect(checkDiskSpace(10 * GB, 20 * GB)).toBeNull();
     expect(checkDiskSpace(10 * GB, 10.4 * GB)).toMatch(/free space/i);
+  });
+});
+
+describe('checkMemoryForLoad (create-time guard)', () => {
+  const MEM = 32 * GB;
+  it('ok: a small model with nothing loaded', () => {
+    const v = checkMemoryForLoad({ chosenBytes: 4 * GB, totalMemBytes: MEM, totalVramBytes: null, loadedBytes: 0 });
+    expect(v.verdict).toBe('ok');
+    expect(v.headline).toBe('');
+  });
+  it('BLOCKS (too-large) a model that cannot fit even alone', () => {
+    // 40GB + 2GB overhead > 32GB machine (RAM-only) → too-large even at loadedBytes 0.
+    const v = checkMemoryForLoad({ chosenBytes: 40 * GB, totalMemBytes: MEM, totalVramBytes: null, loadedBytes: 0 });
+    expect(v.verdict).toBe('too-large');
+    expect(v.headline).toMatch(/too large/i);
+    expect(v.detail).toMatch(/smaller model|quant/i);
+  });
+  it('WARNS (tight) when it fits alone but over-commits alongside loaded models', () => {
+    // 12GB fits alone on 32GB, but 12 + 18 already-loaded + 2 overhead = 32 > 0.85*32.
+    const v = checkMemoryForLoad({ chosenBytes: 12 * GB, totalMemBytes: MEM, totalVramBytes: null, loadedBytes: 18 * GB });
+    expect(v.verdict).toBe('tight');
+    expect(v.headline).toMatch(/memory/i);
+    expect(v.detail).toMatch(/unload|swap/i);
+  });
+  it('does not warn when nothing else is loaded (loadedBytes 0), even if largish', () => {
+    // 20GB alone on 32GB is not too-large; with nothing loaded it must not warn.
+    const v = checkMemoryForLoad({ chosenBytes: 20 * GB, totalMemBytes: MEM, totalVramBytes: null, loadedBytes: 0 });
+    expect(v.verdict).toBe('ok');
+  });
+  it('dedicated VRAM raises capacity, upgrading a tight verdict to ok', () => {
+    const args = { chosenBytes: 20 * GB, totalMemBytes: MEM, loadedBytes: 15 * GB };
+    // RAM-only (32GB): 20 + 15 + 2 = 37 > 0.85*32 (27.2) → tight.
+    expect(checkMemoryForLoad({ ...args, totalVramBytes: null }).verdict).toBe('tight');
+    // +16GB dedicated VRAM → capacity 48GB: 37 < 0.85*48 (40.8) → ok.
+    expect(checkMemoryForLoad({ ...args, totalVramBytes: 16 * GB }).verdict).toBe('ok');
   });
 });

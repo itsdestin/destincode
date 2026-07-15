@@ -298,6 +298,14 @@ function handleMessage(data: string): void {
       // WHY: models.onDownloadProgress subscribers listen on this channel.
       dispatchEvent('models:download-progress', payload);
       break;
+    case 'engine:models-changed':
+      // WHY: engine.onModelsChanged subscribers listen on this channel.
+      dispatchEvent('engine:models-changed', payload);
+      break;
+    case 'native:model-state':
+      // WHY: native.onModelState subscribers (ChatView banner) listen here.
+      dispatchEvent('native:model-state', payload);
+      break;
     case 'system:back':
       // Android hardware back press → routed to useDismissTop via the
       // window.claude.system.onBack subscriber registered in App.tsx. No
@@ -1429,6 +1437,11 @@ export function installShim(): void {
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
       setBinding: (sessionId: string, binding: unknown) => invoke('native:set-binding', { sessionId, binding }),
       sessionsList: () => invoke('native:sessions-list'),
+      onModelState: (cb: (s: unknown) => void) => {
+        const handler: Callback = (payload: any) => cb(payload);
+        addListener('native:model-state', handler);
+        return () => removeListener('native:model-state', handler);
+      },
     },
     // Provider registry — WS transport. upsert sends the config as the whole
     // payload (remote-server reads `payload` directly); remove/test read
@@ -1461,6 +1474,12 @@ export function installShim(): void {
         addListener('engine:status-changed', handler);
         return () => removeListener('engine:status-changed', handler);
       },
+      models: () => invoke('engine:models'),
+      onModelsChanged: (cb: (models: unknown) => void) => {
+        const handler: Callback = (payload: any) => cb(payload);
+        addListener('engine:models-changed', handler);
+        return () => removeListener('engine:models-changed', handler);
+      },
     },
     // Model manager (Plan C) — WS transport. Positional-ish payloads match how
     // remote-server.ts's WS cases read them (payload.query / payload.repo /
@@ -1476,6 +1495,8 @@ export function installShim(): void {
       installed: () => invoke('models:installed'),
       detectEndpoints: () => invoke('endpoints:detect'),
       setBackend: (backend: string) => invoke('engine:set-backend', { backend }),
+      memoryCheck: (modelId: string) => invoke('models:memory-check', { modelId }),
+      load: (modelId: string) => invoke('models:load', { modelId }),
       onDownloadProgress: (cb: (p: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('models:download-progress', handler);
