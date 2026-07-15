@@ -33,7 +33,7 @@ import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THE
 import { isBundledPlugin } from '../shared/bundled-plugins';
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
-import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, getSyncService, type SyncWarning } from './sync-state';
+import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, type SyncWarning } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
@@ -2165,7 +2165,7 @@ export function registerIpcHandlers(
       // (passes the store's id guard), synced to every device, and never
       // pruned (flagged records are deliberately kept). When gated out, the
       // flag re-applies once the SessionStart hook establishes the mapping and
-      // the user (or a re-flag) drives it again — the store is store-only now,
+      // the user (or a re-flag) drives it again — flags are store-only now,
       // so there's no legacy index still catching it in the meantime.
       if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
         noteFlagChanged(resolved, flag, !!value);

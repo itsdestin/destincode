@@ -66,49 +66,11 @@ interface SnapshotGate {
   now: Date;      // the instant push() computed the gate (used for age-based pruning)
 }
 
-// Per-flag storage shape. updatedAt drives cross-device merge (latest writer wins)
-// independent of lastActive, so marking/unmarking doesn't fake new session activity.
-interface SessionFlagState {
-  value: boolean;
-  updatedAt: string; // ISO-8601
-}
-
-interface ConversationIndexEntry {
-  topic: string;
-  lastActive: string; // ISO-8601
-  slug: string;
-  device: string;
-  // User-set flags. Keys are flag names (e.g. 'complete', 'priority', 'helpful').
-  // Added in v2 schema; v1 used top-level `complete` / `completeUpdatedAt`
-  // and is lifted into `flags.complete` on read for backward compatibility.
-  flags?: Record<string, SessionFlagState>;
-  // v1 legacy — tolerated on read, never written by this version.
-  complete?: boolean;
-  completeUpdatedAt?: string;
-}
-
-interface ConversationIndex {
-  version: number;
-  sessions: Record<string, ConversationIndexEntry>;
-}
-
-/** Lift v1 `complete` / `completeUpdatedAt` into `flags.complete` so older devices'
- *  index entries still mean the same thing after upgrade. Returns a normalized
- *  copy so callers can trust entry.flags exists when non-empty. */
-function migrateEntry(entry: ConversationIndexEntry): ConversationIndexEntry {
-  if (entry.complete === undefined && !entry.completeUpdatedAt) return entry;
-  const flags = { ...(entry.flags || {}) };
-  if (!flags.complete && entry.complete !== undefined) {
-    flags.complete = {
-      value: !!entry.complete,
-      updatedAt: entry.completeUpdatedAt || entry.lastActive || new Date(0).toISOString(),
-    };
-  }
-  const next = { ...entry, flags };
-  delete (next as any).complete;
-  delete (next as any).completeUpdatedAt;
-  return next;
-}
+// (Plan 2c) The conversation-index typed shapes — SessionFlagState,
+// ConversationIndexEntry, ConversationIndex — were deleted along with the index
+// read/write helpers. The frozen conversation-index.json is now copied as an
+// opaque file into snapshots (see pushDrive/pushiCloud); nothing in SyncService
+// parses its structure anymore. session-browser.ts owns the residual typed read.
 
 // --- Constants ---
 
@@ -333,38 +295,6 @@ export class SyncService extends EventEmitter {
         }
       }
     } catch {}
-  }
-
-  // =========================================================================
-  // Slug Generation (CRITICAL — must match Claude Code's algorithm)
-  // =========================================================================
-
-  /**
-   * Generate the current device's project slug.
-   * On Windows, os.homedir() returns native path (C:\Users\alice).
-   * On Unix, uses fs.realpathSync to resolve symlinks.
-   * Replace /, \, :, and SPACE with - to match Claude Code's slug algorithm.
-   * MUST match cwdToProjectSlug() in transcript-watcher.ts and the two Android
-   * encoders (TranscriptWatcher.cwdToProjectSlug, SyncService.getCurrentSlug).
-   * Omitting the space replace here means Windows users with spaces in the
-   * home-dir path (e.g. "First Last") write to a different slug than the
-   * watcher reads from, silently splitting sync from transcript.
-   */
-  getCurrentSlug(): string {
-    let homePath: string;
-    if (process.platform === 'win32') {
-      // os.homedir() already returns native Windows path (C:\Users\alice)
-      // No cygpath needed — bash uses cygpath because $HOME is /c/Users/alice
-      homePath = os.homedir();
-    } else {
-      try {
-        homePath = fs.realpathSync(os.homedir());
-      } catch {
-        homePath = os.homedir();
-      }
-    }
-    // Replace path separators, drive-letter colon, AND spaces with dashes
-    return homePath.replace(/[/\\: ]/g, '-');
   }
 
   // =========================================================================
@@ -1069,32 +999,13 @@ export class SyncService extends EventEmitter {
     }
   }
 
-  // =========================================================================
-  // Conversation Index Management (FROZEN — read-only after Plan 2c)
-  // =========================================================================
-  //
-  // The legacy conversation-index.json WRITE methods (updateConversationIndex,
-  // mergeConversationIndex, setSessionFlag) were deleted in Plan 2c. Titles +
-  // flags are now owned by the Conversation Store. Only getAllSessionFlags
-  // (read-only) survives here; session-browser reads the frozen index directly
-  // (readIndexMeta / readTopic fallback) for residual legacy-only rows.
-
-  /** Read all session flags (from the normalized index, migrating legacy fields).
-   *  Returns { sessionId: { flagName: boolean } } for flags whose value is truthy. */
-  getAllSessionFlags(): Record<string, Record<string, boolean>> {
-    const index: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-    const out: Record<string, Record<string, boolean>> = {};
-    for (const [sid, raw] of Object.entries(index.sessions || {})) {
-      const entry = migrateEntry(raw);
-      const flags = entry.flags || {};
-      const onFlags: Record<string, boolean> = {};
-      for (const [name, state] of Object.entries(flags)) {
-        if (state?.value) onFlags[name] = true;
-      }
-      if (Object.keys(onFlags).length > 0) out[sid] = onFlags;
-    }
-    return out;
-  }
+  // Conversation Index Management: FULLY RETIRED from SyncService (Plan 2c).
+  // The legacy conversation-index.json is frozen and now owned entirely by the
+  // Conversation Store for titles + flags. SyncService no longer writes OR reads
+  // it — the only residual reader is session-browser.ts (readIndexMeta /
+  // readTopic fallback), for legacy-only rows that predate the store. All
+  // SyncService index helpers (updateConversationIndex, mergeConversationIndex,
+  // setSessionFlag, getAllSessionFlags, migrateEntry) were deleted here.
 
   // =========================================================================
   // Sync Health Check & Warning Generation
