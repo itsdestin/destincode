@@ -313,6 +313,24 @@ const IPC = {
   // Push events (no id): install progress + run-state transitions.
   ENGINE_INSTALL_PROGRESS: 'engine:install-progress',
   ENGINE_STATUS_CHANGED: 'engine:status-changed',
+  // ---- Native runtime Plan C (Phase 1): model manager ----
+  ENGINE_SET_BACKEND: 'engine:set-backend',
+  ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  MODELS_CURATED: 'models:curated',
+  MODELS_SEARCH: 'models:search',
+  MODELS_QUANTS: 'models:quants',
+  MODELS_DOWNLOAD: 'models:download',
+  MODELS_DOWNLOAD_CANCEL: 'models:download-cancel',
+  MODELS_DOWNLOAD_PROGRESS: 'models:download-progress',  // push
+  MODELS_DELETE: 'models:delete',
+  MODELS_INSTALLED: 'models:installed',
+  ENDPOINTS_DETECT: 'endpoints:detect',
+  // Model memory lifecycle (2026-07-14) — keep in sync with shared/types.ts.
+  ENGINE_MODELS: 'engine:models',
+  ENGINE_MODELS_CHANGED: 'engine:models-changed',
+  NATIVE_MODEL_STATE: 'native:model-state',
+  MODELS_MEMORY_CHECK: 'models:memory-check',
+  MODELS_LOAD: 'models:load',
 } as const;
 
 contextBridge.exposeInMainWorld('claude', {
@@ -1051,6 +1069,13 @@ contextBridge.exposeInMainWorld('claude', {
     // Request-response: match the positional ipcMain.handle signatures.
     setBinding: (sessionId: string, binding: unknown) => ipcRenderer.invoke(IPC.NATIVE_SET_BINDING, sessionId, binding),
     sessionsList: () => ipcRenderer.invoke(IPC.NATIVE_SESSIONS_LIST),
+    // Per-session bound-model residency push (unloaded/loading/loaded/sleeping)
+    // → ChatView's model-unloaded banner + loading indicator (2026-07-14).
+    onModelState: (cb: (s: unknown) => void) => {
+      const listener = (_e: unknown, s: unknown) => cb(s);
+      ipcRenderer.on(IPC.NATIVE_MODEL_STATE, listener);
+      return () => ipcRenderer.removeListener(IPC.NATIVE_MODEL_STATE, listener);
+    },
   },
   // Provider registry — CRUD + connection test + model catalog for native
   // runtime model providers. All request-response; positional args match the
@@ -1069,6 +1094,8 @@ contextBridge.exposeInMainWorld('claude', {
     status: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_STATUS),
     install: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_INSTALL),
     restart: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_RESTART),
+    // Plan C context-length knob — persists -c and reboots the engine.
+    setContext: (contextSize: number): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_SET_CONTEXT, contextSize),
     onInstallProgress: (cb: (p: unknown) => void) => {
       const listener = (_e: unknown, p: unknown) => cb(p);
       ipcRenderer.on(IPC.ENGINE_INSTALL_PROGRESS, listener);
@@ -1078,6 +1105,35 @@ contextBridge.exposeInMainWorld('claude', {
       const listener = (_e: unknown, s: unknown) => cb(s);
       ipcRenderer.on(IPC.ENGINE_STATUS_CHANGED, listener);
       return () => ipcRenderer.removeListener(IPC.ENGINE_STATUS_CHANGED, listener);
+    },
+    // Live per-model residency (state: unloaded|loading|loaded|sleeping).
+    models: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_MODELS),
+    onModelsChanged: (cb: (models: unknown) => void) => {
+      const listener = (_e: unknown, models: unknown) => cb(models);
+      ipcRenderer.on(IPC.ENGINE_MODELS_CHANGED, listener);
+      return () => ipcRenderer.removeListener(IPC.ENGINE_MODELS_CHANGED, listener);
+    },
+  },
+  // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
+  // detectors, engine backend switch. Download progress pushes return an
+  // unsubscribe, matching engine.onInstallProgress above.
+  models: {
+    curated: () => ipcRenderer.invoke(IPC.MODELS_CURATED),
+    search: (query: string) => ipcRenderer.invoke(IPC.MODELS_SEARCH, query),
+    quants: (repo: string) => ipcRenderer.invoke(IPC.MODELS_QUANTS, repo),
+    download: (repo: string, quant: unknown) => ipcRenderer.invoke(IPC.MODELS_DOWNLOAD, repo, quant),
+    downloadCancel: (downloadId: string) => ipcRenderer.invoke(IPC.MODELS_DOWNLOAD_CANCEL, downloadId),
+    delete: (id: string) => ipcRenderer.invoke(IPC.MODELS_DELETE, id),
+    installed: () => ipcRenderer.invoke(IPC.MODELS_INSTALLED),
+    detectEndpoints: () => ipcRenderer.invoke(IPC.ENDPOINTS_DETECT),
+    setBackend: (backend: string) => ipcRenderer.invoke(IPC.ENGINE_SET_BACKEND, backend),
+    // Create-time / swap memory guard + [Reload Model] (2026-07-14).
+    memoryCheck: (modelId: string) => ipcRenderer.invoke(IPC.MODELS_MEMORY_CHECK, modelId),
+    load: (modelId: string) => ipcRenderer.invoke(IPC.MODELS_LOAD, modelId),
+    onDownloadProgress: (cb: (p: unknown) => void) => {
+      const listener = (_e: unknown, p: unknown) => cb(p);
+      ipcRenderer.on(IPC.MODELS_DOWNLOAD_PROGRESS, listener);
+      return () => ipcRenderer.removeListener(IPC.MODELS_DOWNLOAD_PROGRESS, listener);
     },
   },
   // System namespace — platform integrations like hardware back button.

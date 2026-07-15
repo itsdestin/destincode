@@ -933,6 +933,24 @@ export const IPC = {
   // Push events (no id): install progress + run-state transitions.
   ENGINE_INSTALL_PROGRESS: 'engine:install-progress',
   ENGINE_STATUS_CHANGED: 'engine:status-changed',
+  // ---- Native runtime Plan C (Phase 1): model manager ----
+  ENGINE_SET_BACKEND: 'engine:set-backend',
+  ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  MODELS_CURATED: 'models:curated',
+  MODELS_SEARCH: 'models:search',
+  MODELS_QUANTS: 'models:quants',
+  MODELS_DOWNLOAD: 'models:download',
+  MODELS_DOWNLOAD_CANCEL: 'models:download-cancel',
+  MODELS_DOWNLOAD_PROGRESS: 'models:download-progress',  // push
+  MODELS_DELETE: 'models:delete',
+  MODELS_INSTALLED: 'models:installed',
+  ENDPOINTS_DETECT: 'endpoints:detect',
+  // ---- Model memory lifecycle (2026-07-14): per-model residency + guards ----
+  ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state
+  ENGINE_MODELS_CHANGED: 'engine:models-changed', // push → EngineModel[] on any state change
+  NATIVE_MODEL_STATE: 'native:model-state',       // push → per-session bound-model state
+  MODELS_MEMORY_CHECK: 'models:memory-check',     // invoke(modelId) → MemoryVerdict
+  MODELS_LOAD: 'models:load',                     // invoke(modelId) → true ([Reload Model])
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.

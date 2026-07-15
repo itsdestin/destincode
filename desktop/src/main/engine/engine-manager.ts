@@ -7,16 +7,20 @@
 //   - catalogModels() — ModelCatalog's local source for the model picker
 import { EventEmitter } from 'events';
 import * as path from 'path';
+import * as fs from 'fs'; // Plan C: deleteModel needs fs.rmSync for model files
 import { NativeHome } from '../native-home';
 import { EngineAcquisition, InstalledEngine } from './engine-acquisition';
 import { EngineSupervisor } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
 import { readEngineConfig, updateEngineConfig } from './engine-config';
+import { scanGgufCache } from './cache-scan';
+import { parseGgufName, quantDescription } from '../models/quant-parser';
 import type {
-  EngineBackend, EngineInstallProgress, EngineStatus,
+  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
+import type { InstalledLocalModel } from '../../shared/model-manager-types';
 
 /** What ProviderRegistry's local-engine branch consumes (replaces Plan A's
  *  bare localBaseUrl callback). Defined here, imported by provider-registry. */
@@ -79,8 +83,27 @@ export class EngineManager extends EventEmitter {
         ? 'The engine crashed repeatedly and was stopped. Press "Restart engine" to try again.'
         : undefined,
       cacheDir: cfg.cacheDir,
+      contextSize: cfg.contextSize,   // Plan C: the knob binds to this value
       port: this.port,
     };
+  }
+
+  /** Plan C (Amendment I): the context-length knob. Persists the new -c and
+   *  reboots a running engine so the change takes effect immediately. */
+  async setContext(contextSize: number): Promise<void> {
+    if (!Number.isFinite(contextSize) || contextSize < 1024) {
+      throw new Error('Context length must be at least 1024 tokens.');
+    }
+    await updateEngineConfig(this.home, { contextSize: Math.floor(contextSize) });
+    // A running engine keeps its old -c until rebooted; restart now so the knob
+    // does what it says. The supervisorBinary = null is REQUIRED (K6):
+    // rebuildSupervisor dedups on binaryPath, so a plain restart() would return
+    // early and keep the OLD contextSize — nulling forces a rebuild with the
+    // fresh config on the next ensureRunning. stop() is single-flight (Plan B),
+    // so a send in the kill window is coordinated; only avoid applying this
+    // mid-stream (a context change is inherently disruptive).
+    if (this.supervisor) { await this.supervisor.stop(); this.supervisorBinary = null; }
+    this.emit('status-changed');
   }
 
   /** Install the pinned engine for this machine. Vulkan-first on win/linux
@@ -154,6 +177,33 @@ export class EngineManager extends EventEmitter {
     // Fan out supervisor transitions so the EngineCard tracks crash/idle live.
     this.supervisor.on('status-changed', () => this.emit('status-changed'));
     this.supervisor.on('crashed', (info) => this.emit('crashed', info));
+    // Fan out per-model residency (load/sleep/unload) → the model-state
+    // coordinator turns this into per-session banners (unloaded/loading UI).
+    this.supervisor.on('models-changed', (models) => this.emit('models-changed', models));
+  }
+
+  /** Best-effort per-model unload — used when the last session bound to a model
+   *  goes away (frees its memory immediately, ahead of the 5-min sleep). */
+  async unloadModel(modelId: string): Promise<void> {
+    if (!this.supervisor) return;
+    await this.supervisor.unloadModel(modelId);
+  }
+
+  /** Force a model resident (the [Reload Model] button). Boots the engine if
+   *  needed, then warms the model so its state flips loading → loaded. */
+  async loadModel(modelId: string): Promise<void> {
+    const inst = this.currentInstall();
+    if (!inst) throw new Error('The local engine is not installed yet.');
+    await this.rebuildSupervisor(inst);
+    await this.supervisor!.loadModel(modelId);
+  }
+
+  /** Live per-model residency for the create-time memory guard + coordinator. */
+  async liveModels(): Promise<EngineModel[]> {
+    const inst = this.currentInstall();
+    if (!inst) return [];
+    await this.rebuildSupervisor(inst);
+    return this.supervisor!.listModels();
   }
 
   /** User-initiated recovery: clear the strike-out and boot fresh. */
@@ -200,8 +250,69 @@ export class EngineManager extends EventEmitter {
       providerId: 'local',
       label: m.id,
       contextLength: cfg.contextSize,
-      local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true },
+      local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true, state: m.state },
     }));
+  }
+
+  /** Plan C: switch GPU backend. Downloads that backend's build if missing
+   *  (progress rides the same install-progress event), verifies it boots,
+   *  THEN records the choice — a failed switch leaves config untouched. */
+  async setBackend(backend: EngineBackend): Promise<void> {
+    const asset = pickAsset(process.platform, process.arch, backend);
+    if (!asset) {
+      throw new Error(`That backend is not available for this platform (${process.platform}/${process.arch}).`);
+    }
+    const onProgress = (p: EngineInstallProgress) => this.emit('install-progress', p);
+    const installed = await this.acquisition.install(asset, onProgress);
+    await this.verifyBoot(installed);
+    await updateEngineConfig(this.home, { backend });
+    this.emit('status-changed');
+  }
+
+  /** Plan C: installed models with quant metadata (spec §4.5). lastUsedAt +
+   *  defaultForTier were CUT from v1 (Amendment 2026-07-14 G). */
+  async installedModels(): Promise<InstalledLocalModel[]> {
+    const cfg = readEngineConfig(this.home);
+    return scanGgufCache(cfg.cacheDir).map((m) => {
+      const parsed = parseGgufName(`${m.id}.gguf`);
+      return {
+        id: m.id,
+        sizeBytes: m.sizeBytes ?? 0,   // scanGgufCache sums all parts for a split model
+        quant: parsed?.quant ?? null,
+        quantDescription: parsed ? quantDescription(parsed.quant) : null,
+        parts: parsed?.part?.of ?? 1,
+      };
+    });
+  }
+
+  // noteModelUsed / setDefaultForTier were CUT from v1 (Amendment 2026-07-14 G).
+  // Do NOT reintroduce until the model picker actually consumes a per-tier
+  // default — a write-only stat would just be dead state.
+
+  /** Plan C: delete a model (all parts). Best-effort /models/unload first so
+   *  the router isn't serving a file we're removing; file deletion proceeds
+   *  regardless (the router tolerates a vanished file on next request). */
+  async deleteModel(id: string): Promise<void> {
+    const cfg = readEngineConfig(this.home);
+    if (this.supervisor?.status() === 'running') {
+      try {
+        await (this.opts.fetchImpl ?? fetch)(`http://127.0.0.1:${this.port}/models/unload`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: id }),
+        });
+      } catch { /* best-effort */ }
+    }
+    // A multi-part id points at part 00001 — delete every sibling part.
+    const partMatch = /-(\d{5})-of-(\d{5})$/.exec(id);
+    const names = partMatch
+      ? Array.from({ length: Number(partMatch[2]) }, (_, i) =>
+          `${id.replace(/-\d{5}-of-\d{5}$/, '')}-${String(i + 1).padStart(5, '0')}-of-${partMatch[2]}.gguf`)
+      : [`${id}.gguf`];
+    for (const name of names) {
+      fs.rmSync(path.join(cfg.cacheDir, name), { force: true });
+      fs.rmSync(path.join(cfg.cacheDir, `${name}.partial`), { force: true });
+    }
+    this.emit('status-changed');
   }
 
   /** App-quit teardown — registered next to nativeHost.destroyAll(). */

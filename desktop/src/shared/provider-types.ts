@@ -31,7 +31,8 @@ export interface CatalogModel {
   pricing?: { in: number; out: number };
   // Local-engine models only (Plan B/C). fit is Plan C's estimator; Plan B
   // fills sizeBytes/quant('unknown')/installed(true) from the cache scan.
-  local?: { sizeBytes: number; quant: string; installed: boolean; fit?: 'fits' | 'tight' | 'too-large' };
+  local?: { sizeBytes: number; quant: string; installed: boolean; fit?: 'fits' | 'tight' | 'too-large';
+            state?: import('./engine-types').EngineModelState };
 }
 
 /** provider:list row — config + derived status, never the key.

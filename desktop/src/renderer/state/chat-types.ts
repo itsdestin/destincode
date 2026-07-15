@@ -159,6 +159,17 @@ export interface SessionChatState {
    * how much was freed.
    */
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
+  /**
+   * Native (local-model) sessions only. Residency of the session's bound model,
+   * pushed from main (native:model-state). Drives ChatView's ModelLoadingBar:
+   * 'sleeping'/'unloaded' → "Model unloaded to save memory · [Reload Model]";
+   * 'loading' → the loading indicator (size + spinner). null = not a native
+   * session (or state not yet known). Separate from attentionState on purpose —
+   * this is engine model residency, not turn/thinking state.
+   */
+  modelState: import('../../shared/engine-types').EngineModelState | null;
+  /** Bound model id + size for the banner copy (from native:model-state). */
+  modelInfo: { modelId: string; sizeBytes: number | null } | null;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -177,6 +188,8 @@ export function createSessionChatState(): SessionChatState {
     errorMessage: null,
     lastBufferActivityAt: 0,
     compactionPending: null,
+    modelState: null,
+    modelInfo: null,
   };
 }
 
@@ -223,6 +236,16 @@ export type ChatAction =
       type: 'SESSION_PROCESS_EXITED';
       sessionId: string;
       exitCode: number;
+    }
+  | {
+      // Native runtime only: the session's bound model's residency changed
+      // (loaded/loading/sleeping/unloaded), pushed from main. Drives the
+      // ModelLoadingBar (unloaded-to-save-memory + [Reload Model], loading UI).
+      type: 'NATIVE_MODEL_STATE_CHANGED';
+      sessionId: string;
+      state: import('../../shared/engine-types').EngineModelState;
+      modelId: string;
+      sizeBytes: number | null;
     }
   | {
       // Native runtime only: a provider/stream failure ended the turn.
@@ -446,6 +469,8 @@ export interface SerializedSessionChatState {
   errorMessage: string | null;
   lastBufferActivityAt: number;
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
+  modelState?: import('../../shared/engine-types').EngineModelState | null;
+  modelInfo?: { modelId: string; sizeBytes: number | null } | null;
 }
 
 export interface SerializedChatState {
@@ -472,6 +497,8 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         errorMessage: s.errorMessage,
         lastBufferActivityAt: s.lastBufferActivityAt,
         compactionPending: s.compactionPending,
+        modelState: s.modelState,
+        modelInfo: s.modelInfo,
       },
     ]);
   }
@@ -498,6 +525,9 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       errorMessage: ser.errorMessage ?? null,
       lastBufferActivityAt: ser.lastBufferActivityAt,
       compactionPending: ser.compactionPending,
+      // Older hosts predate these — default null so a pre-field snapshot hydrates.
+      modelState: ser.modelState ?? null,
+      modelInfo: ser.modelInfo ?? null,
     });
   }
   return result;

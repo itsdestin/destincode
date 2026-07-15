@@ -50,6 +50,7 @@ import SettingsPanel from './components/SettingsPanel';
 import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
+import { useNativeBinding, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
 import ModelPickerPopup from './components/ModelPickerPopup';
 import OpenTasksPopup from './components/OpenTasksPopup';
 import { useSessionTasks } from './hooks/useSessionTasks';
@@ -340,6 +341,12 @@ function AppInner() {
   const [welcomeCwd, setWelcomeCwd] = useState('');
   const [welcomeModel, setWelcomeModel] = useState('sonnet');
   const [welcomeDangerous, setWelcomeDangerous] = useState(false);
+  // Runtime (Claude Code vs YouCoded native harness) + native binding for the
+  // welcome/app-open new-session form — mirrors the SessionStrip form via the
+  // shared RuntimeBinding hook so the two forms can't drift.
+  const [welcomeRuntime, setWelcomeRuntime] = useState<Runtime>('claude');
+  const [welcomeBinding, setWelcomeBinding] = useState<Binding | null>(() => loadLastBinding());
+  const welcomeNb = useNativeBinding({ active: welcomeFormOpen, runtime: welcomeRuntime, binding: welcomeBinding, setBinding: setWelcomeBinding });
 
   // Per-session model state — keyed by sessionId, same pattern as permissionModes
   const [sessionModels, setSessionModels] = useState<Map<string, ModelAlias>>(new Map());
@@ -718,6 +725,23 @@ function AppInner() {
     const handler = () => dismissTopRef.current();
     const unsubscribe = window.claude.system?.onBack?.(handler);
     return unsubscribe;
+  }, []);
+
+  // Native local-model residency → per-session ModelLoadingBar (2026-07-14).
+  // Main joins per-model engine state with session→model and pushes each native
+  // session its bound model's state (loaded/loading/sleeping/unloaded).
+  useEffect(() => {
+    const off = window.claude.native?.onModelState?.((s: any) => {
+      if (!s?.sessionId || !s?.modelId || !s?.state) return;
+      dispatch({
+        type: 'NATIVE_MODEL_STATE_CHANGED',
+        sessionId: s.sessionId,
+        state: s.state,
+        modelId: s.modelId,
+        sizeBytes: typeof s.sizeBytes === 'number' ? s.sizeBytes : null,
+      });
+    });
+    return () => { off?.(); };
   }, []);
 
   useEffect(() => {
@@ -2675,24 +2699,32 @@ function AppInner() {
                       onManageProjects={() => dispatchArtifact({ type: 'PROJECT_VIEW_OPENED' })}
                     />
                   </div>
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
-                    <div className="flex gap-1">
-                      {MODELS.map((m) => (
-                        <button
-                          key={m}
-                          onClick={() => setWelcomeModel(m)}
-                          className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
-                            welcomeModel === m
-                              ? 'bg-accent text-on-accent font-medium'
-                              : 'bg-inset text-fg-dim hover:bg-edge'
-                          }`}
-                        >
-                          {WELCOME_MODEL_LABELS[m] || m}
-                        </button>
-                      ))}
+                  {/* Runtime (Claude Code | YouCoded) + native provider/model
+                      picker — same shared control as the SessionStrip form.
+                      Self-hides when native.supported is false. */}
+                  <RuntimeBindingFields runtime={welcomeRuntime} onRuntime={setWelcomeRuntime} nb={welcomeNb} />
+                  {/* Claude model aliases — hidden for the native runtime, which
+                      picks its model via the binding picker above. */}
+                  {welcomeRuntime !== 'native' && (
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+                      <div className="flex gap-1">
+                        {MODELS.map((m) => (
+                          <button
+                            key={m}
+                            onClick={() => setWelcomeModel(m)}
+                            className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                              welcomeModel === m
+                                ? 'bg-accent text-on-accent font-medium'
+                                : 'bg-inset text-fg-dim hover:bg-edge'
+                            }`}
+                          >
+                            {WELCOME_MODEL_LABELS[m] || m}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
                     <button
@@ -2714,10 +2746,26 @@ function AppInner() {
                     </button>
                     <button
                       onClick={() => {
-                        createSession(welcomeCwd, welcomeDangerous, welcomeModel);
+                        // Native runtime carries a provider/model binding; persist
+                        // the choice so it sticks. The disabled guard already blocks
+                        // a missing binding, but bail defensively.
+                        if (welcomeRuntime === 'native') {
+                          if (!welcomeNb.effectiveBinding) return;
+                          persistLastBinding(welcomeNb.effectiveBinding);
+                        }
+                        createSession(
+                          welcomeCwd,
+                          welcomeDangerous,
+                          welcomeModel,
+                          welcomeRuntime,
+                          undefined, // welcome form has no launch-in-new-window toggle
+                          welcomeRuntime === 'native' ? (welcomeNb.effectiveBinding ?? undefined) : undefined,
+                        );
                         setWelcomeFormOpen(false);
+                        setWelcomeRuntime('claude');
                       }}
-                      className={`flex-1 text-sm font-medium rounded-md py-1.5 transition-colors ${
+                      disabled={welcomeNb.nativeCreateBlocked}
+                      className={`flex-1 text-sm font-medium rounded-md py-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                         welcomeDangerous
                           ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
                           : 'bg-accent hover:bg-accent text-on-accent'
@@ -2771,6 +2819,8 @@ function AppInner() {
         hasActiveSession={!!sessionId}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); openMarketplace('themes'); }}
         onPublishTheme={(slug) => { setSettingsOpen(false); setPublishThemeSlug(slug); }}
+        // Model Providers popup → Claude Code section → opens the /config prefs popup.
+        onOpenClaudePreferences={() => { setSettingsOpen(false); setPreferencesOpen(true); }}
         syncAutoOpen={syncAutoOpen}
         onSyncAutoOpenHandled={() => setSyncAutoOpen(false)}
       />

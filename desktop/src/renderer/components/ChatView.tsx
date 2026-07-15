@@ -10,6 +10,7 @@ import CompactingCard from './CompactingCard';
 import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
 import AttentionBanner from './AttentionBanner';
+import ModelLoadingBar from './ModelLoadingBar';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
 import { useArtifact } from '../state/ArtifactContext';
@@ -634,7 +635,22 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               const thinkingArea = state.isThinking && !hasAwaitingApproval && !hasRunningTools;
               const terminalAttention =
                 state.attentionState === 'error' || state.attentionState === 'session-died';
-              if (thinkingArea && state.attentionState === 'ok') return <ThinkingIndicator />;
+              // Native local-model: while the model isn't resident yet (cold load
+              // / waking from sleep), the turn is waiting on the ENGINE, not the
+              // model thinking — show a static "Loading…" instead of the animated
+              // spinner until it begins processing. (2026-07-14)
+              const modelNotResident = state.modelState != null && state.modelState !== 'loaded';
+              if (thinkingArea && state.attentionState === 'ok') {
+                return modelNotResident
+                  ? (
+                    <div className="flex items-center gap-2 px-4 py-1.5 in-view">
+                      <div className="flex items-center gap-2 bg-inset rounded-2xl rounded-bl-sm px-4 py-2.5">
+                        <span className="text-sm text-fg-dim italic">Loading…</span>
+                      </div>
+                    </div>
+                  )
+                  : <ThinkingIndicator />;
+              }
               if (state.attentionState !== 'ok' && (thinkingArea || terminalAttention)) {
                 return (
                   <AttentionBanner
@@ -684,6 +700,17 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
         )}
         <div className="frame-edge" />
       </div>
+
+      {/* Native local-model status: centered strip above the input — a loading
+          bar while the model (re)loads, or an "unloaded · Reload" prompt when it
+          slept. In the outer absolute div (like jump-to-bottom) so it floats
+          above the input chrome, unclipped. No-op for claude sessions. */}
+      <ModelLoadingBar
+        modelState={state.modelState}
+        modelInfo={state.modelInfo}
+        isThinking={state.isThinking}
+        onReload={(modelId) => { void window.claude.models.load(modelId); }}
+      />
 
       {/* Jump to bottom button — .jump-to-bottom class handles glassmorphism
          offset so the button appears above the frosted input bar.

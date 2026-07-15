@@ -249,6 +249,9 @@ declare global {
         interrupt: (sessionId: string) => void;
         setBinding: (sessionId: string, binding: { providerId: string; modelId: string }) => Promise<boolean>;
         sessionsList: () => Promise<any[]>;
+        // Per-session bound-model residency push (2026-07-14): { sessionId,
+        // modelId, state: 'unloaded'|'loading'|'loaded'|'sleeping', sizeBytes }.
+        onModelState: (cb: (s: any) => void) => () => void;
       };
       // Provider registry — native runtime model providers (desktop-only; the
       // Android/remote stubs reject with not-implemented).
@@ -267,8 +270,31 @@ declare global {
         status: () => Promise<any>;
         install: () => Promise<any>;
         restart: () => Promise<any>;
+        // Plan C context-length knob — persists -c and reboots the engine.
+        setContext: (contextSize: number) => Promise<any>;
         onInstallProgress: (cb: (p: any) => void) => () => void;
         onStatusChanged: (cb: (s: any) => void) => () => void;
+        // Live per-model residency (2026-07-14).
+        models: () => Promise<import('../../shared/engine-types').EngineModel[]>;
+        onModelsChanged: (cb: (models: import('../../shared/engine-types').EngineModel[]) => void) => () => void;
+      };
+      // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
+      // detectors, engine backend switch. Task 9's Local Models panel consumes
+      // these. onDownloadProgress returns an unsubscribe.
+      models: {
+        curated: () => Promise<any[]>;
+        search: (query: string) => Promise<any[]>;
+        quants: (repo: string) => Promise<any[]>;
+        download: (repo: string, quant: any) => Promise<{ downloadId: string }>;
+        downloadCancel: (downloadId: string) => Promise<boolean>;
+        delete: (id: string) => Promise<boolean>;
+        installed: () => Promise<any[]>;
+        detectEndpoints: () => Promise<any[]>;
+        setBackend: (backend: string) => Promise<any>;
+        onDownloadProgress: (cb: (p: any) => void) => () => void;
+        // Create-time / swap memory guard + [Reload Model] (2026-07-14).
+        memoryCheck: (modelId: string) => Promise<{ verdict: 'ok' | 'tight' | 'too-large'; headline: string; detail: string }>;
+        load: (modelId: string) => Promise<boolean>;
       };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState

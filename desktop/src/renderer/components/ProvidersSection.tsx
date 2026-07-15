@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
-import EngineCard from './EngineCard';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
 // test, enable/disable, and remove the model providers the NATIVE runtime binds
@@ -104,7 +103,13 @@ const ADD_TYPE_OPTIONS: { value: ProviderType; label: string; needsBaseUrl?: boo
   { value: 'openai-compatible', label: 'Custom endpoint (OpenAI-compatible)', needsBaseUrl: true },
 ];
 
-export default function ProvidersSection() {
+// `embedded`: rendered inside the Model Providers popup's "OpenRouter/API"
+// section, which supplies its own heading + a dedicated OpenRouter connect flow
+// and already gates on native support — so we drop the standalone <h3> AND hide
+// BOTH the local-engine row (managed in Local Models) and the openrouter row
+// (managed by the section's own Connect-to-OpenRouter control). What's left is
+// the "add your own API provider" list.
+export default function ProvidersSection({ embedded = false }: { embedded?: boolean } = {}) {
   // Gate the ENTIRE section on native support — hidden in production until
   // Phase 2 ungates. Read once (it's a static boolean, no IPC round-trip).
   const supported = window.claude?.native?.supported === true;
@@ -131,11 +136,19 @@ export default function ProvidersSection() {
 
   if (!supported) return null;
 
+  // In embedded mode the local-engine row (managed in Local Models) AND the
+  // openrouter row (managed by the section's own Connect control) are hidden.
+  const visibleRows = rows === null
+    ? null
+    : (embedded ? rows.filter((p) => p.type !== 'local-engine' && p.type !== 'openrouter') : rows);
+
   return (
     <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Providers</h3>
+      {!embedded && (
+        <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Providers</h3>
+      )}
 
-      {rows === null ? (
+      {visibleRows === null ? (
         // Loading — quiet skeleton (a single muted line) rather than a spinner.
         <p className="text-[11px] text-fg-muted px-1">Loading…</p>
       ) : (
@@ -147,7 +160,7 @@ export default function ProvidersSection() {
           {listError && (
             <div className="flex items-center gap-2 px-1">
               <p className="text-[11px] text-red-500 flex-1">
-                {rows.length === 0
+                {visibleRows.length === 0
                   ? `Couldn't load providers — ${listError}`
                   : `Couldn't refresh — ${listError}`}
               </p>
@@ -160,7 +173,7 @@ export default function ProvidersSection() {
             </div>
           )}
 
-          {rows.map((p) => (
+          {visibleRows.map((p) => (
             <ProviderRow key={p.id} provider={p} onChanged={refresh} />
           ))}
 
@@ -371,9 +384,11 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
         </p>
       )}
 
-      {/* Local engine install/status/restart controls live under the local
-          provider row (Plan B). Only this row carries them. */}
-      {isLocal && <EngineCard />}
+      {/* Local engine install/status/restart controls moved to the Local Models
+          section (Plan C) — the local row just points there now. */}
+      {isLocal && (
+        <p className="text-[10px] text-fg-muted mt-2">Managed in Local Models below.</p>
+      )}
     </div>
   );
 }

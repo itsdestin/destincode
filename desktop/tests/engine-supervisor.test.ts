@@ -9,6 +9,14 @@ vi.mock('child_process', async (orig) => ({
   spawn: (...args: any[]) => mockSpawn(...args),
 }));
 
+// fs is partially mocked: mkdirSync is a spy (the supervisor creates the models
+// cache dir before spawning) so tests don't create stray dirs from 'C:/fake/cache'.
+const mockMkdir = vi.fn();
+vi.mock('fs', async (orig) => ({
+  ...(await orig() as any),
+  mkdirSync: (...args: any[]) => mockMkdir(...args),
+}));
+
 function makeFakeChild(): ChildProcess {
   const ee = new EventEmitter() as any;
   ee.stdout = new EventEmitter();
@@ -46,10 +54,43 @@ function makeSupervisor(fetchImpl: any, extra: Record<string, any> = {}) {
 }
 
 let sup: EngineSupervisor;
-beforeEach(() => { mockSpawn.mockReset(); });
+beforeEach(() => { mockSpawn.mockReset(); mockMkdir.mockReset(); });
 afterEach(async () => { await sup?.stop(); });
 
 describe('EngineSupervisor', () => {
+  it('creates the models cache dir BEFORE spawning (router mode fatals on a missing --models-dir)', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(healthAfter(0));
+    await sup.ensureRunning();
+    expect(mockMkdir).toHaveBeenCalledWith('C:/fake/cache', { recursive: true });
+    // mkdir must precede the spawn, else the fresh-install verify-boot dies.
+    expect(mockMkdir.mock.invocationCallOrder[0]).toBeLessThan(mockSpawn.mock.invocationCallOrder[0]);
+  });
+
+  it('reports a SPECIFIC error (not a bad-build guess) when the cache dir cannot be created, and does not spawn', async () => {
+    mockMkdir.mockImplementationOnce(() => { throw new Error('EACCES: permission denied'); });
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(healthAfter(0));
+    await expect(sup.ensureRunning()).rejects.toThrow(/model folder could not be created.*EACCES/i);
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(sup.status()).toBe('stopped');
+  });
+
+  it('surfaces the child\'s OWN output (the real cause) when it exits during startup', async () => {
+    const child = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
+    sup = makeSupervisor(vi.fn(async () => { throw new Error('ECONNREFUSED'); }), { readyDeadlineMs: 5_000 });
+    const p = sup.ensureRunning();
+    setImmediate(() => {
+      child.stderr!.emit('data', Buffer.from(
+        "failed to initialize router models: error: '/home/x/.cache/llama.cpp' does not exist or is not a directory"
+      ));
+      child.emit('exit', 1);
+    });
+    // The thrown error carries the engine's real message, NOT a hardware guess.
+    await expect(p).rejects.toThrow(/does not exist or is not a directory/i);
+  });
+
   it('ensureRunning spawns router-mode llama-server (no -m) with the pinned flag set and LLAMA_CACHE', async () => {
     mockSpawn.mockReturnValue(makeFakeChild());
     sup = makeSupervisor(healthAfter(20));
@@ -63,6 +104,7 @@ describe('EngineSupervisor', () => {
       '--no-webui', '--jinja',
       '--models-dir', 'C:/fake/cache', // discovers dropped GGUFs (LLAMA_CACHE alone doesn't)
       '--models-max', '2',
+      '--sleep-idle-seconds', '300', // per-model 5-min auto-sleep (2026-07-14)
       '-c', '32768',
     ]);
     expect(args).not.toContain('-m'); // router mode = no model arg
@@ -168,7 +210,46 @@ describe('EngineSupervisor', () => {
     sup = makeSupervisor(fetchImpl);
     await sup.ensureRunning();
     const models = await sup.listModels();
-    expect(models).toEqual([{ id: 'foo-Q4_K_M', sizeBytes: null, loaded: true }]);
+    expect(models).toEqual([{ id: 'foo-Q4_K_M', sizeBytes: null, loaded: true, state: 'loaded' }]);
+  });
+
+  it('listModels maps /models status.value → EngineModelState (unknown → unloaded)', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { id: 'a', status: { value: 'loaded' } },
+          { id: 'b', status: { value: 'sleeping' } },
+          { id: 'c', status: { value: 'loading' } },
+          { id: 'd', status: { value: 'unloaded' } },
+          { id: 'e', status: { value: 'some-future-state' } },
+        ] }) } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    const byId = Object.fromEntries((await sup.listModels()).map((m) => [m.id, m.state]));
+    expect(byId).toEqual({ a: 'loaded', b: 'sleeping', c: 'loading', d: 'unloaded', e: 'unloaded' });
+  });
+
+  it('emits models-changed after boot with the live model set (drives the per-session banner)', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'a', status: { value: 'loaded' } }] }) } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+    sup = makeSupervisor(fetchImpl);
+    const changed: any[] = [];
+    sup.on('models-changed', (m) => changed.push(m));
+    await sup.ensureRunning();
+    await new Promise((r) => setTimeout(r, 30)); // let the initial poll tick resolve
+    expect(changed.length).toBeGreaterThan(0);
+    expect(changed[changed.length - 1][0]).toMatchObject({ id: 'a', state: 'loaded' });
   });
 
   it('ensureRunning during an in-flight stop WAITS for it, then respawns (no URL to the dying server)', async () => {

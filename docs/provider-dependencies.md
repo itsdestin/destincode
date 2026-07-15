@@ -40,3 +40,27 @@ _None yet — Phase 1 pins the AI SDK major/minor here._
   `X-Title`), BYOK behavior. (provider-registry)
 - **Per-vendor quirks** — reasoning blocks, prompt caching, rate-limit
   headers; one entry per adopted `@ai-sdk/*` provider. (provider-registry)
+- **HF model search** —
+  `https://huggingface.co/api/models?search=<q>&filter=gguf&sort=downloads&limit=30`.
+  Fields consumed per row: `id` (string, required — rows without it are
+  skipped), `downloads` / `likes` (numbers, default 0 when absent). Parsed
+  DEFENSIVELY — a non-array response yields no hits. Consumer:
+  `src/main/models/hf-client.ts`. (hf-client)
+- **HF repo tree** —
+  `https://huggingface.co/api/models/<owner>/<repo>/tree/main?recursive=true`.
+  `recursive=true` is REQUIRED (unsloth keeps dynamic quants in subfolders).
+  Fields consumed per row: `type` (`file` / `directory` — only `file` rows
+  are kept), `path` (string, required), `size` (number, required), `lfs.oid`
+  (64-hex sha256, optional → null when absent or malformed; the downloader
+  skips verification when null). Rows missing a required field are skipped.
+  Consumers: `src/main/models/hf-client.ts`, `model-downloader.ts`. (hf-client)
+- **HF resolve URLs** —
+  `https://huggingface.co/<owner>/<repo>/resolve/main/<path>` → 302 to the CDN
+  (Node fetch follows redirects). `Range` request support is relied on for
+  resumable downloads. Path segments are individually `encodeURIComponent`-encoded
+  (subfolders preserved). Consumer: `model-downloader.ts`. (hf-client)
+- **Curated remote list** —
+  `https://raw.githubusercontent.com/itsdestin/youcoded/master/curated-models.json`.
+  Gated on `schemaVersion` (must equal 1); on fetch failure or a malformed /
+  version-mismatched payload, falls back to the shipped copy. Consumer:
+  `src/main/models/curated-catalog.ts`. (curated-catalog)

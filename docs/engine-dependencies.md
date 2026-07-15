@@ -35,8 +35,22 @@ Exact router-mode arg list (no `-m`):
   `/v1/chat/completions` returns HTTP 400 `model '…' not found` — the feature is
   completely non-functional. (This build also has no `LLAMA_CACHE`-based flat
   discovery; see below.)
+- **`--models-dir` MUST EXIST or the router exits during startup (verified b9992).**
+  A missing directory is FATAL: `error: '<dir>' does not exist or is not a directory`
+  and the process exits immediately — it is NOT treated as "zero models, empty
+  router." Since `cacheDir` (`~/.cache/llama.cpp`) is created lazily on the first
+  model download, a fresh install's verify-boot ran BEFORE any model existed and
+  always died this way. `EngineSupervisor.start()` therefore `fs.mkdirSync(cacheDir,
+  {recursive:true})` before spawning (an empty dir boots fine — the router just
+  serves no models yet). The supervisor also drains + tail-captures child stdout/
+  stderr so a startup exit surfaces the engine's REAL message instead of a guess.
 - **`--models-max 2`** — the router's LRU default is 4; 2 bounds RAM on consumer
   machines while keeping chat↔utility switching cheap.
+- **`--sleep-idle-seconds 300` (2026-07-14)** — the router frees an idle model's
+  memory after 5 min (status → `'sleeping'`) and wakes it on the next request.
+  Verified b9992. FINER-grained than the engine-wide idle stop (`idleMs`, 10 min)
+  which tears down the whole process — the two are complementary. `SLEEP_IDLE_SECONDS`
+  in `engine-supervisor.ts`; the flag presence is pinned in `engine-supervisor.test.ts`.
 - **`--jinja`** from day one so Phase 2 tool calling needs no process-shape change.
 - **`-c` is inherited by every loaded model instance** — confirmed: the router
   writes each model's preset with `ctx-size = <-c>` (seen in `/models` `status`).
@@ -79,13 +93,21 @@ Observed b9992 shape:
     "architecture": { "input_modalities": ["text"], "output_modalities": ["text"] },
     "source": "models_dir", "can_remove": false } ] }
 ```
-- **`status` is an OBJECT `{value: 'loaded'|'unloaded'|'loading'}`, NOT a bare
-  string.** `listModels` reads `row.status.value` (with a string fallback). The
-  original `row.status === 'loaded'` was always false. Regression-pinned in
+- **`status` is an OBJECT `{value: 'loaded'|'unloaded'|'loading'|'sleeping'}`, NOT
+  a bare string.** `listModels` maps `row.status.value` → `EngineModelState` via
+  `mapModelState` (unknown → `'unloaded'`, the safe default). `'sleeping'` is
+  produced by `--sleep-idle-seconds` (below). Regression-pinned in
   `engine-supervisor.test.ts`.
-- **No `size` field** on `/models` rows — `sizeBytes` comes from the cache scan.
-- `POST /models/load` / `/models/unload` take `{"model":"<id>"}` (unused in Plan B;
-  auto-load on first chat request is what we rely on).
+- **No `size` field** on `/models` rows — `sizeBytes` comes from the cache scan,
+  merged in by id (the loading banner needs the model size).
+- **Per-model state polling (2026-07-14):** the supervisor polls `GET /models`
+  every ~1.5s while running and emits `models-changed` only on an (id→state)
+  diff (llama-server has no push channel). `ipc-handlers` joins this with the
+  session→model ref-count and pushes `native:model-state` per session → the
+  ChatView unloaded/loading banner. Cheap localhost GET; timer is `.unref()`'d.
+- `POST /models/unload` takes `{"model":"<id>"}` — used to free a model the
+  moment its last session releases it (`NativeSessionHost` ref-count → 0, #1).
+  `loadModel` warms a model via a 1-token `/v1/chat/completions` ([Reload Model]).
 
 ### `/v1/chat/completions` streaming (harness via @ai-sdk/openai-compatible; probe-chat.mjs)
 
@@ -114,15 +136,41 @@ Observed b9992 shape:
 - Windows unpack MUST use System32 `bsdtar` (reads both `.zip` and `.tar.gz`); a
   bare `tar` on PATH can resolve to Git's GNU tar, which cannot read `.zip`.
 
-### GGUF cache layout (cache-scan.ts, Plan C downloader)
+### GGUF cache layout + downloader naming contract (cache-scan.ts, Plan C model-downloader.ts)
 
 Flat `*.gguf` files in `--models-dir` (== the configured `cacheDir`). Multi-part
 split sets follow `<name>-00001-of-000NN.gguf`; the model is addressed through its
 first part and cache-scan sums the parts' sizes into one entry.
 
+- **Downloader flat-basename contract (Plan C):** `model-downloader.ts` writes each
+  HF file into the cache dir under its BASENAME (repo subfolders collapsed) — that
+  is exactly what `--models-dir` discovery + `cache-scan.ts`'s `ggufIdFromFileName`
+  read, so the router-served id == the downloaded filename minus `.gguf`. NEVER
+  rename downloaded files or change how split parts are named without re-running
+  `probe-download.mjs`.
+- **Multi-part router-id VERIFIED (Amendment H):** `probe-download.mjs` downloads a
+  real ~0.4 GB unsloth GGUF, ALSO splits it with the sibling `llama-gguf-split`
+  (same archive as `llama-server`), drops both flat in the cache, and asserts the
+  router LISTS + SERVES both the single-file id AND the `-00001-of-00002` split id,
+  with a real chat round-trip against the split model. This is the only cheap check
+  of the large-tier (gpt-oss-120b / Qwen3.5-122B) multi-part path, which can't be
+  downloaded on a 32 GB dev box. **PASS on b9992** (Windows x64 Vulkan,
+  `Qwen3-0.6B-Q4_K_M` single + `Qwen3-0.6B-SPLIT-00001-of-00002`), 2026-07-14 —
+  router discovered both ids from `--models-dir` and served the split model.
+- **Router hot-reload of `--models-dir` after boot — NOT yet verified live.** The
+  router discovers GGUFs at BOOT; whether a file downloaded AFTER boot appears in
+  `GET /models` (→ `catalogModels()` → the new-session picker's Local group)
+  without an engine restart is an open live-acceptance item (Amendment K2). The
+  Installed list (`scanGgufCache`) updates instantly regardless; the documented
+  mitigation is an engine restart (or a `scanGgufCache` fallback in the local
+  catalog source) after a download so a just-downloaded model is immediately
+  selectable. Resolve on Destin's dev machine during the Plan C live pass.
+
 ## Verification
 
 `desktop/test-engine/` holds dev-run smoke probes (spawn the real engine, assert
 health + `/models` parity + a streamed tool-less chat round-trip). Re-run all
-three on every engine bump — analogous to `test-conpty/` on a CC bump. All three
-PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
+three on every engine bump — analogous to `test-conpty/` on a CC bump. The
+original three PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
+`probe-download.mjs` (Plan C: flat-basename ↔ router-id for single AND multi-part)
+PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine bump.

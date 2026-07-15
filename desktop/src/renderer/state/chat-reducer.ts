@@ -411,6 +411,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    // Native model residency changed (loaded/loading/sleeping/unloaded). Purely
+    // informational — does NOT touch the turn/attention machinery. Drives the
+    // ModelLoadingBar (unloaded → reload; loading → loading indicator).
+    case 'NATIVE_MODEL_STATE_CHANGED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      if (session.modelState === action.state
+          && session.modelInfo?.modelId === action.modelId) return state; // no-op
+      next.set(action.sessionId, {
+        ...session,
+        modelState: action.state,
+        modelInfo: { modelId: action.modelId, sizeBytes: action.sizeBytes },
+      });
+      return next;
+    }
+
     // Plan 2b: another device took over this session's lease. See the inline
     // comment below — as of the "Moved Gate" follow-up this only ends the turn
     // cleanly; the user-facing surface moved to App.tsx's MovedGate.

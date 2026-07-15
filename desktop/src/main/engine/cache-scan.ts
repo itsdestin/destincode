@@ -42,6 +42,7 @@ export function scanGgufCache(cacheDir: string): EngineModel[] {
       id: ggufIdFromFileName(ent.name),
       sizeBytes,
       loaded: false,
+      state: 'unloaded', // cache scan = engine-off view; nothing is resident
     });
   }
   for (const [firstId, extra] of partSizes) {
