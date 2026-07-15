@@ -7,8 +7,8 @@ licensed under the GNU General Public License, version 3 (GPLv3), the full
 text of which follows below.
 
 This license applies specifically to the Android application because it links
-against Termux terminal-emulator and terminal-view (github.com/termux/termux-app),
-both of which are licensed under GPLv3. GPLv3's copyleft provisions therefore
+against the Termux terminal-emulator library (github.com/termux/termux-app),
+which is licensed under GPLv3. GPLv3's copyleft provisions therefore
 govern the combined Android work.
 
 The rest of YouCoded — the Electron desktop application, shared React user
