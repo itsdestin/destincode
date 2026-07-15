@@ -29,7 +29,14 @@ export function findSpaceFor(folderPath: string, status: SyncStatusData | null):
 
 function latestEventFor(spaceId: string, status: SyncStatusData) {
   for (let i = status.recentEvents.length - 1; i >= 0; i--) {
-    if (status.recentEvents[i].spaceId === spaceId) return status.recentEvents[i];
+    const e = status.recentEvents[i];
+    // Skip 'notice' events (e.g. the large-history warning): they carry a REAL
+    // space id but are informational, NOT a sync-status signal. If we returned
+    // one it would mask the green 'synced' state (a notice fires right after a
+    // healthy sync) and — were the dot logic to ever treat non-'synced' as
+    // bad — falsely paint the dot red. Mirrors how the 'hub'/'projects'
+    // sentinels are excluded, but keyed on type since a notice has a real id.
+    if (e.spaceId === spaceId && e.type !== 'notice') return e;
   }
   return null;
 }

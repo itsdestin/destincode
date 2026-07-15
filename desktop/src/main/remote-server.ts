@@ -19,8 +19,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory } from './session-browser';
-import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend } from './sync-state';
-import { getRestoreService } from './restore-service';
+import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
 import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
@@ -1576,11 +1575,7 @@ export class RemoteServer {
         this.respond(client.ws, type, id, pushResult);
         break;
       }
-      case 'sync:pull-backend': {
-        const pullResult = await pullBackend(payload.id || payload);
-        this.respond(client.ws, type, id, pullResult);
-        break;
-      }
+      // sync:pull-backend ("Download now") removed in sync-legacy-demolition.
       case 'sync:open-folder': {
         // Remote clients can't open local folders — return the URL for them to open manually.
         // For Drive, resolve the actual sync folder ID via rclone so the client deep-links
@@ -1645,66 +1640,6 @@ export class RemoteServer {
       case 'sync:setup:create-repo': {
         const repoResult = await createGithubRepo(payload.repoName || payload);
         this.respond(client.ws, type, id, repoResult);
-        break;
-      }
-
-      // --- Restore from backup (browser + Android parity) ---
-      // Each case fetches the RestoreService singleton lazily — it's initialized
-      // after SyncService.start(), so browser clients that connect very early
-      // (rare) will see an "RestoreService not initialized" error rather than a crash.
-      case 'sync:restore:list-versions': {
-        const versions = await getRestoreService()!.listVersions(payload.backendId || payload);
-        this.respond(client.ws, type, id, versions);
-        break;
-      }
-      case 'sync:restore:preview': {
-        const previewResult = await getRestoreService()!.previewRestore(payload.opts || payload);
-        this.respond(client.ws, type, id, previewResult);
-        break;
-      }
-      case 'sync:restore:execute': {
-        // Progress events stream back to the originating client only — restore
-        // is single-actor, broadcasting to peer browsers would be noise.
-        const execResult = await getRestoreService()!.executeRestore(
-          payload.opts || payload,
-          (evt) => {
-            if (client.ws.readyState === WebSocket.OPEN) {
-              client.ws.send(JSON.stringify({ type: 'sync:restore:progress', payload: evt }));
-            }
-          },
-        );
-        this.respond(client.ws, type, id, execResult);
-        break;
-      }
-      case 'sync:restore:list-snapshots': {
-        const snaps = await getRestoreService()!.listSnapshots();
-        this.respond(client.ws, type, id, snaps);
-        break;
-      }
-      case 'sync:restore:undo': {
-        await getRestoreService()!.undoRestore(payload.snapshotId || payload);
-        this.respond(client.ws, type, id, { ok: true });
-        break;
-      }
-      case 'sync:restore:delete-snapshot': {
-        await getRestoreService()!.deleteSnapshot(payload.snapshotId || payload);
-        this.respond(client.ws, type, id, { ok: true });
-        break;
-      }
-      case 'sync:restore:probe': {
-        const probeResult = await getRestoreService()!.probe(payload.backendId || payload);
-        this.respond(client.ws, type, id, probeResult);
-        break;
-      }
-      case 'sync:restore:browse-url': {
-        // Browser clients can't open the local shell, so we just resolve + return
-        // the URL and let the browser open it via window.open.
-        const url = await getRestoreService()!.browseCategoryUrl(
-          payload.backendId,
-          payload.category,
-          payload.versionRef || 'HEAD',
-        );
-        this.respond(client.ws, type, id, { url });
         break;
       }
 

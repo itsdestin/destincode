@@ -74,12 +74,6 @@ export interface BackendInstance {
   label: string;                       // User-visible name, e.g. "Personal Drive"
   syncEnabled: boolean;                // true = auto-sync; false = storage only
   config: Record<string, string>;      // Type-specific connection details
-  /**
-   * Set when the user explicitly picks "Start fresh" during onboarding despite
-   * detecting existing backup data. Prevents the restore probe from nagging on
-   * every launch. Absence means "never prompted yet" — presence means "user chose local".
-   */
-  freshStartConfirmedEpoch?: number;
 }
 
 /**
@@ -626,24 +620,9 @@ export async function pushBackend(id: string): Promise<{
   }
 }
 
-/**
- * Pull from a single specific backend (manual downsync).
- */
-export async function pullBackend(id: string): Promise<{
-  success: boolean;
-  error: string;
-}> {
-  if (!syncServiceInstance) {
-    return { success: false, error: 'SyncService not initialized' };
-  }
-
-  try {
-    await syncServiceInstance.pull({ backendId: id });
-    return { success: true, error: '' };
-  } catch (e: any) {
-    return { success: false, error: e.message || `Pull from ${id} failed` };
-  }
-}
+// pullBackend (manual "Download now" downsync) was removed in
+// sync-legacy-demolition along with SyncService.pull() — the flat backup paths
+// it read are orphaned and restore is gone.
 
 /**
  * Read the last N lines of backup.log.

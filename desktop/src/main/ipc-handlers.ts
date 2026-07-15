@@ -36,7 +36,7 @@ import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THE
 import { isBundledPlugin } from '../shared/bundled-plugins';
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
-import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend, getSyncService, type SyncWarning } from './sync-state';
+import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, type SyncWarning } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
@@ -50,8 +50,6 @@ import { createGithubConnect, setGithubConnect } from './github-connect';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
-import { getRestoreService } from './restore-service';
-import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
 import { readLogTail, gatherDiagnostics, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
 import { createUpdateInstaller, findCachedDownload, makeLaunchInstaller, UpdateInstallError } from './update-installer';
@@ -1734,12 +1732,10 @@ export function registerIpcHandlers(
       if (state) attentionMap[desktopId] = state;
     }
 
-    // Background bulk-conversations pull — non-null while a recent-restore
-    // is still fetching older history in the background. UI shows a chip
-    // explaining why conversations are still appearing after restore "Done".
-    const backgroundPull = getSyncService()?.getBackgroundPullState() ?? null;
+    // (The background bulk-conversations pull + its restore-progress chip were
+    // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap, backgroundPull };
+    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -2201,24 +2197,22 @@ export function registerIpcHandlers(
   });
 
   // Set a named flag on a session (complete, priority, helpful). Persists in
-  // conversation-index.json via SyncService (so it rides the existing
-  // backup/downsync pipeline) and broadcasts SESSION_META_CHANGED so any open
-  // resume browser refreshes. Accepts either a Claude session ID (as stored in
-  // the index) or a desktop session ID — the desktop ID is resolved via
+  // the Conversation Store (~/YouCoded/Personal/Conversations/) via
+  // noteFlagChanged, and broadcasts SESSION_META_CHANGED so any open resume
+  // browser refreshes. Accepts either a Claude session ID (as stored in the
+  // store) or a desktop session ID — the desktop ID is resolved via
   // sessionIdMap. Unknown flag names are rejected server-side so a typo
   // surfaces as an error rather than silently writing dead data.
   ipcMain.handle(IPC.SESSION_SET_FLAG, async (_event, sessionId: string, flag: string, value: boolean) => {
-    const svc = getSyncService();
-    if (!svc) return { ok: false, error: 'sync service unavailable' };
     if (!SESSION_FLAG_NAMES.includes(flag as SessionFlagName)) {
       return { ok: false, error: `unknown flag: ${flag}` };
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     try {
-      svc.setSessionFlag(resolved, flag, !!value);
-      // Dual-write into the Conversation Store (Phase 2a). The legacy index
-      // above is removed in Plan 2c; until then both carry flags so a rollback
-      // never loses them. safeWrite semantics live inside noteFlagChanged.
+      // Plan 2c: flags are STORE-ONLY now. The legacy conversation-index
+      // dual-write (svc.setSessionFlag) was removed — the Conversation Store is
+      // the sole authority for flags; the frozen legacy index is read-only for
+      // residual legacy-only rows. safeWrite semantics live inside noteFlagChanged.
       //
       // Phantom-record gate (review fix 5): only write when `resolved` is
       // actually a CLAUDE id. Either the mapping is known (sessionId was a
@@ -2228,8 +2222,10 @@ export function registerIpcHandlers(
       // session before its SessionStart hook establishes the mapping would
       // seed a flag-only record keyed by the desktop randomUUID — UUID-shaped
       // (passes the store's id guard), synced to every device, and never
-      // pruned (flagged records are deliberately kept). The legacy index above
-      // keeps the flag either way, so nothing is lost while gated.
+      // pruned (flagged records are deliberately kept). When gated out, the
+      // flag re-applies once the SessionStart hook establishes the mapping and
+      // the user (or a re-flag) drives it again — flags are store-only now,
+      // so there's no legacy index still catching it in the meantime.
       if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
         noteFlagChanged(resolved, flag, !!value);
       }
@@ -2421,7 +2417,7 @@ export function registerIpcHandlers(
   ipcMain.handle('sync:remove-backend', (_e, id) => removeBackend(id));
   ipcMain.handle('sync:update-backend', (_e, id, updates) => updateBackend(id, updates));
   ipcMain.handle('sync:push-backend', (_e, id) => pushBackend(id));
-  ipcMain.handle('sync:pull-backend', (_e, id) => pullBackend(id));
+  // sync:pull-backend ("Download now") was removed in sync-legacy-demolition.
 
   // Open a backend's remote location in the default browser/file explorer
   ipcMain.handle('sync:open-folder', async (_e, id: string) => {
@@ -2482,62 +2478,6 @@ export function registerIpcHandlers(
   ipcMain.handle('sync:setup:auth-gdrive', () => authGdrive());
   ipcMain.handle('sync:setup:auth-github', () => authGithub());
   ipcMain.handle('sync:setup:create-repo', (_e, repoName) => createGithubRepo(repoName));
-
-  // --- Restore from backup ---
-  // Directional, user-initiated pull. See restore-service.ts for safety invariants.
-  // Throws if SyncService hasn't finished starting yet (restore needs it to pause pushes).
-  const restore = () => {
-    const svc = getRestoreService();
-    if (!svc) throw new Error('RestoreService not initialized — SyncService must start first');
-    return svc;
-  };
-
-  ipcMain.handle(IPC.SYNC_RESTORE_LIST_VERSIONS, (_e, backendId: string) =>
-    restore().listVersions(backendId),
-  );
-  ipcMain.handle(IPC.SYNC_RESTORE_PREVIEW, async (_e, opts: RestoreOptions) => {
-    log('INFO', 'Restore', 'preview:start', { backendId: opts.backendId, categories: opts.categories });
-    try {
-      const res = await restore().previewRestore(opts);
-      log('INFO', 'Restore', 'preview:done', { totalBytes: res.totalBytes, warnings: res.warnings.length });
-      return res;
-    } catch (e: any) {
-      log('ERROR', 'Restore', 'preview:failed', { error: e?.message || String(e), stack: e?.stack });
-      throw e;
-    }
-  });
-  ipcMain.handle(IPC.SYNC_RESTORE_EXECUTE, async (e, opts: RestoreOptions) => {
-    // Progress is pushed back to the calling window only (not broadcast to
-    // peer windows) — restore is a single-actor flow; showing progress in a
-    // peer window would be noise. Event channel: IPC.SYNC_RESTORE_PROGRESS.
-    const wc = e.sender;
-    return restore().executeRestore(opts, (evt: RestoreProgressEvent) => {
-      if (!wc.isDestroyed()) wc.send(IPC.SYNC_RESTORE_PROGRESS, evt);
-    });
-  });
-  ipcMain.handle(IPC.SYNC_RESTORE_LIST_SNAPSHOTS, () => restore().listSnapshots());
-  ipcMain.handle(IPC.SYNC_RESTORE_UNDO, (_e, snapshotId: string) =>
-    restore().undoRestore(snapshotId),
-  );
-  ipcMain.handle(IPC.SYNC_RESTORE_DELETE_SNAPSHOT, (_e, snapshotId: string) =>
-    restore().deleteSnapshot(snapshotId),
-  );
-  ipcMain.handle(IPC.SYNC_RESTORE_PROBE, (_e, backendId: string) =>
-    restore().probe(backendId),
-  );
-
-  // Returns a browseable URL for a given category on a backend (or a local
-  // folder path for iCloud). Result used by the preview UI's folder-icon link.
-  // Opening the URL itself is done by the renderer via shell.openExternal
-  // (desktop) or window.open (browser/Android) — this handler just resolves it.
-  ipcMain.handle(IPC.SYNC_RESTORE_BROWSE_URL, async (_e, backendId: string, category: string, versionRef: string) => {
-    const url = await restore().browseCategoryUrl(backendId, category as any, versionRef || 'HEAD');
-    if (url) {
-      const { shell } = require('electron');
-      shell.openExternal(url).catch(() => {});
-    }
-    return { url };
-  });
 
   // --- Permission response (blocking hooks) ---
   if (hookRelay) {

@@ -18,9 +18,8 @@ import SyncSetupWizard from './SyncSetupWizard';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { RestoreWizard } from './restore/RestoreWizard';
-import { SnapshotsPanel } from './restore/SnapshotsPanel';
 import ConnectGithubModal from './ConnectGithubModal';
+import type { PastSession } from '../../shared/types';
 
 // --- Explainer content (updated for V2 multi-instance model) ---
 
@@ -59,7 +58,7 @@ const SYNC_EXPLAINER: { intro: string; sections: ExplainerSection[] } = {
       bullets: [
         { term: 'Sync now', text: 'Pushes and pulls your synced spaces right away instead of waiting for the next automatic cycle.' },
         { term: 'Back up now', text: 'Forces an immediate copy to your additional backups (Drive/iCloud).' },
-        { term: 'Upload now / Download now', text: 'Per-backup: push your local data up to that backup, or pull its copy down to this device.' },
+        { term: 'Upload now', text: 'Per-backup: push your local data up to that backup right now.' },
         { term: '+ Add a backup', text: 'Connect an extra Drive or iCloud copy.' },
       ],
     },
@@ -400,16 +399,28 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   const [editingId, setEditingId] = useState<string | null>(null);
   // Overflow menu state
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  // Count-tabs (Devices/Projects/Conversations) — which pill's list shows below the header.
+  const [countTab, setCountTab] = useState<'dev' | 'proj' | 'conv'>('dev');
+  // Devices in the synced registry — lifted out of the old YourDevices component so
+  // the "Devices" count tab and its list share ONE fetch. null = not loaded yet.
+  const [devices, setDevices] = useState<DeviceRow[] | null>(null);
+  // Past conversations across all projects — only used for the Conversations count +
+  // list. There's no dedicated count IPC, so we reuse session.browse(). null = unloaded.
+  const [conversations, setConversations] = useState<PastSession[] | null>(null);
+  // Local "a syncNow() is in flight" flag — drives the blue "Syncing…" header while the
+  // box's Sync now / Try again runs (spacesStatus carries no live in-progress signal).
+  const [spacesSyncing, setSpacesSyncing] = useState(false);
+  // Local "additional backups master intent". The derived master-on is
+  // backends.some(syncEnabled), which can NEVER be true with zero backends — so this
+  // lets the master toggle reveal the inline Drive/iCloud picker on an empty list
+  // without persisting anything. Reset whenever the master is turned back off.
+  const [additionalIntent, setAdditionalIntent] = useState(false);
   const mainScrollRef = useScrollFade<HTMLDivElement>();
   const logScrollRef = useScrollFade<HTMLDivElement>();
   // Per-backend action feedback
   const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
   // Confirmation dialog state
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
-  const [confirmPullId, setConfirmPullId] = useState<string | null>(null);
-  // Restore flow: stash the backend the user picked so RestoreWizard can open.
-  const [restoreTarget, setRestoreTarget] = useState<{ id: string; label: string; type: 'drive' | 'github' | 'icloud' } | null>(null);
-  const [showSnapshots, setShowSnapshots] = useState(false);
   // Cross-device sync spaces (spec 2026-07-03) — separate from the backend backups
   // above. Status refetches whenever the engine emits an event so the list and
   // per-space connected/local state stay live.
@@ -526,17 +537,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     setTimeout(() => setActionFeedback(prev => { const n = { ...prev }; delete n[id]; return n; }), 2000);
   }, [claude, refreshStatus]);
 
-  const handlePullBackend = useCallback(async (id: string) => {
-    setActionFeedback(prev => ({ ...prev, [id]: 'downloading' }));
-    try {
-      const result = await claude.sync.pullBackend(id);
-      setActionFeedback(prev => ({ ...prev, [id]: result.success ? 'downloaded' : 'error' }));
-      await refreshStatus();
-    } catch {
-      setActionFeedback(prev => ({ ...prev, [id]: 'error' }));
-    }
-    setTimeout(() => setActionFeedback(prev => { const n = { ...prev }; delete n[id]; return n; }), 2000);
-  }, [claude, refreshStatus]);
+  // handlePullBackend ("Download now") was removed in sync-legacy-demolition —
+  // the pull path is gone. Only the "Upload now" backup action remains.
 
   const handleToggleSync = useCallback(async (id: string, syncEnabled: boolean) => {
     try {
@@ -658,6 +660,68 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   }, [claude, refreshSpacesStatus, refreshGithubStatus]);
   useEffect(() => { handleSpacesEnableRef.current = handleSpacesEnable; }, [handleSpacesEnable]);
 
+  // Device registry fetch (lifted from YourDevices). Method-exists guard so remote /
+  // older Android without the handler degrades to an empty list instead of throwing.
+  const loadDevices = useCallback(async () => {
+    const fn = (window as any).claude?.syncSpaces?.listDevices;
+    if (typeof fn !== 'function') { setDevices([]); return; }
+    try { setDevices(await fn()); } catch { setDevices([]); }
+  }, []);
+  const handleRenameDevice = useCallback(async (id: string, name: string) => {
+    const fn = (window as any).claude?.syncSpaces?.renameDevice;
+    if (typeof fn !== 'function') return;
+    try { await fn(id, name); } catch {}
+    await loadDevices(); // re-fetch so the fold-on-read authoritative name is shown
+  }, [loadDevices]);
+  // Load devices on mount and whenever sync flips on — the first enable provisions the
+  // Personal space that backs the registry, so the list can go empty -> populated.
+  useEffect(() => { void loadDevices(); }, [loadDevices, spacesStatus?.enabled]);
+
+  // Conversations for the count tab. session.browse() can be a touch slow, so this is
+  // fire-and-forget and non-blocking; [] on failure keeps the count at zero.
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await claude.session?.browse?.();
+        setConversations(Array.isArray(list) ? list : []);
+      } catch { setConversations([]); }
+    })();
+  }, [claude]);
+
+  // Wrap syncNow() so the header shows the blue "Syncing…" state while it runs. .catch
+  // routes a rejected invoke into the same red note slot as before; .finally clears the
+  // flag whether it resolved or failed. Used by the box's "Sync now" and "Try again".
+  const runSpacesSyncNow = useCallback(() => {
+    setSpacesSyncing(true);
+    void (window as any).claude.syncSpaces.syncNow()
+      .catch((err: any) => setSpacesError(String(err?.message ?? err)))
+      .finally(() => setSpacesSyncing(false));
+  }, []);
+
+  // Additional-backups master toggle. WHY: there is no dedicated "additional backups
+  // enabled" flag yet (deferred follow-up) — the master state is DERIVED from whether
+  // ANY backend has syncEnabled. So the toggle maps to: OFF -> pause every active
+  // backend, ON -> resume every paused backend. Non-destructive (never removes a
+  // backend). With zero backends, turning ON just reveals the inline picker
+  // (additionalIntent) — actually adding a backend is what persists anything.
+  const handleAdditionalToggle = useCallback(async () => {
+    const list = status?.backends ?? [];
+    const on = list.some(b => b.syncEnabled) || additionalIntent;
+    if (on) {
+      // Turn OFF: pause all currently-active backends and drop the picker intent.
+      for (const b of list) if (b.syncEnabled) await claude.sync.updateBackend(b.id, { syncEnabled: false });
+      setAdditionalIntent(false);
+      await refreshStatus();
+    } else if (list.length === 0) {
+      // Turn ON with nothing connected: reveal the inline Drive/iCloud picker.
+      setAdditionalIntent(true);
+    } else {
+      // Turn ON with paused backends: resume them all.
+      for (const b of list) if (!b.syncEnabled) await claude.sync.updateBackend(b.id, { syncEnabled: true });
+      await refreshStatus();
+    }
+  }, [status, additionalIntent, claude, refreshStatus]);
+
   // Recent sync events for DISPLAY only. `hub-status` entries drive the
   // "Instant sync" status line below (that's their surface); `projects-changed`
   // is a pure list-refresh signal (2026-07-13) with no user-facing notice.
@@ -752,332 +816,397 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             <div className="px-4 py-4 space-y-6">
 
             {/* ============================================================
-                PRIMARY — Cross-Device Backup & Sync (GitHub). Spec 2026-07-03.
-                One private GitHub repo per space is BOTH the cross-device sync
-                channel and a versioned cloud backup, so it's the headline system
-                and leads the panel; the Drive/iCloud backups below are optional
-                secondary failsafes.
-                FUTURE (spec §11 / Phase 2c): GitHub is removed as a *separate
-                backup backend* and the extra-backup layer becomes a daily
-                Drive/iCloud job. Today the two engines still run side by side —
-                this copy is written to stay correct through that change. Note for
-                dogfood: the GitHub side does not yet carry memory/encyclopedia/
-                skills (2c wires those into the Personal space), so the Drive
-                backup is still load-bearing until then — don't turn it off. */}
-            <section>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-fg">Cross-Device Backup &amp; Sync</h3>
-                  <p className="text-[11px] text-fg-muted mt-1 leading-relaxed">
-                    Your conversations, projects, and files are backed up to your private
-                    GitHub and kept in sync on every device you use. Requires a GitHub connection.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0 pt-0.5">
-                  {/* Plain-word pending state — first enable provisions repos and takes seconds. */}
-                  {enabling && <span className="text-[10px] text-fg-muted">Setting up…</span>}
-                  {/* Green switch = on, matching the per-backup toggles below. */}
-                  <button
-                    role="switch"
-                    aria-checked={!!spacesStatus?.enabled}
-                    disabled={enabling}
-                    onClick={() => void handleSpacesEnable(!spacesStatus?.enabled)}
-                    className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${spacesStatus?.enabled ? 'bg-green-600' : 'bg-inset'} ${enabling ? 'opacity-50 cursor-wait' : 'cursor-pointer'}`}
-                    title={spacesStatus?.enabled ? 'Cross-device sync on — click to turn off' : 'Cross-device sync off — click to turn on'}
-                  >
-                    <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all"
-                      style={{ left: spacesStatus?.enabled ? '18px' : '2px' }} />
-                  </button>
-                </div>
-              </div>
+                PRIMARY — Cross-Device Backup & Sync box (redesign 2026-07-15).
+                One bordered "sync box": a unified status header (dot · title · sub ·
+                toggle), then — only when enabled & healthy — Devices/Projects/
+                Conversations count tabs with a switchable list, plus the conflict /
+                large-history notices and a "Sync now" link. Every state reuses the
+                SAME header anatomy so the box never reads as a different widget.
+                (Replaces the old primary section, the secondary backups block, and
+                the standalone "Back up now" row.) */}
+            {(() => {
+              const engineError = [...visibleSpaceEvents].reverse().find((e: any) => e.type === 'error');
+              const errorMsg = spacesError ?? engineError?.message;
+              const enabled = !!spacesStatus?.enabled;
+              const githubUnauthed = !!(githubStatus && !githubStatus.authed);
+              const login = githubStatus?.login;
 
-              {/* GitHub connection line. Shown whenever we know the status:
-                  a plain "connected as <login>" when authed (no status glyph),
-                  or a "Connect GitHub…" affordance when not. Gates on the
-                  structured github:status, never on the error strings. */}
-              {githubStatus && (
-                githubStatus.authed ? (
-                  <p className="text-xs text-fg-muted mt-2">
-                    GitHub connected{githubStatus.login ? <> as <span className="text-fg-2">{githubStatus.login}</span></> : ''}
-                  </p>
-                ) : (
-                  <button
-                    onClick={() => setShowConnectGithub(true)}
-                    className="text-xs mt-2 text-accent hover:underline"
-                  >
+              // Resolve the single header state from the existing signals.
+              type HK = 'setup' | 'off' | 'waiting-github' | 'error' | 'syncing' | 'synced';
+              let hk: HK;
+              if (enabling) hk = 'setup';
+              else if (!enabled) hk = (errorMsg && githubUnauthed) ? 'waiting-github' : 'off';
+              else if (errorMsg) hk = 'error';
+              else if (spacesSyncing) hk = 'syncing';
+              else hk = 'synced';
+
+              const dot =
+                hk === 'setup' ? 'bg-blue-400 animate-pulse' :
+                hk === 'off' ? 'bg-fg-muted/40' :
+                hk === 'waiting-github' ? 'bg-[#FF9800]' :
+                hk === 'error' ? 'bg-red-500' :
+                hk === 'syncing' ? 'bg-blue-400 animate-pulse' :
+                'bg-green-500';
+
+              const title =
+                hk === 'setup' ? 'Setting up…' :
+                hk === 'off' ? 'Backup & sync is off' :
+                hk === 'waiting-github' ? 'Waiting on GitHub' :
+                hk === 'error' ? "Couldn't sync" :
+                hk === 'syncing' ? 'Syncing…' :
+                'All synced';
+
+              // Instant-sync phrase (reuses the syncHub logic) + relative last-sync.
+              // lastSyncEpoch is the app-wide sync marker (seconds) — the only relative
+              // time we have — so it's shown only when present ("if available").
+              const instant =
+                spacesStatus?.syncHub === 'connected' ? 'instant sync on' :
+                (spacesStatus?.syncHub && spacesStatus.syncHub !== 'off') ? 'reconnecting' : null;
+              const lastRel = status?.lastSyncEpoch ? timeAgo(status.lastSyncEpoch) : null;
+              const syncedSub = ['GitHub', login, instant, lastRel].filter(Boolean).join(' · ');
+              const syncingSub = ['GitHub', login].filter(Boolean).join(' · ');
+
+              // space-manager's error string is a pinned UI contract — shown verbatim.
+              const sub =
+                hk === 'setup' ? 'Creating your private repositories — a few seconds.' :
+                hk === 'off' ? 'Turn on to back up and sync across your devices' :
+                hk === 'waiting-github' ? 'Connect your account to start syncing' :
+                hk === 'error' ? (errorMsg as string) :
+                hk === 'syncing' ? syncingSub :
+                syncedSub;
+              const subWarn = hk === 'error';
+
+              // Toggle reflects the real enabled state (or the pending enable) so its
+              // click always flips the correct direction. Disabled only while setting up.
+              const toggleOn = enabling || enabled;
+
+              // Count tabs only when enabled & healthy (not off/setup/error/waiting).
+              const showTabs = hk === 'synced' || hk === 'syncing';
+              const devCount = devices?.length ?? 0;
+              const projCount = ((spacesStatus?.spaces ?? []) as any[]).filter(s => s.kind === 'project').length;
+              const convCount = conversations?.length ?? 0;
+              const tabDefs = [
+                { key: 'dev' as const, count: devCount, word: devCount === 1 ? 'Device' : 'Devices' },
+                { key: 'proj' as const, count: projCount, word: projCount === 1 ? 'Project' : 'Projects' },
+                { key: 'conv' as const, count: convCount, word: convCount === 1 ? 'Conversation' : 'Conversations' },
+              ];
+
+              // CTA row — tucked directly under the sub (aligned past the dot, no divider).
+              const cta =
+                hk === 'waiting-github' ? (
+                  <button onClick={() => setShowConnectGithub(true)} className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent text-on-accent hover:brightness-110">
                     Connect GitHub…
                   </button>
-                )
-              )}
-
-              {spacesStatus?.enabled && (
-                <ul className="mt-3 space-y-1">
-                  {(spacesStatus.spaces?.map((s: any) => (
-                    <li key={s.id} className="text-xs text-fg-2 flex items-center justify-between">
-                      <span>{s.id === 'personal' ? 'Personal' : s.id.replace('project:', '')}</span>
-                      <span className="text-[10px] text-fg-muted">{s.remote ? 'connected' : 'local only'}</span>
-                    </li>
-                  )) ?? [])}
-                </ul>
-              )}
-
-              {/* Instant sync (SyncHub, Plan 1b) — plain words, no status glyphs. */}
-              {spacesStatus?.enabled && spacesStatus?.syncHub && spacesStatus.syncHub !== 'off' && (
-                <p className="text-xs text-fg-muted mt-2">
-                  {spacesStatus.syncHub === 'connected'
-                    ? 'Instant sync: connected'
-                    : 'Instant sync: reconnecting — changes still sync every couple of minutes'}
-                </p>
-              )}
-
-              {spacesStatus?.enabled && visibleSpaceEvents.some((e: any) => e.type === 'conflict') && (
-                <p className="text-xs text-amber-600 mt-2">
-                  Some files had conflicting edits — the other device's copy was kept alongside yours
-                  (look for "(from …)" files).
-                </p>
-              )}
-
-              {/* Error slot stays OUTSIDE the enabled gate: a failed enable attempt
-                  (e.g. gh not installed) sets spacesError / emits an engine error while
-                  enabled is still false, and space-manager's friendly messages are
-                  contractually shown verbatim. */}
-              {(() => {
-                const engineError = [...visibleSpaceEvents].reverse().find((e: any) => e.type === 'error');
-                const msg = spacesError ?? engineError?.message;
-                if (!msg) return null;
-                // Keep the raw message verbatim (space-manager's friendly strings
-                // are a pinned UI contract). The "Connect GitHub…" button is an
-                // ADDITIVE affordance, gated on the structured not-authed state —
-                // NOT on parsing the error text.
-                return (
-                  <div className="mt-2 space-y-1">
-                    <p className="text-xs text-red-500">{msg}</p>
-                    {githubStatus && !githubStatus.authed && (
-                      <button
-                        onClick={() => setShowConnectGithub(true)}
-                        className="text-xs text-accent hover:underline"
-                      >
+                ) : hk === 'error' ? (
+                  <>
+                    {/* Try again reuses syncNow() with the existing .catch error routing. */}
+                    <button onClick={runSpacesSyncNow} className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent text-on-accent hover:brightness-110">
+                      Try again
+                    </button>
+                    {githubUnauthed && (
+                      <button onClick={() => setShowConnectGithub(true)} className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-edge-dim text-fg-2 hover:bg-inset">
                         Connect GitHub…
                       </button>
                     )}
-                  </div>
-                );
-              })()}
+                  </>
+                ) : null;
 
-              {spacesStatus?.enabled && (
-                /* .catch: void doesn't swallow rejections — route a failed invoke
-                   (bridge timeout) into the red note slot instead of an unhandled rejection. */
-                <button
-                  onClick={() => void (window as any).claude.syncSpaces.syncNow().catch((err: any) => setSpacesError(String(err?.message ?? err)))}
-                  className="text-xs mt-2 underline text-fg-muted"
-                >
-                  Sync now
-                </button>
-              )}
+              const conflict = enabled && visibleSpaceEvents.some((e: any) => e.type === 'conflict');
+              const notice = enabled ? [...visibleSpaceEvents].reverse().find((e: any) => e.type === 'notice') : null;
 
-              {/* Your devices (Plan 2b spec §10a) — the synced device registry.
-                  Plain text only (no status dots/glyphs — user preference); the
-                  current machine is marked "(this device)" and each name is an
-                  inline-editable nickname. Gated on sync being on: the registry
-                  lives inside the Personal space, so there's nothing to list until
-                  sync has a personal root. */}
-              <YourDevices enabled={!!spacesStatus?.enabled} />
-            </section>
-
-            {/* Divider between the primary GitHub system and the optional extras. */}
-            <div className="border-t border-edge-dim" />
-
-            {/* ============================================================
-                SECONDARY — Additional cloud backups (Drive/iCloud), optional.
-                Belt-and-suspenders copies on top of the GitHub primary. */}
-            <div>
-              <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-1">Additional backups · optional</h3>
-              <p className="text-[11px] text-fg-muted mb-3 leading-relaxed">
-                A second copy on top of GitHub — belt and suspenders. GitHub stays your
-                primary; these don't replace it.
-              </p>
-
-              {status?.backends && status.backends.length > 0 ? (
-                <div className="space-y-2">
-                  {(() => {
-                    // Fix: warnings are now SyncWarning objects, not strings — check by .code.
-                    const isOffline = status.warnings.some(w => w.code === 'OFFLINE');
-                    return status.backends.map(b => {
-                  // Pending = sync-enabled backend that can't currently push (offline or errored)
-                  const isPending = b.syncEnabled && (b.lastError != null || isOffline);
-                  return (
-                    <div
-                      key={b.id}
-                      className={`rounded-lg border px-3 py-2.5 flex items-center gap-3 ${
-                        b.lastError ? 'border-red-500/20 bg-red-500/5' :
-                        b.syncEnabled && b.connected ? 'border-green-500/20 bg-green-500/5' :
-                        'border-edge bg-inset/30'
-                      }`}
-                    >
-                      {/* Type icon */}
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 ${BACKEND_STYLE[b.type]?.tint ?? ''}`}>
-                        {BACKEND_STYLE[b.type]?.icon ?? '?'}
-                      </div>
-
-                      {/* Name + detail */}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs text-fg font-medium truncate">{b.label}</div>
-                        <div className="text-[10px] text-fg-faint truncate">
-                          {b.lastError ? b.lastError :
-                           b.lastPushEpoch ? `Backed up ${timeAgo(b.lastPushEpoch)}` :
-                           !b.syncEnabled ? 'Auto-backup paused' :
-                           'Never backed up'}
+              return (
+                <div className="rounded-lg border border-edge bg-well overflow-hidden">
+                  {/* Unified header: dot · title/sub · toggle. Identical anatomy every state. */}
+                  <div className="px-3 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex items-start gap-2.5">
+                        <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${dot}`} />
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-fg">{title}</div>
+                          <div className={`text-[11px] mt-0.5 leading-relaxed ${subWarn ? 'text-red-500' : 'text-fg-muted'}`}>{sub}</div>
                         </div>
-                        {/* Pending changes badge — only when sync is on but blocked */}
-                        {isPending && !actionFeedback[b.id] && (
-                          <span className="text-[9px] font-medium text-amber-400">Changes pending upload</span>
-                        )}
-                        {/* Action feedback badge */}
-                        {actionFeedback[b.id] && (
-                          <span className={`text-[9px] font-medium ${
-                            actionFeedback[b.id] === 'error' ? 'text-red-400' :
-                            actionFeedback[b.id]?.includes('ing') ? 'text-blue-400' :
-                            'text-green-400'
-                          }`}>
-                            {actionFeedback[b.id] === 'uploading' ? 'Uploading...' :
-                             actionFeedback[b.id] === 'downloading' ? 'Downloading...' :
-                             actionFeedback[b.id] === 'uploaded' ? 'Uploaded!' :
-                             actionFeedback[b.id] === 'downloaded' ? 'Downloaded!' :
-                             'Error'}
-                          </span>
-                        )}
                       </div>
-
-                      {/* Status dot — same severity logic as the panel-wide row, scoped to this backend.
-                          Action-feedback "uploading/downloading" overlays the helper-derived color. */}
-                      {(() => {
-                        const scopedDisplay = deriveSyncState({
-                          hasBackends: true,
-                          // syncInProgress is global; per-backend "syncing" comes from per-backend action feedback below.
-                          syncInProgress: false,
-                          lastSyncEpoch: b.lastPushEpoch,
-                          warnings: status.warnings,
-                          scope: { backendId: b.id },
-                        });
-                        const inFlight = actionFeedback[b.id]?.includes('ing');
-                        const baseClass = dotColorForState(scopedDisplay);
-                        // When the backend isn't connected/sync-enabled at all, dim the dot regardless of warnings.
-                        const offline = !b.syncEnabled || !b.connected;
-                        const dotClass = inFlight
-                          ? 'bg-blue-400 animate-pulse'
-                          : offline && scopedDisplay.kind !== 'failing'
-                            ? 'bg-fg-muted/40'
-                            : baseClass;
-                        return <div className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />;
-                      })()}
-
-                      {/* Sync toggle — green when auto-sync, gray when storage-only */}
+                      {/* Enable toggle — reuses the 36×20 green switch markup. */}
                       <button
-                        onClick={() => handleToggleSync(b.id, !b.syncEnabled)}
-                        className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${
-                          b.syncEnabled ? 'bg-green-600' : 'bg-inset'
-                        }`}
-                        title={b.syncEnabled ? 'Auto-backup on \u2014 click to pause' : 'Auto-backup paused \u2014 click to resume'}
+                        role="switch"
+                        aria-checked={toggleOn}
+                        disabled={enabling}
+                        onClick={() => void handleSpacesEnable(!enabled)}
+                        className={`relative w-9 h-5 rounded-full transition-colors shrink-0 mt-0.5 ${toggleOn ? 'bg-green-600' : 'bg-inset'} ${enabling ? 'opacity-50 cursor-wait' : 'cursor-pointer'}`}
+                        title={enabled ? 'Cross-device sync on — click to turn off' : 'Cross-device sync off — click to turn on'}
                       >
-                        <div className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-all"
-                          style={{ left: b.syncEnabled ? '18px' : '2px' }} />
+                        <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all" style={{ left: toggleOn ? '18px' : '2px' }} />
                       </button>
-
-                      {/* Overflow menu (three-dot) */}
-                      <div className="relative shrink-0">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === b.id ? null : b.id); }}
-                          className="w-6 h-6 flex items-center justify-center rounded hover:bg-inset text-fg-muted hover:text-fg-2 text-xs"
-                        >
-                          {'\u00B7\u00B7\u00B7'}
-                        </button>
-                        {menuOpenId === b.id && (
-                          /* Overflow menu — .layer-surface for theme-consistent look + glass. */
-                          <div className="layer-surface absolute right-0 top-7 w-40 py-1"
-                            style={{ zIndex: 10 }}
-                            onClick={(e) => e.stopPropagation()}>
-                            <MenuButton onClick={() => { handlePushBackend(b.id); setMenuOpenId(null); }}>Upload now</MenuButton>
-                            <MenuButton onClick={() => { setConfirmPullId(b.id); setMenuOpenId(null); }}>Download now</MenuButton>
-                            <MenuButton onClick={() => { setRestoreTarget({ id: b.id, label: b.label, type: b.type }); setMenuOpenId(null); }}>Restore from backup...</MenuButton>
-                            <MenuButton onClick={() => { claude.sync.openFolder(b.id); setMenuOpenId(null); }}>Open folder</MenuButton>
-                            <MenuButton onClick={() => { setEditingId(b.id); setView('edit'); setMenuOpenId(null); }}>Edit settings</MenuButton>
-                            <div className="border-t border-edge-dim my-1" />
-                            <MenuButton danger onClick={() => { setConfirmRemoveId(b.id); setMenuOpenId(null); }}>Remove</MenuButton>
-                          </div>
-                        )}
-                      </div>
                     </div>
-                  ); }); })()}
-                </div>
-              ) : (
-                <div className="text-center py-6">
-                  <div className="text-fg-muted text-sm mb-1">No extra backups yet</div>
-                  <div className="text-fg-faint text-[11px] mb-3">GitHub already backs you up — add Drive or iCloud for a second copy.</div>
-                </div>
-              )}
+                    {/* Action tucked under the reason — same box, no divider. */}
+                    {cta && <div className="mt-2 flex items-center gap-2 pl-[18px]">{cta}</div>}
+                  </div>
 
-              {/* Add backend button */}
-              <button
-                onClick={() => setView('add-type')}
-                className="w-full mt-2 border border-dashed border-edge-dim rounded-lg py-3 text-center text-[11px] text-fg-muted hover:text-fg-2 hover:border-edge hover:bg-inset/30 transition-colors"
-              >
-                + Add a backup
-              </button>
+                  {/* Count tabs + switchable list (only when enabled & healthy). */}
+                  {showTabs && (
+                    <>
+                      <div
+                        role="tablist"
+                        aria-label="Synced content"
+                        className="flex gap-2 px-3 pb-3"
+                        onKeyDown={(e) => {
+                          // Left/Right arrow roving between the three pills.
+                          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                          e.preventDefault();
+                          const order = ['dev', 'proj', 'conv'] as const;
+                          const i = order.indexOf(countTab);
+                          const ni = e.key === 'ArrowRight' ? (i + 1) % 3 : (i + 2) % 3;
+                          setCountTab(order[ni]);
+                          (e.currentTarget.children[ni] as HTMLElement)?.focus();
+                        }}
+                      >
+                        {tabDefs.map(t => {
+                          const active = countTab === t.key;
+                          return (
+                            <button
+                              key={t.key}
+                              role="tab"
+                              aria-selected={active}
+                              tabIndex={active ? 0 : -1}
+                              onClick={() => setCountTab(t.key)}
+                              className={`inline-flex items-baseline gap-1.5 rounded-full px-3 py-1 text-[11px] transition-colors ${active ? 'bg-accent text-on-accent border border-accent' : 'bg-inset border border-edge-dim text-fg-dim hover:text-fg-2'}`}
+                            >
+                              <span className="font-bold text-xs">{t.count}</span> {t.word}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div role="tabpanel" className="border-t border-edge-dim px-3 py-2.5">
+                        {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} />}
+                        {countTab === 'proj' && (() => {
+                          const projects = ((spacesStatus?.spaces ?? []) as any[]).filter(s => s.kind === 'project');
+                          if (projects.length === 0) return <p className="text-[11px] text-fg-muted">Turn on sync for a project folder to add it here.</p>;
+                          return (
+                            <ul className="space-y-1">
+                              {projects.map((s: any) => (
+                                <li key={s.id} className="flex items-center justify-between gap-2">
+                                  <span className="text-xs text-fg-2 truncate">{s.displayName || s.id.replace('project:', '')}</span>
+                                  <span className="text-[10px] text-fg-muted shrink-0">{s.remote ? 'connected' : 'local only'}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          );
+                        })()}
+                        {countTab === 'conv' && (() => {
+                          // Most-recent first; show up to 4 with a "+ N more" muted tail.
+                          const sorted = [...(conversations ?? [])].sort((a, b) => b.lastModified - a.lastModified);
+                          if (sorted.length === 0) return <p className="text-[11px] text-fg-muted">No conversations yet.</p>;
+                          const shown = sorted.slice(0, 4);
+                          return (
+                            <>
+                              <ul className="space-y-1">
+                                {shown.map(c => (
+                                  <li key={c.sessionId} className="flex items-center justify-between gap-2">
+                                    <span className="text-xs text-fg-2 truncate">{c.name}</span>
+                                    <span className="text-[10px] text-fg-muted shrink-0">{relativeMs(c.lastModified)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                              {sorted.length > shown.length && (
+                                <p className="text-[10px] text-fg-muted mt-1.5">+ {sorted.length - shown.length} more, all backed up</p>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </>
+                  )}
 
-              {/* Restore snapshots expander — lists pre-restore backups users can undo.
-                  Collapsed by default; only surfaces when at least one backend exists
-                  (snapshots are pointless without a backend). */}
-              {(status?.backends?.length ?? 0) > 0 && (
-                <div className="mt-2">
-                  <button
-                    onClick={() => setShowSnapshots(v => !v)}
-                    className="w-full text-left px-3 py-2 rounded-md text-[11px] text-fg-muted hover:text-fg-2 hover:bg-inset/30"
-                  >
-                    {showSnapshots ? '▾' : '▸'} Restore snapshots
-                  </button>
-                  {showSnapshots && (
-                    <div className="mt-1 px-1">
-                      <SnapshotsPanel />
+                  {/* Conflict / large-history notice / Sync now — only when enabled & not errored. */}
+                  {enabled && !errorMsg && (
+                    <div className="border-t border-edge-dim px-3 py-2.5 space-y-2">
+                      {conflict && (
+                        <p className="text-xs text-amber-600">
+                          Some files had conflicting edits — the other device's copy was kept alongside yours
+                          (look for "(from …)" files).
+                        </p>
+                      )}
+                      {notice && <p className="text-xs text-fg-muted">{notice.message}</p>}
+                      {/* .catch (inside runSpacesSyncNow) routes a failed invoke into the red note slot. */}
+                      <button onClick={runSpacesSyncNow} className="text-xs underline text-fg-muted hover:text-fg-2">Sync now</button>
                     </div>
                   )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
 
-            {/* Back up now — forces an immediate copy to the additional backups
-                (sync.force drives the legacy Drive/iCloud/GitHub-backup engine).
-                Only meaningful when at least one extra backup is configured, so it's
-                gated on backends existing. The cross-device "Sync now" is up in the
-                primary section — these are two different actions, hence two verbs. */}
-            {(status?.backends?.length ?? 0) > 0 && (
-              <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-inset/50">
-                <div>
-                  <div className="text-xs text-fg font-medium">
-                    {status?.syncInProgress || syncing
-                      ? 'Backing up…'
-                      : status?.lastSyncEpoch
-                        ? `Last backed up ${timeAgo(status.lastSyncEpoch)}`
-                        : 'Not backed up yet'}
+            {/* ============================================================
+                SECONDARY — Additional backups (Drive/iCloud), optional. One box with
+                the master toggle ALWAYS in the header. OFF+empty -> collapsed hint;
+                OFF+backends -> paused rows kept visible (never hidden/lost); ON ->
+                backend rows (status light + cog menu) and/or the inline picker.
+                Redesign 2026-07-15 — replaces the per-row toggles + kebab. */}
+            {(() => {
+              const list = status?.backends ?? [];
+              const masterOn = list.some(b => b.syncEnabled) || additionalIntent;
+              const pausedCount = list.filter(b => !b.syncEnabled).length;
+              const anyActive = list.some(b => b.syncEnabled);
+              const isOffline = (status?.warnings ?? []).some(w => w.code === 'OFFLINE');
+
+              const sub =
+                masterOn && list.length === 0 ? 'Pick where the second copy goes' :
+                masterOn ? 'A second copy on top of GitHub — it stays primary.' :
+                list.length > 0 ? `${pausedCount} destination${pausedCount === 1 ? '' : 's'} paused` :
+                'A second copy on top of GitHub — Drive or iCloud';
+
+              return (
+                <div className="rounded-lg border border-dashed border-edge px-3 py-3">
+                  {/* Header: title + optional pill + master toggle (always present). */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-fg">Additional backups</span>
+                        <span className="text-[9px] font-medium text-fg-muted tracking-wider uppercase px-1.5 py-0.5 rounded-full bg-inset">optional</span>
+                      </div>
+                      <p className="text-[11px] text-fg-muted mt-1 leading-relaxed">{sub}</p>
+                    </div>
+                    {/* Master toggle: pause-all / resume-all / reveal picker (handleAdditionalToggle). */}
+                    <button
+                      role="switch"
+                      aria-checked={masterOn}
+                      onClick={() => void handleAdditionalToggle()}
+                      className={`relative w-9 h-5 rounded-full transition-colors shrink-0 mt-0.5 cursor-pointer ${masterOn ? 'bg-green-600' : 'bg-inset'}`}
+                      title={masterOn ? 'Additional backups on — click to pause all' : 'Additional backups off — click to turn on'}
+                    >
+                      <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all" style={{ left: masterOn ? '18px' : '2px' }} />
+                    </button>
                   </div>
+
+                  {/* Backend rows — shown whenever any exist (kept visible even when paused,
+                      so turning the master off doesn't hide/lose destinations). */}
+                  {list.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {list.map(b => {
+                        // Pending = sync-enabled backend that can't currently push (offline or errored).
+                        const isPending = b.syncEnabled && (b.lastError != null || isOffline);
+                        const inFlight = actionFeedback[b.id]?.includes('ing');
+                        // Status light: blue in-flight / red error / green healthy / gray paused-or-disconnected.
+                        const lightClass = inFlight ? 'bg-blue-400 animate-pulse'
+                          : b.lastError ? 'bg-red-500 ring-2 ring-red-500/25'
+                          : (b.syncEnabled && b.connected) ? 'bg-green-500 ring-2 ring-green-500/25'
+                          : 'bg-fg-muted/40';
+                        return (
+                          <div
+                            key={b.id}
+                            className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 ${
+                              b.lastError ? 'border-red-500/20 bg-red-500/5' :
+                              b.syncEnabled && b.connected ? 'border-green-500/20 bg-green-500/5' :
+                              'border-edge bg-inset/30'
+                            }`}
+                          >
+                            {/* Type icon */}
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 ${BACKEND_STYLE[b.type]?.tint ?? ''}`}>
+                              {BACKEND_STYLE[b.type]?.icon ?? '?'}
+                            </div>
+                            {/* Name + detail */}
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs text-fg font-medium truncate">{b.label}</div>
+                              <div className="text-[10px] text-fg-faint truncate">
+                                {b.lastError ? b.lastError :
+                                 b.lastPushEpoch ? `Backed up ${timeAgo(b.lastPushEpoch)}` :
+                                 !b.syncEnabled ? 'Auto-backup paused' :
+                                 'Never backed up'}
+                              </div>
+                              {isPending && !actionFeedback[b.id] && (
+                                <span className="text-[9px] font-medium text-amber-400">Changes pending upload</span>
+                              )}
+                              {actionFeedback[b.id] && (
+                                <span className={`text-[9px] font-medium ${
+                                  actionFeedback[b.id] === 'error' ? 'text-red-400' :
+                                  actionFeedback[b.id]?.includes('ing') ? 'text-blue-400' :
+                                  'text-green-400'
+                                }`}>
+                                  {actionFeedback[b.id] === 'uploading' ? 'Uploading...' :
+                                   actionFeedback[b.id] === 'uploaded' ? 'Uploaded!' :
+                                   'Error'}
+                                </span>
+                              )}
+                            </div>
+                            {/* Status light (state at a glance) — controls moved into the cog menu. */}
+                            <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${lightClass}`} />
+                            {/* Cog menu (replaces the old ⋯ kebab + per-row on/off toggle). */}
+                            <div className="relative shrink-0">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === b.id ? null : b.id); }}
+                                className="w-6 h-6 flex items-center justify-center rounded hover:bg-inset text-fg-muted"
+                                title="Manage"
+                              >
+                                {/* App settings gear (same SVG as HeaderBar). */}
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                              </button>
+                              {menuOpenId === b.id && (
+                                /* Overflow menu — .layer-surface for theme-consistent look + glass. */
+                                <div className="layer-surface absolute right-0 top-7 w-44 py-1" style={{ zIndex: 10 }} onClick={(e) => e.stopPropagation()}>
+                                  <MenuButton onClick={() => { handlePushBackend(b.id); setMenuOpenId(null); }}>Upload now</MenuButton>
+                                  <MenuButton onClick={() => { claude.sync.openFolder(b.id); setMenuOpenId(null); }}>Open folder</MenuButton>
+                                  <MenuButton onClick={() => { handleToggleSync(b.id, !b.syncEnabled); setMenuOpenId(null); }}>
+                                    {b.syncEnabled ? 'Pause auto-backup' : 'Resume auto-backup'}
+                                  </MenuButton>
+                                  <MenuButton onClick={() => { setEditingId(b.id); setView('edit'); setMenuOpenId(null); }}>Edit settings…</MenuButton>
+                                  <div className="border-t border-edge-dim my-1" />
+                                  <MenuButton danger onClick={() => { setConfirmRemoveId(b.id); setMenuOpenId(null); }}>Remove</MenuButton>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Inline picker — master on but nothing connected yet. Opens the wizard
+                      straight into per-type config (initialType skips the type picker). */}
+                  {masterOn && list.length === 0 && (
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={() => { setAddType('drive'); setView('add-config'); }}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-edge bg-well hover:bg-inset text-xs text-fg-2 transition-colors"
+                      >
+                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-[11px] bg-blue-500/10 text-blue-400">{'☁'}</span>
+                        Google Drive
+                      </button>
+                      <button
+                        onClick={() => { setAddType('icloud'); setView('add-config'); }}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-edge bg-well hover:bg-inset text-xs text-fg-2 transition-colors"
+                      >
+                        <span className="w-5 h-5 rounded-full flex items-center justify-center text-[11px] bg-sky-500/10 text-sky-400">{'⬡'}</span>
+                        iCloud
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Add-a-backup + compact "Back up all now" (replaces the standalone Back
+                      up now row; keeps handleForceSync's syncing state + label behavior). */}
+                  {list.length > 0 && (
+                    <div className="mt-2 space-y-2">
+                      <button
+                        onClick={() => setView('add-type')}
+                        className="w-full border border-dashed border-edge-dim rounded-lg py-2.5 text-center text-[11px] text-fg-muted hover:text-fg-2 hover:border-edge hover:bg-inset/30 transition-colors"
+                      >
+                        ＋ Add a backup
+                      </button>
+                      {anyActive && (
+                        <button
+                          onClick={handleForceSync}
+                          disabled={syncing}
+                          className="text-[11px] underline text-fg-muted hover:text-fg-2 disabled:opacity-50 disabled:cursor-wait"
+                        >
+                          {syncing || status?.syncInProgress ? 'Backing up…' : 'Back up all now'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <button
-                  onClick={handleForceSync}
-                  disabled={syncing}
-                  className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
-                    syncing
-                      ? 'bg-blue-500/20 text-blue-300 cursor-wait'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer'
-                  }`}
-                >
-                  {syncing ? (
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-3 h-3 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
-                      Backing up
-                    </span>
-                  ) : 'Back up now'}
-                </button>
-              </div>
-            )}
+              );
+            })()}
 
             {/* 3. Warnings — typed SyncWarning objects with title/body/fix-action/stderr */}
             {status?.warnings && status.warnings.length > 0 && (
@@ -1228,17 +1357,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         />
       )}
 
-      {/* Restore-from-backup wizard — own modal layer so it overlays the sync popup.
-          Refreshes sync status on close so lastPush/lastError reflect the restore. */}
-      {restoreTarget && (
-        <RestoreWizard
-          backendId={restoreTarget.id}
-          backendLabel={restoreTarget.label}
-          backendType={restoreTarget.type}
-          onClose={() => { setRestoreTarget(null); refreshStatus(); }}
-        />
-      )}
-
       {/* Confirmation dialog: Remove backend */}
       {confirmRemoveId && (() => {
         const target = status?.backends.find(b => b.id === confirmRemoveId);
@@ -1254,20 +1372,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         ) : null;
       })()}
 
-      {/* Confirmation dialog: Download from backend */}
-      {confirmPullId && (() => {
-        const target = status?.backends.find(b => b.id === confirmPullId);
-        return target ? (
-          <ConfirmDialog
-            title="Download from backup?"
-            message={<>Download from <strong>{target.label}</strong>? This will update your local data with the version stored in {BACKEND_LABELS[target.type]}. Your conversations won&apos;t be overwritten, but your settings and config will be replaced with the backed-up version.</>}
-            confirmLabel="Download"
-            confirmColor="blue"
-            onConfirm={() => { handlePullBackend(confirmPullId); setConfirmPullId(null); }}
-            onCancel={() => setConfirmPullId(null)}
-          />
-        ) : null;
-      })()}
+      {/* The "Download from backup" confirmation dialog was removed in
+          sync-legacy-demolition — there is no pull/restore path anymore. */}
     </>
   );
 }
@@ -1328,11 +1434,13 @@ function ConfirmDialog({
   );
 }
 
-// --- "Your devices" list (Plan 2b spec §10a) ---
-// Shows every device in the synced device registry: friendly (inline-editable)
-// name, "last seen <relative>", and a plain "(this device)" suffix for the
-// current machine. Deliberately PLAIN TEXT — no status dots or ●◐○ glyphs
-// (the section is spec'd plain, and the owner dislikes status glyphs).
+// --- DeviceRow + Devices count-tab (Plan 2b spec §10a) ---
+// The synced device registry, rendered as the "Devices" tab body inside the sync
+// box. PLAIN TEXT only — no status dots/glyphs (spec'd plain; owner dislikes
+// glyphs). The current machine is marked "(this device)" and each name is an
+// inline-editable nickname. Fetching + rename now live in SyncPopup (so the
+// "Devices" count and this list share one source); this component keeps only the
+// local editing draft state.
 
 interface DeviceRow {
   schemaVersion: number;
@@ -1344,87 +1452,65 @@ interface DeviceRow {
   self: boolean; // marks THIS machine (matched by deviceId in the main handler)
 }
 
-function YourDevices({ enabled }: { enabled: boolean }) {
-  // null = not loaded yet; [] = loaded-but-empty (sync off / no personal root).
-  const [devices, setDevices] = useState<DeviceRow[] | null>(null);
+function DevicesTab({ devices, onRename }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
 
-  const load = useCallback(async () => {
-    // Method-exists guard: on remote / older Android without the handler the
-    // invoke is absent, so degrade to an empty list instead of throwing.
-    const fn = window.claude?.syncSpaces?.listDevices;
-    if (typeof fn !== 'function') { setDevices([]); return; }
-    try { setDevices(await fn()); } catch { setDevices([]); }
-  }, []);
-
-  // Load on mount and whenever sync flips on — the first enable provisions the
-  // Personal space that backs the registry, so the list can go empty → populated.
-  useEffect(() => { void load(); }, [load, enabled]);
-
-  const commitRename = useCallback(async (id: string) => {
+  // Commit a rename: reject empty/whitespace and skip a no-op rename so we don't
+  // fire a pointless invoke + refetch. The parent (SyncPopup) owns the IPC call.
+  const commitRename = useCallback((id: string) => {
     const name = draft.trim();
     setEditingId(null);
-    // Reject empty/whitespace (the store no-ops on empty anyway) and skip a
-    // no-op rename so we don't fire a pointless invoke + refetch.
     if (!name) return;
     const current = devices?.find(d => d.id === id);
     if (current && current.name === name) return;
-    const fn = window.claude?.syncSpaces?.renameDevice;
-    if (typeof fn !== 'function') return;
-    try { await fn(id, name); } catch {}
-    // Re-fetch so the merged/synced name (fold-on-read authoritative) is shown.
-    await load();
-  }, [draft, devices, load]);
+    onRename(id, name);
+  }, [draft, devices, onRename]);
 
-  if (!enabled) return null;
+  // null = not loaded yet; [] = loaded-but-empty (sync off / no personal root).
+  if (devices !== null && devices.length === 0) {
+    return <p className="text-[11px] text-fg-muted">No devices yet — they appear here once sync has run.</p>;
+  }
 
   return (
-    <div className="mt-3">
-      <h4 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-1.5">Your devices</h4>
-      {devices !== null && devices.length === 0 ? (
-        <p className="text-[11px] text-fg-muted">No devices yet — they appear here once sync has run.</p>
-      ) : (
-        <ul className="space-y-1">
-          {(devices ?? []).map(d => {
-            const plat = platformLabel(d.platform);
-            const activity = d.self ? 'active now' : `last seen ${relativeMs(d.lastSeen)}`;
-            const right = plat ? `${plat} · ${activity}` : activity;
-            return (
-              <li key={d.id} className="flex items-center justify-between gap-2">
-                <div className="min-w-0 flex items-center gap-1.5">
-                  {editingId === d.id ? (
-                    <input
-                      value={draft}
-                      autoFocus
-                      onChange={(e) => setDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') void commitRename(d.id);
-                        if (e.key === 'Escape') setEditingId(null); // cancel — no rename
-                      }}
-                      onBlur={() => void commitRename(d.id)}
-                      className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none min-w-0"
-                    />
-                  ) : (
-                    // Click the name to edit — it's just a nickname, so no confirm gate.
-                    <button
-                      type="button"
-                      onClick={() => { setEditingId(d.id); setDraft(d.name); }}
-                      className="text-xs text-fg-2 hover:text-fg truncate text-left"
-                      title="Click to rename this device"
-                    >
-                      {d.name}
-                    </button>
-                  )}
-                  {d.self && <span className="text-[10px] text-fg-muted shrink-0">(this device)</span>}
-                </div>
-                <span className="text-[10px] text-fg-muted shrink-0">{right}</span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
+    <ul className="space-y-1">
+      {(devices ?? []).map(d => {
+        const plat = platformLabel(d.platform);
+        const activity = d.self ? 'active now' : `last seen ${relativeMs(d.lastSeen)}`;
+        const right = plat ? `${plat} · ${activity}` : activity;
+        return (
+          <li key={d.id} className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex items-center gap-1.5">
+              {editingId === d.id ? (
+                <input
+                  value={draft}
+                  autoFocus
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(d.id);
+                    if (e.key === 'Escape') setEditingId(null); // cancel — no rename
+                  }}
+                  onBlur={() => commitRename(d.id)}
+                  className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none min-w-0"
+                />
+              ) : (
+                // Click the name to edit — it's just a nickname, so no confirm gate.
+                <button
+                  type="button"
+                  onClick={() => { setEditingId(d.id); setDraft(d.name); }}
+                  className="text-xs text-fg-2 hover:text-fg truncate text-left"
+                  title="Click to rename this device"
+                >
+                  {d.name}
+                </button>
+              )}
+              {d.self && <span className="text-[10px] text-fg-muted shrink-0">(this device)</span>}
+            </div>
+            <span className="text-[10px] text-fg-muted shrink-0">{right}</span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

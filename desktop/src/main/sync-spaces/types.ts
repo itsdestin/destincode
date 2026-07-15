@@ -32,6 +32,16 @@ export interface SyncTransport {
   push(space: SyncSpace, message: string): Promise<PushResult>;
   pull(space: SyncSpace): Promise<PullResult>;
   history(space: SyncSpace, limit?: number): Promise<SpaceVersion[]>;
+  // Maintenance hooks (spec §7 "known limit"). OPTIONAL so a future non-git
+  // transport (YouCoded Cloud) needn't implement local repack/sizing — the
+  // engine calls them with `?.` and treats absence as a no-op.
+  /** After every Nth successful sync, run a LOCAL `git gc` to repack the hidden
+   *  history. Best-effort; never throws. Never rewrites history (no force-push /
+   *  filter-branch), so it cannot desync peers — it only shrinks local disk. */
+  maybeGc?(space: SyncSpace): Promise<void>;
+  /** Recursive byte size of the hidden sync repo, for the large-history warning.
+   *  Bounded + best-effort; returns 0 on error / missing repo. */
+  gitDirSizeBytes?(space: SyncSpace): Promise<number>;
 }
 
 // `at` is stamped by service.broadcast() at emit time (ms epoch). Optional so
@@ -42,6 +52,12 @@ export type SpaceSyncEvent = (
   | { type: 'conflict'; spaceId: string; copies: string[] }
   | { type: 'oversize'; spaceId: string; files: string[] }
   | { type: 'error'; spaceId: string; message: string }
+  // Informational notice — NOT an error. Used for the large-history warning
+  // (spec §7). Carries a REAL space id (unlike the 'hub'/'projects' sentinels),
+  // but MUST NOT drive the red "sync isn't working" dot: sync still works
+  // normally. sync-dot-state.ts's latestEventFor skips it for that reason;
+  // SyncPanel renders it in non-alarming (muted, not red) styling.
+  | { type: 'notice'; spaceId: string; message: string }
   // SyncHub (Plan 1b) connection status. spaceId is the literal 'hub' (never a
   // real space id) so every consumer's per-space event scan / sync-dot
   // derivation ignores it naturally while keeping the field shape uniform.

@@ -47,7 +47,7 @@ describe('deriveSyncState', () => {
   });
 
   it('returns attention when only warn-level warnings are present', () => {
-    const warnings = [warn({ code: 'PROJECTS_UNSYNCED' }), warn({ code: 'SKILLS_UNROUTED' })];
+    const warnings = [warn({ code: 'PERSONAL_STALE' }), warn({ code: 'OFFLINE' })];
     const result = deriveSyncState({
       hasBackends: true,
       syncInProgress: false,

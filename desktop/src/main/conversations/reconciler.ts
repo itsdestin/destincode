@@ -10,9 +10,10 @@ import { ccProjectSlug } from '../project-conversations';
 import type { ConversationStore } from './conversation-store';
 import type { ConversationRecord } from './store-core';
 
-// Same UUID gate as the legacy index (sync-service.ts SESSION_UUID_RE — COPIED,
-// not imported: sync-service is legacy/untouchable). The phantom-id lesson from
-// the Resume Browser incident: never create records from malformed ids.
+// Canonical Claude Code session id gate (this is now the ONLY copy — the legacy
+// index's SESSION_UUID_RE was deleted with its writers in Plan 2c). The
+// phantom-id lesson from the Resume Browser incident: never create records from
+// malformed ids (e.g. an auto-title typo like `3f3a5cccc-…`, nine c's).
 const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MIN_TRANSCRIPT_BYTES = 500; // junk threshold, same as listPastSessions
 

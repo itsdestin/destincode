@@ -5,13 +5,15 @@
  * session-start.sh, session-end-sync.sh, backup-common.sh) into a Node.js
  * service running in the Electron main process.
  *
- * The service owns the full sync lifecycle:
- *   - Pull on app launch (replaces session-start.sh personal data pull)
- *   - Background push every 15 minutes (replaces PostToolUse sync.sh debounce)
- *   - Session-end push (replaces session-end-sync.sh)
- *   - Conversation index management, cross-device slug rewriting, aggregation
+ * The service now owns a NARROW slice of the sync lifecycle: dated daily
+ * snapshot backups (Drive/iCloud) plus conversation-index read/write and the
+ * sync health check. The legacy PULL path (auto-restore, recent-50, manual
+ * "Download now"), the timed/session-end/index-debounce PUSH loops, the slug
+ * symlink aggregation, and the GitHub backup target were demolished — those
+ * responsibilities moved to the sync-spaces engine and the dated snapshot
+ * writers. See docs/superpowers/plans (sync-legacy-demolition).
  *
- * Actual rclone/git/rsync commands still shell out via child_process.execFile.
+ * Actual rclone/rsync commands still shell out via child_process.execFile.
  * The bash hooks detect .app-sync-active and skip when the app is running.
  *
  * Design ref: sync-engine-integration plan (Phase 2)
@@ -33,7 +35,11 @@ import {
   syncLegacyKeys,
   writeWarnings,
 } from './sync-state';
-import { classifyPushError, decidePersonalSyncRemoteAction, extractStderr, truncateStderr } from './sync-error-classifier';
+import { classifyPushError, extractStderr, truncateStderr } from './sync-error-classifier';
+// Why: dated daily snapshots reuse the SAME once-per-UTC-day gate helpers as the
+// spaces daily-backup (single source of truth) plus the pure tiered-retention core.
+import { datedFolderName, isBackupDue } from './sync-spaces/daily-backup';
+import { snapshotsToDelete, shouldStampDailyMarker } from './snapshot-retention';
 
 const execFileAsync = promisify(execFile);
 
@@ -51,80 +57,36 @@ interface PushResult {
   backends: string[];  // IDs of backends that were pushed to
 }
 
-// Per-flag storage shape. updatedAt drives cross-device merge (latest writer wins)
-// independent of lastActive, so marking/unmarking doesn't fake new session activity.
-interface SessionFlagState {
-  value: boolean;
-  updatedAt: string; // ISO-8601
+// Once-per-UTC-day gate for the dated ~/.claude snapshot, computed ONCE per
+// push() cycle and shared by pushDrive + pushiCloud so both write into the SAME
+// dated folder on a given day and the daily stamp isn't double-consumed.
+interface SnapshotGate {
+  due: boolean;   // is a new snapshot due today? (marker != today)
+  dated: string;  // YYYY-MM-DD folder name for today's snapshot
+  now: Date;      // the instant push() computed the gate (used for age-based pruning)
 }
 
-interface ConversationIndexEntry {
-  topic: string;
-  lastActive: string; // ISO-8601
-  slug: string;
-  device: string;
-  // User-set flags. Keys are flag names (e.g. 'complete', 'priority', 'helpful').
-  // Added in v2 schema; v1 used top-level `complete` / `completeUpdatedAt`
-  // and is lifted into `flags.complete` on read for backward compatibility.
-  flags?: Record<string, SessionFlagState>;
-  // v1 legacy — tolerated on read, never written by this version.
-  complete?: boolean;
-  completeUpdatedAt?: string;
-}
-
-interface ConversationIndex {
-  version: number;
-  sessions: Record<string, ConversationIndexEntry>;
-}
-
-/** Lift v1 `complete` / `completeUpdatedAt` into `flags.complete` so older devices'
- *  index entries still mean the same thing after upgrade. Returns a normalized
- *  copy so callers can trust entry.flags exists when non-empty. */
-function migrateEntry(entry: ConversationIndexEntry): ConversationIndexEntry {
-  if (entry.complete === undefined && !entry.completeUpdatedAt) return entry;
-  const flags = { ...(entry.flags || {}) };
-  if (!flags.complete && entry.complete !== undefined) {
-    flags.complete = {
-      value: !!entry.complete,
-      updatedAt: entry.completeUpdatedAt || entry.lastActive || new Date(0).toISOString(),
-    };
-  }
-  const next = { ...entry, flags };
-  delete (next as any).complete;
-  delete (next as any).completeUpdatedAt;
-  return next;
-}
+// (Plan 2c) The conversation-index typed shapes — SessionFlagState,
+// ConversationIndexEntry, ConversationIndex — were deleted along with the index
+// read/write helpers. The frozen conversation-index.json is now copied as an
+// opaque file into snapshots (see pushDrive/pushiCloud); nothing in SyncService
+// parses its structure anymore. session-browser.ts owns the residual typed read.
 
 // --- Constants ---
 
-const PUSH_INTERVAL_MS = 15 * 60 * 1000;   // 15 minutes
 const PUSH_DEBOUNCE_MIN = 15;
-const PULL_DEBOUNCE_MIN = 10;
-const INDEX_PRUNE_DAYS = 30;
-// Tags set via setSessionFlag should reach the backend within seconds, not
-// wait for the 15-minute cycle. Debounce coalesces rapid tagging into one
-// upload. A full push in flight preempts the index-only push (it will upload
-// the index anyway), so the net cost is at most one extra small upload.
-const INDEX_PUSH_DEBOUNCE_MS = 30_000;
 // 10 min — generous because individual conversation slugs can grow to
 // hundreds of MB (one user has a 25 MB single .jsonl in a 156 MB slug).
 // The previous 60s value silently killed rclone mid-upload on big slugs,
 // producing empty stderr that fell through to UNKNOWN classification.
 const RCLONE_TIMEOUT = 10 * 60 * 1000;
-const GIT_TIMEOUT = 5 * 60 * 1000;
-const SESSION_PUSH_TIMEOUT = 15_000;
-// Recent-conversations strategy: foreground pull only fetches the N most-
-// recently-active sessions (sorted by lastActive in conversation-index.json).
-// The remainder is scheduled as a background pull. Without this, a fresh
-// restore takes 14+ minutes for users with large histories — see the
-// 2026-04-24 restore UX investigation in git log.
-const RECENT_PULL_LIMIT = 50;
-
-// Canonical Claude Code session id. The auto-title flow has the in-session
-// model hand-type `echo "Title" > topics/topic-<id>` — a typo'd id creates a
-// phantom index entry pointing at no transcript (seen in the wild:
-// `3f3a5cccc-…`, nine c's). Gate the topic scan + prune on this shape.
-const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Daily-snapshot poll cadence. This is NOT the deleted 15-min aggressive
+// flat-overwrite loop — it's an hourly heartbeat (mirrors DailyBackup's hourly
+// runIfDue). Each tick calls push() NON-force, so the 15-min .sync-marker
+// debounce throttles redundant runs and the once-per-UTC-day snapshot stamp
+// gates the actual dated copy: net effect is at most ONE dated ~/.claude
+// snapshot per day, produced automatically.
+const SNAPSHOT_POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 // --- SyncService ---
 
@@ -133,33 +95,17 @@ export class SyncService extends EventEmitter {
   private configPath: string;
   private localConfigPath: string;
   private syncMarkerPath: string;
-  private pullMarkerPath: string;
+  // Why: separate once-per-UTC-day stamp for the dated ~/.claude snapshot copy —
+  // distinct from the 15-min .sync-marker debounce so the snapshot runs at most
+  // once per day even though the daily-snapshot poll calls push() hourly.
+  private snapshotMarkerPath: string;
   private lockDir: string;
   private backupLogPath: string;
   private appSyncMarkerPath: string;
   private conversationIndexPath: string;
-  private indexStagingDir: string;
-
-  private pushTimer: NodeJS.Timeout | null = null;
-  private indexPushTimer: NodeJS.Timeout | null = null;
-  private pulling = false;
   private pushing = false;
-
-  /**
-   * Gates pushLoop() during a restore. Pushing a half-restored state would
-   * upload mid-staging data and corrupt the backup — so RestoreService flips
-   * this true before any filesystem work, false after the final swap.
-   */
-  public restoreInProgress = false;
-
-  /**
-   * Non-null while a background bulk-conversations pull is running. Read by
-   * buildStatusData() so the StatusBar can render a chip. Also serves as a
-   * single-flight guard — scheduleBackgroundConversationsPull skips if non-null
-   * so a re-restore mid-pull doesn't race two background fetches.
-   */
-  private backgroundPullState: { type: string; startedAt: number } | null = null;
-  public getBackgroundPullState() { return this.backgroundPullState; }
+  // Hourly daily-snapshot poll (see SNAPSHOT_POLL_INTERVAL_MS). Cleared in stop().
+  private snapshotTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     super();
@@ -167,19 +113,23 @@ export class SyncService extends EventEmitter {
     this.configPath = path.join(this.claudeDir, 'toolkit-state', 'config.json');
     this.localConfigPath = path.join(this.claudeDir, 'toolkit-state', 'config.local.json');
     this.syncMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.sync-marker');
-    this.pullMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.session-sync-marker');
+    this.snapshotMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.snapshot-marker');
     this.lockDir = path.join(this.claudeDir, 'toolkit-state', '.sync-lock');
     this.backupLogPath = path.join(this.claudeDir, 'backup.log');
     this.appSyncMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.app-sync-active');
     this.conversationIndexPath = path.join(this.claudeDir, 'conversation-index.json');
-    this.indexStagingDir = path.join(this.claudeDir, 'toolkit-state', '.index-staging');
   }
 
   // =========================================================================
   // Lifecycle
   // =========================================================================
 
-  /** Start the sync service: write marker, initial pull, start push timer. */
+  /** Start the sync service: write the .app-sync-active marker, run the
+   *  launch-time health check, and start the hourly daily-snapshot poll. The
+   *  legacy initial PULL (auto-restore) and the aggressive 15-min flat-overwrite
+   *  push loop were removed (sync-legacy-demolition); the daily-snapshot poll
+   *  below is a lightweight replacement that produces at most one dated
+   *  ~/.claude snapshot per UTC day. There is no auto-restore. */
   async start(): Promise<void> {
     // Self-heal: if a stale marker exists from a previous crash, log and overwrite.
     // Without this, a crash leaves the marker indefinitely and hooks never sync.
@@ -205,29 +155,37 @@ export class SyncService extends EventEmitter {
 
     this.logBackup('INFO', 'SyncService started', 'sync.lifecycle');
 
-    // Initial pull — don't crash if it fails
+    // Re-home: runHealthCheck used to run at the end of the now-deleted pull()
+    // orchestrator. It still generates the .sync-warnings the UI reads (OFFLINE /
+    // no-backend / stale), so we run it once at launch instead. Best-effort —
+    // never crash startup on a health-check failure.
     try {
-      await this.pull();
+      await this.runHealthCheck();
     } catch (e) {
-      this.logBackup('ERROR', `Initial pull failed: ${e}`, 'sync.pull');
+      this.logBackup('ERROR', `Startup health check failed: ${e}`, 'sync.health');
     }
 
-    // Start background push timer
-    this.pushTimer = setInterval(() => {
-      // Guard: RestoreService may be mid-way through rewriting files. Pushing now
-      // would upload a half-restored state and nuke the backup it was trying to recover.
-      if (this.restoreInProgress) return;
+    // Daily-snapshot poll. Non-force push() on launch (in case today's snapshot
+    // isn't done yet) plus an hourly tick. NON-force so the 15-min debounce +
+    // once-per-day snapshot stamp collapse this to at most one dated ~/.claude
+    // snapshot per UTC day — this restores the automatic personal backup the
+    // deleted 15-min timer used to provide, without its per-cycle re-copy cost.
+    this.push().catch(e => {
+      this.logBackup('ERROR', `Launch snapshot push failed: ${e}`, 'sync.push');
+    });
+    this.snapshotTimer = setInterval(() => {
       this.push().catch(e => {
-        this.logBackup('ERROR', `Background push failed: ${e}`, 'sync.push');
+        this.logBackup('ERROR', `Daily-snapshot push failed: ${e}`, 'sync.push');
       });
-    }, PUSH_INTERVAL_MS);
+    }, SNAPSHOT_POLL_INTERVAL_MS);
   }
 
-  /** Stop the sync service: clear timer, release locks, remove marker. */
+  /** Stop the sync service: clear the daily-snapshot poll, release locks,
+   *  remove marker. */
   stop(): void {
-    if (this.pushTimer) {
-      clearInterval(this.pushTimer);
-      this.pushTimer = null;
+    if (this.snapshotTimer) {
+      clearInterval(this.snapshotTimer);
+      this.snapshotTimer = null;
     }
 
     // Release lock if held
@@ -280,8 +238,8 @@ export class SyncService extends EventEmitter {
   }
 
   /** Find a single backend by id (for manual push/pull). */
-  // Public so RestoreService can look up the active BackendInstance by id
-  // without re-reading config.json itself.
+  // Kept public (used internally by push()'s per-backend "Upload now" path); the
+  // former RestoreService caller was removed in sync-legacy-demolition.
   public getBackendById(id: string): BackendInstance | null {
     return this.getBackendInstances().find(b => b.id === id) || null;
   }
@@ -337,45 +295,6 @@ export class SyncService extends EventEmitter {
         }
       }
     } catch {}
-  }
-
-  // Legacy helpers kept for health check auto-detect (reads flat keys)
-  /** Get active backend type names from legacy flat keys. */
-  private getLegacyBackendTypes(): string[] {
-    const raw = this.configGet('PERSONAL_SYNC_BACKEND', 'none');
-    return raw.split(',').map(b => b.trim().toLowerCase()).filter(b => b && b !== 'none');
-  }
-
-  // =========================================================================
-  // Slug Generation (CRITICAL — must match Claude Code's algorithm)
-  // =========================================================================
-
-  /**
-   * Generate the current device's project slug.
-   * On Windows, os.homedir() returns native path (C:\Users\alice).
-   * On Unix, uses fs.realpathSync to resolve symlinks.
-   * Replace /, \, :, and SPACE with - to match Claude Code's slug algorithm.
-   * MUST match cwdToProjectSlug() in transcript-watcher.ts and the two Android
-   * encoders (TranscriptWatcher.cwdToProjectSlug, SyncService.getCurrentSlug).
-   * Omitting the space replace here means Windows users with spaces in the
-   * home-dir path (e.g. "First Last") write to a different slug than the
-   * watcher reads from, silently splitting sync from transcript.
-   */
-  getCurrentSlug(): string {
-    let homePath: string;
-    if (process.platform === 'win32') {
-      // os.homedir() already returns native Windows path (C:\Users\alice)
-      // No cygpath needed — bash uses cygpath because $HOME is /c/Users/alice
-      homePath = os.homedir();
-    } else {
-      try {
-        homePath = fs.realpathSync(os.homedir());
-      } catch {
-        homePath = os.homedir();
-      }
-    }
-    // Replace path separators, drive-letter colon, AND spaces with dashes
-    return homePath.replace(/[/\\: ]/g, '-');
   }
 
   // =========================================================================
@@ -511,15 +430,6 @@ export class SyncService extends EventEmitter {
     }
   }
 
-  /** Execute git with args in a working directory. */
-  private async gitExec(args: string[], cwd: string): Promise<ExecResult> {
-    try {
-      const { stdout, stderr } = await execFileAsync('git', args, { cwd, timeout: GIT_TIMEOUT });
-      return { code: 0, stdout, stderr };
-    } catch (e: any) {
-      return { code: e.code || 1, stdout: e.stdout || '', stderr: extractStderr(e, GIT_TIMEOUT) };
-    }
-  }
 
   /** Copy with rsync (preferred) or fs.cpSync (fallback). */
   private async rsyncOrCp(src: string, dst: string, updateOnly = true): Promise<void> {
@@ -573,14 +483,6 @@ export class SyncService extends EventEmitter {
       return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch {
       return null;
-    }
-  }
-
-  private readText(filePath: string): string {
-    try {
-      return fs.readFileSync(filePath, 'utf8').trim();
-    } catch {
-      return '';
     }
   }
 
@@ -646,13 +548,25 @@ export class SyncService extends EventEmitter {
   // =========================================================================
 
   // Accepts a BackendInstance so multiple Drive accounts can use different rclone remotes
-  private async pushDrive(instance: BackendInstance): Promise<number> {
+  private async pushDrive(instance: BackendInstance, snapshot: SnapshotGate): Promise<number> {
     const rcloneRemote = instance.config.rcloneRemote || 'gdrive';
     const driveRoot = instance.config.DRIVE_ROOT || 'Claude';
-    const remoteBase = `${rcloneRemote}:${driveRoot}/Backup/personal`;
+    const backupRoot = `${rcloneRemote}:${driveRoot}/Backup`;
+    // Why: dated-not-flat — the ~/.claude set is now snapshotted into a per-day
+    // folder Backup/<YYYY-MM-DD>/... instead of overwriting one flat Backup/personal
+    // tree, so history is retained and pruned by age (see snapshot-retention.ts).
+    const remoteBase = `${backupRoot}/${snapshot.dated}/personal`;
     const sysRemote = `${remoteBase}/system-backup`;
     let errors = 0;
     let firstFailStderr = '';
+
+    // Why: daily-stamp gating — the daily-snapshot poll calls push() hourly, but
+    // the actual snapshot copy runs at most once per UTC day. After today's
+    // snapshot is written we no-op (success) so we don't re-upload the whole set.
+    if (!snapshot.due) {
+      this.logBackup('INFO', 'Drive snapshot skipped — already done today', 'sync.push.drive');
+      return 0;
+    }
 
     // Memory files — per project key
     const projectsDir = path.join(this.claudeDir, 'projects');
@@ -702,37 +616,11 @@ export class SyncService extends EventEmitter {
       }
     }
 
-    // Conversations — snapshot to temp dir first to avoid races with subagents
-    if (this.dirExists(projectsDir)) {
-      const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-conv-'));
-      try {
-        for (const slugName of fs.readdirSync(projectsDir)) {
-          const slugDir = path.join(projectsDir, slugName);
-          if (!this.dirExists(slugDir)) continue;
-          // Skip symlinked slug dirs (foreign device slugs)
-          try { if (fs.lstatSync(slugDir).isSymbolicLink()) continue; } catch { continue; }
-
-          // Find real .jsonl files (not symlinks)
-          const jsonlFiles = fs.readdirSync(slugDir).filter(f => f.endsWith('.jsonl') && !fs.lstatSync(path.join(slugDir, f)).isSymbolicLink());
-          if (jsonlFiles.length === 0) continue;
-
-          const snapSlugDir = path.join(snapDir, slugName);
-          fs.mkdirSync(snapSlugDir, { recursive: true });
-          for (const f of jsonlFiles) {
-            fs.copyFileSync(path.join(slugDir, f), path.join(snapSlugDir, f));
-          }
-
-          const r = await this.rclone(['copy', snapSlugDir + '/', `${remoteBase}/conversations/${slugName}/`, '--checksum', '--include', '*.jsonl']);
-          if (r.code !== 0) {
-            this.logBackup('WARN', `Drive push conversations/${slugName} failed`, 'sync.push.drive', { stderr: truncateStderr(r.stderr || '') });
-            if (!firstFailStderr && r.stderr) firstFailStderr = r.stderr;
-            errors++;
-          }
-        }
-      } finally {
-        fs.rmSync(snapDir, { recursive: true, force: true });
-      }
-    }
+    // Why: conversations-excluded-because-spaces-cover-them — the Conversation
+    // Store + mirrored CC transcripts now ride the Personal SYNC SPACE, which the
+    // spaces daily-backup (sync-spaces/daily-backup.ts) snapshots to Backup/spaces/
+    // <date>/. Copying conversations here too would duplicate that data, so the
+    // former per-slug conversation copy block was removed from the dated snapshot.
 
     // System config
     const sysFiles: [string, string][] = [
@@ -765,6 +653,21 @@ export class SyncService extends EventEmitter {
       await this.rclone(['copyto', this.conversationIndexPath, `${sysRemote}/conversation-index.json`, '--checksum']);
     }
 
+    // Why: tiered pruning of old dated snapshots. List the dated dirs under
+    // Backup/, decide which to delete via the pure retention core, then purge
+    // each by its EXACT dated path — NEVER a wildcard — so a bad name can't wipe
+    // sibling data (unparseable names are never returned for deletion anyway).
+    try {
+      const lsf = await this.rclone(['lsf', '--dirs-only', `${backupRoot}/`]);
+      if (lsf.code === 0) {
+        const names = lsf.stdout.split('\n').map(s => s.replace(/\/$/, '').trim()).filter(Boolean);
+        for (const name of snapshotsToDelete(names, snapshot.now)) {
+          const r = await this.rclone(['purge', `${backupRoot}/${name}`]);
+          if (r.code === 0) this.logBackup('INFO', `Drive snapshot pruned ${name}`, 'sync.push.drive');
+        }
+      }
+    } catch { /* pruning is best-effort — never fail a snapshot over cleanup */ }
+
     if (errors > 0) {
       await this.recordBackendFailure(instance, firstFailStderr);
     } else {
@@ -774,181 +677,32 @@ export class SyncService extends EventEmitter {
     return errors;
   }
 
-  // =========================================================================
-  // Push: GitHub Backend
-  // =========================================================================
-
-  // Accepts a BackendInstance — each instance gets its own clone dir for multi-repo support
-  private async pushGithub(instance: BackendInstance): Promise<number> {
-    const syncRepo = instance.config.PERSONAL_SYNC_REPO || '';
-    // Per-instance clone directory so multiple GitHub backends don't collide
-    const repoDir = path.join(this.claudeDir, 'toolkit-state', `personal-sync-repo-${instance.id}`);
-    let errors = 0;
-    let firstFailStderr = '';
-
-    // Init repo if missing
-    if (!this.dirExists(path.join(repoDir, '.git'))) {
-      if (!syncRepo) {
-        this.logBackup('ERROR', 'PERSONAL_SYNC_REPO not configured', 'sync.push.github');
-        return 1;
-      }
-      fs.mkdirSync(repoDir, { recursive: true });
-      const cloneResult = await this.gitExec(['clone', syncRepo, repoDir], this.claudeDir);
-      if (cloneResult.code !== 0) {
-        // Init fresh repo
-        await this.gitExec(['init'], repoDir);
-        await this.gitExec(['remote', 'add', 'personal-sync', syncRepo], repoDir);
-        fs.writeFileSync(path.join(repoDir, 'README.md'), '# Personal Claude Data Backup\n');
-        fs.writeFileSync(path.join(repoDir, '.gitignore'), '.DS_Store\nThumbs.db\n*.tmp\n');
-        await this.gitExec(['add', '-A'], repoDir);
-        await this.gitExec(['commit', '-m', 'Initial commit', '--no-gpg-sign'], repoDir);
-        await this.gitExec(['branch', '-M', 'main'], repoDir);
-        await this.gitExec(['push', '-u', 'personal-sync', 'main'], repoDir);
-      }
-    }
-
-    // Self-heal the remote name. `git clone` (success path) creates `origin`,
-    // but the rest of this service unconditionally references `personal-sync`.
-    // Without this block, every push/pull fails with "fatal: 'personal-sync'
-    // does not appear to be a git repository" until the user manually renames
-    // the remote. Idempotent — fixes both new installs and existing affected
-    // users on next sync run. See itsdestin/youcoded#74.
-    const remotesResult = await this.gitExec(['remote'], repoDir);
-    if (remotesResult.code === 0) {
-      const action = decidePersonalSyncRemoteAction(remotesResult.stdout || '', syncRepo);
-      if (action) {
-        const r = await this.gitExec(action, repoDir);
-        if (r.code !== 0) {
-          this.logBackup('WARN', `Failed to ${action[1]} personal-sync remote`, 'sync.push.github', { stderr: truncateStderr(r.stderr || '') });
-        }
-      }
-    }
-
-    // Ensure remote URL is current (handles syncRepo config changes)
-    const setUrlResult = await this.gitExec(['remote', 'set-url', 'personal-sync', syncRepo], repoDir);
-    if (setUrlResult.code !== 0) {
-      this.logBackup('WARN', 'Failed to update personal-sync remote URL', 'sync.push.github', { stderr: truncateStderr(setUrlResult.stderr || '') });
-    }
-
-    // Copy all data categories into repo structure
-    const projectsDir = path.join(this.claudeDir, 'projects');
-
-    // Memory files
-    if (this.dirExists(projectsDir)) {
-      for (const projectKey of fs.readdirSync(projectsDir)) {
-        const memoryDir = path.join(projectsDir, projectKey, 'memory');
-        if (!this.dirExists(memoryDir)) continue;
-        const dest = path.join(repoDir, 'memory', projectKey);
-        fs.mkdirSync(dest, { recursive: true });
-        fs.cpSync(memoryDir, dest, { recursive: true, force: true });
-      }
-    }
-
-    // CLAUDE.md
-    const claudeMd = path.join(this.claudeDir, 'CLAUDE.md');
-    if (this.fileExists(claudeMd)) fs.copyFileSync(claudeMd, path.join(repoDir, 'CLAUDE.md'));
-
-    // Encyclopedia
-    const encDir = path.join(this.claudeDir, 'encyclopedia');
-    if (this.dirExists(encDir)) {
-      const dest = path.join(repoDir, 'encyclopedia');
-      fs.mkdirSync(dest, { recursive: true });
-      fs.cpSync(encDir, dest, { recursive: true, force: true });
-    }
-
-    // User-created skills
-    const skillsDir = path.join(this.claudeDir, 'skills');
-    if (this.dirExists(skillsDir)) {
-      for (const skillName of fs.readdirSync(skillsDir)) {
-        const skillDir = path.join(skillsDir, skillName);
-        if (!this.dirExists(skillDir) || this.isToolkitOwned(skillDir)) continue;
-        if (!this.shouldSyncSkill(skillName)) continue;
-        const dest = path.join(repoDir, 'skills', skillName);
-        fs.mkdirSync(dest, { recursive: true });
-        fs.cpSync(skillDir, dest, { recursive: true, force: true });
-      }
-    }
-
-    // Conversations (real .jsonl files only, skip symlinks)
-    if (this.dirExists(projectsDir)) {
-      for (const slugName of fs.readdirSync(projectsDir)) {
-        const slugDir = path.join(projectsDir, slugName);
-        if (!this.dirExists(slugDir)) continue;
-        try { if (fs.lstatSync(slugDir).isSymbolicLink()) continue; } catch { continue; }
-        const jsonlFiles = fs.readdirSync(slugDir).filter(f => {
-          if (!f.endsWith('.jsonl')) return false;
-          try { return !fs.lstatSync(path.join(slugDir, f)).isSymbolicLink(); } catch { return false; }
-        });
-        if (jsonlFiles.length === 0) continue;
-        const dest = path.join(repoDir, 'conversations', slugName);
-        fs.mkdirSync(dest, { recursive: true });
-        for (const f of jsonlFiles) {
-          fs.copyFileSync(path.join(slugDir, f), path.join(dest, f));
-        }
-      }
-    }
-
-    // System config
-    const sysDir = path.join(repoDir, 'system-backup');
-    fs.mkdirSync(sysDir, { recursive: true });
-    for (const [src, name] of [
-      [this.configPath, 'config.json'],
-      [path.join(this.claudeDir, 'settings.json'), 'settings.json'],
-      [path.join(this.claudeDir, 'keybindings.json'), 'keybindings.json'],
-      [path.join(this.claudeDir, 'mcp.json'), 'mcp.json'],
-      [path.join(this.claudeDir, 'history.jsonl'), 'history.jsonl'],
-    ] as const) {
-      if (this.fileExists(src)) fs.copyFileSync(src, path.join(sysDir, name));
-    }
-    for (const dir of ['plans', 'specs']) {
-      const srcDir = path.join(this.claudeDir, dir);
-      if (this.dirExists(srcDir)) {
-        const dest = path.join(sysDir, dir);
-        fs.mkdirSync(dest, { recursive: true });
-        fs.cpSync(srcDir, dest, { recursive: true, force: true });
-      }
-    }
-    // Conversation index
-    if (this.fileExists(this.conversationIndexPath)) {
-      fs.copyFileSync(this.conversationIndexPath, path.join(sysDir, 'conversation-index.json'));
-    }
-
-    // Git add, commit, push
-    await this.gitExec(['add', '-A'], repoDir);
-    const diffResult = await this.gitExec(['diff', '--cached', '--quiet'], repoDir);
-    if (diffResult.code !== 0) {
-      // There are staged changes
-      await this.gitExec(['commit', '-m', 'auto: sync', '--no-gpg-sign'], repoDir);
-      const pushResult = await this.gitExec(['push', 'personal-sync', 'main'], repoDir);
-      if (pushResult.code !== 0) {
-        this.logBackup('WARN', 'Push to personal-sync repo failed', 'sync.push.github', { stderr: truncateStderr(pushResult.stderr || '') });
-        if (!firstFailStderr && pushResult.stderr) firstFailStderr = pushResult.stderr;
-        errors++;
-      }
-    }
-
-    if (errors > 0) {
-      await this.recordBackendFailure(instance, firstFailStderr);
-    } else {
-      await this.clearBackendFailures(instance.id);
-    }
-    this.logBackup(errors > 0 ? 'WARN' : 'INFO', 'GitHub sync completed', 'sync.push.github');
-    return errors;
-  }
 
   // =========================================================================
   // Push: iCloud Backend
   // =========================================================================
 
   // Accepts a BackendInstance for per-instance iCloud path support
-  private async pushiCloud(instance: BackendInstance): Promise<number> {
+  private async pushiCloud(instance: BackendInstance, snapshot: SnapshotGate): Promise<number> {
     const icloudPath = this.resolveICloudPath(instance);
     if (!icloudPath) {
       this.logBackup('ERROR', 'iCloud Drive folder not found', 'sync.push.icloud');
       return 1;
     }
 
-    fs.mkdirSync(icloudPath, { recursive: true });
+    // Why: daily-stamp gating — same as Drive. The hourly daily-snapshot poll
+    // calls us, but the snapshot copy runs at most once per UTC day; after
+    // today's is written we no-op (success) rather than re-copying the whole set.
+    if (!snapshot.due) {
+      this.logBackup('INFO', 'iCloud snapshot skipped — already done today', 'sync.push.icloud');
+      return 0;
+    }
+
+    // Why: dated-not-flat — snapshot into <YouCoded>/Backup/<YYYY-MM-DD>/... instead
+    // of overwriting the files directly under the iCloud folder, so history is
+    // retained and pruned by age below (mirrors the Drive layout).
+    const datedRoot = path.join(icloudPath, 'Backup', snapshot.dated);
+    fs.mkdirSync(datedRoot, { recursive: true });
     let errors = 0;
     let firstFailStderr = '';
 
@@ -958,7 +712,7 @@ export class SyncService extends EventEmitter {
       for (const projectKey of fs.readdirSync(projectsDir)) {
         const memoryDir = path.join(projectsDir, projectKey, 'memory');
         if (!this.dirExists(memoryDir)) continue;
-        const dest = path.join(icloudPath, 'memory', projectKey);
+        const dest = path.join(datedRoot, 'memory', projectKey);
         fs.mkdirSync(dest, { recursive: true });
         try {
           await this.rsyncOrCp(memoryDir, dest);
@@ -974,7 +728,7 @@ export class SyncService extends EventEmitter {
     const claudeMd = path.join(this.claudeDir, 'CLAUDE.md');
     if (this.fileExists(claudeMd)) {
       try {
-        fs.copyFileSync(claudeMd, path.join(icloudPath, 'CLAUDE.md'));
+        fs.copyFileSync(claudeMd, path.join(datedRoot, 'CLAUDE.md'));
       } catch (e) {
         this.logBackup('WARN', 'iCloud push CLAUDE.md failed', 'sync.push.icloud', { stderr: truncateStderr(String(e)) });
         if (!firstFailStderr) firstFailStderr = String(e);
@@ -985,7 +739,7 @@ export class SyncService extends EventEmitter {
     // Encyclopedia
     const encDir = path.join(this.claudeDir, 'encyclopedia');
     if (this.dirExists(encDir)) {
-      const dest = path.join(icloudPath, 'encyclopedia');
+      const dest = path.join(datedRoot, 'encyclopedia');
       fs.mkdirSync(dest, { recursive: true });
       try {
         await this.rsyncOrCp(encDir, dest);
@@ -1007,7 +761,7 @@ export class SyncService extends EventEmitter {
         const skillDir = path.join(skillsDir, skillName);
         if (!this.dirExists(skillDir) || this.isToolkitOwned(skillDir)) continue;
         if (!this.shouldSyncSkill(skillName)) continue;
-        const dest = path.join(icloudPath, 'skills', skillName);
+        const dest = path.join(datedRoot, 'skills', skillName);
         fs.mkdirSync(dest, { recursive: true });
         try {
           await this.rsyncOrCp(skillDir, dest);
@@ -1023,39 +777,15 @@ export class SyncService extends EventEmitter {
       }
     }
 
-    // Conversations — aggregate per-conversation-file errors the same way as skills.
-    if (this.dirExists(projectsDir)) {
-      let convStderr = '';
-      let convErrors = 0;
-      for (const slugName of fs.readdirSync(projectsDir)) {
-        const slugDir = path.join(projectsDir, slugName);
-        if (!this.dirExists(slugDir)) continue;
-        try { if (fs.lstatSync(slugDir).isSymbolicLink()) continue; } catch { continue; }
-        const jsonlFiles = fs.readdirSync(slugDir).filter(f => {
-          if (!f.endsWith('.jsonl')) return false;
-          try { return !fs.lstatSync(path.join(slugDir, f)).isSymbolicLink(); } catch { return false; }
-        });
-        for (const f of jsonlFiles) {
-          const dest = path.join(icloudPath, 'conversations', slugName);
-          fs.mkdirSync(dest, { recursive: true });
-          try {
-            fs.copyFileSync(path.join(slugDir, f), path.join(dest, f));
-          } catch (e) {
-            if (!convStderr) convStderr = String(e);
-            convErrors++;
-          }
-        }
-      }
-      if (convErrors > 0) {
-        this.logBackup('WARN', `iCloud push conversations failed (${convErrors} file(s))`, 'sync.push.icloud', { stderr: truncateStderr(convStderr) });
-        if (!firstFailStderr) firstFailStderr = convStderr;
-        errors++;
-      }
-    }
+    // Why: conversations-excluded-because-spaces-cover-them — the Conversation
+    // Store + mirrored CC transcripts ride the Personal SYNC SPACE, which the
+    // spaces daily-backup snapshots separately (Backup/spaces/<date>/). Copying
+    // them here too would duplicate that data, so the former per-slug conversation
+    // copy block was removed from the dated snapshot.
 
     // System config — aggregate sys-file and plans/specs/index errors into
     // one "system-config" warning since they share a fix path (disk/permission).
-    const sysPath = path.join(icloudPath, 'system-backup');
+    const sysPath = path.join(datedRoot, 'system-backup');
     fs.mkdirSync(sysPath, { recursive: true });
     let sysStderr = '';
     let sysErrors = 0;
@@ -1102,6 +832,23 @@ export class SyncService extends EventEmitter {
       errors++;
     }
 
+    // Why: tiered pruning of old dated snapshots. Read the dated dirs under
+    // <YouCoded>/Backup/, decide which to delete via the pure retention core,
+    // then fs.rm each by its EXACT dated path — NEVER a glob/wildcard — so a bad
+    // name can't remove sibling data (unparseable names are never returned).
+    try {
+      const backupDir = path.join(icloudPath, 'Backup');
+      const names = await fs.promises.readdir(backupDir);
+      for (const name of snapshotsToDelete(names, snapshot.now)) {
+        // Why: per-delete try/catch (matches Drive's continue-past-failure loop) so
+        // one failed rm doesn't abort the remaining deletions.
+        try {
+          await fs.promises.rm(path.join(backupDir, name), { recursive: true, force: true });
+          this.logBackup('INFO', `iCloud snapshot pruned ${name}`, 'sync.push.icloud');
+        } catch { /* skip this one, keep pruning the rest */ }
+      }
+    } catch { /* pruning is best-effort — never fail a snapshot over cleanup */ }
+
     if (errors > 0) {
       await this.recordBackendFailure(instance, firstFailStderr);
     } else {
@@ -1135,17 +882,21 @@ export class SyncService extends EventEmitter {
 
   /**
    * Push personal data to backends.
-   * - Default: pushes to all sync-enabled backends (automatic loop)
+   * - Default: pushes to all sync-enabled backends (the hourly daily-snapshot poll)
    * - With backendId: pushes to that specific backend only (manual upsync)
-   * - With force: bypasses the 15-minute debounce
+   * - With force: bypasses the 15-minute debounce (manual "Back up now")
    */
   async push(opts?: { force?: boolean; backendId?: string }): Promise<PushResult> {
     if (this.pushing) return { success: false, errors: 0, backends: [] };
     this.pushing = true;
 
     try {
-      // Update conversation index before push
-      this.updateConversationIndex();
+      // Plan 2c: the legacy conversation-index is FROZEN — no longer maintained
+      // on push. The Conversation Store (~/YouCoded/Personal/Conversations/) is
+      // authoritative for titles + flags now; the index file stays readable for
+      // residual legacy-only rows (session-browser's readIndexMeta / readTopic
+      // fallback). Full index retirement (delete the read path + file) is
+      // deferred to a future task. (was: this.updateConversationIndex())
 
       // Acquire lock
       if (!this.acquireLock()) {
@@ -1161,12 +912,35 @@ export class SyncService extends EventEmitter {
         }
 
         // If a specific backend was requested (manual push), use just that one.
-        // Otherwise, push to all sync-enabled backends (automatic loop).
+        // Otherwise, push to all sync-enabled backends (the daily-snapshot poll).
         const instances = opts?.backendId
           ? [this.getBackendById(opts.backendId)].filter(Boolean) as BackendInstance[]
           : this.getSyncEnabledBackends();
 
         if (instances.length === 0) return { success: true, errors: 0, backends: [] };
+
+        // Why: compute the daily snapshot gate ONCE per push() cycle (not per
+        // backend) so Drive AND iCloud write into the SAME dated folder today and
+        // the once-per-day stamp isn't double-consumed. github ignores it.
+        let snapshotMarker: string | null = null;
+        try { snapshotMarker = fs.readFileSync(this.snapshotMarkerPath, 'utf8').trim(); } catch { /* first run */ }
+        const snapshotNow = new Date();
+        const snapshot: SnapshotGate = {
+          // Why: a manual force (opts.force) bypasses the once-per-UTC-day due gate
+          // so "Back up now" / "Upload now" ALWAYS copy today's ~/.claude personal
+          // data (encyclopedia/memory/CLAUDE.md/settings). Re-copying into the same
+          // dated Backup/<date>/ folder is idempotent (rclone --update/--checksum skip
+          // unchanged files). The AUTOMATIC hourly poll (non-force) still respects the
+          // daily stamp, so it produces at most one snapshot per UTC day as before.
+          due: !!opts?.force || isBackupDue(snapshotMarker, snapshotNow),
+          dated: datedFolderName(snapshotNow),
+          now: snapshotNow,
+        };
+        // Why: track whether at least one snapshot backend (Drive/iCloud) actually
+        // SUCCEEDED this cycle (0 errors). We only stamp the daily marker on success
+        // (see below) so a total-failure cycle — or a github-only cycle — leaves the
+        // marker unwritten and a later hourly-poll push retries the same day.
+        let anySnapshotSucceeded = false;
 
         let totalErrors = 0;
         const pushedIds: string[] = [];
@@ -1175,16 +949,21 @@ export class SyncService extends EventEmitter {
           try {
             let backendErrors = 0;
             switch (instance.type) {
-              case 'drive': backendErrors = await this.pushDrive(instance); break;
-              case 'github': backendErrors = await this.pushGithub(instance); break;
-              case 'icloud': backendErrors = await this.pushiCloud(instance); break;
+              case 'drive': backendErrors = await this.pushDrive(instance, snapshot); break;
+              // Why: the legacy GitHub personal-sync backup target was removed
+              // (sync-legacy-demolition). A github-type backend no longer backs up
+              // via this path — the GitHub *space sync* is a separate subsystem.
+              case 'icloud': backendErrors = await this.pushiCloud(instance, snapshot); break;
+            }
+            if ((instance.type === 'drive' || instance.type === 'icloud') && backendErrors === 0) {
+              anySnapshotSucceeded = true;
             }
             totalErrors += backendErrors;
             pushedIds.push(instance.id);
 
             // Write per-backend marker for individual status tracking
             this.debounceTouch(this.perBackendMarkerPath(instance.id));
-            // pushDrive/pushGithub/pushiCloud now handle their own warning clear on success
+            // pushDrive/pushiCloud handle their own warning clear on success
           } catch (e) {
             this.logBackup('ERROR', `${instance.id} push failed: ${e}`, 'sync.push', { stderr: String(e).slice(0, 500) });
             // Synthesize an UNKNOWN warning from the exception string so the UI
@@ -1194,6 +973,20 @@ export class SyncService extends EventEmitter {
             await this.recordBackendFailure(instance, String(e));
             totalErrors++;
           }
+        }
+
+        // Why: write the daily snapshot stamp ONCE, after both Drive+iCloud have
+        // had their turn this cycle, so subsequent hourly-poll push() calls no-op
+        // the snapshot copy until the next UTC day. Retry semantics: we stamp ONLY
+        // when a snapshot backend SUCCEEDED (0 errors) today — a fully-failed cycle
+        // (rclone missing / network down) leaves the marker unwritten so the next
+        // hourly-poll push retries the same day rather than silently burning it. rclone
+        // copy/copyto skip unchanged files, so a retry after partial success is cheap.
+        // Best-effort write like daily-backup's marker — a read-only ~/.claude must
+        // not fail the whole push.
+        if (shouldStampDailyMarker(snapshot.due, anySnapshotSucceeded)) {
+          try { fs.writeFileSync(this.snapshotMarkerPath, snapshot.dated); }
+          catch (e) { this.logBackup('WARN', `Could not write snapshot marker: ${String(e)}`, 'sync.push'); }
         }
 
         // Write backup-meta.json on success
@@ -1212,873 +1005,13 @@ export class SyncService extends EventEmitter {
     }
   }
 
-  // =========================================================================
-  // Pull: Drive Backend
-  // =========================================================================
-
-  private async pullDrive(instance: BackendInstance): Promise<void> {
-    const rcloneRemote = instance.config.rcloneRemote || 'gdrive';
-    const driveRoot = instance.config.DRIVE_ROOT || 'Claude';
-    const remoteBase = `${rcloneRemote}:${driveRoot}/Backup/personal`;
-    const sysRemote = `${rcloneRemote}:${driveRoot}/Backup/system-backup`;
-
-    // Track first-fail stderr so we can record a SyncWarning at the end of the
-    // pull cycle. Symmetric with pushDrive's failure recording — same backend
-    // problems (CONFIG_MISSING, AUTH_EXPIRED, NETWORK) affect both directions,
-    // and the user needs to see them on first-run before any push has happened.
-    let firstFailStderr = '';
-    const noteFail = (label: string, r: ExecResult) => {
-      if (r.code !== 0) {
-        if (!firstFailStderr) firstFailStderr = r.stderr;
-        this.logBackup('WARN', `Pull ${label} failed`, 'sync.pull.drive', { stderr: truncateStderr(r.stderr || '') });
-      }
-    };
-
-    // Memory files — list remote keys, then pull each
-    const memResult = await this.rclone(['lsf', `${remoteBase}/memory/`, '--dirs-only']);
-    noteFail('memory/lsf', memResult);
-    if (memResult.code === 0) {
-      const memKeys = memResult.stdout.split('\n').map(k => k.replace(/\/$/, '').trim()).filter(Boolean);
-      for (const key of memKeys) {
-        const dest = path.join(this.claudeDir, 'projects', key, 'memory');
-        fs.mkdirSync(dest, { recursive: true });
-        const r = await this.rclone(['copy', `${remoteBase}/memory/${key}/`, dest + '/', '--update', '--skip-links', '--exclude', '.DS_Store']);
-        noteFail(`memory/${key}`, r);
-      }
-    }
-
-    // Safety: only pull config.json on first-run (when local doesn't exist).
-    // Once local config exists, it is authoritative — users configure backends
-    // deliberately per-device, and silently overwriting their config could
-    // disable sync, change backends, or break machine-specific setups.
-    const configPullPromise: Promise<ExecResult> = this.fileExists(this.configPath)
-      ? Promise.resolve({ code: 0, stdout: '', stderr: 'skipped — local config exists' })
-      : this.rclone(['copyto', `${sysRemote}/config.json`, this.configPath, '--update']);
-
-    // Pull conversation-index.json FIRST (was last). The recent-50 strategy
-    // reads it to decide which conversations to fetch in the foreground; if it
-    // fails we fall back to the legacy bulk pull. See 2026-04-24 restore UX
-    // investigation in git log for why this matters (was 14+ min foreground
-    // for large accounts).
-    fs.mkdirSync(this.indexStagingDir, { recursive: true });
-    const indexResult = await this.rclone(['copy', `${sysRemote}/conversation-index.json`, this.indexStagingDir + '/', '--checksum']);
-    noteFail('conversation-index', indexResult);
-
-    // Parallel pulls for the small + non-dependent categories. Each wrapped
-    // in its own catch so a single rclone failure (network timeout, DNS error)
-    // doesn't abort the whole pull via unhandled rejection.
-    const projectsDir = path.join(this.claudeDir, 'projects');
-    const pullResults = await Promise.allSettled([
-      // CLAUDE.md
-      this.rclone(['copyto', `${remoteBase}/CLAUDE.md`, path.join(this.claudeDir, 'CLAUDE.md'), '--update']),
-      // System config — first-run only (see above)
-      configPullPromise,
-      // Encyclopedia
-      (async (): Promise<ExecResult> => {
-        const encDir = path.join(this.claudeDir, 'encyclopedia');
-        fs.mkdirSync(encDir, { recursive: true });
-        return this.rclone(['copy', `${remoteBase}/encyclopedia/`, encDir + '/', '--update', '--max-depth', '1', '--include', '*.md']);
-      })(),
-    ]);
-    const pullLabels = ['CLAUDE.md', 'config.json', 'encyclopedia'];
-    pullResults.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        const stderr = String(r.reason);
-        if (!firstFailStderr) firstFailStderr = stderr;
-        this.logBackup('WARN', `Pull ${pullLabels[i]} failed: ${stderr}`, 'sync.pull.drive');
-      } else {
-        noteFail(pullLabels[i], r.value);
-      }
-    });
-
-    // Conversations — recent-50 in foreground, rest in background.
-    // Why split: a fresh restore was taking 14+ minutes because rclone has to
-    // enumerate the entire conversations/ tree. Recent-50 fetches the most
-    // recently-active sessions synchronously (~30s) and lets the user start
-    // working while history syncs in the background.
-    const stagedIndex = path.join(this.indexStagingDir, 'conversation-index.json');
-    let recentCount = -1;
-    if (this.fileExists(stagedIndex) && fs.statSync(stagedIndex).size > 0) {
-      try {
-        recentCount = await this.pullDriveConversationsRecent(remoteBase, stagedIndex, projectsDir, RECENT_PULL_LIMIT);
-      } catch (e) {
-        this.logBackup('WARN', `Recent conversations pull threw: ${e}`, 'sync.pull.drive');
-        if (!firstFailStderr) firstFailStderr = String(e);
-        recentCount = -1;
-      }
-    }
-
-    if (recentCount < 0) {
-      // Fallback: index missing/unreadable. Run the legacy bulk pull synchronously
-      // so the user actually gets their conversations on first-run / index-corrupted
-      // scenarios. No background schedule (the foreground already covered everything).
-      this.logBackup('INFO', 'No conversation index — falling back to legacy bulk pull', 'sync.pull.drive');
-      const r = await this.rclone(['copy', `${remoteBase}/conversations/`, projectsDir + '/', '--checksum', '--include', '*.jsonl', '--ignore-existing']);
-      noteFail('conversations', r);
-    } else {
-      // Recent-50 done; schedule the bulk pull as fire-and-forget so the user
-      // can use the app immediately. Single-flight guarded internally.
-      this.scheduleBackgroundConversationsPull(remoteBase, projectsDir);
-    }
-
-    // Surface the first failure as a SyncWarning so it appears in the UI.
-    // Don't call clearBackendFailures on success — pull alone doesn't prove push
-    // works (e.g. read access without write). Only push success clears warnings.
-    if (firstFailStderr) {
-      await this.recordBackendFailure(instance, firstFailStderr, 'pull');
-    }
-  }
-
-  /**
-   * Foreground: pull only the [limit] most-recently-active conversations
-   * named in the staged conversation-index.json using rclone's --files-from.
-   * One rclone process, --transfers 8 in parallel internally → ~30s for 50
-   * files vs. 14 min for a full bulk copy. Returns the count of file lines
-   * actually pulled, or 0 if the index has no eligible entries.
-   *
-   * --ignore-existing means already-local files are skipped, so this is
-   * cheap to re-run on every startup pull.
-   */
-  private async pullDriveConversationsRecent(
-    remoteBase: string,
-    stagedIndex: string,
-    projectsDir: string,
-    limit: number,
-  ): Promise<number> {
-    let parsed: any;
-    try {
-      parsed = JSON.parse(fs.readFileSync(stagedIndex, 'utf8'));
-    } catch (e) {
-      this.logBackup('WARN', `Failed to parse staged index: ${e}`, 'sync.pull.drive');
-      return 0;
-    }
-    const sessions = parsed?.sessions;
-    if (!sessions || typeof sessions !== 'object') return 0;
-
-    type Entry = { sessionId: string; slug: string; lastActive: string };
-    const entries: Entry[] = [];
-    for (const [sessionId, raw] of Object.entries(sessions)) {
-      const obj = raw as any;
-      const slug = String(obj?.slug ?? '').trim();
-      if (!slug) continue;
-      entries.push({ sessionId, slug, lastActive: String(obj?.lastActive ?? '') });
-    }
-    if (entries.length === 0) return 0;
-    // ISO-8601 lastActive strings sort lexicographically as chronologically.
-    const recent = entries.sort((a, b) => b.lastActive.localeCompare(a.lastActive)).slice(0, limit);
-
-    // Write a files-from list. Paths relative to the rclone source root.
-    const listFile = path.join(this.claudeDir, 'toolkit-state', '.recent-pull-files-from.txt');
-    try {
-      fs.mkdirSync(path.dirname(listFile), { recursive: true });
-      fs.writeFileSync(listFile, recent.map(e => `${e.slug}/${e.sessionId}.jsonl`).join('\n') + '\n');
-
-      const r = await this.rclone([
-        'copy',
-        `${remoteBase}/conversations/`,
-        projectsDir + '/',
-        '--files-from', listFile,
-        '--checksum',
-        '--ignore-existing',
-        '--transfers', '8',
-      ]);
-      if (r.code !== 0) {
-        this.logBackup('WARN', `Recent conversations pull failed: ${truncateStderr(r.stderr || '')}`, 'sync.pull.drive');
-      }
-      return recent.length;
-    } finally {
-      try { fs.unlinkSync(listFile); } catch { /* best-effort */ }
-    }
-  }
-
-  /**
-   * Background: fire-and-forget bulk pull of every remaining conversation.
-   * Reuses the original `--include *.jsonl --ignore-existing` semantics so
-   * the recent-50 just pulled are skipped.
-   *
-   * Single-flight guarded — if a prior background pull is still running we
-   * return immediately. Otherwise the chip would either flicker out when
-   * the first finishes or never appear when a re-restore begins.
-   */
-  private scheduleBackgroundConversationsPull(remoteBase: string, projectsDir: string): void {
-    if (this.backgroundPullState !== null) {
-      this.logBackup('INFO', 'Skipping bg conversations pull — one already running', 'sync.pull.drive');
-      return;
-    }
-    this.backgroundPullState = { type: 'conversations', startedAt: Date.now() };
-    // Fire-and-forget; the .catch keeps an unhandled-rejection from killing the process.
-    (async () => {
-      try {
-        const r = await this.rclone([
-          'copy',
-          `${remoteBase}/conversations/`,
-          projectsDir + '/',
-          '--checksum',
-          '--include', '*.jsonl',
-          '--ignore-existing',
-          '--transfers', '8',
-        ]);
-        if (r.code !== 0) {
-          this.logBackup('WARN', `Background conversations pull failed: ${truncateStderr(r.stderr || '')}`, 'sync.pull.drive');
-        } else {
-          this.logBackup('INFO', 'Background conversations pull complete', 'sync.pull.drive');
-        }
-      } catch (e) {
-        this.logBackup('WARN', `Background conversations pull threw: ${e}`, 'sync.pull.drive');
-      } finally {
-        this.backgroundPullState = null;
-      }
-    })().catch(() => { /* swallowed — already logged inside */ });
-  }
-
-  // =========================================================================
-  // Pull: GitHub Backend
-  // =========================================================================
-
-  private async pullGithub(instance: BackendInstance): Promise<void> {
-    const syncRepo = instance.config.PERSONAL_SYNC_REPO || '';
-    const repoDir = path.join(this.claudeDir, 'toolkit-state', `personal-sync-repo-${instance.id}`);
-
-    if (!syncRepo || !this.dirExists(path.join(repoDir, '.git'))) return;
-
-    const pullResult = await this.gitExec(['pull', 'personal-sync', 'main'], repoDir);
-    if (pullResult.code !== 0) {
-      // Surface as a SyncWarning (auth/network/repo-missing all need user action).
-      // Symmetric with pullDrive — see recordBackendFailure docstring for why we
-      // don't clear on success.
-      this.logBackup('WARN', 'GitHub personal-sync pull failed', 'sync.pull.github', { stderr: truncateStderr(pullResult.stderr || '') });
-      await this.recordBackendFailure(instance, pullResult.stderr || '', 'pull');
-      return;
-    }
-
-    // Copy restored files to live locations (don't overwrite existing)
-    const repoMemory = path.join(repoDir, 'memory');
-    if (this.dirExists(repoMemory)) {
-      for (const key of fs.readdirSync(repoMemory)) {
-        const dest = path.join(this.claudeDir, 'projects', key, 'memory');
-        fs.mkdirSync(dest, { recursive: true });
-        fs.cpSync(path.join(repoMemory, key), dest, { recursive: true, force: false });
-      }
-    }
-
-    const repoClaudeMd = path.join(repoDir, 'CLAUDE.md');
-    if (this.fileExists(repoClaudeMd) && !this.fileExists(path.join(this.claudeDir, 'CLAUDE.md'))) {
-      fs.copyFileSync(repoClaudeMd, path.join(this.claudeDir, 'CLAUDE.md'));
-    }
-
-    const repoEnc = path.join(repoDir, 'encyclopedia');
-    if (this.dirExists(repoEnc)) {
-      const dest = path.join(this.claudeDir, 'encyclopedia');
-      fs.mkdirSync(dest, { recursive: true });
-      fs.cpSync(repoEnc, dest, { recursive: true, force: false });
-    }
-
-    // Conversations
-    const repoConv = path.join(repoDir, 'conversations');
-    if (this.dirExists(repoConv)) {
-      for (const slugName of fs.readdirSync(repoConv)) {
-        const src = path.join(repoConv, slugName);
-        const dest = path.join(this.claudeDir, 'projects', slugName);
-        fs.mkdirSync(dest, { recursive: true });
-        fs.cpSync(src, dest, { recursive: true, force: false });
-      }
-    }
-
-    // System config — first-run only. Once local config exists, it is
-    // authoritative; users configure backends deliberately per-device.
-    const repoSys = path.join(repoDir, 'system-backup');
-    if (this.fileExists(path.join(repoSys, 'config.json')) && !this.fileExists(this.configPath)) {
-      fs.copyFileSync(path.join(repoSys, 'config.json'), this.configPath);
-    }
-
-    // Conversation index to staging
-    const repoIndex = path.join(repoSys, 'conversation-index.json');
-    if (this.fileExists(repoIndex)) {
-      fs.mkdirSync(this.indexStagingDir, { recursive: true });
-      fs.copyFileSync(repoIndex, path.join(this.indexStagingDir, 'conversation-index.json'));
-    }
-  }
-
-  // =========================================================================
-  // Pull: iCloud Backend
-  // =========================================================================
-
-  private async pulliCloud(instance: BackendInstance): Promise<void> {
-    const icloudPath = this.resolveICloudPath(instance);
-    if (!icloudPath || !this.dirExists(icloudPath)) return;
-
-    // Memory
-    const icMemory = path.join(icloudPath, 'memory');
-    if (this.dirExists(icMemory)) {
-      for (const key of fs.readdirSync(icMemory)) {
-        const dest = path.join(this.claudeDir, 'projects', key, 'memory');
-        fs.mkdirSync(dest, { recursive: true });
-        try { await this.rsyncOrCp(path.join(icMemory, key), dest); } catch {}
-      }
-    }
-
-    // CLAUDE.md
-    const icClaudeMd = path.join(icloudPath, 'CLAUDE.md');
-    if (this.fileExists(icClaudeMd) && !this.fileExists(path.join(this.claudeDir, 'CLAUDE.md'))) {
-      fs.copyFileSync(icClaudeMd, path.join(this.claudeDir, 'CLAUDE.md'));
-    }
-
-    // Encyclopedia
-    const icEnc = path.join(icloudPath, 'encyclopedia');
-    if (this.dirExists(icEnc)) {
-      const dest = path.join(this.claudeDir, 'encyclopedia');
-      fs.mkdirSync(dest, { recursive: true });
-      try { await this.rsyncOrCp(icEnc, dest); } catch {}
-    }
-
-    // Conversations
-    const icConv = path.join(icloudPath, 'conversations');
-    if (this.dirExists(icConv)) {
-      for (const slugName of fs.readdirSync(icConv)) {
-        const dest = path.join(this.claudeDir, 'projects', slugName);
-        fs.mkdirSync(dest, { recursive: true });
-        fs.cpSync(path.join(icConv, slugName), dest, { recursive: true, force: false });
-      }
-    }
-
-    // System config — first-run only. Once local config exists, it is
-    // authoritative; users configure backends deliberately per-device.
-    const icSys = path.join(icloudPath, 'system-backup');
-    if (this.fileExists(path.join(icSys, 'config.json')) && !this.fileExists(this.configPath)) {
-      fs.copyFileSync(path.join(icSys, 'config.json'), this.configPath);
-    }
-
-    // Conversation index to staging
-    const icIndex = path.join(icSys, 'conversation-index.json');
-    if (this.fileExists(icIndex)) {
-      fs.mkdirSync(this.indexStagingDir, { recursive: true });
-      fs.copyFileSync(icIndex, path.join(this.indexStagingDir, 'conversation-index.json'));
-    }
-  }
-
-  // =========================================================================
-  // Pull: Orchestrator
-  // =========================================================================
-
-  /**
-   * Pull personal data from a backend + run post-pull operations.
-   * - Default: pulls from the first sync-enabled backend
-   * - With backendId: pulls from that specific backend (manual downsync)
-   */
-  async pull(opts?: { backendId?: string }): Promise<void> {
-    if (this.pulling) return;
-    this.pulling = true;
-
-    try {
-      let instance: BackendInstance | null;
-      if (opts?.backendId) {
-        instance = this.getBackendById(opts.backendId);
-      } else {
-        const syncEnabled = this.getSyncEnabledBackends();
-        instance = syncEnabled.length > 0 ? syncEnabled[0] : null;
-      }
-
-      if (!instance) {
-        this.logBackup('INFO', 'No backend for pull', 'sync.pull');
-        return;
-      }
-
-      this.logBackup('INFO', `Pulling from ${instance.id} (${instance.type})`, 'sync.pull');
-
-      switch (instance.type) {
-        case 'drive': await this.pullDrive(instance); break;
-        case 'github': await this.pullGithub(instance); break;
-        case 'icloud': await this.pulliCloud(instance); break;
-      }
-
-      // Sequential post-pull operations (order matters)
-      this.rewriteProjectSlugs();
-      this.aggregateConversations();
-
-      // Merge staged conversation index (from pull) with local
-      const stagedIndex = path.join(this.indexStagingDir, 'conversation-index.json');
-      if (this.fileExists(stagedIndex)) {
-        this.mergeConversationIndex(stagedIndex);
-      }
-
-      this.regenerateTopicCache();
-
-      // Run health check to generate .sync-warnings for the UI
-      await this.runHealthCheck();
-
-      this.emit('pull-complete');
-      this.logBackup('INFO', 'Pull complete', 'sync.pull');
-    } catch (e) {
-      this.logBackup('ERROR', `Pull failed: ${e}`, 'sync.pull');
-      throw e;
-    } finally {
-      this.pulling = false;
-    }
-  }
-
-  // =========================================================================
-  // Conversation Index Management
-  // =========================================================================
-
-  /** Scan topic files and upsert into conversation-index.json. */
-  updateConversationIndex(): void {
-    const topicsDir = path.join(this.claudeDir, 'topics');
-    if (!this.dirExists(topicsDir)) return;
-
-    // Read existing index
-    let index: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-    if (!index.sessions) index.sessions = {};
-
-    const slug = this.getCurrentSlug();
-    const device = os.hostname();
-    const now = Date.now();
-    const pruneThreshold = now - INDEX_PRUNE_DAYS * 24 * 60 * 60 * 1000;
-
-    // Scan topic files
-    let files: string[];
-    try { files = fs.readdirSync(topicsDir); } catch { return; }
-
-    for (const file of files) {
-      if (!file.startsWith('topic-')) continue;
-      const sessionId = file.replace(/^topic-/, '');
-      // Phantom-id guard: don't CREATE a new index entry from a topic file
-      // whose id isn't a canonical UUID (these come from auto-title-write
-      // typos and point at no transcript). But still allow updating an entry
-      // that already exists under a non-UUID id — setSessionFlag() can seed
-      // one legitimately (a user tagged the session before its topic file
-      // existed; the flag-bearing entry must get its real topic). The prune
-      // loop below self-heals leftover flagless non-UUID rows.
-      if (!SESSION_UUID_RE.test(sessionId) && !index.sessions[sessionId]) continue;
-      const filePath = path.join(topicsDir, file);
-
-      try {
-        const topic = fs.readFileSync(filePath, 'utf8').trim();
-        if (!topic || topic === 'New Session') continue;
-
-        const stat = fs.statSync(filePath);
-        const lastActive = stat.mtime.toISOString();
-
-        // Lift any v1 legacy fields into flags before comparing / merging.
-        const existing = index.sessions[sessionId]
-          ? migrateEntry(index.sessions[sessionId])
-          : undefined;
-
-        // Only upsert if newer than existing entry
-        if (existing && new Date(existing.lastActive).getTime() >= stat.mtimeMs) {
-          // Still write back the migrated form in case legacy fields were present.
-          if (existing !== index.sessions[sessionId]) index.sessions[sessionId] = existing;
-          continue;
-        }
-
-        // Preserve user-set flags across topic-file-driven upserts so a topic
-        // rename doesn't clobber complete/priority/helpful.
-        index.sessions[sessionId] = {
-          topic,
-          lastActive,
-          slug,
-          device,
-          ...(existing?.flags ? { flags: { ...existing.flags } } : {}),
-        };
-      } catch {}
-    }
-
-    // Prune old entries, but skip epoch-sentinel entries. Those are seeded by
-    // setSessionFlag() when a user tags a session before its topic file exists;
-    // epoch is older than any prune threshold, so without this guard the
-    // pending entry (and its flag) would be deleted immediately on next push.
-    // Also self-heal phantom entries: malformed session ids carry no
-    // transcript and were created by title-write typos — but only delete them
-    // when they hold NO user flags (deleting a user's tag is worse than
-    // carrying a dead row).
-    for (const [sid, entry] of Object.entries(index.sessions)) {
-      const migrated = migrateEntry(entry);
-      const hasFlags = Object.keys(migrated.flags || {}).length > 0;
-      if (!SESSION_UUID_RE.test(sid) && !hasFlags) {
-        delete index.sessions[sid];
-        continue;
-      }
-      const ts = new Date(entry.lastActive).getTime();
-      if (ts === 0) continue;
-      if (ts < pruneThreshold) {
-        delete index.sessions[sid];
-      }
-    }
-
-    this.atomicWrite(this.conversationIndexPath, JSON.stringify(index, null, 2));
-  }
-
-  /** Merge a remote conversation index with the local one. Base entry fields
-   *  follow latest-lastActive-wins; each flag merges independently by its own
-   *  updatedAt so marking/unmarking on any device doesn't need fresher activity. */
-  mergeConversationIndex(remotePath: string): void {
-    const remote: ConversationIndex = this.readJson(remotePath) || { version: 1, sessions: {} };
-    const local: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-
-    const merged: ConversationIndex = { version: 1, sessions: { ...local.sessions } };
-
-    for (const [sid, rawRemote] of Object.entries(remote.sessions || {})) {
-      const remoteEntry = migrateEntry(rawRemote);
-      const rawLocal = merged.sessions[sid];
-      const localEntry = rawLocal ? migrateEntry(rawLocal) : undefined;
-
-      // Base entry: latest lastActive wins for topic/slug/device.
-      let baseEntry: ConversationIndexEntry;
-      if (!localEntry || new Date(remoteEntry.lastActive).getTime() > new Date(localEntry.lastActive).getTime()) {
-        baseEntry = { ...remoteEntry };
-      } else {
-        baseEntry = { ...localEntry };
-      }
-
-      // Per-flag merge. Union of all flag names seen on either side; whichever
-      // side has the larger updatedAt wins for that flag.
-      const flagNames = new Set<string>([
-        ...Object.keys(localEntry?.flags || {}),
-        ...Object.keys(remoteEntry.flags || {}),
-      ]);
-      const mergedFlags: Record<string, SessionFlagState> = {};
-      for (const name of flagNames) {
-        const l = localEntry?.flags?.[name];
-        const r = remoteEntry.flags?.[name];
-        const lTs = l ? new Date(l.updatedAt).getTime() : 0;
-        const rTs = r ? new Date(r.updatedAt).getTime() : 0;
-        const winner = rTs > lTs ? r : l;
-        if (winner) mergedFlags[name] = winner;
-      }
-      if (Object.keys(mergedFlags).length > 0) baseEntry.flags = mergedFlags;
-      else delete baseEntry.flags;
-
-      // Never write legacy fields — the migrated shape is the canonical form now.
-      delete (baseEntry as any).complete;
-      delete (baseEntry as any).completeUpdatedAt;
-
-      merged.sessions[sid] = baseEntry;
-    }
-
-    this.atomicWrite(this.conversationIndexPath, JSON.stringify(merged, null, 2));
-  }
-
-  /** Read all session flags (from the normalized index, migrating legacy fields).
-   *  Returns { sessionId: { flagName: boolean } } for flags whose value is truthy. */
-  getAllSessionFlags(): Record<string, Record<string, boolean>> {
-    const index: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-    const out: Record<string, Record<string, boolean>> = {};
-    for (const [sid, raw] of Object.entries(index.sessions || {})) {
-      const entry = migrateEntry(raw);
-      const flags = entry.flags || {};
-      const onFlags: Record<string, boolean> = {};
-      for (const [name, state] of Object.entries(flags)) {
-        if (state?.value) onFlags[name] = true;
-      }
-      if (Object.keys(onFlags).length > 0) out[sid] = onFlags;
-    }
-    return out;
-  }
-
-  /** Set a named flag on a session. Fresh updatedAt timestamp so cross-device
-   *  merge honors latest-writer-wins per-flag. Creates the entry if missing.
-   *
-   *  Seeding an unknown session is the tricky case: a naive "lastActive: now"
-   *  seed corrupted cross-device merge (local bare stub beat real remote entry
-   *  by mere seconds) and blocked the next topic scan from writing the real
-   *  topic (scan skips when existing.lastActive >= file.mtime). Fix: try the
-   *  topic file first; if absent, seed lastActive=epoch so the next scan wins
-   *  and cross-device merge picks the peer's real entry. Epoch-seeded entries
-   *  are protected from the age-based prune in updateConversationIndex(). */
-  setSessionFlag(sessionId: string, flag: string, value: boolean): void {
-    const index: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-    if (!index.sessions) index.sessions = {};
-
-    const now = new Date().toISOString();
-    const existing = index.sessions[sessionId]
-      ? migrateEntry(index.sessions[sessionId])
-      : null;
-
-    if (existing) {
-      const flags = { ...(existing.flags || {}) };
-      flags[flag] = { value: !!value, updatedAt: now };
-      index.sessions[sessionId] = { ...existing, flags };
-    } else {
-      // Try to populate from the topic file if it already exists on disk.
-      const topicFilePath = path.join(this.claudeDir, 'topics', `topic-${sessionId}`);
-      let topic = 'Untitled';
-      let lastActive = new Date(0).toISOString();   // epoch = "pending topic scan"
-      let slug = '';
-      try {
-        const stat = fs.statSync(topicFilePath);
-        const content = fs.readFileSync(topicFilePath, 'utf8').trim();
-        if (content && content !== 'New Session') {
-          topic = content;
-          lastActive = stat.mtime.toISOString();
-          slug = this.getCurrentSlug();
-        }
-      } catch {
-        // Topic file doesn't exist yet — stick with the epoch sentinel.
-      }
-
-      index.sessions[sessionId] = {
-        topic,
-        lastActive,
-        slug,
-        device: os.hostname(),
-        flags: { [flag]: { value: !!value, updatedAt: now } },
-      };
-    }
-
-    this.atomicWrite(this.conversationIndexPath, JSON.stringify(index, null, 2));
-
-    // Tags are high-value metadata with a narrow window — if the user closes
-    // the app before the 15-min push, the tag never reaches the backup and is
-    // lost forever on reinstall. A 30s debounce gets them off-device quickly
-    // without bombarding the backend on every click.
-    this.scheduleIndexPush();
-  }
-
-  /** Schedule a 30s-debounced index-only push. Resets the timer on each call. */
-  private scheduleIndexPush(): void {
-    if (this.indexPushTimer) clearTimeout(this.indexPushTimer);
-    this.indexPushTimer = setTimeout(() => {
-      this.indexPushTimer = null;
-      // A full push in flight will upload the index as part of its run — skip
-      // to avoid redundant writes (and any rclone contention on the same file).
-      if (this.pushing) return;
-      this.pushIndexOnly().catch(e => {
-        this.logBackup('ERROR', `Index-only push failed: ${e}`, 'sync.push.index');
-      });
-    }, INDEX_PUSH_DEBOUNCE_MS);
-  }
-
-  /** Pull just conversation-index.json from a single backend and merge it
-   *  into the local index via mergeConversationIndex(). Used by the restore
-   *  wipe flow, which stages categories atomically and cannot invoke the full
-   *  pull() without clobbering those just-restored dirs. */
-  async pullConversationIndexOnly(backendId: string): Promise<void> {
-    const instance = this.getBackendById(backendId);
-    if (!instance) return;
-    fs.mkdirSync(this.indexStagingDir, { recursive: true });
-    // Clean any stale staged file so a failed fetch doesn't re-merge old data.
-    const stagedIndex = path.join(this.indexStagingDir, 'conversation-index.json');
-    try { fs.unlinkSync(stagedIndex); } catch {}
-
-    try {
-      await this.fetchIndexFromBackend(instance);
-    } catch (e) {
-      this.logBackup('WARN', `Index fetch from ${instance.id} failed: ${e}`, 'sync.pull.index');
-      return;
-    }
-
-    if (this.fileExists(stagedIndex)) {
-      this.mergeConversationIndex(stagedIndex);
-    }
-  }
-
-  /** Per-backend implementation of conversation-index fetch into staging. */
-  private async fetchIndexFromBackend(instance: BackendInstance): Promise<void> {
-    const stagedDir = this.indexStagingDir;
-    switch (instance.type) {
-      case 'drive': {
-        const rcloneRemote = instance.config.rcloneRemote || 'gdrive';
-        const driveRoot = instance.config.DRIVE_ROOT || 'Claude';
-        await this.rclone(['copy', `${rcloneRemote}:${driveRoot}/Backup/system-backup/conversation-index.json`, stagedDir + '/', '--checksum']);
-        break;
-      }
-      case 'github': {
-        const repoDir = path.join(this.claudeDir, 'toolkit-state', `personal-sync-repo-${instance.id}`);
-        if (!this.dirExists(path.join(repoDir, '.git'))) return;
-        // Log non-zero exits so silent remote misconfig (e.g. #74) surfaces
-        // in backup.log even though we don't promote it to a SyncWarning here.
-        const pullR = await this.gitExec(['pull', 'personal-sync', 'main'], repoDir);
-        if (pullR.code !== 0) {
-          this.logBackup('WARN', 'Index-only pull from personal-sync failed', 'sync.pull.github', { stderr: truncateStderr(pullR.stderr || '') });
-        }
-        const src = path.join(repoDir, 'system-backup', 'conversation-index.json');
-        if (this.fileExists(src)) fs.copyFileSync(src, path.join(stagedDir, 'conversation-index.json'));
-        break;
-      }
-      case 'icloud': {
-        const icloudPath = this.resolveICloudPath(instance);
-        if (!icloudPath) return;
-        const src = path.join(icloudPath, 'system-backup', 'conversation-index.json');
-        if (this.fileExists(src)) fs.copyFileSync(src, path.join(stagedDir, 'conversation-index.json'));
-        break;
-      }
-    }
-  }
-
-  /** Push just conversation-index.json to each sync-enabled backend's
-   *  system-backup/. Narrow counterpart to push() — used by the 30s tag
-   *  debouncer so tags propagate faster than the 15-min full-push cycle. */
-  async pushIndexOnly(): Promise<void> {
-    if (!this.fileExists(this.conversationIndexPath)) return;
-    const instances = this.getSyncEnabledBackends();
-    for (const instance of instances) {
-      try {
-        switch (instance.type) {
-          case 'drive': {
-            const rcloneRemote = instance.config.rcloneRemote || 'gdrive';
-            const driveRoot = instance.config.DRIVE_ROOT || 'Claude';
-            await this.rclone(['copyto', this.conversationIndexPath, `${rcloneRemote}:${driveRoot}/Backup/system-backup/conversation-index.json`, '--checksum']);
-            break;
-          }
-          case 'github': {
-            const repoDir = path.join(this.claudeDir, 'toolkit-state', `personal-sync-repo-${instance.id}`);
-            if (!this.dirExists(path.join(repoDir, '.git'))) break;
-            fs.mkdirSync(path.join(repoDir, 'system-backup'), { recursive: true });
-            fs.copyFileSync(this.conversationIndexPath, path.join(repoDir, 'system-backup', 'conversation-index.json'));
-            await this.gitExec(['add', 'system-backup/conversation-index.json'], repoDir);
-            await this.gitExec(['commit', '-m', 'sync: conversation-index (tags)'], repoDir);
-            // Log non-zero exits so silent remote misconfig (#74) surfaces in
-            // backup.log. Not promoted to SyncWarning — the 15-min pushGithub
-            // owns that surface and would record the same failure there.
-            const idxPushR = await this.gitExec(['push', 'personal-sync', 'main'], repoDir);
-            if (idxPushR.code !== 0) {
-              this.logBackup('WARN', 'Index-only push to personal-sync failed', 'sync.push.index.github', { stderr: truncateStderr(idxPushR.stderr || '') });
-            }
-            break;
-          }
-          case 'icloud': {
-            const icloudPath = this.resolveICloudPath(instance);
-            if (!icloudPath) break;
-            fs.mkdirSync(path.join(icloudPath, 'system-backup'), { recursive: true });
-            fs.copyFileSync(this.conversationIndexPath, path.join(icloudPath, 'system-backup', 'conversation-index.json'));
-            break;
-          }
-        }
-      } catch (e) {
-        this.logBackup('WARN', `Index push to ${instance.id} failed: ${e}`, 'sync.push.index');
-      }
-    }
-  }
-
-  /** Create topic cache files from index for cross-device sessions. */
-  regenerateTopicCache(): void {
-    const index: ConversationIndex = this.readJson(this.conversationIndexPath) || { version: 1, sessions: {} };
-    const topicsDir = path.join(this.claudeDir, 'topics');
-    fs.mkdirSync(topicsDir, { recursive: true });
-
-    const pruneThreshold = Date.now() - INDEX_PRUNE_DAYS * 24 * 60 * 60 * 1000;
-
-    for (const [sid, entry] of Object.entries(index.sessions || {})) {
-      // Phantom-id symmetry with the topic scan: never materialize a topic
-      // file for a malformed session id (e.g. synced from a device that
-      // predates the scan guard) — it would sit on disk as an inert orphan.
-      if (!SESSION_UUID_RE.test(sid)) continue;
-      // Skip placeholder names — readTopic treats Untitled/New Session/empty as
-      // "no title", so writing them just churns files for no UI gain.
-      if (!entry.topic || entry.topic === 'Untitled' || entry.topic === 'New Session') continue;
-
-      const ts = new Date(entry.lastActive).getTime();
-      // Skip invalid / epoch / pre-prune-window entries. A file created today
-      // for a 45-day-old entry would be deleted by the title hook's daily
-      // `find -mtime +30` prune tomorrow — pure churn. The conversation-index
-      // fallback in session-browser still names these sessions, so dropping the
-      // topic file costs nothing.
-      if (Number.isNaN(ts) || ts <= 0 || ts < pruneThreshold) continue;
-
-      const topicFile = path.join(topicsDir, `topic-${sid}`);
-      // Only create if local file doesn't exist (local-first)
-      if (!this.fileExists(topicFile)) {
-        try {
-          fs.writeFileSync(topicFile, entry.topic);
-          // Stamp the file with the entry's real lastActive, NOT "now".
-          // updateConversationIndex() treats topic-file mtime AS the entry's
-          // lastActive (it upserts when mtime > existing lastActive). Writing
-          // fresh "now" mtimes here bumped every session's lastActive on each
-          // regenerate, so the 30-day prune never fired (dead entries lived
-          // forever) and the recent-50 backup pull selected the wrong sessions.
-          const d = new Date(ts);
-          fs.utimesSync(topicFile, d, d);
-        } catch {}
-      }
-    }
-  }
-
-  // =========================================================================
-  // Cross-Device Operations
-  // =========================================================================
-
-  /** Create symlinks from foreign device project slugs into current device's slug. */
-  rewriteProjectSlugs(): void {
-    const projectsDir = path.join(this.claudeDir, 'projects');
-    if (!this.dirExists(projectsDir)) return;
-
-    const currentSlug = this.getCurrentSlug();
-
-    for (const slugName of fs.readdirSync(projectsDir)) {
-      if (slugName === currentSlug) continue;
-      const slugDir = path.join(projectsDir, slugName);
-
-      // Skip if it's already a symlink (previous rewrite)
-      try { if (fs.lstatSync(slugDir).isSymbolicLink()) continue; } catch { continue; }
-      if (!fs.statSync(slugDir).isDirectory()) continue;
-
-      // For each subdirectory in the foreign slug, create a symlink in current slug
-      const currentSlugDir = path.join(projectsDir, currentSlug);
-      fs.mkdirSync(currentSlugDir, { recursive: true });
-
-      for (const subName of fs.readdirSync(slugDir)) {
-        const target = path.join(currentSlugDir, subName);
-        if (this.fileExists(target) || this.dirExists(target)) continue; // Don't overwrite local
-
-        const relativeSrc = path.join('..', slugName, subName);
-        try {
-          // Use 'junction' on Windows to avoid Developer Mode requirement
-          const symlinkType = process.platform === 'win32' && fs.statSync(path.join(slugDir, subName)).isDirectory() ? 'junction' : undefined;
-          fs.symlinkSync(relativeSrc, target, symlinkType);
-        } catch {
-          // Fallback: copy if symlink fails
-          try {
-            fs.cpSync(path.join(slugDir, subName), target, { recursive: true });
-          } catch {}
-        }
-      }
-    }
-  }
-
-  /** Symlink all .jsonl files from non-home slugs into home slug for /resume from ~. */
-  aggregateConversations(): void {
-    const projectsDir = path.join(this.claudeDir, 'projects');
-    if (!this.dirExists(projectsDir)) return;
-
-    const currentSlug = this.getCurrentSlug();
-    const homeDir = path.join(projectsDir, currentSlug);
-    if (!this.dirExists(homeDir)) return;
-
-    for (const slugName of fs.readdirSync(projectsDir)) {
-      if (slugName === currentSlug) continue;
-      const slugDir = path.join(projectsDir, slugName);
-
-      // Skip symlinked slug dirs
-      try { if (fs.lstatSync(slugDir).isSymbolicLink()) continue; } catch { continue; }
-      if (!fs.statSync(slugDir).isDirectory()) continue;
-
-      // Symlink each .jsonl into home slug
-      for (const file of fs.readdirSync(slugDir)) {
-        if (!file.endsWith('.jsonl')) continue;
-        const target = path.join(homeDir, file);
-        if (this.fileExists(target)) continue; // Don't overwrite
-
-        const relativeSrc = path.join('..', slugName, file);
-        try {
-          fs.symlinkSync(relativeSrc, target);
-        } catch {}
-      }
-    }
-
-    // Clean up dangling symlinks in home dir
-    for (const file of fs.readdirSync(homeDir)) {
-      const filePath = path.join(homeDir, file);
-      try {
-        const lstat = fs.lstatSync(filePath);
-        if (lstat.isSymbolicLink()) {
-          // Check if target exists
-          try { fs.statSync(filePath); } catch {
-            // Target doesn't exist — dangling symlink
-            fs.unlinkSync(filePath);
-          }
-        }
-      } catch {}
-    }
-  }
+  // Conversation Index Management: FULLY RETIRED from SyncService (Plan 2c).
+  // The legacy conversation-index.json is frozen and now owned entirely by the
+  // Conversation Store for titles + flags. SyncService no longer writes OR reads
+  // it — the only residual reader is session-browser.ts (readIndexMeta /
+  // readTopic fallback), for legacy-only rows that predate the store. All
+  // SyncService index helpers (updateConversationIndex, mergeConversationIndex,
+  // setSessionFlag, getAllSessionFlags, migrateEntry) were deleted here.
 
   // =========================================================================
   // Sync Health Check & Warning Generation
@@ -2086,9 +1019,9 @@ export class SyncService extends EventEmitter {
 
   /**
    * Run sync health checks and write .sync-warnings file.
-   * Ports session-start.sh _bg_sync_health() — generates warnings for:
-   *   OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE, PROJECTS:N
-   * Called after pull completes and on app startup.
+   * Generates warnings for: OFFLINE, PERSONAL:NOT_CONFIGURED, PERSONAL:STALE.
+   * (The PROJECTS_UNSYNCED discovery warning was removed in sync-legacy-demolition.)
+   * Called once on app startup (re-homed off the deleted pull() path).
    */
   async runHealthCheck(): Promise<SyncWarning[]> {
     const warnings: SyncWarning[] = [];
@@ -2157,29 +1090,16 @@ export class SyncService extends EventEmitter {
       } catch {}
     }
 
-    // 3. Unsynced projects
-    const discoveredProjects = this.discoverProjects();
-    if (discoveredProjects.length > 0) {
-      const unsyncedFile = path.join(this.claudeDir, '.unsynced-projects');
-      this.atomicWrite(unsyncedFile, discoveredProjects.join('\n'));
-      warnings.push({
-        code: 'PROJECTS_UNSYNCED',
-        level: 'warn',
-        title: 'Projects excluded',
-        body: `${discoveredProjects.length} project(s) aren't being synced. Check the sync panel to include them.`,
-        dismissible: true,
-        createdEpoch: now,
-      });
-    } else {
-      try { fs.unlinkSync(path.join(this.claudeDir, '.unsynced-projects')); } catch {}
-    }
+    // (The unsynced-projects discovery warning was removed in
+    // sync-legacy-demolition — discoverProjects() went with it.)
 
     // Merge with existing push-failure warnings (preserve them; only replace
     // the health-check-owned codes).
     const existing = await readWarnings();
-    // NOTE: 'SKILLS_UNROUTED' is retained here but no longer generated above.
-    // Keeps the filter clearing stale entries from old .sync-warnings.json files.
-    // Safe to remove from this set in a future release once all users have upgraded.
+    // Only the still-actionable health codes are owned here. 'SKILLS_UNROUTED'
+    // and 'PROJECTS_UNSYNCED' are retained in the clear-set so any stale entries
+    // from old .sync-warnings.json files (from before this demolition) get swept
+    // out. Safe to drop from this set once all users have upgraded.
     const healthCodes = new Set(['OFFLINE', 'PERSONAL_NOT_CONFIGURED', 'PERSONAL_STALE', 'SKILLS_UNROUTED', 'PROJECTS_UNSYNCED']);
     const preserved = existing.filter((w) => !healthCodes.has(w.code));
     await writeWarnings([...preserved, ...warnings]);
@@ -2212,49 +1132,6 @@ export class SyncService extends EventEmitter {
     return null;
   }
 
-  /**
-   * Discover git repos in common directories that aren't tracked.
-   * Ports backup-common.sh discover_projects().
-   */
-  private discoverProjects(): string[] {
-    const trackedFile = path.join(this.claudeDir, 'tracked-projects.json');
-    const tracked = this.readJson(trackedFile) || {};
-
-    // Build skip set from tracked + ignored projects
-    const skipPaths = new Set<string>();
-    skipPaths.add(path.resolve(this.claudeDir));
-    for (const p of (tracked.projects || [])) {
-      if (p.path) skipPaths.add(path.resolve(p.path));
-    }
-    for (const p of (tracked.ignored || [])) {
-      skipPaths.add(path.resolve(p));
-    }
-
-    // Scan common directories (depth 1)
-    const scanDirs = ['projects', 'repos', 'code', 'dev', 'src', 'Documents', 'Desktop']
-      .map(d => path.join(os.homedir(), d))
-      .filter(d => this.dirExists(d));
-
-    const discovered: string[] = [];
-
-    for (const scanDir of scanDirs) {
-      try {
-        for (const entry of fs.readdirSync(scanDir)) {
-          const candidate = path.join(scanDir, entry);
-          if (!this.dirExists(candidate)) continue;
-          if (!this.dirExists(path.join(candidate, '.git'))) continue;
-
-          const resolved = path.resolve(candidate);
-          if (skipPaths.has(resolved)) continue;
-
-          discovered.push(resolved);
-        }
-      } catch {}
-    }
-
-    return discovered;
-  }
-
   // =========================================================================
   // Backup Metadata
   // =========================================================================
@@ -2277,77 +1154,4 @@ export class SyncService extends EventEmitter {
     this.atomicWrite(path.join(this.claudeDir, 'backup-meta.json'), JSON.stringify(meta, null, 2));
   }
 
-  // =========================================================================
-  // Session-End Push
-  // =========================================================================
-
-  /** Push a single session's JSONL to all sync-enabled backends (called on session close). */
-  async pushSession(sessionId: string): Promise<void> {
-    const slug = this.getCurrentSlug();
-    const jsonlFile = path.join(this.claudeDir, 'projects', slug, `${sessionId}.jsonl`);
-    if (!this.fileExists(jsonlFile)) return;
-
-    // Update conversation index first
-    this.updateConversationIndex();
-
-    // Only push to sync-enabled backends (storage-only backends skip session-end sync)
-    const instances = this.getSyncEnabledBackends();
-
-    for (const instance of instances) {
-      try {
-        switch (instance.type) {
-          case 'drive': {
-            const rcloneRemote = instance.config.rcloneRemote || 'gdrive';
-            const driveRoot = instance.config.DRIVE_ROOT || 'Claude';
-            await this.rclone(['copy', jsonlFile, `${rcloneRemote}:${driveRoot}/Backup/personal/conversations/${slug}/`, '--checksum']);
-            // Also push conversation index
-            if (this.fileExists(this.conversationIndexPath)) {
-              await this.rclone(['copyto', this.conversationIndexPath, `${rcloneRemote}:${driveRoot}/Backup/system-backup/conversation-index.json`, '--checksum']);
-            }
-            break;
-          }
-          case 'github': {
-            // Per-instance repo directory
-            const repoDir = path.join(this.claudeDir, 'toolkit-state', `personal-sync-repo-${instance.id}`);
-            if (!this.dirExists(path.join(repoDir, '.git'))) break;
-            const convDir = path.join(repoDir, 'conversations', slug);
-            fs.mkdirSync(convDir, { recursive: true });
-            fs.copyFileSync(jsonlFile, path.join(convDir, `${sessionId}.jsonl`));
-            if (this.fileExists(this.conversationIndexPath)) {
-              fs.mkdirSync(path.join(repoDir, 'system-backup'), { recursive: true });
-              fs.copyFileSync(this.conversationIndexPath, path.join(repoDir, 'system-backup', 'conversation-index.json'));
-            }
-            await this.gitExec(['add', '-A'], repoDir);
-            const diff = await this.gitExec(['diff', '--cached', '--quiet'], repoDir);
-            if (diff.code !== 0) {
-              await this.gitExec(['commit', '-m', 'auto: session-end sync', '--no-gpg-sign'], repoDir);
-              // Log non-zero exits so silent remote misconfig (#74) surfaces
-              // in backup.log without spamming the SyncWarning surface.
-              const sessPushR = await this.gitExec(['push', 'personal-sync', 'main'], repoDir);
-              if (sessPushR.code !== 0) {
-                this.logBackup('WARN', 'Session-end push to personal-sync failed', 'sync.push.session.github', { stderr: truncateStderr(sessPushR.stderr || '') });
-              }
-            }
-            break;
-          }
-          case 'icloud': {
-            const icloudPath = this.resolveICloudPath(instance);
-            if (!icloudPath) break;
-            const convDir = path.join(icloudPath, 'conversations', slug);
-            fs.mkdirSync(convDir, { recursive: true });
-            fs.copyFileSync(jsonlFile, path.join(convDir, `${sessionId}.jsonl`));
-            if (this.fileExists(this.conversationIndexPath)) {
-              fs.mkdirSync(path.join(icloudPath, 'system-backup'), { recursive: true });
-              fs.copyFileSync(this.conversationIndexPath, path.join(icloudPath, 'system-backup', 'conversation-index.json'));
-            }
-            break;
-          }
-        }
-      } catch (e) {
-        this.logBackup('WARN', `Session-end ${instance.id} sync failed: ${e}`, 'sync.sessionend');
-      }
-    }
-
-    this.logBackup('INFO', `Session-end sync for ${sessionId.slice(0, 8)}`, 'sync.sessionend');
-  }
 }

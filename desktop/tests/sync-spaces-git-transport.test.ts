@@ -46,4 +46,64 @@ describe('GitTransport specifics', () => {
     expect(r.oversize).toEqual(['big.bin']);
     await h.cleanup();
   }, 30000);
+
+  it('maybeGc advances the persisted counter and gc actually repacks on the Nth sync', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    // Force a gc every 2nd call so we don't need 50 iterations.
+    const t = new GitTransport({ deviceName: 'T', gcInterval: 2 });
+    const gitDir = path.join(a.root, '.youcoded', 'sync.git');
+    const counterFile = path.join(a.root, '.youcoded', 'gc-counter');
+    const packDir = path.join(gitDir, 'objects', 'pack');
+    const gitEnv = { ...process.env, GIT_DIR: gitDir, GIT_WORK_TREE: a.root };
+    const git = (...args: string[]) => execFileSync('git', args, { env: gitEnv });
+    const packCount = () => { try { return fs.readdirSync(packDir).filter(f => f.endsWith('.pack')).length; } catch { return 0; } };
+
+    // The production command is `git gc --auto`, which decides to run via a
+    // heuristic. `--auto`'s LOOSE-object sampler is unreliable on a tiny repo
+    // (it samples a single fanout bucket), so instead drive the deterministic
+    // TOO-MANY-PACKS trigger: set gc.autoPackLimit=1 and manufacture 2 packs,
+    // so `git gc --auto` MUST run and consolidate them back to 1. That proves
+    // the gc had a real EFFECT rather than the command silently no-op'ing/failing
+    // (both git() and maybeGc swallow failures, so counter-advance alone wouldn't).
+    git('config', 'gc.autoPackLimit', '1');
+    fs.writeFileSync(path.join(a.root, 'f.md'), 'v1');
+    await t.push(a, 'c1');
+    git('repack', '-d');                       // pack #1 (packs c1's loose objects)
+    fs.writeFileSync(path.join(a.root, 'g.md'), 'v2');
+    await t.push(a, 'c2');
+    git('repack', '-d');                       // pack #2 (packs c2's loose objects)
+    expect(packCount()).toBe(2);               // two packs now → over autoPackLimit
+
+    await t.maybeGc(a);
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('1'); // 1 % 2 !== 0, no gc yet
+    expect(packCount()).toBe(2);               // untouched — gc did NOT run
+    await t.maybeGc(a);
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('2'); // 2 % 2 === 0, gc ran
+    expect(packCount()).toBe(1);               // gc consolidated 2 packs → 1: real effect
+    await t.maybeGc(a);
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('3');
+
+    // Corrupt counter file → treated as 0, so next write is 1 (never throws).
+    fs.writeFileSync(counterFile, 'not-a-number');
+    await expect(t.maybeGc(a)).resolves.toBeUndefined();
+    expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('1');
+    await h.cleanup();
+  }, 30000);
+
+  it('gitDirSizeBytes returns >0 for a real repo and 0 for a missing dir', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    const t = new GitTransport({ deviceName: 'T' });
+    fs.writeFileSync(path.join(a.root, 'f.md'), 'content');
+    await t.push(a, 'commit');
+    const size = await t.gitDirSizeBytes(a);
+    expect(size).toBeGreaterThan(0);
+
+    // A space whose .youcoded/sync.git doesn't exist reports 0.
+    const empty: SyncSpace = { id: 'project:none', kind: 'project', root: path.join(a.root, 'nope') };
+    fs.mkdirSync(empty.root, { recursive: true });
+    expect(await t.gitDirSizeBytes(empty)).toBe(0);
+    await h.cleanup();
+  }, 30000);
 });

@@ -13,9 +13,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { isAndroid as checkIsAndroid } from '../platform';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
-import { ExistingBackupDetected } from './restore/ExistingBackupDetected';
-import { RestoreWizard } from './restore/RestoreWizard';
-import type { RestoreCategory } from '../../shared/types';
 
 // Detect desktop OS so prereq warnings can show install steps specific to the
 // user's machine (iCloud setup on Windows differs from macOS, gh install varies, etc.)
@@ -32,7 +29,7 @@ function detectDesktopOS(): DesktopOS {
 // --- Types ---
 
 type BackendType = 'drive' | 'github' | 'icloud';
-type WizardStep = 'type' | 'prereqs' | 'auth' | 'configure' | 'probe-restore' | 'done';
+type WizardStep = 'type' | 'prereqs' | 'auth' | 'configure' | 'done';
 
 interface PrereqStatus {
   rcloneInstalled: boolean;
@@ -158,16 +155,6 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
   const [icloudPath, setIcloudPath] = useState<string | null>(null);
   const [syncEnabled, setSyncEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
-  // Probe result cached between onComplete and the 'probe-restore' step render.
-  // If the user picks "Restore", we swap in <RestoreWizard>; if "Start fresh",
-  // we stamp freshStartConfirmedEpoch on the backend so we don't nag again.
-  const [probeResult, setProbeResult] = useState<{
-    backendId: string;
-    backendLabel: string;
-    backendType: 'drive' | 'github' | 'icloud';
-    categories: RestoreCategory[];
-  } | null>(null);
-  const [showRestoreWizard, setShowRestoreWizard] = useState(false);
   // Separate refs per step — only one scroll region mounts at a time,
   // and useScrollFade's observer needs to bind to that mounted element.
   // PrereqCheckStep is a separate component and owns its own scroll ref.
@@ -341,32 +328,11 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
 
         await onComplete({ type: backendType, label, syncEnabled, config });
 
-        // Auto-detect existing backup data so first-run users don't accidentally
-        // overwrite a populated cloud backend with an empty local state. Fetch
-        // the newly-created backend by label, probe it, and if data exists on
-        // a backend the user hasn't confirmed fresh-start for, show the prompt.
-        try {
-          const cfg = await claude.sync.getConfig();
-          const created = cfg.backends.find((b: any) => b.label === label && b.type === backendType);
-          if (created && !created.freshStartConfirmedEpoch) {
-            const probe = await claude.sync.restore.probe(created.id);
-            if (probe?.hasData) {
-              setProbeResult({
-                backendId: created.id,
-                backendLabel: label,
-                backendType: backendType as 'drive' | 'github' | 'icloud',
-                categories: probe.categories || [],
-              });
-              setStep('probe-restore');
-              setSaving(false);
-              return;
-            }
-          }
-        } catch {
-          // Probe is best-effort — any failure just skips the prompt and
-          // routes to Done. The user can still hit Restore from the main panel.
-        }
-
+        // Restore-from-backup was removed in Plan 2c (2026-07-14) — the dated
+        // Drive/iCloud snapshot reshape orphaned the flat-path readers, so
+        // there is no "we found existing data → restore vs start fresh" gate
+        // anymore. New backends always start fresh; a redesigned restore will
+        // land later around the local-models/accounts/platform work.
         setStep('done');
       } catch (e: any) {
         setError(e.message || 'Something went wrong');
@@ -562,44 +528,6 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           </button>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  // --- Step: Existing backup detected (auto-probe result) ---
-  if (step === 'probe-restore' && probeResult) {
-    const handleStartFresh = async () => {
-      // Stamp the backend so this prompt won't reappear on next launch.
-      try {
-        await claude.sync.updateBackend(probeResult.backendId, {
-          freshStartConfirmedEpoch: Date.now(),
-        });
-      } catch {}
-      setStep('done');
-    };
-    return (
-      <div className="flex flex-col h-full">
-        <WizardHeader title="We found existing data" onClose={onClose} />
-        <div className="flex-1 px-4 py-4">
-          <ExistingBackupDetected
-            backendId={probeResult.backendId}
-            backendLabel={probeResult.backendLabel}
-            categories={probeResult.categories}
-            onRestore={() => setShowRestoreWizard(true)}
-            onStartFresh={handleStartFresh}
-          />
-        </div>
-        {showRestoreWizard && (
-          <RestoreWizard
-            backendId={probeResult.backendId}
-            backendLabel={probeResult.backendLabel}
-            backendType={probeResult.backendType}
-            onClose={() => {
-              setShowRestoreWizard(false);
-              setStep('done');
-            }}
-          />
-        )}
       </div>
     );
   }

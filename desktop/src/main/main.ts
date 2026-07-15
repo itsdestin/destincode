@@ -33,8 +33,9 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
 import { startConversationStore, stopConversationStore, materializeOne } from './conversations/service';
+// One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
+import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
-import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
@@ -1479,9 +1480,6 @@ app.whenReady().then(async () => {
   const syncService = new SyncService();
   setSyncService(syncService);
   syncService.start().catch(e => log('ERROR', 'Main', 'SyncService start failed', { error: String(e) }));
-  // Initialize restore service after sync is live — it needs SyncService to
-  // flip restoreInProgress, which pauses the push loop during restore/undo.
-  initRestoreService(syncService, app.getPath('userData'));
 
   // Cross-device sync spaces (spec 2026-07-03). Roots always ensured (the
   // session picker lists them); the engine runs only when the user enabled
@@ -1531,16 +1529,29 @@ app.whenReady().then(async () => {
   // resolves fast — the first-run reconcile inside is detached (may mirror GBs).
   startConversationStore().catch(e => log('ERROR', 'Main', 'ConversationStore start failed', { error: String(e) }));
 
+  // One-time symlink sweep (Plan 2c): the legacy SyncService.aggregateConversations()/
+  // rewriteProjectSlugs() (deleted this release) left ~hundreds of symlinks/junctions
+  // in ~/.claude/projects/. Deleting the creators does NOT remove links already on
+  // disk — this sweep does. lstat-only, removes ONLY symlinks/junctions, never real
+  // files. Idempotent (0 removals after the first run), so no once-marker is needed.
+  // Detached so ~hundreds of lstats never block startup. The 2a reconciler's own
+  // symlink-skip (conversations/reconciler.ts) stays as a harmless defense.
+  setImmediate(() => {
+    try {
+      const { removed, failed } = sweepProjectSymlinks(path.join(os.homedir(), '.claude', 'projects'));
+      log('INFO', 'Main', 'Legacy slug-symlink sweep complete', { removed, failed });
+    } catch (e) {
+      log('ERROR', 'Main', 'Legacy slug-symlink sweep failed', { error: String(e) });
+    }
+  });
+
   // Tag registry (design §"Storage & sync layout") — same Personal sync space,
   // resolved after managed roots exist (same ordering as startConversationStore).
   startTagRegistry();
 
-  // Push session JSONL on session close (replaces session-end-sync.sh)
-  sessionManager.on('session-exit', (sessionId: string) => {
-    syncService.pushSession(sessionId).catch(e =>
-      log('ERROR', 'Main', 'Session-end sync failed', { sessionId, error: String(e) })
-    );
-  });
+  // The legacy session-end backup push (SyncService.pushSession) was removed in
+  // sync-legacy-demolition. Conversations now travel via the sync-spaces
+  // conversation store, so there is no session-exit backup hook here anymore.
 });
 
 app.on('window-all-closed', () => {

@@ -111,10 +111,10 @@ function flushSendQueue(): void {
   }
 }
 
-// Default 30s is fine for anything interactive, but long-running sync/restore
+// Default 30s is fine for anything interactive, but long-running sync
 // operations (rclone copy of 100s of files over cellular, git push of a large
 // repo, etc.) can legitimately take minutes. Callers pass a larger timeoutMs
-// for those — see `sync.force` and `sync.restore.execute` below.
+// for those — see `sync.force` below.
 function invoke(type: string, payload?: any, opts?: { timeoutMs?: number }): Promise<any> {
   const timeoutMs = opts?.timeoutMs ?? 30_000;
   return new Promise((resolve, reject) => {
@@ -252,11 +252,6 @@ function handleMessage(data: string): void {
       break;
     case 'prompt:complete':
       dispatchEvent('prompt:complete', payload);
-      break;
-    case 'sync:restore:progress':
-      // Restore progress events flow to any listener registered via
-      // window.claude.sync.restore.onProgress(). Broadcast (no sessionId).
-      dispatchEvent('sync:restore:progress', payload);
       break;
     case 'syncspaces:event':
       // Cross-device sync-space engine events (synced/conflict/oversize/error)
@@ -1077,7 +1072,6 @@ export function installShim(): void {
       removeBackend: (id: string) => invoke('sync:remove-backend', { id }),
       updateBackend: (id: string, updates: any) => invoke('sync:update-backend', { id, updates }),
       pushBackend: (id: string) => invoke('sync:push-backend', { id }),
-      pullBackend: (id: string) => invoke('sync:pull-backend', { id }),
       openFolder: (id: string) => invoke('sync:open-folder', { id }),
       // Guided setup wizard
       setup: {
@@ -1090,32 +1084,6 @@ export function installShim(): void {
         authGdrive: () => invoke('sync:setup:auth-gdrive', undefined, { timeoutMs: 4 * 60_000 }),
         authGithub: () => invoke('sync:setup:auth-github', undefined, { timeoutMs: 4 * 60_000 }),
         createRepo: (repoName: string) => invoke('sync:setup:create-repo', { repoName }),
-      },
-      // Restore from backup — directional, user-initiated pull. Mirrors the
-      // preload surface exactly (see preload.ts sync.restore). Browser/Android
-      // transports use WebSocket invoke + a dispatchEvent subscription for progress.
-      restore: {
-        listVersions: (backendId: string) =>
-          invoke('sync:restore:list-versions', { backendId }),
-        // Preview walks the whole remote via `rclone lsjson --recursive`; for a
-        // large backup over cellular that can take a couple minutes. 3 min.
-        preview: (opts: any) => invoke('sync:restore:preview', { opts }, { timeoutMs: 3 * 60_000 }),
-        // Execute actually transfers files — can run 10+ min on slow links.
-        // 15 min ceiling; the kotlin side emits progress events during the
-        // transfer, so the UI stays alive even on multi-minute restores.
-        execute: (opts: any) => invoke('sync:restore:execute', { opts }, { timeoutMs: 15 * 60_000 }),
-        listSnapshots: () => invoke('sync:restore:list-snapshots'),
-        undo: (snapshotId: string) => invoke('sync:restore:undo', { snapshotId }),
-        deleteSnapshot: (snapshotId: string) =>
-          invoke('sync:restore:delete-snapshot', { snapshotId }),
-        probe: (backendId: string) => invoke('sync:restore:probe', { backendId }),
-        browseCategory: (backendId: string, category: string, versionRef: string) =>
-          invoke('sync:restore:browse-url', { backendId, category, versionRef }),
-        onProgress: (cb: (evt: any) => void) => {
-          const handler: Callback = (evt: any) => cb(evt);
-          addListener('sync:restore:progress', handler);
-          return () => removeListener('sync:restore:progress', handler);
-        },
       },
     },
     // Cross-device sync spaces (spec 2026-07-03). Same shared shape as
@@ -1273,7 +1241,7 @@ export function installShim(): void {
       onInstallProgress: (cb: (line: string) => void) => {
         // WHY: Server pushes 'dev:install-progress' events via the existing
         // WebSocket push dispatcher (handleMessage switch). Register a listener
-        // using addListener/removeListener — same pattern as sync.restore.onProgress.
+        // using addListener/removeListener — same pattern as syncSpaces.onEvent.
         const handler: Callback = (payload: any) => cb(String(payload));
         addListener('dev:install-progress', handler);
         return () => removeListener('dev:install-progress', handler);
