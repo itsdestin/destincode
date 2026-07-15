@@ -27,7 +27,8 @@ export interface EngineSupervisorOpts {
   idleMs?: number;           // default 10 min (spec §3.2)
   idleCheckMs?: number;      // default 60s
   sleepIdleSeconds?: number; // per-model auto-sleep; default 300 (5 min)
-  modelPollMs?: number;      // /models state poll cadence; default 1500
+  modelPollMs?: number;      // /models state poll cadence when idle; default 1500
+  modelPollLoadingMs?: number; // faster cadence while a model is loading; default 400
 }
 
 // Keep at most 2 models resident: the router's LRU default (4) can overcommit
@@ -57,6 +58,7 @@ export class EngineSupervisor extends EventEmitter {
   private intentionalShutdown = false;
   private modelPollTimer: NodeJS.Timeout | null = null; // per-model /models state poll
   private lastModelSig = '';                             // last emitted (id→state) signature
+  private loadProgress = new Map<string, number>();      // modelId → max resident bytes seen while loading (monotonic)
 
   constructor(private readonly opts: EngineSupervisorOpts) { super(); }
 
@@ -373,31 +375,78 @@ export class EngineSupervisor extends EventEmitter {
 
   // ---- per-model state polling (drives the UI's load/sleep/unload signals) --
 
-  /** Poll GET /models while running and emit 'models-changed' only when the set
-   *  of (id → state) actually changes. llama-server has no push channel, so a
+  /** Poll GET /models while running and emit 'models-changed' when the set of
+   *  (id → state → loadedBytes) changes. llama-server has no push channel, so a
    *  cheap localhost poll is how the renderer learns a model slept/loaded/was
-   *  evicted. Unref'd; started on ready, stopped on teardown. */
+   *  evicted — and, while a model is LOADING, tracks its resident bytes for the
+   *  "N GB / M GB" progress bar. Adaptive cadence: fast while anything is loading
+   *  (smooth progress), slow otherwise (near-zero idle cost). Unref'd; started on
+   *  ready, stopped on teardown. */
   private startModelPoll(): void {
     this.stopModelPoll();
-    const everyMs = this.opts.modelPollMs ?? 1500;
-    const tick = async () => {
-      if (this.state !== 'running') return;
-      let models: EngineModel[];
-      try { models = await this.listModels(); } catch { return; }
-      const sig = models.map((m) => `${m.id}:${m.state}`).sort().join('|');
-      if (sig !== this.lastModelSig) {
-        this.lastModelSig = sig;
-        this.emit('models-changed', models);
-      }
+    const schedule = () => {
+      // Fast while a load is in flight (loadProgress tracks loading ids), else lazy.
+      const loading = this.loadProgress.size > 0;
+      const delay = loading ? (this.opts.modelPollLoadingMs ?? 400) : (this.opts.modelPollMs ?? 1500);
+      this.modelPollTimer = setTimeout(() => {
+        void this.emitModelsIfChanged().finally(() => {
+          if (this.state === 'running') schedule();
+        });
+      }, delay);
+      this.modelPollTimer.unref?.();
     };
-    this.modelPollTimer = setInterval(() => { void tick(); }, everyMs);
-    this.modelPollTimer.unref?.();
-    void tick(); // emit an initial snapshot promptly
+    void this.emitModelsIfChanged().finally(() => { if (this.state === 'running') schedule(); });
   }
 
   private stopModelPoll(): void {
-    if (this.modelPollTimer) { clearInterval(this.modelPollTimer); this.modelPollTimer = null; }
+    if (this.modelPollTimer) { clearTimeout(this.modelPollTimer); this.modelPollTimer = null; }
     this.lastModelSig = '';
+    this.loadProgress.clear();
+  }
+
+  /** Compute the live model set (with load progress) and emit if it changed. */
+  private async emitModelsIfChanged(): Promise<void> {
+    if (this.state !== 'running') return;
+    let models: EngineModel[];
+    try { models = await this.listModels(); } catch { return; }
+    for (const m of models) {
+      if (m.state === 'loading') {
+        // Resident bytes of the model's child process, monotonic (Vulkan drops
+        // RSS once weights move to VRAM, so hold the max seen this load).
+        const rss = this.residentBytesForModel(m.id) ?? 0;
+        const maxRss = Math.max(this.loadProgress.get(m.id) ?? 0, rss);
+        this.loadProgress.set(m.id, maxRss);
+        if (maxRss > 0) m.loadedBytes = m.sizeBytes ? Math.min(maxRss, m.sizeBytes) : maxRss;
+      } else {
+        this.loadProgress.delete(m.id); // load finished / not loading → drop tracker
+      }
+    }
+    const sig = models.map((m) => `${m.id}:${m.state}:${m.loadedBytes ?? ''}`).sort().join('|');
+    if (sig !== this.lastModelSig) { this.lastModelSig = sig; this.emit('models-changed', models); }
+  }
+
+  /** Resident bytes of the router's child process serving `modelId` (its VmRSS,
+   *  which climbs toward the file size as the GGUF is read into RAM). Linux only
+   *  (reads /proc); undefined elsewhere → the UI falls back to an elapsed-only,
+   *  indeterminate bar. The child's cmdline carries `--model …/<id>.gguf`, which
+   *  the router process (with `--models-dir`) does not, so the needle is unique. */
+  private residentBytesForModel(modelId: string): number | undefined {
+    if (process.platform !== 'linux') return undefined;
+    const needle = `/${modelId}.gguf`;
+    let pids: string[];
+    try { pids = fs.readdirSync('/proc'); } catch { return undefined; }
+    for (const pid of pids) {
+      if (!/^\d+$/.test(pid)) continue;
+      let cmd: string;
+      try { cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8'); } catch { continue; } // NUL-separated
+      if (!cmd.includes('--model') || !cmd.includes(needle)) continue;
+      try {
+        const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+        const m = /VmRSS:\s+(\d+)\s+kB/.exec(status);
+        if (m) return parseInt(m[1], 10) * 1024;
+      } catch { /* raced exit */ }
+    }
+    return undefined;
   }
 
   /** Best-effort per-model unload (frees its memory now). Used when the last
@@ -412,32 +461,29 @@ export class EngineSupervisor extends EventEmitter {
         body: JSON.stringify({ model: modelId }),
       });
     } catch { /* best-effort */ }
-    void this.pollModelsNow();
+    void this.emitModelsIfChanged();
   }
 
-  /** Force a model resident by sending a 1-token warm-up completion — the router
-   *  loads (or wakes) it. Used by the [Reload Model] button. Routed through
-   *  trackedFetch so it counts as activity (won't be reaped mid-load). */
+  /** Force a model resident (the [Reload Model] button AND eager load-on-open).
+   *  Fires the warm-up completion WITHOUT awaiting it so the caller returns
+   *  immediately; the model poll (fast while loading) then tracks 'loading' +
+   *  resident bytes → the progress bar. Routed through trackedFetch so it counts
+   *  as activity (never reaped mid-load). */
   async loadModel(modelId: string): Promise<void> {
     const base = await this.ensureRunning(); // http://127.0.0.1:port/v1
-    try {
-      await this.trackedFetch(`${base}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
-      });
-    } catch { /* best-effort — the model state poll reflects the outcome */ }
-    void this.pollModelsNow();
+    void this.trackedFetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
+    }).catch(() => { /* best-effort — the poll reflects the outcome */ });
+    // Nudge the poll so 'loading' + the progress bar appear promptly (don't wait
+    // for the next lazy tick). The adaptive poll then takes over at fast cadence.
+    void this.emitModelsIfChanged();
   }
 
-  /** Emit a fresh models-changed on demand (after an unload/load nudges state). */
+  /** Emit a fresh models-changed on demand. */
   async pollModelsNow(): Promise<void> {
-    if (this.state !== 'running') return;
-    try {
-      const models = await this.listModels();
-      const sig = models.map((m) => `${m.id}:${m.state}`).sort().join('|');
-      if (sig !== this.lastModelSig) { this.lastModelSig = sig; this.emit('models-changed', models); }
-    } catch { /* ignore */ }
+    await this.emitModelsIfChanged();
   }
 }
 

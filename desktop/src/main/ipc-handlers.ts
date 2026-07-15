@@ -487,6 +487,11 @@ export function registerIpcHandlers(
       } catch (e) {
         log('ERROR', 'IPC', 'native session start failed', { sessionId: info.id, error: String(e) });
       }
+      // Eager-load the bound model the moment the session opens (like LM Studio),
+      // so the loading bar + GB progress appear immediately rather than only after
+      // the first message. Fire-and-forget; the model poll drives the UI.
+      const eagerModelId = nativeHost.modelForSession(info.id);
+      if (eagerModelId) { void engineManager.loadModel(eagerModelId).catch(() => { /* engine not installed / boot failed — the first send surfaces it */ }); }
     }
     // Assign the new session to the calling window so per-session events (transcript,
     // pty output, permission prompts) route here once Task 1.4 migrates the emits.
@@ -1950,13 +1955,16 @@ export function registerIpcHandlers(
   // Join per-model residency (engine) with session→model (host): push each live
   // native session its bound model's state so ChatView can show the unloaded /
   // loading banner (#4/#5). Only push on change per session.
+  // Signature includes loadedBytes so LOAD PROGRESS updates (state stays
+  // 'loading' while bytes climb) are pushed, not just state transitions.
   const lastSessionModelState = new Map<string, string>();
   engineManager.on('models-changed', (models: EngineModelType[]) => {
     for (const m of models) {
-      const payload = { modelId: m.id, state: m.state, sizeBytes: m.sizeBytes };
+      const payload = { modelId: m.id, state: m.state, sizeBytes: m.sizeBytes, loadedBytes: m.loadedBytes ?? null };
+      const sig = `${m.state}:${m.loadedBytes ?? ''}`;
       for (const sessionId of nativeHost.sessionsForModel(m.id)) {
-        if (lastSessionModelState.get(sessionId) === m.state) continue;
-        lastSessionModelState.set(sessionId, m.state);
+        if (lastSessionModelState.get(sessionId) === sig) continue;
+        lastSessionModelState.set(sessionId, sig);
         const full = { sessionId, ...payload };
         sendForSession(sessionId, IPC.NATIVE_MODEL_STATE, full);
         remoteServer?.broadcast({ type: 'native:model-state', payload: full });
