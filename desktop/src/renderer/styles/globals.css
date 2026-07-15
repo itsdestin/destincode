@@ -516,6 +516,41 @@ body[data-mode="buddy-chat"] #theme-bg {
   bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
 }
 
+/* Native local-model loading / unloaded strip — floats centered just above the
+   input chrome (same offset math as .jump-to-bottom). 2026-07-14. */
+.model-status-strip {
+  bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
+}
+/* Indeterminate progress bar (llama-server gives no load %). A highlight sweeps
+   across the track. Reduced-effects users get a static filled track instead. */
+@keyframes model-load-sweep {
+  0%   { left: -35%; }
+  100% { left: 100%; }
+}
+.model-load-track {
+  position: relative;
+  overflow: hidden;
+}
+.model-load-track::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  left: -35%;
+  border-radius: 9999px;
+  background: var(--accent);
+  animation: model-load-sweep 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-load-track::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
 /* Lightweight containment — skip layout/style for off-screen chat messages.
    Uses layout+style containment (not paint) so box-shadow glows from community
    themes can overflow without being clipped at the entry edges.

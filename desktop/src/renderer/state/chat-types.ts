@@ -161,7 +161,7 @@ export interface SessionChatState {
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
   /**
    * Native (local-model) sessions only. Residency of the session's bound model,
-   * pushed from main (native:model-state). Drives ChatView's ModelStateBanner:
+   * pushed from main (native:model-state). Drives ChatView's ModelLoadingBar:
    * 'sleeping'/'unloaded' → "Model unloaded to save memory · [Reload Model]";
    * 'loading' → the loading indicator (size + spinner). null = not a native
    * session (or state not yet known). Separate from attentionState on purpose —
@@ -240,7 +240,7 @@ export type ChatAction =
   | {
       // Native runtime only: the session's bound model's residency changed
       // (loaded/loading/sleeping/unloaded), pushed from main. Drives the
-      // ModelStateBanner (unloaded-to-save-memory + [Reload Model], loading UI).
+      // ModelLoadingBar (unloaded-to-save-memory + [Reload Model], loading UI).
       type: 'NATIVE_MODEL_STATE_CHANGED';
       sessionId: string;
       state: import('../../shared/engine-types').EngineModelState;
