@@ -10,6 +10,7 @@
 // count until its response BODY is fully read (streams count as active for
 // their whole duration; a 10-minute generation must not be killed mid-stream).
 import { spawn, ChildProcess } from 'child_process';
+import * as fs from 'fs';
 import { EventEmitter } from 'events';
 import type { EngineModel, EngineRunState } from '../../shared/engine-types';
 import { scanGgufCache } from './cache-scan';
@@ -103,6 +104,24 @@ export class EngineSupervisor extends EventEmitter {
     const readyDeadlineMs = this.opts.readyDeadlineMs ?? 30_000;
     const readyPollMs = this.opts.readyPollMs ?? 250;
 
+    // Fix: llama-server's router mode treats a MISSING --models-dir as a fatal
+    // error and exits during startup. The cache dir is only created lazily when
+    // the first model downloads (model-downloader.ts), so a fresh install's
+    // verify-boot — which runs BEFORE any model exists — always spawned the
+    // engine against a nonexistent dir and it died instantly. Create it here so
+    // the engine can always boot (an empty router is valid — it just serves no
+    // models yet). A genuine mkdir failure (permissions, path is a file) is
+    // surfaced specifically rather than misattributed to a bad build below.
+    try {
+      fs.mkdirSync(this.opts.cacheDir, { recursive: true });
+    } catch (err) {
+      this.state = 'stopped';
+      this.emit('status-changed');
+      throw new Error(
+        `The local engine's model folder could not be created at ${this.opts.cacheDir}: ${(err as Error).message}`
+      );
+    }
+
     const child = spawn(
       this.opts.binaryPath,
       [
@@ -131,6 +150,19 @@ export class EngineSupervisor extends EventEmitter {
     );
     this.child = child;
 
+    // Capture the child's output so a startup failure surfaces the REAL reason
+    // (e.g. "'…/.cache/llama.cpp' does not exist or is not a directory") instead
+    // of a generic guess. Kept to a bounded tail — llama-server is chatty. Also
+    // DRAINS both pipes: an unread stdio: 'pipe' can back-pressure and stall the
+    // child once its OS pipe buffer fills. See docs/error-message-standards.md.
+    const MAX_OUTPUT_TAIL = 4000;
+    let outputTail = '';
+    const collect = (buf: Buffer) => {
+      outputTail = (outputTail + buf.toString('utf8')).slice(-MAX_OUTPUT_TAIL);
+    };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+
     let exitedDuringStartup = false;
     const startupExitListener = () => { exitedDuringStartup = true; };
     child.once('exit', startupExitListener);
@@ -157,7 +189,15 @@ export class EngineSupervisor extends EventEmitter {
     this.state = 'stopped';
     this.emit('status-changed');
     if (exitedDuringStartup) {
-      throw new Error('The local engine exited while starting up — its build may not run on this machine.');
+      // Surface the child's own last output — it names the actual cause. Only
+      // fall back to a general (non-committal, non-guessing) message when the
+      // child died silently. See docs/error-message-standards.md.
+      const detail = outputTail.trim();
+      throw new Error(
+        detail
+          ? `The local engine exited during startup. Engine output:\n${detail}`
+          : 'The local engine exited during startup without any output.'
+      );
     }
     throw new Error(`The local engine did not start within ${Math.round(readyDeadlineMs / 1000)} seconds.`);
   }

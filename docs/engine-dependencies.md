@@ -35,6 +35,15 @@ Exact router-mode arg list (no `-m`):
   `/v1/chat/completions` returns HTTP 400 `model '…' not found` — the feature is
   completely non-functional. (This build also has no `LLAMA_CACHE`-based flat
   discovery; see below.)
+- **`--models-dir` MUST EXIST or the router exits during startup (verified b9992).**
+  A missing directory is FATAL: `error: '<dir>' does not exist or is not a directory`
+  and the process exits immediately — it is NOT treated as "zero models, empty
+  router." Since `cacheDir` (`~/.cache/llama.cpp`) is created lazily on the first
+  model download, a fresh install's verify-boot ran BEFORE any model existed and
+  always died this way. `EngineSupervisor.start()` therefore `fs.mkdirSync(cacheDir,
+  {recursive:true})` before spawning (an empty dir boots fine — the router just
+  serves no models yet). The supervisor also drains + tail-captures child stdout/
+  stderr so a startup exit surfaces the engine's REAL message instead of a guess.
 - **`--models-max 2`** — the router's LRU default is 4; 2 bounds RAM on consumer
   machines while keeping chat↔utility switching cheap.
 - **`--jinja`** from day one so Phase 2 tool calling needs no process-shape change.

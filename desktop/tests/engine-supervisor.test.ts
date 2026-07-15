@@ -9,6 +9,14 @@ vi.mock('child_process', async (orig) => ({
   spawn: (...args: any[]) => mockSpawn(...args),
 }));
 
+// fs is partially mocked: mkdirSync is a spy (the supervisor creates the models
+// cache dir before spawning) so tests don't create stray dirs from 'C:/fake/cache'.
+const mockMkdir = vi.fn();
+vi.mock('fs', async (orig) => ({
+  ...(await orig() as any),
+  mkdirSync: (...args: any[]) => mockMkdir(...args),
+}));
+
 function makeFakeChild(): ChildProcess {
   const ee = new EventEmitter() as any;
   ee.stdout = new EventEmitter();
@@ -46,10 +54,43 @@ function makeSupervisor(fetchImpl: any, extra: Record<string, any> = {}) {
 }
 
 let sup: EngineSupervisor;
-beforeEach(() => { mockSpawn.mockReset(); });
+beforeEach(() => { mockSpawn.mockReset(); mockMkdir.mockReset(); });
 afterEach(async () => { await sup?.stop(); });
 
 describe('EngineSupervisor', () => {
+  it('creates the models cache dir BEFORE spawning (router mode fatals on a missing --models-dir)', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(healthAfter(0));
+    await sup.ensureRunning();
+    expect(mockMkdir).toHaveBeenCalledWith('C:/fake/cache', { recursive: true });
+    // mkdir must precede the spawn, else the fresh-install verify-boot dies.
+    expect(mockMkdir.mock.invocationCallOrder[0]).toBeLessThan(mockSpawn.mock.invocationCallOrder[0]);
+  });
+
+  it('reports a SPECIFIC error (not a bad-build guess) when the cache dir cannot be created, and does not spawn', async () => {
+    mockMkdir.mockImplementationOnce(() => { throw new Error('EACCES: permission denied'); });
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(healthAfter(0));
+    await expect(sup.ensureRunning()).rejects.toThrow(/model folder could not be created.*EACCES/i);
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(sup.status()).toBe('stopped');
+  });
+
+  it('surfaces the child\'s OWN output (the real cause) when it exits during startup', async () => {
+    const child = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
+    sup = makeSupervisor(vi.fn(async () => { throw new Error('ECONNREFUSED'); }), { readyDeadlineMs: 5_000 });
+    const p = sup.ensureRunning();
+    setImmediate(() => {
+      child.stderr!.emit('data', Buffer.from(
+        "failed to initialize router models: error: '/home/x/.cache/llama.cpp' does not exist or is not a directory"
+      ));
+      child.emit('exit', 1);
+    });
+    // The thrown error carries the engine's real message, NOT a hardware guess.
+    await expect(p).rejects.toThrow(/does not exist or is not a directory/i);
+  });
+
   it('ensureRunning spawns router-mode llama-server (no -m) with the pinned flag set and LLAMA_CACHE', async () => {
     mockSpawn.mockReturnValue(makeFakeChild());
     sup = makeSupervisor(healthAfter(20));
