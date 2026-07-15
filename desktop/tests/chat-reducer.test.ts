@@ -415,4 +415,22 @@ describe('native runtime reducer paths', () => {
     state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'loading', modelId: 'Qwen-9B', sizeBytes: 9_000_000_000, loadedBytes: 6_000_000_000 });
     expect(state.get(SESSION)!).toBe(same);
   });
+
+  it('modelEverResident latches on first loaded and stays true through sleep/unload', () => {
+    // Fresh session's cold state: not yet resident → the Reload prompt must NOT
+    // key on this (ModelLoadingBar shows the loading bar instead).
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'unloaded', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    expect(state.get(SESSION)!.modelEverResident).toBe(false);
+
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'loading', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    expect(state.get(SESSION)!.modelEverResident).toBe(false);
+
+    // First time fully loaded → latch true.
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'loaded', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    expect(state.get(SESSION)!.modelEverResident).toBe(true);
+
+    // Idle sleep after use → still true, so the Reload prompt is now valid.
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'sleeping', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    expect(state.get(SESSION)!.modelEverResident).toBe(true);
+  });
 });

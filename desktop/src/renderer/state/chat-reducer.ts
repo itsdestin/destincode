@@ -418,16 +418,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const session = next.get(action.sessionId);
       if (!session) return state;
       const loadedBytes = action.loadedBytes ?? null;
-      // No-op unless state, model, OR load-progress bytes changed (bytes climb
-      // while state stays 'loading', and must re-render the progress bar).
+      // Latches true the first time the model reaches 'loaded'. The Reload prompt
+      // keys on this so a fresh session's initial 'unloaded'/'loading' (before its
+      // eager load completes) shows the loading bar, not a spurious Reload button.
+      const everResident = session.modelEverResident || action.state === 'loaded';
+      // No-op unless state, model, load-progress bytes, OR the ever-resident latch
+      // changed (bytes climb while state stays 'loading', and must re-render).
       if (session.modelState === action.state
           && session.modelInfo?.modelId === action.modelId
-          && session.modelLoadedBytes === loadedBytes) return state;
+          && session.modelLoadedBytes === loadedBytes
+          && session.modelEverResident === everResident) return state;
       next.set(action.sessionId, {
         ...session,
         modelState: action.state,
         modelInfo: { modelId: action.modelId, sizeBytes: action.sizeBytes },
         modelLoadedBytes: loadedBytes,
+        modelEverResident: everResident,
       });
       return next;
     }
