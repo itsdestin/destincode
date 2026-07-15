@@ -18,8 +18,6 @@ import SyncSetupWizard from './SyncSetupWizard';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { RestoreWizard } from './restore/RestoreWizard';
-import { SnapshotsPanel } from './restore/SnapshotsPanel';
 import ConnectGithubModal from './ConnectGithubModal';
 
 // --- Explainer content (updated for V2 multi-instance model) ---
@@ -407,9 +405,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // Confirmation dialog state
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [confirmPullId, setConfirmPullId] = useState<string | null>(null);
-  // Restore flow: stash the backend the user picked so RestoreWizard can open.
-  const [restoreTarget, setRestoreTarget] = useState<{ id: string; label: string; type: 'drive' | 'github' | 'icloud' } | null>(null);
-  const [showSnapshots, setShowSnapshots] = useState(false);
   // Cross-device sync spaces (spec 2026-07-03) — separate from the backend backups
   // above. Status refetches whenever the engine emits an event so the list and
   // per-space connected/local state stay live.
@@ -1007,7 +1002,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                             onClick={(e) => e.stopPropagation()}>
                             <MenuButton onClick={() => { handlePushBackend(b.id); setMenuOpenId(null); }}>Upload now</MenuButton>
                             <MenuButton onClick={() => { setConfirmPullId(b.id); setMenuOpenId(null); }}>Download now</MenuButton>
-                            <MenuButton onClick={() => { setRestoreTarget({ id: b.id, label: b.label, type: b.type }); setMenuOpenId(null); }}>Restore from backup...</MenuButton>
                             <MenuButton onClick={() => { claude.sync.openFolder(b.id); setMenuOpenId(null); }}>Open folder</MenuButton>
                             <MenuButton onClick={() => { setEditingId(b.id); setView('edit'); setMenuOpenId(null); }}>Edit settings</MenuButton>
                             <div className="border-t border-edge-dim my-1" />
@@ -1032,25 +1026,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               >
                 + Add a backup
               </button>
-
-              {/* Restore snapshots expander — lists pre-restore backups users can undo.
-                  Collapsed by default; only surfaces when at least one backend exists
-                  (snapshots are pointless without a backend). */}
-              {(status?.backends?.length ?? 0) > 0 && (
-                <div className="mt-2">
-                  <button
-                    onClick={() => setShowSnapshots(v => !v)}
-                    className="w-full text-left px-3 py-2 rounded-md text-[11px] text-fg-muted hover:text-fg-2 hover:bg-inset/30"
-                  >
-                    {showSnapshots ? '▾' : '▸'} Restore snapshots
-                  </button>
-                  {showSnapshots && (
-                    <div className="mt-1 px-1">
-                      <SnapshotsPanel />
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
 
             {/* Back up now — forces an immediate copy to the additional backups
@@ -1234,17 +1209,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         <ConnectGithubModal
           onClose={() => setShowConnectGithub(false)}
           onConnected={() => { void handleGithubConnected(); }}
-        />
-      )}
-
-      {/* Restore-from-backup wizard — own modal layer so it overlays the sync popup.
-          Refreshes sync status on close so lastPush/lastError reflect the restore. */}
-      {restoreTarget && (
-        <RestoreWizard
-          backendId={restoreTarget.id}
-          backendLabel={restoreTarget.label}
-          backendType={restoreTarget.type}
-          onClose={() => { setRestoreTarget(null); refreshStatus(); }}
         />
       )}
 

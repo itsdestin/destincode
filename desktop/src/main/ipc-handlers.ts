@@ -47,8 +47,6 @@ import { createGithubConnect, setGithubConnect } from './github-connect';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
-import { getRestoreService } from './restore-service';
-import type { RestoreOptions, RestoreProgressEvent } from '../shared/types';
 import { log } from './logger';
 import { readLogTail, gatherDiagnostics, summarizeIssue, submitIssue, installWorkspace, openDevSessionIn } from './dev-tools';
 import { createUpdateInstaller, findCachedDownload, makeLaunchInstaller, UpdateInstallError } from './update-installer';
@@ -2423,62 +2421,6 @@ export function registerIpcHandlers(
   ipcMain.handle('sync:setup:auth-gdrive', () => authGdrive());
   ipcMain.handle('sync:setup:auth-github', () => authGithub());
   ipcMain.handle('sync:setup:create-repo', (_e, repoName) => createGithubRepo(repoName));
-
-  // --- Restore from backup ---
-  // Directional, user-initiated pull. See restore-service.ts for safety invariants.
-  // Throws if SyncService hasn't finished starting yet (restore needs it to pause pushes).
-  const restore = () => {
-    const svc = getRestoreService();
-    if (!svc) throw new Error('RestoreService not initialized — SyncService must start first');
-    return svc;
-  };
-
-  ipcMain.handle(IPC.SYNC_RESTORE_LIST_VERSIONS, (_e, backendId: string) =>
-    restore().listVersions(backendId),
-  );
-  ipcMain.handle(IPC.SYNC_RESTORE_PREVIEW, async (_e, opts: RestoreOptions) => {
-    log('INFO', 'Restore', 'preview:start', { backendId: opts.backendId, categories: opts.categories });
-    try {
-      const res = await restore().previewRestore(opts);
-      log('INFO', 'Restore', 'preview:done', { totalBytes: res.totalBytes, warnings: res.warnings.length });
-      return res;
-    } catch (e: any) {
-      log('ERROR', 'Restore', 'preview:failed', { error: e?.message || String(e), stack: e?.stack });
-      throw e;
-    }
-  });
-  ipcMain.handle(IPC.SYNC_RESTORE_EXECUTE, async (e, opts: RestoreOptions) => {
-    // Progress is pushed back to the calling window only (not broadcast to
-    // peer windows) — restore is a single-actor flow; showing progress in a
-    // peer window would be noise. Event channel: IPC.SYNC_RESTORE_PROGRESS.
-    const wc = e.sender;
-    return restore().executeRestore(opts, (evt: RestoreProgressEvent) => {
-      if (!wc.isDestroyed()) wc.send(IPC.SYNC_RESTORE_PROGRESS, evt);
-    });
-  });
-  ipcMain.handle(IPC.SYNC_RESTORE_LIST_SNAPSHOTS, () => restore().listSnapshots());
-  ipcMain.handle(IPC.SYNC_RESTORE_UNDO, (_e, snapshotId: string) =>
-    restore().undoRestore(snapshotId),
-  );
-  ipcMain.handle(IPC.SYNC_RESTORE_DELETE_SNAPSHOT, (_e, snapshotId: string) =>
-    restore().deleteSnapshot(snapshotId),
-  );
-  ipcMain.handle(IPC.SYNC_RESTORE_PROBE, (_e, backendId: string) =>
-    restore().probe(backendId),
-  );
-
-  // Returns a browseable URL for a given category on a backend (or a local
-  // folder path for iCloud). Result used by the preview UI's folder-icon link.
-  // Opening the URL itself is done by the renderer via shell.openExternal
-  // (desktop) or window.open (browser/Android) — this handler just resolves it.
-  ipcMain.handle(IPC.SYNC_RESTORE_BROWSE_URL, async (_e, backendId: string, category: string, versionRef: string) => {
-    const url = await restore().browseCategoryUrl(backendId, category as any, versionRef || 'HEAD');
-    if (url) {
-      const { shell } = require('electron');
-      shell.openExternal(url).catch(() => {});
-    }
-    return { url };
-  });
 
   // --- Permission response (blocking hooks) ---
   if (hookRelay) {

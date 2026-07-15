@@ -34,7 +34,6 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // handler can call stopConversationStore() directly.
 import { startConversationStore, stopConversationStore, materializeOne } from './conversations/service';
 import { startTagRegistry } from './conversations/tag-registry-service';
-import { initRestoreService } from './restore-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
@@ -1479,9 +1478,6 @@ app.whenReady().then(async () => {
   const syncService = new SyncService();
   setSyncService(syncService);
   syncService.start().catch(e => log('ERROR', 'Main', 'SyncService start failed', { error: String(e) }));
-  // Initialize restore service after sync is live — it needs SyncService to
-  // flip restoreInProgress, which pauses the push loop during restore/undo.
-  initRestoreService(syncService, app.getPath('userData'));
 
   // Cross-device sync spaces (spec 2026-07-03). Roots always ensured (the
   // session picker lists them); the engine runs only when the user enabled
