@@ -24,9 +24,16 @@ export type EngineInstallProgress =
   | { kind: 'done'; version: string; backend: EngineBackend }
   | { kind: 'error'; message: string };
 
+/** Per-model residency, read from GET /models `status.value` (llama-server b9992).
+ *  'sleeping' = auto-slept by --sleep-idle-seconds (memory freed, wakes on next
+ *  request). 'unloaded' = not resident (never loaded, LRU-evicted, or a cache
+ *  scan while the engine is off). See docs/engine-dependencies.md. */
+export type EngineModelState = 'unloaded' | 'loading' | 'loaded' | 'sleeping';
+
 /** One GGUF the engine can serve — from GET /models when running, else a cache scan. */
 export interface EngineModel {
   id: string;              // what /v1/chat/completions expects in its "model" field
   sizeBytes: number | null;
-  loaded: boolean;         // always false when derived from a cache scan (engine not running)
+  loaded: boolean;         // convenience: state === 'loaded'. False from a cache scan.
+  state: EngineModelState; // 'unloaded' when derived from a cache scan (engine not running)
 }

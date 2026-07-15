@@ -380,4 +380,23 @@ describe('native runtime reducer paths', () => {
     expect(session.attentionState).toBe('ok');
     expect(session.errorMessage).toBeNull();
   });
+
+  it('NATIVE_MODEL_STATE_CHANGED sets modelState + modelInfo without touching turn state', () => {
+    state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'hi', timestamp: 1 });
+    expect(state.get(SESSION)!.isThinking).toBe(true);
+
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'loading', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    let s = state.get(SESSION)!;
+    expect(s.modelState).toBe('loading');
+    expect(s.modelInfo).toEqual({ modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    expect(s.isThinking).toBe(true); // model residency is orthogonal to the turn
+
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'sleeping', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    expect(state.get(SESSION)!.modelState).toBe('sleeping');
+
+    // No-op when unchanged → same object reference (cheap, no needless render).
+    const before = state.get(SESSION)!;
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'sleeping', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
+    expect(state.get(SESSION)!).toBe(before);
+  });
 });

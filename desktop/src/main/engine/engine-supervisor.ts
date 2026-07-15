@@ -12,7 +12,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import { EventEmitter } from 'events';
-import type { EngineModel, EngineRunState } from '../../shared/engine-types';
+import type { EngineModel, EngineModelState, EngineRunState } from '../../shared/engine-types';
 import { scanGgufCache } from './cache-scan';
 
 export interface EngineSupervisorOpts {
@@ -26,6 +26,8 @@ export interface EngineSupervisorOpts {
   readyPollMs?: number;      // default 250
   idleMs?: number;           // default 10 min (spec §3.2)
   idleCheckMs?: number;      // default 60s
+  sleepIdleSeconds?: number; // per-model auto-sleep; default 300 (5 min)
+  modelPollMs?: number;      // /models state poll cadence; default 1500
 }
 
 // Keep at most 2 models resident: the router's LRU default (4) can overcommit
@@ -33,6 +35,11 @@ export interface EngineSupervisorOpts {
 // switching between a chat and a utility model free. Recorded in
 // docs/engine-dependencies.md.
 const MODELS_MAX = 2;
+// Per-model idle sleep: the router frees an idle model's memory after this many
+// seconds (status → 'sleeping'); the next request wakes it. 5 min per product
+// decision 2026-07-14. This is FINER-grained than the engine-wide idle stop
+// (idleMs, 10 min) which tears down the whole process. Verified b9992.
+const SLEEP_IDLE_SECONDS = 300;
 // Crash strike-out (spec §3.2): 3 crashes within 5 minutes → error state,
 // stop retrying until the user acts (EngineCard's Restart button).
 const STRIKE_LIMIT = 3;
@@ -48,6 +55,8 @@ export class EngineSupervisor extends EventEmitter {
   private lastActivity = Date.now();
   private idleTimer: NodeJS.Timeout | null = null;
   private intentionalShutdown = false;
+  private modelPollTimer: NodeJS.Timeout | null = null; // per-model /models state poll
+  private lastModelSig = '';                             // last emitted (id→state) signature
 
   constructor(private readonly opts: EngineSupervisorOpts) { super(); }
 
@@ -137,6 +146,10 @@ export class EngineSupervisor extends EventEmitter {
         // cache dir so a dropped GGUF and an -hf pull live side by side.
         '--models-dir', this.opts.cacheDir,
         '--models-max', String(MODELS_MAX),
+        // Per-model auto-sleep: the router frees an idle model's memory after N
+        // seconds and wakes it on the next request. Keeps residency proportional
+        // to use without tearing down the whole engine. See engine-dependencies.md.
+        '--sleep-idle-seconds', String(this.opts.sleepIdleSeconds ?? SLEEP_IDLE_SECONDS),
         '-c', String(this.opts.contextSize),
       ],
       {
@@ -177,6 +190,7 @@ export class EngineSupervisor extends EventEmitter {
           child.off('exit', startupExitListener);
           child.on('exit', (code) => this.onExit(code));
           this.armIdleTimer();
+          this.startModelPoll();
           this.emit('status-changed');
           return this.baseUrl()!;
         }
@@ -206,6 +220,7 @@ export class EngineSupervisor extends EventEmitter {
     const wasRunning = this.state === 'running';
     this.child = null;
     this.disarmIdleTimer();
+    this.stopModelPoll();
     if (this.intentionalShutdown) { this.state = 'stopped'; this.emit('status-changed'); return; }
     if (!wasRunning) return;
     const now = Date.now();
@@ -231,6 +246,7 @@ export class EngineSupervisor extends EventEmitter {
 
   private async _stop(): Promise<void> {
     this.disarmIdleTimer();
+    this.stopModelPoll();
     if (!this.child) {
       if (this.state !== 'error') this.state = 'stopped';
       return;
@@ -327,24 +343,111 @@ export class EngineSupervisor extends EventEmitter {
       const rows: any[] = Array.isArray(payload?.data) ? payload.data
         : Array.isArray(payload?.models) ? payload.models
         : Array.isArray(payload) ? payload : [];
+      // /models rows carry no size — the cache scan does, so index sizes by id
+      // and merge them in (the UI's loading banner shows the model size).
+      const sizeById = new Map<string, number | null>();
+      for (const m of scanGgufCache(this.opts.cacheDir)) sizeById.set(m.id, m.sizeBytes);
       const out: EngineModel[] = [];
       for (const row of rows) {
         const id = typeof row?.id === 'string' ? row.id : typeof row?.name === 'string' ? row.name : null;
         if (!id) continue; // skip malformed
         // b9992's /models reports status as an OBJECT ({value:'loaded'|'unloaded'
-        // |'loading'}), NOT a bare string. Handle both so a schema shift either
-        // way still reads. (/models rows carry no size — cache scan provides it.)
+        // |'loading'|'sleeping'}), NOT a bare string. Handle both so a schema
+        // shift either way still reads.
         const statusValue = typeof row?.status === 'object' && row?.status
           ? row.status.value : row?.status;
+        const state = mapModelState(statusValue);
         out.push({
           id,
-          sizeBytes: typeof row?.size === 'number' ? row.size : null,
-          loaded: statusValue === 'loaded',
+          sizeBytes: typeof row?.size === 'number' ? row.size
+            : (sizeById.has(id) ? sizeById.get(id)! : null),
+          loaded: state === 'loaded',
+          state,
         });
       }
       return out;
     } catch {
       return scanGgufCache(this.opts.cacheDir); // engine died mid-call — degrade to scan
     }
+  }
+
+  // ---- per-model state polling (drives the UI's load/sleep/unload signals) --
+
+  /** Poll GET /models while running and emit 'models-changed' only when the set
+   *  of (id → state) actually changes. llama-server has no push channel, so a
+   *  cheap localhost poll is how the renderer learns a model slept/loaded/was
+   *  evicted. Unref'd; started on ready, stopped on teardown. */
+  private startModelPoll(): void {
+    this.stopModelPoll();
+    const everyMs = this.opts.modelPollMs ?? 1500;
+    const tick = async () => {
+      if (this.state !== 'running') return;
+      let models: EngineModel[];
+      try { models = await this.listModels(); } catch { return; }
+      const sig = models.map((m) => `${m.id}:${m.state}`).sort().join('|');
+      if (sig !== this.lastModelSig) {
+        this.lastModelSig = sig;
+        this.emit('models-changed', models);
+      }
+    };
+    this.modelPollTimer = setInterval(() => { void tick(); }, everyMs);
+    this.modelPollTimer.unref?.();
+    void tick(); // emit an initial snapshot promptly
+  }
+
+  private stopModelPoll(): void {
+    if (this.modelPollTimer) { clearInterval(this.modelPollTimer); this.modelPollTimer = null; }
+    this.lastModelSig = '';
+  }
+
+  /** Best-effort per-model unload (frees its memory now). Used when the last
+   *  session bound to a model goes away. Silent on failure — a lingering model
+   *  is harmless (the 5-min sleep reaps it), and there's no user to inform. */
+  async unloadModel(modelId: string): Promise<void> {
+    if (this.state !== 'running') return;
+    try {
+      await (this.opts.fetchImpl ?? fetch)(`${this.rootUrl()}/models/unload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelId }),
+      });
+    } catch { /* best-effort */ }
+    void this.pollModelsNow();
+  }
+
+  /** Force a model resident by sending a 1-token warm-up completion — the router
+   *  loads (or wakes) it. Used by the [Reload Model] button. Routed through
+   *  trackedFetch so it counts as activity (won't be reaped mid-load). */
+  async loadModel(modelId: string): Promise<void> {
+    const base = await this.ensureRunning(); // http://127.0.0.1:port/v1
+    try {
+      await this.trackedFetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
+      });
+    } catch { /* best-effort — the model state poll reflects the outcome */ }
+    void this.pollModelsNow();
+  }
+
+  /** Emit a fresh models-changed on demand (after an unload/load nudges state). */
+  async pollModelsNow(): Promise<void> {
+    if (this.state !== 'running') return;
+    try {
+      const models = await this.listModels();
+      const sig = models.map((m) => `${m.id}:${m.state}`).sort().join('|');
+      if (sig !== this.lastModelSig) { this.lastModelSig = sig; this.emit('models-changed', models); }
+    } catch { /* ignore */ }
+  }
+}
+
+/** Map llama-server's /models status.value to our EngineModelState. Unknown →
+ *  'unloaded' (safe default; never claims a model is resident when unsure). */
+function mapModelState(statusValue: unknown): EngineModelState {
+  switch (statusValue) {
+    case 'loaded': return 'loaded';
+    case 'loading': return 'loading';
+    case 'sleeping': return 'sleeping';
+    default: return 'unloaded';
   }
 }

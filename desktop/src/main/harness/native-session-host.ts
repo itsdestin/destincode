@@ -40,6 +40,12 @@ interface LiveEntry {
 
 export class NativeSessionHost extends EventEmitter {
   private live = new Map<string, LiveEntry>();
+  // Reverse index: modelId → sessionIds currently bound to it. The ONLY
+  // session→model usage tracking in the app. Drives "unload a model when no
+  // session is using it" (#1) — when a model's set empties, onModelReleased
+  // fires so the engine can free it immediately (ahead of the 5-min sleep).
+  private modelRefs = new Map<string, Set<string>>();
+  private onModelReleased?: (modelId: string) => void;
 
   constructor(
     private store: SessionStore,
@@ -49,11 +55,43 @@ export class NativeSessionHost extends EventEmitter {
     super();
   }
 
+  /** Wire the "no session uses model X anymore" callback (→ engine unload). */
+  setModelReleasedHandler(fn: (modelId: string) => void): void {
+    this.onModelReleased = fn;
+  }
+
+  private retainModel(sessionId: string, modelId: string): void {
+    let set = this.modelRefs.get(modelId);
+    if (!set) { set = new Set(); this.modelRefs.set(modelId, set); }
+    set.add(sessionId);
+  }
+
+  private releaseModel(sessionId: string, modelId: string): void {
+    const set = this.modelRefs.get(modelId);
+    if (!set) return;
+    set.delete(sessionId);
+    if (set.size === 0) {
+      this.modelRefs.delete(modelId);
+      try { this.onModelReleased?.(modelId); } catch { /* best-effort */ }
+    }
+  }
+
+  /** Live sessions currently bound to a model (for the state coordinator). */
+  sessionsForModel(modelId: string): string[] {
+    return [...(this.modelRefs.get(modelId) ?? [])];
+  }
+
+  /** The model a live session is bound to right now (null if not live). */
+  modelForSession(sessionId: string): string | null {
+    return this.live.get(sessionId)?.session.binding.modelId ?? null;
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession): void {
     const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve() };
     this.live.set(sessionId, entry);
+    this.retainModel(sessionId, session.binding.modelId); // ref-count this model
     session.on('transcript-event', (event: TranscriptEvent) => {
       // (1) Forward NOW — not gated on the disk write (see module header).
       this.emit('transcript-event', event);
@@ -158,7 +196,14 @@ export class NativeSessionHost extends EventEmitter {
   async setBinding(sessionId: string, binding: ModelBinding): Promise<boolean> {
     const entry = this.live.get(sessionId);
     if (!entry) return false;
+    const oldModelId = entry.session.binding.modelId;
     entry.session.setBinding(binding, await this.contextLengthFor(binding));
+    if (oldModelId !== binding.modelId) {
+      // Swap the ref-count: releasing the old model may unload it if this was
+      // its last session (#1); retain the new one so it isn't unloaded.
+      this.retainModel(sessionId, binding.modelId);
+      this.releaseModel(sessionId, oldModelId);
+    }
     return true;
   }
 
@@ -199,10 +244,12 @@ export class NativeSessionHost extends EventEmitter {
   async destroy(sessionId: string): Promise<void> {
     const entry = this.live.get(sessionId);
     if (!entry) return;
+    const modelId = entry.session.binding.modelId; // capture before teardown
     entry.session.destroy();             // abort stream + remove our listener → no new appends
     await entry.appendChain;             // drain already-enqueued appends
     await this.store.dispose(sessionId); // flush the buffered open part
     this.live.delete(sessionId);
+    this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
   }
 
   /** App-shutdown path: destroy every live session, then flush any residue. */

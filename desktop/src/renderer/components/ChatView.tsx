@@ -10,6 +10,7 @@ import CompactingCard from './CompactingCard';
 import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
 import AttentionBanner from './AttentionBanner';
+import ModelStateBanner from './ModelStateBanner';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
 import { useArtifact } from '../state/ArtifactContext';
@@ -498,6 +499,14 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
           )}
           <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
            <div ref={contentRef}>
+        {/* Native local-model residency: unloaded-to-save-memory + [Reload],
+            or a loading indicator (size + spinner). No-op for claude sessions
+            (modelInfo stays null). (2026-07-14 memory-lifecycle feature) */}
+        <ModelStateBanner
+          modelState={state.modelState}
+          modelInfo={state.modelInfo}
+          onReload={(modelId) => { void window.claude.models.load(modelId); }}
+        />
         {state.timeline.length === 0 && !state.isThinking ? (
           <div className="flex items-center justify-center h-full text-fg-muted text-sm">
             Start a conversation with Claude

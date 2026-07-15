@@ -139,4 +139,39 @@ describe('NativeSessionHost', () => {
     expect(types).toContain('turn-complete');  // chain kept going after the failure
     await failHost.destroyAll();
   });
+
+  // ---- model ref-count (#1: unload a model when no session uses it) ----
+  describe('model ref-count', () => {
+    it('fires onModelReleased ONLY when the last session for a model is destroyed', async () => {
+      const released: string[] = [];
+      host.setModelReleasedHandler((id) => released.push(id));
+      await host.create({ sessionId: 'a', cwd: root, binding: { providerId: 'local', modelId: 'M1' } });
+      await host.create({ sessionId: 'b', cwd: root, binding: { providerId: 'local', modelId: 'M1' } });
+      expect(host.sessionsForModel('M1').sort()).toEqual(['a', 'b']);
+
+      await host.destroy('a');            // one of two → M1 still in use
+      expect(released).toEqual([]);
+      expect(host.sessionsForModel('M1')).toEqual(['b']);
+
+      await host.destroy('b');            // last one → release M1
+      expect(released).toEqual(['M1']);
+      expect(host.sessionsForModel('M1')).toEqual([]);
+    });
+
+    it('setBinding swaps the ref-count: releases the old model, retains the new', async () => {
+      const released: string[] = [];
+      host.setModelReleasedHandler((id) => released.push(id));
+      await host.create({ sessionId: 's', cwd: root, binding: { providerId: 'local', modelId: 'OLD' } });
+      expect(host.modelForSession('s')).toBe('OLD');
+
+      await host.setBinding('s', { providerId: 'local', modelId: 'NEW' });
+      expect(released).toEqual(['OLD']);           // OLD had no other session → released
+      expect(host.modelForSession('s')).toBe('NEW');
+      expect(host.sessionsForModel('NEW')).toEqual(['s']);
+    });
+
+    it('modelForSession is null for an unknown session', () => {
+      expect(host.modelForSession('nope')).toBeNull();
+    });
+  });
 });

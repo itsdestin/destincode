@@ -17,7 +17,7 @@ import { readEngineConfig, updateEngineConfig } from './engine-config';
 import { scanGgufCache } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
 import type {
-  EngineBackend, EngineInstallProgress, EngineStatus,
+  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
 import type { InstalledLocalModel } from '../../shared/model-manager-types';
@@ -177,6 +177,33 @@ export class EngineManager extends EventEmitter {
     // Fan out supervisor transitions so the EngineCard tracks crash/idle live.
     this.supervisor.on('status-changed', () => this.emit('status-changed'));
     this.supervisor.on('crashed', (info) => this.emit('crashed', info));
+    // Fan out per-model residency (load/sleep/unload) → the model-state
+    // coordinator turns this into per-session banners (unloaded/loading UI).
+    this.supervisor.on('models-changed', (models) => this.emit('models-changed', models));
+  }
+
+  /** Best-effort per-model unload — used when the last session bound to a model
+   *  goes away (frees its memory immediately, ahead of the 5-min sleep). */
+  async unloadModel(modelId: string): Promise<void> {
+    if (!this.supervisor) return;
+    await this.supervisor.unloadModel(modelId);
+  }
+
+  /** Force a model resident (the [Reload Model] button). Boots the engine if
+   *  needed, then warms the model so its state flips loading → loaded. */
+  async loadModel(modelId: string): Promise<void> {
+    const inst = this.currentInstall();
+    if (!inst) throw new Error('The local engine is not installed yet.');
+    await this.rebuildSupervisor(inst);
+    await this.supervisor!.loadModel(modelId);
+  }
+
+  /** Live per-model residency for the create-time memory guard + coordinator. */
+  async liveModels(): Promise<EngineModel[]> {
+    const inst = this.currentInstall();
+    if (!inst) return [];
+    await this.rebuildSupervisor(inst);
+    return this.supervisor!.listModels();
   }
 
   /** User-initiated recovery: clear the strike-out and boot fresh. */
@@ -223,7 +250,7 @@ export class EngineManager extends EventEmitter {
       providerId: 'local',
       label: m.id,
       contextLength: cfg.contextSize,
-      local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true },
+      local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true, state: m.state },
     }));
   }
 

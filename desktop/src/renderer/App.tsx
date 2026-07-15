@@ -724,6 +724,23 @@ function AppInner() {
     return unsubscribe;
   }, []);
 
+  // Native local-model residency → per-session ModelStateBanner (2026-07-14).
+  // Main joins per-model engine state with session→model and pushes each native
+  // session its bound model's state (loaded/loading/sleeping/unloaded).
+  useEffect(() => {
+    const off = window.claude.native?.onModelState?.((s: any) => {
+      if (!s?.sessionId || !s?.modelId || !s?.state) return;
+      dispatch({
+        type: 'NATIVE_MODEL_STATE_CHANGED',
+        sessionId: s.sessionId,
+        state: s.state,
+        modelId: s.modelId,
+        sizeBytes: typeof s.sizeBytes === 'number' ? s.sizeBytes : null,
+      });
+    });
+    return () => { off?.(); };
+  }, []);
+
   useEffect(() => {
     const createdHandler = window.claude.on.sessionCreated((info) => {
       setSessions((prev) => {

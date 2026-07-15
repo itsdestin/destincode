@@ -11,7 +11,7 @@ import { readEngineConfig } from '../engine/engine-config';
 import { CuratedCatalog } from './curated-catalog';
 import { HfClient } from './hf-client';
 import { ModelDownloader } from './model-downloader';
-import { estimateFit, checkDiskSpace } from './fit-estimator';
+import { estimateFit, checkDiskSpace, checkMemoryForLoad, type MemoryVerdict } from './fit-estimator';
 import { detectGpu } from './gpu-detector';
 import type {
   CuratedModel, DownloadProgress, FitEstimate, HFSearchHit, QuantOption,
@@ -69,6 +69,26 @@ export class ModelManager extends EventEmitter {
   async quants(repo: string): Promise<Array<QuantOption & { fit: FitEstimate }>> {
     const [opts, vram] = await Promise.all([this.hf.quantOptions(repo), this.vram()]);
     return opts.map((o) => ({ ...o, fit: this.fitFor(o.totalSizeBytes, vram) }));
+  }
+
+  /** Create-time / swap-time memory guard for an INSTALLED model id: is it safe
+   *  to load it given what's already resident? Blocks only when clearly too
+   *  large; otherwise warns (see checkMemoryForLoad). Unknown model/size → 'ok'
+   *  (never block on missing data). Used by the new-session picker + swap popup. */
+  async memoryCheck(modelId: string): Promise<MemoryVerdict> {
+    const [models, vram] = await Promise.all([this.engine.liveModels(), this.vram()]);
+    const chosen = models.find((m) => m.id === modelId);
+    const chosenBytes = chosen?.sizeBytes ?? 0;
+    if (chosenBytes <= 0) return { verdict: 'ok', headline: '', detail: '' };
+    const loadedBytes = models
+      .filter((m) => m.id !== modelId && (m.state === 'loaded' || m.state === 'loading'))
+      .reduce((sum, m) => sum + (m.sizeBytes ?? 0), 0);
+    return checkMemoryForLoad({
+      chosenBytes,
+      totalMemBytes: this.opts.totalMemBytes ?? os.totalmem(),
+      totalVramBytes: vram,
+      loadedBytes,
+    });
   }
 
   /** Free bytes on the volume holding `dir`, walking UP to the nearest EXISTING
