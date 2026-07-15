@@ -119,6 +119,13 @@ const INDEX_PRUNE_DAYS = 30;
 // The previous 60s value silently killed rclone mid-upload on big slugs,
 // producing empty stderr that fell through to UNKNOWN classification.
 const RCLONE_TIMEOUT = 10 * 60 * 1000;
+// Daily-snapshot poll cadence. This is NOT the deleted 15-min aggressive
+// flat-overwrite loop — it's an hourly heartbeat (mirrors DailyBackup's hourly
+// runIfDue). Each tick calls push() NON-force, so the 15-min .sync-marker
+// debounce throttles redundant runs and the once-per-UTC-day snapshot stamp
+// gates the actual dated copy: net effect is at most ONE dated ~/.claude
+// snapshot per day, produced automatically.
+const SNAPSHOT_POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 // Canonical Claude Code session id. The auto-title flow has the in-session
 // model hand-type `echo "Title" > topics/topic-<id>` — a typo'd id creates a
@@ -135,13 +142,15 @@ export class SyncService extends EventEmitter {
   private syncMarkerPath: string;
   // Why: separate once-per-UTC-day stamp for the dated ~/.claude snapshot copy —
   // distinct from the 15-min .sync-marker debounce so the snapshot runs at most
-  // once per day even though push() is still called every 15 minutes.
+  // once per day even though the daily-snapshot poll calls push() hourly.
   private snapshotMarkerPath: string;
   private lockDir: string;
   private backupLogPath: string;
   private appSyncMarkerPath: string;
   private conversationIndexPath: string;
   private pushing = false;
+  // Hourly daily-snapshot poll (see SNAPSHOT_POLL_INTERVAL_MS). Cleared in stop().
+  private snapshotTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     super();
@@ -160,10 +169,12 @@ export class SyncService extends EventEmitter {
   // Lifecycle
   // =========================================================================
 
-  /** Start the sync service: write the .app-sync-active marker and run the
-   *  launch-time health check. The legacy initial pull + 15-min push timer were
-   *  removed (sync-legacy-demolition) — dated snapshot backups run only via the
-   *  manual "Back up now" path and there is no auto-restore. */
+  /** Start the sync service: write the .app-sync-active marker, run the
+   *  launch-time health check, and start the hourly daily-snapshot poll. The
+   *  legacy initial PULL (auto-restore) and the aggressive 15-min flat-overwrite
+   *  push loop were removed (sync-legacy-demolition); the daily-snapshot poll
+   *  below is a lightweight replacement that produces at most one dated
+   *  ~/.claude snapshot per UTC day. There is no auto-restore. */
   async start(): Promise<void> {
     // Self-heal: if a stale marker exists from a previous crash, log and overwrite.
     // Without this, a crash leaves the marker indefinitely and hooks never sync.
@@ -198,11 +209,30 @@ export class SyncService extends EventEmitter {
     } catch (e) {
       this.logBackup('ERROR', `Startup health check failed: ${e}`, 'sync.health');
     }
+
+    // Daily-snapshot poll. Non-force push() on launch (in case today's snapshot
+    // isn't done yet) plus an hourly tick. NON-force so the 15-min debounce +
+    // once-per-day snapshot stamp collapse this to at most one dated ~/.claude
+    // snapshot per UTC day — this restores the automatic personal backup the
+    // deleted 15-min timer used to provide, without its per-cycle re-copy cost.
+    this.push().catch(e => {
+      this.logBackup('ERROR', `Launch snapshot push failed: ${e}`, 'sync.push');
+    });
+    this.snapshotTimer = setInterval(() => {
+      this.push().catch(e => {
+        this.logBackup('ERROR', `Daily-snapshot push failed: ${e}`, 'sync.push');
+      });
+    }, SNAPSHOT_POLL_INTERVAL_MS);
   }
 
-  /** Stop the sync service: release locks, remove marker.
-   *  (The 15-min push timer it used to clear here was removed.) */
+  /** Stop the sync service: clear the daily-snapshot poll, release locks,
+   *  remove marker. */
   stop(): void {
+    if (this.snapshotTimer) {
+      clearInterval(this.snapshotTimer);
+      this.snapshotTimer = null;
+    }
+
     // Release lock if held
     this.releaseLock();
 
@@ -310,13 +340,6 @@ export class SyncService extends EventEmitter {
         }
       }
     } catch {}
-  }
-
-  // Legacy helpers kept for health check auto-detect (reads flat keys)
-  /** Get active backend type names from legacy flat keys. */
-  private getLegacyBackendTypes(): string[] {
-    const raw = this.configGet('PERSONAL_SYNC_BACKEND', 'none');
-    return raw.split(',').map(b => b.trim().toLowerCase()).filter(b => b && b !== 'none');
   }
 
   // =========================================================================
@@ -540,14 +563,6 @@ export class SyncService extends EventEmitter {
     }
   }
 
-  private readText(filePath: string): string {
-    try {
-      return fs.readFileSync(filePath, 'utf8').trim();
-    } catch {
-      return '';
-    }
-  }
-
   /** Atomic write via same-directory temp file + rename.
    *  Retries on EPERM/EACCES (Windows file locking) before falling back
    *  to direct overwrite. Cleans up the temp file on all paths. */
@@ -622,9 +637,9 @@ export class SyncService extends EventEmitter {
     let errors = 0;
     let firstFailStderr = '';
 
-    // Why: daily-stamp gating — push() still fires every 15 min, but the actual
-    // snapshot copy runs at most once per UTC day. After today's snapshot is
-    // written we no-op (success) so we don't re-upload the whole set every cycle.
+    // Why: daily-stamp gating — the daily-snapshot poll calls push() hourly, but
+    // the actual snapshot copy runs at most once per UTC day. After today's
+    // snapshot is written we no-op (success) so we don't re-upload the whole set.
     if (!snapshot.due) {
       this.logBackup('INFO', 'Drive snapshot skipped — already done today', 'sync.push.drive');
       return 0;
@@ -752,9 +767,9 @@ export class SyncService extends EventEmitter {
       return 1;
     }
 
-    // Why: daily-stamp gating — same as Drive. The 15-min push() timer still calls
-    // us, but the snapshot copy runs at most once per UTC day; after today's is
-    // written we no-op (success) rather than re-copying the whole set every cycle.
+    // Why: daily-stamp gating — same as Drive. The hourly daily-snapshot poll
+    // calls us, but the snapshot copy runs at most once per UTC day; after
+    // today's is written we no-op (success) rather than re-copying the whole set.
     if (!snapshot.due) {
       this.logBackup('INFO', 'iCloud snapshot skipped — already done today', 'sync.push.icloud');
       return 0;
@@ -944,9 +959,9 @@ export class SyncService extends EventEmitter {
 
   /**
    * Push personal data to backends.
-   * - Default: pushes to all sync-enabled backends (automatic loop)
+   * - Default: pushes to all sync-enabled backends (the hourly daily-snapshot poll)
    * - With backendId: pushes to that specific backend only (manual upsync)
-   * - With force: bypasses the 15-minute debounce
+   * - With force: bypasses the 15-minute debounce (manual "Back up now")
    */
   async push(opts?: { force?: boolean; backendId?: string }): Promise<PushResult> {
     if (this.pushing) return { success: false, errors: 0, backends: [] };
@@ -970,7 +985,7 @@ export class SyncService extends EventEmitter {
         }
 
         // If a specific backend was requested (manual push), use just that one.
-        // Otherwise, push to all sync-enabled backends (automatic loop).
+        // Otherwise, push to all sync-enabled backends (the daily-snapshot poll).
         const instances = opts?.backendId
           ? [this.getBackendById(opts.backendId)].filter(Boolean) as BackendInstance[]
           : this.getSyncEnabledBackends();
@@ -991,7 +1006,7 @@ export class SyncService extends EventEmitter {
         // Why: track whether at least one snapshot backend (Drive/iCloud) actually
         // SUCCEEDED this cycle (0 errors). We only stamp the daily marker on success
         // (see below) so a total-failure cycle — or a github-only cycle — leaves the
-        // marker unwritten and a later 15-min push retries the same day.
+        // marker unwritten and a later hourly-poll push retries the same day.
         let anySnapshotSucceeded = false;
 
         let totalErrors = 0;
@@ -1028,11 +1043,11 @@ export class SyncService extends EventEmitter {
         }
 
         // Why: write the daily snapshot stamp ONCE, after both Drive+iCloud have
-        // had their turn this cycle, so repeated 15-min push() calls no-op the
-        // snapshot copy until the next UTC day. Retry semantics: we stamp ONLY when
-        // a snapshot backend SUCCEEDED (0 errors) today — a fully-failed cycle
+        // had their turn this cycle, so subsequent hourly-poll push() calls no-op
+        // the snapshot copy until the next UTC day. Retry semantics: we stamp ONLY
+        // when a snapshot backend SUCCEEDED (0 errors) today — a fully-failed cycle
         // (rclone missing / network down) leaves the marker unwritten so the next
-        // 15-min push retries the same day rather than silently burning it. rclone
+        // hourly-poll push retries the same day rather than silently burning it. rclone
         // copy/copyto skip unchanged files, so a retry after partial success is cheap.
         // Best-effort write like daily-backup's marker — a read-only ~/.claude must
         // not fail the whole push.
