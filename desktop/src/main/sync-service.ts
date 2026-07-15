@@ -37,7 +37,7 @@ import { classifyPushError, decidePersonalSyncRemoteAction, extractStderr, trunc
 // Why: dated daily snapshots reuse the SAME once-per-UTC-day gate helpers as the
 // spaces daily-backup (single source of truth) plus the pure tiered-retention core.
 import { datedFolderName, isBackupDue } from './sync-spaces/daily-backup';
-import { snapshotsToDelete } from './snapshot-retention';
+import { snapshotsToDelete, shouldStampDailyMarker } from './snapshot-retention';
 
 const execFileAsync = promisify(execFile);
 
@@ -1117,8 +1117,12 @@ export class SyncService extends EventEmitter {
       const backupDir = path.join(icloudPath, 'Backup');
       const names = await fs.promises.readdir(backupDir);
       for (const name of snapshotsToDelete(names, snapshot.now)) {
-        await fs.promises.rm(path.join(backupDir, name), { recursive: true, force: true });
-        this.logBackup('INFO', `iCloud snapshot pruned ${name}`, 'sync.push.icloud');
+        // Why: per-delete try/catch (matches Drive's continue-past-failure loop) so
+        // one failed rm doesn't abort the remaining deletions.
+        try {
+          await fs.promises.rm(path.join(backupDir, name), { recursive: true, force: true });
+          this.logBackup('INFO', `iCloud snapshot pruned ${name}`, 'sync.push.icloud');
+        } catch { /* skip this one, keep pruning the rest */ }
       }
     } catch { /* pruning is best-effort — never fail a snapshot over cleanup */ }
 
@@ -1199,10 +1203,11 @@ export class SyncService extends EventEmitter {
           dated: datedFolderName(snapshotNow),
           now: snapshotNow,
         };
-        // Only stamp the marker if a snapshot backend actually had a chance to run
-        // today — otherwise a github-only cycle would consume the day and skip the
-        // real snapshot when a Drive/iCloud backend is added later that same day.
-        const hasSnapshotBackend = instances.some(i => i.type === 'drive' || i.type === 'icloud');
+        // Why: track whether at least one snapshot backend (Drive/iCloud) actually
+        // SUCCEEDED this cycle (0 errors). We only stamp the daily marker on success
+        // (see below) so a total-failure cycle — or a github-only cycle — leaves the
+        // marker unwritten and a later 15-min push retries the same day.
+        let anySnapshotSucceeded = false;
 
         let totalErrors = 0;
         const pushedIds: string[] = [];
@@ -1214,6 +1219,9 @@ export class SyncService extends EventEmitter {
               case 'drive': backendErrors = await this.pushDrive(instance, snapshot); break;
               case 'github': backendErrors = await this.pushGithub(instance); break;
               case 'icloud': backendErrors = await this.pushiCloud(instance, snapshot); break;
+            }
+            if ((instance.type === 'drive' || instance.type === 'icloud') && backendErrors === 0) {
+              anySnapshotSucceeded = true;
             }
             totalErrors += backendErrors;
             pushedIds.push(instance.id);
@@ -1234,9 +1242,14 @@ export class SyncService extends EventEmitter {
 
         // Why: write the daily snapshot stamp ONCE, after both Drive+iCloud have
         // had their turn this cycle, so repeated 15-min push() calls no-op the
-        // snapshot copy until the next UTC day. Best-effort like daily-backup's
-        // marker — a read-only ~/.claude must not fail the whole push.
-        if (snapshot.due && hasSnapshotBackend) {
+        // snapshot copy until the next UTC day. Retry semantics: we stamp ONLY when
+        // a snapshot backend SUCCEEDED (0 errors) today — a fully-failed cycle
+        // (rclone missing / network down) leaves the marker unwritten so the next
+        // 15-min push retries the same day rather than silently burning it. rclone
+        // copy/copyto skip unchanged files, so a retry after partial success is cheap.
+        // Best-effort write like daily-backup's marker — a read-only ~/.claude must
+        // not fail the whole push.
+        if (shouldStampDailyMarker(snapshot.due, anySnapshotSucceeded)) {
           try { fs.writeFileSync(this.snapshotMarkerPath, snapshot.dated); }
           catch (e) { this.logBackup('WARN', `Could not write snapshot marker: ${String(e)}`, 'sync.push'); }
         }

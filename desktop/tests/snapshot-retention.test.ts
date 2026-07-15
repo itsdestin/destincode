@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { snapshotsToDelete } from '../src/main/snapshot-retention';
+import { snapshotsToDelete, shouldStampDailyMarker } from '../src/main/snapshot-retention';
 
 // All tests pin "today" to 2026-07-14 (UTC) so they're fully deterministic.
 const TODAY = new Date(Date.UTC(2026, 6, 14)); // month is 0-indexed → 6 = July
@@ -47,5 +47,34 @@ describe('snapshotsToDelete', () => {
     const names = ['personal', 'Backup', '2026-13-99', 'random', '2026-01-01'];
     // Only the valid, >90d date is deleted; every unparseable name is kept.
     expect(snapshotsToDelete(names, TODAY)).toEqual(['2026-01-01']);
+  });
+
+  it('buckets TWO distinct ISO weeks independently (no bucket-key collision)', () => {
+    // Week A: 2026-06-29 (age 15) + 2026-07-01 (age 13) → delete 2026-06-29
+    // Week B: 2026-06-22 (age 22) + 2026-06-24 (age 20) → delete 2026-06-22
+    // Both weeks are in the 8..28d tier; the newest in EACH week is kept.
+    const names = ['2026-06-22', '2026-06-24', '2026-06-29', '2026-07-01'];
+    expect(snapshotsToDelete(names, TODAY).sort()).toEqual(['2026-06-22', '2026-06-29']);
+  });
+
+  it('buckets TWO distinct calendar months independently (no bucket-key collision)', () => {
+    // May: 2026-05-10 (age 65) + 2026-05-20 (age 55) → delete 2026-05-10
+    // June: 2026-06-05 (age 39) + 2026-06-10 (age 34) → delete 2026-06-05
+    // Both months are in the 29..90d tier; the newest in EACH month is kept.
+    const names = ['2026-05-10', '2026-05-20', '2026-06-05', '2026-06-10'];
+    expect(snapshotsToDelete(names, TODAY).sort()).toEqual(['2026-05-10', '2026-06-05']);
+  });
+});
+
+describe('shouldStampDailyMarker', () => {
+  it('stamps only when due AND a snapshot succeeded', () => {
+    expect(shouldStampDailyMarker(true, true)).toBe(true);
+  });
+  it('does NOT stamp when the snapshot failed this cycle (retry the same day)', () => {
+    expect(shouldStampDailyMarker(true, false)).toBe(false);
+  });
+  it('does NOT stamp when not due, regardless of success', () => {
+    expect(shouldStampDailyMarker(false, true)).toBe(false);
+    expect(shouldStampDailyMarker(false, false)).toBe(false);
   });
 });

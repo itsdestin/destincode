@@ -59,10 +59,31 @@ function deleteAllButNewest(group: string[]): string[] {
   return group.filter(n => n !== newest);
 }
 
+/**
+ * Decide whether to stamp today's daily snapshot marker after a push() cycle.
+ * Only stamp when a new snapshot was DUE today AND at least one snapshot backend
+ * (Drive/iCloud) completed with ZERO errors. A total-failure cycle (rclone
+ * missing, network down) must leave the marker UNWRITTEN so a later 15-min push
+ * retries the same day instead of silently burning it. Pure so it's unit-tested.
+ */
+export function shouldStampDailyMarker(due: boolean, anySnapshotSucceeded: boolean): boolean {
+  return due && anySnapshotSucceeded;
+}
+
 export function snapshotsToDelete(folderNames: string[], today: Date): string[] {
   const toDelete: string[] = [];
   const weekBuckets = new Map<string, string[]>();   // 8..28d, grouped by ISO week
   const monthBuckets = new Map<string, string[]>();  // 29..90d, grouped by YYYY-MM
+
+  // Plain get-or-create push into a bucket Map (readable for a non-dev maintainer).
+  const addTo = (buckets: Map<string, string[]>, key: string, name: string) => {
+    let group = buckets.get(key);
+    if (!group) {
+      group = [];
+      buckets.set(key, group);
+    }
+    group.push(name);
+  };
 
   for (const name of folderNames) {
     const date = parseSnapshotName(name);
@@ -71,11 +92,9 @@ export function snapshotsToDelete(folderNames: string[], today: Date): string[] 
     const age = ageInDays(date, today);
     if (age <= 7) continue; // keep-all tier
     if (age <= 28) {
-      const key = isoWeekKey(date);
-      (weekBuckets.get(key) ?? weekBuckets.set(key, []).get(key)!).push(name);
+      addTo(weekBuckets, isoWeekKey(date), name);
     } else if (age <= 90) {
-      const key = name.slice(0, 7); // YYYY-MM
-      (monthBuckets.get(key) ?? monthBuckets.set(key, []).get(key)!).push(name);
+      addTo(monthBuckets, name.slice(0, 7) /* YYYY-MM */, name);
     } else {
       toDelete.push(name); // age > 90 → delete outright
     }
