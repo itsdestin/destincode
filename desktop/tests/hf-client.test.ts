@@ -43,9 +43,32 @@ describe('HfClient', () => {
   });
 
   it('search/quantOptions surface plain-language errors on HTTP failure', async () => {
+    // 503 is retryable, so it retries maxAttempts times before surfacing the
+    // error. retryDelayMs: 0 keeps the test instant.
     const fetchMock = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })) as any;
-    const hf = new HfClient(fetchMock);
+    const hf = new HfClient(fetchMock, { retryDelayMs: 0 });
     await expect(hf.search('x')).rejects.toThrow(/Hugging Face/);
+    expect(fetchMock).toHaveBeenCalledTimes(3); // retried before giving up
+  });
+
+  it('retries a transient network flake (ECONNRESET) then succeeds', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+      return { ok: true, json: async () => ([{ id: 'unsloth/M-GGUF', downloads: 3, likes: 0 }]) };
+    }) as any;
+    const hf = new HfClient(fetchMock, { retryDelayMs: 0 });
+    const hits = await hf.search('m');
+    expect(calls).toBe(2); // first attempt threw, second succeeded
+    expect(hits).toEqual([{ repo: 'unsloth/M-GGUF', downloads: 3, likes: 0 }]);
+  });
+
+  it('does NOT retry a permanent 404', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) })) as any;
+    const hf = new HfClient(fetchMock, { retryDelayMs: 0 });
+    await expect(hf.quantOptions('missing/repo')).rejects.toThrow(/Hugging Face/);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 404 is permanent — no retries
   });
 });
 

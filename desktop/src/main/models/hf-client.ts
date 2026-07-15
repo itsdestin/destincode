@@ -6,8 +6,18 @@ import { groupQuantOptions } from './quant-parser';
 
 const API = 'https://huggingface.co/api';
 const FETCH_TIMEOUT_MS = 15_000;
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 500;
 
 type FetchLike = (url: string, init?: any) => Promise<{ ok: boolean; status?: number; json: () => Promise<any> }>;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// Transient HTTP statuses worth retrying: 429 (rate limit) and 5xx
+// (server/gateway). A 404 (repo/file absent) is permanent — don't waste retries.
+function isRetryableStatus(status?: number): boolean {
+  return status === 429 || (status ?? 0) >= 500;
+}
 
 export function hfResolveUrl(repo: string, filePath: string): string {
   // repo is 'owner/name' — the slash is a real URL separator; file path
@@ -17,11 +27,50 @@ export function hfResolveUrl(repo: string, filePath: string): string {
 }
 
 export class HfClient {
-  constructor(private fetchImpl: FetchLike = fetch as any) {}
+  private maxAttempts: number;
+  private retryDelayMs: number;
+
+  constructor(
+    private fetchImpl: FetchLike = fetch as any,
+    // Test seam: shrink the backoff to 0 so the retry path runs instantly.
+    opts: { maxAttempts?: number; retryDelayMs?: number } = {},
+  ) {
+    this.maxAttempts = opts.maxAttempts ?? MAX_ATTEMPTS;
+    this.retryDelayMs = opts.retryDelayMs ?? RETRY_DELAY_MS;
+  }
+
+  // Fetch with backoff + jitter. The Local Models panel resolves many repos'
+  // quant lists at once, and that burst regularly trips transient
+  // huggingface.co failures (ECONNRESET, timeouts, 429s). Retrying a couple
+  // times in the background clears almost all of them — so a card only shows
+  // "unavailable" after real, repeated failure, not a first-attempt flake. The
+  // jitter de-syncs the parallel cards' retries so they don't re-burst in
+  // lockstep. A FRESH timeout signal per attempt is required (one
+  // AbortSignal.timeout would already be aborted by the time we retry).
+  private async fetchWithRetry(url: string): Promise<{ ok: boolean; status?: number; json: () => Promise<any> }> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      try {
+        const res = await this.fetchImpl(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        if (!res.ok && isRetryableStatus(res.status) && attempt < this.maxAttempts) {
+          await sleep(this.retryDelayMs * attempt * (1 + Math.random()));
+          continue;
+        }
+        return res; // ok, or a permanent failure the caller maps to a message
+      } catch (e) {
+        lastErr = e; // network flake / timeout — back off and retry
+        if (attempt < this.maxAttempts) {
+          await sleep(this.retryDelayMs * attempt * (1 + Math.random()));
+          continue;
+        }
+      }
+    }
+    throw lastErr ?? new Error('Hugging Face is not reachable right now — try again in a moment.');
+  }
 
   async search(query: string): Promise<HFSearchHit[]> {
     const url = `${API}/models?search=${encodeURIComponent(query)}&filter=gguf&sort=downloads&limit=30`;
-    const res = await this.fetchImpl(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await this.fetchWithRetry(url);
     if (!res.ok) throw new Error('Hugging Face search is not reachable right now — try again in a moment.');
     const rows = await res.json();
     const out: HFSearchHit[] = [];
@@ -40,7 +89,7 @@ export class HfClient {
    *  unsloth keeps dynamic quants in subfolders. */
   async quantOptions(repo: string): Promise<QuantOption[]> {
     const url = `${API}/models/${repo}/tree/main?recursive=true`;
-    const res = await this.fetchImpl(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await this.fetchWithRetry(url);
     if (!res.ok) throw new Error("Could not list this model's files on Hugging Face — try again in a moment.");
     const rows = await res.json();
     const files = [];
