@@ -58,9 +58,9 @@ It's designed for students, professionals, and anyone who uses AI regularly — 
 - The multiplayer game lobby (powered by [PartyKit](https://www.partykit.io/) on Cloudflare Durable Objects) shares your GitHub username and idle/in-game status with other signed-in YouCoded users so they can challenge you
 - Toggle **Incognito** in the multiplayer settings to stay hidden — no presence is broadcast in incognito mode
 
-**Powered by YouCoded**
-- Optional [YouCoded toolkit](https://github.com/itsdestin/youcoded-core) adds journaling, a personal encyclopedia, task inbox processing, text messaging, and cross-device sync
-- Heavily encouraged but not required — install what you want
+**Personalization**
+- Community plugins from the [WeCoded marketplace](https://github.com/itsdestin/wecoded-marketplace) add journaling, a personal encyclopedia, task inbox processing, and text messaging — browse and install them from inside the app
+- Cross-device sync is built into the app — no plugin required
 
 ## Platforms
 
@@ -121,7 +121,7 @@ Contributions welcome — bug fixes, features, documentation, testing on differe
 
 ## Related Projects
 
-- [YouCoded](https://github.com/itsdestin/youcoded-core) — The plugin toolkit that powers YouCoded's personalization features
+- [YouCoded Core](https://github.com/itsdestin/youcoded-core) — Legacy bundled plugin (safety hooks + setup skills), currently being phased out
 - [YouCoded Themes](https://github.com/itsdestin/wecoded-themes) — Community theme registry
 - [YouCoded Marketplace](https://github.com/itsdestin/wecoded-marketplace) — Skill marketplace registry
 
