@@ -52,6 +52,12 @@ export type SpaceSyncEvent = (
   | { type: 'conflict'; spaceId: string; copies: string[] }
   | { type: 'oversize'; spaceId: string; files: string[] }
   | { type: 'error'; spaceId: string; message: string }
+  // Informational notice — NOT an error. Used for the large-history warning
+  // (spec §7). Carries a REAL space id (unlike the 'hub'/'projects' sentinels),
+  // but MUST NOT drive the red "sync isn't working" dot: sync still works
+  // normally. sync-dot-state.ts's latestEventFor skips it for that reason;
+  // SyncPanel renders it in non-alarming (muted, not red) styling.
+  | { type: 'notice'; spaceId: string; message: string }
   // SyncHub (Plan 1b) connection status. spaceId is the literal 'hub' (never a
   // real space id) so every consumer's per-space event scan / sync-dot
   // derivation ignores it naturally while keeping the field shape uniform.

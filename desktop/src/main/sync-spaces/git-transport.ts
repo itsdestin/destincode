@@ -18,7 +18,11 @@ const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT = 5 * 60 * 1000; // mirrors sync-service.ts GIT_TIMEOUT
 const DEFAULT_GC_INTERVAL = 50;    // run a local git gc every 50th successful sync (spec §7)
 // Bound the recursive size walk so a pathological repo can never hang the probe.
+// Both a total-entry cap AND a depth cap (belt-and-suspenders, matching
+// countFilesBounded): fs.Dirent.isSymbolicLink does NOT detect NTFS junctions,
+// so a junction cycle wouldn't trip the entry cap on its own (PITFALLS).
 const SIZE_WALK_MAX_ENTRIES = 200_000;
+const SIZE_WALK_MAX_DEPTH = 100;
 
 interface ExecResult { code: number; stdout: string; stderr: string; }
 
@@ -277,21 +281,24 @@ export class GitTransport implements SyncTransport {
     const root = this.gitDir(space);
     let total = 0;
     let visited = 0;
-    const walk = (dir: string): void => {
-      if (visited >= SIZE_WALK_MAX_ENTRIES) return;
+    const walk = (dir: string, depth: number): void => {
+      if (visited >= SIZE_WALK_MAX_ENTRIES || depth > SIZE_WALK_MAX_DEPTH) return;
       let entries: fs.Dirent[];
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
         if (visited >= SIZE_WALK_MAX_ENTRIES) return;
         visited++;
         const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
+        // Skip symlinks outright (never follow) — a defense the junction-cycle
+        // depth cap backstops on Windows where isSymbolicLink misses junctions.
+        if (e.isSymbolicLink()) continue;
+        if (e.isDirectory()) walk(full, depth + 1);
         else if (e.isFile()) { try { total += fs.statSync(full).size; } catch { /* raced away */ } }
       }
     };
     try {
       if (!fs.existsSync(root)) return 0;
-      walk(root);
+      walk(root, 0);
     } catch { return 0; }
     return total;
   }

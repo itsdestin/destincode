@@ -47,21 +47,40 @@ describe('GitTransport specifics', () => {
     await h.cleanup();
   }, 30000);
 
-  it('maybeGc advances the persisted counter and gc runs on the Nth sync without throwing', async () => {
+  it('maybeGc advances the persisted counter and gc actually repacks on the Nth sync', async () => {
     const h = await makeHarness();
     const a = await h.makeDeviceSpace();
     // Force a gc every 2nd call so we don't need 50 iterations.
     const t = new GitTransport({ deviceName: 'T', gcInterval: 2 });
+    const gitDir = path.join(a.root, '.youcoded', 'sync.git');
     const counterFile = path.join(a.root, '.youcoded', 'gc-counter');
+    const packDir = path.join(gitDir, 'objects', 'pack');
+    const gitEnv = { ...process.env, GIT_DIR: gitDir, GIT_WORK_TREE: a.root };
+    const git = (...args: string[]) => execFileSync('git', args, { env: gitEnv });
+    const packCount = () => { try { return fs.readdirSync(packDir).filter(f => f.endsWith('.pack')).length; } catch { return 0; } };
 
-    // Give the repo real objects so `git gc` has something to consider.
+    // The production command is `git gc --auto`, which decides to run via a
+    // heuristic. `--auto`'s LOOSE-object sampler is unreliable on a tiny repo
+    // (it samples a single fanout bucket), so instead drive the deterministic
+    // TOO-MANY-PACKS trigger: set gc.autoPackLimit=1 and manufacture 2 packs,
+    // so `git gc --auto` MUST run and consolidate them back to 1. That proves
+    // the gc had a real EFFECT rather than the command silently no-op'ing/failing
+    // (both git() and maybeGc swallow failures, so counter-advance alone wouldn't).
+    git('config', 'gc.autoPackLimit', '1');
     fs.writeFileSync(path.join(a.root, 'f.md'), 'v1');
     await t.push(a, 'c1');
+    git('repack', '-d');                       // pack #1 (packs c1's loose objects)
+    fs.writeFileSync(path.join(a.root, 'g.md'), 'v2');
+    await t.push(a, 'c2');
+    git('repack', '-d');                       // pack #2 (packs c2's loose objects)
+    expect(packCount()).toBe(2);               // two packs now → over autoPackLimit
 
     await t.maybeGc(a);
     expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('1'); // 1 % 2 !== 0, no gc yet
+    expect(packCount()).toBe(2);               // untouched — gc did NOT run
     await t.maybeGc(a);
     expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('2'); // 2 % 2 === 0, gc ran
+    expect(packCount()).toBe(1);               // gc consolidated 2 packs → 1: real effect
     await t.maybeGc(a);
     expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('3');
 

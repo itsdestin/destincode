@@ -15,7 +15,8 @@ interface EngineOpts {
 
 // Warn once per launch when a space's hidden sync history exceeds this. Remote
 // history compaction stays a MANUAL, deferred procedure (spec §7) — we never
-// automate a force-push or peer re-clone.
+// automate a force-push or peer re-clone. TODO: point the notice at the exact
+// manual-compaction doc once that procedure is written up (a later task).
 const SIZE_WARN_BYTES = 500 * 1024 * 1024;
 
 interface SpaceState {
@@ -126,14 +127,20 @@ export class SpaceSyncEngine {
         try {
           // LOCAL git gc every Nth sync: repacks THIS device's history only,
           // never rewrites it, so it can't desync peers. No-op on transports
-          // (future YouCoded Cloud) that don't implement it.
+          // (future YouCoded Cloud) that don't implement it. Note: the counter
+          // increments on EVERY successful sync, including idle no-op polls, so
+          // gc effectively fires on a time cadence too — harmless, because
+          // `git gc --auto` itself no-ops when the repo doesn't need repacking.
           await this.transport.maybeGc?.(space);
-          // One-per-launch large-history warning. Remote/history compaction stays
-          // a MANUAL deferred procedure — we never automate a force-push.
+          // One-per-launch large-history NOTICE (not an error — sync still works).
+          // Emitted as the 'notice' kind so it never turns the project's sync dot
+          // red. Remote/history compaction stays a MANUAL deferred procedure — we
+          // never automate a force-push. Unit is binary MiB to match sizeWarnBytes.
           const size = (await this.transport.gitDirSizeBytes?.(space)) ?? 0;
           if (size > this.sizeWarnBytes && !this.warnedLargeSpaces.has(space.id)) {
             this.warnedLargeSpaces.add(space.id);
-            this.onEvent({ type: 'error', spaceId: space.id, message: `Sync history for ${space.id} is large (${Math.round(size / 1e6)} MB) — see docs` });
+            const mib = Math.round(size / (1024 * 1024));
+            this.onEvent({ type: 'notice', spaceId: space.id, message: `Sync history for ${space.id} is large (${mib} MB). Sync still works normally.` });
           }
         } catch { /* maintenance is best-effort; the sync itself already succeeded */ }
       } catch (e: any) {

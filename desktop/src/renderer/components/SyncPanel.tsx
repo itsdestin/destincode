@@ -837,6 +837,15 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 </p>
               )}
 
+              {/* Informational notice (e.g. the large-history warning, spec §7).
+                  NON-alarming muted styling — deliberately NOT the red error note
+                  below: a 'notice' means sync still works, so it must not read as
+                  "sync is broken". */}
+              {spacesStatus?.enabled && (() => {
+                const notice = [...visibleSpaceEvents].reverse().find((e: any) => e.type === 'notice');
+                return notice ? <p className="text-xs text-fg-muted mt-2">{notice.message}</p> : null;
+              })()}
+
               {/* Error slot stays OUTSIDE the enabled gate: a failed enable attempt
                   (e.g. gh not installed) sets spacesError / emits an engine error while
                   enabled is still false, and space-manager's friendly messages are

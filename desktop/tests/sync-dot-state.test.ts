@@ -64,6 +64,24 @@ describe('syncDotFor', () => {
     }));
     expect(d?.color).toBe('green');
   });
+  it('stays green when a large-history "notice" fires right after a synced event (no false red dot)', () => {
+    const d = syncDotFor('C:\\Users\\x\\YouCoded\\Projects\\budget-app', status({
+      recentEvents: [
+        { type: 'synced', spaceId: 'project:budget-app' },
+        { type: 'notice', spaceId: 'project:budget-app', message: 'Sync history for project:budget-app is large (512 MB). Sync still works normally.' },
+      ],
+    }));
+    expect(d).toEqual({ color: 'green', label: 'Syncs across your devices' });
+  });
+  it('a notice does not mask an underlying error (error still wins the dot)', () => {
+    const d = syncDotFor('C:\\Users\\x\\YouCoded\\Projects\\budget-app', status({
+      recentEvents: [
+        { type: 'error', spaceId: 'project:budget-app' },
+        { type: 'notice', spaceId: 'project:budget-app', message: 'large' },
+      ],
+    }));
+    expect(d?.color).toBe('red');
+  });
 });
 
 describe('lastSyncedLabel', () => {

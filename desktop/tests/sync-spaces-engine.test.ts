@@ -101,8 +101,11 @@ describe('SpaceSyncEngine', () => {
     // Two independent syncs — the warning must fire on the first only.
     await engine.syncSpace(space);
     await engine.syncSpace(space);
-    const warnings = events.filter(e => e.type === 'error' && /is large/.test((e as any).message));
+    // Emitted as 'notice' (NOT 'error') so it never turns the sync dot red.
+    const warnings = events.filter(e => e.type === 'notice' && /is large/.test((e as any).message));
     expect(warnings.length).toBe(1);
+    // And crucially NO error event was produced by the healthy large space.
+    expect(events.some(e => e.type === 'error')).toBe(false);
     expect((t as any).maybeGc).toHaveBeenCalled();
     await engine.stop();
   });
