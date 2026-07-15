@@ -399,4 +399,20 @@ describe('native runtime reducer paths', () => {
     state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'sleeping', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
     expect(state.get(SESSION)!).toBe(before);
   });
+
+  it('NATIVE_MODEL_STATE_CHANGED re-renders on load-progress bytes even when state is unchanged', () => {
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'loading', modelId: 'Qwen-9B', sizeBytes: 9_000_000_000, loadedBytes: 1_000_000_000 });
+    expect(state.get(SESSION)!.modelLoadedBytes).toBe(1_000_000_000);
+
+    // Same state, MORE bytes resident → must produce a new object (progress bar advances).
+    const before = state.get(SESSION)!;
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'loading', modelId: 'Qwen-9B', sizeBytes: 9_000_000_000, loadedBytes: 6_000_000_000 });
+    expect(state.get(SESSION)!).not.toBe(before);
+    expect(state.get(SESSION)!.modelLoadedBytes).toBe(6_000_000_000);
+
+    // Identical bytes → no-op (same reference).
+    const same = state.get(SESSION)!;
+    state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'loading', modelId: 'Qwen-9B', sizeBytes: 9_000_000_000, loadedBytes: 6_000_000_000 });
+    expect(state.get(SESSION)!).toBe(same);
+  });
 });

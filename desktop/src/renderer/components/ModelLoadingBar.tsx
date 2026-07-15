@@ -3,8 +3,9 @@ import type { EngineModelState } from '../../shared/engine-types';
 
 // Centered status strip that floats just ABOVE the input area for a NATIVE
 // (local-model) session. Two states (2026-07-14 memory-lifecycle UX):
-//   • LOADING  — the model is (re)loading to answer: indeterminate bar + size +
-//     elapsed. Shown while the model isn't resident yet (cold load / waking).
+//   • LOADING  — the model is (re)loading into RAM. When main can measure the
+//     model child's resident bytes, shows a DETERMINATE bar + "N GB / M GB"
+//     (Unsloth-Studio style); otherwise an indeterminate bar + elapsed seconds.
 //   • UNLOADED — the model slept to save memory and no turn is in flight:
 //     "Model unloaded to save memory · [Reload Model]".
 // Renders nothing when the model is loaded (or state unknown). Positioned by the
@@ -13,6 +14,8 @@ import type { EngineModelState } from '../../shared/engine-types';
 interface Props {
   modelState: EngineModelState | null;
   modelInfo: { modelId: string; sizeBytes: number | null } | null;
+  /** Bytes resident so far while loading (null when unavailable / not loading). */
+  loadedBytes: number | null;
   isThinking: boolean;
   onReload: (modelId: string) => void;
 }
@@ -25,20 +28,18 @@ function friendlyName(modelId: string): string {
     .replace(/-(UD-)?(BF16|F16|F32|MXFP4(_MOE)?)$/i, '');
 }
 
-function gb(bytes: number | null): string | null {
-  if (bytes == null || bytes <= 0) return null;
-  return (bytes / 1024 ** 3).toFixed(1) + ' GB';
+function gbNum(bytes: number | null | undefined): string {
+  return ((bytes ?? 0) / 1024 ** 3).toFixed(1);
 }
 
-export default function ModelLoadingBar({ modelState, modelInfo, isThinking, onReload }: Props) {
+export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, isThinking, onReload }: Props) {
   // The model is coming up if it's explicitly loading, OR a turn is in flight
   // while the model is still asleep/unloaded (the send is waking it).
   const notResident = modelState === 'sleeping' || modelState === 'unloaded';
   const loading = modelState === 'loading' || (isThinking && notResident);
   const showReload = !isThinking && notResident;
 
-  // Elapsed-seconds ticker while loading (llama exposes no %, so elapsed is the
-  // honest progress signal). Reset when the shown model changes.
+  // Elapsed-seconds ticker (fallback signal when byte-progress isn't available).
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     if (!loading) { setElapsed(0); return; }
@@ -50,7 +51,10 @@ export default function ModelLoadingBar({ modelState, modelInfo, isThinking, onR
   if (!modelInfo || (!loading && !showReload)) return null;
 
   const name = friendlyName(modelInfo.modelId);
-  const size = gb(modelInfo.sizeBytes);
+  const size = modelInfo.sizeBytes;
+  // Determinate GB progress when we have both resident bytes and a total size.
+  const hasProgress = loading && loadedBytes != null && loadedBytes > 0 && size != null && size > 0;
+  const pct = hasProgress ? Math.min(100, Math.round((loadedBytes! / size!) * 100)) : 0;
 
   return (
     <div className="model-status-strip absolute left-1/2 -translate-x-1/2 z-10 w-[min(88%,26rem)]">
@@ -60,10 +64,28 @@ export default function ModelLoadingBar({ modelState, modelInfo, isThinking, onR
             <div className="flex items-baseline justify-center gap-1.5 text-sm text-fg-2">
               <span className="italic">Loading</span>
               <span className="font-medium">{name}</span>
-              {size ? <span className="text-fg-dim text-xs">· {size}</span> : null}
-              <span className="text-fg-faint text-xs tabular-nums">· {elapsed}s</span>
+              {hasProgress ? (
+                <span className="text-fg-dim text-xs tabular-nums">
+                  · {gbNum(loadedBytes)} / {gbNum(size)} GB
+                </span>
+              ) : size != null ? (
+                <span className="text-fg-dim text-xs">· {gbNum(size)} GB · {elapsed}s</span>
+              ) : (
+                <span className="text-fg-faint text-xs tabular-nums">· {elapsed}s</span>
+              )}
             </div>
-            <div className="model-load-track h-1 rounded-full bg-well" />
+            {hasProgress ? (
+              // Determinate: fill tracks resident bytes / total size.
+              <div className="h-1.5 rounded-full bg-well overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            ) : (
+              // Indeterminate: no byte measurement (non-Linux / racing) — sweep.
+              <div className="model-load-track h-1.5 rounded-full bg-well" />
+            )}
           </div>
         ) : (
           <div className="flex items-center justify-center gap-3">

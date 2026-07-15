@@ -708,6 +708,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       <ModelLoadingBar
         modelState={state.modelState}
         modelInfo={state.modelInfo}
+        loadedBytes={state.modelLoadedBytes}
         isThinking={state.isThinking}
         onReload={(modelId) => { void window.claude.models.load(modelId); }}
       />

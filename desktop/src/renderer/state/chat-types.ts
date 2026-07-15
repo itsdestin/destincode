@@ -170,6 +170,9 @@ export interface SessionChatState {
   modelState: import('../../shared/engine-types').EngineModelState | null;
   /** Bound model id + size for the banner copy (from native:model-state). */
   modelInfo: { modelId: string; sizeBytes: number | null } | null;
+  /** While modelState==='loading': bytes resident in RAM so far, for the
+   *  "N GB / M GB" progress bar. null when not loading / progress unavailable. */
+  modelLoadedBytes: number | null;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -190,6 +193,7 @@ export function createSessionChatState(): SessionChatState {
     compactionPending: null,
     modelState: null,
     modelInfo: null,
+    modelLoadedBytes: null,
   };
 }
 
@@ -246,6 +250,7 @@ export type ChatAction =
       state: import('../../shared/engine-types').EngineModelState;
       modelId: string;
       sizeBytes: number | null;
+      loadedBytes?: number | null;
     }
   | {
       // Native runtime only: a provider/stream failure ended the turn.
@@ -471,6 +476,7 @@ export interface SerializedSessionChatState {
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
   modelState?: import('../../shared/engine-types').EngineModelState | null;
   modelInfo?: { modelId: string; sizeBytes: number | null } | null;
+  modelLoadedBytes?: number | null;
 }
 
 export interface SerializedChatState {
@@ -499,6 +505,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         compactionPending: s.compactionPending,
         modelState: s.modelState,
         modelInfo: s.modelInfo,
+        modelLoadedBytes: s.modelLoadedBytes,
       },
     ]);
   }
@@ -528,6 +535,7 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       // Older hosts predate these — default null so a pre-field snapshot hydrates.
       modelState: ser.modelState ?? null,
       modelInfo: ser.modelInfo ?? null,
+      modelLoadedBytes: ser.modelLoadedBytes ?? null,
     });
   }
   return result;

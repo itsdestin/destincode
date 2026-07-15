@@ -417,12 +417,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'NATIVE_MODEL_STATE_CHANGED': {
       const session = next.get(action.sessionId);
       if (!session) return state;
+      const loadedBytes = action.loadedBytes ?? null;
+      // No-op unless state, model, OR load-progress bytes changed (bytes climb
+      // while state stays 'loading', and must re-render the progress bar).
       if (session.modelState === action.state
-          && session.modelInfo?.modelId === action.modelId) return state; // no-op
+          && session.modelInfo?.modelId === action.modelId
+          && session.modelLoadedBytes === loadedBytes) return state;
       next.set(action.sessionId, {
         ...session,
         modelState: action.state,
         modelInfo: { modelId: action.modelId, sizeBytes: action.sizeBytes },
+        modelLoadedBytes: loadedBytes,
       });
       return next;
     }
