@@ -1060,7 +1060,6 @@ export function installShim(): void {
       removeBackend: (id: string) => invoke('sync:remove-backend', { id }),
       updateBackend: (id: string, updates: any) => invoke('sync:update-backend', { id, updates }),
       pushBackend: (id: string) => invoke('sync:push-backend', { id }),
-      pullBackend: (id: string) => invoke('sync:pull-backend', { id }),
       openFolder: (id: string) => invoke('sync:open-folder', { id }),
       // Guided setup wizard
       setup: {

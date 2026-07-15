@@ -1531,12 +1531,9 @@ app.whenReady().then(async () => {
   // resolved after managed roots exist (same ordering as startConversationStore).
   startTagRegistry();
 
-  // Push session JSONL on session close (replaces session-end-sync.sh)
-  sessionManager.on('session-exit', (sessionId: string) => {
-    syncService.pushSession(sessionId).catch(e =>
-      log('ERROR', 'Main', 'Session-end sync failed', { sessionId, error: String(e) })
-    );
-  });
+  // The legacy session-end backup push (SyncService.pushSession) was removed in
+  // sync-legacy-demolition. Conversations now travel via the sync-spaces
+  // conversation store, so there is no session-exit backup hook here anymore.
 });
 
 app.on('window-all-closed', () => {

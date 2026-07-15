@@ -17,7 +17,7 @@ import type { EngineManager } from './engine/engine-manager';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory } from './session-browser';
-import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend } from './sync-state';
+import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
 import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
@@ -1444,11 +1444,7 @@ export class RemoteServer {
         this.respond(client.ws, type, id, pushResult);
         break;
       }
-      case 'sync:pull-backend': {
-        const pullResult = await pullBackend(payload.id || payload);
-        this.respond(client.ws, type, id, pullResult);
-        break;
-      }
+      // sync:pull-backend ("Download now") removed in sync-legacy-demolition.
       case 'sync:open-folder': {
         // Remote clients can't open local folders — return the URL for them to open manually.
         // For Drive, resolve the actual sync folder ID via rclone so the client deep-links

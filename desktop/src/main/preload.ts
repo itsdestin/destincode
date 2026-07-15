@@ -767,7 +767,6 @@ contextBridge.exposeInMainWorld('claude', {
     removeBackend: (id: string) => ipcRenderer.invoke('sync:remove-backend', id),
     updateBackend: (id: string, updates: any) => ipcRenderer.invoke('sync:update-backend', id, updates),
     pushBackend: (id: string) => ipcRenderer.invoke('sync:push-backend', id),
-    pullBackend: (id: string) => ipcRenderer.invoke('sync:pull-backend', id),
     openFolder: (id: string) => ipcRenderer.invoke('sync:open-folder', id),
     // Guided setup wizard
     setup: {

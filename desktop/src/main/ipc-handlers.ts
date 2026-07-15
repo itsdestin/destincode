@@ -33,7 +33,7 @@ import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THE
 import { isBundledPlugin } from '../shared/bundled-plugins';
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
-import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, pullBackend, getSyncService, type SyncWarning } from './sync-state';
+import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, getSyncService, type SyncWarning } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
@@ -1724,12 +1724,10 @@ export function registerIpcHandlers(
       if (state) attentionMap[desktopId] = state;
     }
 
-    // Background bulk-conversations pull — non-null while a recent-restore
-    // is still fetching older history in the background. UI shows a chip
-    // explaining why conversations are still appearing after restore "Done".
-    const backgroundPull = getSyncService()?.getBackgroundPullState() ?? null;
+    // (The background bulk-conversations pull + its restore-progress chip were
+    // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap, backgroundPull };
+    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -2360,7 +2358,7 @@ export function registerIpcHandlers(
   ipcMain.handle('sync:remove-backend', (_e, id) => removeBackend(id));
   ipcMain.handle('sync:update-backend', (_e, id, updates) => updateBackend(id, updates));
   ipcMain.handle('sync:push-backend', (_e, id) => pushBackend(id));
-  ipcMain.handle('sync:pull-backend', (_e, id) => pullBackend(id));
+  // sync:pull-backend ("Download now") was removed in sync-legacy-demolition.
 
   // Open a backend's remote location in the default browser/file explorer
   ipcMain.handle('sync:open-folder', async (_e, id: string) => {

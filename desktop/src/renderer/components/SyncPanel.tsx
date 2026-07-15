@@ -57,7 +57,7 @@ const SYNC_EXPLAINER: { intro: string; sections: ExplainerSection[] } = {
       bullets: [
         { term: 'Sync now', text: 'Pushes and pulls your synced spaces right away instead of waiting for the next automatic cycle.' },
         { term: 'Back up now', text: 'Forces an immediate copy to your additional backups (Drive/iCloud).' },
-        { term: 'Upload now / Download now', text: 'Per-backup: push your local data up to that backup, or pull its copy down to this device.' },
+        { term: 'Upload now', text: 'Per-backup: push your local data up to that backup right now.' },
         { term: '+ Add a backup', text: 'Connect an extra Drive or iCloud copy.' },
       ],
     },
@@ -404,7 +404,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
   // Confirmation dialog state
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
-  const [confirmPullId, setConfirmPullId] = useState<string | null>(null);
   // Cross-device sync spaces (spec 2026-07-03) — separate from the backend backups
   // above. Status refetches whenever the engine emits an event so the list and
   // per-space connected/local state stay live.
@@ -521,17 +520,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     setTimeout(() => setActionFeedback(prev => { const n = { ...prev }; delete n[id]; return n; }), 2000);
   }, [claude, refreshStatus]);
 
-  const handlePullBackend = useCallback(async (id: string) => {
-    setActionFeedback(prev => ({ ...prev, [id]: 'downloading' }));
-    try {
-      const result = await claude.sync.pullBackend(id);
-      setActionFeedback(prev => ({ ...prev, [id]: result.success ? 'downloaded' : 'error' }));
-      await refreshStatus();
-    } catch {
-      setActionFeedback(prev => ({ ...prev, [id]: 'error' }));
-    }
-    setTimeout(() => setActionFeedback(prev => { const n = { ...prev }; delete n[id]; return n; }), 2000);
-  }, [claude, refreshStatus]);
+  // handlePullBackend ("Download now") was removed in sync-legacy-demolition —
+  // the pull path is gone. Only the "Upload now" backup action remains.
 
   const handleToggleSync = useCallback(async (id: string, syncEnabled: boolean) => {
     try {
@@ -944,16 +934,14 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                             'text-green-400'
                           }`}>
                             {actionFeedback[b.id] === 'uploading' ? 'Uploading...' :
-                             actionFeedback[b.id] === 'downloading' ? 'Downloading...' :
                              actionFeedback[b.id] === 'uploaded' ? 'Uploaded!' :
-                             actionFeedback[b.id] === 'downloaded' ? 'Downloaded!' :
                              'Error'}
                           </span>
                         )}
                       </div>
 
                       {/* Status dot — same severity logic as the panel-wide row, scoped to this backend.
-                          Action-feedback "uploading/downloading" overlays the helper-derived color. */}
+                          Action-feedback "uploading" overlays the helper-derived color. */}
                       {(() => {
                         const scopedDisplay = deriveSyncState({
                           hasBackends: true,
@@ -1001,7 +989,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                             style={{ zIndex: 10 }}
                             onClick={(e) => e.stopPropagation()}>
                             <MenuButton onClick={() => { handlePushBackend(b.id); setMenuOpenId(null); }}>Upload now</MenuButton>
-                            <MenuButton onClick={() => { setConfirmPullId(b.id); setMenuOpenId(null); }}>Download now</MenuButton>
                             <MenuButton onClick={() => { claude.sync.openFolder(b.id); setMenuOpenId(null); }}>Open folder</MenuButton>
                             <MenuButton onClick={() => { setEditingId(b.id); setView('edit'); setMenuOpenId(null); }}>Edit settings</MenuButton>
                             <div className="border-t border-edge-dim my-1" />
@@ -1227,20 +1214,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
         ) : null;
       })()}
 
-      {/* Confirmation dialog: Download from backend */}
-      {confirmPullId && (() => {
-        const target = status?.backends.find(b => b.id === confirmPullId);
-        return target ? (
-          <ConfirmDialog
-            title="Download from backup?"
-            message={<>Download from <strong>{target.label}</strong>? This will update your local data with the version stored in {BACKEND_LABELS[target.type]}. Your conversations won&apos;t be overwritten, but your settings and config will be replaced with the backed-up version.</>}
-            confirmLabel="Download"
-            confirmColor="blue"
-            onConfirm={() => { handlePullBackend(confirmPullId); setConfirmPullId(null); }}
-            onCancel={() => setConfirmPullId(null)}
-          />
-        ) : null;
-      })()}
+      {/* The "Download from backup" confirmation dialog was removed in
+          sync-legacy-demolition — there is no pull/restore path anymore. */}
     </>
   );
 }

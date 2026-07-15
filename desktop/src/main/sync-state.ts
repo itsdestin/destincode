@@ -620,24 +620,9 @@ export async function pushBackend(id: string): Promise<{
   }
 }
 
-/**
- * Pull from a single specific backend (manual downsync).
- */
-export async function pullBackend(id: string): Promise<{
-  success: boolean;
-  error: string;
-}> {
-  if (!syncServiceInstance) {
-    return { success: false, error: 'SyncService not initialized' };
-  }
-
-  try {
-    await syncServiceInstance.pull({ backendId: id });
-    return { success: true, error: '' };
-  } catch (e: any) {
-    return { success: false, error: e.message || `Pull from ${id} failed` };
-  }
-}
+// pullBackend (manual "Download now" downsync) was removed in
+// sync-legacy-demolition along with SyncService.pull() — the flat backup paths
+// it read are orphaned and restore is gone.
 
 /**
  * Read the last N lines of backup.log.

@@ -145,9 +145,6 @@ interface StatusDataState {
   lastSyncEpoch: number | null;
   syncInProgress: boolean;
   backupMeta: any;
-  // Non-null while a recent restore is still pulling older conversations in
-  // the background. Drives the StatusBar 'restore-progress' chip.
-  backgroundPull: { type: 'conversations'; startedAt: number } | null;
 }
 
 function AppInner() {
@@ -172,7 +169,6 @@ function AppInner() {
     model: null, contextMap: {}, gitBranchMap: {}, sessionStatsMap: {},
     syncStatus: null, syncWarnings: [],
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
-    backgroundPull: null,
   });
 
   const [permissionModes, setPermissionModes] = useState<Map<string, PermissionMode>>(new Map());
@@ -1089,11 +1085,6 @@ function AppInner() {
         contextMap: data.contextMap || prev.contextMap,
         gitBranchMap: data.gitBranchMap || prev.gitBranchMap,
         sessionStatsMap: data.sessionStatsMap || prev.sessionStatsMap,
-        // backgroundPull intentionally trusts the server payload (no `?? prev`):
-        // the server's `null` is meaningful — it signals "background pull just
-        // completed, hide the chip." Falling back to prev would keep the chip
-        // visible forever after the bg-pull finishes.
-        backgroundPull: data.backgroundPull ?? null,
       }));
 
       // Diff attentionMap and dispatch per-session when state flips.
@@ -2611,7 +2602,6 @@ function AppInner() {
                     sessionStats: sessionId ? (statusData.sessionStatsMap[sessionId] ?? null) : null,
                     syncStatus: statusData.syncStatus,
                     syncWarnings: statusData.syncWarnings,
-                    backgroundPull: statusData.backgroundPull,
                   }}
                   onOpenSync={() => {
                     // Open settings panel with sync popup auto-opened
