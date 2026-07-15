@@ -550,6 +550,33 @@ body[data-mode="buddy-chat"] #theme-bg {
     opacity: 0.5;
   }
 }
+/* Finalizing phase: weights are in RAM but the backend is still initializing
+   (KV cache, compute buffers, Vulkan VRAM upload, warm-up). The bar is FULL
+   (solid accent) and a lighter highlight sweeps across so it never looks frozen
+   at 100%. Shares the model-load-sweep keyframe with the indeterminate track. */
+.model-load-finalize {
+  position: relative;
+  overflow: hidden;
+  background: var(--accent);
+}
+.model-load-finalize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  left: -35%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--on-accent) 55%, transparent),
+    transparent
+  );
+  animation: model-load-sweep 1.25s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-load-finalize::after { animation: none; opacity: 0; }
+}
 
 /* Lightweight containment — skip layout/style for off-screen chat messages.
    Uses layout+style containment (not paint) so box-shadow glows from community

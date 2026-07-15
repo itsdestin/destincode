@@ -173,6 +173,13 @@ export interface SessionChatState {
   /** While modelState==='loading': bytes resident in RAM so far, for the
    *  "N GB / M GB" progress bar. null when not loading / progress unavailable. */
   modelLoadedBytes: number | null;
+  /** True once this session's model has been seen fully 'loaded' at least once.
+   *  Distinguishes "unloaded because it slept after use" (→ show the Reload
+   *  prompt) from "unloaded because it hasn't finished its FIRST load yet" (a
+   *  fresh session eager-loading → show the loading bar, never a reload prompt).
+   *  Without this, a brand-new session flashes "Model unloaded · Reload" in the
+   *  race window before the eager load flips the poll to 'loading'. */
+  modelEverResident: boolean;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -194,6 +201,7 @@ export function createSessionChatState(): SessionChatState {
     modelState: null,
     modelInfo: null,
     modelLoadedBytes: null,
+    modelEverResident: false,
   };
 }
 
@@ -477,6 +485,7 @@ export interface SerializedSessionChatState {
   modelState?: import('../../shared/engine-types').EngineModelState | null;
   modelInfo?: { modelId: string; sizeBytes: number | null } | null;
   modelLoadedBytes?: number | null;
+  modelEverResident?: boolean;
 }
 
 export interface SerializedChatState {
@@ -506,6 +515,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         modelState: s.modelState,
         modelInfo: s.modelInfo,
         modelLoadedBytes: s.modelLoadedBytes,
+        modelEverResident: s.modelEverResident,
       },
     ]);
   }
@@ -536,6 +546,7 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       modelState: ser.modelState ?? null,
       modelInfo: ser.modelInfo ?? null,
       modelLoadedBytes: ser.modelLoadedBytes ?? null,
+      modelEverResident: ser.modelEverResident ?? false,
     });
   }
   return result;
