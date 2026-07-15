@@ -19,8 +19,7 @@ import { BugReportPopup } from './development/BugReportPopup';
 import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
-import ProvidersSection from './ProvidersSection';
-import LocalModelsSection from './LocalModelsSection';
+import ModelProvidersSection from './ModelProvidersPopup';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -96,6 +95,9 @@ interface Props {
   hasActiveSession: boolean;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
+  // Opens Claude Code's preferences popup (/config). Consumed by the Model
+  // Providers popup's Claude Code section. Desktop-only.
+  onOpenClaudePreferences?: () => void;
   syncAutoOpen?: boolean;
   onSyncAutoOpenHandled?: () => void;
 }
@@ -163,7 +165,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   );
 }
 
-export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: Props) {
+export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled }: Props) {
   useEscClose(open, onClose);
   // Slide polish: track animation window so CSS can reduce backdrop-filter cost
   // and suppress scrollbar-thumb while the 300ms transform is running. Also
@@ -247,6 +249,7 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
                 hasActiveSession={hasActiveSession}
                 onOpenThemeMarketplace={onOpenThemeMarketplace}
                 onPublishTheme={onPublishTheme}
+                onOpenClaudePreferences={onOpenClaudePreferences}
                 syncAutoOpen={syncAutoOpen}
                 onSyncAutoOpenHandled={onSyncAutoOpenHandled}
               />
@@ -2126,13 +2129,16 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
 // ─── Desktop Settings (existing, unchanged) ─────────────────────────────────
 
-function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, syncAutoOpen, onSyncAutoOpenHandled }: {
+function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled }: {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
   hasActiveSession: boolean;
   onOpenThemeMarketplace?: () => void;
   onPublishTheme?: (slug: string) => void;
+  // Opens Claude Code's preferences popup (/config). Consumed by the Model
+  // Providers popup's Claude Code section. Desktop-only.
+  onOpenClaudePreferences?: () => void;
   syncAutoOpen?: boolean;
   onSyncAutoOpenHandled?: () => void;
 }) {
@@ -2292,17 +2298,11 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
-        {/* Providers — native-runtime model providers (OpenRouter, direct keys,
-            custom endpoints). Self-gated on native.supported, so it renders
-            nothing in production until Phase 2. Desktop-authoritative — NOT
-            mounted in AndroidSettings. */}
-        <ProvidersSection />
-
-        {/* Local Models — the Plan C model manager (engine controls, curated
-            catalog, installed models, HF search, local-app detectors).
-            Self-gated on native.supported, so it renders nothing in production
-            until Phase 2. Desktop-authoritative — NOT mounted in AndroidSettings. */}
-        <LocalModelsSection />
+        {/* Model Providers — one popup gathering Claude Code, OpenRouter, and
+            Local Models (the Plan A/B/C native-runtime surfaces). Self-gated on
+            native.supported, so it renders nothing in production until Phase 2.
+            Desktop-authoritative — NOT mounted in AndroidSettings. */}
+        <ModelProvidersSection onOpenClaudePreferences={onOpenClaudePreferences} />
 
         <RemoteButton
           config={config}

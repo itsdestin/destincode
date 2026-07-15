@@ -46,7 +46,10 @@ type CardState =
   | { state: 'ready'; chosen: QuantWithFit }
   | { state: 'unavailable' };
 
-export default function LocalModelsSection() {
+// `embedded`: rendered inside the Model Providers popup, which supplies its own
+// "Local Models" heading and already gates on native support — so drop the
+// standalone <h3>.
+export default function LocalModelsSection({ embedded = false }: { embedded?: boolean } = {}) {
   // Gate the ENTIRE section on native support (same pattern as ProvidersSection).
   const supported = window.claude?.native?.supported === true;
 
@@ -109,7 +112,9 @@ export default function LocalModelsSection() {
 
   return (
     <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Local Models</h3>
+      {!embedded && (
+        <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Local Models</h3>
+      )}
 
       <div className="space-y-4">
         {/* 1 — Engine card (with the Plan C detail controls). */}

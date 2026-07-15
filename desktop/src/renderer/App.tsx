@@ -2781,6 +2781,8 @@ function AppInner() {
         hasActiveSession={!!sessionId}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); openMarketplace('themes'); }}
         onPublishTheme={(slug) => { setSettingsOpen(false); setPublishThemeSlug(slug); }}
+        // Model Providers popup → Claude Code section → opens the /config prefs popup.
+        onOpenClaudePreferences={() => { setSettingsOpen(false); setPreferencesOpen(true); }}
         syncAutoOpen={syncAutoOpen}
         onSyncAutoOpenHandled={() => setSyncAutoOpen(false)}
       />
