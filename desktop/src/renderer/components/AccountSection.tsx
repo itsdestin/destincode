@@ -5,6 +5,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
+import SettingsRow from './SettingsRow';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Auth-token state and mutations
@@ -45,36 +46,26 @@ export default function AccountSection() {
     : 'Sign in to like themes, rate plugins, and play games';
 
   return (
-    <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Account</h3>
-
-      {/* Row button — verbatim class list from the About row (SettingsPanel:2451). */}
-      <button
-        onClick={() => setOpen(true)}
-        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-      >
-        <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-          {signedIn && user?.avatar_url ? (
-            // alt="" so the avatar doesn't leak into the button's accessible name.
+    <>
+      <SettingsRow
+        icon={
+          signedIn && user?.avatar_url ? (
+            // alt="" so the avatar doesn't leak into the row's accessible name.
             <img src={user.avatar_url} alt="" className="w-5 h-5 rounded-full object-cover" />
           ) : (
             <PersonIcon />
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">{rowLabel}</span>
-          <p className="text-[10px] text-fg-muted truncate">{rowDesc}</p>
-        </div>
-        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
+          )
+        }
+        title={rowLabel}
+        subtitle={rowDesc}
+        onClick={() => setOpen(true)}
+      />
 
       {/* AccountPopup portals itself to document.body (same as AboutPopup) so the
           popup centers over the full viewport, not inside SettingsPanel's
           transformed wrapper. Render directly here — do NOT wrap in a second portal. */}
       {open && <AccountPopup onClose={() => setOpen(false)} />}
-    </section>
+    </>
   );
 }
 
