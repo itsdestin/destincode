@@ -5,9 +5,10 @@
  *
  * Used by: sync-service.ts (on any push returning errors > 0).
  *
- * Also hosts the pure remote-name decision helper used by pushGithub's
- * self-heal block (kept here, not in sync-service.ts, so it has a unit-test
- * seam that doesn't require constructing a SyncService).
+ * Also hosts the pure remote-name decision helper (decidePersonalSyncRemoteAction),
+ * kept here rather than in sync-service.ts so it has a unit-test seam that doesn't
+ * require constructing a SyncService. (Its former pushGithub caller was removed in
+ * sync-legacy-demolition; the helper stays exported + unit-tested.)
  */
 
 import type { SyncWarning, BackendType, BackendInstance } from './sync-state';

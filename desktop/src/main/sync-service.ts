@@ -238,8 +238,8 @@ export class SyncService extends EventEmitter {
   }
 
   /** Find a single backend by id (for manual push/pull). */
-  // Public so RestoreService can look up the active BackendInstance by id
-  // without re-reading config.json itself.
+  // Kept public (used internally by push()'s per-backend "Upload now" path); the
+  // former RestoreService caller was removed in sync-legacy-demolition.
   public getBackendById(id: string): BackendInstance | null {
     return this.getBackendInstances().find(b => b.id === id) || null;
   }
@@ -926,7 +926,13 @@ export class SyncService extends EventEmitter {
         try { snapshotMarker = fs.readFileSync(this.snapshotMarkerPath, 'utf8').trim(); } catch { /* first run */ }
         const snapshotNow = new Date();
         const snapshot: SnapshotGate = {
-          due: isBackupDue(snapshotMarker, snapshotNow),
+          // Why: a manual force (opts.force) bypasses the once-per-UTC-day due gate
+          // so "Back up now" / "Upload now" ALWAYS copy today's ~/.claude personal
+          // data (encyclopedia/memory/CLAUDE.md/settings). Re-copying into the same
+          // dated Backup/<date>/ folder is idempotent (rclone --update/--checksum skip
+          // unchanged files). The AUTOMATIC hourly poll (non-force) still respects the
+          // daily stamp, so it produces at most one snapshot per UTC day as before.
+          due: !!opts?.force || isBackupDue(snapshotMarker, snapshotNow),
           dated: datedFolderName(snapshotNow),
           now: snapshotNow,
         };

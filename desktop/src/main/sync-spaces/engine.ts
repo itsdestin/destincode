@@ -136,11 +136,16 @@ export class SpaceSyncEngine {
           // Emitted as the 'notice' kind so it never turns the project's sync dot
           // red. Remote/history compaction stays a MANUAL deferred procedure — we
           // never automate a force-push. Unit is binary MiB to match sizeWarnBytes.
-          const size = (await this.transport.gitDirSizeBytes?.(space)) ?? 0;
-          if (size > this.sizeWarnBytes && !this.warnedLargeSpaces.has(space.id)) {
-            this.warnedLargeSpaces.add(space.id);
-            const mib = Math.round(size / (1024 * 1024));
-            this.onEvent({ type: 'notice', spaceId: space.id, message: `Sync history for ${space.id} is large (${mib} MB). Sync still works normally.` });
+          // The size probe (gitDirSizeBytes) is a recursive stat-walk, so once we've
+          // already warned about a space we SKIP the probe entirely — otherwise the
+          // 120s poll would re-walk the whole git dir on every idle sync forever.
+          if (!this.warnedLargeSpaces.has(space.id)) {
+            const size = (await this.transport.gitDirSizeBytes?.(space)) ?? 0;
+            if (size > this.sizeWarnBytes) {
+              this.warnedLargeSpaces.add(space.id);
+              const mib = Math.round(size / (1024 * 1024));
+              this.onEvent({ type: 'notice', spaceId: space.id, message: `Sync history for ${space.id} is large (${mib} MiB). Sync still works normally.` });
+            }
           }
         } catch { /* maintenance is best-effort; the sync itself already succeeded */ }
       } catch (e: any) {

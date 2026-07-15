@@ -63,8 +63,9 @@ function deleteAllButNewest(group: string[]): string[] {
  * Decide whether to stamp today's daily snapshot marker after a push() cycle.
  * Only stamp when a new snapshot was DUE today AND at least one snapshot backend
  * (Drive/iCloud) completed with ZERO errors. A total-failure cycle (rclone
- * missing, network down) must leave the marker UNWRITTEN so a later 15-min push
- * retries the same day instead of silently burning it. Pure so it's unit-tested.
+ * missing, network down) must leave the marker UNWRITTEN so the next hourly
+ * snapshot poll retries the same day instead of silently burning it. Pure so it's
+ * unit-tested.
  */
 export function shouldStampDailyMarker(due: boolean, anySnapshotSucceeded: boolean): boolean {
   return due && anySnapshotSucceeded;
