@@ -20,6 +20,7 @@ import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
+import SettingsRow from './SettingsRow';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
