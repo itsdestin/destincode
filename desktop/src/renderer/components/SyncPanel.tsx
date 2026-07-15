@@ -20,6 +20,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
+import SettingsRow from './SettingsRow';
 
 // --- Explainer content (updated for V2 multi-instance model) ---
 
@@ -335,32 +336,19 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
   const primaryLabel = primaryLabelForState(display, loading);
   const badge = badgeForState(display);
 
-  return (
-    <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Backup &amp; Sync</h3>
+  const counts = (syncCount + storageCount) > 0 && display.kind !== 'failing'
+    ? [syncCount > 0 ? `${syncCount} synced` : '', storageCount > 0 ? `${storageCount} paused` : ''].filter(Boolean).join(' \u00B7 ')
+    : '';
 
-      <button
+  return (
+    <>
+      <SettingsRow
+        icon={<div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />}
+        title="Backup & Sync"
+        subtitle={counts ? `${primaryLabel} \u00B7 ${counts}` : primaryLabel}
+        rightAccessory={badge}
         onClick={() => setOpen(true)}
-        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-      >
-        <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-          <div className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">{primaryLabel}</span>
-          {(syncCount + storageCount) > 0 && display.kind !== 'failing' && (
-            <span className="text-[10px] text-fg-muted ml-2">
-              {syncCount > 0 ? `${syncCount} synced` : ''}
-              {syncCount > 0 && storageCount > 0 ? ' \u00B7 ' : ''}
-              {storageCount > 0 ? `${storageCount} paused` : ''}
-            </span>
-          )}
-        </div>
-        {badge}
-        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
+      />
 
       {open && createPortal(
         <SyncPopup
@@ -371,7 +359,7 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
         />,
         document.body
       )}
-    </section>
+    </>
   );
 }
 
