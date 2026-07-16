@@ -1182,7 +1182,10 @@ body[data-mode="buddy-chat"] #theme-bg {
      The artifact drawer uses the 480px default; App overrides it to a narrower
      value when the game pane is the active right pane. Referenced by both
      .drawer-pane (width) and chrome-glass--drawer-open (cutout offset) so the
-     frosted-chrome cutout always matches the actual pane width. */
+     frosted-chrome cutout always matches the actual pane width.
+     User-resized drawer widths arrive via --drawer-width on <html>
+     (ThemeProvider / drawer-width.ts) — App.tsx points --right-pane-width at
+     it when the artifact drawer is the active right pane. */
   --right-pane-width: 480px;
 }
 
