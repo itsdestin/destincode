@@ -36,8 +36,22 @@ it('device B discovers, materializes, and (after a stop) detaches a project', as
 
   const lT = new GitTransport({ deviceName: 'Laptop' });
   const dT = new GitTransport({ deviceName: 'Desktop' });
-  const lEngine = new SpaceSyncEngine(lT, { debounceMs: 200, pollMs: 0, onEvent: () => {} });
-  const dEngine = new SpaceSyncEngine(dT, { debounceMs: 200, pollMs: 0, onEvent: () => {} });
+  // debounceMs is deliberately longer than this test's lifetime (the
+  // sync-spaces-engine.test.ts:76 idiom), NOT the 200ms copied from
+  // sync-spaces-two-device — that test wants background syncs (pollMs: 300),
+  // this one drives every sync explicitly below (pollMs: 0).
+  //
+  // WHY it must not fire: addSpace() starts a chokidar watcher on space.root,
+  // so each registry write here schedules a debounced background syncSpace().
+  // syncSpace() is single-flight — if one is already running it sets rerun and
+  // returns IMMEDIATELY (engine.ts:114), so the test's own `await syncSpace()`
+  // could resolve without having synced anything, and the peer then pulled a
+  // stale registry ('active' instead of 'stopped'). A watcher that never fires
+  // makes the explicit awaits the only syncs, which is what this test means.
+  // This raced only under full-suite load — green on Windows and on an idle
+  // Linux box, red on every ubuntu/macos CI run.
+  const lEngine = new SpaceSyncEngine(lT, { debounceMs: 60_000, pollMs: 0, onEvent: () => {} });
+  const dEngine = new SpaceSyncEngine(dT, { debounceMs: 60_000, pollMs: 0, onEvent: () => {} });
 
   // planReconcile takes live project NAMES, not space ids — convert exactly as
   // the service's runDiscovery does (id 'project:app' → name 'app').
