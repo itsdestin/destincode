@@ -33,8 +33,20 @@ function parseChain(payload: unknown): SearchChainEntry[] | null {
   return rows.length > 0 ? rows : null;
 }
 
+// Reuse contract: construct ONE long-lived instance per process and share it.
+// Unlike CuratedCatalog (hit once, on picker-open), get() is called on EVERY
+// WebSearch, so a naive transplant would do a synchronous disk read per call
+// and, on a stale/absent cache, an un-deduped network fetch of up to
+// FETCH_TIMEOUT_MS. This class guards both against that hot-path footgun:
+//   - an in-memory memo serves the resolved chain with ZERO I/O while fresh;
+//   - an in-flight promise dedups concurrent resolves (thundering-herd guard).
+// get() still may do disk I/O and — rarely, at most once per TTL — a network
+// fetch up to FETCH_TIMEOUT_MS. It never throws on any path: memo → cache →
+// remote → cache-fallback → shipped, in freshness order.
 export class SearchChain {
   private cachePath: string;
+  private memo: { chain: SearchChainEntry[]; fetchedAt: number } | null = null;
+  private inflight: Promise<SearchChainEntry[]> | null = null;
   constructor(cacheDir: string, private fetchImpl: typeof fetch = fetch) {
     this.cachePath = path.join(cacheDir, CACHE_FILE);
   }
@@ -42,29 +54,51 @@ export class SearchChain {
   private readCache(): { fetchedAt: number; chain: SearchChainEntry[] } | null {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.cachePath, 'utf8'));
-      const chain = parseChain({ schemaVersion: SEARCH_CHAIN_SCHEMA_VERSION, chain: parsed.chain });
+      // Validate the STORED schemaVersion — pass the cache object straight to
+      // parseChain rather than injecting the current version. Injecting would
+      // make a future schema bump keep serving a stale v1 cache as if current.
+      // (NOTE: curated-catalog.ts has this same latent gap — it injects
+      // CURATED_SCHEMA_VERSION on read. Fixing it there is out of this task's
+      // scope; recorded as a follow-up.)
+      const chain = parseChain(parsed);
       if (typeof parsed.fetchedAt !== 'number' || !chain) return null;
       return { fetchedAt: parsed.fetchedAt, chain };
     } catch { return null; }
   }
 
-  /** Never throws: remote → cache → shipped, in freshness order. */
+  /** Never throws: memo → cache → remote → cache-fallback → shipped. */
   async get(): Promise<SearchChainEntry[]> {
+    // In-memory memo: serve a fresh resolve with zero disk/network I/O.
+    if (this.memo && Date.now() - this.memo.fetchedAt < TTL_MS) return this.memo.chain;
+    // In-flight dedup: concurrent callers await the SAME resolve, not N races.
+    if (this.inflight) return this.inflight;
+    this.inflight = this.resolve().finally(() => { this.inflight = null; });
+    return this.inflight;
+  }
+
+  private async resolve(): Promise<SearchChainEntry[]> {
     const cached = this.readCache();
-    if (cached && Date.now() - cached.fetchedAt < TTL_MS) return cached.chain;
+    if (cached && Date.now() - cached.fetchedAt < TTL_MS) {
+      this.memo = cached; // memoize the fresh cache hit
+      return cached.chain;
+    }
     try {
       const res = await this.fetchImpl(REMOTE_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (res.ok) {
         const chain = parseChain(await res.json());
         if (chain) {
+          const fetchedAt = Date.now();
           try {
             fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
-            fs.writeFileSync(this.cachePath, JSON.stringify({ fetchedAt: Date.now(), chain }));
+            fs.writeFileSync(this.cachePath, JSON.stringify({ schemaVersion: SEARCH_CHAIN_SCHEMA_VERSION, fetchedAt, chain }));
           } catch { /* cache write is best-effort */ }
+          this.memo = { chain, fetchedAt }; // memoize the successful fetch
           return chain;
         }
       }
     } catch { /* offline / timeout — fall through */ }
+    // The fallback is deliberately NOT memoized: we want the next call to retry
+    // the remote rather than pinning shipped/stale for a full TTL.
     return cached?.chain ?? SHIPPED_SEARCH_CHAIN;
   }
 }
