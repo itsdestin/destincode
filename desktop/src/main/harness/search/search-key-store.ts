@@ -41,11 +41,22 @@ export class SearchKeyStore {
 
   /**
    * Save (or rotate) a backend's key. Encrypt FIRST via SecretsStore, then
-   * persist only the returned secretRef. Reusing the existing ref means a
-   * rotation overwrites the same ciphertext entry in place — no orphan blobs,
-   * and the pointer we store here never changes.
+   * persist only the returned secretRef. Rotation reuses the existing ref, so
+   * the COMMON path overwrites the same ciphertext entry in place and leaves no
+   * orphan blobs, with the stored pointer unchanged.
+   *
+   * NOT orphan-free in two edge cases, both harmless: (a) two concurrent
+   * first-saves (no existing ref) each mint a fresh ref via secrets.set, and the
+   * mutateJson loser's blob is left unreachable; (b) secrets.set succeeds but the
+   * subsequent mutateJson throws, stranding the just-written blob. Either leaves
+   * an unreachable, machine-local ciphertext (no pointer, can't decrypt off-box)
+   * — reclaimed by a future SecretsStore reconciliation sweep (roadmap
+   * follow-up; deliberately NOT built here).
    */
   async setKey(backend: KeyedBackend, key: string): Promise<void> {
+    // Reject empty/whitespace-only keys BEFORE touching SecretsStore: otherwise
+    // we'd encrypt "" and surface a "key saved" badge for a key that can't auth.
+    if (!key.trim()) throw new Error('Cannot save an empty API key.');
     const existing = await this.refFor(backend);
     // key.trim(): a stray trailing newline/space from a paste would otherwise be
     // encrypted into the key and break the provider auth header silently.

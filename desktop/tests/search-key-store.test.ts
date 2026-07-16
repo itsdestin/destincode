@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { SearchKeyStore } from '../src/main/harness/search/search-key-store';
+import type { NativeHomeLike, SecretsLike } from '../src/main/harness/search/search-key-store';
+import type { NativeHome } from '../src/main/native-home';
+import type { SecretsStore } from '../src/main/providers/secrets-store';
+
+// Interface-drift guard: if NativeHome or SecretsStore ever changes a signature
+// SearchKeyStore's structural interfaces rely on, these assignments stop
+// compiling and `npx tsc --noEmit` fails — catching the drift before runtime.
+const _homeDrift: NativeHomeLike = null as unknown as NativeHome;
+const _secretsDrift: SecretsLike = null as unknown as SecretsStore;
+void _homeDrift;
+void _secretsDrift;
 
 // In-memory SecretsStore stand-in: mirrors the real signatures we use —
 // set(plaintext, existingRef?) reuses the ref for rotation, has()/get()/delete()
@@ -75,5 +86,37 @@ describe('SearchKeyStore', () => {
   it('tolerates a wrong-shape file', async () => {
     const s = new SearchKeyStore(fakeHomeSeeded({ garbage: true }), fakeSecrets() as any);
     expect(await s.list()).toHaveLength(2); // tavily + exa rows, hasKey false
+  });
+  // The POINT of the secretRef split: a synced ~/.youcoded/ carries the pointer
+  // but the machine-bound ciphertext never leaves userData, so on a fresh
+  // machine the ref is a dangling pointer. It must read as "no key" — never a
+  // throw, never a phantom "key saved" badge.
+  it('treats an orphan ref from another machine as no key', async () => {
+    const home = fakeHomeSeeded({ providers: { tavily: { secretRef: 'orphan-ref-from-another-machine' } } });
+    const s = new SearchKeyStore(home, fakeSecrets() as any); // EMPTY secrets — ref points at nothing
+    expect((await s.list()).find((p) => p.id === 'tavily')?.hasKey).toBe(false);
+    expect(await s.getKey('tavily')).toBeNull();
+  });
+  // Encrypt-BEFORE-persist ordering, pinned: when SecretsStore.set rejects
+  // (e.g. safeStorage unavailable), setKey must propagate the error AND leave
+  // the home file untouched — no ref written for a key that was never encrypted.
+  // A future reorder that persisted first would fail this test.
+  it('does not write the home file when secrets.set throws (encrypt-first)', async () => {
+    const home = fakeHome();
+    let wrote = false;
+    const origMutate = home.mutateJson.bind(home);
+    home.mutateJson = async (rel, fn) => { wrote = true; return origMutate(rel, fn); };
+    const throwingSecrets = { ...fakeSecrets(), async set() { throw new Error('safeStorage unavailable'); } };
+    const s = new SearchKeyStore(home, throwingSecrets as any);
+    await expect(s.setKey('tavily', 'tvly-123')).rejects.toThrow(/safeStorage/);
+    expect(wrote).toBe(false);            // never reached the persist step
+    expect(home.readJson('search-providers.json')).toBeNull(); // no half-state on disk
+  });
+  it('rejects an empty / whitespace-only key without storing anything', async () => {
+    const secrets = fakeSecrets();
+    const s = new SearchKeyStore(fakeHome(), secrets as any);
+    await expect(s.setKey('tavily', '   ')).rejects.toThrow(/empty/i);
+    expect(secrets.m.size).toBe(0);       // nothing encrypted
+    expect((await s.list()).find((p) => p.id === 'tavily')?.hasKey).toBe(false);
   });
 });
