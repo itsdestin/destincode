@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "chain": [
+    { "backend": "tavily", "requiresKey": true },
+    { "backend": "exa", "requiresKey": false },
+    { "backend": "ddg", "requiresKey": false }
+  ]
+}
