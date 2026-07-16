@@ -57,6 +57,71 @@ describe('WebFetch', () => {
     expect(r.text).toContain('Source: https://example.com/docs');
   });
 
+  // --- DoS complexity-guard tests (CRITICAL: main-thread freeze) ---
+
+  it('rejects hostile DOM depth BEFORE reaching Readability', async () => {
+    // 5000-deep nesting would take TENS of seconds in Readability's ~quadratic
+    // parse and freeze the whole app. The O(n) pre-check must reject it instantly
+    // (the guard fires long before parse), so this test also returns fast.
+    const deep = '<html><body>' + '<div>'.repeat(5000) + 'x' + '</div>'.repeat(5000) + '</body></html>';
+    __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(deep) });
+    const t0 = Date.now();
+    const r = await WebFetchTool.execute({ url: 'https://example.com/deep' } as any, ctx());
+    const elapsed = Date.now() - t0;
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/too large or deeply nested/);
+    // If Readability had run, this would be many seconds; the guard keeps it tiny.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it('rejects a high tag count (huge table / anchor list)', async () => {
+    // ~40k tags — far past MAX_TAGS. Cost here is breadth, not depth.
+    const wide = '<html><body><table>' + '<tr><td>x</td></tr>'.repeat(20000) + '</table></body></html>';
+    __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(wide) });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/wide' } as any, ctx());
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/too large or deeply nested/);
+  });
+
+  it('lets a normal article through the guard (depth/tags well under caps)', async () => {
+    // Realistic article with moderate nesting and tag count — must NOT be rejected.
+    const article = '<html><head><title>Docs</title></head><body><header><nav>'
+      + '<a href="#">home</a>'.repeat(10) + '</nav></header><main><article><h1>API Guide</h1>'
+      + '<section><p>Real content that is long enough to be extractable. </p></section>'.repeat(30)
+      + '</article></main></body></html>';
+    __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(article) });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/docs' } as any, ctx());
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain('API Guide');
+  });
+
+  it('returns a clean isError (never an uncaught throw) on malformed HTML', async () => {
+    // The reviewer saw `new Readability(document)` throw on some malformed input.
+    // defineTool's try/catch must convert any such throw into an isError result,
+    // not let it escape as an uncaught exception. Passes the depth/tag guard first.
+    __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html('<html><body><p>< < </ ></</body') });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/malformed' } as any, ctx());
+    // Either it extracts something OR it errors cleanly — the ONLY failure mode we
+    // forbid is a rejected promise / uncaught throw, and awaiting proves neither.
+    expect(typeof r.text).toBe('string');
+  });
+
+  it('sniffs a no-content-type response and extracts it as HTML', async () => {
+    // A bare/misconfigured server omits content-type. If the body is clearly HTML,
+    // read it instead of refusing it as an "unknown binary type".
+    // NOTE: a STRING body makes Response auto-add `content-type: text/plain`, which
+    // would defeat the no-content-type path — encode to bytes so the header stays
+    // genuinely absent (mirrors the real bare-server case).
+    const bareBody = new TextEncoder().encode(
+      '<!doctype html><html><head><title>Bare</title></head><body><article><h1>Bare Server</h1><p>'
+        + 'Real content. '.repeat(40) + '</p></article></body></html>',
+    );
+    __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => new Response(bareBody, { status: 200 }) });
+    const r = await WebFetchTool.execute({ url: 'https://example.com/bare' } as any, ctx());
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain('Bare Server');
+  });
+
   it('falls back to whole-body markdown when Readability finds no article', async () => {
     // A dashboard/index page with no readable article — Readability returns null,
     // and we must still return SOMETHING structured, never a silent empty result.
