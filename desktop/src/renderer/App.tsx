@@ -63,6 +63,7 @@ import ShareSheet from './components/ShareSheet';
 import { ProjectView } from './components/project-view/ProjectView';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
+import type { NativePermissionMode } from '../shared/permission-types';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -173,6 +174,11 @@ function AppInner() {
   });
 
   const [permissionModes, setPermissionModes] = useState<Map<string, PermissionMode>>(new Map());
+  // Native sessions carry a SEPARATE permission mode (harness policy, not a CC
+  // PTY mode). Kept in its own map so the two unions never mix; default 'ask' is
+  // read lazily (no per-session seeding) since NativeSessionHost also defaults to
+  // 'ask' and the chip is the only setter. Task 13.
+  const [nativePermissionModes, setNativePermissionModes] = useState<Map<string, NativePermissionMode>>(new Map());
   // Sessions that have received their first hook event (Claude is initialized).
   // Until this fires, show an "Initializing" overlay to prevent premature input.
   const [initializedSessions, setInitializedSessions] = useState<Set<string>>(new Set());
@@ -185,6 +191,9 @@ function AppInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBadge, setSettingsBadge] = useState(false);
   const [syncAutoOpen, setSyncAutoOpen] = useState(false);
+  // Deep-link flag for the Model Providers popup — set by a provider-error
+  // bubble's "Open Settings" jump so Settings opens straight to that section.
+  const [providersAutoOpen, setProvidersAutoOpen] = useState(false);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   // Track which sessions the user has "seen" (switched to after activity completed)
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
@@ -791,6 +800,7 @@ function AppInner() {
         // initializedSessions also keeps the input bar disabled as defence-in-depth.
         setViewModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
         setPermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+        setNativePermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
         setSessionModels((prev) => { const n = new Map(prev); n.delete(id); return n; });
         setInitializedSessions((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
         return;
@@ -814,6 +824,11 @@ function AppInner() {
         return next;
       });
       setPermissionModes((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+      setNativePermissionModes((prev) => {
         const next = new Map(prev);
         next.delete(id);
         return next;
@@ -1485,6 +1500,7 @@ function AppInner() {
       });
       setViewModes((prev) => { const n = new Map(prev); n.delete(sid); return n; });
       setPermissionModes((prev) => { const n = new Map(prev); n.delete(sid); return n; });
+      setNativePermissionModes((prev) => { const n = new Map(prev); n.delete(sid); return n; });
       setInitializedSessions((prev) => {
         if (!prev.has(sid)) return prev;
         const n = new Set(prev); n.delete(sid); return n;
@@ -1530,6 +1546,7 @@ function AppInner() {
       setSessionId(null);
       setViewModes(new Map());
       setPermissionModes(new Map());
+      setNativePermissionModes(new Map());
       setInitializedSessions(new Set());
       setViewedSessions(new Set());
       dispatch({ type: 'RESET' });
@@ -1962,6 +1979,7 @@ function AppInner() {
     });
     setViewModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
     setPermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+    setNativePermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
     setSessionModels((prev) => { const n = new Map(prev); n.delete(id); return n; });
     setInitializedSessions((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
     dispatch({ type: 'SESSION_REMOVE', sessionId: id });
@@ -2171,6 +2189,36 @@ function AppInner() {
   // PTY shift+tab cycle — hide the badge + cycle affordance for them.
   const isNativeSession = currentSession?.provider === 'native';
   const currentPermissionMode = sessionId ? (permissionModes.get(sessionId) || 'normal') : 'normal';
+  // Native mode defaults to 'ask' (mirrors NativeSessionHost's default).
+  const currentNativeMode: NativePermissionMode = sessionId ? (nativePermissionModes.get(sessionId) || 'ask') : 'ask';
+
+  // Native permission chip: cycle ask → auto-edit → full-auto → ask via the
+  // Task 12 IPC (NOT a PTY Shift+Tab — native sessions have no PTY). The IPC
+  // returns the APPLIED mode, which is authoritative — state updates from the
+  // return value, not the optimistic `next` (no screen-scrape correction path).
+  const cycleNativePermission = useCallback(async () => {
+    if (!sessionId) return;
+    const cycle: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
+    const idx = cycle.indexOf(currentNativeMode);
+    const next = cycle[(idx + 1) % cycle.length];
+    try {
+      const applied = await window.claude.native.setPermissionMode(sessionId, next);
+      // Validate before storing: the normal path returns a bare mode string, but
+      // the remote path converts a host throw into a resolved {ok:false,...}
+      // object (remote-shim). Storing that would corrupt the chip's
+      // PERMISSION_DISPLAY lookup — leave state unchanged on anything unexpected.
+      const VALID: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
+      if (VALID.includes(applied as NativePermissionMode)) {
+        setNativePermissionModes((prev) => new Map(prev).set(sessionId, applied as NativePermissionMode));
+      } else {
+        console.error('Native permission mode not applied:', applied);
+      }
+    } catch (err) {
+      // A rejected invoke means an unknown-mode wiring bug in the host — leave
+      // the chip on its current (unchanged) mode rather than lying about state.
+      console.error('Failed to set native permission mode:', err);
+    }
+  }, [sessionId, currentNativeMode]);
 
   // Shift+Tab cycles permission mode in chat view
   // (In terminal view, the raw escape code reaches the PTY directly)
@@ -2543,6 +2591,9 @@ function AppInner() {
                           <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
                         </ErrorBoundary>
                       ) : null}
+                      // Provider-config error bubble → open Settings straight to
+                      // the Model Providers section so the key can be fixed.
+                      onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">
@@ -2644,8 +2695,8 @@ function AppInner() {
                   } : undefined}
                   model={currentModel}
                   onCycleModel={cycleModel}
-                  permissionMode={isNativeSession ? undefined : currentPermissionMode}
-                  onCyclePermission={isNativeSession ? undefined : cyclePermission}
+                  permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
+                  onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}
@@ -2814,7 +2865,7 @@ function AppInner() {
           artifact drawer's framed chrome instead of being a separate slide-out. */}
       <SettingsPanel
         open={settingsOpen}
-        onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); }}
+        onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); setProvidersAutoOpen(false); }}
         onSendInput={(text) => {
           // Guarded: with a permission/question pending, the text would land on
           // CC's live Ink menu and the trailing \r would answer it.
@@ -2827,6 +2878,8 @@ function AppInner() {
         onOpenClaudePreferences={() => { setSettingsOpen(false); setPreferencesOpen(true); }}
         syncAutoOpen={syncAutoOpen}
         onSyncAutoOpenHandled={() => setSyncAutoOpen(false)}
+        providersAutoOpen={providersAutoOpen}
+        onProvidersAutoOpenHandled={() => setProvidersAutoOpen(false)}
       />
       <ResumeBrowser
         open={resumeRequested}

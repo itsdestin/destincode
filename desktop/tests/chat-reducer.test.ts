@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { chatReducer } from '../src/renderer/state/chat-reducer';
 import { ChatState, ChatAction } from '../src/renderer/state/chat-types';
+import { hookEventToAction } from '../src/renderer/state/hook-dispatcher';
+import type { HookEvent } from '../src/shared/types';
 
 const SESSION = 'test-session';
 
@@ -293,6 +295,72 @@ describe('PERMISSION_REQUEST tool matching', () => {
     const syn = session.toolCalls.get('perm-req-4');
     expect(syn).toBeDefined();
     expect(syn!.status).toBe('awaiting-approval');
+  });
+
+  // Task 13: denyListed must survive onto the tool so ToolCard can gate the
+  // consequence-warning "Always allow". Covers both the matched-tool branch and
+  // the synthetic-entry branch.
+  it('carries denyListed onto the matched running tool', () => {
+    state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'rm -rf /' }));
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'rm -rf /' },
+      requestId: 'native-req-5',
+      denyListed: true,
+    });
+    expect(state.get(SESSION)!.toolCalls.get('tool-a')!.denyListed).toBe(true);
+  });
+
+  it('carries denyListed onto a synthetic entry', () => {
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'rm -rf /' },
+      requestId: 'native-req-6',
+      denyListed: true,
+    });
+    expect(state.get(SESSION)!.toolCalls.get('perm-native-req-6')!.denyListed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hookEventToAction — native denyListed passthrough (Task 13)
+// ---------------------------------------------------------------------------
+describe('hookEventToAction PermissionRequest', () => {
+  it('passes denyListed from the broker payload into the action', () => {
+    const action = hookEventToAction({
+      type: 'PermissionRequest',
+      sessionId: SESSION,
+      payload: {
+        _requestId: 'native-abc',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push --force' },
+        denyListed: true,
+      },
+      timestamp: Date.now(),
+    } as HookEvent);
+    expect(action).not.toBeNull();
+    expect(action!.type).toBe('PERMISSION_REQUEST');
+    expect((action as any).denyListed).toBe(true);
+  });
+
+  it('leaves denyListed undefined for a CC event without it', () => {
+    const action = hookEventToAction({
+      type: 'PermissionRequest',
+      sessionId: SESSION,
+      payload: {
+        _requestId: 'cc-xyz',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        permission_suggestions: ['Bash(ls:*)'],
+      },
+      timestamp: Date.now(),
+    } as HookEvent);
+    expect((action as any).denyListed).toBeUndefined();
+    expect((action as any).permissionSuggestions).toEqual(['Bash(ls:*)']);
   });
 });
 

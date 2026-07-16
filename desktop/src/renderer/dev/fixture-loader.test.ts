@@ -40,6 +40,45 @@ describe('loadFixture', () => {
     }
   });
 
+  it('flips a running tool to awaiting-approval on a permission_request line', () => {
+    const raw = [
+      '{"type":"tool_use","id":"toolu_01BashAsk","name":"Bash","input":{"command":"npm test","description":"Run the test suite"}}',
+      '{"type":"permission_request","tool_use_id":"toolu_01BashAsk","requestId":"native-fixture-1","denyListed":false}',
+    ].join('\n');
+
+    const result = loadFixture('bash-awaiting-approval', raw);
+
+    // The bare tool_use emits no block — the permission_request line is what
+    // surfaces the (terminal) awaiting-approval card.
+    expect(result.blocks).toHaveLength(1);
+    expect(result.blocks[0].kind).toBe('tool');
+    if (result.blocks[0].kind === 'tool') {
+      expect(result.blocks[0].tool).toMatchObject({
+        toolUseId: 'toolu_01BashAsk',
+        toolName: 'Bash',
+        status: 'awaiting-approval',
+        requestId: 'native-fixture-1',
+        denyListed: false,
+      });
+    }
+    expect(result.error).toBeUndefined();
+  });
+
+  it('carries denyListed:true through to the awaiting-approval tool', () => {
+    const raw = [
+      '{"type":"tool_use","id":"toolu_01BashRm","name":"Bash","input":{"command":"rm -rf build/"}}',
+      '{"type":"permission_request","tool_use_id":"toolu_01BashRm","requestId":"native-fixture-2","denyListed":true}',
+    ].join('\n');
+
+    const result = loadFixture('bash-awaiting-approval-denylisted', raw);
+
+    expect(result.blocks).toHaveLength(1);
+    if (result.blocks[0].kind === 'tool') {
+      expect(result.blocks[0].tool.status).toBe('awaiting-approval');
+      expect(result.blocks[0].tool.denyListed).toBe(true);
+    }
+  });
+
   it('returns an error field when the fixture is malformed', () => {
     const result = loadFixture('broken', 'not valid json\n');
 

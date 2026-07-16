@@ -81,6 +81,34 @@ export function loadFixture(name: string, raw: string): LoadResult {
         const session = state.get(SANDBOX_SESSION_ID);
         const tool = session?.toolCalls.get(parsed.tool_use_id);
         if (tool) blocks.push({ kind: 'tool', tool });
+      } else if (parsed.type === 'permission_request') {
+        // WHY: the awaiting-approval state is the ONE tool-card state no
+        // tool_result can express — the tool is paused waiting on the user, so
+        // there's no result line to key off of. We synthesize the same
+        // PERMISSION_REQUEST action the hook relay fires in a live session so
+        // the sandbox renders the real approval card (Yes / No / Always-allow).
+        // The reducer pairs a request to a RUNNING tool by name+input (not by
+        // id), so we recover those from the tool_use line the fixture just
+        // dispatched (looked up by tool_use_id) and hand them to the action.
+        const before = state.get(SANDBOX_SESSION_ID);
+        const pending = before?.toolCalls.get(parsed.tool_use_id);
+        const action: ChatAction = {
+          type: 'PERMISSION_REQUEST',
+          sessionId: SANDBOX_SESSION_ID,
+          toolName: pending?.toolName ?? parsed.tool_name ?? 'Bash',
+          input: (pending?.input as Record<string, unknown>) ?? {},
+          requestId: parsed.requestId,
+          // denyListed:true → the destructive-deny-list rule won; ToolCard
+          // gates the "Always allow" strip behind a consequence warning.
+          denyListed: parsed.denyListed === true,
+        };
+        state = chatReducer(state, action);
+        // awaiting-approval is a TERMINAL fixture state (no tool_result
+        // follows), so emit the block here — the tool keeps its original
+        // tool_use_id when a running tool is matched in place.
+        const after = state.get(SANDBOX_SESSION_ID);
+        const tool = after?.toolCalls.get(parsed.tool_use_id);
+        if (tool) blocks.push({ kind: 'tool', tool });
       }
       // Unknown types are silently skipped (same policy as before).
     }

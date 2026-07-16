@@ -189,6 +189,9 @@ export interface ToolCallState {
   status: ToolCallStatus;
   requestId?: string;
   permissionSuggestions?: string[];
+  /** Native broker only: winning rule came from the destructive deny-list →
+   *  the "Always allow" button shows a consequence-gated confirm. Task 13. */
+  denyListed?: boolean;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
@@ -919,6 +922,7 @@ export const IPC = {
   NATIVE_SEND: 'native:send',
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_SET_BINDING: 'native:set-binding',
+  NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   NATIVE_SESSIONS_LIST: 'native:sessions-list',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_UPSERT: 'provider:upsert',

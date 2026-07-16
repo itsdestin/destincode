@@ -1,0 +1,23 @@
+import { z } from 'zod';
+import { defineTool } from './registry';
+
+export const TodoWriteTool = defineTool({
+  name: 'TodoWrite',
+  description: 'Replace your task list. Use it to plan multi-step work and mark progress (pending / in_progress / completed).',
+  inputSchema: z.object({
+    todos: z.array(
+      z.object({
+        content: z.string(),
+        status: z.enum(['pending', 'in_progress', 'completed']),
+        activeForm: z.string(),
+      }),
+    ),
+  }),
+  permissionSubject: () => undefined,
+  async execute(args, ctx) {
+    ctx.todos.length = 0;
+    ctx.todos.push(...args.todos);
+    const done = args.todos.filter((t) => t.status === 'completed').length;
+    return { text: `Todo list updated: ${args.todos.length} items, ${done} completed.` };
+  },
+});

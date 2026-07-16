@@ -14,12 +14,18 @@
 // not wait on disk) AND enqueue the append on the per-session chain. A renderer
 // crash losing an unpersisted event is acceptable; a stuttering UI is not.
 import { EventEmitter } from 'events';
-import type { ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
-import { HarnessSession, type ModelFactory } from './harness-session';
+import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './harness-session';
+import { rebuildHistory } from './history-rebuild';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
+import { PermissionBroker, type AskDecision } from './permission-broker';
 import { CHAT_PRESET } from '../../shared/harness-manifest';
+import { decidePermission } from './permission-engine';
+import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
+import { assembleSystemPrompt } from './prompt-assembly';
+import { CODER_DEFAULT_BODY } from './prompts/coder-default';
+import { CORE_TOOLS } from './tools';
 import { log } from '../logger';
 
 export interface CreateNativeSessionOpts {
@@ -27,6 +33,18 @@ export interface CreateNativeSessionOpts {
   cwd: string;
   binding: ModelBinding;
 }
+
+/** The two PermissionStore methods the host consumes. Declared structurally so
+ *  tests can inject a real PermissionStore (which satisfies this shape) OR rely
+ *  on the no-op default below without pulling in the NativeHome dependency. */
+export interface RememberedRuleStore {
+  rulesFor(cwd: string): Promise<PermissionRule[]>;
+  remember(cwd: string, rule: PermissionRule): Promise<void>;
+}
+const NOOP_REMEMBERED_STORE: RememberedRuleStore = {
+  async rulesFor() { return []; },
+  async remember() { /* no-op */ },
+};
 
 interface LiveEntry {
   session: HarnessSession;
@@ -47,12 +65,62 @@ export class NativeSessionHost extends EventEmitter {
   private modelRefs = new Map<string, Set<string>>();
   private onModelReleased?: (modelId: string) => void;
 
+  // One broker for all native sessions (spec §2.4). Its 'hook-event's are
+  // re-emitted on this host so ipc-handlers forwards them on the SAME channel
+  // as native transcript events (which is the SAME channel CC hook events ride).
+  private broker = new PermissionBroker();
+
+  // Per-session permission mode (spec §2.4 layer 2). In-memory, per session,
+  // default 'ask' — NOT persisted (a fresh app session starts back at 'ask').
+  // decide() reads this fresh on every tool, so setPermissionMode() takes effect
+  // on the NEXT gated call without disturbing an in-flight ask.
+  private modeFor = new Map<string, NativePermissionMode>();
+
+  // Per-session in-memory copy of "Always allow" rules remembered THIS session.
+  // WHY memory is the source of session-truth: the disk persist (PermissionStore)
+  // is async fire-and-forget, so relying on it alone means (a) a failed persist
+  // silently never sticks — the user re-asks forever — and (b) a fast model's
+  // next tool can race the write and re-ask once. Updated SYNCHRONOUSLY in the
+  // remember-rule handler (before the async persist kicks off) and unioned into
+  // decide(), so an Always-allow always sticks for the rest of this session.
+  // Disk remains the cross-session record; this is per-run and dropped on destroy.
+  private rememberedFor = new Map<string, PermissionRule[]>();
+
   constructor(
     private store: SessionStore,
     private modelFactory: ModelFactory,
     private contextLengthFor: (binding: ModelBinding) => Promise<number | null>,
+    // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
+    // a no-op so the many existing 3-arg test constructions still compile; the
+    // real wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
+    private permissionStore: RememberedRuleStore = NOOP_REMEMBERED_STORE,
+    // Injected because electron's `app` is not importable in tests (mirrors the
+    // other injected functions/values above). Feeds the <env> block of the
+    // once-per-session assembled system prompt.
+    private appVersion: string = '0.0.0-dev',
   ) {
     super();
+    // Re-emit broker asks/expirations so ipc-handlers can forward them to the
+    // renderer + remote clients (see the 'hook-event' listener there).
+    this.broker.on('hook-event', (event) => this.emit('hook-event', event));
+  }
+
+  /** Route a renderer/remote permission response to the broker. Returns false
+   *  when the id isn't a pending native ask so ipc-handlers falls through to
+   *  hookRelay (CC asks share the permission:respond channel). */
+  respondPermission(requestId: string, decision: Record<string, unknown>): boolean {
+    return this.broker.respond(requestId, decision);
+  }
+
+  /** Raise a native permission ask (Task 12's decide() will call this). Resolves
+   *  when the user responds or the session is interrupted (→ 'canceled'). */
+  askPermission(req: {
+    sessionId: string;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    denyListed: boolean;
+  }): Promise<AskDecision> {
+    return this.broker.ask(req);
   }
 
   /** Wire the "no session uses model X anymore" callback (→ engine unload). */
@@ -86,12 +154,90 @@ export class NativeSessionHost extends EventEmitter {
     return this.live.get(sessionId)?.session.binding.modelId ?? null;
   }
 
+  /** Set a session's permission mode (renderer chip → NATIVE_SET_PERMISSION_MODE).
+   *  Validates LOUDLY: an unknown mode string is a renderer/wiring bug, so throw
+   *  (rejecting the invoke() promise at the ipcMain.handle boundary) rather than
+   *  silently storing garbage. Returns the applied mode as the authoritative
+   *  value the chip renders. Pending asks are untouched — decide() re-reads the
+   *  mode on the NEXT gated tool, so a flip never disturbs an in-flight ask. */
+  setPermissionMode(sessionId: string, mode: NativePermissionMode): NativePermissionMode {
+    const VALID: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
+    if (!VALID.includes(mode)) {
+      throw new Error(`Unknown native permission mode: ${String(mode)} (expected one of ${VALID.join(', ')}).`);
+    }
+    this.modeFor.set(sessionId, mode);
+    return mode;
+  }
+
+  /** The per-session permission decision closure passed into each HarnessSession.
+   *  Re-reads the session's current mode + remembered rules on EVERY call, so a
+   *  mid-session mode flip (setPermissionMode) — and any newly-remembered rule —
+   *  takes effect on the NEXT gated tool. */
+  private buildDecide(sessionId: string, cwd: string) {
+    return async (tool: string, subject: string | undefined) => decidePermission(tool, subject, {
+      presetRules: [],                       // Plan B: preset manifests contribute here
+      modeRules: rulesForMode(this.modeFor.get(sessionId) ?? 'ask'),
+      denyList: DESTRUCTIVE_DENY_LIST,
+      // Union disk (cross-session record) with this session's in-memory rules
+      // (session-truth). Disk first, in-memory appended after — a later match
+      // wins in the engine, but the two are identical allow rules so the tie is
+      // harmless. In-memory is what guarantees an Always-allow sticks even if the
+      // async disk persist failed or hasn't landed yet (see rememberedFor above).
+      rememberedRules: [
+        ...await this.permissionStore.rulesFor(cwd),
+        ...(this.rememberedFor.get(sessionId) ?? []),
+      ],
+    });
+  }
+
+  /** Tool + permission + prompt wiring shared by create() and resume(). Plan A:
+   *  EVERY native session is tool-enabled (the Coder-shaped default) — there is
+   *  no separate legacy "chat" runtime path in the host. CHAT_PRESET is used only
+   *  as the manifest container (limits + fallback prompt); the explicit
+   *  systemPrompt + CORE_TOOLS below shadow its no-tools defaults. */
+  private toolWiring(sessionId: string, cwd: string): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt'> {
+    return {
+      tools: CORE_TOOLS,
+      decide: this.buildDecide(sessionId, cwd),
+      askUser: (req) => this.broker.ask(req),
+      // WHY assembleSystemPrompt is called synchronously here: it shells out to
+      // git twice (execFileSync, 3s timeout each → ~6s worst case). It runs ONCE
+      // per session create/resume — NEVER on the per-turn send() path — so the
+      // accepted sync cost sits off the hot loop. Threading an await through here
+      // would ripple through every construction site for no per-turn benefit
+      // (Task 11 review ruling — the sync cost is deliberate and bounded).
+      systemPrompt: assembleSystemPrompt({ presetBody: CODER_DEFAULT_BODY, cwd, appVersion: this.appVersion }),
+    };
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession): void {
     const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve() };
     this.live.set(sessionId, entry);
     this.retainModel(sessionId, session.binding.modelId); // ref-count this model
+    // Persist "Always allow" decisions for THIS session's project. The session
+    // emits 'remember-rule' {tool, pattern?, action} — a plain EventEmitter
+    // event, NOT a transcript event (the frozen transcript surface is untouched)
+    // — whenever the user picks Always-allow. The host owns the cwd → project
+    // slug scoping via PermissionStore. Fire-and-forget: a failed persist must
+    // not break the turn (the rule is a convenience, re-asked next time).
+    session.on('remember-rule', (rule: PermissionRule) => {
+      // (1) Record in-memory SYNCHRONOUSLY first, deduping exact repeats — this is
+      // what makes the Always-allow stick for the rest of the session regardless
+      // of whether the disk write below succeeds or wins the race with the next
+      // tool call.
+      const mem = this.rememberedFor.get(sessionId) ?? [];
+      if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action)) {
+        mem.push(rule);
+        this.rememberedFor.set(sessionId, mem);
+      }
+      // (2) Then persist the cross-session record. Fire-and-forget: a failed
+      // persist must not break the turn, and (1) already covers this session.
+      void this.permissionStore.remember(cwd, rule).catch((err) => {
+        log('ERROR', 'NativeSessionHost', 'remember-rule persist failed', { sessionId, error: String(err) });
+      });
+    });
     session.on('transcript-event', (event: TranscriptEvent) => {
       // (1) Forward NOW — not gated on the disk write (see module header).
       this.emit('transcript-event', event);
@@ -120,7 +266,8 @@ export class NativeSessionHost extends EventEmitter {
       createdAt: Date.now(),
     });
     const session = new HarnessSession(
-      { sessionId: opts.sessionId, cwd: opts.cwd, harness: CHAT_PRESET, binding: opts.binding, contextLength },
+      { sessionId: opts.sessionId, cwd: opts.cwd, harness: CHAT_PRESET, binding: opts.binding, contextLength,
+        ...this.toolWiring(opts.sessionId, opts.cwd) },
       this.modelFactory,
     );
     this.wire(opts.sessionId, opts.cwd, session);
@@ -133,33 +280,18 @@ export class NativeSessionHost extends EventEmitter {
     if (!header) return false;
     const contextLength = await this.contextLengthFor(header.binding);
     const session = new HarnessSession(
-      { sessionId, cwd, harness: CHAT_PRESET, binding: header.binding, contextLength },
+      { sessionId, cwd, harness: CHAT_PRESET, binding: header.binding, contextLength,
+        ...this.toolWiring(sessionId, cwd) },
       this.modelFactory,
     );
-    session.seedHistory(this.eventsToMessages(this.store.readEvents(sessionId, cwd)));
+    // Full history rebuild (spec §2.5): rebuildHistory reconstructs the assistant
+    // tool-call + tool-result pairs too (the old eventsToMessages dropped every
+    // tool event, so a resumed tool turn lost its tool context). seedHistory
+    // already clears readRegistry + todos (the reset-on-resume ruling) — those
+    // are runtime state, never persisted.
+    session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
     this.wire(sessionId, cwd, session);
     return true;
-  }
-
-  /** Stored transcript events → AI SDK message history. User messages map 1:1;
-   *  the assistant-text fragments of a turn merge into a SINGLE assistant
-   *  message (append to the last pushed message when it's already assistant).
-   *  All other event types are ignored (they carry no model-visible content). */
-  private eventsToMessages(events: TranscriptEvent[]): ModelMessage[] {
-    const out: ModelMessage[] = [];
-    for (const e of events) {
-      if (e.type === 'user-message' && typeof e.data?.text === 'string') {
-        out.push({ role: 'user', content: e.data.text });
-      } else if (e.type === 'assistant-text' && typeof e.data?.text === 'string') {
-        const last = out[out.length - 1];
-        if (last && last.role === 'assistant' && typeof last.content === 'string') {
-          last.content += e.data.text;
-        } else {
-          out.push({ role: 'assistant', content: e.data.text });
-        }
-      }
-    }
-    return out;
   }
 
   isNative(sessionId: string): boolean {
@@ -188,6 +320,10 @@ export class NativeSessionHost extends EventEmitter {
 
   interrupt(sessionId: string): boolean {
     const entry = this.live.get(sessionId);
+    // Cancel pending asks FIRST (resolve them 'canceled') so a loop paused on a
+    // permission await unwinds cleanly before the stream is aborted underneath
+    // it (spec pending-ask ruling). Also expires the renderer's approval cards.
+    this.broker.cancelSession(sessionId);
     entry?.session.interrupt();
     return !!entry;
   }
@@ -244,16 +380,30 @@ export class NativeSessionHost extends EventEmitter {
   async destroy(sessionId: string): Promise<void> {
     const entry = this.live.get(sessionId);
     if (!entry) return;
+    // Resolve any pending asks for this session ('canceled') + expire their
+    // cards BEFORE tearing down the stream — same rationale as interrupt(); a
+    // loop paused on a permission await must unwind, and the promise must not
+    // leak past teardown.
+    this.broker.cancelSession(sessionId);
     const modelId = entry.session.binding.modelId; // capture before teardown
     entry.session.destroy();             // abort stream + remove our listener → no new appends
     await entry.appendChain;             // drain already-enqueued appends
     await this.store.dispose(sessionId); // flush the buffered open part
     this.live.delete(sessionId);
+    // Drop per-session runtime state so it can't leak and so a destroy→resume of
+    // the SAME sessionId within one app run starts clean: mode resets to the
+    // default 'ask', and the in-memory remembered rules fall back to the disk
+    // record (never carried across a teardown).
+    this.modeFor.delete(sessionId);
+    this.rememberedFor.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
   }
 
   /** App-shutdown path: destroy every live session, then flush any residue. */
   async destroyAll(): Promise<void> {
+    // Cancel every pending ask up front (covers asks whose session is no longer
+    // live, which the per-session destroy loop below would miss).
+    this.broker.cancelAll();
     for (const id of [...this.live.keys()]) {
       await this.destroy(id);
     }

@@ -3,7 +3,27 @@ import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os'
 import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
+import { PermissionStore } from '../src/main/harness/permission-store';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
+import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
+
+// One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
+// tool result — stops with text. A FRESH instance per factory call so the
+// per-step counter resets each turn. Write is chosen because it is permission-
+// gated in 'ask' mode but auto-allowed in 'full-auto' (rulesForMode).
+const writeThenStop = () => scriptedModel([
+  stream(toolCallChunk('c1', 'Write', { file_path: 'note.txt', content: 'hi' }), finishChunk('tool-calls')),
+  stream(...textChunks('t', 'done'), finishChunk('stop')),
+]);
+const writeFactory = async () => writeThenStop() as any;
+// Resolves with the ask's _requestId the first time the host re-emits a native
+// PermissionRequest (broker → host 'hook-event').
+function firstAsk(h: NativeSessionHost): Promise<string> {
+  return new Promise((res) => {
+    const on = (e: any) => { if (e.type === 'PermissionRequest') { h.off('hook-event', on); res(e.payload._requestId); } };
+    h.on('hook-event', on);
+  });
+}
 
 // RAW V4 stream-part shapes (see harness-session.test.ts): deltas carry `delta`, usage is nested.
 const CHUNKS = [
@@ -172,6 +192,135 @@ describe('NativeSessionHost', () => {
 
     it('modelForSession is null for an unknown session', () => {
       expect(host.modelForSession('nope')).toBeNull();
+    });
+  });
+
+  // ---- Task 12: per-session permission mode + remembered rules ----
+  describe('permission mode + remembered rules', () => {
+    // A host wired with a REAL PermissionStore (over the temp home) + an injected
+    // app version, driving the Write-then-stop turn.
+    const permHost = () => new NativeSessionHost(
+      new SessionStore(new NativeHome(root)), writeFactory, async () => null,
+      new PermissionStore(new NativeHome(root)), '9.9.9',
+    );
+
+    it('setPermissionMode returns the applied mode; rejects unknown modes loudly', () => {
+      expect(host.setPermissionMode('s', 'auto-edit')).toBe('auto-edit');
+      expect(host.setPermissionMode('s', 'full-auto')).toBe('full-auto');
+      // An unknown mode string is a renderer/wiring bug — throw, don't store garbage.
+      expect(() => host.setPermissionMode('s', 'bogus' as any)).toThrow(/Unknown native permission mode/);
+    });
+
+    it('destroy resets the per-session mode: a resumed same-id session is back to ask', async () => {
+      const p = permHost();
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      p.setPermissionMode('s', 'full-auto');
+      await p.send('s', 'seed a turn so there is a stored header to resume');  // full-auto → no ask, resolves
+      await p.drain('s');
+      await p.destroy('s');   // must drop the mode entry, not leak it
+
+      // Resume the SAME id: mode must be back to the default 'ask', so the Write
+      // call raises a permission ask (it would NOT under a stale full-auto).
+      const p2 = permHost();
+      const ask = firstAsk(p2);   // resolves with the ask's _requestId
+      const resumed = await p2.resume('s', root);
+      expect(resumed).toBe(true);
+      const seen: any[] = []; p2.on('transcript-event', (e) => seen.push(e));
+      const turn = p2.send('s', 'write a file');
+      const requestId = await ask;   // resolves ONLY if the resumed session is back to 'ask'
+      expect(seen.map((e) => e.type)).not.toContain('turn-complete');  // paused on the ask
+      p2.respondPermission(requestId, { decision: { behavior: 'deny' } });
+      await turn;
+      await p.destroyAll();
+      await p2.destroyAll();
+    });
+
+    it('full-auto auto-allows a gated tool (decide reflects the mode — no ask fires)', async () => {
+      const p = permHost();
+      const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+      const seen: any[] = []; p.on('transcript-event', (e) => seen.push(e));
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      expect(p.setPermissionMode('s', 'full-auto')).toBe('full-auto');
+      await p.send('s', 'write a file');   // resolves — no ask to wait on
+      expect(asks).toHaveLength(0);                                  // full-auto → no permission ask
+      expect(seen.map((e) => e.type)).toContain('turn-complete');
+      await p.destroyAll();
+    });
+
+    it('a mode flip does NOT disturb a pending ask; it resolves by its own respond()', async () => {
+      const p = permHost();
+      const seen: any[] = []; p.on('transcript-event', (e) => seen.push(e));
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      // Default mode 'ask' → the Write call raises an ask and the turn pauses.
+      // Don't await send() — it won't resolve until we respond.
+      const ask = firstAsk(p);
+      const turn = p.send('s', 'write a file');
+      const requestId = await ask;
+      expect(seen.map((e) => e.type)).not.toContain('turn-complete');   // paused on the ask
+      // Flip the mode mid-ask. The pending ask must be UNTOUCHED (spec pending-ask
+      // ruling) — decide() only re-reads the mode on the NEXT tool.
+      p.setPermissionMode('s', 'full-auto');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(seen.map((e) => e.type)).not.toContain('turn-complete');   // still pending after the flip
+      // The ORIGINAL ask resolves by its own respond(), not by the mode flip.
+      expect(p.respondPermission(requestId, { decision: { behavior: 'allow' } })).toBe(true);
+      await turn;
+      expect(seen.map((e) => e.type)).toContain('turn-complete');
+      await p.destroyAll();
+    });
+
+    it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
+      const store = new PermissionStore(new NativeHome(root));
+      const p = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, store, '9.9.9',
+      );
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const ask = firstAsk(p);
+      const turn = p.send('s', 'write a file');
+      const requestId = await ask;
+      // "Always allow": non-empty updatedPermissions signals the remember.
+      p.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Write' }] });
+      await turn;
+      // remember() is fire-and-forget off the turn (mutateJson under a file lock);
+      // poll until the persisted rule appears.
+      let rules: any[] = [];
+      for (let i = 0; i < 50; i++) {
+        rules = await store.rulesFor(root);
+        if (rules.some((r) => r.tool === 'Write' && r.action === 'allow')) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rules.some((r) => r.tool === 'Write' && r.action === 'allow')).toBe(true);
+      await p.destroyAll();
+    });
+
+    it('Always-allow sticks in-session even when the disk persist never resolves (in-memory union)', async () => {
+      // A store whose remember() NEVER resolves (persist hang/failure) and whose
+      // rulesFor never reflects the rule — so ONLY the in-memory union can make
+      // the Always-allow stick.
+      const hangingStore = {
+        rulesFor: async () => [] as any[],
+        remember: () => new Promise<void>(() => { /* never resolves */ }),
+      };
+      const p = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, hangingStore, '9.9.9',
+      );
+      const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // Turn 1 (mode 'ask'): the Write raises ONE ask; respond Always-allow.
+      const ask1 = firstAsk(p);
+      const t1 = p.send('s', 'write once');
+      p.respondPermission(await ask1, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Write' }] });
+      await t1;
+      expect(asks).toHaveLength(1);
+
+      // Turn 2: the SAME gated call must NOT ask — the in-memory remembered rule
+      // held even though the disk persist (remember) never resolved.
+      const seen: any[] = []; p.on('transcript-event', (e) => seen.push(e));
+      await p.send('s', 'write again');   // resolves — no ask to wait on
+      expect(asks).toHaveLength(1);       // still just the first ask (no re-ask)
+      expect(seen.map((e) => e.type)).toContain('turn-complete');
+      await p.destroyAll();
     });
   });
 });

@@ -31,6 +31,10 @@ interface Props {
   /** Runtime backend — forwarded to useAttentionClassifier so it
    *  short-circuits for sessions without a PTY (native harness). */
   provider?: 'claude' | 'native';
+  /** Opens Settings → Model Providers. Threaded to the AttentionBanner so a
+   *  provider-config error bubble (missing/disabled key) can jump the user
+   *  straight to the fix. App owns Settings open-state, so it passes this down. */
+  onOpenProviderSettings?: () => void;
 }
 
 function HistoryExpandButton({ sessionId, resumeInfo }: {
@@ -75,7 +79,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider }: Props) {
+export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -657,6 +661,9 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                     state={state.attentionState}
                     anthropicRequestId={lastTurnRequestId}
                     errorMessage={state.errorMessage}
+                    // Provider-config errors (missing/disabled key) show an
+                    // "Open Settings" button that deep-links to Model Providers.
+                    onOpenProviderSettings={onOpenProviderSettings}
                     // TODO(Task 12): wire onRetry to the provider-aware native
                     // send helper (native-send.ts) to re-send the last user
                     // message. Left unwired here so no "Try again" button shows yet.

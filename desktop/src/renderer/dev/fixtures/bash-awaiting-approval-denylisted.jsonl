@@ -1,0 +1,2 @@
+{"type":"tool_use","id":"toolu_01BashRm","name":"Bash","input":{"command":"rm -rf build/","description":"Delete the build output directory"}}
+{"type":"permission_request","tool_use_id":"toolu_01BashRm","requestId":"native-fixture-2","denyListed":true}

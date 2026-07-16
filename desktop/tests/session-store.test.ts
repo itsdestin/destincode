@@ -151,6 +151,31 @@ describe('SessionStore', () => {
     expect((events[2] as any).data).toMatchObject({ text: 'more-think', partId: 'r2' });
   });
 
+  // Passthrough pin (Task 10): tool-use / tool-result are NON-delta events, so
+  // append persists them VERBATIM (no coalescing) — a resume rebuild depends on
+  // reading them back byte-for-byte, INCLUDING the Edit/MultiEdit structuredPatch
+  // hunks that the ToolCard diff view renders. This is the store half of the
+  // resume contract (rebuildHistory is the other half).
+  it('round-trips a tool-use/tool-result pair through append→readEvents unchanged (incl. structuredPatch)', async () => {
+    await store.create(HEADER);
+    const useEvent = ev('tool-use', {
+      toolUseId: 'call-1', toolName: 'Edit', toolInput: { file_path: 'a.ts', old_string: 'x', new_string: 'y' },
+    }, 'tu1') as any;
+    const structuredPatch = [
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [' ctx', '-x', '+y'] },
+    ];
+    const resultEvent = ev('tool-result', {
+      toolUseId: 'call-1', toolName: 'Edit', toolResult: 'Edited a.ts', isError: false, structuredPatch,
+    }, 'tr1') as any;
+    await store.append(HEADER.cwd, useEvent);
+    await store.append(HEADER.cwd, resultEvent);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    // Deep-equal both events verbatim — nothing coalesced, nothing dropped, and
+    // the nested structuredPatch survives the JSON round-trip intact.
+    expect(events).toEqual([useEvent, resultEvent]);
+    expect((events[1] as any).data.structuredPatch).toEqual(structuredPatch);
+  });
+
   // Clone-semantics pin (Task 7 self-review requirement): the buffered open
   // part must be a CLONE — mutating the caller's event object after append()
   // returns must not change what ends up on disk.

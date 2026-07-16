@@ -19,6 +19,17 @@ const SENSITIVE_SEGMENTS = new Set(['.ssh', '.gnupg', '.aws', '.azure', '.kube']
 /** Basenames refused outright (credential stores). */
 const SENSITIVE_BASENAMES = new Set(['.netrc', '_netrc', '.credentials.json']);
 
+/** True when a basename is a dotenv file (`.env`, `.env.local`, `.env.production`,
+ * …) or a direnv `.envrc`. Added for the native tool-layer path guards (Phase 2):
+ * dotenv files are the single most common place project secrets (API keys, DB
+ * passwords) live, and `.envrc` (direnv) routinely holds `export SECRET=…` lines,
+ * so the file tools hard-deny them the same way as other credential stores.
+ * Matches the exact `.env` name plus any `.env.<suffix>` variant and `.envrc`, but
+ * NOT unrelated names that merely start with the letters (e.g. `.environment`). */
+function isDotenvBasename(base: string): boolean {
+  return base === '.env' || base === '.envrc' || base.startsWith('.env.');
+}
+
 /** `.config/gh` holds the GitHub OAuth token (hosts.yml). */
 const SENSITIVE_SUBPATHS = ['/.config/gh/'];
 
@@ -27,6 +38,7 @@ export function isSensitivePath(canonicalPath: string): boolean {
   const parts = canonicalPath.split('/');
   const base = parts[parts.length - 1] ?? '';
   if (SENSITIVE_BASENAMES.has(base)) return true;
+  if (isDotenvBasename(base)) return true;
   if (parts.some((seg) => SENSITIVE_SEGMENTS.has(seg))) return true;
   return SENSITIVE_SUBPATHS.some((sub) => canonicalPath.includes(sub));
 }

@@ -217,15 +217,34 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
   }
 }
 
-function PermissionButtons({ requestId, suggestions, onResponded, onFailed }: {
+// Synthetic updatedPermissions payload for a native "Always allow". The native
+// broker's respond() reads "always" purely from a non-empty updatedPermissions
+// array + behavior:allow (it ignores the array's CONTENTS — the host derives the
+// remembered rule from the tool call itself), so any single-element marker works.
+// CC asks keep sending their real suggestion string. Task 13.
+const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
+
+function PermissionButtons({ requestId, suggestions, denyListed, onResponded, onFailed }: {
   requestId: string;
   suggestions?: string[];
+  /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
+  denyListed?: boolean;
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
   const [responding, setResponding] = useState(false);
+  // Native asks carry NO CC permission_suggestions, but Always-allow must still
+  // be offered (Task 8 carry-forward). The broker mints `native-${uuid}` request
+  // ids, so the prefix is the cleanest native discriminator — no extra state to
+  // thread. CC keeps its suggestions-gated behavior unchanged.
+  const isNative = requestId.startsWith('native-');
   const hasSuggestions = !!(suggestions?.length);
-  const [focusIdx, setFocusIdx] = useState(hasSuggestions ? 1 : 0);
+  const canAlwaysAllow = hasSuggestions || isNative;
+  // Consequence-gated confirm strip (deny-listed asks) — mirrors the delete-model
+  // confirm in LocalModelsSection: replace the button row with a plain-language
+  // warning + Cancel / confirm.
+  const [confirmingAlways, setConfirmingAlways] = useState(false);
+  const [focusIdx, setFocusIdx] = useState(canAlwaysAllow ? 1 : 0);
   const buttonsRef = useRef<(HTMLButtonElement | null)[]>([]);
 
   const handleRespond = useCallback(async (decision: object) => {
@@ -246,20 +265,32 @@ function PermissionButtons({ requestId, suggestions, onResponded, onFailed }: {
     }
   }, [requestId, onResponded, onFailed]);
 
+  // The "Always allow" decision: CC sends its first real suggestion; native sends
+  // the synthetic marker the broker reads as always.
+  const alwaysAllowDecision = () =>
+    hasSuggestions
+      ? { decision: { behavior: 'allow' }, updatedPermissions: [suggestions![0]] }
+      : { decision: { behavior: 'allow' }, updatedPermissions: [NATIVE_ALWAYS_ALLOW] };
+
+  // Deny-listed asks show the consequence confirm first; otherwise respond directly.
+  const onAlwaysAllow = useCallback(() => {
+    if (denyListed) { setConfirmingAlways(true); return; }
+    handleRespond(alwaysAllowDecision());
+  }, [denyListed, handleRespond, hasSuggestions, suggestions]);
+
   // Build actions list so keyboard handler can index into it
   const actions = useRef<(() => void)[]>([]);
   actions.current = [
     () => handleRespond({ decision: { behavior: 'allow' } }),
-    ...(hasSuggestions
-      ? [() => handleRespond({ decision: { behavior: 'allow' }, updatedPermissions: [suggestions![0]] })]
-      : []),
+    ...(canAlwaysAllow ? [onAlwaysAllow] : []),
     () => handleRespond({ decision: { behavior: 'deny' } }),
   ];
   const count = actions.current.length;
 
-  // Global keyboard navigation: arrows cycle, Enter activates
+  // Global keyboard navigation: arrows cycle, Enter activates. Suspended while
+  // the consequence confirm is open so arrow/Enter don't drive the hidden row.
   useEffect(() => {
-    if (responding) return;
+    if (responding || confirmingAlways) return;
     const handler = (e: KeyboardEvent) => {
       // Don't steal keyboard events when user is typing in an input
       const tag = (e.target as HTMLElement)?.tagName;
@@ -279,10 +310,38 @@ function PermissionButtons({ requestId, suggestions, onResponded, onFailed }: {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [responding, focusIdx, count]);
+  }, [responding, confirmingAlways, focusIdx, count]);
 
   const pad = isAndroid() ? 'py-2' : 'py-1';
   const ring = 'ring-2 ring-white/40';
+
+  // Consequence-gated confirm — plain-language warning before persisting a rule
+  // for a deny-listed action. Cancel returns to the card (the buttons re-render).
+  if (confirmingAlways) {
+    return (
+      <div className="px-3 py-2 space-y-2 border-t border-edge bg-inset/30">
+        <p className="text-[11px] text-fg-dim leading-relaxed">
+          This lets the assistant run commands like this without asking, including ones that can delete files or push code. You can undo this later in Settings.
+        </p>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={responding}
+            onClick={() => setConfirmingAlways(false)}
+            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-inset/60 hover:bg-inset text-fg-muted transition-colors disabled:opacity-50`}
+          >
+            Cancel
+          </button>
+          <button
+            disabled={responding}
+            onClick={() => handleRespond(alwaysAllowDecision())}
+            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-amber-600/60 hover:bg-amber-600/80 text-amber-50 transition-colors disabled:opacity-50`}
+          >
+            Always allow
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-t border-edge bg-inset/30">
@@ -294,21 +353,21 @@ function PermissionButtons({ requestId, suggestions, onResponded, onFailed }: {
       >
         Yes
       </button>
-      {hasSuggestions ? (
+      {canAlwaysAllow ? (
         <button
           ref={el => { buttonsRef.current[1] = el; }}
           disabled={responding}
-          onClick={() => handleRespond({ decision: { behavior: 'allow' }, updatedPermissions: [suggestions![0]] })}
+          onClick={onAlwaysAllow}
           className={`px-3 ${pad} text-xs font-medium rounded-sm bg-blue-600/60 hover:bg-blue-600/80 text-blue-100 transition-colors disabled:opacity-50 ${focusIdx === 1 ? ring : ''}`}
         >
           Always Allow
         </button>
       ) : null}
       <button
-        ref={el => { buttonsRef.current[hasSuggestions ? 2 : 1] = el; }}
+        ref={el => { buttonsRef.current[canAlwaysAllow ? 2 : 1] = el; }}
         disabled={responding}
         onClick={() => handleRespond({ decision: { behavior: 'deny' } })}
-        className={`px-3 ${pad} text-xs font-medium rounded-sm bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50 ${focusIdx === (hasSuggestions ? 2 : 1) ? ring : ''}`}
+        className={`px-3 ${pad} text-xs font-medium rounded-sm bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50 ${focusIdx === (canAlwaysAllow ? 2 : 1) ? ring : ''}`}
       >
         No
       </button>
@@ -687,6 +746,7 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
           <PermissionButtons
             requestId={tool.requestId}
             suggestions={tool.permissionSuggestions}
+            denyListed={tool.denyListed}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

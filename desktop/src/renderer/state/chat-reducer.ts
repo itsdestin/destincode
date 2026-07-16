@@ -658,6 +658,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             status: synTool.status,
             requestId: synTool.requestId,
             permissionSuggestions: synTool.permissionSuggestions,
+            denyListed: synTool.denyListed,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
@@ -903,6 +904,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           status: 'awaiting-approval',
           requestId: action.requestId,
           permissionSuggestions: action.permissionSuggestions,
+          denyListed: action.denyListed,
         });
         found = true;
       }
@@ -917,6 +919,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           status: 'awaiting-approval',
           requestId: action.requestId,
           permissionSuggestions: action.permissionSuggestions,
+          denyListed: action.denyListed,
         });
 
         const groupId = nextGroupId();

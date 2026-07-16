@@ -672,12 +672,13 @@ describe('native runtime capability parity', () => {
 
 describe('native:*/provider:* channel parity', () => {
   const NEW_TYPES = [
-    'native:send', 'native:interrupt', 'native:set-binding', 'native:sessions-list',
+    'native:send', 'native:interrupt', 'native:set-binding', 'native:set-permission-mode', 'native:sessions-list',
     'provider:list', 'provider:upsert', 'provider:remove', 'provider:test', 'provider:set-key', 'provider:catalog',
   ];
   const CHANNEL_TO_CONST: Record<string, string> = {
     'native:send': 'IPC.NATIVE_SEND', 'native:interrupt': 'IPC.NATIVE_INTERRUPT',
-    'native:set-binding': 'IPC.NATIVE_SET_BINDING', 'native:sessions-list': 'IPC.NATIVE_SESSIONS_LIST',
+    'native:set-binding': 'IPC.NATIVE_SET_BINDING', 'native:set-permission-mode': 'IPC.NATIVE_SET_PERMISSION_MODE',
+    'native:sessions-list': 'IPC.NATIVE_SESSIONS_LIST',
     'provider:list': 'IPC.PROVIDER_LIST', 'provider:upsert': 'IPC.PROVIDER_UPSERT',
     'provider:remove': 'IPC.PROVIDER_REMOVE', 'provider:test': 'IPC.PROVIDER_TEST',
     'provider:set-key': 'IPC.PROVIDER_SET_KEY', 'provider:catalog': 'IPC.PROVIDER_CATALOG',

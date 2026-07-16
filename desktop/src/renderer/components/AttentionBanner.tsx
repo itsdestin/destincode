@@ -18,6 +18,21 @@ interface Props {
   /** Retry affordance shown only when state==='error'. Wired to re-send the
    *  last user message via the native send path (Task 12). */
   onRetry?: () => void;
+  /** Opens Settings → Model Providers. When the provider error is a
+   *  configuration problem (missing/disabled key), the bubble shows an
+   *  "Open Settings" button that calls this so the user can fix it in one hop. */
+  onOpenProviderSettings?: () => void;
+}
+
+// Provider-CONFIGURATION errors (missing API key, disabled provider, no endpoint)
+// all originate in main/providers/provider-registry.ts and deterministically end
+// with "Settings → Providers." — the one place that phrase is emitted. We match
+// that phrase rather than threading a structured `action` field through the event
+// data → NATIVE_SESSION_ERROR → SessionChatState → serialization → here (~8 files),
+// because the message has a single origin and is stable. Runtime/stream failures
+// ("502…", "The model request failed.") don't contain it, so they won't match.
+function isProviderConfigError(message: string | null | undefined): boolean {
+  return !!message && /Settings → Providers/.test(message);
 }
 
 const COPY: Record<Props['state'], string> = {
@@ -34,7 +49,7 @@ const COPY: Record<Props['state'], string> = {
 // neutral bubble styling to stay consistent with ThinkingIndicator.
 const DESTRUCTIVE: Props['state'][] = ['session-died', 'error'];
 
-export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry }: Props) {
+export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings }: Props) {
   const destructive = DESTRUCTIVE.includes(state);
   const bubbleBase = 'flex items-center gap-2 bg-inset rounded-2xl rounded-bl-sm px-4 py-2.5';
   const bubbleClasses = destructive
@@ -55,6 +70,9 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
   // Provider error text takes precedence over the generic 'error' COPY line.
   const line = state === 'error' && errorMessage ? errorMessage : COPY[state];
   const showRetry = state === 'error' && !!onRetry;
+  // Provider-CONFIG errors get a direct "Open Settings" jump to Model Providers.
+  const showOpenSettings =
+    state === 'error' && !!onOpenProviderSettings && isProviderConfigError(errorMessage);
 
   return (
     // in-view: opts the bubble into wallpaper-driven bubble glassmorphism
@@ -72,6 +90,17 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
             className="text-xs underline text-fg-dim hover:text-fg"
           >
             Try again
+          </button>
+        )}
+        {showOpenSettings && (
+          // ml-auto pushes the CTA to the right edge of the bubble, past the
+          // message text. Plain-words label (no glyph) per standing preference.
+          <button
+            type="button"
+            onClick={onOpenProviderSettings}
+            className="ml-auto shrink-0 text-xs font-medium rounded-md px-2.5 py-1 bg-accent text-on-accent hover:opacity-90 transition-opacity"
+          >
+            Open Settings
           </button>
         )}
       </div>

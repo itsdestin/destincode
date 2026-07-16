@@ -605,6 +605,18 @@ export class RemoteServer {
         this.respond(client.ws, type, id, ok);
         break;
       }
+      case 'native:set-permission-mode': {
+        // setPermissionMode THROWS on an unknown mode string — respond an error
+        // object (same convention as the provider CRUD handlers below) so the
+        // remote client's request id resolves instead of hanging to timeout.
+        try {
+          const mode = this.nativeRuntime ? this.nativeRuntime.nativeHost.setPermissionMode(payload.sessionId, payload.mode) : null;
+          this.respond(client.ws, type, id, mode);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
       case 'native:sessions-list': {
         this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
         break;
@@ -926,7 +938,11 @@ export class RemoteServer {
       }
       case 'permission:respond': {
         const { requestId, decision } = payload;
-        const result = this.hookRelay.respond(requestId, decision);
+        // Native asks share the channel; 'native-'-prefixed ids route to the
+        // broker first, then fall through to hookRelay (mirrors ipc-handlers).
+        const result = this.nativeRuntime?.nativeHost.respondPermission(requestId, decision)
+          ? true
+          : this.hookRelay.respond(requestId, decision);
         this.respond(client.ws, type, id, result);
         break;
       }

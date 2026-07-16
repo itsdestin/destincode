@@ -101,6 +101,11 @@ interface Props {
   onOpenClaudePreferences?: () => void;
   syncAutoOpen?: boolean;
   onSyncAutoOpenHandled?: () => void;
+  // Deep-link the Model Providers popup open on panel mount — used by the
+  // provider-error bubble's "Open Settings" jump. Desktop-only (the Model
+  // Providers section isn't mounted in AndroidSettings).
+  providersAutoOpen?: boolean;
+  onProvidersAutoOpenHandled?: () => void;
 }
 
 function timeAgo(timestamp: number): string {
@@ -166,7 +171,7 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   );
 }
 
-export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled }: Props) {
+export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: Props) {
   useEscClose(open, onClose);
   // Slide polish: track animation window so CSS can reduce backdrop-filter cost
   // and suppress scrollbar-thumb while the 300ms transform is running. Also
@@ -253,6 +258,8 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
                 onOpenClaudePreferences={onOpenClaudePreferences}
                 syncAutoOpen={syncAutoOpen}
                 onSyncAutoOpenHandled={onSyncAutoOpenHandled}
+                providersAutoOpen={providersAutoOpen}
+                onProvidersAutoOpenHandled={onProvidersAutoOpenHandled}
               />
             )}
           </div>
@@ -2109,7 +2116,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
 
 // ─── Desktop Settings (existing, unchanged) ─────────────────────────────────
 
-function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled }: {
+function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenThemeMarketplace, onPublishTheme, onOpenClaudePreferences, syncAutoOpen, onSyncAutoOpenHandled, providersAutoOpen, onProvidersAutoOpenHandled }: {
   open: boolean;
   onClose: () => void;
   onSendInput: (text: string) => void;
@@ -2121,6 +2128,9 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   onOpenClaudePreferences?: () => void;
   syncAutoOpen?: boolean;
   onSyncAutoOpenHandled?: () => void;
+  // Deep-link the Model Providers popup open (provider-error bubble jump).
+  providersAutoOpen?: boolean;
+  onProvidersAutoOpenHandled?: () => void;
 }) {
   const [config, setConfig] = useState<RemoteConfig | null>(null);
   const [tailscale, setTailscale] = useState<TailscaleInfo | null>(null);
@@ -2282,7 +2292,11 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
             Local Models (the Plan A/B/C native-runtime surfaces). Self-gated on
             native.supported, so it renders nothing in production until Phase 2.
             Desktop-authoritative — NOT mounted in AndroidSettings. */}
-        <ModelProvidersSection onOpenClaudePreferences={onOpenClaudePreferences} />
+        <ModelProvidersSection
+          onOpenClaudePreferences={onOpenClaudePreferences}
+          autoOpen={providersAutoOpen}
+          onAutoOpenHandled={onProvidersAutoOpenHandled}
+        />
 
         <RemoteButton
           config={config}
