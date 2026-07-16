@@ -9,7 +9,11 @@ describe('isPrivateIp', () => {
     ['100.64.0.1', true],                // CGNAT (includes Tailscale 100.x)
     ['0.0.0.0', true], ['8.8.8.8', false], ['93.184.216.34', false],
     ['::1', true], ['fd00::1', true], ['fc00::1', true], ['fe80::1', true],
-    ['::ffff:192.168.1.1', true],        // v4-mapped v6 re-checked as v4
+    ['::ffff:192.168.1.1', true],        // v4-mapped v6 (dotted form) re-checked as v4
+    // HEX-encoded v4-mapped forms — the shapes `new URL` ACTUALLY produces (C1 bypass):
+    ['::ffff:7f00:1', true],             // 127.0.0.1
+    ['::ffff:a00:1', true],              // 10.0.0.1
+    ['::ffff:a9fe:a9fe', true],          // 169.254.169.254 (cloud metadata)
     ['2606:2800:220:1:248:1893:25c8:1946', false],
   ])('%s → %s', (ip, expected) => expect(isPrivateIp(ip as string)).toBe(expected));
 });
@@ -34,6 +38,23 @@ describe('assertPublicHttpUrl', () => {
   it('accepts a public URL', async () => {
     const url = await assertPublicHttpUrl('https://example.com/page', resolves(['93.184.216.34']));
     expect(url.hostname).toBe('example.com');
+  });
+  it('rejects v4-mapped IPv6 literals in the HEX form new URL emits (C1)', async () => {
+    // new URL('http://[::ffff:127.0.0.1]/').hostname === '[::ffff:7f00:1]' — the
+    // dotted form NEVER reaches us in production, so these must be caught in hex.
+    const nope = vi.fn(); // must resolve as a literal IP: no DNS call
+    await expect(assertPublicHttpUrl('http://[::ffff:127.0.0.1]/', nope)).rejects.toThrow(/private|internal/i);
+    await expect(assertPublicHttpUrl('http://[::ffff:10.0.0.1]/', nope)).rejects.toThrow(/private|internal/i);
+    await expect(assertPublicHttpUrl('http://[::ffff:169.254.169.254]/', nope)).rejects.toThrow(/private|internal/i);
+    expect(nope).not.toHaveBeenCalled();
+  });
+  it('rejects decimal/hex/octal literal encodings of a private IP', async () => {
+    // These all normalize to 127.0.0.1 via new URL — good today but previously untested.
+    const nope = vi.fn();
+    await expect(assertPublicHttpUrl('http://2130706433/', nope)).rejects.toThrow(/private|internal/i);   // decimal
+    await expect(assertPublicHttpUrl('http://0x7f000001/', nope)).rejects.toThrow(/private|internal/i);   // hex
+    await expect(assertPublicHttpUrl('http://017700000001/', nope)).rejects.toThrow(/private|internal/i); // octal
+    expect(nope).not.toHaveBeenCalled();
   });
 });
 
@@ -61,6 +82,9 @@ describe('guardedFetch', () => {
       guardedFetch('https://example.com/a', { signal: new AbortController().signal, lookup: publicLookup, fetchImpl: fetchMock as unknown as typeof fetch }),
     ).rejects.toThrow(/redirect/i);
     expect(fetchMock).toHaveBeenCalledTimes(6); // initial + 5 hops
+    // I1: ONE deadline shared across hops (total budget), not a fresh 30s per hop.
+    const signals = fetchMock.mock.calls.map((c) => c[1].signal);
+    expect(new Set(signals).size).toBe(1);
   });
 
   it('returns the final response + finalUrl on success', async () => {

@@ -30,8 +30,24 @@ export function isPrivateIp(ip: string): boolean {
   if (lower === '::' || lower === '::1') return true;
   if (lower.startsWith('fc') || lower.startsWith('fd')) return true;    // fc00::/7 ULA
   if (/^fe[89ab]/.test(lower)) return true;                             // fe80::/10 link-local
-  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);          // v4-mapped
-  if (mapped) return isPrivateIp(mapped[1]);
+  // v4-mapped IPv6 (::ffff:0:0/96) — CRITICAL: `new URL` NORMALIZES the embedded
+  // v4 to HEX groups, so http://[::ffff:127.0.0.1]/ arrives as `::ffff:7f00:1`,
+  // NOT the dotted form. The old dotted-only regex missed every real request and
+  // let ::ffff:169.254.169.254 (cloud metadata) through — the classic bypass.
+  // Decode BOTH encodings: a dotted remainder is used as-is; otherwise the
+  // trailing hex group(s) ARE the embedded v4 (its low 32 bits), which we rebuild
+  // into a dotted-quad (each ≤4-digit hex group is 2 octets) and re-check.
+  if (lower.startsWith('::ffff:')) {
+    const rest = lower.slice('::ffff:'.length);                        // e.g. '7f00:1' or '127.0.0.1'
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(rest)) return isPrivateIp(rest);
+    const groups = rest.split(':').filter(Boolean);                    // '::ffff:0:7f00:1' → ['0','7f00','1']
+    if (groups.length >= 1 && groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) {
+      const low = parseInt(groups[groups.length - 1], 16);             // low 16 bits → last two octets
+      const high = groups.length >= 2 ? parseInt(groups[groups.length - 2], 16) : 0; // high 16 bits → first two
+      const v4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+      return isPrivateIp(v4);
+    }
+  }
   return false;
 }
 
@@ -43,7 +59,9 @@ export async function assertPublicHttpUrl(raw: string, lookup: LookupFn = defaul
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new NetGuardError(`Only http and https URLs can be fetched (got ${url.protocol.replace(':', '')}).`);
   }
-  const host = url.hostname.replace(/^\[|\]$/g, ''); // strip v6 brackets
+  // strip v6 brackets, then a FQDN trailing dot ('localhost.' / 'foo.local.')
+  // so it can't slip past the localhost/.local name checks below.
+  const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (isIP(host)) {
     if (isPrivateIp(host)) throw new NetGuardError(`${host} is a private/internal address — fetching it is blocked.`);
     return url;
@@ -71,30 +89,40 @@ export interface GuardedFetchOpts {
   headers?: Record<string, string>;
 }
 
-/** Fetch with MANUAL redirect following: every hop re-runs assertPublicHttpUrl. */
+/** Fetch with MANUAL redirect following: every hop re-runs assertPublicHttpUrl.
+ *  Timeout/abort surfaces as a DOMException (AbortError) from fetch — NOT a
+ *  NetGuardError — which the tool layer translates for the user (spec §3.1). */
 export async function guardedFetch(rawUrl: string, opts: GuardedFetchOpts): Promise<{ res: Response; finalUrl: string }> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const lookup = opts.lookup ?? defaultLookup;
+  // ONE deadline for the WHOLE call: 30s is the TOTAL wall-clock budget ACROSS
+  // all redirect hops, not per-hop. Built once before the loop — building it
+  // inside would give 6 hops × 30s = up to 180s, defeating the cap.
+  const deadline = AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs ?? 30_000)]);
   let current = rawUrl;
   for (let hop = 0; ; hop++) {
     const url = await assertPublicHttpUrl(current, lookup);
     const res = await fetchImpl(url.toString(), {
       redirect: 'manual',
       headers: { 'User-Agent': 'YouCoded', accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8', ...opts.headers },
-      signal: AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs ?? 30_000)]),
+      signal: deadline,
     });
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       if (!location) throw new NetGuardError(`${url.hostname} answered ${res.status} with no Location header.`);
       if (hop >= MAX_REDIRECTS) throw new NetGuardError(`Gave up after ${MAX_REDIRECTS} redirects (last: ${current}).`);
       current = new URL(location, url).toString(); // relative Location supported
+      await res.body?.cancel().catch(() => { /* already closed */ }); // release the socket before the next hop
       continue;
     }
     return { res, finalUrl: current };
   }
 }
 
-/** Stream the body up to maxBytes; flag truncation instead of buffering unbounded. */
+/** Stream the body up to maxBytes; flag truncation instead of buffering unbounded.
+ *  Note: the cap is a BYTE cut, so a multi-byte UTF-8 codepoint straddling the
+ *  boundary decodes to a single U+FFFD replacement char — acceptable for a
+ *  truncated preview; the tool layer already signals truncation to the user. */
 export async function readBodyCapped(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
   if (!res.body) return { text: await res.text(), truncated: false };
   const reader = res.body.getReader();
