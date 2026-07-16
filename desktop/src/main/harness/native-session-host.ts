@@ -14,10 +14,10 @@
 // not wait on disk) AND enqueue the append on the per-session chain. A renderer
 // crash losing an unpersisted event is acceptable; a stuttering UI is not.
 import { EventEmitter } from 'events';
-import type { ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, type ModelFactory } from './harness-session';
+import { rebuildHistory } from './history-rebuild';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision } from './permission-broker';
 import { CHAT_PRESET } from '../../shared/harness-manifest';
@@ -163,30 +163,14 @@ export class NativeSessionHost extends EventEmitter {
       { sessionId, cwd, harness: CHAT_PRESET, binding: header.binding, contextLength },
       this.modelFactory,
     );
-    session.seedHistory(this.eventsToMessages(this.store.readEvents(sessionId, cwd)));
+    // Full history rebuild (spec §2.5): rebuildHistory reconstructs the assistant
+    // tool-call + tool-result pairs too (the old eventsToMessages dropped every
+    // tool event, so a resumed tool turn lost its tool context). seedHistory
+    // already clears readRegistry + todos (the reset-on-resume ruling) — those
+    // are runtime state, never persisted.
+    session.seedHistory(rebuildHistory(this.store.readEvents(sessionId, cwd)));
     this.wire(sessionId, cwd, session);
     return true;
-  }
-
-  /** Stored transcript events → AI SDK message history. User messages map 1:1;
-   *  the assistant-text fragments of a turn merge into a SINGLE assistant
-   *  message (append to the last pushed message when it's already assistant).
-   *  All other event types are ignored (they carry no model-visible content). */
-  private eventsToMessages(events: TranscriptEvent[]): ModelMessage[] {
-    const out: ModelMessage[] = [];
-    for (const e of events) {
-      if (e.type === 'user-message' && typeof e.data?.text === 'string') {
-        out.push({ role: 'user', content: e.data.text });
-      } else if (e.type === 'assistant-text' && typeof e.data?.text === 'string') {
-        const last = out[out.length - 1];
-        if (last && last.role === 'assistant' && typeof last.content === 'string') {
-          last.content += e.data.text;
-        } else {
-          out.push({ role: 'assistant', content: e.data.text });
-        }
-      }
-    }
-    return out;
   }
 
   isNative(sessionId: string): boolean {

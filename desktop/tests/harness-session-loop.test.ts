@@ -13,44 +13,10 @@ import type { NativeTool } from '../src/main/harness/tools/types';
 import type { TranscriptEvent } from '../src/shared/types';
 import type { PermissionDecision } from '../src/shared/permission-types';
 import type { AskRequest, AskDecision } from '../src/main/harness/permission-broker';
-import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
-
-// --- Mock stream chunk builders (RAW LanguageModelV4 shape, per the contract
-// test): text needs stream-start/text-start/delta/text-end framing; tool-call
-// input is a JSON STRING; finish carries finishReason as { unified, raw } and
-// nested usage. streamText transforms all of these for the fullStream. ---
-function textChunks(id: string, text: string) {
-  return [
-    { type: 'text-start', id },
-    { type: 'text-delta', id, delta: text },
-    { type: 'text-end', id },
-  ];
-}
-function toolCallChunk(toolCallId: string, toolName: string, input: unknown) {
-  return { type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) };
-}
-function finishChunk(reason: string, inTok = 1, outTok = 1) {
-  return { type: 'finish', finishReason: { unified: reason, raw: reason }, usage: { inputTokens: { total: inTok }, outputTokens: { total: outTok } } };
-}
-/** A full scripted stream (one streamText call). */
-function stream(...chunks: any[]) {
-  return [{ type: 'stream-start', warnings: [] }, ...chunks];
-}
-
-/** A model whose doStream returns a DIFFERENT scripted stream per call, driven
- *  by a call counter — this is how one turn drives multiple steps. Also records
- *  the prompt each call saw (for history assertions). */
-function scriptedModel(scripts: any[][], seenPrompts?: any[]) {
-  let call = 0;
-  return new MockLanguageModelV4({
-    doStream: async (req: any) => {
-      seenPrompts?.push(req.prompt);
-      const chunks = scripts[Math.min(call, scripts.length - 1)];
-      call++;
-      return { stream: simulateReadableStream({ chunks }) };
-    },
-  });
-}
+// Scripted-mock builders live in a shared helper — the history-rebuild test
+// (Task 10) drives the same mock model so its deep-equal contract exercises the
+// exact grouping this suite pins.
+import { textChunks, toolCallChunk, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
 
 // A permissive fake tool that RECORDS executions. subject undefined by default
 // (so the tool-layer guards are skipped and decide() is the sole gate — the
