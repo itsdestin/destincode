@@ -29,6 +29,16 @@ export type KeyedBackend = 'tavily' | 'exa';
 
 const FILE = 'search-providers.json';
 const LABELS: Record<KeyedBackend, string> = { tavily: 'Tavily', exa: 'Exa' };
+// The `backend` arg is TYPED KeyedBackend but arrives over an untrusted IPC
+// channel (a remote WS client can send any string). Validate mutations against
+// this set so a bogus id can't persist junk `providers:{<garbage>:…}` into the
+// syncable file (and strand a SecretsStore blob).
+const KEYED_BACKENDS: readonly KeyedBackend[] = ['tavily', 'exa'];
+function assertKeyedBackend(backend: KeyedBackend): void {
+  if (!KEYED_BACKENDS.includes(backend)) {
+    throw new Error(`Unknown search provider "${String(backend)}".`);
+  }
+}
 
 // On-disk shape: { providers: { tavily?: { secretRef }, exa?: { secretRef } } }.
 // Every field is optional because the file is user-syncable and may be
@@ -54,6 +64,7 @@ export class SearchKeyStore {
    * follow-up; deliberately NOT built here).
    */
   async setKey(backend: KeyedBackend, key: string): Promise<void> {
+    assertKeyedBackend(backend);
     // Reject empty/whitespace-only keys BEFORE touching SecretsStore: otherwise
     // we'd encrypt "" and surface a "key saved" badge for a key that can't auth.
     if (!key.trim()) throw new Error('Cannot save an empty API key.');
@@ -83,6 +94,7 @@ export class SearchKeyStore {
    * un-deletable orphan blob with no pointer left to find it by.
    */
   async removeKey(backend: KeyedBackend): Promise<void> {
+    assertKeyedBackend(backend);
     const ref = await this.refFor(backend);
     if (ref) await this.secrets.delete(ref);
     await this.home.mutateJson(FILE, (cur) => {

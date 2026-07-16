@@ -134,5 +134,11 @@ describe('SearchService', () => {
       expect(res.ok).toBe(false);
       expect(res.message).toBe('Tavily rejected the API key.');
     });
+    it('unknown backend (untrusted IPC) → clean { ok: false }, no internals-leak', async () => {
+      const res = await svc(async () => R).testBackend('brave' as any, 'k');
+      expect(res.ok).toBe(false);
+      expect(res.message).toMatch(/unknown search provider/i);
+      expect(res.message).not.toMatch(/undefined|cannot read/i);
+    });
   });
 });

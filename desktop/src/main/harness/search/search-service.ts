@@ -55,8 +55,14 @@ export class SearchService {
 
   /** Never-throw key check for the Settings "Test" button (testConnection pattern). */
   async testBackend(backend: 'tavily' | 'exa', key: string): Promise<{ ok: boolean; message: string }> {
+    // The IPC arg is TYPED 'tavily'|'exa' but comes from an untrusted channel
+    // (a remote WS client can send any string). Validate before indexing, or a
+    // bogus backend hits `undefined.search` → a TypeError whose message leaks
+    // internals into the UI (error-message-standards.md forbids).
+    const impl = this.backends[backend];
+    if (!impl) return { ok: false, message: `Unknown search provider "${String(backend)}".` };
     try {
-      const results = await this.backends[backend].search('youcoded connectivity test', {
+      const results = await impl.search('youcoded connectivity test', {
         key, signal: AbortSignal.timeout(PER_BACKEND_TIMEOUT_MS),
       });
       return { ok: true, message: `Working — ${results.length} results returned.` };

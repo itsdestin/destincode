@@ -119,4 +119,13 @@ describe('SearchKeyStore', () => {
     expect(secrets.m.size).toBe(0);       // nothing encrypted
     expect((await s.list()).find((p) => p.id === 'tavily')?.hasKey).toBe(false);
   });
+  it('rejects an unknown backend (untrusted IPC) without persisting junk', async () => {
+    const home = fakeHome();
+    const secrets = fakeSecrets();
+    const s = new SearchKeyStore(home, secrets as any);
+    await expect(s.setKey('brave' as any, 'k')).rejects.toThrow(/unknown search provider/i);
+    await expect(s.removeKey('brave' as any)).rejects.toThrow(/unknown search provider/i);
+    expect(secrets.m.size).toBe(0);                              // nothing encrypted
+    expect(home.readJson('search-providers.json')).toBeNull();  // file untouched
+  });
 });
