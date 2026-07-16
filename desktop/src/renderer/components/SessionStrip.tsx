@@ -6,7 +6,7 @@ import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
-import { useNativeBinding, RuntimeBindingFields, loadLastBinding, persistLastBinding, defaultPresetFor, type Runtime, type Binding, type PresetId } from './RuntimeBinding';
+import { useNativeBinding, usePreset, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
@@ -179,15 +179,10 @@ export default function SessionStrip({
   const [runtime, setRuntime] = useState<Runtime>('claude');
   const [binding, setBinding] = useState<Binding | null>(() => loadLastBinding());
   const nb = useNativeBinding({ active: showNewForm, runtime, binding, setBinding });
-  // Native harness preset (Assistant | Coder). Seeded from the project-folder
-  // heuristic (defaultPresetFor) until the user picks one — presetTouched latches
-  // on the first manual pick so the heuristic stops overriding their choice, and
-  // resets when the form (re)opens.
-  const [preset, setPreset] = useState<PresetId>('assistant');
-  const presetTouched = useRef(false);
-  useEffect(() => {
-    if (!presetTouched.current) setPreset(defaultPresetFor(newCwd));
-  }, [newCwd]);
+  // Native harness preset (Assistant | Coder) — shared lifecycle hook (see
+  // RuntimeBinding.usePreset). Follows the folder heuristic until the user picks a
+  // card, then latches; re-arms every time the form (re)opens via `showNewForm`.
+  const { preset, setPreset } = usePreset({ active: showNewForm, cwd: newCwd });
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -1015,7 +1010,7 @@ export default function SessionStrip({
                 onRuntime={setRuntime}
                 nb={nb}
                 preset={preset}
-                onPreset={(p) => { presetTouched.current = true; setPreset(p); }}
+                onPreset={setPreset}
               />
               {/* Model selector (Claude aliases) — hidden for the native runtime,
                   which chooses a model via the provider/model binding picker above. */}
@@ -1098,10 +1093,8 @@ export default function SessionStrip({
                   setNewCwd(defaultProjectFolder || '');
                   setDangerous(defaultSkipPermissions || false);
                   setNewModel(defaultModel || 'sonnet');
-                  // Re-arm the preset heuristic each time the form opens so the
-                  // defaultProjectFolder seed re-derives the preset (Coder when a
-                  // folder is preset, Assistant otherwise).
-                  presetTouched.current = false;
+                  // usePreset re-arms the heuristic itself on the showNewForm
+                  // false→true edge — no manual touched reset needed here.
                   setShowNewForm(true);
                 }}
                 className="flex-1 px-3 py-2 text-sm text-fg-dim hover:bg-inset hover:text-fg transition-colors flex items-center justify-center gap-1.5"

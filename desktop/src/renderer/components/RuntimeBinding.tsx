@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
 
@@ -10,6 +10,57 @@ export type PresetId = 'assistant' | 'coder';
 /** Spec §3.4 heuristic: a project folder set at form-open → Coder, else Assistant.
  *  Both new-session forms seed the preset from this until the user picks one. */
 export function defaultPresetFor(cwd: string): PresetId { return cwd.trim() ? 'coder' : 'assistant'; }
+
+// Preset lifecycle (spec §3.4): follow the folder heuristic (folder set → Coder,
+// empty → Assistant) UNTIL the user explicitly picks a card, then latch. Lifted
+// here so both new-session forms share ONE implementation (the whole reason
+// RuntimeBinding exists) — a per-form copy already drifted on the re-arm bug (I2):
+// the old code re-armed by resetting a `touched` ref AND setting cwd back to the
+// default folder, relying on a cwd-change to re-run a `useEffect([cwd])`. But
+// after the first create the folder is ALREADY the default, so `setCwd(same)`
+// caused no state change → the effect didn't re-run → the user's last manual pick
+// stuck even though `touched` was cleared. The fix keys the re-arm on `active`
+// (form open) transitioning false→true and re-derives EXPLICITLY from the current
+// cwd, so an unchanged cwd can no longer trap it.
+export function usePreset({ active, cwd }: { active: boolean; cwd: string }): {
+  preset: PresetId;
+  setPreset: (p: PresetId) => void;   // marks touched (latches the manual pick)
+} {
+  const [preset, setPresetState] = useState<PresetId>(() => defaultPresetFor(cwd));
+  // Has the user manually picked a card this open? While false, `preset` tracks
+  // the folder heuristic; once true, the manual pick sticks even if cwd changes.
+  const touched = useRef(false);
+  // Previous `active`, so we can detect the false→true (fresh open) edge.
+  const prevActive = useRef(active);
+
+  // Track the folder heuristic while the user hasn't picked. Pure derivation from
+  // cwd (no state writes when touched) — can't loop (dep is only cwd).
+  useEffect(() => {
+    if (!touched.current) setPresetState(defaultPresetFor(cwd));
+  }, [cwd]);
+
+  // Re-arm on each fresh OPEN: when the form goes closed→open, drop the latch and
+  // re-derive from the CURRENT cwd DIRECTLY. Keyed on `active` (not cwd), so the
+  // "cwd unchanged after create" trap that broke the per-form copies can't recur —
+  // this always fires on open regardless of whether cwd moved.
+  useEffect(() => {
+    if (active && !prevActive.current) {
+      touched.current = false;
+      setPresetState(defaultPresetFor(cwd));
+    }
+    prevActive.current = active;
+    // cwd is intentionally read but NOT a dependency: the re-arm must trigger on
+    // the `active` edge alone, using whatever cwd is current at that commit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
+  const setPreset = useCallback((p: PresetId) => {
+    touched.current = true;   // latch — the heuristic stops overriding this pick
+    setPresetState(p);
+  }, []);
+
+  return { preset, setPreset };
+}
 
 // Shared "Runtime" selector (Claude Code vs the YouCoded native harness) + the
 // native provider/model binding picker, used by BOTH new-session forms — the

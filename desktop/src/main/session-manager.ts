@@ -94,8 +94,11 @@ export class SessionManager extends EventEmitter {
         // Seed the resolved-preset badge on the FIRST push for a fresh create
         // (opts.preset is the user's pick, which equals the resolved id for the
         // two built-ins). ipc-handlers re-stamps the authoritative resolved id
-        // after nativeHost.create/resume; on resume the id is header-derived and
-        // arrives via that re-stamp + list() refresh (unknown here).
+        // after nativeHost.create/resume. On RESUME the id is header-derived and
+        // unknown here (left absent). It does NOT reach the live pill via the
+        // re-stamp — session:created is sent before create/resume awaits, so the
+        // renderer patches the pill from the SESSION_CREATE invoke's RETURN value
+        // (App.createSession / handleResumeSession), which carries the re-stamped id.
         ...(opts.preset && !opts.resumeSessionId ? { harnessId: opts.preset } : {}),
         ...(opts.initialInput !== undefined ? { initialInput: opts.initialInput } : {}),
       };
