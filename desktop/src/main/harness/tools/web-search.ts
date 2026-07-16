@@ -18,8 +18,13 @@ export const WebSearchTool = defineTool<z.infer<typeof inputSchema>>({
     }
     try {
       const { results, source } = await ctx.services.search.search(args.query, ctx.signal);
+      // Result fields are UNTRUSTED web content interpolated into a numbered
+      // markdown list. Collapse internal whitespace/newlines so a title like
+      // "\n\n2. **fake**" can't fabricate extra list items or inject
+      // instruction-shaped lines into the model-facing text.
+      const clean = (s: string) => s.replace(/\s+/g, ' ').trim();
       const lines = results.slice(0, 8).map((r, i) =>
-        `${i + 1}. **${r.title}**\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ''}`);
+        `${i + 1}. **${clean(r.title)}**\n   ${clean(r.url)}${r.snippet ? `\n   ${clean(r.snippet)}` : ''}`);
       return { text: `Web search results for "${args.query}" (via ${source}):\n\n${lines.join('\n\n')}` };
     } catch (err: any) {
       if (err instanceof SearchUnavailableError) return { text: err.message, isError: true };

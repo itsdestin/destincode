@@ -24,11 +24,18 @@ export class SearchService {
     const failures: string[] = [];
     let anyKey = false;
     for (const entry of await this.chain.get()) {
+      // Defend the precondition HERE, don't trust the chain layer: search-chain.ts
+      // filters to VALID_BACKENDS today, but that's an unstated cross-file
+      // invariant. If the chain ever names a backend with no registered impl,
+      // a bare this.backends[x].search would TypeError and leak an internals
+      // message (error-message-standards.md forbids). Surface a clean failure.
+      const impl = this.backends[entry.backend];
+      if (!impl) { failures.push(`${entry.backend}: no backend implementation registered`); continue; }
       const key = entry.backend === 'ddg' ? null : await this.keys.getKey(entry.backend);
       if (key) anyKey = true;
       if (entry.requiresKey && !key) continue;
       try {
-        const results = await this.backends[entry.backend].search(query, {
+        const results = await impl.search(query, {
           key, signal: AbortSignal.any([signal, AbortSignal.timeout(PER_BACKEND_TIMEOUT_MS)]),
         });
         if (results.length > 0) return { results, source: entry.backend };
@@ -38,9 +45,11 @@ export class SearchService {
         failures.push(`${entry.backend}: ${err instanceof SearchBackendError ? err.message : `Could not reach the service (${err?.message ?? err}).`}`);
       }
     }
+    // These hints become the isError tool text the model may relay VERBATIM, so
+    // phrase them as plain pass-through statements — no "tell the user:" meta.
     const hint = anyKey
       ? 'All configured search backends failed — this may be temporary.'
-      : 'Tell the user: adding a free Tavily or Exa API key in Settings → Providers makes web search reliable.';
+      : 'Web search has no API key configured; adding a free Tavily or Exa key in Settings → Providers makes it faster and more reliable.';
     throw new SearchUnavailableError(`Web search is unavailable right now. ${failures.join(' | ')}. ${hint}`);
   }
 
