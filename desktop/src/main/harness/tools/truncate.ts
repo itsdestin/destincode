@@ -10,14 +10,19 @@ export function truncateOutput(text: string, opts: TruncateOpts): TruncateResult
     const lines = out.split('\n');
     if (lines.length > opts.maxLines) {
       const head = lines.slice(0, Math.ceil(opts.maxLines * 0.8));
-      const tail = lines.slice(-Math.floor(opts.maxLines * 0.2));
+      // Guard slice(-0): Math.floor(maxLines*0.2)===0 (maxLines<=4) would make
+      // slice(-0) return the WHOLE array, blowing output past the input size.
+      const tailN = Math.floor(opts.maxLines * 0.2);
+      const tail = tailN > 0 ? lines.slice(-tailN) : [];
       out = [...head, `[... ${lines.length - opts.maxLines} lines omitted ...]`, ...tail].join('\n');
       truncated = true;
     }
   }
   if (out.length > opts.maxChars) {
     const head = out.slice(0, Math.ceil(opts.maxChars * 0.8));
-    const tail = out.slice(-Math.floor(opts.maxChars * 0.2));
+    // Same slice(-0) guard as the line path: an empty tail when maxChars<=4.
+    const tailN = Math.floor(opts.maxChars * 0.2);
+    const tail = tailN > 0 ? out.slice(-tailN) : '';
     out = `${head}\n[...]\n${tail}`;
     truncated = true;
   }
