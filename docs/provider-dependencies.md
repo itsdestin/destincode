@@ -6,7 +6,9 @@ in the youcoded-dev workspace).
 
 ## Pinned versions
 
-_None yet — Phase 1 pins the AI SDK major/minor here._
+- **ai** — `7.0.22` (Vercel AI SDK). Stream-part, finish-reason, and
+  tool-call/tool-result message shapes pinned by
+  `desktop/tests/harness-*.test.ts`.
 
 ## Touchpoints (to be filled as built)
 
@@ -25,15 +27,15 @@ _None yet — Phase 1 pins the AI SDK major/minor here._
   `{ type:'tool-call', toolCallId, toolName, input:<object> }` part plus a
   `role:'tool'` message whose parts are
   `{ type:'tool-result', toolCallId, toolName, output:{ type:'text', value } }`
-  — the v7 field is `output` (a `ToolResultOutput`), NOT `result`. Error
-  surface (for the Task 9 retry wrapper): `streamText` returns synchronously
-  and never throws; a `doStream` rejection appears as a `{ type:'error' }`
-  fullStream part AND rejects the awaited promises (`result.text` throws
-  `AI_NoOutputGeneratedError`); the SDK already wraps calls in
-  `retryWithExponentialBackoff` internally. Field names verified against
-  ai@7.0.22 and PINNED by
+  — the v7 field is `output` (a `ToolResultOutput`), NOT `result`. Field names
+  verified against ai@7.0.22 and PINNED by
   `desktop/tests/harness-sdk-toolcall-contract.test.ts` — run it first on any
-  ai bump. (harness)
+  ai bump. Error surface (verified empirically during the spike, NOT pinned by
+  the test — Task 9's retry wrapper adds its own coverage): `streamText`
+  returns synchronously and never throws; a `doStream` rejection appears as a
+  `{ type:'error' }` fullStream part AND rejects the awaited promises
+  (`result.text` throws `AI_NoOutputGeneratedError`); the SDK already wraps
+  calls in `retryWithExponentialBackoff` internally. (harness)
 - **models.dev `api.json` schema** — `https://models.dev/api.json`, shape
   `{ [providerKey]: { models: { [modelId]: {...} } } }`. Fields consumed per
   model row: `name` (string label), `limit.context` (number → contextLength),

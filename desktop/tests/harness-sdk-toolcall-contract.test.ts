@@ -67,6 +67,11 @@ describe('ai@7 tool-call stream contract (provider-dependencies row)', () => {
   });
 
   it('accepts assistant tool-call + tool-result messages in history', async () => {
+    // The teeth: the `result.text` assertion LOOKS tautological, but streamText
+    // runs standardizePrompt over `messages` at call time — a wrong field name
+    // (e.g. `result` instead of `output`, or a bad part shape) throws
+    // AI_InvalidPromptError before the mock stream is ever read. This test fails
+    // if the v7 tool-result message shape drifts. Do not weaken or delete it.
     const messages = [
       { role: 'user' as const, content: 'read it' },
       { role: 'assistant' as const, content: [
