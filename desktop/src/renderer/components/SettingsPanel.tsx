@@ -2292,7 +2292,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
 
   return (
     <>
-      <div className="flex-1 px-4 py-4 space-y-6">
+      <div className="flex-1 px-4 py-4 space-y-2">
 
         {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
         <AccountSection />
@@ -2340,153 +2340,117 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
           onSetShowAddDevice={setShowAddDevice}
         />
 
-        {/* Other */}
-        <section>
-          <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Other</h3>
-          <div className="space-y-2">
-            <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
+        <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
-            {/* Development — bug reports, contributions, known issues */}
-            <button
-              onClick={() => setShowDevMenu(true)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+        {/* Development — bug reports, contributions, known issues */}
+        <SettingsRow
+          icon={
+            // {YC} — curly braces with YC monogram in Cascadia Mono (matches
+            // the "Development" label's font size).
+            <svg className="w-6 h-4 text-fg-muted" viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 4 C 3 4 3 7 3 9 C 3 11 2 12 1 12 C 2 12 3 13 3 15 C 3 17 3 20 5 20" />
+              <path d="M27 4 C 29 4 29 7 29 9 C 29 11 30 12 31 12 C 30 12 29 13 29 15 C 29 17 29 20 27 20" />
+              <text x="16" y="17" textAnchor="middle" fontFamily="'Cascadia Code', 'Cascadia Mono', Consolas, monospace" fontSize="16" fontWeight="500" fill="currentColor" stroke="none">YC</text>
+            </svg>
+          }
+          title="Development"
+          subtitle="Report a bug, contribute, or browse known issues"
+          onClick={() => setShowDevMenu(true)}
+        />
+        <DevelopmentPopup
+          open={showDevMenu}
+          onClose={() => setShowDevMenu(false)}
+          onOpenBug={() => { setShowDevMenu(false); setShowBugReport(true); }}
+          onOpenContribute={() => { setShowDevMenu(false); setShowContribute(true); }}
+        />
+        <BugReportPopup open={showBugReport} onClose={() => setShowBugReport(false)} />
+        <ContributePopup open={showContribute} onClose={() => setShowContribute(false)} />
+
+        {/* Keyboard Shortcuts */}
+        <SettingsRow
+          icon={
+            <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M8 16h8" />
+            </svg>
+          }
+          title="Keyboard Shortcuts"
+          subtitle="View all hotkeys"
+          onClick={() => setShowShortcuts(true)}
+        />
+        <ShortcutsPopup open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+
+        <SettingsRow
+          icon={
+            <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z" />
+            </svg>
+          }
+          title="Donate"
+          subtitle="Support YouCoded development"
+          onClick={() => setShowDonateConfirm(true)}
+        />
+
+        {/* Donate confirmation modal */}
+        {showDonateConfirm && createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setShowDonateConfirm(false)}>
+            <div className="absolute inset-0 layer-scrim" data-layer="2" />
+            <div
+              className="layer-surface relative p-6 max-w-xs w-full mx-4 text-center"
+              onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-                {/* {YC} — curly braces with YC monogram in Cascadia Mono (matches the */}
-                {/* "Development" label's font size). Wider viewBox/icon (32×24 → 24×16) */}
-                {/* than the other Other-section icons because monospace YC at the */}
-                {/* requested size won't fit alongside brackets in a 16×16 box. */}
-                <svg className="w-6 h-4 text-fg-muted" viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 4 C 3 4 3 7 3 9 C 3 11 2 12 1 12 C 2 12 3 13 3 15 C 3 17 3 20 5 20" />
-                  <path d="M27 4 C 29 4 29 7 29 9 C 29 11 30 12 31 12 C 30 12 29 13 29 15 C 29 17 29 20 27 20" />
-                  <text x="16" y="17" textAnchor="middle" fontFamily="'Cascadia Code', 'Cascadia Mono', Consolas, monospace" fontSize="16" fontWeight="500" fill="currentColor" stroke="none">YC</text>
+              <p className="text-xs text-fg-muted mb-1">Donations supported via</p>
+              <div className="flex items-center justify-center gap-2 mb-5">
+                {/* Custom coffee-mug icon: body + handle + rising steam. Ties to "Buy Me a Coffee" label via BMC yellow. */}
+                <svg className="w-5 h-5 text-[#FFDD00]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M7 2v2M11 2v2M15 2v2" />
+                  <path d="M3 8h14v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8z" />
+                  <path d="M17 11h2a2.5 2.5 0 0 1 0 5h-2" />
                 </svg>
+                <span className="text-sm font-bold text-fg">Buy Me a Coffee</span>
               </div>
-              <div className="flex-1 min-w-0">
-                <span className="text-xs text-fg font-medium">Development</span>
-                <p className="text-[10px] text-fg-muted">Report a bug, contribute, or browse known issues</p>
-              </div>
-              <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-            <DevelopmentPopup
-              open={showDevMenu}
-              onClose={() => setShowDevMenu(false)}
-              onOpenBug={() => { setShowDevMenu(false); setShowBugReport(true); }}
-              onOpenContribute={() => { setShowDevMenu(false); setShowContribute(true); }}
-            />
-            <BugReportPopup open={showBugReport} onClose={() => setShowBugReport(false)} />
-            <ContributePopup open={showContribute} onClose={() => setShowContribute(false)} />
-
-            {/* Keyboard Shortcuts */}
-            <button
-              onClick={() => setShowShortcuts(true)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-            >
-              <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-                <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M8 16h8" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <span className="text-xs text-fg font-medium">Keyboard Shortcuts</span>
-                <p className="text-[10px] text-fg-muted">View all hotkeys</p>
-              </div>
-              <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-            <ShortcutsPopup open={showShortcuts} onClose={() => setShowShortcuts(false)} />
-
-            <button
-              onClick={() => setShowDonateConfirm(true)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-            >
-              <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-                <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z" />
-                  </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <span className="text-xs text-fg font-medium">Donate</span>
-                <p className="text-[10px] text-fg-muted">Support YouCoded development</p>
-              </div>
-              <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-
-            {/* Donate confirmation modal */}
-            {showDonateConfirm && createPortal(
-              <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setShowDonateConfirm(false)}>
-                <div className="absolute inset-0 layer-scrim" data-layer="2" />
-                <div
-                  className="layer-surface relative p-6 max-w-xs w-full mx-4 text-center"
-                  onClick={(e) => e.stopPropagation()}
+              <p className="text-[11px] text-fg-dim mb-5">Okay to open donation link?</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowDonateConfirm(false)}
+                  className="flex-1 text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
                 >
-                  <p className="text-xs text-fg-muted mb-1">Donations supported via</p>
-                  <div className="flex items-center justify-center gap-2 mb-5">
-                    {/* Custom coffee-mug icon: body + handle + rising steam. Ties to "Buy Me a Coffee" label via BMC yellow. */}
-                    <svg className="w-5 h-5 text-[#FFDD00]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M7 2v2M11 2v2M15 2v2" />
-                      <path d="M3 8h14v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8z" />
-                      <path d="M17 11h2a2.5 2.5 0 0 1 0 5h-2" />
-                    </svg>
-                    <span className="text-sm font-bold text-fg">Buy Me a Coffee</span>
-                  </div>
-                  <p className="text-[11px] text-fg-dim mb-5">Okay to open donation link?</p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setShowDonateConfirm(false)}
-                      className="flex-1 text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={() => {
-                        window.open('https://buymeacoffee.com/itsdestin', '_blank');
-                        setShowDonateConfirm(false);
-                      }}
-                      className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all"
-                    >
-                      Open
-                    </button>
-                  </div>
-                </div>
-              </div>,
-              document.body
-            )}
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    window.open('https://buymeacoffee.com/itsdestin', '_blank');
+                    setShowDonateConfirm(false);
+                  }}
+                  className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all"
+                >
+                  Open
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
-            {/* About — popup on click, styled like other settings popups */}
-            <button
-              onClick={() => setShowAbout(true)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-            >
-              <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-                <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="16" x2="12" y2="12" />
-                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <span className="text-xs text-fg font-medium">About</span>
-                <p className="text-[10px] text-fg-muted">YouCoded {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}</p>
-              </div>
-              <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-            <AboutPopup
-              open={showAbout}
-              onClose={() => setShowAbout(false)}
-              platform="desktop"
-              version={typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}
-            />
-          </div>
-        </section>
+        {/* About — popup on click, styled like other settings popups */}
+        <SettingsRow
+          icon={
+            <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="16" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+          }
+          title="About"
+          subtitle={`YouCoded ${typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}`}
+          onClick={() => setShowAbout(true)}
+        />
+        <AboutPopup
+          open={showAbout}
+          onClose={() => setShowAbout(false)}
+          platform="desktop"
+          version={typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}
+        />
       </div>
     </>
   );
