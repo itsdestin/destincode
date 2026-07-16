@@ -60,9 +60,13 @@ export class PermissionBroker extends EventEmitter {
     // is signaled by a non-empty updatedPermissions array.
     const inner = (decision.decision as Record<string, unknown> | undefined) ?? decision;
     const behavior = inner.behavior === 'allow' ? 'allow' : 'deny';
+    // "Always allow" is signaled by a non-empty updatedPermissions array — but
+    // ONLY meaningful on an allow. A deny+updatedPermissions must NOT become an
+    // allow-always rule (Task 12 persists on `always`), so gate on behavior.
     const always =
-      (Array.isArray(decision.updatedPermissions) && decision.updatedPermissions.length > 0) ||
-      inner.behavior === 'allow-always';
+      behavior === 'allow' &&
+      Array.isArray(decision.updatedPermissions) &&
+      decision.updatedPermissions.length > 0;
     entry.resolve({ behavior, always });
     return true;
   }
@@ -70,16 +74,27 @@ export class PermissionBroker extends EventEmitter {
   cancelSession(sessionId: string): void {
     for (const [id, entry] of [...this.pending]) {
       if (entry.sessionId !== sessionId) continue;
-      this.pending.delete(id);
-      // PermissionExpired clears the approval card; _requestId matches the
-      // field hook-dispatcher reads for the expired branch.
-      this.emit('hook-event', {
-        sessionId,
-        type: 'PermissionExpired',
-        payload: { _requestId: id },
-        timestamp: Date.now(),
-      });
-      entry.resolve({ behavior: 'canceled' });
+      this.cancelOne(id, entry);
     }
+  }
+
+  /** Cancel EVERY pending ask (app-shutdown / destroyAll). */
+  cancelAll(): void {
+    for (const [id, entry] of [...this.pending]) {
+      this.cancelOne(id, entry);
+    }
+  }
+
+  private cancelOne(id: string, entry: { sessionId: string; resolve: (d: AskDecision) => void }): void {
+    this.pending.delete(id);
+    // PermissionExpired clears the approval card; _requestId matches the field
+    // hook-dispatcher reads for the expired branch.
+    this.emit('hook-event', {
+      sessionId: entry.sessionId,
+      type: 'PermissionExpired',
+      payload: { _requestId: id },
+      timestamp: Date.now(),
+    });
+    entry.resolve({ behavior: 'canceled' });
   }
 }

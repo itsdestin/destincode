@@ -275,6 +275,11 @@ export class NativeSessionHost extends EventEmitter {
   async destroy(sessionId: string): Promise<void> {
     const entry = this.live.get(sessionId);
     if (!entry) return;
+    // Resolve any pending asks for this session ('canceled') + expire their
+    // cards BEFORE tearing down the stream — same rationale as interrupt(); a
+    // loop paused on a permission await must unwind, and the promise must not
+    // leak past teardown.
+    this.broker.cancelSession(sessionId);
     const modelId = entry.session.binding.modelId; // capture before teardown
     entry.session.destroy();             // abort stream + remove our listener → no new appends
     await entry.appendChain;             // drain already-enqueued appends
@@ -285,6 +290,9 @@ export class NativeSessionHost extends EventEmitter {
 
   /** App-shutdown path: destroy every live session, then flush any residue. */
   async destroyAll(): Promise<void> {
+    // Cancel every pending ask up front (covers asks whose session is no longer
+    // live, which the per-session destroy loop below would miss).
+    this.broker.cancelAll();
     for (const id of [...this.live.keys()]) {
       await this.destroy(id);
     }

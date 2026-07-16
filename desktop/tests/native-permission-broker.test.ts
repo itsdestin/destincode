@@ -29,8 +29,33 @@ describe('PermissionBroker', () => {
     await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true });
   });
 
+  it('does NOT flag always when behavior is deny (guards against persisting an allow rule for a denied tool)', async () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    const requestId = emitted[0].payload._requestId as string;
+    expect(broker.respond(requestId, { decision: { behavior: 'deny' }, updatedPermissions: ['Bash(rm)'] })).toBe(true);
+    const d = await p;
+    expect(d.behavior).toBe('deny');
+    expect(d.always).toBeFalsy();
+  });
+
   it('respond() returns false for unknown ids (lets ipc-handlers fall through to hookRelay)', () => {
     expect(new PermissionBroker().respond('hook-123', { behavior: 'allow' })).toBe(false);
+  });
+
+  it('cancelAll() resolves every pending ask across sessions as canceled and expires each card', async () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p1 = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    const p2 = broker.ask({ sessionId: 's2', toolName: 'Edit', toolInput: {}, denyListed: false });
+    broker.cancelAll();
+    await expect(p1).resolves.toMatchObject({ behavior: 'canceled' });
+    await expect(p2).resolves.toMatchObject({ behavior: 'canceled' });
+    const expired = emitted.filter((e) => e.type === 'PermissionExpired');
+    expect(expired.map((e) => e.sessionId).sort()).toEqual(['s1', 's2']);
   });
 
   it('cancel() resolves pending asks as canceled and emits PermissionExpired', async () => {

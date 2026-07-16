@@ -7,7 +7,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type TranscriptEvent, type PastSession } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type TranscriptEvent, type HookEvent, type PastSession } from '../shared/types';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -1881,7 +1881,7 @@ export function registerIpcHandlers(
   // Native permission asks ride the SAME hook:event channel + broadcast as CC's
   // PermissionRequest/PermissionExpired — hook-dispatcher/ToolCard render them
   // unchanged. Ids are 'native-'-prefixed so permission:respond routes by id.
-  nativeHost.on('hook-event', (event: { sessionId: string }) => {
+  nativeHost.on('hook-event', (event: HookEvent) => {
     sendForSession(event.sessionId, IPC.HOOK_EVENT, event);
     if (remoteServer) {
       remoteServer.broadcast({ type: 'hook:event', payload: event });
