@@ -541,6 +541,45 @@ describe('HarnessSession — multi-step turn driver', () => {
       expect(events.some((e) => e.type === 'turn-complete')).toBe(false);
     });
 
+    it('multi-call step, interactive cancel on the FIRST call → BOTH calls back-filled canceled + user-interrupt', async () => {
+      // A step with two tool-calls; the first is AskUserQuestion and its ask is
+      // canceled. The unwind must back-fill canceled results for the AskUserQuestion
+      // AND the still-un-executed second call (the "this call AND every remaining
+      // call in the step" invariant), else the second tool-call dangles → 400.
+      const ask = fakeInteractive();
+      const read = fakeTool('Read');
+      const askUser = async (): Promise<AskDecision> => ({ behavior: 'canceled' });
+      const model = scriptedModel([
+        stream(
+          toolCallChunk('c1', 'AskUserQuestion', oneQuestion()),
+          toolCallChunk('c2', 'Read', { file_path: 'x.ts' }),
+          finishChunk('tool-calls'),
+        ),
+        stream(...textChunks('b', 'unreached'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ tools: [ask, read], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+      // BOTH calls get a back-filled canceled tool-result.
+      const canceled = events.filter((e) => e.type === 'tool-result' && e.data.toolResult === 'Canceled: the user interrupted this action.');
+      expect(canceled.map((e) => e.data.toolUseId).sort()).toEqual(['c1', 'c2']);
+      expect(canceled.every((e) => e.data.isError === true)).toBe(true);
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(true);
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(false);
+      expect((read as any).calls).toHaveLength(0);   // second call never executed
+      // Pairing invariant: every tool-call in history has a matching tool-result.
+      const history = (session as any).history as any[];
+      const callIds = new Set<string>(); const resultIds = new Set<string>();
+      for (const m of history) {
+        if (!Array.isArray(m.content)) continue;
+        for (const part of m.content) {
+          if (part?.type === 'tool-call') callIds.add(part.toolCallId);
+          if (part?.type === 'tool-result') resultIds.add(part.toolCallId);
+        }
+      }
+      for (const id of callIds) expect(resultIds.has(id)).toBe(true);
+    });
+
     it('invalid questions shape → corrective validation result; askUser NOT called', async () => {
       const ask = fakeInteractive();
       const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
