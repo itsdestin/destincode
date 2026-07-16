@@ -2889,6 +2889,11 @@ function AppInner() {
           postSwitchTurnReady.current = false;
           (window.claude as any).model?.setPreference(m);
         }}
+        // /fast and /effort are PTY writes just like /model — route them
+        // through the same pending-prompt gate so they can't answer a live Ink
+        // menu (stray-Enter fix, youcoded#110). Returns false when refused so
+        // the popup skips its optimistic state writes.
+        sendPtyCommand={(text) => (sessionId ? guardedPtySend(sessionId, text) : false)}
         provider={currentSession?.provider}
         // Native model picker — the live bound modelId + a refresh callback so
         // the header reflects a mid-session swap (SessionInfo.model is the pill's

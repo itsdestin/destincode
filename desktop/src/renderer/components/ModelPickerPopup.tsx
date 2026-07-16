@@ -142,9 +142,15 @@ interface Props {
   /** Native only — called after a successful setBinding so App can refresh its
    *  record of the session's model (the header pill sources SessionInfo.model). */
   onNativeModelChanged?: (modelId: string) => void;
+  /** Guarded PTY sender (App.guardedPtySend). /fast and /effort are PTY writes
+   *  just like /model — while a permission/plan/AskUserQuestion prompt is
+   *  pending, CC's Ink select menu is live in the PTY and a raw sendInput would
+   *  answer the menu instead of running the command (stray-Enter fix,
+   *  youcoded#110). Returns false when the send was refused. */
+  sendPtyCommand: (text: string) => boolean;
 }
 
-export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider, currentModelId, onNativeModelChanged }: Props) {
+export default function ModelPickerPopup({ open, onClose, sessionId, currentModel, onSelectModel, provider, currentModelId, onNativeModelChanged, sendPtyCommand }: Props) {
   useEscClose(open, onClose);
   const [fast, setFast] = useState(false);
   const [effort, setEffort] = useState<EffortLevel>('auto');
@@ -219,13 +225,15 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   };
 
   const applyFast = (v: boolean) => {
+    // Forward to Claude Code via PTY first, guarded (pending-prompt gate) —
+    // a raw sendInput while CC shows an interactive prompt would answer the
+    // live Ink menu instead of running /fast. Refusing BEFORE the optimistic
+    // state writes keeps the toggle truthful when the command never reached
+    // CC. Mirrors the guarded /model path in App.onSelectModel.
+    if (sessionId && !sendPtyCommand(`/fast ${v ? 'on' : 'off'}\r`)) return;
     setFast(v);
     const api = (window.claude as any).modes;
     api?.set({ fast: v }).catch(() => {});
-    // Forward to Claude Code via PTY — command affects the running session
-    if (sessionId) {
-      window.claude.session.sendInput(sessionId, `/fast ${v ? 'on' : 'off'}\r`);
-    }
   };
 
   const handleFastToggle = () => {
@@ -239,12 +247,12 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   };
 
   const updateEffort = (level: EffortLevel) => {
+    // Guarded like applyFast above — don't let /effort answer a live Ink
+    // prompt, and don't record a level CC never received.
+    if (sessionId && !sendPtyCommand(`/effort ${level}\r`)) return;
     setEffort(level);
     const api = (window.claude as any).modes;
     api?.set({ effort: level }).catch(() => {});
-    if (sessionId) {
-      window.claude.session.sendInput(sessionId, `/effort ${level}\r`);
-    }
   };
 
   if (!open) return null;
