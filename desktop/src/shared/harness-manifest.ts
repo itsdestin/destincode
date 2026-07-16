@@ -12,7 +12,12 @@ export interface HarnessManifest {
   systemPrompt: string;                  // fallback one-liner; the real body is a main-side prompt asset
   tools: string[];                       // CC-compatible names (ADR 009)
   /** A string sets the session's STARTING permission mode (the modeFor seed);
-   *  a Record maps to presetRules (Phase 3 custom harnesses — unused in v1). */
+   *  a Record maps to presetRules (Phase 3 custom harnesses — unused in v1).
+   *  WARNING to future harness authors: presetRules are the LOWEST permission
+   *  layer, so mode rules, the destructive deny-list, and remembered user rules
+   *  ALL override them. A preset `{ Bash: 'deny' }` is NOT enforced under
+   *  full-auto (the mode's `*: allow` wins) and only degrades to a prompt under
+   *  ask/auto-edit — it is a default posture, never a hard guard. */
   permissionPolicy: 'ask' | 'auto-edit' | 'full-auto' | Record<string, 'allow' | 'ask' | 'deny'>;
   defaultBinding?: ModelBinding;
   skills?: string[]; mcp?: string[];
