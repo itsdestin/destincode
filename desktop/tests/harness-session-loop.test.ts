@@ -346,6 +346,99 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'session-error')).toBe(false);
   });
 
+  it('tool-layer guard: path OUTSIDE cwd forces an ask even when decide() allows (external_directory)', async () => {
+    // permissionSubject returns an absolute path outside the session cwd (C:/x)
+    // → checkPathGuard verdict 'external' → forced ask, short-circuiting decide().
+    const write = fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'C:/other/secrets-elsewhere.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [write], decide, askUser }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    expect(askUser).toHaveBeenCalledTimes(1);            // external forced the ask
+    expect(askUser.mock.calls[0][0].toolName).toBe('Write');
+    expect(decide).not.toHaveBeenCalled();               // external short-circuits configured decision
+    expect((write as any).calls).toHaveLength(1);        // ask allowed → executed
+  });
+
+  it('tool-layer guard: a secret path hard-denies BEFORE any permission consultation', async () => {
+    // C:/x/.env is a dotenv file → isSensitivePath → checkPathGuard 'deny'.
+    const write = fakeTool('Write', { permissionSubject: (a: any) => a.file_path });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'C:/x/.env' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [write], decide, askUser }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    const res = events.find((e) => e.type === 'tool-result')!;
+    expect(res.data.isError).toBe(true);
+    expect(res.data.toolResult).toMatch(/blocked/i);
+    expect(decide).not.toHaveBeenCalled();               // guard precedes configuration
+    expect(askUser).not.toHaveBeenCalled();
+    expect((write as any).calls).toHaveLength(0);         // never executed
+  });
+
+  it('CRITICAL regression: a canceled ask back-fills tool-results so the NEXT send ships valid history', async () => {
+    const write = fakeTool('Write');
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'x.ts' }), finishChunk('tool-calls')),  // turn 1 step 1
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),                                    // turn 2 step 1
+    ]);
+    const askUser = async (): Promise<AskDecision> => ({ behavior: 'canceled' });
+    const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ({ action: 'ask', denyListed: false }), askUser }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    // A synthesized canceled tool-result was emitted (transcript agrees with history).
+    const synth = events.find((e) => e.type === 'tool-result' && e.data.toolResult === 'Canceled: the user interrupted this action.');
+    expect(synth).toBeTruthy();
+    expect(synth!.data.isError).toBe(true);
+    expect(synth!.data.toolUseId).toBe('c1');
+
+    // History-shape invariant: NO assistant tool-call without a following tool
+    // message carrying a matching toolCallId (a dangling tool_call → provider 400).
+    const history = (session as any).history as any[];
+    const callIds = new Set<string>();
+    const resultIds = new Set<string>();
+    for (const m of history) {
+      if (!Array.isArray(m.content)) continue;
+      for (const part of m.content) {
+        if (part?.type === 'tool-call') callIds.add(part.toolCallId);
+        if (part?.type === 'tool-result') resultIds.add(part.toolCallId);
+      }
+    }
+    expect(callIds.size).toBeGreaterThan(0);
+    for (const id of callIds) expect(resultIds.has(id)).toBe(true);
+
+    // And the follow-up turn must complete cleanly on that valid history.
+    await session.send('again');
+    expect(events.filter((e) => e.type === 'turn-complete')).toHaveLength(1);
+  });
+
+  it('absent askUser on an ask decision → decline RESULT (config error), not an interrupt', async () => {
+    const write = fakeTool('Write');
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Write', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    // decide → ask, but NO askUser handler wired.
+    const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ({ action: 'ask', denyListed: false }) }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    const res = events.find((e) => e.type === 'tool-result')!;
+    expect(res.data.isError).toBe(true);
+    expect(res.data.toolResult).toMatch(/No approval handler is wired/);
+    expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);   // NOT masqueraded as a cancel
+    expect(events.some((e) => e.type === 'turn-complete')).toBe(true);     // loop continues
+    expect((write as any).calls).toHaveLength(0);
+  });
+
   it('no tools configured (tools absent) → v0 plain-text turn; no tool plumbing invoked', async () => {
     const decide = vi.fn(async () => ALLOW);
     const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));

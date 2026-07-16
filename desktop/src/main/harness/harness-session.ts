@@ -72,6 +72,10 @@ function mapStopReason(finishReason: string | undefined): string {
   }
 }
 const APPROX_CHARS_PER_TOKEN = 4;
+// Back-filled into a tool-result when a turn is interrupted mid-step (during a
+// permission ask). Every collected tool-call MUST get a matching tool-result or
+// the persisted history ends on a dangling tool_call that provider APIs reject.
+const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
 
 // CONCURRENCY PRECONDITION: `send()` is NOT re-entrant. `abort`, `interrupted`,
 // and `history` are single-slot per session — a second send() before the first
@@ -169,6 +173,21 @@ export class HarnessSession extends EventEmitter {
       kept.unshift(messages[i]);
       total += size;
     }
+    // Pair-aware front trim: oldest-first truncation can cut BETWEEN an
+    // assistant(tool-call) and its paired tool result, leaving the window
+    // starting on an orphaned role:'tool' message OR an assistant tool-call
+    // whose result got dropped — both are unpaired tool_calls that provider
+    // APIs 400 on. Drop leading messages until the window starts on a user or
+    // plain-text-assistant message. (An assistant tool-call and its adjacent
+    // tool result are dropped together as a pair.)
+    while (kept.length > 0) {
+      const first = kept[0];
+      const isOrphanToolResult = first.role === 'tool';
+      const isToolCallOpener = first.role === 'assistant' && Array.isArray(first.content)
+        && first.content.some((p: any) => p && p.type === 'tool-call');
+      if (isOrphanToolResult || isToolCallOpener) { kept.shift(); continue; }
+      break;
+    }
     return kept;
   }
 
@@ -198,9 +217,12 @@ export class HarnessSession extends EventEmitter {
     try {
       const model = await this.modelFactory(this.binding);
       const aiTools = this.buildAiTools();       // {} when no tools → v0 chat path
-      let stepIndex = 0;
 
       turnLoop: while (true) {
+        // Reset per STEP (not per retry attempt inside withRetry): a mid-stream
+        // retry after content was already emitted can cosmetically duplicate that
+        // partial in a session-error's history push — accepted, since the
+        // required immediate-error retry emits nothing before it throws.
         partialAssistantText = '';
         // One step = one streamText consumption. withRetry wraps the whole
         // CONSUMPTION (not just the streamText call): the SDK surfaces provider
@@ -239,10 +261,29 @@ export class HarnessSession extends EventEmitter {
 
         // Execute tool calls SERIALLY; collect their results for the next step.
         const resultParts: any[] = [];
-        for (const call of step.toolCalls) {
+        for (let i = 0; i < step.toolCalls.length; i++) {
+          const call = step.toolCalls[i];
           this.emitEvent('tool-use', { toolUseId: call.toolCallId, toolName: call.toolName, toolInput: call.input });
           const payload = await this.runOneTool(call, recentCalls);   // NEVER throws
-          if (payload === 'interrupted') { this.emitEvent('user-interrupt', {}); return; }
+          if (payload === 'interrupted') {
+            // Interrupt during a permission ask. Back-fill canceled tool-results
+            // for THIS call AND every remaining un-executed call in the step
+            // (earlier calls already have real results in resultParts + emitted
+            // events). Without this, the assistant(tool-call) message has no
+            // matching tool message — a dangling tool_call that provider APIs
+            // hard-reject (HTTP 400) on the NEXT send, bricking the session (the
+            // bad message persists in history across sends). CC does the same
+            // canceled back-fill. Emit matching tool-result events too so the
+            // persisted transcript agrees with the model-facing history.
+            for (let j = i; j < step.toolCalls.length; j++) {
+              const rem = step.toolCalls[j];
+              this.emitEvent('tool-result', { toolUseId: rem.toolCallId, toolName: rem.toolName, toolResult: CANCELED_TOOL_TEXT, isError: true });
+              resultParts.push(this.toolResultPart(rem, CANCELED_TOOL_TEXT));
+            }
+            this.history.push({ role: 'tool', content: resultParts });
+            this.emitEvent('user-interrupt', {});
+            return;
+          }
           this.emitEvent('tool-result', {
             toolUseId: call.toolCallId, toolName: call.toolName,
             toolResult: payload.text, isError: payload.isError ?? false,
@@ -253,7 +294,6 @@ export class HarnessSession extends EventEmitter {
         this.history.push({ role: 'tool', content: resultParts });
 
         stepsSinceApproval++;
-        stepIndex++;
         // Budget gate (spec §2.4) — surfaces as a permission ASK, not a new
         // event. Allow resets the counter and continues; anything else ends the
         // turn with stopReason 'max_steps'; canceled is an interrupt.
@@ -416,6 +456,8 @@ export class HarnessSession extends EventEmitter {
     const args = parsed.data;
 
     // 2. Doom loop (BEFORE permissions — a stuck model shouldn't spam asks).
+    //    `args` is parsed.data (zod-NORMALIZED), so the signature is canonical:
+    //    two calls that differ only in JSON key order still count as identical.
     const sig = `${call.toolName}:${JSON.stringify(args)}`;
     recentCalls.push(sig);
     if (recentCalls.length > 3) recentCalls.shift();
@@ -443,8 +485,12 @@ export class HarnessSession extends EventEmitter {
       : await (this.opts.decide?.(call.toolName, subject) ?? Promise.resolve<PermissionDecision>({ action: 'ask', denyListed: false }));
     if (decision.action === 'deny') return { text: `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
     if (decision.action === 'ask') {
-      const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed });
-      if (!d || d.behavior === 'canceled') return 'interrupted';
+      // An ABSENT handler is a WIRING gap, not a user cancel — surface it as a
+      // decline RESULT (the model can't proceed) instead of the 'interrupted'
+      // sentinel, so a misconfiguration never masquerades as an ESC/interrupt.
+      if (!this.opts.askUser) return { text: `No approval handler is wired for this session; the ${call.toolName} call cannot be approved. This is a configuration error.`, isError: true };
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed });
+      if (d.behavior === 'canceled') return 'interrupted';
       if (d.behavior !== 'allow') return { text: 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
       // "Always allow" → emit a rule for the host to persist (PermissionStore).
       // Plain EventEmitter event, NOT a transcript event — the frozen emit
