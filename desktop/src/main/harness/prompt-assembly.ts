@@ -14,8 +14,10 @@ export interface PromptInputs { presetBody: string; cwd: string; appVersion: str
 
 function gitSnapshot(cwd: string): string {
   try {
-    const branch = execFileSync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 3000 }).toString().trim();
-    const dirty = execFileSync('git', ['-C', cwd, 'status', '--porcelain'], { timeout: 3000 }).toString().trim();
+    // stdio ignores stderr so a non-git cwd doesn't spam the main-process log
+    // with `fatal: not a repository`; stdout is still captured, catch still fires.
+    const branch = execFileSync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const dirty = execFileSync('git', ['-C', cwd, 'status', '--porcelain'], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
     return `Git branch: ${branch}${dirty ? ` (${dirty.split('\n').length} uncommitted change(s))` : ' (clean)'}`;
   } catch { return 'Git: not a repository'; }
 }
@@ -29,6 +31,9 @@ function projectInstructions(cwd: string): string | null {
       const p = path.join(dir, name);
       if (fs.existsSync(p)) {
         const body = fs.readFileSync(p, 'utf8').slice(0, 20_000);
+        // NOT sanitizing: repo instruction files are trusted-by-design input. The
+        // tag is a labeling convention, not a security boundary — a file with a
+        // literal </project-instructions> can escape it, and that's acceptable here.
         return `<project-instructions source="${name}">\n${body}\n</project-instructions>`;
       }
     }
