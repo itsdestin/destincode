@@ -1,0 +1,2 @@
+{"type":"tool_use","id":"toolu_01BashAsk","name":"Bash","input":{"command":"npm test","description":"Run the test suite"}}
+{"type":"permission_request","tool_use_id":"toolu_01BashAsk","requestId":"native-fixture-1","denyListed":false}
