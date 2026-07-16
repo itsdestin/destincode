@@ -13,6 +13,27 @@ _None yet — Phase 1 pins the AI SDK major/minor here._
 - **Vercel AI SDK surface** — `streamText` stream-part shapes, tool-approval
   mechanism (`needsApproval` vs `toolApproval` — version-sensitive), provider
   factory signatures. (harness, provider-registry)
+- **AI SDK v7 tool-call loop surface** — tools passed WITHOUT `execute` make
+  `streamText` emit a `tool-call` fullStream part and finish the step with
+  finishReason `'tool-calls'` (the SDK does NOT loop on its own). The RAW
+  provider chunk (`LanguageModelV4ToolCall`) carries `input` as a STRINGIFIED
+  JSON string and `finishReason` as the V4 object `{ unified, raw }`;
+  `streamText` TRANSFORMS these into the fullStream `tool-call` part
+  `{ type:'tool-call', toolCallId, toolName, input:<parsed object> }` and
+  flattens `result.finishReason` back to the `'tool-calls'` string. The driver
+  executes tools itself and appends an assistant message with a
+  `{ type:'tool-call', toolCallId, toolName, input:<object> }` part plus a
+  `role:'tool'` message whose parts are
+  `{ type:'tool-result', toolCallId, toolName, output:{ type:'text', value } }`
+  — the v7 field is `output` (a `ToolResultOutput`), NOT `result`. Error
+  surface (for the Task 9 retry wrapper): `streamText` returns synchronously
+  and never throws; a `doStream` rejection appears as a `{ type:'error' }`
+  fullStream part AND rejects the awaited promises (`result.text` throws
+  `AI_NoOutputGeneratedError`); the SDK already wraps calls in
+  `retryWithExponentialBackoff` internally. Field names verified against
+  ai@7.0.22 and PINNED by
+  `desktop/tests/harness-sdk-toolcall-contract.test.ts` — run it first on any
+  ai bump. (harness)
 - **models.dev `api.json` schema** — `https://models.dev/api.json`, shape
   `{ [providerKey]: { models: { [modelId]: {...} } } }`. Fields consumed per
   model row: `name` (string label), `limit.context` (number → contextLength),
