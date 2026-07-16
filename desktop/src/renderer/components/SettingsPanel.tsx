@@ -1696,28 +1696,24 @@ function ConnectToDesktopButton() {
 
   return (
     <>
-      <button
+      <SettingsRow
+        icon={
+          <div className="relative flex items-center justify-center">
+            <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+            </svg>
+            {remoteConnected && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400 ring-1 ring-panel" />
+            )}
+          </div>
+        }
+        title="Connect to Desktop"
+        subtitle={subtitle}
+        subtitleClassName={remoteConnected ? 'text-green-400' : undefined}
         onClick={() => { setOpen(true); setShowConnectForm(false); }}
-        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-      >
-        <div className="relative flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" />
-            <line x1="8" y1="21" x2="16" y2="21" />
-            <line x1="12" y1="17" x2="12" y2="21" />
-          </svg>
-          {remoteConnected && (
-            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400 ring-1 ring-panel" />
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">Connect to Desktop</span>
-          <p className={`text-[10px] ${remoteConnected ? 'text-green-400' : 'text-fg-muted'}`}>{subtitle}</p>
-        </div>
-        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
+      />
 
       {open && createPortal(
         <>
