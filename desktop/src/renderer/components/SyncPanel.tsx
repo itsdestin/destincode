@@ -257,6 +257,15 @@ const BACKEND_CONFIG_DISPLAY: Record<string, { key: string; label: string }[]> =
   ],
 };
 
+// Module-level cache of the last session.browse() result. WHY: the popup
+// re-fetches conversations every time it opens, so the Conversations count
+// pill flashed "0" for a beat before the real number arrived. Seeding the
+// popup's state from the last-known list shows the previous count instantly
+// while the fresh fetch updates it in place. Module scope is the lightest
+// fix — Devices/Projects don't flash because their fetches are fast local
+// reads, so only this slower browse() call needs a cache.
+let conversationsCache: PastSession[] | null = null;
+
 // --- Main exported component ---
 
 interface SyncSectionProps {
@@ -393,8 +402,10 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // the "Devices" count tab and its list share ONE fetch. null = not loaded yet.
   const [devices, setDevices] = useState<DeviceRow[] | null>(null);
   // Past conversations across all projects — only used for the Conversations count +
-  // list. There's no dedicated count IPC, so we reuse session.browse(). null = unloaded.
-  const [conversations, setConversations] = useState<PastSession[] | null>(null);
+  // list. There's no dedicated count IPC, so we reuse session.browse(). Seeded from
+  // the module-level cache so reopening the popup shows the last-known count
+  // immediately instead of flashing 0. null = never loaded in this app run.
+  const [conversations, setConversations] = useState<PastSession[] | null>(conversationsCache);
   // Local "a syncNow() is in flight" flag — drives the blue "Syncing…" header while the
   // box's Sync now / Try again runs (spacesStatus carries no live in-progress signal).
   const [spacesSyncing, setSpacesSyncing] = useState(false);
@@ -671,8 +682,15 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     (async () => {
       try {
         const list = await claude.session?.browse?.();
-        setConversations(Array.isArray(list) ? list : []);
-      } catch { setConversations([]); }
+        const fresh = Array.isArray(list) ? list : [];
+        // Keep the module cache current so the NEXT popup open starts from this value.
+        conversationsCache = fresh;
+        setConversations(fresh);
+      } catch {
+        // On failure keep the last-known list (a slightly stale count beats
+        // flashing back to 0); [] only when nothing was ever loaded.
+        setConversations(conversationsCache ?? []);
+      }
     })();
   }, [claude]);
 
@@ -864,6 +882,15 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 syncedSub;
               const subWarn = hk === 'error';
 
+              // Not-enabled + error + GitHub-authed collapses to the plain 'off'
+              // header (only error + UNauthed gets 'waiting-github'), which used to
+              // hide the failure entirely — e.g. an enable attempt that failed for a
+              // non-GitHub reason looked like nothing happened. Surface the error as
+              // its own red line under the off sub, mirroring how the enabled+error
+              // state shows errorMsg in red. (Error strings are shown verbatim —
+              // same pinned-contract rule as the 'error' sub above.)
+              const offError = hk === 'off' && errorMsg ? (errorMsg as string) : null;
+
               // Toggle reflects the real enabled state (or the pending enable) so its
               // click always flips the correct direction. Disabled only while setting up.
               const toggleOn = enabling || enabled;
@@ -912,6 +939,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         <div className="min-w-0">
                           <div className="text-sm font-semibold text-fg">{title}</div>
                           <div className={`text-[11px] mt-0.5 leading-relaxed ${subWarn ? 'text-red-500' : 'text-fg-muted'}`}>{sub}</div>
+                          {/* Off-but-errored: keep the normal off sub AND show why the last attempt failed. */}
+                          {offError && <div className="text-[11px] mt-0.5 leading-relaxed text-red-500">{offError}</div>}
                         </div>
                       </div>
                       {/* Enable toggle — reuses the 36×20 green switch markup. */}
