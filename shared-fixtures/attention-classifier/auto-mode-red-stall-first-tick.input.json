@@ -1,0 +1,12 @@
+{
+  "description": "CC v2.1.126+ auto-mode red-stalled spinner (permission check stalls → spinner turns red), first classifier tick. The red is pure SGR color — getScreenText feeds the classifier ANSI-stripped text, so the buffer is byte-identical to a healthy spinner line. This fixture pins that the color change alone does NOT alter matching: the glyph still matches SPINNER_RE and a first observation gets the benefit of the doubt (thinking-active). Stall detection is cross-tick — see the companion auto-mode-red-stall-persistent fixture for the ≥30s frozen case. Issue youcoded#87.",
+  "bufferTail": [
+    "⏺ Bash(npm publish)",
+    "  ⎿  Running…",
+    "✳ Effervescing… (45s · ↓ 1.2k tokens)",
+    ""
+  ],
+  "previousSpinnerGlyph": null,
+  "secondsSincePreviousGlyph": 0,
+  "previousCounterSeconds": null
+}
