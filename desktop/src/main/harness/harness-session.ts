@@ -18,7 +18,7 @@ import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision } from '../../shared/permission-types';
-import type { NativeTool, ToolContext, ToolResultPayload } from './tools/types';
+import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { checkPathGuard } from './tools/guards';
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
@@ -40,6 +40,9 @@ export interface HarnessSessionOpts {
   /** System prompt assembled ONCE at init (Task 11); falls back to the
    *  harness's own systemPrompt for the Chat preset. */
   systemPrompt?: string;
+  /** Runtime services threaded into every tool's ToolContext (spec §3.2).
+   *  Injected by NativeSessionHost (e.g. { search } → WebSearch). */
+  toolServices?: ToolServices;
   /** Test hook: step-level retry backoff (ms). Defaults to [1000, 2000, 4000]. */
   retryDelays?: number[];
 }
@@ -536,6 +539,7 @@ export class HarnessSession extends EventEmitter {
       signal: this.abort!.signal,
       readRegistry: this.readRegistry,
       todos: this.todos,
+      ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),
     });
   }
 

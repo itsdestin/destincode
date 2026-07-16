@@ -47,13 +47,18 @@ export const DESTRUCTIVE_DENY_LIST: PermissionRule[] = [
   { tool: 'Bash', pattern: '* format *', action: 'ask' },
 ];
 
-/** Mode baselines (spec §2.4 layer 2). Read/search tools plus TodoWrite are always free. */
+/** Mode baselines (spec §2.4 layer 2). Reads + web are free in EVERY preset and
+ *  mode (spec §3.4 "reads + web free"): local reads (Read/Glob/Grep), TodoWrite,
+ *  and the web pair (WebFetch/WebSearch) never prompt at the baseline. Higher
+ *  layers (deny-list, remembered/denied rules) still override via last-match-wins. */
 export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
   const alwaysAllowed: PermissionRule[] = [
     { tool: 'Read', action: 'allow' },
     { tool: 'Glob', action: 'allow' },
     { tool: 'Grep', action: 'allow' },
     { tool: 'TodoWrite', action: 'allow' },
+    { tool: 'WebFetch', action: 'allow' },
+    { tool: 'WebSearch', action: 'allow' },
   ];
   switch (mode) {
     case 'ask':
