@@ -29,5 +29,9 @@ export interface NativeTool<A = any> {
   /** The permission SUBJECT for rule matching: Bash → command string; file
    *  tools → the file path; undefined → tool-name-only matching. */
   permissionSubject(args: A): string | undefined;
+  /** Interactive tools (AskUserQuestion) are routed by the DRIVER straight to
+   *  askUser() — guards/decide are skipped (asking permission to ask a question
+   *  is absurd) and execute() never runs. */
+  interactive?: boolean;
   execute(args: A, ctx: ToolContext): Promise<ToolResultPayload>;
 }

@@ -439,6 +439,125 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect((write as any).calls).toHaveLength(0);
   });
 
+  describe('interactive tools (AskUserQuestion)', () => {
+    // A minimal interactive fake matching the AskUserQuestion contract the driver
+    // reads: interactive:true, a questions schema, no permission subject. execute
+    // RECORDS so we can prove it is never reached.
+    function fakeInteractive(over: Partial<NativeTool> & { schema?: z.ZodType } = {}): NativeTool {
+      const calls: any[] = [];
+      const t: NativeTool = {
+        name: 'AskUserQuestion',
+        description: 'ask',
+        inputSchema: over.schema ?? z.object({
+          questions: z.array(z.object({
+            question: z.string().min(1),
+            header: z.string().min(1).max(12),
+            options: z.array(z.object({ label: z.string().min(1), description: z.string().optional() })).min(2).max(4),
+            multiSelect: z.boolean(),
+          })).min(1).max(4),
+        }),
+        permissionSubject: () => undefined,
+        interactive: true,
+        async execute(args) { calls.push(args); return { text: 'execute reached' }; },
+      };
+      (t as any).calls = calls;
+      return t;
+    }
+    const oneQuestion = () => ({
+      questions: [{ question: 'Which color?', header: 'Color', multiSelect: false, options: [{ label: 'Blue' }, { label: 'Red' }] }],
+    });
+
+    it('routes to askUser, skips decide, returns formatted answers; call/result pair recorded; turn ends', async () => {
+      const ask = fakeInteractive();
+      const decide = vi.fn(async () => ALLOW);
+      const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({
+        behavior: 'allow', updatedInput: { questions: [], answers: { 'Which color?': 'Blue' } },
+      }));
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'AskUserQuestion', oneQuestion()), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'thanks'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ tools: [ask], decide, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+
+      expect(askUser).toHaveBeenCalledTimes(1);
+      expect(askUser.mock.calls[0][0].toolName).toBe('AskUserQuestion');
+      expect(decide).not.toHaveBeenCalled();          // interactive skips decide
+      expect((ask as any).calls).toHaveLength(0);      // execute() never reached
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBeFalsy();
+      expect(res.data.toolResult).toContain('Blue');
+      expect(res.data.toolResult).toContain('Which color?');
+      // call/result pair present in history.
+      const history = (session as any).history as any[];
+      const callIds = new Set<string>(); const resultIds = new Set<string>();
+      for (const m of history) {
+        if (!Array.isArray(m.content)) continue;
+        for (const part of m.content) {
+          if (part?.type === 'tool-call') callIds.add(part.toolCallId);
+          if (part?.type === 'tool-result') resultIds.add(part.toolCallId);
+        }
+      }
+      expect(callIds.has('c1')).toBe(true);
+      expect(resultIds.has('c1')).toBe(true);
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(true);   // turn ended
+    });
+
+    it('deny (dismissal) → error result telling the model the question was dismissed; loop continues', async () => {
+      const ask = fakeInteractive();
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'deny' }));
+      const seen: any[] = [];
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'AskUserQuestion', oneQuestion()), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+      ], seen);
+      const session = new HarnessSession(makeOpts({ tools: [ask], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/dismiss|without answering/i);
+      expect(JSON.stringify(seen[1])).toMatch(/dismiss|without answering/i);   // model sees it on the next step
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
+    });
+
+    it('canceled (interrupt) → back-filled canceled result + user-interrupt, no turn-complete', async () => {
+      const ask = fakeInteractive();
+      const askUser = async (): Promise<AskDecision> => ({ behavior: 'canceled' });
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'AskUserQuestion', oneQuestion()), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'unreached'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ tools: [ask], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+      // Same unwind as a canceled permission ask: back-filled canceled tool-result + user-interrupt.
+      const synth = events.find((e) => e.type === 'tool-result' && e.data.toolResult === 'Canceled: the user interrupted this action.');
+      expect(synth).toBeTruthy();
+      expect(synth!.data.toolUseId).toBe('c1');
+      expect(synth!.data.isError).toBe(true);
+      expect(events.some((e) => e.type === 'user-interrupt')).toBe(true);
+      expect(events.some((e) => e.type === 'turn-complete')).toBe(false);
+    });
+
+    it('invalid questions shape → corrective validation result; askUser NOT called', async () => {
+      const ask = fakeInteractive();
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'AskUserQuestion', { questions: [] }), finishChunk('tool-calls')),  // zero questions
+        stream(...textChunks('b', 'fixed'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ tools: [ask], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/Invalid arguments/);
+      expect(askUser).not.toHaveBeenCalled();          // validation precedes the interactive ask
+    });
+  });
+
   it('no tools configured (tools absent) → v0 plain-text turn; no tool plumbing invoked', async () => {
     const decide = vi.fn(async () => ALLOW);
     const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));

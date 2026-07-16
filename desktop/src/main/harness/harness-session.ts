@@ -20,6 +20,7 @@ import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload } from './tools/types';
 import { checkPathGuard } from './tools/guards';
+import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 
 export interface HarnessSessionOpts {
@@ -482,6 +483,20 @@ export class HarnessSession extends EventEmitter {
       if (d?.behavior === 'canceled') return 'interrupted';
       if (d?.behavior !== 'allow') return { text: 'Stopped: this exact call has been repeated three times. Try a different approach.', isError: true };
       recentCalls.length = 0;   // allow resets the window
+    }
+
+    // 2.5 Interactive tools (AskUserQuestion): the ask IS the execution. Skip
+    //     guards/decide — there is no side effect to gate; the ask rail supplies
+    //     pause/cancel semantics. The card's answers come back via updatedInput
+    //     (broker passthrough), formatted here into the tool result. Kept BELOW
+    //     the doom-loop check on purpose: a model re-asking the identical question
+    //     three times IS a doom loop and should still trip.
+    if (tool.interactive) {
+      if (!this.opts.askUser) return { text: `No user-interaction handler is wired for this session; ${call.toolName} cannot run. This is a configuration error.`, isError: true };
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: false });
+      if (d.behavior === 'canceled') return 'interrupted';
+      if (d.behavior !== 'allow') return { text: 'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.', isError: true };
+      return { text: formatAnswers(args as any, d.updatedInput) };
     }
 
     // 3. Tool-layer guards (below ALL configuration) — file tools only. Bash's
