@@ -4,7 +4,7 @@
 // the emit surface — it's the contract Phase 2's tool agent must not move.
 import { describe, it, expect } from 'vitest';
 import { HarnessSession } from '../src/main/harness/harness-session';
-import { CHAT_PRESET } from '../src/shared/harness-manifest';
+import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import type { TranscriptEvent } from '../src/shared/types';
 // MockLanguageModelV4 + simulateReadableStream confirmed present in ai@7.0.22
 // (node_modules/ai/dist/test/index.d.ts).
@@ -39,7 +39,7 @@ function collect(session: HarnessSession): TranscriptEvent[] {
 }
 
 describe('HarnessSession', () => {
-  const opts = { sessionId: 's-1', cwd: 'C:/x', harness: CHAT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' } };
+  const opts = { sessionId: 's-1', cwd: 'C:/x', harness: ASSISTANT_PRESET, binding: { providerId: 'openrouter', modelId: 'm' } };
 
   it('send() emits user-message, merged-partId assistant-text deltas, and turn-complete with usage', async () => {
     const session = new HarnessSession(opts, async () => mockModel(TEXT_FINISH) as any);

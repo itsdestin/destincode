@@ -20,11 +20,10 @@ import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './ha
 import { rebuildHistory } from './history-rebuild';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision } from './permission-broker';
-import { CHAT_PRESET } from '../../shared/harness-manifest';
+import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
 import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
-import { CODER_DEFAULT_BODY } from './prompts/coder-default';
 import { CORE_TOOLS } from './tools';
 import { log } from '../logger';
 
@@ -32,6 +31,7 @@ export interface CreateNativeSessionOpts {
   sessionId: string;
   cwd: string;
   binding: ModelBinding;
+  presetId?: string;
 }
 
 /** The two PermissionStore methods the host consumes. Declared structurally so
@@ -85,6 +85,16 @@ export class NativeSessionHost extends EventEmitter {
   // decide(), so an Always-allow always sticks for the rest of this session.
   // Disk remains the cross-session record; this is per-run and dropped on destroy.
   private rememberedFor = new Map<string, PermissionRule[]>();
+
+  // Per-session resolved preset id (POST legacy-mapping, e.g. a stored 'chat'
+  // header resolves to 'assistant' here). Drives the renderer's preset chip and
+  // is the read-side answer to "what personality is this session running as".
+  private presetIdFor = new Map<string, string>();   // resolved (post-legacy-mapping) preset id
+
+  /** This session's current permission mode (default 'ask' when not seeded). */
+  getPermissionMode(sessionId: string): NativePermissionMode { return this.modeFor.get(sessionId) ?? 'ask'; }
+  /** This session's resolved preset id (null if not live). */
+  getHarnessId(sessionId: string): string | null { return this.presetIdFor.get(sessionId) ?? null; }
 
   constructor(
     private store: SessionStore,
@@ -173,9 +183,9 @@ export class NativeSessionHost extends EventEmitter {
    *  Re-reads the session's current mode + remembered rules on EVERY call, so a
    *  mid-session mode flip (setPermissionMode) — and any newly-remembered rule —
    *  takes effect on the NEXT gated tool. */
-  private buildDecide(sessionId: string, cwd: string) {
+  private buildDecide(sessionId: string, cwd: string, presetRules: PermissionRule[]) {
     return async (tool: string, subject: string | undefined) => decidePermission(tool, subject, {
-      presetRules: [],                       // Plan B: preset manifests contribute here
+      presetRules,                           // preset manifests contribute here — lowest layer, mode/deny/remembered all override
       modeRules: rulesForMode(this.modeFor.get(sessionId) ?? 'ask'),
       denyList: DESTRUCTIVE_DENY_LIST,
       // Union disk (cross-session record) with this session's in-memory rules
@@ -190,15 +200,15 @@ export class NativeSessionHost extends EventEmitter {
     });
   }
 
-  /** Tool + permission + prompt wiring shared by create() and resume(). Plan A:
-   *  EVERY native session is tool-enabled (the Coder-shaped default) — there is
-   *  no separate legacy "chat" runtime path in the host. CHAT_PRESET is used only
-   *  as the manifest container (limits + fallback prompt); the explicit
-   *  systemPrompt + CORE_TOOLS below shadow its no-tools defaults. */
-  private toolWiring(sessionId: string, cwd: string): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt'> {
+  /** Tool + permission + prompt wiring shared by create() and resume(). Both v1
+   *  presets (Assistant, Coder) are personality profiles, not capability tiers
+   *  (spec decisions 8/9): EVERY native session carries the full CORE_TOOLS
+   *  suite — presets differ only in prompt body (preset.body) and permission
+   *  posture (preset.presetRules + the seeded starting mode). */
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt'> {
     return {
       tools: CORE_TOOLS,
-      decide: this.buildDecide(sessionId, cwd),
+      decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       askUser: (req) => this.broker.ask(req),
       // WHY assembleSystemPrompt is called synchronously here: it shells out to
       // git twice (execFileSync, 3s timeout each → ~6s worst case). It runs ONCE
@@ -206,7 +216,7 @@ export class NativeSessionHost extends EventEmitter {
       // accepted sync cost sits off the hot loop. Threading an await through here
       // would ripple through every construction site for no per-turn benefit
       // (Task 11 review ruling — the sync cost is deliberate and bounded).
-      systemPrompt: assembleSystemPrompt({ presetBody: CODER_DEFAULT_BODY, cwd, appVersion: this.appVersion }),
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion }),
     };
   }
 
@@ -256,20 +266,25 @@ export class NativeSessionHost extends EventEmitter {
 
   /** Fresh session: write the header, build + wire a live HarnessSession. */
   async create(opts: CreateNativeSessionOpts): Promise<void> {
+    const preset = resolvePreset(opts.presetId);
     const contextLength = await this.contextLengthFor(opts.binding);
     await this.store.create({
       v: 1,
       sessionId: opts.sessionId,
-      harnessId: CHAT_PRESET.id,
+      harnessId: preset.manifest.id,
       binding: opts.binding,
       cwd: opts.cwd,
       createdAt: Date.now(),
     });
+    // The preset seeds the STARTING mode; an explicit setPermissionMode always
+    // wins — modeFor is never overwritten here (plan decision 3).
+    if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
     const session = new HarnessSession(
-      { sessionId: opts.sessionId, cwd: opts.cwd, harness: CHAT_PRESET, binding: opts.binding, contextLength,
-        ...this.toolWiring(opts.sessionId, opts.cwd) },
+      { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength,
+        ...this.toolWiring(opts.sessionId, opts.cwd, preset) },
       this.modelFactory,
     );
+    this.presetIdFor.set(opts.sessionId, preset.manifest.id);
     this.wire(opts.sessionId, opts.cwd, session);
   }
 
@@ -278,12 +293,20 @@ export class NativeSessionHost extends EventEmitter {
   async resume(sessionId: string, cwd: string): Promise<boolean> {
     const header = this.store.readHeader(sessionId, cwd);
     if (!header) return false;
+    // Read-side legacy mapping: a stored 'chat' header (or any unknown id)
+    // resolves to Assistant. The stored header is NEVER rewritten (spec
+    // decision 8) — the mapping lives only here + in presetIdFor.
+    const preset = resolvePreset(header.harnessId);
     const contextLength = await this.contextLengthFor(header.binding);
+    // Seed the STARTING mode from the resolved preset unless the caller already
+    // set one for this id (an explicit setPermissionMode always wins).
+    if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
     const session = new HarnessSession(
-      { sessionId, cwd, harness: CHAT_PRESET, binding: header.binding, contextLength,
-        ...this.toolWiring(sessionId, cwd) },
+      { sessionId, cwd, harness: preset.manifest, binding: header.binding, contextLength,
+        ...this.toolWiring(sessionId, cwd, preset) },
       this.modelFactory,
     );
+    this.presetIdFor.set(sessionId, preset.manifest.id);
     // Full history rebuild (spec §2.5): rebuildHistory reconstructs the assistant
     // tool-call + tool-result pairs too (the old eventsToMessages dropped every
     // tool event, so a resumed tool turn lost its tool context). seedHistory
@@ -396,6 +419,7 @@ export class NativeSessionHost extends EventEmitter {
     // record (never carried across a teardown).
     this.modeFor.delete(sessionId);
     this.rememberedFor.delete(sessionId);
+    this.presetIdFor.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
   }
 

@@ -323,4 +323,48 @@ describe('NativeSessionHost', () => {
       await p.destroyAll();
     });
   });
+
+  // ---- Task 13: preset selection + seeding + legacy 'chat' mapping ----
+  describe('preset wiring', () => {
+    const binding = { providerId: 'openrouter', modelId: 'm' } as const;
+
+    it('create stamps the chosen preset in the header and seeds its default mode', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(store, factory, async () => null);
+      await h.create({ sessionId: 's1', cwd: root, binding, presetId: 'coder' });
+      expect(store.readHeader('s1', root)?.harnessId).toBe('coder');
+      expect(h.getPermissionMode('s1')).toBe('auto-edit');
+      await h.destroyAll();
+    });
+
+    it('create defaults to assistant when no preset is given', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(store, factory, async () => null);
+      await h.create({ sessionId: 's2', cwd: root, binding });
+      expect(store.readHeader('s2', root)?.harnessId).toBe('assistant');
+      expect(h.getPermissionMode('s2')).toBe('ask');
+      await h.destroyAll();
+    });
+
+    it("resume maps a legacy 'chat' header to assistant wiring without rewriting the header", async () => {
+      // Seed a stored session whose header has the legacy harnessId:'chat'.
+      const store = new SessionStore(new NativeHome(root));
+      await store.create({ v: 1, sessionId: 'legacy1', harnessId: 'chat', binding, cwd: root, createdAt: Date.now() });
+
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+      expect(await h.resume('legacy1', root)).toBe(true);
+      expect(h.getHarnessId('legacy1')).toBe('assistant');
+      expect(store.readHeader('legacy1', root)?.harnessId).toBe('chat'); // header untouched — mapping is read-side
+      await h.destroyAll();
+    });
+
+    it('an explicit user mode flip still beats the preset default', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(store, factory, async () => null);
+      await h.create({ sessionId: 's3', cwd: root, binding, presetId: 'coder' });
+      h.setPermissionMode('s3', 'ask');
+      expect(h.getPermissionMode('s3')).toBe('ask');
+      await h.destroyAll();
+    });
+  });
 });
