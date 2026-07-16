@@ -361,6 +361,10 @@ export class NativeSessionHost extends EventEmitter {
     await entry.appendChain;             // drain already-enqueued appends
     await this.store.dispose(sessionId); // flush the buffered open part
     this.live.delete(sessionId);
+    // Drop the per-session mode so it can't leak, and so a destroy→resume of the
+    // SAME sessionId within one app run resets to the documented default 'ask'
+    // (mode is per-session runtime state, never carried across a teardown).
+    this.modeFor.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
   }
 

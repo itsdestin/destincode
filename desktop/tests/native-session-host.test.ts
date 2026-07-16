@@ -211,6 +211,30 @@ describe('NativeSessionHost', () => {
       expect(() => host.setPermissionMode('s', 'bogus' as any)).toThrow(/Unknown native permission mode/);
     });
 
+    it('destroy resets the per-session mode: a resumed same-id session is back to ask', async () => {
+      const p = permHost();
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      p.setPermissionMode('s', 'full-auto');
+      await p.send('s', 'seed a turn so there is a stored header to resume');  // full-auto → no ask, resolves
+      await p.drain('s');
+      await p.destroy('s');   // must drop the mode entry, not leak it
+
+      // Resume the SAME id: mode must be back to the default 'ask', so the Write
+      // call raises a permission ask (it would NOT under a stale full-auto).
+      const p2 = permHost();
+      const ask = firstAsk(p2);   // resolves with the ask's _requestId
+      const resumed = await p2.resume('s', root);
+      expect(resumed).toBe(true);
+      const seen: any[] = []; p2.on('transcript-event', (e) => seen.push(e));
+      const turn = p2.send('s', 'write a file');
+      const requestId = await ask;   // resolves ONLY if the resumed session is back to 'ask'
+      expect(seen.map((e) => e.type)).not.toContain('turn-complete');  // paused on the ask
+      p2.respondPermission(requestId, { decision: { behavior: 'deny' } });
+      await turn;
+      await p.destroyAll();
+      await p2.destroyAll();
+    });
+
     it('full-auto auto-allows a gated tool (decide reflects the mode — no ask fires)', async () => {
       const p = permHost();
       const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
