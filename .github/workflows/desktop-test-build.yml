@@ -2,6 +2,16 @@ name: Desktop Test Build
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version to stamp into the build. MUST sort ABOVE the latest published
+          release, or the installed build will offer to "update" itself back to
+          that release (compareVersions in ipc-handlers.ts parses naively:
+          `1.2.4-beta` -> [1,2,0], which is LOWER than 1.2.4). Bump the minor
+          and suffix, e.g. 1.3.0-beta, rather than patching the current version.
+        required: false
+        default: '1.3.0-beta'
 
 jobs:
   build:
@@ -33,6 +43,19 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
+      # Mirrors desktop-release.yml's "Sync version from tag". Without this the
+      # build inherits package.json's version — the LAST RELEASED one — so a test
+      # build is indistinguishable from the real release in Settings → About, in
+      # analytics (analytics-service.ts reports app.getVersion()), and in bug
+      # reports. Both __APP_VERSION__ and app.getVersion() derive from this file,
+      # so stamping it here fixes every surface at once.
+      - name: Stamp beta version
+        shell: bash
+        run: |
+          BETA_VERSION="${{ inputs.version }}"
+          node -e "var p=require('path').resolve('package.json'),pkg=JSON.parse(require('fs').readFileSync(p,'utf8'));pkg.version=process.argv[1];require('fs').writeFileSync(p,JSON.stringify(pkg,null,2)+'\n')" "$BETA_VERSION"
+          echo "Set desktop/package.json version to $BETA_VERSION"
+
       - name: Install dependencies
         run: npm ci
 
@@ -50,6 +73,10 @@ jobs:
         working-directory: .
 
       - name: Build
+        # Vite bakes this into __BUILD_CHANNEL__, which renders the "(BETA)" tag
+        # in Settings → About. Release builds never set it, so they render clean.
+        env:
+          YOUCODED_BUILD_CHANNEL: BETA
         run: npm run build
 
       - name: Install xvfb (Linux)

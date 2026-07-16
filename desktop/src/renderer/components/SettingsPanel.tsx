@@ -1,4 +1,7 @@
 declare const __APP_VERSION__: string;
+// Baked in by Vite from YOUCODED_BUILD_CHANNEL. '' for release builds, 'BETA'
+// for desktop-test-build.yml artifacts. See src/shared/version-line.ts.
+declare const __BUILD_CHANNEL__: string;
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
@@ -21,6 +24,12 @@ import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
 import SettingsRow from './SettingsRow';
+import { formatVersionLine } from '../../shared/version-line';
+
+// Both are Vite `define` substitutions, so they're constants at module scope.
+// The typeof guard covers paths where the define isn't applied (unit tests).
+const desktopVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '';
+const desktopChannel = typeof __BUILD_CHANNEL__ !== 'undefined' ? __BUILD_CHANNEL__ : '';
 
 // Plain-language explainer for the Remote Access popup. Shown when the user
 // taps the (i) icon in the popup header — see RemoteButton's `showInfo` state.
@@ -2097,7 +2106,7 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
                 </svg>
               }
               title="About"
-              subtitle={`YouCoded ${aboutInfo.version}${aboutInfo.build ? ` · ${aboutInfo.build}` : ''}`}
+              subtitle={formatVersionLine({ version: aboutInfo.version, build: aboutInfo.build })}
               onClick={() => setShowAbout(true)}
             />
             <AboutPopup
@@ -2427,14 +2436,15 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
             </svg>
           }
           title="About"
-          subtitle={`YouCoded ${typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}`}
+          subtitle={formatVersionLine({ version: desktopVersion, channel: desktopChannel })}
           onClick={() => setShowAbout(true)}
         />
         <AboutPopup
           open={showAbout}
           onClose={() => setShowAbout(false)}
           platform="desktop"
-          version={typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : ''}
+          version={desktopVersion}
+          channel={desktopChannel}
         />
       </div>
     </>

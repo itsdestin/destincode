@@ -4,6 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Toggle } from './SettingsPanel';
+import { formatVersionLine } from '../../shared/version-line';
 
 // Shared About popup for Desktop and Android settings. Previously this was an
 // inline collapsible inside SettingsPanel on both platforms, which didn't match
@@ -17,6 +18,8 @@ interface AboutPopupProps {
   platform: 'desktop' | 'android';
   version: string;
   build?: string;
+  /** Build channel (e.g. 'BETA') — set only by test builds, never by releases. */
+  channel?: string;
 }
 
 const DESKTOP_LIBS: { lib: string; license: string; source: string }[] = [
@@ -75,7 +78,7 @@ function AnalyticsOptInToggle() {
   );
 }
 
-export default function AboutPopup({ open, onClose, platform, version, build }: AboutPopupProps) {
+export default function AboutPopup({ open, onClose, platform, version, build, channel }: AboutPopupProps) {
   const scrollRef = useScrollFade<HTMLDivElement>();
 
   // Escape-to-close, matching PreferencesPopup/ModelPickerPopup convention.
@@ -84,7 +87,7 @@ export default function AboutPopup({ open, onClose, platform, version, build }: 
   if (!open) return null;
 
   const libs = platform === 'desktop' ? DESKTOP_LIBS : ANDROID_LIBS;
-  const versionLine = `YouCoded ${version}${build ? ` · ${build}` : ''}`;
+  const versionLine = formatVersionLine({ version, build, channel });
 
   return createPortal(
     <>
