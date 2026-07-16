@@ -25,20 +25,31 @@ export interface PermissionDecision {
 // every mode baseline (Full-auto included). An explicit remembered user rule
 // wins over it (spec review ruling #2) — that's why these are 'ask', not 'deny':
 // the user stays sovereign, the model never proceeds silently.
+// Each base pattern has a '* …' compound variant because the Task-3 matcher
+// anchors patterns ^…$, so a bare 'git push*' won't catch 'cd repo && git push'.
+// Over-matching is fail-safe here because the action is only 'ask': an
+// unnecessary ask is merely annoying, while a missed destructive command in
+// Full-auto is the failure that actually matters.
 export const DESTRUCTIVE_DENY_LIST: PermissionRule[] = [
   { tool: 'Bash', pattern: 'rm *', action: 'ask' },
   { tool: 'Bash', pattern: '* rm *', action: 'ask' },
   { tool: 'Bash', pattern: 'rmdir *', action: 'ask' },
+  { tool: 'Bash', pattern: '* rmdir *', action: 'ask' },
   { tool: 'Bash', pattern: 'del *', action: 'ask' },
+  { tool: 'Bash', pattern: '* del *', action: 'ask' },
   { tool: 'Bash', pattern: 'git push*', action: 'ask' },
+  { tool: 'Bash', pattern: '* git push*', action: 'ask' },
   { tool: 'Bash', pattern: 'git reset --hard*', action: 'ask' },
+  { tool: 'Bash', pattern: '* git reset --hard*', action: 'ask' },
   { tool: 'Bash', pattern: 'sudo *', action: 'ask' },
+  { tool: 'Bash', pattern: '* sudo *', action: 'ask' },
   { tool: 'Bash', pattern: 'format *', action: 'ask' },
+  { tool: 'Bash', pattern: '* format *', action: 'ask' },
 ];
 
-/** Mode baselines (spec §2.4 layer 2). Read/search tools are always free. */
+/** Mode baselines (spec §2.4 layer 2). Read/search tools plus TodoWrite are always free. */
 export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
-  const readOnly: PermissionRule[] = [
+  const alwaysAllowed: PermissionRule[] = [
     { tool: 'Read', action: 'allow' },
     { tool: 'Glob', action: 'allow' },
     { tool: 'Grep', action: 'allow' },
@@ -46,9 +57,9 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
   ];
   switch (mode) {
     case 'ask':
-      return [{ tool: '*', action: 'ask' }, ...readOnly];
+      return [{ tool: '*', action: 'ask' }, ...alwaysAllowed];
     case 'auto-edit':
-      return [{ tool: '*', action: 'ask' }, ...readOnly,
+      return [{ tool: '*', action: 'ask' }, ...alwaysAllowed,
         { tool: 'Edit', action: 'allow' }, { tool: 'Write', action: 'allow' }];
     case 'full-auto':
       return [{ tool: '*', action: 'allow' }];
