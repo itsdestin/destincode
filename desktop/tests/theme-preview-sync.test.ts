@@ -9,8 +9,11 @@ import path from 'path';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const GLOBALS_PATH = path.join(ROOT, 'desktop', 'src', 'renderer', 'styles', 'globals.css');
-// theme-preview.css lives in the youcoded-core repo (sibling workspace directory)
-const PREVIEW_PATH = path.resolve(ROOT, '..', 'youcoded-core', 'core', 'skills', 'theme-builder', 'theme-preview.css');
+// theme-preview.css lives in the wecoded-marketplace repo (sibling workspace
+// directory) under the bundled wecoded-themes-plugin. It previously lived in
+// youcoded-core (deprecated); when that copy was removed this suite silently
+// skipped — hence the canary test below that fails loudly if the file moves again.
+const PREVIEW_PATH = path.resolve(ROOT, '..', 'wecoded-marketplace', 'wecoded-themes-plugin', 'skills', 'theme-builder', 'theme-preview.css');
 
 const previewExists = fs.existsSync(PREVIEW_PATH);
 const globals = fs.readFileSync(GLOBALS_PATH, 'utf8');
@@ -29,6 +32,18 @@ function extractSelectors(css: string): string[] {
   }
   return results;
 }
+
+// Canary: in a workspace checkout (sibling wecoded-marketplace repo present),
+// the preview file must exist at PREVIEW_PATH. Without this, moving the file
+// turns the whole suite into a permanent silent skip instead of a failure —
+// exactly what happened when it left youcoded-core. Standalone clones of this
+// repo (no sibling) still skip everything.
+const marketplaceRepoExists = fs.existsSync(path.resolve(ROOT, '..', 'wecoded-marketplace'));
+describe.skipIf(!marketplaceRepoExists)('theme-preview.css location canary', () => {
+  it('theme-preview.css exists at its expected wecoded-marketplace path', () => {
+    expect(previewExists).toBe(true);
+  });
+});
 
 describe.skipIf(!previewExists)('theme-preview.css ↔ globals.css sync', () => {
   // All 15 token variables must be used in the preview
@@ -100,11 +115,14 @@ describe.skipIf(!previewExists)('theme-preview.css ↔ globals.css sync', () => 
   // Post-blur-fix: glass is gated behind [data-wallpaper] in globals.css,
   // and backdrop-filter is injected dynamically by theme-engine at apply
   // time (literal blur values, not var(), to force Chrome repaint on
-  // slider changes). So the plain `.header-bar` rule no longer carries
-  // blur/color-mix — only the wallpaper-scoped variant does.
-  // See GLASSMORPHISM-BLUR-FIX-PLAN.md.
+  // slider changes). After the chrome-glass refactor the base `.header-bar`
+  // is fully transparent (the framed chrome surface is .chrome-glass), so
+  // the wallpaper-scoped color-mix rule now lives on the floating-chrome /
+  // floating-input header variants. The pinned guarantee is unchanged:
+  // some [data-wallpaper]-gated .header-bar rule derives its background
+  // from --panels-opacity via color-mix.
   it('wallpaper-gated header uses --panels-opacity color-mix in both files', () => {
-    const headerWallpaperRe = /\[data-wallpaper\]\s*\.header-bar\s*\{([^}]+)\}/;
+    const headerWallpaperRe = /\[data-wallpaper\][^{}]*\.header-bar[^{}]*\{([^}]+)\}/;
     const globalsMatch = globals.match(headerWallpaperRe);
     const previewMatch = preview.match(headerWallpaperRe);
 
