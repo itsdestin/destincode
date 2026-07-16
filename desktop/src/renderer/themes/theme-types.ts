@@ -87,7 +87,14 @@ export type ThemeIcons = Partial<Record<IconSlot, string>>;
 
 export type MascotVariant = 'idle' | 'welcome' | 'inquisitive' | 'shocked';
 
-export type ThemeMascot = Partial<Record<MascotVariant, string>>;
+export type ThemeMascot = Partial<Record<MascotVariant, string>> & {
+  /** Optional rigged SVG (named part groups + data-pivot attrs) — the
+   *  preferred mascot format; the flat variants above are the legacy tier.
+   *  Full authoring contract: wecoded-themes mascots/README.md.
+   *  Resolved to theme-asset:// by theme-asset-resolver like the flat variants
+   *  (its Object.entries loop is key-agnostic — no resolver change needed). */
+  rig?: string;
+};
 
 export interface ThemeScrollbar {
   'thumb-image'?: string;
