@@ -121,4 +121,19 @@ describe('ModelDownloader', () => {
     expect(() => dl.start('unsloth/M-GGUF', quantOpt(), () => {})).toThrow(/already/i);
     await dl.wait(id);
   });
+
+  it('activePartialNames: reports in-flight .partial basenames, empty once the download settles (orphan-scan exclusion)', async () => {
+    const dl = new ModelDownloader(dir, fetchServing(bodies));
+    expect(dl.activePartialNames().size).toBe(0);
+    const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
+    // While live, every file of the quant is claimed (basenames + .partial) —
+    // ModelManager.orphanedPartials subtracts these so an in-flight download
+    // is never mislabeled an orphan.
+    expect([...dl.activePartialNames()].sort()).toEqual([
+      'M-UD-Q4_K_XL-00001-of-00002.gguf.partial',
+      'M-UD-Q4_K_XL-00002-of-00002.gguf.partial',
+    ]);
+    await dl.wait(id);
+    expect(dl.activePartialNames().size).toBe(0);
+  });
 });

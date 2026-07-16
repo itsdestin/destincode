@@ -71,6 +71,20 @@ export interface InstalledLocalModel {
   parts: number;              // 1 for single-file models
 }
 
+/** A `.gguf.partial` file in the cache dir with NO live download attached —
+ *  orphaned by an app restart/crash mid-download. The downloader only tracks
+ *  THIS session's downloads in memory, so without this scan an orphan is
+ *  invisible to the UI (it can't be resumed or cleaned). Listing only in v1:
+ *  clean via models:delete with `modelId` (it removes every part + .partial),
+ *  resume by re-starting the same repo+quant download (the Range request picks
+ *  the partial bytes back up). */
+export interface OrphanedPartial {
+  fileName: string;   // e.g. 'M-Q4_K_M.gguf.partial' — the on-disk file
+  modelId: string;    // the id models:delete expects (first-part id for splits)
+  sizeBytes: number;  // bytes downloaded so far
+  mtimeMs: number;    // last write time — shows how stale the orphan is
+}
+
 export interface DetectedEndpoint {
   kind: 'ollama' | 'lmstudio';
   label: string;              // 'Ollama (local)' / 'LM Studio (local)'

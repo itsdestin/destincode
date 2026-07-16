@@ -8,13 +8,14 @@ import * as path from 'path';
 import { NativeHome } from '../native-home';
 import { EngineManager } from '../engine/engine-manager';
 import { readEngineConfig } from '../engine/engine-config';
+import { scanPartialFiles } from '../engine/cache-scan';
 import { CuratedCatalog } from './curated-catalog';
 import { HfClient } from './hf-client';
 import { ModelDownloader } from './model-downloader';
 import { estimateFit, checkDiskSpace, checkMemoryForLoad, type MemoryVerdict } from './fit-estimator';
 import { detectGpu } from './gpu-detector';
 import type {
-  CuratedModel, DownloadProgress, FitEstimate, HFSearchHit, QuantOption,
+  CuratedModel, DownloadProgress, FitEstimate, HFSearchHit, OrphanedPartial, QuantOption,
 } from '../../shared/model-manager-types';
 
 export class ModelManager extends EventEmitter {
@@ -137,4 +138,15 @@ export class ModelManager extends EventEmitter {
   }
 
   cancel(downloadId: string): void { this.getDownloader().cancel(downloadId); }
+
+  /** `.partial` files in the cache dir with no live download attached — orphans
+   *  from a previous app run (quit/crash mid-download). The downloader only
+   *  tracks THIS session's downloads in memory, so these are otherwise invisible
+   *  to the UI. Listing only (v1): the panel cleans one via models:delete with
+   *  `modelId` (delete removes every part + .partial), or resumes by re-starting
+   *  the same repo+quant download (the Range request continues the partial). */
+  orphanedPartials(): OrphanedPartial[] {
+    const active = this.getDownloader().activePartialNames();
+    return scanPartialFiles(this.cacheDir()).filter((p) => !active.has(p.fileName));
+  }
 }

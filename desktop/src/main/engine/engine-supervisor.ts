@@ -332,7 +332,9 @@ export class EngineSupervisor extends EventEmitter {
 
   // ---- model listing ----------------------------------------------------
 
-  /** Running → GET /models (live status); stopped → cache scan (loaded:false).
+  /** Running → GET /models (live status) UNIONED with a fresh disk scan, so a
+   *  model downloaded after boot is listed without a restart (Amendment K2);
+   *  stopped → cache scan alone (loaded:false).
    *  Upstream /models schema is a tracked coupling — parse DEFENSIVELY, and
    *  keep the exact observed shape pinned in test-engine/probe-models.mjs +
    *  docs/engine-dependencies.md. */
@@ -347,8 +349,9 @@ export class EngineSupervisor extends EventEmitter {
         : Array.isArray(payload) ? payload : [];
       // /models rows carry no size — the cache scan does, so index sizes by id
       // and merge them in (the UI's loading banner shows the model size).
+      const scanned = scanGgufCache(this.opts.cacheDir);
       const sizeById = new Map<string, number | null>();
-      for (const m of scanGgufCache(this.opts.cacheDir)) sizeById.set(m.id, m.sizeBytes);
+      for (const m of scanned) sizeById.set(m.id, m.sizeBytes);
       const out: EngineModel[] = [];
       for (const row of rows) {
         const id = typeof row?.id === 'string' ? row.id : typeof row?.name === 'string' ? row.name : null;
@@ -366,6 +369,16 @@ export class EngineSupervisor extends EventEmitter {
           loaded: state === 'loaded',
           state,
         });
+      }
+      // Fix (Amendment K2): the router discovers GGUFs at BOOT, and whether a
+      // file downloaded AFTER boot ever shows up in GET /models is unverified
+      // upstream — so union in the fresh disk scan. A just-downloaded model is
+      // then immediately visible (new-session picker via catalogModels, memory
+      // guard via liveModels) without an engine restart. Router rows win — they
+      // carry live residency state; disk-only rows are 'unloaded' by definition.
+      const routerIds = new Set(out.map((m) => m.id));
+      for (const m of scanned) {
+        if (!routerIds.has(m.id)) out.push(m);
       }
       return out;
     } catch {

@@ -23,6 +23,7 @@ interface ActiveDownload {
   abort: AbortController;
   promise: Promise<void>;
   cancelled: boolean;
+  fileNames: string[];               // basenames this download writes — the orphan scan excludes their .partials
 }
 
 export class ModelDownloader {
@@ -39,7 +40,10 @@ export class ModelDownloader {
     }
     const downloadId = ulid();
     const abort = new AbortController();
-    const entry: ActiveDownload = { key, abort, cancelled: false, promise: Promise.resolve() };
+    const entry: ActiveDownload = {
+      key, abort, cancelled: false, promise: Promise.resolve(),
+      fileNames: quant.files.map((f) => path.basename(f)),
+    };
     entry.promise = this.run(downloadId, repo, quant, entry, onProgress)
       .finally(() => { /* keep the entry until wait() consumers observe it */ });
     this.active.set(downloadId, entry);
@@ -57,6 +61,17 @@ export class ModelDownloader {
     if (!entry) return;
     entry.cancelled = true;
     entry.abort.abort();
+  }
+
+  /** Basenames of the `.partial` files THIS session's live downloads may be
+   *  writing. The orphan scan (ModelManager.orphanedPartials) subtracts these —
+   *  an in-flight download is not an orphan, it's just not finished yet. */
+  activePartialNames(): Set<string> {
+    const out = new Set<string>();
+    for (const d of this.active.values()) {
+      for (const name of d.fileNames) out.add(`${name}.partial`);
+    }
+    return out;
   }
 
   private async run(

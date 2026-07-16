@@ -852,6 +852,16 @@ export class RemoteServer {
         }
         break;
       }
+      // Orphaned .partial scan (2026-07-15) — mirrors the Electron IPC handler.
+      case 'models:orphaned-partials': {
+        try {
+          const res = this.nativeRuntime ? this.nativeRuntime.modelManager.orphanedPartials() : [];
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
       case 'engine:models': {
         try {
           const res = this.nativeRuntime ? await this.nativeRuntime.engineManager.liveModels() : [];
