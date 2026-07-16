@@ -292,5 +292,35 @@ describe('NativeSessionHost', () => {
       expect(rules.some((r) => r.tool === 'Write' && r.action === 'allow')).toBe(true);
       await p.destroyAll();
     });
+
+    it('Always-allow sticks in-session even when the disk persist never resolves (in-memory union)', async () => {
+      // A store whose remember() NEVER resolves (persist hang/failure) and whose
+      // rulesFor never reflects the rule — so ONLY the in-memory union can make
+      // the Always-allow stick.
+      const hangingStore = {
+        rulesFor: async () => [] as any[],
+        remember: () => new Promise<void>(() => { /* never resolves */ }),
+      };
+      const p = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, hangingStore, '9.9.9',
+      );
+      const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
+      await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // Turn 1 (mode 'ask'): the Write raises ONE ask; respond Always-allow.
+      const ask1 = firstAsk(p);
+      const t1 = p.send('s', 'write once');
+      p.respondPermission(await ask1, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Write' }] });
+      await t1;
+      expect(asks).toHaveLength(1);
+
+      // Turn 2: the SAME gated call must NOT ask — the in-memory remembered rule
+      // held even though the disk persist (remember) never resolved.
+      const seen: any[] = []; p.on('transcript-event', (e) => seen.push(e));
+      await p.send('s', 'write again');   // resolves — no ask to wait on
+      expect(asks).toHaveLength(1);       // still just the first ask (no re-ask)
+      expect(seen.map((e) => e.type)).toContain('turn-complete');
+      await p.destroyAll();
+    });
   });
 });

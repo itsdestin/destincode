@@ -76,6 +76,16 @@ export class NativeSessionHost extends EventEmitter {
   // on the NEXT gated call without disturbing an in-flight ask.
   private modeFor = new Map<string, NativePermissionMode>();
 
+  // Per-session in-memory copy of "Always allow" rules remembered THIS session.
+  // WHY memory is the source of session-truth: the disk persist (PermissionStore)
+  // is async fire-and-forget, so relying on it alone means (a) a failed persist
+  // silently never sticks — the user re-asks forever — and (b) a fast model's
+  // next tool can race the write and re-ask once. Updated SYNCHRONOUSLY in the
+  // remember-rule handler (before the async persist kicks off) and unioned into
+  // decide(), so an Always-allow always sticks for the rest of this session.
+  // Disk remains the cross-session record; this is per-run and dropped on destroy.
+  private rememberedFor = new Map<string, PermissionRule[]>();
+
   constructor(
     private store: SessionStore,
     private modelFactory: ModelFactory,
@@ -168,7 +178,15 @@ export class NativeSessionHost extends EventEmitter {
       presetRules: [],                       // Plan B: preset manifests contribute here
       modeRules: rulesForMode(this.modeFor.get(sessionId) ?? 'ask'),
       denyList: DESTRUCTIVE_DENY_LIST,
-      rememberedRules: await this.permissionStore.rulesFor(cwd),
+      // Union disk (cross-session record) with this session's in-memory rules
+      // (session-truth). Disk first, in-memory appended after — a later match
+      // wins in the engine, but the two are identical allow rules so the tie is
+      // harmless. In-memory is what guarantees an Always-allow sticks even if the
+      // async disk persist failed or hasn't landed yet (see rememberedFor above).
+      rememberedRules: [
+        ...await this.permissionStore.rulesFor(cwd),
+        ...(this.rememberedFor.get(sessionId) ?? []),
+      ],
     });
   }
 
@@ -205,6 +223,17 @@ export class NativeSessionHost extends EventEmitter {
     // slug scoping via PermissionStore. Fire-and-forget: a failed persist must
     // not break the turn (the rule is a convenience, re-asked next time).
     session.on('remember-rule', (rule: PermissionRule) => {
+      // (1) Record in-memory SYNCHRONOUSLY first, deduping exact repeats — this is
+      // what makes the Always-allow stick for the rest of the session regardless
+      // of whether the disk write below succeeds or wins the race with the next
+      // tool call.
+      const mem = this.rememberedFor.get(sessionId) ?? [];
+      if (!mem.some((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action)) {
+        mem.push(rule);
+        this.rememberedFor.set(sessionId, mem);
+      }
+      // (2) Then persist the cross-session record. Fire-and-forget: a failed
+      // persist must not break the turn, and (1) already covers this session.
       void this.permissionStore.remember(cwd, rule).catch((err) => {
         log('ERROR', 'NativeSessionHost', 'remember-rule persist failed', { sessionId, error: String(err) });
       });
@@ -361,10 +390,12 @@ export class NativeSessionHost extends EventEmitter {
     await entry.appendChain;             // drain already-enqueued appends
     await this.store.dispose(sessionId); // flush the buffered open part
     this.live.delete(sessionId);
-    // Drop the per-session mode so it can't leak, and so a destroy→resume of the
-    // SAME sessionId within one app run resets to the documented default 'ask'
-    // (mode is per-session runtime state, never carried across a teardown).
+    // Drop per-session runtime state so it can't leak and so a destroy→resume of
+    // the SAME sessionId within one app run starts clean: mode resets to the
+    // default 'ask', and the in-memory remembered rules fall back to the disk
+    // record (never carried across a teardown).
     this.modeFor.delete(sessionId);
+    this.rememberedFor.delete(sessionId);
     this.releaseModel(sessionId, modelId); // last session gone → unload it (#1)
   }
 
