@@ -619,6 +619,13 @@ export class RemoteServer {
         }
         break;
       }
+      case 'native:get-permission-mode': {
+        // Read-only — never throws. Falls back to 'ask' when no native runtime
+        // (mirrors NativeSessionHost.getPermissionMode's default).
+        const mode = this.nativeRuntime ? this.nativeRuntime.nativeHost.getPermissionMode(payload.sessionId) : 'ask';
+        this.respond(client.ws, type, id, mode);
+        break;
+      }
       case 'native:sessions-list': {
         this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
         break;

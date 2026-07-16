@@ -300,6 +300,7 @@ const IPC = {
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
+  NATIVE_GET_PERMISSION_MODE: 'native:get-permission-mode',
   NATIVE_SESSIONS_LIST: 'native:sessions-list',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_UPSERT: 'provider:upsert',
@@ -1071,6 +1072,8 @@ contextBridge.exposeInMainWorld('claude', {
     // Request-response: match the positional ipcMain.handle signatures.
     setBinding: (sessionId: string, binding: unknown) => ipcRenderer.invoke(IPC.NATIVE_SET_BINDING, sessionId, binding),
     setPermissionMode: (sessionId: string, mode: string) => ipcRenderer.invoke(IPC.NATIVE_SET_PERMISSION_MODE, sessionId, mode),
+    // Read the session's current permission mode — seeds the chip on create/resume.
+    getPermissionMode: (sessionId: string) => ipcRenderer.invoke(IPC.NATIVE_GET_PERMISSION_MODE, sessionId),
     sessionsList: () => ipcRenderer.invoke(IPC.NATIVE_SESSIONS_LIST),
     // Per-session bound-model residency push (unloaded/loading/loaded/sleeping)
     // → ChatView's model-unloaded banner + loading indicator (2026-07-14).

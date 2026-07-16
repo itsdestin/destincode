@@ -3557,6 +3557,7 @@ class SessionService : Service() {
             "native:interrupt",
             "native:set-binding",
             "native:set-permission-mode",
+            "native:get-permission-mode",
             "native:sessions-list",
             "provider:list",
             "provider:upsert",

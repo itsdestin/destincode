@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
+import { PRESETS } from '../../shared/harness-manifest';
+
+// The two built-in native harness presets (personality profiles, not capability
+// tiers). A native session is stamped with one at create time; it drives the
+// session's starting permission posture + prompt personality.
+export type PresetId = 'assistant' | 'coder';
+
+/** Spec §3.4 heuristic: a project folder set at form-open → Coder, else Assistant.
+ *  Both new-session forms seed the preset from this until the user picks one. */
+export function defaultPresetFor(cwd: string): PresetId { return cwd.trim() ? 'coder' : 'assistant'; }
 
 // Shared "Runtime" selector (Claude Code vs the YouCoded native harness) + the
 // native provider/model binding picker, used by BOTH new-session forms — the
@@ -147,11 +157,16 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
 // The Runtime toggle + (when native is chosen) the provider/model picker.
 // Self-gates on native support — renders nothing when there's only one runtime.
 export function RuntimeBindingFields({
-  runtime, onRuntime, nb,
+  runtime, onRuntime, nb, preset, onPreset,
 }: {
   runtime: Runtime;
   onRuntime: (r: Runtime) => void;
   nb: NativeBinding & { setBinding: (b: Binding) => void };
+  // The chosen native harness preset (Assistant | Coder) + its setter. Only
+  // meaningful when runtime === 'native'; the parent forwards it into the
+  // create call so the session is stamped with the right personality/posture.
+  preset: PresetId;
+  onPreset: (p: PresetId) => void;
 }) {
   if (!nb.nativeSupported) return null;
   return (
@@ -219,6 +234,28 @@ export function RuntimeBindingFields({
                     ))}
                   </select>
                 )}
+              </div>
+
+              {/* Preset picker (spec §3.4): the native harness personality —
+                  Assistant (asks first) vs Coder (agentic, auto-edits). Both carry
+                  the full tool suite; they differ in prompt + starting permission
+                  posture. Stamped at create; drives the resolved harnessId. */}
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Preset</label>
+                <div className="flex gap-2">
+                  {PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => onPreset(p.id as PresetId)}
+                      aria-pressed={preset === p.id}
+                      className={`flex-1 text-left rounded border px-2 py-1.5 ${preset === p.id ? 'border-accent bg-inset' : 'border-edge bg-panel hover:bg-inset'}`}
+                    >
+                      <div className="text-xs text-fg">{p.name}</div>
+                      <div className="text-[10px] text-fg-muted leading-snug">{p.description}</div>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Memory guard (#2): block only when clearly too large; otherwise a

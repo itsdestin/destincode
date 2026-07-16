@@ -44,6 +44,10 @@ export interface SessionInfo {
   createdAt: number;
   /** Which runtime backend this session runs — 'claude' (default) or 'native' */
   provider: SessionProvider;
+  /** Native runtime only: the RESOLVED harness preset id ('assistant' | 'coder',
+   *  post legacy-mapping — a stored 'chat' header resolves to 'assistant'). Drives
+   *  the renderer's preset badge. Absent for Claude sessions. */
+  harnessId?: string;
   /** Model alias the session was started with (e.g. 'claude-sonnet-4-6') */
   model?: string;
   /** Optional text to prefill into the input bar after this session is selected.
@@ -592,6 +596,10 @@ export interface PastSession {
    *  Conversation-Store rows (Phase 2a). Typed `string` (not the `'claude' |
    *  'native'` union) because store-fed rows assign it from a stored string. */
   provider?: string;
+  /** Native runtime only: the stored harness preset id from the session header
+   *  ('assistant' | 'coder' | legacy 'chat'). Drives the Resume Browser's preset
+   *  label. Absent for Claude transcripts. */
+  harnessId?: string;
   /** Applied custom-tag ids (from the conversation store's `tag:<id>` flag
    *  keys). Resolved to labels/colors by the renderer via the tag registry. */
   tags?: string[];
@@ -923,6 +931,9 @@ export const IPC = {
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_SET_BINDING: 'native:set-binding',
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
+  // Read the session's current native permission mode. Seeds the StatusBar chip
+  // on create/resume so a fresh Coder session shows AUTO EDIT (not the default ASK).
+  NATIVE_GET_PERMISSION_MODE: 'native:get-permission-mode',
   NATIVE_SESSIONS_LIST: 'native:sessions-list',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_UPSERT: 'provider:upsert',

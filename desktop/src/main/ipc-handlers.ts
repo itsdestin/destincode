@@ -468,7 +468,7 @@ export function registerIpcHandlers(
           // a fresh session under the same id so the renderer isn't left with a
           // SessionInfo backed by no live HarnessSession.
           if (!resumed && opts.binding) {
-            await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding });
+            await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
           } else if (!resumed && !opts.binding) {
             // Resume asked for a session whose saved data is gone, and we have no
             // binding to start a fresh one under this id — the renderer already
@@ -490,8 +490,13 @@ export function registerIpcHandlers(
             });
           }
         } else {
-          await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding });
+          await nativeHost.create({ sessionId: info.id, cwd: info.cwd, binding: opts.binding, presetId: opts.preset });
         }
+        // Stamp the RESOLVED preset id (post legacy-mapping — a stored 'chat'
+        // header resolves to 'assistant') onto the SessionInfo so the renderer's
+        // preset badge + resume rows can read it. getHarnessId is authoritative
+        // after create/resume awaited above.
+        info.harnessId = nativeHost.getHarnessId(info.id) ?? undefined;
       } catch (e) {
         log('ERROR', 'IPC', 'native session start failed', { sessionId: info.id, error: String(e) });
       }
@@ -1311,6 +1316,10 @@ export function registerIpcHandlers(
       lastModified: r.mtimeMs,
       size: r.sizeBytes,
       provider: 'native' as const,
+      // Stored (raw) harness id from the header — drives the Resume Browser's
+      // preset label. Note: not legacy-mapped here (a 'chat' header shows as
+      // Assistant via the label's fallback), which is fine for a display badge.
+      harnessId: r.harnessId,
     }));
     // ResumeBrowser re-sorts by lastModified, so a plain concat is fine here.
     return [...ccRows, ...nativeRows];
@@ -1966,6 +1975,11 @@ export function registerIpcHandlers(
   // applied mode as the authoritative value.
   ipcMain.handle(IPC.NATIVE_SET_PERMISSION_MODE, async (_e, sessionId: string, mode: NativePermissionMode) =>
     nativeHost.setPermissionMode(sessionId, mode));
+  // Read-only mode fetch — seeds the renderer chip on create/resume so a fresh
+  // Coder session shows AUTO EDIT rather than the default ASK. Never throws
+  // (getPermissionMode falls back to 'ask' for an unknown/non-live id).
+  ipcMain.handle(IPC.NATIVE_GET_PERMISSION_MODE, async (_e, sessionId: string) =>
+    nativeHost.getPermissionMode(sessionId));
   ipcMain.handle(IPC.NATIVE_SESSIONS_LIST, async () => nativeHost.list());
   // Provider management (Settings → Providers).
   ipcMain.handle(IPC.PROVIDER_LIST, async () => providerRegistry.list());

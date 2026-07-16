@@ -27,6 +27,11 @@ export interface CreateSessionOpts {
   /** Native-runtime model binding (provider='native' only). Required for a
    *  fresh native session; on resume the binding comes from the stored header. */
   binding?: ModelBinding;
+  /** Native-runtime harness preset id (provider='native', fresh create only) —
+   *  'assistant' | 'coder'. On resume the preset comes from the stored header.
+   *  ipc-handlers threads it into nativeHost.create() and re-stamps the resolved
+   *  id back onto the returned SessionInfo. */
+  preset?: string;
   /** Optional text to prefill into the input bar after the session is selected.
    *  Forwarded into SessionInfo so the renderer can pick it up on session-created. */
   initialInput?: string;
@@ -86,6 +91,12 @@ export class SessionManager extends EventEmitter {
         createdAt: Date.now(),
         provider: 'native',
         model: opts.binding?.modelId,
+        // Seed the resolved-preset badge on the FIRST push for a fresh create
+        // (opts.preset is the user's pick, which equals the resolved id for the
+        // two built-ins). ipc-handlers re-stamps the authoritative resolved id
+        // after nativeHost.create/resume; on resume the id is header-derived and
+        // arrives via that re-stamp + list() refresh (unknown here).
+        ...(opts.preset && !opts.resumeSessionId ? { harnessId: opts.preset } : {}),
         ...(opts.initialInput !== undefined ? { initialInput: opts.initialInput } : {}),
       };
       this.sessions.set(nativeId, { info: nativeInfo });

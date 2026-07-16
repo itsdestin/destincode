@@ -6,7 +6,7 @@ import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
 import { ModelInfoTooltip } from './ModelPickerPopup';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
-import { useNativeBinding, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
+import { useNativeBinding, RuntimeBindingFields, loadLastBinding, persistLastBinding, defaultPresetFor, type Runtime, type Binding, type PresetId } from './RuntimeBinding';
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
@@ -16,6 +16,12 @@ interface SessionEntry {
   name: string;
   cwd: string;
   permissionMode: string;
+  // Which runtime backend this session runs — 'claude' (default) or 'native'.
+  // Drives the live-pill "YouCoded · <preset>" badge for native sessions.
+  provider?: string;
+  // Resolved native preset id ('assistant' | 'coder', post legacy-mapping).
+  // Absent for Claude sessions.
+  harnessId?: string;
 }
 
 const MODEL_LABELS: Record<string, string> = {
@@ -29,7 +35,7 @@ interface Props {
   sessions: SessionEntry[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }) => void;
+  onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }, preset?: string) => void;
   onCloseSession: (id: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
   onResumeSession: (sessionId: string, projectSlug: string, projectPath: string, model?: string, dangerous?: boolean) => void;
@@ -173,6 +179,15 @@ export default function SessionStrip({
   const [runtime, setRuntime] = useState<Runtime>('claude');
   const [binding, setBinding] = useState<Binding | null>(() => loadLastBinding());
   const nb = useNativeBinding({ active: showNewForm, runtime, binding, setBinding });
+  // Native harness preset (Assistant | Coder). Seeded from the project-folder
+  // heuristic (defaultPresetFor) until the user picks one — presetTouched latches
+  // on the first manual pick so the heuristic stops overriding their choice, and
+  // resets when the form (re)opens.
+  const [preset, setPreset] = useState<PresetId>('assistant');
+  const presetTouched = useRef(false);
+  useEffect(() => {
+    if (!presetTouched.current) setPreset(defaultPresetFor(newCwd));
+  }, [newCwd]);
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -362,6 +377,7 @@ export default function SessionStrip({
       runtime,
       launchInNewWindow,
       runtime === 'native' ? (nb.effectiveBinding ?? undefined) : undefined,
+      runtime === 'native' ? preset : undefined,
     );
     setMenuOpen(false);
     setShowNewForm(false);
@@ -369,7 +385,7 @@ export default function SessionStrip({
     setNewModel(defaultModel || 'sonnet');
     setLaunchInNewWindow(false);
     setRuntime('claude');
-  }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, runtime, nb.effectiveBinding]);
+  }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, runtime, nb.effectiveBinding, preset]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
 
@@ -779,6 +795,17 @@ export default function SessionStrip({
                 >
                   {s.name}
                 </span>
+                {/* Native-runtime badge — marks a YouCoded harness session and
+                    which preset it runs as. Only when the name is showing so it
+                    never clutters a collapsed dot-only pill. */}
+                {s.provider === 'native' && showName && (
+                  <span
+                    className="shrink-0 text-[9px] px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap"
+                    title="YouCoded native session"
+                  >
+                    {`YouCoded · ${s.harnessId === 'coder' ? 'Coder' : 'Assistant'}`}
+                  </span>
+                )}
                 {/* Active indicator bar — removed (dot is sufficient) */}
               </button>
             </React.Fragment>
@@ -983,7 +1010,13 @@ export default function SessionStrip({
               {/* Runtime (Claude Code | YouCoded) + native provider/model picker.
                   Shared with the welcome/app-open form; self-hides when
                   native.supported is false (one runtime = no selector). */}
-              <RuntimeBindingFields runtime={runtime} onRuntime={setRuntime} nb={nb} />
+              <RuntimeBindingFields
+                runtime={runtime}
+                onRuntime={setRuntime}
+                nb={nb}
+                preset={preset}
+                onPreset={(p) => { presetTouched.current = true; setPreset(p); }}
+              />
               {/* Model selector (Claude aliases) — hidden for the native runtime,
                   which chooses a model via the provider/model binding picker above. */}
               {runtime !== 'native' && (
@@ -1065,6 +1098,10 @@ export default function SessionStrip({
                   setNewCwd(defaultProjectFolder || '');
                   setDangerous(defaultSkipPermissions || false);
                   setNewModel(defaultModel || 'sonnet');
+                  // Re-arm the preset heuristic each time the form opens so the
+                  // defaultProjectFolder seed re-derives the preset (Coder when a
+                  // folder is preset, Assistant otherwise).
+                  presetTouched.current = false;
                   setShowNewForm(true);
                 }}
                 className="flex-1 px-3 py-2 text-sm text-fg-dim hover:bg-inset hover:text-fg transition-colors flex items-center justify-center gap-1.5"
