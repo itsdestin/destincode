@@ -111,6 +111,40 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(p).toContain('Read ran');      // tool-result output value
   });
 
+  it('parallel calls in ONE step: ALL tool-use events precede ALL tool-result events; history is assistant[text,c1,c2] + tool[r1,r2]', async () => {
+    // Task 10 seam fix: a multi-call step must emit use(c1),use(c2) FIRST, then
+    // result(c1),result(c2) — NOT interleaved use→result→use→result. This is
+    // what lets rebuildHistory (pure event-adjacency) reconstruct the SAME
+    // step-grouped history the driver pushes (one assistant message with both
+    // tool-calls, one tool message with both results).
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        ...textChunks('a', 'reading two'),
+        toolCallChunk('c1', 'Read', { file_path: 'a.ts' }),
+        toolCallChunk('c2', 'Read', { file_path: 'b.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    // Event order: both uses, THEN both results (in call order).
+    const toolEvents = events.filter((e) => e.type === 'tool-use' || e.type === 'tool-result');
+    expect(toolEvents.map((e) => `${e.type}:${e.data.toolUseId}`)).toEqual([
+      'tool-use:c1', 'tool-use:c2', 'tool-result:c1', 'tool-result:c2',
+    ]);
+    // History: ONE assistant message [text, c1, c2], then ONE tool message [r1, r2].
+    const history = (session as any).history as any[];
+    expect(history[1].role).toBe('assistant');
+    expect(history[1].content.map((p: any) => p.type)).toEqual(['text', 'tool-call', 'tool-call']);
+    expect(history[1].content.filter((p: any) => p.type === 'tool-call').map((p: any) => p.toolCallId)).toEqual(['c1', 'c2']);
+    expect(history[2].role).toBe('tool');
+    expect(history[2].content.map((p: any) => p.toolCallId)).toEqual(['c1', 'c2']);
+    expect((read as any).calls).toHaveLength(2);   // both executed serially
+  });
+
   it('decide() deny → isError tool-result with the blocked message; model sees refusal; loop continues', async () => {
     const write = fakeTool('Write');
     const seen: any[] = [];

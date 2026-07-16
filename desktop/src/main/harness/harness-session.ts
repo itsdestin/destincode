@@ -259,22 +259,38 @@ export class HarnessSession extends EventEmitter {
           break;
         }
 
+        // Emit ALL of this step's tool-use events FIRST (one per call, in order),
+        // THEN execute serially — so the persisted event stream mirrors the
+        // STEP-GROUPED history we push below (assistant[text?, c1, c2] then
+        // tool[r1, r2]). If we interleaved use→result→use→result instead,
+        // rebuildHistory (pure event-adjacency, Task 10) would wrongly split a
+        // multi-call step into assistant[c1]/tool[r1]/assistant[c2]/tool[r2] and
+        // NO longer deep-equal live history — and a textless second call would be
+        // indistinguishable from a new step. Renderer impact is benign: all tool
+        // cards appear up front, results attach by toolUseId (CC's parallel-call
+        // behavior). The frozen emit surface is untouched — same event types and
+        // fields, only intra-step ordering changes.
+        for (const call of step.toolCalls) {
+          this.emitEvent('tool-use', { toolUseId: call.toolCallId, toolName: call.toolName, toolInput: call.input });
+        }
+
         // Execute tool calls SERIALLY; collect their results for the next step.
         const resultParts: any[] = [];
         for (let i = 0; i < step.toolCalls.length; i++) {
           const call = step.toolCalls[i];
-          this.emitEvent('tool-use', { toolUseId: call.toolCallId, toolName: call.toolName, toolInput: call.input });
           const payload = await this.runOneTool(call, recentCalls);   // NEVER throws
           if (payload === 'interrupted') {
             // Interrupt during a permission ask. Back-fill canceled tool-results
             // for THIS call AND every remaining un-executed call in the step
             // (earlier calls already have real results in resultParts + emitted
-            // events). Without this, the assistant(tool-call) message has no
-            // matching tool message — a dangling tool_call that provider APIs
-            // hard-reject (HTTP 400) on the NEXT send, bricking the session (the
-            // bad message persists in history across sends). CC does the same
-            // canceled back-fill. Emit matching tool-result events too so the
-            // persisted transcript agrees with the model-facing history.
+            // events). Every call's tool-use event was already emitted up front,
+            // so each still gets a matching tool-result event here. Without this,
+            // the assistant(tool-call) message has no matching tool message — a
+            // dangling tool_call that provider APIs hard-reject (HTTP 400) on the
+            // NEXT send, bricking the session (the bad message persists in history
+            // across sends). CC does the same canceled back-fill. The synthesized
+            // tool-result events keep the persisted transcript in agreement with
+            // the model-facing history.
             for (let j = i; j < step.toolCalls.length; j++) {
               const rem = step.toolCalls[j];
               this.emitEvent('tool-result', { toolUseId: rem.toolCallId, toolName: rem.toolName, toolResult: CANCELED_TOOL_TEXT, isError: true });

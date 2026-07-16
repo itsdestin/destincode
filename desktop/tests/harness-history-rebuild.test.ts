@@ -138,6 +138,79 @@ describe('rebuildHistory — the resume deep-equal contract', () => {
     expect(assistantTexts).toEqual(['step1', 'step2', 'final']);
   });
 
+  it('parallel calls in ONE step: rebuild deep-equals live (raw + through-store)', async () => {
+    // The seam fix's payoff: two tool calls in a SINGLE step, emitted as
+    // use(c1),use(c2),result(c1),result(c2), must rebuild to ONE assistant
+    // message [text, c1, c2] + ONE tool message [r1, r2] — exactly the live shape.
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        ...textChunks('a', 'reading two'),
+        toolCallChunk('c1', 'Read', { file_path: 'a.ts' }),
+        toolCallChunk('c2', 'Read', { file_path: 'b.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    const live = (session as any).history as any[];
+    expect(rebuildHistory(events)).toEqual(live);
+    expect(rebuildHistory(await throughStore(events))).toEqual(live);
+    expect(live).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'reading two' },
+        { type: 'tool-call', toolCallId: 'c1', toolName: 'Read', input: { file_path: 'a.ts' } },
+        { type: 'tool-call', toolCallId: 'c2', toolName: 'Read', input: { file_path: 'b.ts' } },
+      ] },
+      { role: 'tool', content: [
+        { type: 'tool-result', toolCallId: 'c1', toolName: 'Read', output: { type: 'text', value: 'Read ran' } },
+        { type: 'tool-result', toolCallId: 'c2', toolName: 'Read', output: { type: 'text', value: 'Read ran' } },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+    ]);
+  });
+
+  it('parallel calls, canceled ask on c1: BOTH results back-filled; rebuild deep-equals live', async () => {
+    // Cancel on the FIRST of two calls in one step: the back-fill synthesizes
+    // canceled results for c1 AND c2 (both tool-use events were already emitted
+    // up front), so the persisted transcript carries a matching result for every
+    // tool-call and rebuildHistory reconstructs a valid (non-dangling) history.
+    const write = fakeTool('Write');
+    const model = scriptedModel([
+      stream(
+        toolCallChunk('c1', 'Write', { file_path: 'a.ts' }),
+        toolCallChunk('c2', 'Write', { file_path: 'b.ts' }),
+        finishChunk('tool-calls'),
+      ),
+    ]);
+    const askUser = async (): Promise<AskDecision> => ({ behavior: 'canceled' });
+    const session = new HarnessSession(makeOpts({ tools: [write], decide: async () => ({ action: 'ask', denyListed: false }), askUser }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    // Both uses up front, then both canceled results — the ordering the rebuild relies on.
+    const toolEvents = events.filter((e) => e.type === 'tool-use' || e.type === 'tool-result');
+    expect(toolEvents.map((e) => `${e.type}:${e.data.toolUseId}`)).toEqual([
+      'tool-use:c1', 'tool-use:c2', 'tool-result:c1', 'tool-result:c2',
+    ]);
+    const rebuilt = rebuildHistory(await throughStore(events));
+    expect(rebuilt).toEqual((session as any).history);
+    // Every assistant tool-call has a matching tool-result (no dangling tool_call → no provider 400).
+    const callIds = new Set<string>();
+    const resultIds = new Set<string>();
+    for (const m of rebuilt) {
+      if (!Array.isArray(m.content)) continue;
+      for (const part of m.content as any[]) {
+        if (part?.type === 'tool-call') callIds.add(part.toolCallId);
+        if (part?.type === 'tool-result') resultIds.add(part.toolCallId);
+      }
+    }
+    expect([...callIds].sort()).toEqual(['c1', 'c2']);
+    for (const id of callIds) expect(resultIds.has(id)).toBe(true);
+  });
+
   it('text-only turn rebuilds exactly like v0 (plain user/assistant exchange)', async () => {
     const model = scriptedModel([stream(...textChunks('a', 'Hi there'), finishChunk('stop'))]);
     const session = new HarnessSession(makeOpts({}), async () => model as any); // no tools → v0 path
@@ -146,8 +219,10 @@ describe('rebuildHistory — the resume deep-equal contract', () => {
     const live = (session as any).history as any[];
     const rebuilt = rebuildHistory(events);
     expect(rebuilt).toEqual(live);
-    // Semantically identical to v0's bare-string assistant message — streamText
-    // accepts both the array and bare-string forms (Task 1 contract).
+    // Semantically identical to v0's bare-string assistant message. Bare-string
+    // assistant content is an inherent ModelMessage form, exercised by the v0
+    // suite (harness-session.test.ts); Task 1 pins the array / tool-result form.
+    // streamText accepts both, so the array form here is equivalent.
     expect(rebuilt).toEqual([
       { role: 'user', content: 'hi' },
       { role: 'assistant', content: [{ type: 'text', text: 'Hi there' }] },
@@ -198,8 +273,10 @@ describe('rebuildHistory — the resume deep-equal contract', () => {
   it('interrupt partial: SEMANTIC equivalence (same text), not byte-identical form', async () => {
     // Live: the interrupt path pushes a BARE-STRING assistant message (the
     // partial). Rebuild produces the ARRAY form ([{type:'text',text}]) from the
-    // emitted assistant-text event. Both are accepted by streamText (Task 1), so
-    // this divergence is acceptable — but ONLY for interrupt partials, and the
+    // emitted assistant-text event. Bare-string assistant content is an inherent
+    // ModelMessage form (exercised by the v0 suite, harness-session.test.ts);
+    // Task 1 pins the array / tool-result form. streamText accepts both, so this
+    // divergence is acceptable — but ONLY for interrupt partials, and the
     // assertion here is honest about it: same text content, different container.
     const never = new ReadableStream({
       start(controller) {
