@@ -241,6 +241,17 @@ export function isFileLockError(msg: string): boolean {
   );
 }
 
+/**
+ * True when `err` is a spawn-time "executable not found on PATH" failure.
+ * Node sets the STRING code 'ENOENT' on the error when the binary itself is
+ * missing; a process that launched but exited non-zero gets a NUMERIC exit
+ * code instead, so this never misfires on script failures inside the child.
+ * Exported for pinning tests.
+ */
+export function isSpawnEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === 'ENOENT';
+}
+
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
@@ -705,9 +716,11 @@ async function runClaudeBootstrap(): Promise<void> {
         { timeout: 300000 },
       );
     } else if (process.platform === 'darwin' || process.platform === 'linux') {
-      // bash is guaranteed present on macOS and on every supported Linux distro.
-      // The installer itself uses `set -e`, so any failure inside the pipe
-      // propagates as a non-zero exit.
+      // bash ships with macOS and nearly every Linux distro, but NOT all of
+      // them (minimal/container images may ship only dash or busybox sh), so
+      // we defensively translate a missing-bash spawn failure below instead of
+      // assuming it exists. The installer itself uses `set -e`, so any failure
+      // inside the pipe propagates as a non-zero exit.
       //
       // Fix (v1.2.4): curl is NOT guaranteed on minimal Linux installs (Debian
       // netinst, some container images ship only wget). Probe for curl first,
@@ -716,16 +729,31 @@ async function runClaudeBootstrap(): Promise<void> {
       // pipefail` is required so a failure on the LEFT side of the pipe (the
       // downloader / the no-downloader `exit 1`) is not masked by `bash`
       // exiting 0 on empty stdin.
-      await runCommand(
-        'bash',
-        ['-c',
-          'set -o pipefail; url=https://claude.ai/install.sh; ' +
-          '{ if command -v curl >/dev/null 2>&1; then curl -fsSL "$url"; ' +
-          'elif command -v wget >/dev/null 2>&1; then wget -qO- "$url"; ' +
-          'else echo "Neither curl nor wget is installed. Install one with ' +
-          'your package manager, then click Try Again." >&2; exit 1; fi; } | bash'],
-        { timeout: 300000 },
-      );
+      try {
+        await runCommand(
+          'bash',
+          ['-c',
+            'set -o pipefail; url=https://claude.ai/install.sh; ' +
+            '{ if command -v curl >/dev/null 2>&1; then curl -fsSL "$url"; ' +
+            'elif command -v wget >/dev/null 2>&1; then wget -qO- "$url"; ' +
+            'else echo "Neither curl nor wget is installed. Install one with ' +
+            'your package manager, then click Try Again." >&2; exit 1; fi; } | bash'],
+          { timeout: 300000 },
+        );
+      } catch (err) {
+        // Fix: without this, a missing bash surfaced to the user as the raw
+        // Node error "spawn bash ENOENT". The ENOENT is precisely "bash is not
+        // on PATH", so we can state the real cause and the fix (per
+        // docs/error-message-standards.md — specific and accurate).
+        if (isSpawnEnoent(err)) {
+          throw new Error(
+            'bash was not found on PATH. Install bash with your package manager ' +
+            '(Debian/Ubuntu: sudo apt install bash · Fedora/RHEL: sudo dnf install bash · ' +
+            'Arch: sudo pacman -S bash), then click Try Again.',
+          );
+        }
+        throw err;
+      }
     } else {
       throw new Error(`Unsupported platform: ${process.platform}`);
     }
