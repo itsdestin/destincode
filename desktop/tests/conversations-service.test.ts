@@ -270,9 +270,12 @@ describe('conversations service composition root', () => {
       projectName: 'ended-proj', originalPath: dir,
       transcriptRef: 'claude/transcripts/ended-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
     };
-    h.store.list.mockResolvedValue([rec] as any);
     const svc = await freshService(startOpts());
     svc.noteSessionStarted(rec.id, dir); // now LIVE → guarded
+    // Records set AFTER start + guard (as in the sweep tests above) so the
+    // startup catch-up sweep sees an empty list — this test isolates the
+    // SYNCED-event sweep and the guard-release path.
+    h.store.list.mockResolvedValue([rec] as any);
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await new Promise((r) => setTimeout(r, 20));
     expect(h.materializeOut).not.toHaveBeenCalled(); // skipped while live
