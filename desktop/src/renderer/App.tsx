@@ -797,6 +797,7 @@ function AppInner() {
         // initializedSessions also keeps the input bar disabled as defence-in-depth.
         setViewModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
         setPermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+        setNativePermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
         setSessionModels((prev) => { const n = new Map(prev); n.delete(id); return n; });
         setInitializedSessions((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
         return;
@@ -820,6 +821,11 @@ function AppInner() {
         return next;
       });
       setPermissionModes((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+      setNativePermissionModes((prev) => {
         const next = new Map(prev);
         next.delete(id);
         return next;
@@ -1491,6 +1497,7 @@ function AppInner() {
       });
       setViewModes((prev) => { const n = new Map(prev); n.delete(sid); return n; });
       setPermissionModes((prev) => { const n = new Map(prev); n.delete(sid); return n; });
+      setNativePermissionModes((prev) => { const n = new Map(prev); n.delete(sid); return n; });
       setInitializedSessions((prev) => {
         if (!prev.has(sid)) return prev;
         const n = new Set(prev); n.delete(sid); return n;
@@ -1536,6 +1543,7 @@ function AppInner() {
       setSessionId(null);
       setViewModes(new Map());
       setPermissionModes(new Map());
+      setNativePermissionModes(new Map());
       setInitializedSessions(new Set());
       setViewedSessions(new Set());
       dispatch({ type: 'RESET' });
@@ -1968,6 +1976,7 @@ function AppInner() {
     });
     setViewModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
     setPermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
+    setNativePermissionModes((prev) => { const n = new Map(prev); n.delete(id); return n; });
     setSessionModels((prev) => { const n = new Map(prev); n.delete(id); return n; });
     setInitializedSessions((prev) => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
     dispatch({ type: 'SESSION_REMOVE', sessionId: id });
@@ -2191,7 +2200,16 @@ function AppInner() {
     const next = cycle[(idx + 1) % cycle.length];
     try {
       const applied = await window.claude.native.setPermissionMode(sessionId, next);
-      setNativePermissionModes((prev) => new Map(prev).set(sessionId, applied));
+      // Validate before storing: the normal path returns a bare mode string, but
+      // the remote path converts a host throw into a resolved {ok:false,...}
+      // object (remote-shim). Storing that would corrupt the chip's
+      // PERMISSION_DISPLAY lookup — leave state unchanged on anything unexpected.
+      const VALID: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
+      if (VALID.includes(applied as NativePermissionMode)) {
+        setNativePermissionModes((prev) => new Map(prev).set(sessionId, applied as NativePermissionMode));
+      } else {
+        console.error('Native permission mode not applied:', applied);
+      }
     } catch (err) {
       // A rejected invoke means an unknown-mode wiring bug in the host — leave
       // the chip on its current (unchanged) mode rather than lying about state.
