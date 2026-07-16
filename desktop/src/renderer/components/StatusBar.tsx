@@ -355,7 +355,7 @@ const WIDGET_CATEGORIES: WidgetCategory[] = [
         id: 'announcement',
         label: 'Announcement',
         defaultVisible: true,
-        description: 'Platform announcements from the YouCoded team — new releases, outages, tips. Pulled every 6 hours from the announcement cache.',
+        description: 'Platform announcements from the YouCoded team — new releases, outages, tips. Pulled every hour from the announcement cache.',
         bestFor: 'Everyone. Hides automatically when there is no active announcement.',
       },
     ],
