@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { usePerformanceConfig } from '../hooks/usePerformanceConfig';
 import PerformancePopup from './PerformancePopup';
+import SettingsRow from './SettingsRow';
 
 // Performance settings entry. Mirrors the chip+popup pattern used by Sound,
 // Appearance, and Sync — a small row in the settings list that opens a popup
@@ -26,16 +27,11 @@ export default function PerformanceButton() {
   const stateLabel = cfg.saved ? 'Power saving' : 'Discrete GPU';
 
   return (
-    <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Performance</h3>
-
-      <button
-        onClick={() => setOpen(true)}
-        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-      >
-        {/* Simple CPU/chip glyph — no real semantic image fits "GPU pref" cleanly,
-            so a generic chip icon is the cleanest visual cue. */}
-        <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
+    <>
+      <SettingsRow
+        // Simple CPU/chip glyph — no real semantic image fits "GPU pref" cleanly,
+        // so a generic chip icon is the cleanest visual cue.
+        icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
             <rect x="4" y="4" width="16" height="16" rx="2" />
             <rect x="9" y="9" width="6" height="6" />
@@ -48,20 +44,16 @@ export default function PerformanceButton() {
             <line x1="20" y1="9" x2="22" y2="9" />
             <line x1="20" y1="15" x2="22" y2="15" />
           </svg>
-        </div>
-        <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">Graphics</span>
-          <p className="text-[10px] text-fg-muted">{stateLabel}{cfg.needsRestart ? ' · restart pending' : ''}</p>
-        </div>
-        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
+        }
+        title="Performance"
+        subtitle={`${stateLabel}${cfg.needsRestart ? ' · restart pending' : ''}`}
+        onClick={() => setOpen(true)}
+      />
 
       {/* Portal to document.body so the popup centers over the full viewport.
           SettingsPanel's outer wrapper has a transform/filter that creates a
           containing block for position:fixed descendants — without the portal,
-          the popup would center inside the panel instead. Same pattern as
+          the popup would center inside the panel instead of the viewport. Same pattern as
           ThemeButton, SoundButton, RemoteButton. */}
       {open && createPortal(
         <PerformancePopup
@@ -74,6 +66,6 @@ export default function PerformanceButton() {
         />,
         document.body,
       )}
-    </section>
+    </>
   );
 }
