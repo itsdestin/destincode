@@ -250,34 +250,43 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
 
   // Fix: always show the button so users can open the drawer even before any
   // artifacts exist. The count badge is conditional — hidden when count is 0.
+  // Styling mirrors the Connect 4 game-panel toggle exactly: bg-inset outer
+  // pill, inner button that fills bg-accent/text-on-accent when its panel
+  // is open, text-fg-dim/hover:text-fg-2 otherwise.
   return (
-    <button
-      type="button"
-      className={`relative p-1 rounded-sm hover:bg-inset transition-colors shrink-0 flex items-center gap-0.5 ${
-        drawerOpen ? 'text-fg' : 'text-fg-muted'
-      }`}
-      onClick={() => {
-        if (!activeSessionId) return;
-        dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
-      }}
-      // "Files", not "Artifacts": the drawer is a session activity log (it
-      // includes files the user merely VIEWED via pills), so the claude.ai-
-      // style "Artifacts" word would be wrong here — that term is reserved for
-      // the Project View tab that shows only what Claude made + pinned files.
-      title="Files in this chat"
-    >
-      {/* Document icon — SVG matches the style of the settings gear above */}
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-      </svg>
-      {/* Count badge — only shown when there are tracked artifacts */}
-      {artifactCount > 0 && (
-        <span className="text-[10px] bg-accent text-on-accent rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5">
-          {artifactCount}
-        </span>
-      )}
-    </button>
+    <div className="bg-inset rounded-md p-0.5">
+      <button
+        type="button"
+        onClick={() => {
+          if (!activeSessionId) return;
+          dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
+        }}
+        className={`px-2 py-1 rounded-[var(--radius-toggle)] transition-colors flex items-center gap-1 ${
+          drawerOpen ? 'bg-accent text-on-accent' : 'text-fg-dim hover:text-fg-2'
+        }`}
+        // "Files", not "Artifacts": the drawer is a session activity log (it
+        // includes files the user merely VIEWED via pills), so the claude.ai-
+        // style "Artifacts" word would be wrong here — that term is reserved for
+        // the Project View tab that shows only what Claude made + pinned files.
+        title="Files in this chat"
+      >
+        {/* Document icon — SVG matches the style of the settings gear above */}
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+        {/* Count badge — only shown when there are tracked artifacts. Flips to
+            bg-on-accent/text-accent while open so it stays legible against the
+            now-accent-colored button background. */}
+        {artifactCount > 0 && (
+          <span className={`text-[10px] rounded-full px-1 min-w-[14px] inline-flex items-center justify-center leading-none py-0.5 ${
+            drawerOpen ? 'bg-on-accent text-accent' : 'bg-accent text-on-accent'
+          }`}>
+            {artifactCount}
+          </span>
+        )}
+      </button>
+    </div>
   );
 }
 
@@ -588,13 +597,6 @@ export default function HeaderBar({
         </button>
         {/* Projects button — always visible; opens the persistent project browser. */}
         <ProjectsButton />
-        {/* Files-drawer trigger — always visible; only the count badge is
-            conditional (the original hide-at-zero plan was dropped — see the
-            ArtifactDrawerButton docblock). */}
-        <ArtifactDrawerButton
-          activeSessionId={activeSessionId}
-          projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}
-        />
         {isRemoteMode() && (
           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 border border-blue-500/25 shrink-0">
             REMOTE
@@ -634,6 +636,14 @@ export default function HeaderBar({
         style={clusterStyle}
       >
         {!toggleOnLeft && showToggle && toggleElement}
+        {/* Files-drawer trigger — always visible; only the count badge is
+            conditional (the original hide-at-zero plan was dropped — see the
+            ArtifactDrawerButton docblock). Grouped with the game-panel toggle
+            since both are panel toggles sharing identical pill styling. */}
+        <ArtifactDrawerButton
+          activeSessionId={activeSessionId}
+          projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}
+        />
         <div className="bg-inset rounded-md p-0.5 hidden sm:block">
           <button
             onClick={onToggleGamePanel}
