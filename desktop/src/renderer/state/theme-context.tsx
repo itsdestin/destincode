@@ -9,6 +9,7 @@ import { applyThemeToDom, applyThemeFont, buildBackgroundStyle, buildPatternStyl
 import type { ThemeDefinition, LoadedTheme } from '../themes/theme-types';
 import { resolveAllAssetPaths } from '../themes/theme-asset-resolver';
 import { buildDefaultIconSvg, rasterizeSvgToPngDataUrl } from '../themes/theme-default-icon';
+import { clampDrawerWidth, applyDrawerWidthVar, DRAWER_WIDTH_KEY, DEFAULT_DRAWER_WIDTH } from './drawer-width';
 
 // Built-in themes imported as JSON (Vite handles JSON imports natively)
 import lightJson from '../themes/builtin/light.json';
@@ -74,6 +75,12 @@ interface ThemeContextValue {
   setHideCodeAndConfigs: (v: boolean) => void;
   showDeletedArtifacts: boolean;
   setShowDeletedArtifacts: (v: boolean) => void;
+  /** Artifact drawer width in px (youcoded#105). Committed value — the live
+   *  drag previews via the <html> CSS var and commits here on pointer-up. */
+  drawerWidth: number;
+  setDrawerWidth: (px: number) => void;
+  /** Double-click-the-handle reset: back to 480 and forget the stored pref. */
+  resetDrawerWidth: () => void;
   allThemes: LoadedTheme[];
   activeTheme: LoadedTheme;
   bgStyle: Record<string, string> | null;
@@ -96,6 +103,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   showTurnMetadata: false, setShowTurnMetadata: () => {},
   hideCodeAndConfigs: true, setHideCodeAndConfigs: () => {},
   showDeletedArtifacts: false, setShowDeletedArtifacts: () => {},
+  drawerWidth: DEFAULT_DRAWER_WIDTH, setDrawerWidth: () => {}, resetDrawerWidth: () => {},
   allThemes: BUILTIN_THEMES, activeTheme: BUILTIN_THEMES[0], bgStyle: null, patternStyle: null,
   setGlassOverride: () => {},
   reloadUserThemes: async () => {},
@@ -144,6 +152,40 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // Artifact viewer "Show deleted" toggle. Default OFF — hide both explicit
   // delete versions AND artifacts whose underlying file has gone missing.
   const [showDeletedArtifacts, setShowDeletedArtifactsState] = useState(() => getStored(SHOW_DELETED_ARTIFACTS_KEY, '') === '1');
+  // Artifact drawer width (youcoded#105). Clamped at load so a pref saved on
+  // a big monitor can't overflow a smaller window on next launch.
+  const [drawerWidth, setDrawerWidthState] = useState(() =>
+    clampDrawerWidth(parseInt(getStored(DRAWER_WIDTH_KEY, String(DEFAULT_DRAWER_WIDTH)), 10), window.innerWidth));
+
+  const setDrawerWidth = (px: number) => {
+    const clamped = clampDrawerWidth(px, window.innerWidth);
+    setDrawerWidthState(clamped);
+    try { localStorage.setItem(DRAWER_WIDTH_KEY, String(clamped)); } catch {}
+  };
+
+  const resetDrawerWidth = () => {
+    setDrawerWidthState(DEFAULT_DRAWER_WIDTH);
+    // Remove (don't write 480) so a future default change reaches users who reset.
+    try { localStorage.removeItem(DRAWER_WIDTH_KEY); } catch {}
+  };
+
+  // Keep the <html> var in sync with the committed value…
+  useEffect(() => { applyDrawerWidthVar(drawerWidth); }, [drawerWidth]);
+
+  // …and re-clamp when the window shrinks (debounced via rAF; resize storms
+  // are cheap no-ops when the clamp doesn't change the value).
+  useEffect(() => {
+    let raf = 0;
+    const onResize = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setDrawerWidthState((w) => clampDrawerWidth(w, window.innerWidth));
+      });
+    };
+    window.addEventListener('resize', onResize);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', onResize); };
+  }, []);
+
   const [userThemes, setUserThemes] = useState<LoadedTheme[]>([]);
   const [userThemesLoaded, setUserThemesLoaded] = useState(false);
   // Glass overrides for non-user themes — keyed by theme slug, persisted to
@@ -531,6 +573,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     showTurnMetadata, setShowTurnMetadata,
     hideCodeAndConfigs, setHideCodeAndConfigs,
     showDeletedArtifacts, setShowDeletedArtifacts,
+    drawerWidth, setDrawerWidth, resetDrawerWidth,
     allThemes, activeTheme, bgStyle, patternStyle,
     setGlassOverride, reloadUserThemes,
   }), [activeSlug, setTheme, cycleTheme, cycleList, setCycleList, font,
@@ -538,6 +581,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
        showTurnMetadata, setShowTurnMetadata,
        hideCodeAndConfigs, setHideCodeAndConfigs,
        showDeletedArtifacts, setShowDeletedArtifacts,
+       // drawerWidth is the only new dep — the two setters are recreated per
+       // render but close over nothing stale (clamp reads window at call time),
+       // so listing them would defeat the memo for no correctness gain.
+       drawerWidth,
        allThemes, activeTheme, bgStyle, patternStyle, setGlassOverride, reloadUserThemes]);
 
   return (

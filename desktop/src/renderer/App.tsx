@@ -2445,8 +2445,11 @@ function AppInner() {
         hidden={activeView === 'marketplace' || activeView === 'library'}
         // --right-pane-width drives BOTH the framed-shell drawer-pane width and
         // the chrome-glass cutout offset (both descend from here). The game pane
-        // is narrower than the artifact drawer's 480px default.
-        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? '400px' : '480px' }}
+        // stays fixed at 400px; the artifact drawer's width is user-resizable
+        // (youcoded#105) via --drawer-width on <html> — referencing the var here
+        // (instead of a px literal) means mid-drag App re-renders rewrite the
+        // SAME string and can't snap the width back while the user is dragging.
+        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? '400px' : 'var(--drawer-width, 480px)' }}
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
