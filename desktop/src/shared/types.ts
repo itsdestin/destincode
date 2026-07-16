@@ -919,6 +919,7 @@ export const IPC = {
   NATIVE_SEND: 'native:send',
   NATIVE_INTERRUPT: 'native:interrupt',
   NATIVE_SET_BINDING: 'native:set-binding',
+  NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   NATIVE_SESSIONS_LIST: 'native:sessions-list',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_UPSERT: 'provider:upsert',
