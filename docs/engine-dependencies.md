@@ -157,14 +157,19 @@ first part and cache-scan sums the parts' sizes into one entry.
   downloaded on a 32 GB dev box. **PASS on b9992** (Windows x64 Vulkan,
   `Qwen3-0.6B-Q4_K_M` single + `Qwen3-0.6B-SPLIT-00001-of-00002`), 2026-07-14 —
   router discovered both ids from `--models-dir` and served the split model.
-- **Router hot-reload of `--models-dir` after boot — NOT yet verified live.** The
-  router discovers GGUFs at BOOT; whether a file downloaded AFTER boot appears in
-  `GET /models` (→ `catalogModels()` → the new-session picker's Local group)
-  without an engine restart is an open live-acceptance item (Amendment K2). The
-  Installed list (`scanGgufCache`) updates instantly regardless; the documented
-  mitigation is an engine restart (or a `scanGgufCache` fallback in the local
-  catalog source) after a download so a just-downloaded model is immediately
-  selectable. Resolve on Destin's dev machine during the Plan C live pass.
+- **Router hot-reload of `--models-dir` after boot — worked around in code
+  (2026-07-15); upstream behavior still NOT verified live.** The router discovers
+  GGUFs at BOOT; whether a file downloaded AFTER boot appears in `GET /models` is
+  unverified upstream (Amendment K2). `EngineSupervisor.listModels()` therefore
+  UNIONS a fresh `scanGgufCache` into the running router's `GET /models` rows
+  (router rows win — they carry live residency state; disk-only rows surface as
+  'unloaded'), so a just-downloaded model is immediately visible in
+  `catalogModels()` → the new-session picker's Local group, `liveModels()` → the
+  memory guard, and the model poll — no engine restart needed for LISTING.
+  Guard: engine-supervisor.test.ts "listModels UNIONS the disk scan". Still open
+  for the live pass: whether the running router can actually SERVE (hot-load) a
+  post-boot file when a completion requests it, or 400s until a restart — resolve
+  on Destin's dev machine.
 
 ## Verification
 

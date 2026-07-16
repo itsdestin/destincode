@@ -213,6 +213,38 @@ describe('EngineSupervisor', () => {
     expect(models).toEqual([{ id: 'foo-Q4_K_M', sizeBytes: null, loaded: true, state: 'loaded' }]);
   });
 
+  it('listModels UNIONS the disk scan into GET /models — a GGUF downloaded after boot is listed without a restart (Amendment K2)', async () => {
+    // Real temp cache dir: fs.readdirSync/statSync are NOT mocked (only
+    // mkdirSync is), so scanGgufCache reads real files dropped here.
+    const realFs = await vi.importActual<typeof import('fs')>('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const cacheDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'k2-cache-'));
+    try {
+      mockSpawn.mockReturnValue(makeFakeChild());
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+        if (String(url).endsWith('/models')) {
+          // The router only knows what it discovered at BOOT.
+          return { ok: true, status: 200, json: async () => ({ data: [{ id: 'boot-model-Q4_K_M', status: { value: 'loaded' } }] }) } as any;
+        }
+        return { ok: false, status: 404 } as any;
+      });
+      sup = makeSupervisor(fetchImpl, { cacheDir });
+      await sup.ensureRunning();
+      // Simulate a download finishing AFTER boot: the file just appears on disk.
+      realFs.writeFileSync(path.join(cacheDir, 'boot-model-Q4_K_M.gguf'), Buffer.alloc(4));
+      realFs.writeFileSync(path.join(cacheDir, 'downloaded-later-Q4_K_M.gguf'), Buffer.alloc(8));
+      const byId = Object.fromEntries((await sup.listModels()).map((m) => [m.id, m]));
+      // The router's row wins for the model it knows (live residency state)…
+      expect(byId['boot-model-Q4_K_M']).toMatchObject({ state: 'loaded', sizeBytes: 4 });
+      // …and the post-boot download is unioned in from the scan as 'unloaded'.
+      expect(byId['downloaded-later-Q4_K_M']).toMatchObject({ state: 'unloaded', loaded: false, sizeBytes: 8 });
+    } finally {
+      realFs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
   it('listModels maps /models status.value → EngineModelState (unknown → unloaded)', async () => {
     mockSpawn.mockReturnValue(makeFakeChild());
     const fetchImpl = vi.fn(async (url: string) => {

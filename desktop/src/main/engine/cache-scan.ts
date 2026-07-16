@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EngineModel } from '../../shared/engine-types';
+import type { OrphanedPartial } from '../../shared/model-manager-types';
 
 // llama.cpp split-GGUF convention: <name>-00001-of-000NN.gguf. The model is
 // addressed through its FIRST part; other parts are the same model's payload.
@@ -50,4 +51,38 @@ export function scanGgufCache(cacheDir: string): EngineModel[] {
     if (first && first.sizeBytes !== null) first.sizeBytes += extra;
   }
   return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** Scan the cache dir for `.gguf.partial` files — the downloader's in-flight
+ *  bytes (model-downloader.ts writes `<final>.partial`, publish is a rename).
+ *  A partial left behind by an app restart is invisible everywhere else: the
+ *  router and scanGgufCache only see `.gguf`, and the downloader only tracks
+ *  THIS session's downloads in memory. This scan is how the UI finds orphans
+ *  so they can be cleaned or resumed. The caller (ModelManager) filters out
+ *  partials that belong to a download currently running in this session. */
+export function scanPartialFiles(cacheDir: string): OrphanedPartial[] {
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(cacheDir, { withFileTypes: true });
+  } catch {
+    return []; // cache dir not created yet — no partials, not an error
+  }
+  const out: OrphanedPartial[] = [];
+  for (const ent of entries) {
+    if (!ent.isFile() || !/\.gguf\.partial$/i.test(ent.name)) continue;
+    let stat: fs.Stats;
+    try { stat = fs.statSync(path.join(cacheDir, ent.name)); } catch { continue; } // raced delete
+    // The final file this partial was downloading, e.g. 'M-Q4_K_M.gguf'.
+    const finalName = ent.name.replace(/\.partial$/i, '');
+    const partialId = ggufIdFromFileName(finalName);
+    // models:delete addresses a split model through its FIRST part and removes
+    // every sibling part + .partial — so report the first-part id for splits,
+    // making the row directly cleanable with the existing delete IPC.
+    const part = PART_RE.exec(finalName);
+    const modelId = part
+      ? partialId.replace(/-\d{5}-of-\d{5}$/, `-00001-of-${part[2]}`)
+      : partialId;
+    out.push({ fileName: ent.name, modelId, sizeBytes: stat.size, mtimeMs: stat.mtimeMs });
+  }
+  return out.sort((a, b) => a.fileName.localeCompare(b.fileName));
 }

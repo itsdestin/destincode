@@ -768,6 +768,9 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     ['models:download-cancel', 'MODELS_DOWNLOAD_CANCEL'],
     ['models:delete', 'MODELS_DELETE'],
     ['models:installed', 'MODELS_INSTALLED'],
+    // Orphaned .partial scan (2026-07-15) — Android stubs it like the rest of
+    // the desktop-only model-manager surface.
+    ['models:orphaned-partials', 'MODELS_ORPHANED_PARTIALS'],
     ['endpoints:detect', 'ENDPOINTS_DETECT'],
   ];
   const pushChannels = ['models:download-progress'];
