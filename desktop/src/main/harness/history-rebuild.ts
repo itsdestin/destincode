@@ -7,8 +7,9 @@
 // Grouping MUST mirror the driver's live pushes EXACTLY (harness-session.ts:
 // send()/assistantMessage()/toolResultPart()) — the deep-equal test in
 // tests/harness-history-rebuild.test.ts is the ARBITER of every grouping choice:
-//   - consecutive assistant-text events + the tool-use events that follow them
-//     form ONE assistant message ({role:'assistant', content:[text?, ...calls]}），
+//   - consecutive assistant-text events (coalesced into ONE text part) + the
+//     tool-use events that follow them form ONE assistant message
+//     ({role:'assistant', content:[text?, ...calls]}),
 //   - the tool-results that follow form ONE tool message,
 //   - a user-message flushes everything before it.
 // A tool-result arriving flushes the open assistant message (this is what keeps
@@ -21,12 +22,16 @@
 // assistant-thinking / compact-summary / session-error never entered model
 // history live either, so they're skipped here too.
 import type { TranscriptEvent } from '../../shared/types';
-import type { ModelMessage } from 'ai';
+import type { ModelMessage, TextPart, ToolCallPart, ToolResultPart } from 'ai';
+
+// Synthesized result text for a tool-call that has no persisted result — a
+// transcript truncated by a crash mid-execution (see backfillUnpairedToolCalls).
+const CRASH_UNPAIRED_TEXT = 'Canceled: this call never completed (the app was closed mid-execution).';
 
 export function rebuildHistory(events: TranscriptEvent[]): ModelMessage[] {
   const out: ModelMessage[] = [];
-  let assistantParts: any[] = [];
-  let toolResults: any[] = [];
+  let assistantParts: Array<TextPart | ToolCallPart> = [];
+  let toolResults: ToolResultPart[] = [];
   const flushAssistant = () => {
     if (assistantParts.length) { out.push({ role: 'assistant', content: assistantParts }); assistantParts = []; }
   };
@@ -39,20 +44,31 @@ export function rebuildHistory(events: TranscriptEvent[]): ModelMessage[] {
         flushAssistant(); flushResults();
         out.push({ role: 'user', content: String(e.data?.text ?? '') });
         break;
-      case 'assistant-text':
+      case 'assistant-text': {
         // A pending tool-result block closes before new assistant text opens.
         flushResults();
-        assistantParts.push({ type: 'text', text: String(e.data?.text ?? '') });
+        // Coalesce CONSECUTIVE text parts. The driver concatenates all of a
+        // step's streamed text into ONE text part (assistantMessage), but the
+        // store persists one assistant-text event per partId — so a step that
+        // streamed two text blocks arrives here as two events. Merging them back
+        // into a single part restores the exact shape the driver pushed live
+        // (the deep-equal contract). A tool-use/tool-result between two text
+        // events breaks the "consecutive" run, matching the live grouping.
+        const text = String(e.data?.text ?? '');
+        const last = assistantParts[assistantParts.length - 1];
+        if (last && last.type === 'text') last.text += text;
+        else assistantParts.push({ type: 'text', text });
         break;
+      }
       case 'tool-use':
         flushResults();
-        assistantParts.push({ type: 'tool-call', toolCallId: e.data?.toolUseId, toolName: e.data?.toolName, input: e.data?.toolInput ?? {} });
+        assistantParts.push({ type: 'tool-call', toolCallId: String(e.data?.toolUseId ?? ''), toolName: String(e.data?.toolName ?? ''), input: e.data?.toolInput ?? {} });
         break;
       case 'tool-result':
         // Close the assistant(tool-call) message this result answers — this
         // flush is what prevents the NEXT step's text from merging into it.
         flushAssistant();
-        toolResults.push({ type: 'tool-result', toolCallId: e.data?.toolUseId, toolName: e.data?.toolName, output: { type: 'text', value: String(e.data?.toolResult ?? '') } });
+        toolResults.push({ type: 'tool-result', toolCallId: String(e.data?.toolUseId ?? ''), toolName: String(e.data?.toolName ?? ''), output: { type: 'text', value: String(e.data?.toolResult ?? '') } });
         break;
       case 'turn-complete':
       case 'user-interrupt':
@@ -65,5 +81,56 @@ export function rebuildHistory(events: TranscriptEvent[]): ModelMessage[] {
     }
   }
   flushAssistant(); flushResults();
+  return backfillUnpairedToolCalls(out);
+}
+
+/**
+ * Guarantee the provider invariant: in the rebuilt history, every assistant
+ * tool-call part is IMMEDIATELY followed by a tool message covering its
+ * toolCallId. A persisted transcript can violate this two ways, both from a
+ * process death mid-execution (a wide window while Bash/Edit runs):
+ *   - TRUNCATED TAIL: the stream ends on an unpaired tool-use (result never
+ *     persisted). Left alone, the final assistant message ends on a dangling
+ *     tool-call and the first resumed send() 400s from real providers.
+ *   - MID-STREAM ORPHAN: after a crash the session was resumed and MORE events
+ *     appended, so an unpaired tool-use sits in the MIDDLE (assistant tool-call
+ *     directly followed by a user-message) — the store is never healed.
+ * fitToContext only trims LEADING orphans, so neither case is caught downstream;
+ * a bricked session persists across sends. Synthesize an isError tool-result for
+ * each unpaired call — faithful to the live interrupt/cancel back-fill.
+ */
+function backfillUnpairedToolCalls(messages: ModelMessage[]): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    out.push(msg);
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+    const calls = (msg.content as Array<{ type: string }>).filter((p): p is ToolCallPart => p.type === 'tool-call');
+    if (calls.length === 0) continue;
+
+    const next = messages[i + 1];
+    const nextIsTool = !!next && next.role === 'tool' && Array.isArray(next.content);
+    const covered = new Set<string>();
+    if (nextIsTool) {
+      for (const p of next!.content as ToolResultPart[]) if (p.type === 'tool-result') covered.add(p.toolCallId);
+    }
+    const missing = calls.filter((c) => !covered.has(c.toolCallId));
+    if (missing.length === 0) continue;
+
+    const synthetic: ToolResultPart[] = missing.map((c) => ({
+      type: 'tool-result', toolCallId: c.toolCallId, toolName: c.toolName,
+      output: { type: 'text', value: CRASH_UNPAIRED_TEXT },
+    }));
+    if (nextIsTool) {
+      // Partial coverage: merge synthetic results into the following tool
+      // message and CONSUME the original (i++), so it isn't emitted twice.
+      out.push({ role: 'tool', content: [...(next!.content as ToolResultPart[]), ...synthetic] });
+      i++;
+    } else {
+      // No tool message follows (truncated tail, or the tool-call sits right
+      // before a user-message) — insert a fresh tool message to pair it.
+      out.push({ role: 'tool', content: synthetic });
+    }
+  }
   return out;
 }

@@ -245,6 +245,100 @@ describe('rebuildHistory — the resume deep-equal contract', () => {
     ]);
   });
 
+  it('multi-part step text (two partIds) coalesces into ONE assistant text part — deep-equals live', async () => {
+    // The store persists ONE assistant-text event per partId, so a step that
+    // streamed two text blocks (distinct partIds) arrives as TWO events — but the
+    // driver concatenated them into ONE text part live. rebuildHistory must
+    // coalesce consecutive text parts to restore the deep-equal contract.
+    const read = fakeTool('Read');
+    const model = scriptedModel([
+      stream(
+        ...textChunks('p1', 'Hello '),
+        ...textChunks('p2', 'world'),
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('p3', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    // Two distinct-partId assistant-text events really were emitted for step 1.
+    expect(events.filter((e) => e.type === 'assistant-text' && (e.data.partId === 'p1' || e.data.partId === 'p2'))).toHaveLength(2);
+    const live = (session as any).history as any[];
+    expect(rebuildHistory(events)).toEqual(live);
+    expect(rebuildHistory(await throughStore(events))).toEqual(live);
+    // The step-1 assistant message carries ONE 'Hello world' text part, not two.
+    expect(live[1].content).toEqual([
+      { type: 'text', text: 'Hello world' },
+      { type: 'tool-call', toolCallId: 'c1', toolName: 'Read', input: { file_path: 'x.ts' } },
+    ]);
+  });
+
+  it('CRASH truncated tail: unpaired tool-use at end → synthetic tool-result back-filled (no dangling call)', async () => {
+    // Process died after the tool-use line persisted but BEFORE its tool-result
+    // (a wide window during Bash/Edit). The stream ends on an unpaired tool-use;
+    // without back-fill the first resumed send() ships a dangling tool_call → 400.
+    const events: TranscriptEvent[] = [
+      { type: 'user-message', sessionId: 's-1', uuid: 'u', timestamp: 0, data: { text: 'go' } },
+      { type: 'assistant-text', sessionId: 's-1', uuid: 'a', timestamp: 0, data: { text: 'running', partId: 'p1' } },
+      { type: 'tool-use', sessionId: 's-1', uuid: 'tu', timestamp: 0, data: { toolUseId: 'c1', toolName: 'Bash', toolInput: { command: 'sleep 9' } } },
+      // ...crash. No tool-result, no turn-complete.
+    ];
+    const check = (rebuilt: any[]) => {
+      // The assistant tool-call is immediately followed by a tool message that
+      // covers c1 with a synthetic isError-style result.
+      expect(rebuilt).toEqual([
+        { role: 'user', content: 'go' },
+        { role: 'assistant', content: [
+          { type: 'text', text: 'running' },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'Bash', input: { command: 'sleep 9' } },
+        ] },
+        { role: 'tool', content: [
+          { type: 'tool-result', toolCallId: 'c1', toolName: 'Bash', output: { type: 'text', value: expect.stringContaining('the app was closed mid-execution') } },
+        ] },
+      ]);
+      // Invariant: no dangling tool-call.
+      const callIds = new Set<string>(); const resultIds = new Set<string>();
+      for (const m of rebuilt) {
+        if (!Array.isArray(m.content)) continue;
+        for (const part of m.content) {
+          if (part?.type === 'tool-call') callIds.add(part.toolCallId);
+          if (part?.type === 'tool-result') resultIds.add(part.toolCallId);
+        }
+      }
+      for (const id of callIds) expect(resultIds.has(id)).toBe(true);
+    };
+    check(rebuildHistory(events));
+    check(rebuildHistory(await throughStore(events)));
+  });
+
+  it('CRASH mid-stream orphan: tool-use directly before a later user-message → back-filled', async () => {
+    // After a crash the session was resumed and MORE events appended, so an
+    // unpaired tool-use sits in the MIDDLE (assistant tool-call followed directly
+    // by a user-message). The store is never healed — rebuild must pair it.
+    const events: TranscriptEvent[] = [
+      { type: 'user-message', sessionId: 's-1', uuid: 'u1', timestamp: 0, data: { text: 'go' } },
+      { type: 'tool-use', sessionId: 's-1', uuid: 'tu', timestamp: 0, data: { toolUseId: 'c1', toolName: 'Edit', toolInput: { file_path: 'a.ts' } } },
+      // ...crash mid-edit, resumed, next turn appended:
+      { type: 'user-message', sessionId: 's-1', uuid: 'u2', timestamp: 0, data: { text: 'again' } },
+      { type: 'assistant-text', sessionId: 's-1', uuid: 'a2', timestamp: 0, data: { text: 'reply', partId: 'p2' } },
+      { type: 'turn-complete', sessionId: 's-1', uuid: 't2', timestamp: 0, data: {} },
+    ];
+    const rebuilt = rebuildHistory(events);
+    expect(rebuilt).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'Edit', input: { file_path: 'a.ts' } }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'Edit', output: { type: 'text', value: expect.stringContaining('the app was closed mid-execution') } }] },
+      { role: 'user', content: 'again' },
+      { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+    ]);
+    // The orphaned tool-call now sits directly before its synthetic tool message,
+    // NOT before the user-message.
+    expect(rebuilt[1].role).toBe('assistant');
+    expect(rebuilt[2].role).toBe('tool');
+  });
+
   it('seedHistory clears readRegistry + todos on resume (read-registry is NOT reconstructed)', async () => {
     // The reset-on-resume ruling (spec §2.5): read-before-edit mtimes and the
     // todo list are per-session RUNTIME state, never persisted. A resumed
