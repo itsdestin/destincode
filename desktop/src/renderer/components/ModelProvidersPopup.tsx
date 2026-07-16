@@ -132,6 +132,10 @@ function ModelProvidersPopupInner({
             <hr className="border-edge-dim" />
 
             <LocalModelsBlock />
+
+            <hr className="border-edge-dim" />
+
+            <SearchProvidersBlock />
           </div>
         </div>
       </OverlayPanel>
@@ -489,6 +493,180 @@ function LocalModelsBlock() {
 
       {/* Embedded: no standalone header (this section supplies it). */}
       <LocalModelsSection embedded />
+    </section>
+  );
+}
+
+// ── 4. Search Providers ──────────────────────────────────────────────────────
+
+// Search providers (native WebSearch keyed upgrades — spec §3.2). NOT model
+// providers: Tavily/Exa have no languageModel(), so they live OUTSIDE
+// ProviderRegistry/ADD_TYPE_OPTIONS on their own search:* IPC + SecretsStore-backed
+// key store. Free search (Exa keyless → DuckDuckGo) works with no key at all; a
+// key just makes web search faster and more reliable. search:* is untyped on the
+// window.claude shape (like firstRun above), so we reach it via `any` casts.
+type SearchBackendId = 'tavily' | 'exa';
+
+// Per-backend copy: a one-line "why add a key" hint + the free-signup URL. Kept
+// deliberately non-committal about tiers/quotas (they change) — see the
+// "never write misleading text" workspace rule.
+const SEARCH_BACKEND_META: Record<SearchBackendId, { hint: string; url: string }> = {
+  tavily: { hint: 'Search API tuned for AI — a key makes it the first backend used.', url: 'https://tavily.com' },
+  exa: { hint: 'Neural search for AI — a key upgrades the keyless free tier.', url: 'https://exa.ai' },
+};
+
+function SearchProvidersBlock() {
+  const [rows, setRows] = useState<Array<{ id: SearchBackendId; label: string; hasKey: boolean }>>([]);
+  // Which backend's key input is open (only one at a time).
+  const [editing, setEditing] = useState<SearchBackendId | null>(null);
+  // The in-flight key text. Never held beyond save(): cleared on save/cancel and
+  // never logged or persisted anywhere but through search.setKey.
+  const [draft, setDraft] = useState('');
+  const [testMsg, setTestMsg] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [busy, setBusy] = useState(false);
+
+  // hasKey comes ONLY from list() — we never infer "connected" from local state.
+  const refresh = useCallback(() => (window as any).claude.search?.list()
+    .then(setRows).catch(() => setRows([])), []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const openEditor = (id: SearchBackendId) => {
+    setEditing(id);
+    setDraft('');
+    // Drop any stale test note for this row when reopening the editor.
+    setTestMsg((m) => { const n = { ...m }; delete n[id]; return n; });
+  };
+
+  const save = async (id: SearchBackendId) => {
+    const key = draft.trim();
+    if (!key) return;
+    setBusy(true);
+    try {
+      // test() never throws — { ok, message } IS the result. Show the honest
+      // message either way; only persist the key when the test actually passed.
+      const res = await (window as any).claude.search.test(id, key) as { ok: boolean; message: string };
+      setTestMsg((m) => ({ ...m, [id]: { ok: res.ok, text: res.message } }));
+      if (!res.ok) return; // keep the input open with the rejection message
+      await (window as any).claude.search.setKey(id, key);
+      setDraft('');
+      setEditing(null);
+      void refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: SearchBackendId) => {
+    await (window as any).claude.search.removeKey(id);
+    setTestMsg((m) => { const n = { ...m }; delete n[id]; return n; });
+    void refresh();
+  };
+
+  return (
+    <section>
+      <SectionHeader
+        title="Web Search"
+        info={{
+          label: 'About web search',
+          body: (
+            <>
+              <p>
+                When Claude searches the web, YouCoded runs the search itself — no extra account needed.
+                It works for free out of the box using open search backends.
+              </p>
+              <p>
+                Adding a free Tavily or Exa API key is optional. It makes web search faster and more
+                reliable, especially when the free backends are busy. Your key is stored encrypted on this
+                computer and never leaves it.
+              </p>
+            </>
+          ),
+        }}
+      />
+
+      <p className="text-[10px] text-fg-muted mb-2.5 leading-relaxed">
+        Web search works for free with no setup. Add an optional key to make it faster and more reliable.
+      </p>
+
+      <div className="space-y-2">
+        {rows.map((row) => {
+          const meta = SEARCH_BACKEND_META[row.id];
+          const isEditing = editing === row.id;
+          const note = testMsg[row.id];
+          return (
+            <div key={row.id} className="bg-inset/50 rounded-lg px-3 py-2.5">
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-fg font-medium">{row.label}</p>
+                  <p className="text-[10px] text-fg-muted">{meta.hint}</p>
+                </div>
+                {row.hasKey ? (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] font-medium text-green-600">Key saved</span>
+                    <button
+                      onClick={() => void remove(row.id)}
+                      className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : !isEditing ? (
+                  <button
+                    onClick={() => openEditor(row.id)}
+                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
+                  >
+                    Add key
+                  </button>
+                ) : null}
+              </div>
+
+              {isEditing && !row.hasKey && (
+                <div className="mt-2 space-y-2">
+                  <input
+                    type="password"
+                    autoFocus
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void save(row.id); }}
+                    placeholder={`Paste your ${row.label} API key`}
+                    aria-label={`${row.label} API key`}
+                    className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      onClick={() => void (window as any).claude.shell.openExternal(meta.url)}
+                      className="text-[10px] text-accent hover:underline"
+                    >
+                      Get a free key
+                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => { setEditing(null); setDraft(''); }}
+                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => void save(row.id)}
+                        disabled={busy || draft.trim().length === 0}
+                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {busy ? 'Checking…' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {note && (
+                <p className={`text-[10px] mt-2 ${note.ok ? 'text-fg-muted' : 'text-red-500'}`}>
+                  {note.text}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }
