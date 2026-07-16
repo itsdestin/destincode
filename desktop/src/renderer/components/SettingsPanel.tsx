@@ -660,15 +660,43 @@ function ThemeButton({ onSendInput, onOpenMarketplace, onPublishTheme }: { onSen
   );
 }
 
-// ─── Buddy floater toggle ─────────────────────────────────────────────────
-// Small section row that controls the buddy mascot window: off by default,
-// persists via localStorage['youcoded-buddy-enabled'] (matches theme/font
-// persistence pattern). Toggling fires window.claude.buddy.show/hide;
-// App.tsx also reads the flag on mount to auto-show if previously enabled.
-function BuddyToggle() {
+// ─── Buddy floater button ──────────────────────────────────────────────────
+// Row + popup that controls the buddy mascot window: off by default, persists
+// via localStorage['youcoded-buddy-enabled'] (matches theme/font persistence
+// pattern). Toggling fires window.claude.buddy.show/hide; App.tsx also reads
+// the flag on mount to auto-show if previously enabled. Follows the same
+// row-opens-popup pattern as Sound/Appearance/Remote Access instead of being
+// a bare checkbox — see docs/active/specs/2026-07-15-settings-panel-card-redesign-design.md.
+function BuddyIcon() {
+  // Simplified outline mascot silhouette (rounded head + dot eyes + arm/leg
+  // stubs) — deliberately NOT the full WelcomeAppIcon/AppIcon/ThemeMascot
+  // illustration, which is too detailed for a 16px monochrome row icon.
+  return (
+    <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="4" width="14" height="12" rx="4" />
+      <circle cx="9.3" cy="10" r="0.6" fill="currentColor" stroke="none" />
+      <circle cx="14.7" cy="10" r="0.6" fill="currentColor" stroke="none" />
+      <path d="M2 9v3M22 9v3" />
+      <path d="M9 20h2M13 20h2" />
+    </svg>
+  );
+}
+
+function BuddyButton() {
   const [enabled, setEnabled] = useState<boolean>(() =>
     localStorage.getItem('youcoded-buddy-enabled') === '1',
   );
+  const [open, setOpen] = useState(false);
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (popupRef.current && !popupRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
 
   const toggle = useCallback(() => {
     const next = !enabled;
@@ -679,21 +707,43 @@ function BuddyToggle() {
   }, [enabled]);
 
   return (
-    <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Buddy</h3>
-      <label className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={toggle}
-          className="shrink-0"
-        />
-        <div className="flex-1 min-w-0">
-          <div className="text-xs text-fg font-medium">Show buddy floater</div>
-          <div className="text-[10px] text-fg-muted mt-0.5">A small always-on-top mascot that stays visible even when the app is minimized.</div>
-        </div>
-      </label>
-    </section>
+    <>
+      <SettingsRow
+        icon={<BuddyIcon />}
+        title="Buddy Floater"
+        subtitle={enabled ? 'Enabled' : 'Disabled'}
+        onClick={() => setOpen(true)}
+      />
+
+      {open && createPortal(
+        <>
+          <Scrim layer={2} onClick={() => setOpen(false)} />
+          <div
+            ref={popupRef}
+            className="layer-surface fixed z-[61] overflow-hidden"
+            style={{
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 'min(340px, 85vw)',
+            }}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
+              <h2 className="text-sm font-bold text-fg">Buddy Floater</h2>
+              <button onClick={() => setOpen(false)} className="text-fg-muted hover:text-fg-2 text-lg leading-none">✕</button>
+            </div>
+            <div className="px-4 py-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-fg font-medium">Show buddy floater</span>
+                <Toggle enabled={enabled} onToggle={toggle} />
+              </div>
+              <p className="text-[10px] text-fg-muted mt-2">A small always-on-top mascot that stays visible even when the app is minimized.</p>
+            </div>
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
   );
 }
 
@@ -2285,7 +2335,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
 
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 
-        <BuddyToggle />
+        <BuddyButton />
 
         <SoundButton />
 
