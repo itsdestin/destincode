@@ -248,6 +248,9 @@ declare global {
         send: (sessionId: string, text: string) => void;
         interrupt: (sessionId: string) => void;
         setBinding: (sessionId: string, binding: { providerId: string; modelId: string }) => Promise<boolean>;
+        // Per-session native permission mode (StatusBar chip, Task 13). Returns
+        // the APPLIED mode — authoritative; the chip renders the return value.
+        setPermissionMode: (sessionId: string, mode: 'ask' | 'auto-edit' | 'full-auto') => Promise<'ask' | 'auto-edit' | 'full-auto'>;
         sessionsList: () => Promise<any[]>;
         // Per-session bound-model residency push (2026-07-14): { sessionId,
         // modelId, state: 'unloaded'|'loading'|'loaded'|'sleeping', sizeBytes }.

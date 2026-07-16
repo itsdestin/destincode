@@ -4,6 +4,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { createPortal } from 'react-dom';
 import { useTheme } from '../state/theme-context';
 import type { PermissionMode } from '../../shared/types';
+import type { NativePermissionMode } from '../../shared/permission-types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
@@ -69,12 +70,23 @@ const MODEL_DISPLAY: Record<ModelAlias, { label: string; color: string; bg: stri
 // Amber (#F2B33D) for AUTO matches CC's own banner color and visually sits
 // between 'auto-accept' (theme accent, mostly safe) and 'bypass' (salmon, no
 // safety checks) — increasing autonomy = warmer color.
-const PERMISSION_DISPLAY: Record<PermissionMode, { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
+// Keyed by both CC's PermissionMode and the native runtime's NativePermissionMode.
+// The two unions share no string values, so one map serves both; App decides
+// which value (and which cycle handler) to pass based on the session's provider.
+// Native labels are plain words (no glyphs — standing user preference) and reuse
+// the same "increasing autonomy = warmer color" convention: ask ≈ normal (muted),
+// auto-edit ≈ auto-accept (accent, mostly safe), full-auto = amber (autonomous,
+// but still deny-list-guarded so not the salmon reserved for CC's bypass).
+const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode, { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
   normal:        { label: 'NORMAL',             shortLabel: 'NORMAL',  color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
   'auto-accept': { label: 'ACCEPT CHANGES',     shortLabel: 'ACCEPT',  color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
   plan:          { label: 'PLAN MODE',           shortLabel: 'PLAN',    color: 'var(--fg-2)',     bg: 'var(--inset)',  border: 'var(--edge)' },
   auto:          { label: 'AUTO MODE',           shortLabel: 'AUTO',    color: '#F2B33D', bg: 'rgba(242,179,61,0.15)',  border: 'rgba(242,179,61,0.25)' },
   bypass:        { label: 'BYPASS PERMISSIONS',  shortLabel: 'BYPASS',  color: '#FA8072', bg: 'rgba(250,128,114,0.15)', border: 'rgba(250,128,114,0.25)' },
+  // Native runtime modes (Task 13).
+  ask:           { label: 'ASK FIRST',          shortLabel: 'ASK',     color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
+  'auto-edit':   { label: 'AUTO EDIT',          shortLabel: 'EDIT',    color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
+  'full-auto':   { label: 'FULL AUTO',          shortLabel: 'FULL',    color: '#F2B33D', bg: 'rgba(242,179,61,0.15)',  border: 'rgba(242,179,61,0.25)' },
 };
 
 function utilizationColor(pct: number): string {
@@ -141,7 +153,9 @@ interface Props {
   onOpenSync?: () => void;
   model?: ModelAlias;
   onCycleModel?: () => void;
-  permissionMode?: PermissionMode;
+  // CC sessions pass a PermissionMode; native sessions pass a NativePermissionMode.
+  // The chip renders identically for both — only the value + cycle handler differ.
+  permissionMode?: PermissionMode | NativePermissionMode;
   onCyclePermission?: () => void;
   // Fast + effort state and opener. When non-default, chips render next to the model
   // chip. Clicking either (or the model chip directly) opens the ModelPickerPopup.

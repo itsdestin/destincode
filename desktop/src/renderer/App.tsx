@@ -63,6 +63,7 @@ import ShareSheet from './components/ShareSheet';
 import { ProjectView } from './components/project-view/ProjectView';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
+import type { NativePermissionMode } from '../shared/permission-types';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -173,6 +174,11 @@ function AppInner() {
   });
 
   const [permissionModes, setPermissionModes] = useState<Map<string, PermissionMode>>(new Map());
+  // Native sessions carry a SEPARATE permission mode (harness policy, not a CC
+  // PTY mode). Kept in its own map so the two unions never mix; default 'ask' is
+  // read lazily (no per-session seeding) since NativeSessionHost also defaults to
+  // 'ask' and the chip is the only setter. Task 13.
+  const [nativePermissionModes, setNativePermissionModes] = useState<Map<string, NativePermissionMode>>(new Map());
   // Sessions that have received their first hook event (Claude is initialized).
   // Until this fires, show an "Initializing" overlay to prevent premature input.
   const [initializedSessions, setInitializedSessions] = useState<Set<string>>(new Set());
@@ -2171,6 +2177,27 @@ function AppInner() {
   // PTY shift+tab cycle — hide the badge + cycle affordance for them.
   const isNativeSession = currentSession?.provider === 'native';
   const currentPermissionMode = sessionId ? (permissionModes.get(sessionId) || 'normal') : 'normal';
+  // Native mode defaults to 'ask' (mirrors NativeSessionHost's default).
+  const currentNativeMode: NativePermissionMode = sessionId ? (nativePermissionModes.get(sessionId) || 'ask') : 'ask';
+
+  // Native permission chip: cycle ask → auto-edit → full-auto → ask via the
+  // Task 12 IPC (NOT a PTY Shift+Tab — native sessions have no PTY). The IPC
+  // returns the APPLIED mode, which is authoritative — state updates from the
+  // return value, not the optimistic `next` (no screen-scrape correction path).
+  const cycleNativePermission = useCallback(async () => {
+    if (!sessionId) return;
+    const cycle: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
+    const idx = cycle.indexOf(currentNativeMode);
+    const next = cycle[(idx + 1) % cycle.length];
+    try {
+      const applied = await window.claude.native.setPermissionMode(sessionId, next);
+      setNativePermissionModes((prev) => new Map(prev).set(sessionId, applied));
+    } catch (err) {
+      // A rejected invoke means an unknown-mode wiring bug in the host — leave
+      // the chip on its current (unchanged) mode rather than lying about state.
+      console.error('Failed to set native permission mode:', err);
+    }
+  }, [sessionId, currentNativeMode]);
 
   // Shift+Tab cycles permission mode in chat view
   // (In terminal view, the raw escape code reaches the PTY directly)
@@ -2641,8 +2668,8 @@ function AppInner() {
                   } : undefined}
                   model={currentModel}
                   onCycleModel={cycleModel}
-                  permissionMode={isNativeSession ? undefined : currentPermissionMode}
-                  onCyclePermission={isNativeSession ? undefined : cyclePermission}
+                  permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
+                  onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
                   fast={fastMode}
                   effort={effortLevel}
                   onOpenModelPicker={() => setModelPickerOpen(true)}

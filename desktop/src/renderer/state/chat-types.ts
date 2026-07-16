@@ -317,6 +317,9 @@ export type ChatAction =
       input: Record<string, unknown>;
       requestId: string;
       permissionSuggestions?: string[];
+      // Native broker only: winning rule came from the destructive deny-list →
+      // ToolCard shows the consequence-gated "Always allow" warning. Task 13.
+      denyListed?: boolean;
     }
   | {
       type: 'PERMISSION_EXPIRED';

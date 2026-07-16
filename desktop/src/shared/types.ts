@@ -189,6 +189,9 @@ export interface ToolCallState {
   status: ToolCallStatus;
   requestId?: string;
   permissionSuggestions?: string[];
+  /** Native broker only: winning rule came from the destructive deny-list →
+   *  the "Always allow" button shows a consequence-gated confirm. Task 13. */
+  denyListed?: boolean;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
