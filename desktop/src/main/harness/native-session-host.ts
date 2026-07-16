@@ -19,6 +19,7 @@ import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, type ModelFactory } from './harness-session';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
+import { PermissionBroker, type AskDecision } from './permission-broker';
 import { CHAT_PRESET } from '../../shared/harness-manifest';
 import { log } from '../logger';
 
@@ -47,12 +48,38 @@ export class NativeSessionHost extends EventEmitter {
   private modelRefs = new Map<string, Set<string>>();
   private onModelReleased?: (modelId: string) => void;
 
+  // One broker for all native sessions (spec §2.4). Its 'hook-event's are
+  // re-emitted on this host so ipc-handlers forwards them on the SAME channel
+  // as native transcript events (which is the SAME channel CC hook events ride).
+  private broker = new PermissionBroker();
+
   constructor(
     private store: SessionStore,
     private modelFactory: ModelFactory,
     private contextLengthFor: (binding: ModelBinding) => Promise<number | null>,
   ) {
     super();
+    // Re-emit broker asks/expirations so ipc-handlers can forward them to the
+    // renderer + remote clients (see the 'hook-event' listener there).
+    this.broker.on('hook-event', (event) => this.emit('hook-event', event));
+  }
+
+  /** Route a renderer/remote permission response to the broker. Returns false
+   *  when the id isn't a pending native ask so ipc-handlers falls through to
+   *  hookRelay (CC asks share the permission:respond channel). */
+  respondPermission(requestId: string, decision: Record<string, unknown>): boolean {
+    return this.broker.respond(requestId, decision);
+  }
+
+  /** Raise a native permission ask (Task 12's decide() will call this). Resolves
+   *  when the user responds or the session is interrupted (→ 'canceled'). */
+  askPermission(req: {
+    sessionId: string;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    denyListed: boolean;
+  }): Promise<AskDecision> {
+    return this.broker.ask(req);
   }
 
   /** Wire the "no session uses model X anymore" callback (→ engine unload). */
@@ -188,6 +215,10 @@ export class NativeSessionHost extends EventEmitter {
 
   interrupt(sessionId: string): boolean {
     const entry = this.live.get(sessionId);
+    // Cancel pending asks FIRST (resolve them 'canceled') so a loop paused on a
+    // permission await unwinds cleanly before the stream is aborted underneath
+    // it (spec pending-ask ruling). Also expires the renderer's approval cards.
+    this.broker.cancelSession(sessionId);
     entry?.session.interrupt();
     return !!entry;
   }

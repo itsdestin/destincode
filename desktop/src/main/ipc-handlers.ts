@@ -1878,6 +1878,16 @@ export function registerIpcHandlers(
     }
   });
 
+  // Native permission asks ride the SAME hook:event channel + broadcast as CC's
+  // PermissionRequest/PermissionExpired — hook-dispatcher/ToolCard render them
+  // unchanged. Ids are 'native-'-prefixed so permission:respond routes by id.
+  nativeHost.on('hook-event', (event: { sessionId: string }) => {
+    sendForSession(event.sessionId, IPC.HOOK_EVENT, event);
+    if (remoteServer) {
+      remoteServer.broadcast({ type: 'hook:event', payload: event });
+    }
+  });
+
   // Plan C: model manager (curated catalog, HF search, downloads, detectors).
   // Constructed here — BEFORE setNativeRuntime — so remote WS clients reach the
   // SAME instance via the native-runtime injection below (the models:* handlers
@@ -2479,12 +2489,14 @@ export function registerIpcHandlers(
   ipcMain.handle('sync:setup:auth-github', () => authGithub());
   ipcMain.handle('sync:setup:create-repo', (_e, repoName) => createGithubRepo(repoName));
 
-  // --- Permission response (blocking hooks) ---
-  if (hookRelay) {
-    ipcMain.handle(IPC.PERMISSION_RESPOND, async (_event, requestId: string, decision: object) => {
-      return hookRelay.respond(requestId, decision);
-    });
-  }
+  // --- Permission response (blocking hooks + native asks) ---
+  // Native asks share the channel; ids are 'native-'-prefixed so routing is
+  // exact — try the native broker first, then fall through to hookRelay (which
+  // may be absent in native-only sessions).
+  ipcMain.handle(IPC.PERMISSION_RESPOND, async (_event, requestId: string, decision: object) => {
+    if (nativeHost.respondPermission(requestId, decision as Record<string, unknown>)) return true;
+    return hookRelay ? hookRelay.respond(requestId, decision) : false;
+  });
 
   // --- Settings → Development feature handlers (see dev-tools.ts) ---
 

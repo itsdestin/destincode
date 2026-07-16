@@ -916,7 +916,11 @@ export class RemoteServer {
       }
       case 'permission:respond': {
         const { requestId, decision } = payload;
-        const result = this.hookRelay.respond(requestId, decision);
+        // Native asks share the channel; 'native-'-prefixed ids route to the
+        // broker first, then fall through to hookRelay (mirrors ipc-handlers).
+        const result = this.nativeRuntime?.nativeHost.respondPermission(requestId, decision)
+          ? true
+          : this.hookRelay.respond(requestId, decision);
         this.respond(client.ws, type, id, result);
         break;
       }
