@@ -1352,24 +1352,17 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
 
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-      >
-        <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
+      <SettingsRow
+        icon={
           <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="4" y1="7" x2="20" y2="7" /><circle cx="8" cy="7" r="2.2" fill="var(--panel)" />
-                    <line x1="4" y1="17" x2="20" y2="17" /><circle cx="16" cy="17" r="2.2" fill="var(--panel)" />
-                  </svg>
-        </div>
-        <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">Defaults</span>
-          <p className="text-[10px] text-fg-muted">{summaryParts.join(' · ')}</p>
-        </div>
-        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
+            <line x1="4" y1="7" x2="20" y2="7" /><circle cx="8" cy="7" r="2.2" fill="var(--panel)" />
+            <line x1="4" y1="17" x2="20" y2="17" /><circle cx="16" cy="17" r="2.2" fill="var(--panel)" />
+          </svg>
+        }
+        title="Defaults"
+        subtitle={summaryParts.join(' · ')}
+        onClick={() => setOpen(true)}
+      />
 
       {open && createPortal(
         <>
@@ -1503,23 +1496,17 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
   const currentTier = TIER_OPTIONS.find(t => t.id === tier) || TIER_OPTIONS[0];
 
   return (
-    <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Package Tier</h3>
-
-      {/* Current tier row */}
-      <button
+    <>
+      {/* Current tier row — title is the static "Package Tier" label, subtitle
+          is the current tier's name (was reversed: the tier name used to be
+          the title with no static label, the one anti-pattern this component
+          shared with pre-redesign Appearance/Remote Access/Buddy Floater). */}
+      <SettingsRow
+        icon={<span className="text-sm leading-none text-fg-dim">⬡</span>}
+        title="Package Tier"
+        subtitle={currentTier.name}
         onClick={() => setOpen(true)}
-        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-      >
-        <span className="text-sm shrink-0 leading-none text-fg-dim">⬡</span>
-        <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">{currentTier.name}</span>
-          <p className="text-[10px] text-fg-muted">{currentTier.desc}</p>
-        </div>
-        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
+      />
 
       {/* Popup overlay — portaled to document.body so position:fixed centers
           against the viewport, not the SettingsPanel drawer. The drawer (and
@@ -1578,7 +1565,7 @@ function TierSelector({ tier, onSetTier }: { tier: string; onSetTier: (t: string
         </>,
         document.body,
       )}
-    </section>
+    </>
   );
 }
 
