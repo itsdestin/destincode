@@ -388,6 +388,55 @@ const debouncedBroadcastAttention = (() => {
 // windows spawned by the detach subsystem. Keeps webPreferences, security
 // hardening, and fullscreen relay consistent across every window so renderers
 // don't have to guess which features are available.
+/**
+ * Dev-only self-healing for Vite-served windows (recurring first-launch
+ * failure, diagnosed 2026-07-16): on a cold Vite dependency cache the first
+ * window load fires a storm of unbundled module requests plus a mid-load
+ * full-reload; Chromium's network service has crashed under it ("Network
+ * service crashed or was terminated"), aborting every in-flight request and
+ * leaving a permanently blank window — the only remedy was restarting dev.
+ * Three recovery paths, because the failure shows up three ways:
+ *  - did-fail-load: the main document itself failed to load (also covers
+ *    "Electron reached the URL before Vite was actually serving");
+ *  - render-process-gone: the renderer process died outright;
+ *  - blank-mount watchdog: the document loaded but its module scripts were
+ *    aborted mid-boot, so React never mounted and NO failure event fires —
+ *    this is the network-service-crash signature.
+ * Prod loads local files and is deliberately untouched (callers gate on
+ * !app.isPackaged).
+ */
+function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
+  let attempts = 0;
+  const retry = (why: string) => {
+    if (win.isDestroyed() || attempts >= 5) return;
+    attempts += 1;
+    console.warn(`[dev-recovery] renderer load failed (${why}) — retry ${attempts}/5 in ${attempts}s`);
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.loadURL(devUrl);
+    }, attempts * 1000);
+  };
+  win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+    // -3 = ERR_ABORTED: fired by Vite's own full-reloads and by a loadURL
+    // superseding an in-flight load — retrying on it would loop forever.
+    if (isMainFrame && errorCode !== -3) retry(`did-fail-load ${errorCode} ${errorDescription}`);
+  });
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (details.reason !== 'clean-exit') retry(`render-process-gone: ${details.reason}`);
+  });
+  win.webContents.on('did-finish-load', () => {
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      win.webContents
+        .executeJavaScript('!!document.getElementById("root")?.childElementCount')
+        .then((mounted) => {
+          if (mounted) attempts = 0; // healthy — future incidents get a fresh retry budget
+          else retry('blank renderer — React never mounted');
+        })
+        .catch(() => { /* window closed or JS context torn down — nothing to heal */ });
+    }, 8000);
+  });
+}
+
 function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'capture' }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
@@ -523,7 +572,9 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     // ?mode=buddy-* routing so the override can't hijack them. Prod (file://)
     // is untouched because this whole branch runs under `!app.isPackaged`.
     const devUrlOverride = !opts?.buddy ? process.env.YOUCODED_DEV_URL : undefined;
-    win.loadURL(devUrlOverride || `${DEV_SERVER_URL}${modeQuery}`);
+    const devUrl = devUrlOverride || `${DEV_SERVER_URL}${modeQuery}`;
+    win.loadURL(devUrl);
+    wireDevLoadRecovery(win, devUrl);
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'), {
       // loadFile expects search string WITHOUT the leading '?'

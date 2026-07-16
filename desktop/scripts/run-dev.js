@@ -1,10 +1,11 @@
-// Dev-mode orchestrator: starts Vite renderer, waits for it, then starts Electron main.
+// Dev-mode orchestrator: pre-warms Vite's dependency cache, starts the Vite
+// renderer, waits for it, then starts Electron main.
 // Reads YOUCODED_PORT_OFFSET to stay in sync with src/shared/ports.ts so dev can
 // coexist with a running built app (see docs/local-dev.md in the workspace repo).
 //
 // Replaces the previous one-liner that hardcoded `wait-on http://localhost:5173` —
 // with a port offset the wait-on URL must shift too, or Electron hangs forever.
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const offset = Number(process.env.YOUCODED_PORT_OFFSET ?? 0);
 const vitePort = 5173 + (Number.isFinite(offset) ? offset : 0);
@@ -28,6 +29,22 @@ function run(cmd, args, label) {
 }
 
 console.log(`[run-dev] Vite → ${viteUrl}`);
+
+// Pre-warm Vite's dependency cache BEFORE Electron ever loads the page.
+// On a cold/invalidated cache (fresh clone, lockfile changed by a pull or an
+// npm install), the first window load otherwise triggers dependency
+// optimization mid-load — a storm of unbundled module requests plus a
+// full-reload — which has crashed Chromium's network service and left a dead
+// window ("dev crashes on first launch, restart fixes it", 2026-07-16).
+// `vite optimize` bakes node_modules/.vite ahead of time so the first load is
+// as calm as a second launch. Near-instant when the cache is already warm.
+// Non-fatal on failure: the in-app dev-recovery reload (main.ts
+// wireDevLoadRecovery) is the safety net either way.
+console.log('[run-dev] pre-warming Vite dependency cache…');
+const optimize = spawnSync(npxCmd, ['vite', 'optimize'], { stdio: 'inherit', env: process.env, shell: true });
+if (optimize.status !== 0) {
+  console.warn('[run-dev] vite optimize failed (non-fatal) — first load may re-optimize mid-boot');
+}
 
 const renderer = run(npmCmd, ['run', 'dev:renderer'], 'dev:renderer');
 
