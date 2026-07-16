@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isFileLockError } from '../src/main/prerequisite-installer';
+import { isFileLockError, isSpawnEnoent } from '../src/main/prerequisite-installer';
 
 // Pins the file-lock detection used by installClaude's retry loop and the
 // friendly-error mapping. The strings below are the real shapes seen in the
@@ -30,5 +30,42 @@ describe('isFileLockError', () => {
     expect(isFileLockError('HTTP 404 downloading claude.exe')).toBe(false);
     expect(isFileLockError('Neither curl nor wget is installed.')).toBe(false);
     expect(isFileLockError('')).toBe(false);
+  });
+});
+
+// Pins the missing-executable detection used by runClaudeBootstrap's POSIX
+// branch. Node marks a spawn failure (binary not on PATH) with the STRING
+// code 'ENOENT'; a child that launched but exited non-zero gets a NUMERIC
+// exit code on the same field. The distinction is load-bearing: a failing
+// install SCRIPT must keep surfacing its own stderr, while a missing `bash`
+// must map to the accurate "bash was not found on PATH" message instead of
+// the raw "spawn bash ENOENT".
+describe('isSpawnEnoent', () => {
+  it('matches a real spawn-ENOENT error shape', () => {
+    // Shape Node produces when the executable does not exist on PATH.
+    const err = Object.assign(new Error('spawn bash ENOENT'), {
+      code: 'ENOENT',
+      errno: -4058,
+      syscall: 'spawn bash',
+      path: 'bash',
+    });
+    expect(isSpawnEnoent(err)).toBe(true);
+  });
+
+  it('does NOT match a child that ran and exited non-zero (numeric code)', () => {
+    // execFile puts the numeric exit code on `code` for a launched child.
+    const err = Object.assign(new Error('Command failed: bash -c ...'), {
+      code: 1,
+      killed: false,
+      signal: null,
+    });
+    expect(isSpawnEnoent(err)).toBe(false);
+  });
+
+  it('does NOT match non-error values', () => {
+    expect(isSpawnEnoent(undefined)).toBe(false);
+    expect(isSpawnEnoent(null)).toBe(false);
+    expect(isSpawnEnoent(new Error('plain error'))).toBe(false);
+    expect(isSpawnEnoent('spawn bash ENOENT')).toBe(false);
   });
 });
