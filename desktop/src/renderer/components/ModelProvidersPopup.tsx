@@ -27,15 +27,31 @@ import SettingsRow from './SettingsRow';
 
 export default function ModelProvidersSection({
   onOpenClaudePreferences,
+  autoOpen,
+  onAutoOpenHandled,
 }: {
   // Opens Claude Code's preferences popup (/config). Threaded from App, which
   // owns that popup's open state — undefined on surfaces that lack it.
   onOpenClaudePreferences?: () => void;
+  // Deep-link: when true, open the popup immediately on mount (mirrors
+  // SyncSection). Used by the provider-error bubble's "Open Settings" jump so
+  // the user lands directly on the Model Providers controls, not the row.
+  autoOpen?: boolean;
+  onAutoOpenHandled?: () => void;
 }) {
   // Gate on native support — invisible in production (same as the sections it
   // replaces). Static boolean, no IPC round-trip.
   const supported = window.claude?.native?.supported === true;
   const [open, setOpen] = useState(false);
+
+  // Auto-open when deep-linked, then clear the flag so it doesn't reopen after
+  // the user closes it (same one-shot handshake SyncSection uses).
+  useEffect(() => {
+    if (autoOpen && !open) {
+      setOpen(true);
+      onAutoOpenHandled?.();
+    }
+  }, [autoOpen, open, onAutoOpenHandled]);
 
   if (!supported) return null;
 

@@ -191,6 +191,9 @@ function AppInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBadge, setSettingsBadge] = useState(false);
   const [syncAutoOpen, setSyncAutoOpen] = useState(false);
+  // Deep-link flag for the Model Providers popup — set by a provider-error
+  // bubble's "Open Settings" jump so Settings opens straight to that section.
+  const [providersAutoOpen, setProvidersAutoOpen] = useState(false);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   // Track which sessions the user has "seen" (switched to after activity completed)
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
@@ -2585,6 +2588,9 @@ function AppInner() {
                           <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
                         </ErrorBoundary>
                       ) : null}
+                      // Provider-config error bubble → open Settings straight to
+                      // the Model Providers section so the key can be fixed.
+                      onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">
@@ -2856,7 +2862,7 @@ function AppInner() {
           artifact drawer's framed chrome instead of being a separate slide-out. */}
       <SettingsPanel
         open={settingsOpen}
-        onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); }}
+        onClose={() => { setSettingsOpen(false); setSyncAutoOpen(false); setProvidersAutoOpen(false); }}
         onSendInput={(text) => {
           // Guarded: with a permission/question pending, the text would land on
           // CC's live Ink menu and the trailing \r would answer it.
@@ -2869,6 +2875,8 @@ function AppInner() {
         onOpenClaudePreferences={() => { setSettingsOpen(false); setPreferencesOpen(true); }}
         syncAutoOpen={syncAutoOpen}
         onSyncAutoOpenHandled={() => setSyncAutoOpen(false)}
+        providersAutoOpen={providersAutoOpen}
+        onProvidersAutoOpenHandled={() => setProvidersAutoOpen(false)}
       />
       <ResumeBrowser
         open={resumeRequested}
