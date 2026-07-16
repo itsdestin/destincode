@@ -17,6 +17,14 @@ const FILE = 'permissions.json';
 type PermFile = { v: 1; projects: Record<string, { rules: PermissionRule[] }> };
 const EMPTY: PermFile = { v: 1, projects: {} };
 
+// SLUG COLLISIONS: cwdToProjectSlug collapses ':', '\\', '/', and spaces all to
+// '-', so distinct paths can theoretically map to the same slug and share rules.
+// This is inherited from CC's project-dir encoding deliberately — do NOT diverge
+// here; the whole point of importing cwdToProjectSlug is one convention everywhere.
+//
+// UNBOUNDED GROWTH: rules per project accumulate without cap or eviction until
+// the Phase 3 permission-management UI lets the user prune them — intentional.
+
 export class PermissionStore {
   constructor(private home: NativeHome) {}
 
@@ -24,7 +32,9 @@ export class PermissionStore {
   async rulesFor(cwd: string): Promise<PermissionRule[]> {
     // readJson is synchronous and untyped (unknown | null); cast + default.
     const data = (this.home.readJson(FILE) as PermFile | null) ?? EMPTY;
-    return data.projects[cwdToProjectSlug(cwd)]?.rules ?? [];
+    // Optional-chain `.projects` too: a hand-edited {} / [] / {"projects":null}
+    // passes the cast but has no usable projects map — treat it as "nothing here".
+    return data.projects?.[cwdToProjectSlug(cwd)]?.rules ?? [];
   }
 
   /** Persist one remembered decision for `cwd`'s project, deduping exact repeats. */
@@ -33,7 +43,10 @@ export class PermissionStore {
     // Read-modify-write under the file lock — never a bare write.
     await this.home.mutateJson(FILE, (cur) => {
       const data = (cur as PermFile | null) ?? EMPTY;
-      const rules = data.projects[slug]?.rules ?? [];
+      // Optional-chain `.projects` (see rulesFor) so a wrong-shape file rebuilds
+      // instead of throwing. Spreading a missing/undefined projects below is safe
+      // ({...undefined} === {}), so the write heals the shape on next persist.
+      const rules = data.projects?.[slug]?.rules ?? [];
       const dup = rules.some(
         (r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action
       );
