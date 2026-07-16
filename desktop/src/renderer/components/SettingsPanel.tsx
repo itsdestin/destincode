@@ -809,30 +809,21 @@ function RemoteButton({
           ? 'Tailscale VPN not active'
           : 'Enabled · No Tailscale';
 
-  return (
-    <section>
-      <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase mb-3">Remote Access</h3>
+  // Tailscale is the transport under a fully-connected session — the old UI
+  // showed a separate "Tailscale" tag next to the title whenever installed;
+  // folding it into the subtitle only when it adds information (fully
+  // connected) avoids a redundant "Tailscale VPN not active · Tailscale".
+  const subtitle = isFullyConnected ? `${statusText} · Tailscale` : statusText;
 
-      <button
+  return (
+    <>
+      <SettingsRow
+        // Status indicator dot — green when remote + Tailscale VPN fully active, gray otherwise
+        icon={<div className={`w-2.5 h-2.5 rounded-full ${isFullyConnected ? 'bg-green-500' : 'bg-fg-muted/40'}`} />}
+        title="Remote Access"
+        subtitle={subtitle}
         onClick={() => setOpen(true)}
-        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
-      >
-        {/* Status indicator dot — green when remote + Tailscale VPN fully active, gray otherwise */}
-        <div className="flex items-center justify-center shrink-0" style={{ width: 32, height: 20 }}>
-          <div className={`w-2.5 h-2.5 rounded-full ${
-            isFullyConnected ? 'bg-green-500' : 'bg-fg-muted/40'
-          }`} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <span className="text-xs text-fg font-medium">{statusText}</span>
-          {tailscale?.installed && (
-            <span className="text-[10px] text-fg-muted ml-2">Tailscale</span>
-          )}
-        </div>
-        <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
+      />
 
       {open && createPortal(
         <>
@@ -1144,7 +1135,7 @@ function RemoteButton({
         </>,
         document.body,
       )}
-    </section>
+    </>
   );
 }
 
