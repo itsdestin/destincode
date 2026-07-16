@@ -30,6 +30,14 @@ import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
 import { PermissionStore } from './harness/permission-store';
+// WebSearch provider stack (Phase 2 Plan B): keyed Tavily/Exa upgrades + the
+// chain-walking SearchService injected into the native tool framework.
+import { SearchKeyStore } from './harness/search/search-key-store';
+import { SearchService } from './harness/search/search-service';
+import { SearchChain } from './harness/search/search-chain';
+import { exaBackend } from './harness/search/backends/exa';
+import { ddgBackend } from './harness/search/backends/ddg';
+import { tavilyBackend } from './harness/search/backends/tavily';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { resolveMappingAction } from './session-id-mapping';
 import { listPastSessions, loadHistory } from './session-browser';
@@ -1865,6 +1873,18 @@ export function registerIpcHandlers(
   const modelCatalog = new ModelCatalog(app.getPath('userData'), undefined, {
     localModels: () => engineManager.catalogModels(),
   });
+  // WebSearch stack (Phase 2 Plan B): keys live in SecretsStore, the ref map in
+  // ~/.youcoded/search-providers.json (via NativeHome). SearchChain caches the
+  // patchable backend chain under userData — the SAME cache-dir convention as
+  // ModelCatalog/CuratedCatalog (both take app.getPath('userData')). The
+  // SearchService is injected into the native tool framework as `toolServices`
+  // so the WebSearch tool can reach it (see NativeSessionHost.toolWiring).
+  const searchKeyStore = new SearchKeyStore(nativeHome, secretsStore);
+  const searchService = new SearchService(
+    new SearchChain(app.getPath('userData')),
+    searchKeyStore,
+    { exa: exaBackend, ddg: ddgBackend, tavily: tavilyBackend },
+  );
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     (binding) => providerRegistry.languageModel(binding),
@@ -1874,6 +1894,9 @@ export function registerIpcHandlers(
     // (electron `app` isn't importable in the host's own test env — inject here).
     new PermissionStore(nativeHome),
     app.getVersion(),
+    // Runtime services threaded into every native tool's ToolContext — WebSearch
+    // reads services.search (the chain-walking SearchService).
+    { search: searchService },
   );
 
   // Native transcript events ride the SAME channel as CC's — the reducer
@@ -1904,7 +1927,7 @@ export function registerIpcHandlers(
   // Give the remote server access to the native stack so its WS clients reach
   // the SAME instances (mirrors how setLastTopic / broadcastStatusData push
   // ipc-handler-owned state into remoteServer — no global needed).
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager });
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService });
 
   // Plan 2b Task 11: give the remote server the SAME lease client/requester +
   // deviceId so its WS clients reach the identical lease/device state the
@@ -1951,6 +1974,13 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.PROVIDER_TEST, async (_e, id: string) => providerRegistry.testConnection(id));
   ipcMain.handle(IPC.PROVIDER_SET_KEY, async (_e, id: string, key: string) => { await providerRegistry.setKey(id, key); return true; });
   ipcMain.handle(IPC.PROVIDER_CATALOG, async () => modelCatalog.get(await providerRegistry.list()));
+  // WebSearch key management (Settings → Providers → Search). list returns the
+  // fixed Tavily/Exa rows with hasKey flags; set/remove manage the encrypted key;
+  // test is never-throws ({ ok, message } is the result, not an exception).
+  ipcMain.handle(IPC.SEARCH_LIST, async () => searchKeyStore.list());
+  ipcMain.handle(IPC.SEARCH_SET_KEY, async (_e, backend: 'tavily' | 'exa', key: string) => { await searchKeyStore.setKey(backend, key); return true; });
+  ipcMain.handle(IPC.SEARCH_REMOVE_KEY, async (_e, backend: 'tavily' | 'exa') => { await searchKeyStore.removeKey(backend); return true; });
+  ipcMain.handle(IPC.SEARCH_TEST, async (_e, backend: 'tavily' | 'exa', key: string) => searchService.testBackend(backend, key));
   // --- Local engine IPC (Plan B) ---
   // install/restart resolve to a fresh status() so the caller doesn't need a
   // second round-trip. The push emitters below keep every window + remote in

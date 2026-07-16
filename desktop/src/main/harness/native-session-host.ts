@@ -25,6 +25,7 @@ import { decidePermission } from './permission-engine';
 import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
 import { CORE_TOOLS } from './tools';
+import type { ToolServices } from './tools/types';
 import { log } from '../logger';
 
 export interface CreateNativeSessionOpts {
@@ -108,6 +109,11 @@ export class NativeSessionHost extends EventEmitter {
     // other injected functions/values above). Feeds the <env> block of the
     // once-per-session assembled system prompt.
     private appVersion: string = '0.0.0-dev',
+    // Runtime services threaded into every session's ToolContext (spec §3.2) —
+    // WebSearch reads toolServices.search. Optional + LAST so existing 3/4/5-arg
+    // test constructions still compile; the real wiring (ipc-handlers) injects
+    // { search: searchService }.
+    private toolServices?: ToolServices,
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -205,11 +211,15 @@ export class NativeSessionHost extends EventEmitter {
    *  (spec decisions 8/9): EVERY native session carries the full CORE_TOOLS
    *  suite — presets differ only in prompt body (preset.body) and permission
    *  posture (preset.presetRules + the seeded starting mode). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices'> {
     return {
       tools: CORE_TOOLS,
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       askUser: (req) => this.broker.ask(req),
+      // Thread injected runtime services (WebSearch's SearchService) into the
+      // HarnessSession opts — only when present, so a host built without them
+      // leaves toolServices undefined (tools handle the absence as a config error).
+      ...(this.toolServices ? { toolServices: this.toolServices } : {}),
       // WHY assembleSystemPrompt is called synchronously here: it shells out to
       // git twice (execFileSync, 3s timeout each → ~6s worst case). It runs ONCE
       // per session create/resume — NEVER on the per-turn send() path — so the

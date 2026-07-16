@@ -1423,6 +1423,14 @@ export function installShim(): void {
       setKey: (id: string, key: string) => invoke('provider:set-key', { id, key }),
       catalog: () => invoke('provider:catalog'),
     },
+    // WebSearch providers (Phase 2 Plan B) — WS transport. Object payloads match
+    // remote-server's WS case reads (payload.backend / payload.key).
+    search: {
+      list: () => invoke('search:list'),
+      setKey: (backend: string, key: string) => invoke('search:set-key', { backend, key }),
+      removeKey: (backend: string) => invoke('search:remove-key', { backend }),
+      test: (backend: string, key: string) => invoke('search:test', { backend, key }),
+    },
     // Local llama.cpp engine (Plan B). Server pushes engine:install-progress /
     // engine:status-changed via the WS dispatcher; subscriptions return an
     // unsubscribe, matching provider/dev patterns above.

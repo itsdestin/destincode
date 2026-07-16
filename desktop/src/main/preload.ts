@@ -1091,6 +1091,15 @@ contextBridge.exposeInMainWorld('claude', {
     setKey: (id: string, key: string) => ipcRenderer.invoke(IPC.PROVIDER_SET_KEY, id, key),
     catalog: () => ipcRenderer.invoke(IPC.PROVIDER_CATALOG),
   },
+  // WebSearch providers (Phase 2 Plan B): keyed Tavily/Exa upgrades. list = the
+  // fixed backend rows (hasKey flags); set/remove-key manage the encrypted key;
+  // test = never-throws connectivity check. Positional args match ipc-handlers.
+  search: {
+    list: () => ipcRenderer.invoke('search:list'),
+    setKey: (backend: string, key: string) => ipcRenderer.invoke('search:set-key', backend, key),
+    removeKey: (backend: string) => ipcRenderer.invoke('search:remove-key', backend),
+    test: (backend: string, key: string) => ipcRenderer.invoke('search:test', backend, key),
+  },
   // Local llama.cpp engine (Plan B). Progress/status pushes return an
   // unsubscribe, matching every other on* subscription in this file.
   engine: {

@@ -930,6 +930,13 @@ export const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // ---- WebSearch providers (Phase 2 Plan B): keyed Tavily/Exa upgrades ----
+  // list = the fixed upgradeable-backend rows (hasKey flags); set/remove-key
+  // manage the encrypted key; test = never-throws connectivity check.
+  SEARCH_LIST: 'search:list',
+  SEARCH_SET_KEY: 'search:set-key',
+  SEARCH_REMOVE_KEY: 'search:remove-key',
+  SEARCH_TEST: 'search:test',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',

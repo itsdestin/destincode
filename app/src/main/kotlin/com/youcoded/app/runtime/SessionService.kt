@@ -3564,6 +3564,13 @@ class SessionService : Service() {
             "provider:test",
             "provider:set-key",
             "provider:catalog",
+            // WebSearch providers (Phase 2 Plan B) — keyed Tavily/Exa upgrades.
+            // Desktop-only; no Android runtime yet. Reply not-implemented so the
+            // shared React UI degrades to a "desktop only" state instead of timing out.
+            "search:list",
+            "search:set-key",
+            "search:remove-key",
+            "search:test",
             // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
             "engine:status",
             "engine:install",
