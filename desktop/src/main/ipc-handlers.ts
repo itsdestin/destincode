@@ -29,6 +29,8 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
+import { PermissionStore } from './harness/permission-store';
+import type { NativePermissionMode } from '../shared/permission-types';
 import { resolveMappingAction } from './session-id-mapping';
 import { listPastSessions, loadHistory } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
@@ -1867,6 +1869,11 @@ export function registerIpcHandlers(
     new SessionStore(nativeHome),
     (binding) => providerRegistry.languageModel(binding),
     async (binding) => modelCatalog.contextLengthFor(binding, await providerRegistry.list()),
+    // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
+    // + the injected app version for the once-per-session assembled system prompt
+    // (electron `app` isn't importable in the host's own test env — inject here).
+    new PermissionStore(nativeHome),
+    app.getVersion(),
   );
 
   // Native transcript events ride the SAME channel as CC's — the reducer
@@ -1930,6 +1937,12 @@ export function registerIpcHandlers(
     nativeHost.interrupt(sessionId);
   });
   ipcMain.handle(IPC.NATIVE_SET_BINDING, async (_e, sessionId: string, binding: any) => nativeHost.setBinding(sessionId, binding));
+  // Per-session permission mode (renderer chip). setPermissionMode throws on an
+  // unknown mode string — the reject surfaces to the renderer invoke() so the
+  // chip sees the failure instead of a false "applied"; on success it returns the
+  // applied mode as the authoritative value.
+  ipcMain.handle(IPC.NATIVE_SET_PERMISSION_MODE, async (_e, sessionId: string, mode: NativePermissionMode) =>
+    nativeHost.setPermissionMode(sessionId, mode));
   ipcMain.handle(IPC.NATIVE_SESSIONS_LIST, async () => nativeHost.list());
   // Provider management (Settings → Providers).
   ipcMain.handle(IPC.PROVIDER_LIST, async () => providerRegistry.list());

@@ -605,6 +605,18 @@ export class RemoteServer {
         this.respond(client.ws, type, id, ok);
         break;
       }
+      case 'native:set-permission-mode': {
+        // setPermissionMode THROWS on an unknown mode string — respond an error
+        // object (same convention as the provider CRUD handlers below) so the
+        // remote client's request id resolves instead of hanging to timeout.
+        try {
+          const mode = this.nativeRuntime ? this.nativeRuntime.nativeHost.setPermissionMode(payload.sessionId, payload.mode) : null;
+          this.respond(client.ws, type, id, mode);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
       case 'native:sessions-list': {
         this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
         break;

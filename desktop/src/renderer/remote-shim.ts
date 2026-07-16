@@ -1404,6 +1404,7 @@ export function installShim(): void {
       send: (sessionId: string, text: string) => fire('native:send', { sessionId, text }),
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
       setBinding: (sessionId: string, binding: unknown) => invoke('native:set-binding', { sessionId, binding }),
+      setPermissionMode: (sessionId: string, mode: string) => invoke('native:set-permission-mode', { sessionId, mode }),
       sessionsList: () => invoke('native:sessions-list'),
       onModelState: (cb: (s: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
