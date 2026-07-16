@@ -87,3 +87,39 @@ in the youcoded-dev workspace).
   Gated on `schemaVersion` (must equal 1); on fetch failure or a malformed /
   version-mismatched payload, falls back to the shipped copy. Consumer:
   `src/main/models/curated-catalog.ts`. (curated-catalog)
+- **Exa hosted MCP search** — `https://mcp.exa.ai/mcp` (keyless; `?exaApiKey=`
+  lifts limits on the same endpoint). JSON-RPC 2.0 `tools/call` → `web_search_exa`
+  `{query, numResults}`. OBSERVED (2026-07-16, keyless): **no `initialize`
+  handshake is required** — a stateless `tools/call` on the bare endpoint returns
+  HTTP 200 (the initialize → `notifications/initialized` sequence is kept in the
+  probe as a fallback only). Responses are **SSE-framed** (`event: message` +
+  `data:` lines), never plain JSON on this endpoint, but the parser handles both.
+  Result payload path is `result.content[0].text` — and that text is a
+  **human-readable PLAIN-TEXT block, NOT a JSON string**: records separated by
+  `\n\n---\n\n`, each formatted as `Title:` / `URL:` / `Published:` (ISO date or
+  `N/A`) / `Author:` (or `N/A`) / `Highlights:` (snippet, may span lines). The
+  content item also carries `_meta.searchTime`. A tool-level failure comes back
+  as HTTP 200 with `result.isError:true` and the message inside
+  `content[0].text`. Malformed/refused responses throw a typed backend error the
+  chain absorbs. Probe: `desktop/test-search/probe-exa.mjs`; parser pinned by
+  `desktop/tests/search-backends.test.ts` on a captured fixture. Consumer:
+  `src/main/harness/search/backends/exa.ts`. (search)
+- **DuckDuckGo HTML fallback** — `https://html.duckduckgo.com/html/?q=`. Scrape,
+  not an API: `202` = rate-limited → honest error, SINGLE attempt, never retried
+  (Apr–May 2025 breakage waves; see youcoded-dev
+  docs/active/investigations/2026-07-15-web-search-backends.md). OBSERVED
+  (2026-07-16): returned `200` (not rate-limited) with 10 results. Parses
+  `result__a` anchors (+ `result__snippet` blocks). Hrefs are **indirect
+  redirects, not direct**: `//duckduckgo.com/l/?uddg=<url-encoded target>&amp;rut=<hash>`
+  — the parser must HTML-unescape `&amp;`→`&`, read the `uddg` query param, and
+  `decodeURIComponent` it to recover the real URL. Markup drift → parser returns
+  a "DDG markup changed" error, not garbage. Probe:
+  `desktop/test-search/probe-ddg.mjs`. Consumer:
+  `src/main/harness/search/backends/ddg.ts`. (search)
+- **Tavily `/search`** — `https://api.tavily.com/search`, `Authorization: Bearer`,
+  `{query, max_results}` → `{results:[{title,url,content}]}` (keyed upgrade,
+  1,000/mo free). Not exercised live — no key on this machine; shape is from
+  official docs and pinned to the probe's SKIP message until a key exists.
+  Defensive per-row parse; rows without `url` skipped. Probe:
+  `desktop/test-search/probe-tavily.mjs`. Consumer:
+  `src/main/harness/search/backends/tavily.ts`. (search)
