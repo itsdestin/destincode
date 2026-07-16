@@ -152,6 +152,50 @@ export function describeTransportContract(name: string, makeHarness: () => Promi
       expect(fs.readFileSync(path.join(b.root, pull.conflictCopies[0]), 'utf8')).toBe(bContent);
     });
 
+    it('a push rejected by a concurrent peer push reports the recovery pull (updated)', async () => {
+      const a = await h.makeDeviceSpace();
+      const b = await h.makeDeviceSpace();
+      await h.transport.init(a); await h.transport.init(b);
+      // Shared base so both devices have a local main.
+      fs.writeFileSync(path.join(a.root, 'doc.md'), 'base\n');
+      await h.transport.push(a, 'base');
+      await h.transport.pull(b);
+      // A pushes first; B commits locally and pushes second → non-fast-forward.
+      // B's push must recover (merge + retry) AND report that the recovery pull
+      // applied A's changes — swallowing `updated` here left peers' data on disk
+      // with no downstream reaction (materialize sweep, discovery) until some
+      // unrelated later pull. (2026-07-15 review finding.)
+      fs.writeFileSync(path.join(a.root, 'a-file.md'), 'from A\n');
+      await h.transport.push(a, 'A change');
+      fs.writeFileSync(path.join(b.root, 'b-file.md'), 'from B\n');
+      const push = await h.transport.push(b, 'B change');
+      expect(push.pushed).toBe(true);
+      expect(push.updated).toBe(true);
+      expect(fs.readFileSync(path.join(b.root, 'a-file.md'), 'utf8')).toBe('from A\n');
+    });
+
+    it('conflict copies created by the push-retry merge are reported on the push result', async () => {
+      const a = await h.makeDeviceSpace();
+      const b = await h.makeDeviceSpace();
+      await h.transport.init(a); await h.transport.init(b);
+      fs.writeFileSync(path.join(a.root, 'doc.md'), 'base\n');
+      await h.transport.push(a, 'base');
+      await h.transport.pull(b);
+      // Same-file divergence, but the merge happens inside B's PUSH retry, not
+      // a caller-visible pull — the copies must still surface on the result so
+      // the engine can emit its conflict event.
+      fs.writeFileSync(path.join(a.root, 'doc.md'), 'A version\n');
+      await h.transport.push(a, 'A edit');
+      fs.writeFileSync(path.join(b.root, 'doc.md'), 'B version\n');
+      const push = await h.transport.push(b, 'B edit');
+      expect(push.pushed).toBe(true);
+      expect(push.conflictCopies?.length).toBe(1);
+      // Convergent rule holds inside the retry merge too: remote (A) wins the
+      // canonical name, B's content is preserved as the visible copy.
+      expect(fs.readFileSync(path.join(b.root, 'doc.md'), 'utf8')).toBe('A version\n');
+      expect(fs.readFileSync(path.join(b.root, push.conflictCopies![0]), 'utf8')).toBe('B version\n');
+    });
+
     it('conflict copies preserve binary content exactly', async () => {
       const a = await h.makeDeviceSpace();
       const b = await h.makeDeviceSpace();

@@ -120,8 +120,14 @@ export class SpaceSyncEngine {
         const pull = await this.transport.pull(space);
         if (pull.conflictCopies.length) this.onEvent({ type: 'conflict', spaceId: space.id, copies: pull.conflictCopies });
         const push = await this.transport.push(space, `sync from ${space.id}`);
+        // A rejected push recovers by pulling + retrying (a peer pushed first).
+        // Fold that recovery pull's outcome into THIS cycle's events — without
+        // it, the peer's changes land on disk with updated:false and nothing
+        // downstream (conversation materialize sweep, project discovery,
+        // conflict notice) ever reacts to them.
+        if (push.conflictCopies?.length) this.onEvent({ type: 'conflict', spaceId: space.id, copies: push.conflictCopies });
         if (push.oversize.length) this.onEvent({ type: 'oversize', spaceId: space.id, files: push.oversize });
-        this.onEvent({ type: 'synced', spaceId: space.id, pushed: push.pushed, updated: pull.updated });
+        this.onEvent({ type: 'synced', spaceId: space.id, pushed: push.pushed, updated: pull.updated || !!push.updated });
         // Post-sync maintenance (spec §7). Wrapped so a repack/probe failure can
         // NEVER break a sync — the sync already succeeded above.
         try {

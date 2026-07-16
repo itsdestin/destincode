@@ -127,9 +127,14 @@ export class GitTransport implements SyncTransport {
     const p = await this.git(space, ['push', '-u', 'origin', 'main']);
     if (p.code !== 0) {
       // Non-fast-forward: another device pushed first. Merge, then push again.
-      await this.pull(space);
+      // The recovery pull's outcome MUST be surfaced on the result: it applies
+      // the peer's changes, and discarding it made those changes invisible to
+      // the engine's event (updated:false → no materialize sweep, no discovery,
+      // no conflict notice) until some unrelated later pull — a stale-resume /
+      // forked-transcript hazard on conversations (2026-07-15 review finding).
+      const recovery = await this.pull(space);
       const retry = await this.git(space, ['push', '-u', 'origin', 'main']);
-      return { pushed: retry.code === 0, commit, oversize };
+      return { pushed: retry.code === 0, commit, oversize, updated: recovery.updated, conflictCopies: recovery.conflictCopies };
     }
     return { pushed: true, commit, oversize };
   }
@@ -145,9 +150,15 @@ export class GitTransport implements SyncTransport {
     }
     if (oversize.length) {
       await this.git(space, ['reset', '--', ...oversize]);
-      // Persist the exclusion so the watcher doesn't re-stage it every cycle.
-      fs.appendFileSync(path.join(this.gitDir(space), 'info', 'exclude'),
-        oversize.map(o => `/${o}`).join('\n') + '\n');
+      // Persist the exclusion so the watcher doesn't re-stage it every cycle —
+      // DEDUPED, because exclude only silences UNTRACKED files: a TRACKED file
+      // that grew past the cap is re-staged by `git add -A` on every sync, and
+      // an unconditional append grew info/exclude without bound at poll cadence.
+      const excludePath = path.join(this.gitDir(space), 'info', 'exclude');
+      let have = new Set<string>();
+      try { have = new Set(fs.readFileSync(excludePath, 'utf8').split('\n')); } catch { /* fresh file */ }
+      const fresh = oversize.map(o => `/${o}`).filter(line => !have.has(line));
+      if (fresh.length) fs.appendFileSync(excludePath, fresh.join('\n') + '\n');
     }
     return oversize;
   }
@@ -215,9 +226,13 @@ export class GitTransport implements SyncTransport {
     }
     const commit = await this.git(space, ['commit', '--no-edit']);
     if (commit.code !== 0) {
-      // Merge could not complete — bail out rather than leave a wedged repo.
+      // Merge could not complete — abort rather than leave a wedged repo, then
+      // THROW so the engine emits an error event (red dot + message). The old
+      // silent {updated:false} made a persistently unmergeable space look
+      // healthy while it quietly stopped converging (2026-07-15 review finding).
+      // The abort restores the pre-merge state, so the next sync retries clean.
       await this.git(space, ['merge', '--abort']);
-      return { updated: false, conflictCopies: [] };
+      throw new Error(`Sync merge could not complete for ${space.id}: ${commit.stderr.trim() || 'git commit failed'}`);
     }
     return { updated: true, conflictCopies: copies };
   }

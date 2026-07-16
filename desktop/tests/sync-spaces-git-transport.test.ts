@@ -47,6 +47,56 @@ describe('GitTransport specifics', () => {
     await h.cleanup();
   }, 30000);
 
+  it('a tracked file that grows past the cap is excluded ONCE, not re-appended every sync', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    const small = new GitTransport({ deviceName: 'T', maxFileBytes: 10 });
+    fs.writeFileSync(path.join(a.root, 'log.txt'), 'tiny'); // under cap → gets tracked
+    await small.push(a, 'small');
+    fs.writeFileSync(path.join(a.root, 'log.txt'), 'x'.repeat(11)); // grows past cap
+    const r1 = await small.push(a, 'grew');
+    expect(r1.oversize).toEqual(['log.txt']);
+    // info/exclude only silences UNTRACKED files, so `git add -A` re-stages the
+    // tracked file's growth on EVERY sync — each cycle must not re-append its
+    // exclude line (unbounded info/exclude growth at poll cadence).
+    const r2 = await small.push(a, 'again');
+    expect(r2.oversize).toEqual(['log.txt']);
+    const exclude = fs.readFileSync(path.join(a.root, '.youcoded', 'sync.git', 'info', 'exclude'), 'utf8');
+    expect(exclude.split('\n').filter(l => l === '/log.txt').length).toBe(1);
+    await h.cleanup();
+  }, 30000);
+
+  it('a merge that cannot complete surfaces an error instead of silently reporting no update', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    const b = await h.makeDeviceSpace();
+    const t = h.transport;
+    // Divergent same-file edits → the conflict-resolution path runs on pull.
+    fs.writeFileSync(path.join(a.root, 'plan.md'), 'base\n');
+    await t.push(a, 'base');
+    await t.pull(b);
+    fs.writeFileSync(path.join(a.root, 'plan.md'), 'A version\n');
+    await t.push(a, 'A edit');
+    fs.writeFileSync(path.join(b.root, 'plan.md'), 'B version\n');
+    // Force the merge-conclusion commit to fail (stands in for lock contention /
+    // disk hiccups). Silent {updated:false} here left a non-converging space
+    // LOOKING healthy — it must throw so the engine emits an error event.
+    const origGit = (t as any).git.bind(t);
+    (t as any).git = async (space: SyncSpace, args: string[]) => {
+      if (args[0] === 'commit' && args.includes('--no-edit')) return { code: 1, stdout: '', stderr: 'simulated: cannot commit' };
+      return origGit(space, args);
+    };
+    await expect(t.pull(b)).rejects.toThrow(/could not complete/i);
+    // The abort left the repo un-wedged: with git healthy again, the next pull
+    // converges normally (remote wins canonical + local kept as conflict copy).
+    (t as any).git = origGit;
+    const retry = await t.pull(b);
+    expect(retry.updated).toBe(true);
+    expect(retry.conflictCopies.length).toBe(1);
+    expect(fs.readFileSync(path.join(b.root, 'plan.md'), 'utf8')).toBe('A version\n');
+    await h.cleanup();
+  }, 30000);
+
   it('maybeGc advances the persisted counter and gc actually repacks on the Nth sync', async () => {
     const h = await makeHarness();
     const a = await h.makeDeviceSpace();

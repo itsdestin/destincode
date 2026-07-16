@@ -124,6 +124,30 @@ describe('SpaceSyncEngine', () => {
     await engine.stop();
   });
 
+  it('folds a push-retry recovery pull into the synced event (updated) and emits its conflicts', async () => {
+    const t = fakeTransport();
+    // The caller-visible pull sees nothing new; the peer's changes arrive via
+    // the PUSH's internal recovery pull (concurrent-push race). The engine must
+    // OR the flags and emit the recovery conflicts — otherwise the materialize
+    // sweep / discovery / conflict notice never fire for changes that ARE on disk.
+    (t.push as any).mockImplementation(async (s: SyncSpace) => {
+      t.pushes.push(s.id);
+      return { pushed: true, oversize: [], updated: true, conflictCopies: ['doc (from Other, 2026-07-15).md'] };
+    });
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { debounceMs: 50, pollMs: 0, onEvent: e => events.push(e) });
+    const space: SyncSpace = { id: 'personal', kind: 'personal', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    const synced = events.find(e => e.type === 'synced') as Extract<SpaceSyncEvent, { type: 'synced' }>;
+    expect(synced).toBeDefined();
+    expect(synced.updated).toBe(true);
+    const conflict = events.find(e => e.type === 'conflict') as Extract<SpaceSyncEvent, { type: 'conflict' }>;
+    expect(conflict).toBeDefined();
+    expect(conflict.copies).toEqual(['doc (from Other, 2026-07-15).md']);
+    await engine.stop();
+  });
+
   it('emits error events instead of throwing (never-block, spec §13)', async () => {
     const t = fakeTransport();
     (t.push as any).mockImplementation(async () => { throw new Error('boom'); });

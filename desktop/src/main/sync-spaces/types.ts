@@ -14,6 +14,13 @@ export interface PushResult {
   pushed: boolean;          // false when nothing changed or no remote configured
   commit?: string;          // HEAD sha after commit, when one was made
   oversize: string[];       // rel paths excluded for exceeding MAX_SYNC_FILE_BYTES
+  // Present when a rejected push ran a RECOVERY pull (a peer pushed first).
+  // That pull applies the peer's changes, so its outcome must ride the push
+  // result — swallowing it left changes on disk with no synced/updated event,
+  // so the conversation materialize sweep, project discovery, and conflict
+  // notices never fired for them (2026-07-15 review finding).
+  updated?: boolean;        // the recovery pull applied remote changes
+  conflictCopies?: string[];// conflict copies the recovery pull wrote
 }
 
 export interface PullResult {
