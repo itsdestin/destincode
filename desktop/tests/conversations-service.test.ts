@@ -193,8 +193,11 @@ describe('conversations service composition root', () => {
       projectName: 'ghost', originalPath: path.join(tmpRoot, 'nope-does-not-exist'),
       transcriptRef: 'claude/transcripts/ghost/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.jsonl',
     };
-    h.store.list.mockResolvedValue([recA, recB] as any);
+    // Set the store records AFTER start so the startup catch-up sweep (which
+    // calls store.list synchronously during startConversationStore, before this
+    // line) sees an empty list — this test isolates the SYNCED-event sweep.
     const svc = await freshService(startOpts());
+    h.store.list.mockResolvedValue([recA, recB] as any);
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut).toHaveBeenCalledTimes(1);
@@ -202,6 +205,24 @@ describe('conversations service composition root', () => {
     expect(arg.spaceTranscriptPath).toContain(recA.transcriptRef.replace(/\//g, path.sep));
     expect(arg.localJsonlPath).toContain(`${recA.id}.jsonl`);
     void svc;
+  });
+
+  // 4b — Part 1 (2026-07-13 dogfood): a catch-up sweep runs at STARTUP with no
+  // synced event, so a peer version already sitting in the local space from a
+  // previous run is materialized on launch. Records are set BEFORE start here so
+  // the synchronous startup sweep observes them.
+  it('runs a catch-up materialize sweep on startup (no synced event needed)', async () => {
+    const dir = path.join(tmpRoot, 'startup-proj');
+    fs.mkdirSync(dir, { recursive: true });
+    const rec = {
+      id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', provider: 'claude',
+      projectName: 'startup-proj', originalPath: dir,
+      transcriptRef: 'claude/transcripts/startup-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
+    };
+    h.store.list.mockResolvedValue([rec] as any);
+    await freshService(startOpts()); // startup sweep fires — no fireSync
+    await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+    expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${rec.id}.jsonl`);
   });
 
   // Review fix 1: the sweep must NEVER touch a LIVE session's transcript. A
@@ -225,8 +246,10 @@ describe('conversations service composition root', () => {
       projectName: 'idle-proj', originalPath: idleDir,
       transcriptRef: 'claude/transcripts/idle-proj/dddddddd-dddd-dddd-dddd-dddddddddddd.jsonl',
     };
-    h.store.list.mockResolvedValue([liveRec, idleRec] as any);
+    // Records set AFTER start (as in the previous test) so the startup catch-up
+    // sweep sees an empty list and this test isolates the SYNCED-event sweep.
     const svc = await freshService(startOpts());
+    h.store.list.mockResolvedValue([liveRec, idleRec] as any);
     svc.noteSessionStarted(liveRec.id, liveDir); // liveRec is a LIVE session here
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
@@ -247,9 +270,12 @@ describe('conversations service composition root', () => {
       projectName: 'ended-proj', originalPath: dir,
       transcriptRef: 'claude/transcripts/ended-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
     };
-    h.store.list.mockResolvedValue([rec] as any);
     const svc = await freshService(startOpts());
     svc.noteSessionStarted(rec.id, dir); // now LIVE → guarded
+    // Records set AFTER start + guard (as in the sweep tests above) so the
+    // startup catch-up sweep sees an empty list — this test isolates the
+    // SYNCED-event sweep and the guard-release path.
+    h.store.list.mockResolvedValue([rec] as any);
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await new Promise((r) => setTimeout(r, 20));
     expect(h.materializeOut).not.toHaveBeenCalled(); // skipped while live
