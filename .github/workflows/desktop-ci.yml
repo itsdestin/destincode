@@ -2,7 +2,11 @@ name: Desktop CI
 
 on:
   push:
-    branches: [master, 'feature/**', 'fix/**']
+    # 'feat/**' is the name this repo actually uses (feat/mascot-rig-core,
+    # feat/beta-build-channel); only 'feature/**' was listed, so those branches
+    # and their PRs got NO checks at all. That's how master stayed red from
+    # 2026-07-14 to 07-16 — 18 failing pushes — without anyone noticing.
+    branches: [master, 'feat/**', 'feature/**', 'fix/**']
   workflow_dispatch:
 
 jobs:

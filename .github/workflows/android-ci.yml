@@ -2,7 +2,9 @@ name: Android CI
 
 on:
   push:
-    branches: [master, 'feature/**', 'fix/**']
+    # Same gap as desktop-ci.yml: this repo names branches 'feat/**', which
+    # 'feature/**' does not match, so those pushes ran no Android checks either.
+    branches: [master, 'feat/**', 'feature/**', 'fix/**']
   workflow_dispatch:
 
 jobs:

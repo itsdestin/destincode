@@ -117,6 +117,16 @@ describe('GitTransport specifics', () => {
     // the gc had a real EFFECT rather than the command silently no-op'ing/failing
     // (both git() and maybeGc swallow failures, so counter-advance alone wouldn't).
     git('config', 'gc.autoPackLimit', '1');
+    // gc.autoDetach defaults to TRUE, so `git gc --auto` forks and returns
+    // immediately wherever git can daemonize() — i.e. Linux/macOS but NOT
+    // Windows. The packCount() assertion below then races the background gc and
+    // reads the pre-gc value, which is why this test passed locally on Windows
+    // and failed on every ubuntu/macos CI run from 2026-07-14 (ffd17fe5) on.
+    // Verified on Linux: with autoDetach default the count is still 2 right
+    // after gc and only drops to 1 ~2s later; with it false it's 1 immediately.
+    // Pinned here rather than in maybeGc because BACKGROUND gc is the behavior
+    // we want in production — a sync must never block on repacking.
+    git('config', 'gc.autoDetach', 'false');
     fs.writeFileSync(path.join(a.root, 'f.md'), 'v1');
     await t.push(a, 'c1');
     git('repack', '-d');                       // pack #1 (packs c1's loose objects)
