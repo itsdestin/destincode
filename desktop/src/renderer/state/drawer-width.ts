@@ -1,4 +1,3 @@
-// desktop/src/renderer/state/drawer-width.ts
 /** Artifact-drawer width preference (youcoded#105).
  *
  * The drawer's width is distributed to the layout through ONE CSS var,

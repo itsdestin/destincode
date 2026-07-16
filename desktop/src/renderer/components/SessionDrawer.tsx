@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useArtifact } from '../state/ArtifactContext';
 import { useTheme } from '../state/theme-context';
+import { clampDrawerWidth, applyDrawerWidthVar } from '../state/drawer-width';
 import { useEscClose } from '../hooks/use-esc-close';
 import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
 import { ContentFindBar } from './ContentFindBar';
@@ -82,7 +83,7 @@ function IconBtn({ name, title, onClick, active }: { name: string; title: string
 
 export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }: Props) {
   const { state, dispatch } = useArtifact();
-  const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts } = useTheme();
+  const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts, drawerWidth, setDrawerWidth, resetDrawerWidth } = useTheme();
   const allArtifacts = state.sessionArtifacts[sessionId] ?? [];
   // Drawer open/closed AND the selected artifact are per-session (remembered
   // across switches). This drawer instance belongs to `sessionId`.
@@ -417,15 +418,63 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     </>
   );
 
+  // Drag-to-resize (youcoded#105). The drawer sits on the RIGHT, so dragging
+  // the LEFT edge left grows it: width = startWidth + (startX - clientX).
+  // Live preview writes the <html> --drawer-width var once per frame (no
+  // React re-render per mousemove); pointer-up commits via setDrawerWidth
+  // (clamp + localStorage). Double-click resets to the 480px default.
+  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+  const dragRaf = useRef(0);
+  const [dragging, setDragging] = useState(false);
+
+  const onHandlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    dragState.current = { startX: e.clientX, startWidth: drawerWidth };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setDragging(true);
+  };
+  const onHandlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const s = dragState.current;
+    if (!s) return;
+    const next = clampDrawerWidth(s.startWidth + (s.startX - e.clientX), window.innerWidth);
+    cancelAnimationFrame(dragRaf.current);
+    dragRaf.current = requestAnimationFrame(() => applyDrawerWidthVar(next));
+  };
+  const onHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const s = dragState.current;
+    if (!s) return;
+    dragState.current = null;
+    setDragging(false);
+    cancelAnimationFrame(dragRaf.current);
+    setDrawerWidth(s.startWidth + (s.startX - e.clientX)); // setter clamps + persists
+  };
+
+  // Hidden while expanded — there's no width to drag in fill mode. w-1.5 is a
+  // 6px hit area hugging the drawer's left edge; the visible affordance is the
+  // hover/drag accent tint. No new backdrop-filter (react-renderer rule).
+  const resizeHandle = expanded ? null : (
+    <div
+      className={`absolute left-0 inset-y-0 w-1.5 cursor-col-resize z-10 transition-colors ${dragging ? 'bg-accent/50' : 'hover:bg-accent/30'}`}
+      title="Drag to resize · double-click to reset"
+      onPointerDown={onHandlePointerDown}
+      onPointerMove={onHandlePointerMove}
+      onPointerUp={onHandlePointerUp}
+      onPointerCancel={onHandlePointerUp}
+      onDoubleClick={resetDrawerWidth}
+    />
+  );
+
   // Expanded just fills the framed-shell content region (ChatView hides the chat
   // pane via the .drawer-expanded class) — the header/input chrome stay put.
+  // relative: positioning context for the resize handle. Width follows the
+  // same var as the parent .drawer-pane so the two can't drift (youcoded#105).
   const asideClass = expanded
-    ? 'flex-1 min-w-0 h-full flex flex-col bg-inset'
-    : 'w-[480px] h-full flex flex-col bg-inset shrink-0';
+    ? 'relative flex-1 min-w-0 h-full flex flex-col bg-inset'
+    : 'relative w-[var(--right-pane-width,480px)] h-full flex flex-col bg-inset shrink-0';
 
   // No selection → the whole drawer is the list (nothing to view yet).
   if (!active) {
-    return <aside ref={asideRef} className={asideClass}>{listInner}</aside>;
+    return <aside ref={asideRef} className={asideClass}>{resizeHandle}{listInner}</aside>;
   }
 
   const statusWord = statusInfo(active, active.status === 'deleted' || orphanIds.has(active.id));
@@ -433,6 +482,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 
   return (
     <aside ref={asideRef} className={asideClass}>
+      {resizeHandle}
       {/* top bar */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
