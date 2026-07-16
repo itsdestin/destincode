@@ -21,7 +21,13 @@ export function preserveFormat(original: string, edited: string): string {
   const hasBom = original.charCodeAt(0) === 0xfeff;
   const crlf = original.includes('\r\n');
   let out = edited;
-  if (crlf && !out.includes('\r\n')) out = out.replace(/\n/g, '\r\n');
+  // A CRLF file stays UNIFORMLY CRLF regardless of what the model puts in
+  // new_string. We normalize any \r\n back to \n first, then expand every \n —
+  // so a new_string that itself contains \r\n (or one that's pure \n) both land
+  // as clean CRLF. The old `!out.includes('\r\n')` guard skipped re-expansion
+  // whenever new_string carried even one \r\n, leaving the unchanged lines as LF
+  // (a mixed, corrupted file). Matching already happens in LF space (see execute).
+  if (crlf) out = out.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
   if (hasBom && out.charCodeAt(0) !== 0xfeff) out = '﻿' + out;
   return out;
 }

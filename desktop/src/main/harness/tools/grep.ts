@@ -39,6 +39,13 @@ export const GrepTool = defineTool({
       ctx.signal.addEventListener('abort', onAbort, { once: true });
       child.on('close', (code) => {
         ctx.signal.removeEventListener('abort', onAbort);
+        // An interrupt SIGKILLs rg → exit code null (not 2). Surface it as a
+        // cancellation like Bash does, rather than resolving the partial output
+        // as a successful search.
+        if (ctx.signal.aborted) {
+          resolve({ text: 'Canceled: the user interrupted this search.', isError: true });
+          return;
+        }
         // rg exit 1 = no matches (not an error); 2 = real error.
         if (code === 2)
           resolve({ text: `Grep failed: ${err.trim() || 'ripgrep error'}. Check the regex syntax.`, isError: true });

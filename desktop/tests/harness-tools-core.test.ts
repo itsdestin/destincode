@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ReadTool } from '../src/main/harness/tools/read';
+import { ReadTool, readSizeError, MAX_READ_BYTES } from '../src/main/harness/tools/read';
 import { WriteTool } from '../src/main/harness/tools/write';
 import { EditTool } from '../src/main/harness/tools/edit';
 import { BashTool } from '../src/main/harness/tools/bash';
@@ -74,6 +74,32 @@ describe('Read', () => {
       : path.resolve(dir, 'a.txt');
     expect(ctx.readRegistry.has(key)).toBe(true);
   });
+
+  it('size guard refuses files over MAX_READ_BYTES with an actionable message', () => {
+    // Unit-test the exact refusal branch without writing a 50 MB fixture.
+    expect(readSizeError(1000, 'small.log')).toBeNull();
+    expect(readSizeError(MAX_READ_BYTES, 'edge.log')).toBeNull();
+    const msg = readSizeError(MAX_READ_BYTES + 1, 'huge.log');
+    expect(msg).toBeTruthy();
+    expect(msg).toContain('huge.log');
+    expect(msg).toContain('limit 50 MB');
+    expect(msg).toMatch(/Grep|head\/tail/);
+  });
+
+  it('trailer line count is honest for a file ending in \\n (no phantom line)', async () => {
+    fs.writeFileSync(path.join(dir, 't.txt'), 'a\nb\nc\n'); // 3 real lines, trailing \n
+    const r = await ReadTool.execute({ file_path: 't.txt', offset: 1, limit: 2 }, ctx);
+    // 3 total, not 4 — the phantom empty split element is dropped.
+    expect(r.text).toContain('of 3 —');
+    expect(r.text).not.toContain('of 4');
+  });
+
+  it('offset past EOF returns a friendly message, not empty text', async () => {
+    fs.writeFileSync(path.join(dir, 't.txt'), 'a\nb\nc\n');
+    const r = await ReadTool.execute({ file_path: 't.txt', offset: 99 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('offset 99 is past the end of the file (3 lines)');
+  });
 });
 
 describe('Edit', () => {
@@ -139,6 +165,20 @@ describe('Edit', () => {
     const changed = r.structuredPatch!.flatMap((h) => h.lines).filter((l) => l.startsWith('+') || l.startsWith('-'));
     expect(changed.every((l) => !l.includes('\r'))).toBe(true);
     expect(changed.some((l) => l === '+X')).toBe(true);
+  });
+
+  it('keeps a CRLF file uniformly CRLF even when new_string contains \\r\\n', async () => {
+    const p = path.join(dir, 'crlf2.txt');
+    fs.writeFileSync(p, 'a\r\nb\r\nc\r\n');
+    await ReadTool.execute({ file_path: 'crlf2.txt' }, ctx);
+    // new_string carries its own \r\n — the file must not go mixed-ending.
+    const r = await EditTool.execute({ file_path: 'crlf2.txt', old_string: 'b', new_string: 'X\r\nY' }, ctx);
+    expect(r.isError).toBeFalsy();
+    const bytes = fs.readFileSync(p, 'utf8');
+    expect(bytes).toBe('a\r\nX\r\nY\r\nc\r\n');
+    // No bare LF anywhere (every \n is preceded by \r) → uniform CRLF.
+    expect(/[^\r]\n/.test(bytes)).toBe(false);
+    expect(bytes.startsWith('\n')).toBe(false);
   });
 
   it('returns non-empty structuredPatch hunks', async () => {
@@ -254,6 +294,20 @@ describe('Grep', () => {
     const r = await GrepTool.execute({ pattern: 'zzzznotpresent', output_mode: 'content' }, ctx);
     expect(r.isError).toBeFalsy();
     expect(r.text).toBe('No matches found.');
+  });
+
+  it('an aborted search surfaces a cancellation error, not partial success', async () => {
+    // Give rg a big tree so it is still running when we abort.
+    for (let i = 0; i < 200; i++) {
+      fs.writeFileSync(path.join(dir, `f${i}.txt`), Array.from({ length: 500 }, () => 'needle line here').join('\n'));
+    }
+    const ac = new AbortController();
+    const actx = makeCtx(dir, ac.signal);
+    const promise = GrepTool.execute({ pattern: 'needle', output_mode: 'content' }, actx);
+    ac.abort();
+    const r = await promise;
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/Canceled: the user interrupted this search/);
   });
 });
 
