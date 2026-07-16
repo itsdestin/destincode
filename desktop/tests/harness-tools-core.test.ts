@@ -124,6 +124,23 @@ describe('Edit', () => {
     expect(after).toContain('\r\n');
   });
 
+  it('multi-line edit on a CRLF file matches in LF space and preserves CRLF', async () => {
+    const p = path.join(dir, 'multi.txt');
+    fs.writeFileSync(p, 'a\r\nb\r\nc\r\n');
+    await ReadTool.execute({ file_path: 'multi.txt' }, ctx);
+    // old_string/new_string use \n (what the model sees in Read output) — must match
+    // despite the file's invisible \r, and the write must stay CRLF end-to-end.
+    const r = await EditTool.execute({ file_path: 'multi.txt', old_string: 'a\nb', new_string: 'a\nX\nb' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(p, 'utf8')).toBe('a\r\nX\r\nb\r\nc\r\n');
+    // Hunks reflect the one-line insertion, not a whole-file line-ending churn.
+    expect(r.structuredPatch).toBeDefined();
+    expect(r.structuredPatch!.length).toBeGreaterThan(0);
+    const changed = r.structuredPatch!.flatMap((h) => h.lines).filter((l) => l.startsWith('+') || l.startsWith('-'));
+    expect(changed.every((l) => !l.includes('\r'))).toBe(true);
+    expect(changed.some((l) => l === '+X')).toBe(true);
+  });
+
   it('returns non-empty structuredPatch hunks', async () => {
     const p = path.join(dir, 'a.txt');
     fs.writeFileSync(p, 'hello\nworld\n');

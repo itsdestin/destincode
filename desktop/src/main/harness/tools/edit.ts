@@ -54,7 +54,17 @@ export const EditTool = defineTool({
     const original = fs.readFileSync(abs, 'utf8');
     // Strip a BOM for matching so old_string anchors don't mysteriously miss at byte 0.
     const body = original.charCodeAt(0) === 0xfeff ? original.slice(1) : original;
-    const count = body.split(args.old_string).length - 1;
+    // Fix (CRLF defect): match in LF space. Read output shows LF only — the model
+    // literally cannot see (and so cannot reproduce) the invisible \r in a CRLF
+    // file, so a multi-line old_string with \n would ALWAYS miss a \r\n file and
+    // fail "old_string not found". We normalize the body to LF for matching +
+    // replacement (old_string/new_string stay literal); preserveFormat(original,…)
+    // then re-expands the all-LF result back to the file's real endings and
+    // restores the BOM. Caveat: a MIXED-endings file that still contains a \r\n
+    // after editing skips re-expansion (preserveFormat's `!out.includes('\r\n')`
+    // guard), leaving the edited region LF — acceptable, mixed files are already broken.
+    const lfBody = body.replace(/\r\n/g, '\n');
+    const count = lfBody.split(args.old_string).length - 1;
     if (count === 0)
       return {
         text: 'Edit failed: old_string not found. Re-Read the file and copy the exact text, including whitespace.',
@@ -71,11 +81,12 @@ export const EditTool = defineTool({
     // replacement string as special patterns, which would corrupt new_string. A
     // function replacer (and split/join) inserts new_string literally.
     const edited = args.replace_all
-      ? body.split(args.old_string).join(args.new_string)
-      : body.replace(args.old_string, () => args.new_string);
+      ? lfBody.split(args.old_string).join(args.new_string)
+      : lfBody.replace(args.old_string, () => args.new_string);
     const final = preserveFormat(original, edited);
     fs.writeFileSync(abs, final);
     ctx.readRegistry.set(canonical, fs.statSync(abs).mtimeMs); // our own write stays "read"
-    return { text: `Edited ${args.file_path}.`, structuredPatch: toHunks(body, edited, args.file_path) };
+    // Diff the LF pair so hunks show only the real change, not a whole-file \r\n churn.
+    return { text: `Edited ${args.file_path}.`, structuredPatch: toHunks(lfBody, edited, args.file_path) };
   },
 });
