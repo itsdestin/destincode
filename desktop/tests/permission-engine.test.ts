@@ -42,6 +42,14 @@ describe('decidePermission', () => {
   it('unknown tool with no matching rule defaults to ask (never silent-allow)', () => {
     expect(decidePermission('Mystery', undefined, { presetRules: [], modeRules: [], denyList: [], rememberedRules: [] }).action).toBe('ask');
   });
+  it('mode layer overrides preset layer (preset allow, mode ask → ask)', () => {
+    const d = decidePermission('Edit', 'src/a.ts', {
+      presetRules: [{ tool: 'Edit', action: 'allow' }],
+      modeRules: [{ tool: 'Edit', action: 'ask' }],
+      denyList: [], rememberedRules: [],
+    });
+    expect(d.action).toBe('ask');
+  });
 
   // Extra torture cases pinning the semantics table (cheap, obviously correct):
   it('a remembered deny rule wins over a mode allow', () => {

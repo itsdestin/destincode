@@ -5,6 +5,10 @@
 // final word — including over the deny-list, per the review-ruling tier split).
 // Tool-layer guards (secret paths, external_directory) are NOT here — they run
 // in defineTool() below all configuration and cannot be expressed as rules.
+// NOTE: `denyListed` tracks the winning rule's ORIGIN (deny-list layer) — this
+// is only safe because remembered rules are allow-originated today (the "Always
+// allow" flow persists only allow rules); a future feature persisting remembered
+// ask/deny rules must revisit this consequence-warning logic.
 import { subjectMatches } from './tools/subject-glob';
 import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
 
