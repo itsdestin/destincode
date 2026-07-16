@@ -542,24 +542,40 @@ function SearchProvidersBlock() {
     if (!key) return;
     setBusy(true);
     try {
-      // test() never throws — { ok, message } IS the result. Show the honest
-      // message either way; only persist the key when the test actually passed.
+      // testBackend() itself never throws, but the IPC channel underneath
+      // (ipcRenderer.invoke) can still reject — so can setKey below. Catch both:
+      // { ok, message } IS the logical result; a caught reject becomes an honest
+      // note too. Only persist the key when the test actually passed.
       const res = await (window as any).claude.search.test(id, key) as { ok: boolean; message: string };
-      setTestMsg((m) => ({ ...m, [id]: { ok: res.ok, text: res.message } }));
-      if (!res.ok) return; // keep the input open with the rejection message
+      if (!res.ok) {
+        setTestMsg((m) => ({ ...m, [id]: { ok: false, text: res.message } }));
+        return; // keep the input open with the rejection message
+      }
       await (window as any).claude.search.setKey(id, key);
+      // Success: the "Key saved" badge is the confirmation — drop the ok note so
+      // it doesn't linger as a redundant line under the row.
+      setTestMsg((m) => { const n = { ...m }; delete n[id]; return n; });
       setDraft('');
       setEditing(null);
       void refresh();
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, [id]: { ok: false, text: e instanceof Error ? e.message : "Couldn't reach the search service." } }));
     } finally {
       setBusy(false);
     }
   };
 
   const remove = async (id: SearchBackendId) => {
-    await (window as any).claude.search.removeKey(id);
-    setTestMsg((m) => { const n = { ...m }; delete n[id]; return n; });
-    void refresh();
+    setBusy(true);
+    try {
+      await (window as any).claude.search.removeKey(id);
+      setTestMsg((m) => { const n = { ...m }; delete n[id]; return n; });
+      void refresh();
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, [id]: { ok: false, text: e instanceof Error ? e.message : "Couldn't reach the search service." } }));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -605,15 +621,20 @@ function SearchProvidersBlock() {
                     <span className="text-[10px] font-medium text-green-600">Key saved</span>
                     <button
                       onClick={() => void remove(row.id)}
-                      className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+                      disabled={busy}
+                      className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       Remove
                     </button>
                   </div>
                 ) : !isEditing ? (
+                  // Disabled while ANY row's save/remove is in flight — otherwise
+                  // opening this editor mid-save gets clobbered when the in-flight
+                  // save resolves and clears editing/draft.
                   <button
                     onClick={() => openEditor(row.id)}
-                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
+                    disabled={busy}
+                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     Add key
                   </button>
