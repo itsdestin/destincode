@@ -17,6 +17,9 @@ export function defineTool<A>(
         const raw = await def.execute(args, ctx);
         return { ...raw, text: truncateOutput(raw.text, caps).text };
       } catch (err: any) {
+        // Abort is only surfaced here when the tool THREW — the driver (Task 9)
+        // owns interrupt semantics (it aborts the signal and stops the turn);
+        // this branch just labels an in-flight throw as a cancellation, not a bug.
         if (ctx.signal.aborted) return { text: 'Canceled: the user interrupted this operation.', isError: true };
         // Actionable error string, never a bare code (research R§3).
         return { text: `${def.name} failed: ${err?.message ?? String(err)}`, isError: true };

@@ -20,13 +20,14 @@ const SENSITIVE_SEGMENTS = new Set(['.ssh', '.gnupg', '.aws', '.azure', '.kube']
 const SENSITIVE_BASENAMES = new Set(['.netrc', '_netrc', '.credentials.json']);
 
 /** True when a basename is a dotenv file (`.env`, `.env.local`, `.env.production`,
- * …). Added for the native tool-layer path guards (Phase 2): dotenv files are the
- * single most common place project secrets (API keys, DB passwords) live, so the
- * file tools hard-deny them the same way as other credential stores. Matches the
- * exact `.env` name plus any `.env.<suffix>` variant, but NOT unrelated names that
- * merely start with the letters (e.g. `.environment`). */
+ * …) or a direnv `.envrc`. Added for the native tool-layer path guards (Phase 2):
+ * dotenv files are the single most common place project secrets (API keys, DB
+ * passwords) live, and `.envrc` (direnv) routinely holds `export SECRET=…` lines,
+ * so the file tools hard-deny them the same way as other credential stores.
+ * Matches the exact `.env` name plus any `.env.<suffix>` variant and `.envrc`, but
+ * NOT unrelated names that merely start with the letters (e.g. `.environment`). */
 function isDotenvBasename(base: string): boolean {
-  return base === '.env' || base.startsWith('.env.');
+  return base === '.env' || base === '.envrc' || base.startsWith('.env.');
 }
 
 /** `.config/gh` holds the GitHub OAuth token (hosts.yml). */

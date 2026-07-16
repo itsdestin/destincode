@@ -1,25 +1,35 @@
 // Tool-layer guards. These are NOT permission rules and no mode/preset/
 // remembered decision reaches them: secret paths hard-deny; paths outside the
 // session cwd force an 'ask' (the external_directory synthetic permission).
-// KNOWN LIMITATION (spec §2.3, accepted): Bash can still `cat .env` — these
-// guards are honest friction on the file tools, not a sandbox. PITFALLS entry
-// ships with this file (Task 13).
+// KNOWN LIMITATIONS (spec §2.3, accepted — honest friction on the file tools,
+// not a sandbox):
+//   1. Bash can still `cat .env` — these guards only gate the native file tools.
+//   2. Symlinks are NOT resolved: a link INSIDE cwd that points at ~/.ssh (or
+//      anywhere outside) passes the jail, because we canonicalize the link path
+//      lexically, not its realpath target. Deliberate — realpath would hit the
+//      fs on every call and still race (TOCTOU). PITFALLS entry ships with this
+//      file (Task 13).
 import * as path from 'path';
 import * as os from 'os';
 import { isSensitivePath, isUnderRoot } from '../../artifacts/read-binary-access';
 
-/** Canonicalize to forward slashes + lowercase drive, matching read-binary-access
- * conventions (isSensitivePath / isUnderRoot expect exactly this form: forward
- * slashes, lowercased drive letter, no trailing slash). */
+/** Canonicalize to the form isSensitivePath / isUnderRoot expect: forward
+ * slashes, lowercased drive letter, no trailing slash on the root, `..` resolved.
+ *  - path.resolve(cwd, p) ALWAYS: resolve() normalizes `..`/`.` AND ignores cwd
+ *    when p is already absolute, so a lexical `C:/proj/../../secret` collapses to
+ *    `C:/secret` instead of sneaking past the cwd jail (fix: the old isAbsolute
+ *    branch skipped normalization for absolute inputs).
+ *  - Windows is case-insensitive but the sensitive sets are all-lowercase, so we
+ *    case-fold the WHOLE path on win32 (not just the drive) — otherwise `.SSH`,
+ *    `.Env`, `.NETRC` evade the hard-deny. POSIX stays case-sensitive. */
 export function canonicalize(p: string, cwd: string): string {
-  const abs = path.isAbsolute(p) ? p : path.resolve(cwd, p);
-  let c = abs.replace(/\\/g, '/');
-  if (/^[A-Za-z]:\//.test(c)) c = c[0].toLowerCase() + c.slice(1);
-  return c;
+  const c = path.resolve(cwd, p).replace(/\\/g, '/');
+  return process.platform === 'win32' ? c.toLowerCase() : c;
 }
 
 export function resolveP(p: string, cwd: string): string {
-  return path.isAbsolute(p) ? p : path.resolve(cwd, p);
+  // Always resolve() so absolute-with-`..` inputs are normalized, not trusted.
+  return path.resolve(cwd, p);
 }
 
 export type GuardVerdict =
