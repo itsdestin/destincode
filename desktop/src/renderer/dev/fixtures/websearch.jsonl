@@ -1,0 +1,2 @@
+{"type":"tool_use","id":"toolu_01Search","name":"WebSearch","input":{"query":"latest Node.js LTS version"}}
+{"tool_use_id":"toolu_01Search","type":"tool_result","content":"Web search results for \"latest Node.js LTS version\" (via exa):\n\n1. **Node.js — Releases**\n   https://nodejs.org/en/about/previous-releases\n   Node.js 24 entered Active LTS in October 2026...\n\n2. **Node.js 24 LTS announcement**\n   https://nodejs.org/en/blog/release/v24\n   Details on the LTS line.","is_error":false}
