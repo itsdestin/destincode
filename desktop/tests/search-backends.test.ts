@@ -46,6 +46,34 @@ describe('exa backend', () => {
     await expect(exaBackend.search('q', { key: null, signal: sig(), fetchImpl: respond(body) }))
       .rejects.toThrow(/quota exhausted/i);
   });
+
+  // C1: a real MULTI-event SSE stream — a notifications/* frame BEFORE the result
+  // frame, with genuine "\n\n" event framing (newlines NOT stripped). The old
+  // parser concatenated every data: line across the whole stream and parsed once,
+  // so "{note}{result}" → JSON.parse throws → a VALID response was misreported.
+  it('extracts the result from a multi-event SSE stream (progress frame first)', async () => {
+    const resultBody = JSON.parse(fixture('exa-response.json'));
+    const noteFrame = 'event: message\ndata: ' + JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 0.5 } }) + '\n\n';
+    const resultFrame = 'event: message\ndata: ' + JSON.stringify(resultBody) + '\n\n';
+    const results = await exaBackend.search('q', { key: null, signal: sig(), fetchImpl: respond(noteFrame + resultFrame) });
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) { expect(r.url).toMatch(/^https?:/); }
+  });
+
+  // I1: an abort raised DURING body read must propagate as the original abort,
+  // not be re-labelled a parse failure.
+  it('propagates an abort raised during body read (not a SearchBackendError)', async () => {
+    const ac = new AbortController();
+    const f = (async () => {
+      ac.abort();
+      return { ok: true, status: 200, async text() { const e: any = new Error('The operation was aborted'); e.name = 'AbortError'; throw e; } } as unknown as Response;
+    }) as typeof fetch;
+    let caught: any;
+    try { await exaBackend.search('q', { key: null, signal: ac.signal, fetchImpl: f }); } catch (e) { caught = e; }
+    expect(caught).toBeDefined();
+    expect(caught).not.toBeInstanceOf(SearchBackendError);
+    expect(caught.name).toBe('AbortError');
+  });
 });
 
 describe('ddg backend', () => {
@@ -74,6 +102,23 @@ describe('ddg backend', () => {
     expect(decoded!.title).not.toContain('&amp;');   // named entity decoded
     for (const r of results) { expect(r.title).not.toContain('<b>'); } // tags stripped
   });
+
+  // I2: an untrusted numeric entity past the Unicode ceiling (0x10FFFF) must not
+  // escape as a raw RangeError — the decoder leaves it literal and keeps going.
+  it('does not throw on an out-of-range numeric entity', async () => {
+    const html = '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&amp;rut=x">Bad &#x110000; and &#99999999; entity</a>';
+    const results = await ddgBackend.search('q', { key: null, signal: sig(), fetchImpl: respond(html) });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].url).toBe('https://example.com');
+  });
+
+  // I3: some DDG variants return a DIRECT href (no uddg wrapper). It must be
+  // returned, not silently dropped into a fake "no results" empty list.
+  it('returns direct (non-uddg) hrefs instead of dropping them', async () => {
+    const html = '<a class="result__a" href="https://direct.example/page">Direct result</a>';
+    const results = await ddgBackend.search('q', { key: null, signal: sig(), fetchImpl: respond(html) });
+    expect(results.map((r) => r.url)).toContain('https://direct.example/page');
+  });
 });
 
 describe('tavily backend', () => {
@@ -88,5 +133,20 @@ describe('tavily backend', () => {
   it('401 → key-rejected error', async () => {
     await expect(tavilyBackend.search('q', { key: 'bad', signal: sig(), fetchImpl: respond('', { status: 401 }) }))
       .rejects.toThrow(/key|rejected|unauthorized/i);
+  });
+
+  // I1: an abort raised DURING body read must propagate as the original abort,
+  // not be re-labelled a parse failure.
+  it('propagates an abort raised during body read (not a SearchBackendError)', async () => {
+    const ac = new AbortController();
+    const f = (async () => {
+      ac.abort();
+      return { ok: true, status: 200, async json() { const e: any = new Error('The operation was aborted'); e.name = 'AbortError'; throw e; } } as unknown as Response;
+    }) as typeof fetch;
+    let caught: any;
+    try { await tavilyBackend.search('q', { key: 'tvly-x', signal: ac.signal, fetchImpl: f }); } catch (e) { caught = e; }
+    expect(caught).toBeDefined();
+    expect(caught).not.toBeInstanceOf(SearchBackendError);
+    expect(caught.name).toBe('AbortError');
   });
 });

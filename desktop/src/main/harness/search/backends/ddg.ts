@@ -18,6 +18,15 @@ import { SearchBackend, SearchBackendError, SearchResult } from './types';
 const HOST = 'html.duckduckgo.com';
 const MAX_RESULTS = 8;
 
+// Convert a numeric code point to a character, but ONLY if it's a valid Unicode
+// scalar. WHY: the HTML is untrusted — a title with "&#x110000;" or "&#99999999;"
+// would make String.fromCodePoint throw a raw RangeError that escapes search()
+// and bypasses the SearchBackendError contract. On out-of-range we leave the
+// original entity text untouched rather than crash the last-resort backend.
+function codePointToChar(literal: string, cp: number): string {
+  return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : literal;
+}
+
 // Decode the small set of HTML entities DDG emits, plus generic numeric refs.
 // &amp; is decoded LAST so an already-decoded "&" is never re-interpreted.
 function decodeEntities(s: string): string {
@@ -25,8 +34,8 @@ function decodeEntities(s: string): string {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => codePointToChar(m, parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (m, d) => codePointToChar(m, parseInt(d, 10)))
     .replace(/&amp;/g, '&');
 }
 
@@ -39,6 +48,7 @@ function cleanText(html: string): string {
 // Turn a DDG redirect href into the real destination URL, or null if it isn't a
 // wrapper we recognise. The href looks like
 //   //duckduckgo.com/l/?uddg=<encoded target>&amp;rut=<hash>
+// or a direct http(s) URL when DDG omits the wrapper entirely.
 function resolveRedirect(rawHref: string): string | null {
   // HTML-unescape first so "&amp;" becomes a real "&" query separator.
   const href = decodeEntities(rawHref);
@@ -47,8 +57,12 @@ function resolveRedirect(rawHref: string): string | null {
     const target = new URL(href.startsWith('//') ? `https:${href}` : href).searchParams.get('uddg');
     if (target && /^https?:/i.test(target)) return target;
   } catch {
-    /* not a parseable URL — fall through to null */
+    /* not a parseable URL — fall through */
   }
+  // Some DDG variants return a DIRECT link with no uddg wrapper. Don't drop it —
+  // dropping every anchor while anchors EXIST would return [] (a fake "no
+  // results") because the markup-drift guard never fires.
+  if (/^https?:\/\//i.test(href)) return href;
   return null;
 }
 

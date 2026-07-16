@@ -44,8 +44,11 @@ export const tavilyBackend: SearchBackend = {
 
     let body: any;
     try {
+      // res.json() is inside the try too: a timeout/cancel DURING the body read
+      // surfaces here, and must propagate as the abort — not a parse failure.
       body = await res.json();
-    } catch {
+    } catch (err) {
+      if (signal.aborted || (err as { name?: string })?.name === 'AbortError') throw err;
       throw new SearchBackendError('Tavily returned a response this app could not parse.');
     }
 
@@ -55,11 +58,11 @@ export const tavilyBackend: SearchBackend = {
       // Defensive: skip any row without a usable URL rather than emit a broken
       // result. `content` is the snippet when present.
       if (!row?.url || typeof row.url !== 'string') continue;
-      results.push({
-        title: typeof row.title === 'string' ? row.title : row.url,
-        url: row.url,
-        ...(typeof row.content === 'string' && row.content ? { snippet: row.content } : {}),
-      });
+      // Fall back to the URL when the title is missing OR blank; trim both so a
+      // whitespace-only field never ships as content.
+      const title = (typeof row.title === 'string' ? row.title.trim() : '') || row.url;
+      const snippet = typeof row.content === 'string' ? row.content.trim() : '';
+      results.push({ title, url: row.url, ...(snippet ? { snippet } : {}) });
       if (results.length >= MAX_RESULTS) break;
     }
     return results;

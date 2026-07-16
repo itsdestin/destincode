@@ -25,18 +25,37 @@ const ENDPOINT = 'https://mcp.exa.ai/mcp';
 const HOST = 'mcp.exa.ai';
 const MAX_RESULTS = 8;
 
-// Streamable-HTTP MCP responses arrive as plain JSON or as an SSE frame. Try a
-// plain JSON.parse first; otherwise concatenate the `data:` lines and parse
-// those. Mirrors parseBody() in test-search/probe-exa.mjs so drift is visible.
+// Streamable-HTTP MCP responses arrive as plain JSON or as an SSE stream. A
+// stream can carry MORE THAN ONE event (e.g. a progress/notification frame
+// before the result frame) — we must NOT concatenate every data: line and parse
+// once, or a legal multi-event response corrupts into "{...}{...}" and throws.
+// Instead: split on blank-line event boundaries; within one event join its
+// data: lines with "\n" (SSE spec); parse each event independently; return the
+// LAST event whose data is a JSON-RPC response carrying `result` or `error`.
+// Frames that parse to neither (bare notifications) are ignored. Mirrors
+// parseBody() in test-search/probe-exa.mjs.
 function parseBody(text: string): any {
   const t = text.trim();
   if (t.startsWith('{') || t.startsWith('[')) return JSON.parse(t);
-  const data = t
-    .split('\n')
-    .filter((l) => l.startsWith('data:'))
-    .map((l) => l.slice(5).trim())
-    .join('');
-  return JSON.parse(data);
+  let selected: any = null;
+  for (const event of t.split(/\r?\n\r?\n/)) {
+    // Join this event's data: lines with "\n" and strip one optional leading
+    // space per the SSE field-value rule (don't trim — that could corrupt a
+    // multi-line JSON string value).
+    const data = event
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => l.slice(5).replace(/^ /, ''))
+      .join('\n');
+    if (!data) continue;
+    let parsed: any;
+    try { parsed = JSON.parse(data); } catch { continue; } // not JSON — skip this frame
+    if (parsed && (Object.prototype.hasOwnProperty.call(parsed, 'result') || Object.prototype.hasOwnProperty.call(parsed, 'error'))) {
+      selected = parsed; // keep the last response frame in the stream
+    }
+  }
+  if (selected === null) throw new Error('no JSON-RPC response frame found in the SSE stream');
+  return selected;
 }
 
 // Scrape the plain-text result block into structured records. We only need the
@@ -89,8 +108,11 @@ export const exaBackend: SearchBackend = {
 
     let body: any;
     try {
+      // res.text() is inside the try too: a timeout/cancel DURING the body read
+      // surfaces here, and must propagate as the abort — not a parse failure.
       body = parseBody(await res.text());
-    } catch {
+    } catch (err) {
+      if (signal.aborted || (err as { name?: string })?.name === 'AbortError') throw err;
       throw new SearchBackendError('Exa returned a response this app could not parse.');
     }
 
