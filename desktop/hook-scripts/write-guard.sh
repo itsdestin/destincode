@@ -126,6 +126,13 @@ fi
 
 echo "$(date): WRITE BLOCKED: '$FILE_PATH' last modified by PID $REG_PID at $WRITE_TIME — blocking write from PID $PPID ($BLOCK_REASON)" >> "$LOG"
 
-# Exit non-zero to block the write, with message for Claude session
-echo "WRITE BLOCKED: $(basename "$FILE_PATH") was last modified by $BLOCK_REASON (PID $REG_PID) at $WRITE_TIME. Re-read the file to see the current version, then retry your edit."
-exit 1
+# Exit code 2 is Claude Code's PreToolUse BLOCKING contract: stderr is fed
+# back to Claude and the tool call is denied. The previous version exited 1
+# with the message on stdout — CC treats non-2 exit codes as NON-blocking,
+# so the "block" was a no-op and the write went through in every permission
+# mode. Verified empirically against CC v2.1.211 on 2026-07-15 (sandboxed
+# `claude -p` probes, incl. --dangerously-skip-permissions): exit 1 + stdout
+# → write succeeds; exit 2 + stderr → write blocked and Claude receives the
+# message verbatim. Mirrors youcoded-core PR #119; see itsdestin/youcoded#86.
+echo "WRITE BLOCKED: $(basename "$FILE_PATH") was last modified by $BLOCK_REASON (PID $REG_PID) at $WRITE_TIME. Re-read the file to see the current version, then retry your edit." >&2
+exit 2
