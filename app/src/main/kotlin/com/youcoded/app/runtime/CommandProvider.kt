@@ -9,7 +9,12 @@ import java.io.File
 // see docs/cc-dependencies.md entry "CC built-in command list" and
 // docs/superpowers/specs/2026-04-21-command-drawer-search-commands-design.md.
 //
-// Last verified against Claude Code CLI v2.1.117 — 2026-04-21.
+// Last verified against Claude Code CLI v2.1.211 — 2026-07-15.
+//
+// Intentionally EXCLUDED (issue #85): top-level CLI subcommands are not
+// in-session slash commands, so they never belong in the CommandDrawer —
+// notably `claude project purge` (v2.1.126; destructive: deletes all CC
+// state for a project) and `claude ultrareview` (v2.1.120; CI runner).
 class CommandProvider(
   private val homeDir: File,
   private val skillProvider: LocalSkillProvider,
@@ -138,7 +143,8 @@ class CommandProvider(
       ccBuiltin("/status",          "Show session, config, and auth status"),
       ccBuiltin("/permissions",     "Manage tool permissions"),
       ccBuiltin("/memory",          "Edit CLAUDE.md memory files"),
-      ccBuiltin("/agents",          "Manage subagents"),
+      // /agents removed: CC v2.1.198 deleted the /agents wizard — the command
+      // now only prints a removal notice, so don't surface it in search.
       ccBuiltin("/mcp",             "Manage MCP servers"),
       ccBuiltin("/plugin",          "Manage plugins"),
       ccBuiltin("/hooks",           "Manage hooks"),
@@ -148,10 +154,17 @@ class CommandProvider(
       ccBuiltin("/review",          "Review a pull request"),
       ccBuiltin("/security-review", "Review pending changes for security issues"),
       ccBuiltin("/init",            "Initialize a CLAUDE.md file"),
-      ccBuiltin("/extra-usage",     "Show detailed usage data"),
+      // /extra-usage was renamed to /usage-credits in CC v2.1.144 (the old
+      // name still works as an alias); list the new canonical name only.
+      ccBuiltin("/usage-credits",   "Configure usage credits"),
       ccBuiltin("/heapdump",        "Dump a heap snapshot"),
       ccBuiltin("/insights",        "Show session insights"),
       ccBuiltin("/team-onboarding", "Team setup flow"),
+      // Added between the v2.1.117 and v2.1.211 anchors (issue #85 gap review):
+      ccBuiltin("/cd",              "Move this session to a new working directory"), // CC v2.1.169
+      ccBuiltin("/goal",            "Set a goal Claude checks before stopping"),     // CC v2.1.139
+      ccBuiltin("/reload-skills",   "Re-scan skill directories without restarting"), // CC v2.1.152
+      ccBuiltin("/scroll-speed",    "Adjust mouse wheel scroll speed"),              // CC v2.1.139
     )
 
     private fun youcoded(name: String, description: String) = JSONObject().apply {

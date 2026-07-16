@@ -1,0 +1,12 @@
+{
+  "description": "CC v2.1.126+ auto-mode red-stalled spinner, persistent case: the permission check has been stalled long enough that the glyph has not rotated for ≥30s AND the paren-wrapped counter is frozen at the same value as the prior tick (CC stops emitting progress while the check hangs). The red color itself is invisible here (ANSI-stripped input) — what the classifier keys on is the absence of cross-tick progress, which correctly yields thinking-stalled. This is the intended state for the scenario in youcoded#87: CC signals a stall, and the classifier agrees via its rotation+counter logic rather than via color.",
+  "bufferTail": [
+    "⏺ Bash(npm publish)",
+    "  ⎿  Running…",
+    "✳ Effervescing… (45s · ↓ 1.2k tokens)",
+    ""
+  ],
+  "previousSpinnerGlyph": "✳",
+  "secondsSincePreviousGlyph": 31,
+  "previousCounterSeconds": 45
+}
