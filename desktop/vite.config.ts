@@ -21,6 +21,11 @@ export default defineConfig({
   },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    // Marks non-release builds. desktop-test-build.yml sets this to 'BETA' so
+    // Settings → About reads `YouCoded v1.3.0-beta (BETA)` — a dogfood build
+    // installs over a real one and is otherwise indistinguishable. Empty for
+    // release builds, which render unchanged. See src/shared/version-line.ts.
+    __BUILD_CHANNEL__: JSON.stringify(process.env.YOUCODED_BUILD_CHANNEL ?? ''),
     __PARTYKIT_HOST__: JSON.stringify(process.env.VITE_PARTYKIT_HOST ?? null),
   },
 });
