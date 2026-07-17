@@ -51,10 +51,14 @@ export function makeOpts(over: Partial<HarnessSessionOpts>): HarnessSessionOpts 
 
 // One scripted step: optional leading text, zero+ tool calls, optional usage.
 // scriptModel turns each into ONE streamText consumption (a driver step).
+// `throwError` makes that consumption's stream surface an error part (which the
+// driver throws) — used to test the compaction fail-safe (a summary model call
+// that explodes must NOT brick the turn). A throwError step ignores text/tools.
 export interface ScriptStep {
   text?: string;
   toolCalls?: { name: string; input: unknown }[];
   usage?: { inputTokens?: number; outputTokens?: number };
+  throwError?: string;
 }
 
 // Build a fake model whose Nth doStream call replays the Nth scripted step. Once
@@ -63,6 +67,11 @@ export interface ScriptStep {
 // possibly tool-calling — step forever, so higher-level tests can't wedge.
 export function scriptModel(steps: ScriptStep[]) {
   const scripts = steps.map((s, i) => {
+    // An error step: emit a single error part (same shape the retry test uses).
+    // streamText surfaces it on fullStream AND textStream, so both the driver's
+    // consumeStep and generateSummary see the throw. doStream itself still
+    // RESOLVES cleanly, so the SDK does not retry it (the error is mid-stream).
+    if (s.throwError !== undefined) return stream({ type: 'error', error: new Error(s.throwError) });
     const chunks: any[] = [];
     if (s.text) chunks.push(...textChunks(`t${i}`, s.text));
     (s.toolCalls ?? []).forEach((tc, j) => chunks.push(toolCallChunk(`c${i}-${j}`, tc.name, tc.input)));
@@ -89,6 +98,14 @@ export interface MakeSessionOver {
   tools?: NativeTool[];
   decide?: (tool: string, subject: string | undefined) => Promise<PermissionDecision>;
   systemPrompt?: string;
+  // Subscribe to the session's transcript-event stream (each emitted event is
+  // forwarded here) — lets a test assert on the frozen emit surface directly.
+  onEvent?: (e: any) => void;
+  // Pre-fill history with ~this-many tokens of large user/assistant messages
+  // (alternating roles). The bulk is PROTECTED non-tool content, so pruning
+  // frees almost nothing — this is how a compaction test forces the SUMMARIZE
+  // branch (pruning insufficient) instead of the cheap prune-only path.
+  seedBulkHistoryTokens?: number;
 }
 
 // Construct a real HarnessSession over a scripted model. Defaults: an allow-all
@@ -111,7 +128,26 @@ export function makeSession(over: MakeSessionOver = {}): HarnessSession {
     ...(over.contextLength !== undefined ? { contextLength: over.contextLength } : {}),
     ...(over.systemPrompt ? { systemPrompt: over.systemPrompt } : {}),
   };
-  return new HarnessSession(opts, async () => model as any);
+  const session = new HarnessSession(opts, async () => model as any);
+  // Forward every transcript event to the test's listener (before any turn runs).
+  if (over.onEvent) session.on('transcript-event', over.onEvent);
+  // Seed protected bulk history so a later compaction check must SUMMARIZE.
+  if (over.seedBulkHistoryTokens && over.seedBulkHistoryTokens > 0) {
+    const filler = 'x'.repeat(4000);   // ~1000 tokens per message (chars/4)
+    const msgs: any[] = [];
+    let tokens = 0;
+    for (let i = 0; tokens < over.seedBulkHistoryTokens; i++) {
+      // Alternate roles so the history has ≥2 user-delimited turns — the summarize
+      // cut needs the 2nd-to-last user message to sit at index > 0 (starting on an
+      // assistant keeps the first seeded user off index 0). Big content per message.
+      const role = i % 2 === 0 ? 'assistant' : 'user';
+      const content = `bulk ${i} ${filler}`;
+      msgs.push({ role, content });
+      tokens += Math.ceil(content.length / 4);
+    }
+    session.seedHistory(msgs);
+  }
+  return session;
 }
 
 // Drive one user turn to completion.

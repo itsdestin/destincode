@@ -24,6 +24,7 @@ import { checkPathGuard } from './tools/guards';
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
+import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -278,6 +279,57 @@ export class HarnessSession extends EventEmitter {
     return kept;
   }
 
+  /** Compaction thresholds scaled to the model window. Big models protect ~40k
+   *  and only prune when it saves ≥20k; tiny local windows scale those down so
+   *  the trigger/prune/protect bands are actually REACHABLE in an 8k (or smaller)
+   *  window — otherwise a small model would never compact until it 400'd. */
+  private compactionConfig(): CompactionConfig {
+    const ctx = this.opts.contextLength ?? 32_768;
+    const big = ctx >= 100_000;
+    return { contextLength: ctx, triggerRatio: 0.75, protectedTokens: big ? 40_000 : Math.floor(ctx * 0.4), minPruneSavings: big ? 20_000 : Math.floor(ctx * 0.1), pruneToChars: 2000 };
+  }
+
+  /** Two-stage compaction (spec §4.4). PRUNE first (nearly lossless, shrinks the
+   *  summarize span too); if pruning can't get under budget, SUMMARIZE the condensed
+   *  span, keeping the last 2 user-delimited turns verbatim, and emit compact-summary.
+   *  FAIL-SAFE: a summary that throws or comes back empty leaves the pruned history —
+   *  fitToContext (in consumeStep) is the hard floor, so the turn never bricks. */
+  private async maybeCompact(model: LanguageModel, lastInputTokens: number): Promise<void> {
+    const cfg = this.compactionConfig();
+    const decision = planCompaction(this.history, cfg, lastInputTokens);
+    if (decision.action === 'none') return;
+    this.history = pruneToolOutputs(this.history, cfg);   // always prune first
+    if (decision.action === 'prune') return;
+    const cut = this.summarizeCutIndex();
+    if (cut <= 0) return;                                  // nothing safely condensable → pruned history stands
+    const keep = this.history.slice(cut);
+    const span = this.history.slice(0, cut);              // already pruned
+    let summary = '';
+    try { summary = await this.generateSummary(model, span); } catch { summary = ''; }
+    if (!summary.trim()) return;                          // FAIL-SAFE: no summary → leave pruned history
+    this.emitEvent('compact-summary', { text: summary }); // existing frozen event → expandable SystemMarker
+    this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
+  }
+
+  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns). */
+  private summarizeCutIndex(): number {
+    const userIdx: number[] = [];
+    this.history.forEach((m, i) => { if ((m as any).role === 'user') userIdx.push(i); });
+    return userIdx.length < 2 ? 0 : userIdx[userIdx.length - 2];
+  }
+
+  /** Model-generated summary of the condensed span. Bounds the span first so the
+   *  summary call itself can't overflow (hard-trim oldest messages until it fits ~60%
+   *  of the window). Uses textStream; the caller wraps this in try/catch (fail-safe). */
+  private async generateSummary(model: LanguageModel, span: ModelMessage[]): Promise<string> {
+    const cfg = this.compactionConfig();
+    let bounded = span;
+    while (estimateTokens(bounded) > cfg.contextLength * 0.6 && bounded.length > 1) bounded = bounded.slice(1);
+    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...bounded, { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
+    let text = ''; for await (const part of result.textStream) text += part;
+    return text.trim();
+  }
+
   async send(text: string): Promise<void> {
     // Re-entrancy guard: a non-null abort means a turn is already streaming.
     // Throw loudly rather than corrupt the single-slot turn state (see the
@@ -308,7 +360,16 @@ export class HarnessSession extends EventEmitter {
       const model = await this.modelFactory(this.binding);
       const aiTools = this.buildAiTools();       // {} when no tools → v0 chat path
 
+      // Tracks the LAST step's real input-token count (from provider usage) so
+      // the next iteration's compaction check triggers on ACTUAL context pressure
+      // rather than a chars/4 estimate. 0 on the first iteration → maybeCompact
+      // falls back to an estimate (usually well under trigger for a fresh turn).
+      let lastInputTokens = 0;
       turnLoop: while (true) {
+        // Two-stage compaction FIRST (spec §4.4) — prune, then summarize only if
+        // pruning can't get under budget. Inert (returns immediately) below the
+        // trigger, so the existing loop behavior is unchanged for normal turns.
+        await this.maybeCompact(model, lastInputTokens);
         // Reset per STEP (not per retry attempt inside withRetry): a mid-stream
         // retry after content was already emitted can cosmetically duplicate that
         // partial in a session-error's history push — accepted, since the
@@ -321,6 +382,8 @@ export class HarnessSession extends EventEmitter {
         const step = await this.withRetry(() =>
           this.consumeStep(model, aiTools, (t) => { partialAssistantText = t; }),
         );
+
+        lastInputTokens = step.usage.inputTokens;   // feed the NEXT compaction check
 
         // Accumulate this step's usage into the turn total.
         turnUsage.inputTokens += step.usage.inputTokens;
