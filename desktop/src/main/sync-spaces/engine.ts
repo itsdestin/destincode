@@ -35,7 +35,15 @@ interface SpaceState {
 // DEFAULT_IGNORES, which stays authoritative about what actually syncs. Each
 // regex means: "this directory name appears anywhere in the path, with either
 // slash style" (Windows \ or POSIX /).
-const WATCH_IGNORED = [/(^|[\\/])\.youcoded([\\/]|$)/, /(^|[\\/])node_modules([\\/]|$)/, /(^|[\\/])\.git([\\/]|$)/];
+// Lock dirs (`<file>.json.lock`) are the mkdir-based lock cas-write.ts takes
+// around every conversation/registry write — created and removed within
+// milliseconds. Watching them is pointless (always empty; git can't track an
+// empty dir) and actively harmful: on Windows chokidar racing the lock's own
+// rmdir throws `EPERM: operation not permitted, watch '…json.lock'`, which
+// surfaced to the user as a red "Couldn't sync" on a sync that was working
+// fine. Scoped to `.json.lock` — NOT bare `.lock` — so real lockfiles a user
+// syncs (Cargo.lock, Gemfile.lock, poetry.lock) still trigger an instant sync.
+const WATCH_IGNORED = [/(^|[\\/])\.youcoded([\\/]|$)/, /(^|[\\/])node_modules([\\/]|$)/, /(^|[\\/])\.git([\\/]|$)/, /\.json\.lock([\\/]|$)/];
 
 export class SpaceSyncEngine {
   private states = new Map<string, SpaceState>();

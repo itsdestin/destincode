@@ -21,6 +21,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
 import SettingsRow from './SettingsRow';
+import { latestUnresolvedError, type SyncStatusData } from './sync-dot-state';
 
 // --- Explainer content (updated for V2 multi-instance model) ---
 
@@ -699,6 +700,11 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // flag whether it resolved or failed. Used by the box's "Sync now" and "Try again".
   const runSpacesSyncNow = useCallback(() => {
     setSpacesSyncing(true);
+    // Clear the PREVIOUS attempt's error before retrying. Without this, the
+    // "Try again" button could never turn the header green again: a failure set
+    // spacesError and nothing ever cleared it, so a succeeding retry still read
+    // as "Couldn't sync". A retry that fails again re-sets it in the catch.
+    setSpacesError(null);
     void (window as any).claude.syncSpaces.syncNow()
       .catch((err: any) => setSpacesError(String(err?.message ?? err)))
       .finally(() => setSpacesSyncing(false));
@@ -831,7 +837,13 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 (Replaces the old primary section, the secondary backups block, and
                 the standalone "Back up now" row.) */}
             {(() => {
-              const engineError = [...visibleSpaceEvents].reverse().find((e: any) => e.type === 'error');
+              // An error only counts while it's UNRESOLVED — i.e. no later
+              // 'synced' for that same space. The old scan took the newest error
+              // in the never-cleared last-50 buffer, so a single transient
+              // watcher hiccup kept this header red for ~100 minutes while syncs
+              // succeeded behind it. Ordering + per-space scoping live in the
+              // pure helper the project dots already use (sync-dot-state.ts).
+              const engineError = latestUnresolvedError(spacesStatus as unknown as SyncStatusData | null);
               const errorMsg = spacesError ?? engineError?.message;
               const enabled = !!spacesStatus?.enabled;
               const githubUnauthed = !!(githubStatus && !githubStatus.authed);

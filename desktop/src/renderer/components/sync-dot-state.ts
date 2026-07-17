@@ -54,6 +54,41 @@ export function syncDotFor(folderPath: string, status: SyncStatusData | null): S
   return { color: 'green', label: 'Syncs across your devices' };
 }
 
+/**
+ * The latest 'error' event that a later successful 'synced' for the SAME space
+ * hasn't already superseded — i.e. "sync is broken right now", not "sync
+ * hiccuped once an hour ago". Returns null once every error has been followed
+ * by a success.
+ *
+ * WHY: `recentEvents` is an append-only last-50 buffer that nothing ever
+ * clears, so a naive "newest error wins" scan pins a one-off transient failure
+ * on screen (red "Couldn't sync") for ~50 events — roughly 100 minutes on the
+ * idle poll — while syncs succeed every 2 minutes behind it. A genuinely broken
+ * sync re-emits an error every cycle, so it stays surfaced.
+ *
+ * Ordering + per-space scoping mirror `latestEventFor()` above (which the
+ * project dots already use): another space's success must NEVER clear this
+ * space's error. Sentinel events ('hub-status'/'projects-changed') are excluded
+ * for free — they're neither 'error' nor 'synced'. A 'notice' is informational,
+ * not a success, so it can't clear an error either.
+ */
+export function latestUnresolvedError(
+  status: SyncStatusData | null,
+): SyncStatusData['recentEvents'][number] | null {
+  if (!status) return null;
+  const events = status.recentEvents;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type !== 'error') continue;
+    let superseded = false;
+    for (let j = i + 1; j < events.length; j++) {
+      if (events[j].type === 'synced' && events[j].spaceId === e.spaceId) { superseded = true; break; }
+    }
+    if (!superseded) return e;
+  }
+  return null;
+}
+
 /** "just now" / "N minutes ago" / "N hours ago" / null when unknown.
  *  `now` is injectable for tests. */
 export function lastSyncedLabel(spaceId: string, status: SyncStatusData | null, now: number = Date.now()): string | null {
