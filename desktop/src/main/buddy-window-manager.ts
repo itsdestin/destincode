@@ -6,7 +6,7 @@ import {
 } from './buddy-bar-geometry';
 import { BarVisibilityTracker } from './buddy-bar-visibility';
 import {
-  dockReducer, detectSnapEdge, dockPosition, FREE_DOCK, PEEK_IDLE_MS,
+  dockReducer, detectSnapEdge, dockPosition, FREE_DOCK,
   type DockState, type DockEvent, type DockEdge,
 } from './buddy-dock';
 
@@ -85,47 +85,26 @@ export class BuddyWindowManager {
   // Dock/peek state machine (spec §6) — pure reducer in buddy-dock.ts; this
   // class owns the timers, the windows, and the persistence.
   private dockState: DockState = FREE_DOCK;
-  private peekTimer: NodeJS.Timeout | null = null;
   private glideTimer: NodeJS.Timeout | null = null;
   private attentionNeeded = false;
 
   constructor(private readonly deps: BuddyWindowManagerDeps) {}
 
-  /** Renderer hover reports land here (buddy:hover-changed IPC). Hover is
-   *  also the dock 'activity' signal that slides a peeking mascot out. */
-  reportHover(source: 'mascot' | 'bar', hovering: boolean): void {
-    this.barVisibility.setHover(source, hovering);
-    if (hovering) this.dispatchDock({ type: 'activity' });
-    else this.schedulePeek();
-  }
-
-  /** Clear hover state stranded by WINDOW movement: pointerleave only fires
-   *  on pointer MOVEMENT, so repositioning the bar/mascot out from under a
-   *  stationary cursor leaves the tracker hovering forever — and a docked
-   *  buddy then never peeks. Called after main-driven moves. */
-  private reconcileHoverWithCursor(): void {
-    let cursor: Point;
-    try { cursor = screen.getCursorScreenPoint(); } catch { return; }
-    const contains = (w: BrowserWindow | null) => {
-      if (!w || w.isDestroyed()) return false;
-      const b = w.getBounds();
-      return cursor.x >= b.x && cursor.x < b.x + b.width && cursor.y >= b.y && cursor.y < b.y + b.height;
-    };
-    if (!contains(this.bar)) this.barVisibility.setHover('bar', false);
-    if (!contains(this.mascot)) this.barVisibility.setHover('mascot', false);
-    this.schedulePeek();
-  }
-
   private dispatchDock(event: DockEvent): void {
     const next = dockReducer(this.dockState, event);
-    if (next.mode === this.dockState.mode && next.edge === this.dockState.edge) {
-      this.schedulePeek(); // state unchanged, but activity resets the idle clock
-      return;
-    }
+    if (next.mode === this.dockState.mode && next.edge === this.dockState.edge) return;
     this.dockState = next;
     this.deps.setPersistedDock(next.mode === 'free' ? null : next.edge);
     this.pushMascotState();
-    this.schedulePeek();
+  }
+
+  /** Reconcile the dock with the reasons the buddy has to stay out: an open
+   *  chat, or something needing attention. Anything that changes either calls
+   *  this rather than dispatching engage/disengage itself, so the two reasons
+   *  can't fight (closing the chat while attention is pending must NOT sink him). */
+  private syncEngagement(): void {
+    const engaged = this.barVisibility.wantsVisible() || this.attentionNeeded;
+    this.dispatchDock({ type: engaged ? 'engage' : 'disengage' });
   }
 
   private pushMascotState(): void {
@@ -134,28 +113,12 @@ export class BuddyWindowManager {
     }
   }
 
-  /** (Re)arm the docked→peeking idle timer. Peek only starts when nothing is
-   *  going on: not hovered, chat closed, no attention (spec §6.2). */
-  private schedulePeek(): void {
-    if (this.peekTimer) { clearTimeout(this.peekTimer); this.peekTimer = null; }
-    if (this.dockState.mode !== 'docked') return;
-    if (this.barVisibility.isEngaged() || this.attentionNeeded) return;
-    this.peekTimer = setTimeout(() => {
-      this.peekTimer = null;
-      // Re-check: state may have changed while the timer was pending.
-      if (this.dockState.mode === 'docked' && !this.barVisibility.isEngaged() && !this.attentionNeeded) {
-        this.dispatchDock({ type: 'idle-timeout' });
-      }
-    }, PEEK_IDLE_MS);
-  }
-
   /** Called by main.ts from the attention aggregation broadcast — attention
-   *  pops a peeking buddy out (spec §6.2). */
+   *  pops a peeking buddy out and holds him there until it clears (spec §6.2). */
   setAttentionNeeded(needed: boolean): void {
     if (needed === this.attentionNeeded) return;
     this.attentionNeeded = needed;
-    if (needed) this.dispatchDock({ type: 'activity' });
-    else this.schedulePeek();
+    this.syncEngagement();
   }
 
   /** buddy:drag-ended — run snap detection against final window bounds, then
@@ -222,10 +185,7 @@ export class BuddyWindowManager {
     if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
       addLeg(this.bar, this.currentBarPosition(finalRect));
     }
-    if (legs.length === 0) {
-      this.reconcileHoverWithCursor();
-      return;
-    }
+    if (legs.length === 0) return;
 
     const t0 = Date.now();
     this.glideTimer = setInterval(() => {
@@ -243,8 +203,6 @@ export class BuddyWindowManager {
       if (t >= 1 || !alive) {
         if (this.glideTimer) clearInterval(this.glideTimer);
         this.glideTimer = null;
-        // The glide moved windows under a possibly-stationary cursor.
-        this.reconcileHoverWithCursor();
       }
     }, 16);
   }
@@ -322,11 +280,12 @@ export class BuddyWindowManager {
       const d = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
       const flush = dockPosition(savedEdge, { x: mb.x, y: mb.y }, MASCOT_SIZE, d.workArea);
       this.mascot.setPosition(Math.round(flush.x), Math.round(flush.y));
-      this.dockState = { mode: 'docked', edge: savedEdge };
+      // A buddy put away on an edge comes back put away — peeking is the
+      // resting state at an edge now, not a timer's eventual destination.
+      this.dockState = { mode: 'peeking', edge: savedEdge };
       // Renderer may not have loaded yet — replay state when it has.
       this.mascot.webContents.once('did-finish-load', () => this.pushMascotState());
       this.pushMascotState();
-      this.schedulePeek();
     }
     // Any show() clears "hidden until restart" — Settings' "Show now" is
     // just buddy.show(). Broadcast so open Settings panels update live.
@@ -350,10 +309,8 @@ export class BuddyWindowManager {
 
   hide(): void {
     // Drop tracker state silently so a torn-down buddy doesn't fire a
-    // stale visibility callback against destroyed windows. Dock timers die
-    // with the windows, but the PERSISTED dock edge stays — a dismissed
-    // buddy should come back docked.
-    if (this.peekTimer) { clearTimeout(this.peekTimer); this.peekTimer = null; }
+    // stale visibility callback against destroyed windows. The PERSISTED dock
+    // edge stays — a dismissed buddy should come back on its edge.
     if (this.glideTimer) { clearInterval(this.glideTimer); this.glideTimer = null; }
     this.dockState = FREE_DOCK;
     this.barVisibility.reset();
@@ -392,7 +349,7 @@ export class BuddyWindowManager {
         }
       }, 140);
       this.barVisibility.setChatOpen(false);
-      this.schedulePeek(); // chat closed — the docked idle clock starts now
+      this.syncEngagement(); // chat closed — sink back to peek unless attention holds him
     } else {
       // Re-anchor to current mascot position before showing — the user may
       // have dragged the mascot while the chat was hidden, and the chat
@@ -404,8 +361,9 @@ export class BuddyWindowManager {
       this.chat.show();
       this.chat.webContents.send(IPC_CHAT_STATE, { visible: true });
       this.barVisibility.setChatOpen(true);
-      // Opening the chat is dock 'activity' — a peeking mascot slides out.
-      this.dispatchDock({ type: 'activity' });
+      // Opening the chat is what actually brings a peeking buddy out — and keeps
+      // him out, unlike the hover hop.
+      this.syncEngagement();
       // chat.show() just raised the chat over the bar — put them back.
       this.raiseSatellites();
       // The chat may have had to claim space the mascot was standing in (see
@@ -538,8 +496,6 @@ export class BuddyWindowManager {
     if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
       const pos = this.currentBarPosition();
       this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
-      // The bar just moved — it may have left a stationary cursor behind.
-      this.reconcileHoverWithCursor();
     }
   }
 
@@ -618,8 +574,7 @@ export class BuddyWindowManager {
     this.chat.show();
     this.chat.focus();
     this.barVisibility.setChatOpen(true);
-    // Opening the chat is dock 'activity' — a peeking mascot slides out.
-    this.dispatchDock({ type: 'activity' });
+    this.syncEngagement();
     // setChatOpen(true) created the bar above the chat, but chat.focus() may
     // have re-raised the chat — assert the order rather than rely on timing.
     this.raiseSatellites();
@@ -663,10 +618,9 @@ export class BuddyWindowManager {
     win.on('closed', () => {
       this.chat = null;
       // FIX: an OS-closed chat (not a toggle) used to strand the action bar
-      // visible with no chat. Tell the tracker so the bar fades out (after
-      // grace) unless the user is still hovering.
+      // visible with no chat. Tell the tracker so the bar fades out.
       this.barVisibility.setChatOpen(false);
-      this.schedulePeek();
+      this.syncEngagement();
     });
   }
 }

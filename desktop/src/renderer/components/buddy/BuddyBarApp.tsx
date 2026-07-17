@@ -103,10 +103,6 @@ export function BuddyBarApp() {
       <div
         className="buddy-bar-root"
         data-visible={visible ? '1' : '0'}
-        // Hovering the bar itself pins it visible (crossing the mascot→bar
-        // gap is bridged by the tracker's grace timeout main-side).
-        onPointerEnter={() => window.claude?.buddy?.reportHover?.({ source: 'bar', hovering: true })}
-        onPointerLeave={() => window.claude?.buddy?.reportHover?.({ source: 'bar', hovering: false })}
         style={{
           width: '100vw',
           height: '100vh',

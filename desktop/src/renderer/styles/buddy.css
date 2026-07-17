@@ -387,10 +387,14 @@ body[data-mode="buddy-mascot"] .mascot-bounce {
 body[data-mode="buddy-mascot"] .mascot-sink {
   width: 100%;
   height: 100%;
-  transition: transform 380ms cubic-bezier(0.34, 1.2, 0.5, 1);
+  /* Bouncier than the original 1.2 overshoot (Destin 2026-07-17): peek is now
+     something you DO — drop him on an edge and he snaps into it — so the snap
+     wants to land with some spring rather than glide politely. The overshoot
+     carries him a little past the sink and back. */
+  transition: transform 380ms cubic-bezier(0.34, 1.5, 0.5, 1);
 }
 body[data-mode="buddy-mascot"] .mascot-lean {
-  transition: rotate 380ms cubic-bezier(0.34, 1.2, 0.5, 1);
+  transition: rotate 380ms cubic-bezier(0.34, 1.5, 0.5, 1);
 }
 body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="bottom"] { transform: translateY(45%); }
 body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="top"] { transform: translateY(-45%); }

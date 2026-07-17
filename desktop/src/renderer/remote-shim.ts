@@ -1365,10 +1365,9 @@ export function installShim(): void {
       moveMascot: (_t: { targetX: number; targetY: number }) => { /* desktop-only */ },
       onAttentionSummary: () => () => { /* no-op unsubscribe */ },
       // ── Buddy upgrades — same desktop-only contract as the methods above.
-      // reportHover/dragEnded are no-ops (not throws): they fire from pointer
-      // handlers and throwing would spam the console if a buddy surface ever
-      // loaded remote-shim. The on* listeners return no-op unsubscribers.
-      reportHover: (_p: { source: 'mascot' | 'bar'; hovering: boolean }) => { /* desktop-only */ },
+      // dragEnded is a no-op (not a throw): it fires from a pointer handler and
+      // throwing would spam the console if a buddy surface ever loaded
+      // remote-shim. The on* listeners return no-op unsubscribers.
       dragEnded: () => { /* desktop-only */ },
       openMain: () => { throw new Error('Buddy is desktop-only in this version'); },
       dismiss: () => { throw new Error('Buddy is desktop-only in this version'); },

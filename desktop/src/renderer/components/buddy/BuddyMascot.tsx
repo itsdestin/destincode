@@ -10,6 +10,10 @@ const DRAG_THRESHOLD_PX = 4;
 // the limb springs (spec §5: k = 80/size × 2.4) so trailing feels identical
 // at any render size (the buddy renders at 112px since the 2026-07-16 bump).
 const DRAG_VELOCITY_GAIN = (80 / 112) * 2.4;
+// Hover-hop dwell. The sink transition is 380ms each way, so this leaves him
+// fully out for a beat before he sinks back — long enough to read as a peek-a-boo
+// rather than a glitch, short enough to still read as "immediately" (Destin).
+const HOP_MS = 700;
 
 // Pointer-driven drag state. Anchor-based: we capture the cursor's offset
 // inside the 80×80 mascot at pointerdown (grabOffsetX/Y from e.clientX/Y)
@@ -52,6 +56,13 @@ export function BuddyMascot() {
   // Swing-out whip (spec §6.2): leaving a SIDE peek releases the −/+75° lean
   // through a short overshoot past vertical before settling at 0.
   const [swing, setSwing] = useState<'left' | 'right' | null>(null);
+  const swingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const triggerSwing = useCallback((edge: 'left' | 'right') => {
+    setSwing(edge);
+    // Whip past vertical for ~230ms, then let the rotate transition settle to 0.
+    if (swingTimerRef.current) clearTimeout(swingTimerRef.current);
+    swingTimerRef.current = setTimeout(() => setSwing(null), 230);
+  }, []);
   const prevDockRef = useRef<MascotDockState>({ mode: 'free', edge: null });
   useEffect(() => {
     const off = window.claude?.buddy?.onMascotState?.((s: MascotDockState) => {
@@ -61,13 +72,33 @@ export function BuddyMascot() {
         prev.mode === 'peeking' && (prev.edge === 'left' || prev.edge === 'right') &&
         s.mode !== 'peeking'
       ) {
-        setSwing(prev.edge as 'left' | 'right');
-        // Whip past vertical for ~230ms, then let the rotate transition settle to 0.
-        setTimeout(() => setSwing(null), 230);
+        triggerSwing(prev.edge as 'left' | 'right');
       }
       setDock(s);
     });
     return off;
+  }, [triggerSwing]);
+
+  // Hover hop (Destin 2026-07-17): hovering a peeking buddy pops him out for a
+  // beat and then he sinks straight back — an acknowledgement, not a mode
+  // change, which is why it lives here and not in the dock reducer. Only a
+  // CLICK brings him out for real (it opens the chat, which engages the dock
+  // main-side). Peek itself is now entered by dropping him on an edge; there is
+  // no idle timer any more.
+  const [hopping, setHopping] = useState(false);
+  const hopTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const onPointerEnter = useCallback(() => {
+    if (dock.mode !== 'peeking') return;
+    if (dock.edge === 'left' || dock.edge === 'right') triggerSwing(dock.edge);
+    setHopping(true);
+    if (hopTimerRef.current) clearTimeout(hopTimerRef.current);
+    hopTimerRef.current = setTimeout(() => setHopping(false), HOP_MS);
+  }, [dock.mode, dock.edge, triggerSwing]);
+  // Any dock change ends a hop — he's somewhere else now.
+  useEffect(() => { setHopping(false); }, [dock.mode, dock.edge]);
+  useEffect(() => () => {
+    if (hopTimerRef.current) clearTimeout(hopTimerRef.current);
+    if (swingTimerRef.current) clearTimeout(swingTimerRef.current);
   }, []);
 
   // Attention bounce: retrigger the CSS animation each time attention flips on.
@@ -76,12 +107,16 @@ export function BuddyMascot() {
 
   const [grabbed, setGrabbed] = useState(false);
 
-  const sidePeek = dock.mode === 'peeking' && (dock.edge === 'left' || dock.edge === 'right');
+  // A hop temporarily renders him as if he were docked: sink released, peek
+  // pose dropped, grip mittens gone. Everything downstream reads `peeking`
+  // rather than dock.mode so the three can't disagree mid-hop.
+  const peeking = dock.mode === 'peeking' && !hopping;
+  const sidePeek = peeking && (dock.edge === 'left' || dock.edge === 'right');
   // Resting = 'idle' (open-eyed welcome face); the rig-authored chevron-eye
   // face lives in 'pressed', shown only while held (Destin 2026-07-16).
   const pose: PoseName = attention
     ? 'shocked'
-    : dock.mode === 'peeking'
+    : peeking
       ? (dock.edge === 'left' ? 'peek-left' : dock.edge === 'right' ? 'peek-right' : 'peek')
       : grabbed
         ? 'pressed'
@@ -217,7 +252,7 @@ export function BuddyMascot() {
         // Flat art has no rig-root idle loop — it breathes at the wrapper.
         // Rigs breathe internally (MascotRig motion-style loop); double-
         // breathing would compound the translate.
-        !useRig && !reducedEffects && !grabbed && dock.mode !== 'peeking' ? 'mascot-breathing' : '',
+        !useRig && !reducedEffects && !grabbed && !peeking ? 'mascot-breathing' : '',
       ].filter(Boolean).join(' ')}
       style={{
         // 112px window (main.ts buddyDimensions) — sized up 40% per Destin.
@@ -240,18 +275,14 @@ export function BuddyMascot() {
       onPointerUp={onPointerUp}
       onLostPointerCapture={onLostPointerCapture}
       onPointerCancel={onPointerCancel}
-      // Hover reveals the action bar: main coalesces mascot+bar hover with a
-      // grace timeout (BarVisibilityTracker) to decide bar visibility. It's
-      // also the dock 'activity' signal that slides a peeking mascot out.
-      onPointerEnter={() => window.claude?.buddy?.reportHover?.({ source: 'mascot', hovering: true })}
-      onPointerLeave={() => window.claude?.buddy?.reportHover?.({ source: 'mascot', hovering: false })}
+      onPointerEnter={onPointerEnter}
     >
       {/* Sink layer: dock/peek transforms + the side-peek lean (independent
           `rotate` so it composes with the wrapper's hover/grab `scale` and
           the flat-art breathing `translate`). data-attrs → buddy.css. */}
       <div
         className="mascot-sink"
-        data-dock-mode={dock.mode}
+        data-dock-mode={peeking ? 'peeking' : dock.mode}
         data-dock-edge={dock.edge ?? ''}
         data-swing={swing ?? ''}
       >
