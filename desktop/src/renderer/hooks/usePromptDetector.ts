@@ -21,6 +21,7 @@ const SETUP_PROMPT_TITLES = new Set([
   'Resume Session', // Stale session resume — lets user choose summary vs full resume
   'Usage Limit Reached', // /rate-limit-options menu — Upgrade / Stop and wait
   'Enable auto mode?', // CC v2.1.83+ first-run opt-in: 4-option auto-mode confirmation
+  'Message Flagged', // Fable 5 model-safeguard fallback — Switch model / Edit prompt and retry
 ]);
 
 // After a permission response (PERMISSION_RESPONDED/EXPIRED clears
@@ -115,16 +116,29 @@ export function usePromptDetector() {
         }
 
         if (menu.id !== lastMenuId) {
+          // A DIFFERENT menu replaced the previous one. Retire the old prompt
+          // BEFORE the recognized-title gate below can bail out: cancel its
+          // pending show timer and dismiss any already-shown prompt. Without
+          // this, a recognized prompt followed by an unrecognized menu
+          // orphaned the old timeline entry at completed:false forever —
+          // hasPendingInteraction() then blocked all chat sends with a stale
+          // "answer the prompt first" toast (seen on crash-resumed sessions,
+          // 2026-07-16). DISMISS_PROMPT is a no-op if the prompt was never
+          // shown or already completed, so dispatching unconditionally is safe.
+          const existingTimer = pendingTimerRef.current.get(sid);
+          if (existingTimer) {
+            clearTimeout(existingTimer);
+            pendingTimerRef.current.delete(sid);
+          }
+          if (lastMenuId) {
+            dispatch({ type: 'DISMISS_PROMPT', sessionId: sid, promptId: lastMenuId });
+          }
           lastMenuRef.current.set(sid, menu.id);
 
           // Only show PromptCards for known setup prompts. Permission prompts
           // and false positives (numbered lists) are skipped — hooks handle
           // permissions, and numbered lists aren't real menus.
           if (!SETUP_PROMPT_TITLES.has(menu.title)) return;
-
-          // Cancel any previous pending prompt for this session
-          const existingTimer = pendingTimerRef.current.get(sid);
-          if (existingTimer) clearTimeout(existingTimer);
 
           // Debounce: wait before showing, giving hook system time to arrive
           const timer = setTimeout(() => {

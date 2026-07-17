@@ -1,9 +1,34 @@
 const ANSI_ESCAPE = /\u001b\[[0-9;]*[a-zA-Z]/g;
 
+// Canonical title the parser assigns to CC's folder-trust prompt. Exported so
+// TrustGate can exact-match against it — a substring match on 'trust' there
+// once hijacked any prompt whose title contained the word.
+export const TRUST_PROMPT_TITLE = 'Trust This Folder?';
+
+// Every key here is matched as a bare substring against the ~10 lines of
+// terminal text ABOVE the menu — which includes arbitrary conversation output,
+// not just the prompt's own body. Keys must therefore be phrases distinctive
+// enough that normal conversation can't plausibly contain them right above a
+// menu. A single common word is never acceptable: the old 'trust' key
+// relabeled the Fable 5 model-safeguard prompt (and would relabel ANY menu)
+// whenever "trust" appeared in nearby text.
 const TITLE_OVERRIDES: Record<string, string> = {
-  'trust': 'Trust This Folder?',
-  'dark mode': 'Choose a Theme',
-  'login method': 'Select Login Method',
+  // Folder-trust prompt — anchored on its security-note body line ("Important:
+  // Only use Claude Code with files you trust. Accessing untrusted files may
+  // pose security risks"), the same line the old bare 'trust' key matched.
+  'files you trust': TRUST_PROMPT_TITLE,
+  // Model-safeguard fallback prompt (CC + Fable 5) — "This model's safeguards
+  // flagged this message…" with "Switch to <model> and continue" /
+  // "Edit prompt and retry with <model>" options. The phrase appears in every
+  // wording variant of the prompt body.
+  'safeguards flagged this message': 'Message Flagged',
+  // Theme select — anchored on its heading ("Choose the text style that looks
+  // best with your terminal"). The old 'dark mode' key was conversation-prone:
+  // any chat about dark mode above a menu relabeled it 'Choose a Theme'.
+  'text style that looks best': 'Choose a Theme',
+  // Login select — anchored on its "Select login method:" heading (the old
+  // bare 'login method' key matched conversation text too).
+  'select login method': 'Select Login Method',
   'dangerously-skip-permissions': 'Skip Permissions Warning',
   'skip all permission': 'Skip Permissions Warning',
   // Resume session prompt — shown when resuming a stale/large session

@@ -23,13 +23,27 @@ object InkSelectParser {
     // Detects a new option (has a number prefix like "1. " or "1: ")
     private val NUMBERED_PREFIX = Regex("""^\s*\d+[.:]\s+""")
 
-    // Title overrides for known prompts — keyed by lowercase keyword found in context
+    // Title overrides for known prompts — keyed by lowercase keyword found in context.
+    // Keys are matched as bare substrings against screen text that includes arbitrary
+    // conversation output, so each key must be a phrase distinctive enough that normal
+    // conversation can't contain it — a single common word is never acceptable (the old
+    // "trust" key relabeled ANY menu whenever the word appeared nearby; fixed 2026-07-16
+    // in lockstep with desktop's ink-select-parser.ts — keep the two maps in sync).
     // Note: bypass permissions prompt is handled by a hardcoded handler in ManagedSession,
     // not by the generic InkSelectParser, because it uses Enter/Esc (not arrow navigation).
     private val TITLE_OVERRIDES = mapOf(
-        "trust" to "Trust This Folder?",
-        "dark mode" to "Choose a Theme for the Terminal",
-        "login method" to "Select Login Method",
+        // Folder-trust prompt — anchored on its security-note body line ("Important:
+        // Only use Claude Code with files you trust. …"), the same line the old bare
+        // "trust" key matched.
+        "files you trust" to "Trust This Folder?",
+        // Model-safeguard fallback prompt — "This model's safeguards flagged this
+        // message…" with Switch-model / Edit-and-retry options.
+        "safeguards flagged this message" to "Message Flagged",
+        // Theme select — anchored on its heading ("Choose the text style that looks
+        // best with your terminal"); the old "dark mode" key matched conversation text.
+        "text style that looks best" to "Choose a Theme for the Terminal",
+        // Login select — anchored on its "Select login method:" heading.
+        "select login method" to "Select Login Method",
         // Resume session prompt — shown when resuming a stale/large session
         "resuming from a summary" to "Resume Session",
         // Usage-limit prompt — shown when the user hits their plan's usage cap.
@@ -158,15 +172,16 @@ object InkSelectParser {
      * First checks TITLE_OVERRIDES, then scans for the nearest question or heading.
      */
     private fun extractTitle(lines: List<String>, firstOptionLine: Int, fullText: String): String {
-        val lower = fullText.lowercase()
-
-        // Check title overrides first
-        for ((keyword, title) in TITLE_OVERRIDES) {
-            if (keyword in lower) return title
-        }
-
-        // Scan up to 10 lines above the menu for context
+        // Check title overrides against only the ~10 lines ABOVE the menu, not the
+        // full screen text — matches desktop's ink-select-parser.ts. Full-screen
+        // matching let stale content from earlier prompts (still in the buffer)
+        // relabel every subsequent menu.
         val searchStart = maxOf(0, firstOptionLine - 10)
+        val nearby = lines.subList(searchStart, firstOptionLine.coerceAtLeast(searchStart))
+            .joinToString(" ") { stripAnsi(it) }.lowercase()
+        for ((keyword, title) in TITLE_OVERRIDES) {
+            if (keyword in nearby) return title
+        }
         for (i in (firstOptionLine - 1) downTo searchStart) {
             val line = lines[i].trim()
             if (line.isEmpty()) continue
