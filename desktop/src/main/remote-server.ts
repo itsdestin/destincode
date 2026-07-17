@@ -85,7 +85,8 @@ export class RemoteServer {
   private leaseWiring: {
     client: import('./conversations/lease-client').LeaseClient;
     requester: import('./conversations/takeover').RequesterTakeoverType;
-    deviceId: string;
+    deviceId: string;  // per-INSTALL — leases only
+    machineId: string; // per-MACHINE — device-registry self-marking only
   } | null = null;
 
   constructor(
@@ -111,11 +112,13 @@ export class RemoteServer {
 
   /** Injected by ipc-handlers after main.ts builds the lease client/requester,
    *  so remote WS clients reach the SAME lease state the Electron IPC handlers
-   *  use (mirrors setNativeRuntime). deviceId marks self in list-devices. */
+   *  use (mirrors setNativeRuntime). machineId marks self in list-devices —
+   *  deviceId is the per-INSTALL lease id and must NOT be used for that. */
   setLeaseWiring(w: {
     client: import('./conversations/lease-client').LeaseClient;
     requester: import('./conversations/takeover').RequesterTakeoverType;
     deviceId: string;
+    machineId: string;
   }): void {
     this.leaseWiring = w;
   }
@@ -1586,9 +1589,11 @@ export class RemoteServer {
       // the current machine via the injected deviceId.
       case 'syncspaces:list-devices': {
         const pr = getManagedRoots()?.personalRoot;
-        const selfId = this.leaseWiring?.deviceId ?? '';
+        // machineId — must match the Electron handler exactly (ipc-channels.test.ts
+        // pins the channel pair; this is the semantic half it can't see).
+        const selfId = this.leaseWiring?.machineId ?? '';
         this.respond(client.ws, type, id,
-          pr ? readDevices(pr).map((d) => ({ ...d, self: d.id === selfId })) : []);
+          pr ? readDevices(pr).map((d) => ({ ...d, self: !!selfId && d.id === selfId })) : []);
         break;
       }
       case 'syncspaces:rename-device': {
