@@ -180,6 +180,18 @@ export interface SessionChatState {
    *  Without this, a brand-new session flashes "Model unloaded · Reload" in the
    *  race window before the eager load flips the poll to 'loading'. */
   modelEverResident: boolean;
+  /**
+   * UUIDs of transcript lines already applied to the timeline — the dedup key
+   * for the two append-prone event types (TRANSCRIPT_USER_MESSAGE and
+   * TRANSCRIPT_ASSISTANT_TEXT). A renderer-crash reload replays every session's
+   * transcript from disk WHILE the live transcript:event stream is still
+   * delivering; an event present in both streams must collapse to one entry.
+   * (tool-use/result/turn-complete are absorbed by Map.set on toolUseId and
+   * don't need this.) CC lines carry a stable uuid; native events each get a
+   * fresh randomUUID, so this never collapses distinct native streaming deltas
+   * — only a genuine replay/live overlap of the identical event.
+   */
+  seenUuids: Set<string>;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -202,6 +214,7 @@ export function createSessionChatState(): SessionChatState {
     modelInfo: null,
     modelLoadedBytes: null,
     modelEverResident: false,
+    seenUuids: new Set(),
   };
 }
 
@@ -489,6 +502,8 @@ export interface SerializedSessionChatState {
   modelInfo?: { modelId: string; sizeBytes: number | null } | null;
   modelLoadedBytes?: number | null;
   modelEverResident?: boolean;
+  // Optional so a pre-field snapshot from an older host still deserializes.
+  seenUuids?: string[];
 }
 
 export interface SerializedChatState {
@@ -519,6 +534,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         modelInfo: s.modelInfo,
         modelLoadedBytes: s.modelLoadedBytes,
         modelEverResident: s.modelEverResident,
+        seenUuids: Array.from(s.seenUuids),
       },
     ]);
   }
@@ -550,6 +566,9 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       modelInfo: ser.modelInfo ?? null,
       modelLoadedBytes: ser.modelLoadedBytes ?? null,
       modelEverResident: ser.modelEverResident ?? false,
+      // Older hosts predate seenUuids — default to an empty Set (not undefined,
+      // which would crash the reducer's .has() dedup check).
+      seenUuids: new Set(ser.seenUuids ?? []),
     });
   }
   return result;

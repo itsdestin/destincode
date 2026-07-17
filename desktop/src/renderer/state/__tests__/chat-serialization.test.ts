@@ -52,4 +52,35 @@ describe('chat state serialization', () => {
     expect(restored.attentionState).toBe('stuck');
     expect(restored.compactionPending).toEqual({ startedAt: 456, beforeContextTokens: 1000 });
   });
+
+  it('round-trips the transcript-dedup seenUuids set', () => {
+    // Remote clients hydrate from this snapshot, then keep receiving the live
+    // transcript:event broadcast — an event already baked into the snapshot
+    // could be re-delivered live, so the dedup set must cross the wire.
+    const session = createSessionChatState();
+    session.seenUuids.add('uuid-a');
+    session.seenUuids.add('uuid-b');
+    const state: ChatState = new Map([['session-a', session]]);
+
+    const viaJson = JSON.parse(JSON.stringify(serializeChatState(state)));
+    const restored = deserializeChatState(viaJson).get('session-a')!;
+
+    expect(restored.seenUuids).toBeInstanceOf(Set);
+    expect(restored.seenUuids.has('uuid-a')).toBe(true);
+    expect(restored.seenUuids.has('uuid-b')).toBe(true);
+  });
+
+  it('defaults seenUuids to an empty Set when hydrating a pre-field snapshot', () => {
+    // Older desktop hosts predate seenUuids — a snapshot without the field must
+    // deserialize to an empty Set, not undefined (which would crash .has()).
+    const legacy = { sessions: [['session-a', {
+      timeline: [], toolCalls: [], toolGroups: [], assistantTurns: [],
+      isThinking: false, streamingText: '', currentGroupId: null, currentTurnId: null,
+      lastActivityAt: 0, activeTurnToolIds: [], attentionState: 'ok',
+      errorMessage: null, lastBufferActivityAt: 0, compactionPending: null,
+    }]] } as any;
+    const restored = deserializeChatState(legacy).get('session-a')!;
+    expect(restored.seenUuids).toBeInstanceOf(Set);
+    expect(restored.seenUuids.size).toBe(0);
+  });
 });
