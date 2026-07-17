@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { useChatStateMap } from '../state/chat-context';
+import { useChatStore } from '../state/chat-context';
 import { canRetrySubmit } from '../state/pty-input-gate';
 
 // First-attempt retry threshold. After this long with the optimistic bubble
@@ -73,11 +73,9 @@ interface UseSubmitConfirmationArgs {
  * when Claude is observably idle with no prompt awaiting the user.
  */
 export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
-  const chatState = useChatStateMap();
-  // stateRef so the timer callback always reads the latest state, not the
+  // Store handle so the timer callback always reads the latest state, not the
   // snapshot from when the timer was scheduled.
-  const stateRef = useRef(chatState);
-  stateRef.current = chatState;
+  const store = useChatStore();
   // Same pattern for the active session/view inputs: timers must observe
   // current values when they fire, not the values that were live when the
   // timer was scheduled.
@@ -91,7 +89,7 @@ export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
     const info = tracked.get(messageId);
     if (!info) return;
 
-    const session = stateRef.current.get(info.sessionId);
+    const session = store.getState().get(info.sessionId);
     if (!session) {
       tracked.delete(messageId);
       return;
@@ -161,39 +159,43 @@ export function useSubmitConfirmation(args: UseSubmitConfirmationArgs) {
   }, []);
 
   // Track new pending bubbles; clean up confirmed/removed ones.
+  // Perf (tranche 1): store subscription instead of a [chatState] effect.
+  // Tracking/cleanup semantics are unchanged — only the read path moved.
   useEffect(() => {
-    const tracked = trackedRef.current;
-    const seen = new Set<string>();
-
-    for (const [sessionId, session] of chatState) {
-      // Native sessions send in-process (native:send) — no lost-byte failure
-      // mode, so never track their pending bubbles for the PTY `\r` retry.
-      // Edge: during teardown the resolver may transiently return undefined
-      // (the SessionInfo already removed while chat state lingers). undefined is
-      // treated as claude/tracked — safe by default (a bare `\r` to a dead
-      // session is a harmless no-op); a native session caught mid-teardown is a
-      // low residual risk, not a correctness bug.
-      if (argsRef.current.providerForSession?.(sessionId) === 'native') continue;
-      for (const entry of session.timeline) {
-        if (entry.kind !== 'user' || !entry.pending) continue;
-        const messageId = entry.message.id;
-        seen.add(messageId);
-        if (tracked.has(messageId)) continue;
-        tracked.set(messageId, {
-          sessionId,
-          retried: false,
-          timer: setTimeout(() => attemptRetry(messageId), RETRY_DELAY_MS),
-        });
+    const track = () => {
+      const tracked = trackedRef.current;
+      const seen = new Set<string>();
+      for (const [sessionId, session] of store.getState()) {
+        // Native sessions send in-process (native:send) — no lost-byte failure
+        // mode, so never track their pending bubbles for the PTY `\r` retry.
+        // Edge: during teardown the resolver may transiently return undefined
+        // (the SessionInfo already removed while chat state lingers). undefined is
+        // treated as claude/tracked — safe by default (a bare `\r` to a dead
+        // session is a harmless no-op); a native session caught mid-teardown is a
+        // low residual risk, not a correctness bug.
+        if (argsRef.current.providerForSession?.(sessionId) === 'native') continue;
+        for (const entry of session.timeline) {
+          if (entry.kind !== 'user' || !entry.pending) continue;
+          const messageId = entry.message.id;
+          seen.add(messageId);
+          if (tracked.has(messageId)) continue;
+          tracked.set(messageId, {
+            sessionId,
+            retried: false,
+            timer: setTimeout(() => attemptRetry(messageId), RETRY_DELAY_MS),
+          });
+        }
       }
-    }
-
-    for (const [id, info] of tracked) {
-      if (!seen.has(id)) {
-        clearTimeout(info.timer);
-        tracked.delete(id);
+      for (const [id, info] of tracked) {
+        if (!seen.has(id)) {
+          clearTimeout(info.timer);
+          tracked.delete(id);
+        }
       }
-    }
-  }, [chatState, attemptRetry]);
+    };
+    track();
+    return store.subscribeAll(track);
+  }, [store, attemptRetry]);
 
   // Clear all timers on unmount only — empty deps so this cleanup doesn't
   // fire on every chatState change (which would defeat the purpose).
