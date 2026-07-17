@@ -1104,12 +1104,11 @@ contextBridge.exposeInMainWorld('claude', {
   app: {
     restart: (): Promise<void> => ipcRenderer.invoke(IPC.APP_RESTART),
   },
-  // Native runtime — the Phase 0 seam for YouCoded's first-party harness
-  // (ships in platform roadmap Phase 1). Hard-false until then. To preview the
-  // dormant UI in dev, prefix the launch: YOUCODED_NATIVE=1 bash scripts/run-dev.sh
-  // (run-dev.sh does not set this var itself — it must come from your shell).
+  // Native runtime — YouCoded's first-party harness (platform roadmap Phase 0-2).
+  // Enabled by default as of 2026-07-16. Kill switch: YOUCODED_NATIVE=0 disables it
+  // (e.g. YOUCODED_NATIVE=0 bash scripts/run-dev.sh) if a regression needs a fast revert.
   native: {
-    supported: process.env.YOUCODED_NATIVE === '1',
+    supported: process.env.YOUCODED_NATIVE !== '0',
     // Fire-and-forget: match ipcMain.on handlers that destructure { sessionId, text } / { sessionId }.
     send: (sessionId: string, text: string) => ipcRenderer.send(IPC.NATIVE_SEND, { sessionId, text }),
     interrupt: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_INTERRUPT, { sessionId }),
