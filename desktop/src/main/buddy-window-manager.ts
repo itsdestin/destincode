@@ -6,6 +6,7 @@ import { BarVisibilityTracker } from './buddy-bar-visibility';
 // Push-channel names (kept as local consts — this module deliberately doesn't
 // import shared/types; values must match IPC.* in src/shared/types.ts).
 const IPC_BAR_STATE = 'buddy:bar-state';
+const IPC_CHAT_STATE = 'buddy:chat-state';
 
 export interface Rect { x: number; y: number; width: number; height: number; }
 export interface Point { x: number; y: number; }
@@ -168,16 +169,28 @@ export class BuddyWindowManager {
       return;
     }
     if (this.chat.isVisible()) {
-      this.chat.hide();
+      this.chatOpenIntent = false;
+      // Exit animation: cue the renderer, let the 120ms fade play, THEN hide
+      // the window. Guarded so a rapid re-toggle inside the delay can't hide
+      // a window the user just re-opened.
+      this.chat.webContents.send(IPC_CHAT_STATE, { visible: false });
+      const chatRef = this.chat;
+      setTimeout(() => {
+        if (chatRef && !chatRef.isDestroyed() && chatRef === this.chat && !this.chatOpenIntent) {
+          chatRef.hide();
+        }
+      }, 140);
       this.barVisibility.setChatOpen(false);
     } else {
       // Re-anchor to current mascot position before showing — the user may
       // have dragged the mascot while the chat was hidden, and the chat
       // should open "wherever the icon is" rather than at its stale last
       // position.
+      this.chatOpenIntent = true;
       const pos = this.computeChatAnchoredPosition();
       this.chat.setPosition(Math.round(pos.x), Math.round(pos.y));
       this.chat.show();
+      this.chat.webContents.send(IPC_CHAT_STATE, { visible: true });
       this.barVisibility.setChatOpen(true);
     }
   }
@@ -346,7 +359,13 @@ export class BuddyWindowManager {
     win.on('closed', () => { this.bar = null; });
   }
 
+  // True while the user intends the chat visible — set in the show paths,
+  // cleared in the hide path. Guards the delayed exit-animation hide()
+  // against rapid re-toggles.
+  private chatOpenIntent = false;
+
   private createChat(): void {
+    this.chatOpenIntent = true;
     // Chat is always anchored to the mascot — saved chat position was
     // intentionally dropped. User's mental model: "chat opens where my
     // buddy is." Drag the mascot, chat follows; open the chat, it's next

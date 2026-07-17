@@ -1,11 +1,22 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ThemeProvider } from '../../state/theme-context';
 import { ChatProvider } from '../../state/chat-context';
 import { BuddyChat } from './BuddyChat';
 
 export function BuddyChatApp() {
+  // Entrance/exit fade+scale (spec §5): first mount plays the entrance;
+  // buddy:chat-state pushes replay it on every re-show and play the exit
+  // before main hides the window (main delays hide() ~140ms for the fade).
+  const [phase, setPhase] = useState<'enter' | 'exit'>('enter');
+  const [replayKey, setReplayKey] = useState(0);
+
   useEffect(() => {
     document.body.setAttribute('data-mode', 'buddy-chat');
+    const off = window.claude?.buddy?.onChatState?.((s: { visible: boolean }) => {
+      if (s.visible) { setPhase('enter'); setReplayKey((k) => k + 1); }
+      else setPhase('exit');
+    });
+    return off;
   }, []);
 
   return (
@@ -15,7 +26,9 @@ export function BuddyChatApp() {
           has its own isolated React tree — it does NOT share the main window's
           ChatProvider instance. */}
       <ChatProvider>
-        <BuddyChat />
+        <div key={replayKey} className={phase === 'enter' ? 'buddy-chat-enter' : 'buddy-chat-exit'} style={{ width: '100%', height: '100%' }}>
+          <BuddyChat />
+        </div>
       </ChatProvider>
     </ThemeProvider>
   );
