@@ -258,7 +258,7 @@ export class NativeSessionHost extends EventEmitter {
    *  `profile` is accepted here so Task 6 can add a prompt variant without another
    *  signature change; this task doesn't use it yet (the session itself carries it
    *  via opts.profile). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, _profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices'> {
     return {
       tools: CORE_TOOLS,
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
@@ -273,7 +273,8 @@ export class NativeSessionHost extends EventEmitter {
       // accepted sync cost sits off the hot loop. Threading an await through here
       // would ripple through every construction site for no per-turn benefit
       // (Task 11 review ruling — the sync cost is deliberate and bounded).
-      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion }),
+      // profile.promptVariant selects the capability-steering overlay (local-small only in v1).
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant }),
     };
   }
 

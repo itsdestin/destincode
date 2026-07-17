@@ -109,3 +109,21 @@ describe('CODER_DEFAULT_BODY', () => {
     expect(CODER_DEFAULT_BODY).toContain('software project');
   });
 });
+
+describe('prompt variant overlay', () => {
+  const base = { presetBody: 'PRESET_BODY', cwd: process.cwd(), appVersion: '9.9.9' };
+
+  it('default/anthropic/gpt append nothing (byte-identical to no variant)', () => {
+    const none = assembleSystemPrompt({ ...base });
+    expect(assembleSystemPrompt({ ...base, promptVariant: 'default' })).toBe(none);
+    expect(assembleSystemPrompt({ ...base, promptVariant: 'anthropic' })).toBe(none);
+    expect(assembleSystemPrompt({ ...base, promptVariant: 'gpt' })).toBe(none);
+  });
+
+  it('local-small appends the plan-then-execute overlay AFTER the preset body', () => {
+    const p = assembleSystemPrompt({ ...base, promptVariant: 'local-small' });
+    expect(p).toContain('PRESET_BODY');
+    expect(p.indexOf('PRESET_BODY')).toBeLessThan(p.indexOf('one tool at a time'));
+    expect(p).toMatch(/TodoWrite/);
+  });
+});
