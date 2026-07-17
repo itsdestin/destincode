@@ -106,6 +106,66 @@ Uses the Local Font Access API (`queryLocalFonts()`) to enumerate all installed 
 
 The border-radius system is ready for dynamic control. Adding `--radius-*` overrides to `@theme` would make all existing `rounded-*` Tailwind classes dynamic without any component changes. Implementation: ~40 lines (CSS variables + slider + localStorage).
 
+## Mascot rig (preferred mascot format)
+
+A theme may ship `mascot.rig`: a single SVG whose named groups the app animates.
+Flat variants (`idle`/`shocked`/`welcome`) remain supported as the legacy tier
+(no limb trailing, no blink, no peek hands, no companions).
+
+**The full authoring contract, six approved skins, example rigs, and drop-in
+components live in the wecoded-themes repo: `mascots/README.md`.** Summary:
+
+- `viewBox="-3 -5 30 30"` (24x24 art box + hat/item padding). Group ids:
+  `rig-root`, `rig-body` (required), `rig-arm-left/right`, `rig-leg-left/right`,
+  `rig-tail`, six faces (`rig-face-idle/welcome/curious/shocked/dizzy/blink`),
+  slots (`slot-hat`/`slot-eyewear`/`slot-item`), `rig-hand-peek-right/left`
+  (grip mittens for the side-edge peek, `display:none` — the app clones + pins
+  them at the screen edge).
+- Draw limbs HANGING DOWN from their `data-pivot="x y"` hinge (viewBox coords;
+  default: top-center of the group's bbox). Canonical capsule pivots: arms
+  (2.5 9)/(21.5 9), legs (8.95 17)/(15.05 17), tail (19 14).
+- Faces are PAINT on a solid body, not evenodd cutouts — face groups must be
+  swappable. All but `rig-face-idle` start `style="display:none"`. The curious
+  face wraps its sparkle pupils in `<g class="pupil">` for cursor tracking.
+- Tint via `var(--rig-accent)` / `var(--rig-on-accent)` / `var(--rig-line)`
+  (always with fallbacks) — NOT `currentColor`, which renders black in the
+  legacy `<img>` path. Hardcoded identity colors are fine.
+- Don't bake static scenery into the rig — flourishes ship as scene companions
+  (below).
+- Groups may embed raster art via `<image href="data:image/...">` — painted
+  mascots can be rigged by slicing.
+- SECURITY: rigs are sanitized at load (`sanitize-rig-svg.ts`) — scripts,
+  foreignObject, `<style>`, SMIL animation tags, `on*` attributes, and external
+  URLs are stripped. Only `#refs` and `data:image/*` URLs survive.
+- Poses, springs, motion styles, blinking, and peek staging are app-defined in
+  `src/renderer/components/mascot/mascot-poses.ts` — new behaviors ship in app
+  updates and apply to every conforming rig with no re-authoring.
+- Reference implementation: `src/renderer/components/mascot/default-buddy-rig.ts`
+  (the 2.5D-soft capsule) + the reference rigs in wecoded-themes `mascots/skins/`.
+
+### Scene companions
+
+A theme may declare a TOP-LEVEL `companions` manifest array (deliberately NOT
+inside `mascot` — app versions that predate companions ignore unknown top-level
+keys, but a non-string value inside `mascot` crashes their asset resolver):
+
+```json
+"companions": [
+  { "asset": "assets/companions/sun.svg", "size": 0.435, "dx": -0.6, "dy": -0.452,
+    "stiffness": 65, "damping": 9, "float": 0.026, "floatMs": 2600 }
+]
+```
+
+All lengths are fractions of the mascot's rendered size (`size` width, optional
+`height`, `dx`/`dy` center offset, `float` bob amplitude / `floatMs` period);
+`stiffness`/`damping` tune the buddy-floater follow spring; `"ghost": true`
+marks a lag-distance after-image. Companion SVGs go through the same sanitizer
+as rigs; the app animates the class names `comp-twinkle` / `comp-spin` /
+`comp-pulse` / `comp-bob` (keyframes in `styles/mascot.css`). Today companions
+render on the welcome screen (`MascotScene`, static tier with CSS bob); the
+buddy floater's spring-follow tier is pending its window-padding redesign.
+Type: `MascotCompanion` in `src/renderer/themes/theme-types.ts`.
+
 ## Change Log
 
 - **1.0** (2026-04-02) — Initial spec. 4 themes, semantic CSS tokens, font selection, cycle configuration.
