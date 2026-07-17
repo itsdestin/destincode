@@ -1,5 +1,9 @@
 import React from 'react';
 import { useThemeMascot } from '../hooks/useThemeMascot';
+import { useTheme } from '../state/theme-context';
+import { isAndroid, isRemoteMode } from '../platform';
+import { MascotRig, type RigMotion } from './mascot/MascotRig';
+import type { PoseName } from './mascot/mascot-poses';
 import type { MascotVariant } from '../themes/theme-types';
 
 interface IconProps {
@@ -248,9 +252,54 @@ interface ThemeMascotProps {
   className?: string;
 }
 
-/** Renders a themed mascot SVG if the active theme overrides it, otherwise falls back to the default. */
+// Static motion for non-buddy surfaces — never dragging, so the rig's limb
+// springs stay parked and only the pose transforms + blink loop are active.
+const STATIC_MOTION: { current: RigMotion } = { current: { vx: 0, vy: 0, dragging: false } };
+
+// The app's four flat variants → rig pose names ('inquisitive' predates the
+// rig contract's 'curious'; same expression).
+const VARIANT_POSE: Record<MascotVariant, PoseName> = {
+  idle: 'idle',
+  welcome: 'welcome',
+  inquisitive: 'curious',
+  shocked: 'shocked',
+};
+
+/** Renders a themed mascot: the rig when the theme ships one (rig-first, spec §3.5),
+ *  else the flat variant image, else the built-in fallback glyph. */
 export function ThemeMascot({ variant, fallback: Fallback, className = 'w-6 h-6' }: ThemeMascotProps) {
+  const { activeTheme, reducedEffects } = useTheme();
   const overrideSrc = useThemeMascot(variant);
+  // Rig rendering is Electron-desktop-only for now: it fetches theme-asset://
+  // URLs, which don't exist in the Android WebView or the remote-browser shim.
+  // Those platforms keep the flat path until rig asset delivery is ported.
+  const rigSrc = !isAndroid() && !isRemoteMode() ? activeTheme?.mascot?.rig ?? null : null;
+
+  if (rigSrc) {
+    // Inline rig render — the whole reason rigs exist: the <img> path below
+    // can't resolve CSS variables (currentColor renders black) and can't
+    // swap faces. MascotRig sanitizes the SVG before inlining it.
+    return (
+      <div
+        className={className}
+        aria-hidden="true"
+        style={{
+          // Map theme tokens onto the rig tint contract (wecoded-themes
+          // mascots/README.md): --rig-accent/-on-accent/-line.
+          ['--rig-accent' as string]: 'var(--accent)',
+          ['--rig-on-accent' as string]: 'var(--on-accent)',
+          ['--rig-line' as string]: 'var(--fg)',
+        }}
+      >
+        <MascotRig
+          svgUrl={rigSrc}
+          pose={VARIANT_POSE[variant]}
+          motionRef={STATIC_MOTION}
+          reducedEffects={reducedEffects}
+        />
+      </div>
+    );
+  }
 
   if (overrideSrc) {
     return <img src={overrideSrc} className={className} alt="" aria-hidden="true" draggable={false} />;
