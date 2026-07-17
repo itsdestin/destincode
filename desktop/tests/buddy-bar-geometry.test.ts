@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   BAR_CONTENT, BAR_PADDING, BAR_GAP_PX, BAR_SIZE, CHAT_SIZE, CHAT_GAP_PX, MASCOT_SIZE,
   computeBarContentRect, computeBarPosition, computeGroupLayout, chatOffsetX,
-  mascotXRangeForChat,
+  mascotXRangeForChat, mascotInkRect,
 } from '../src/main/buddy-bar-geometry';
 
 const wa = { x: 0, y: 0, width: 1920, height: 1080 };
@@ -88,17 +88,45 @@ describe('mascotXRangeForChat', () => {
   });
 });
 
+/** Gap between the chat and the mascot's ARTWORK, which is what the eye reads. */
+const inkGap = (l: { mascot: { x: number; y: number }; chat: { x: number; y: number } }) => {
+  const ink = mascotInkRect({ ...l.mascot, ...MASCOT_SIZE });
+  return l.chat.y > l.mascot.y
+    ? l.chat.y - (ink.y + ink.height)          // chat below him
+    : ink.y - (l.chat.y + CHAT_SIZE.height);   // chat above him
+};
+
 describe('computeGroupLayout', () => {
   it('hangs the chat below the mascot when there is room, leaving him put', () => {
     const l = computeGroupLayout(mascot(600, 100), wa);
-    expect(l.chat.y).toBe(100 + 112 + CHAT_GAP_PX);
     expect(l.mascot).toEqual({ x: 600, y: 100 });
+    expect(inkGap(l)).toBe(CHAT_GAP_PX);
+    // Unchanged from the window-gap era Destin was happy with: 13 - 7px of
+    // foot padding = the old 6px window gap.
+    expect(l.chat.y).toBe(100 + 112 + 6);
   });
 
   it('flips the chat above when it would not fit below, leaving him put', () => {
     const l = computeGroupLayout(mascot(600, 900), wa);
-    expect(l.chat.y).toBe(900 - CHAT_SIZE.height - CHAT_GAP_PX);
     expect(l.mascot).toEqual({ x: 600, y: 900 });
+    expect(inkGap(l)).toBe(CHAT_GAP_PX);
+  });
+
+  // Destin 2026-07-17: the gap looked ~2x wider above him than below, because
+  // the rig's viewBox carries 5 units of headroom and only 2 of footroom.
+  it('reads the same distance from his artwork above and below', () => {
+    const below = computeGroupLayout(mascot(600, 100), wa);
+    const above = computeGroupLayout(mascot(600, 900), wa);
+    expect(inkGap(below)).toBe(inkGap(above));
+  });
+
+  it('lets the chat overlap only his transparent headroom, never his ink', () => {
+    const above = computeGroupLayout(mascot(600, 900), wa);
+    const ink = mascotInkRect({ ...above.mascot, ...MASCOT_SIZE });
+    // Chat's bottom edge crosses the window's top edge...
+    expect(above.chat.y + CHAT_SIZE.height).toBeGreaterThan(above.mascot.y);
+    // ...but stops well short of his actual head.
+    expect(above.chat.y + CHAT_SIZE.height).toBeLessThan(ink.y);
   });
 
   // The 2026-07-16 regression: on Destin's short workArea the mascot sat at
@@ -108,8 +136,9 @@ describe('computeGroupLayout', () => {
   it('never lets the chat cover the mascot, anywhere on a short workArea', () => {
     for (let y = 0; y <= SHORT_WA.height - MASCOT_SIZE.height; y += 1) {
       const l = computeGroupLayout(mascot(700, y), SHORT_WA);
+      const ink = mascotInkRect({ ...l.mascot, ...MASCOT_SIZE });
       expect(
-        rectsOverlap(l.chat, CHAT_SIZE, l.mascot, MASCOT_SIZE),
+        rectsOverlap(l.chat, CHAT_SIZE, ink, ink),
         `mascot y=${y} → mascot ${l.mascot.y}, chat ${l.chat.y}`,
       ).toBe(false);
     }
@@ -128,13 +157,10 @@ describe('computeGroupLayout', () => {
   });
 
   it('holds the pinned gap exactly when it has to push the mascot', () => {
-    // y=370 is inside the 232px homeless band on Destin's workArea.
+    // y=370 is inside the homeless band on Destin's workArea.
     const l = computeGroupLayout(mascot(1025, 370), SHORT_WA);
     expect(l.mascot.y).not.toBe(370); // he got pushed
-    const gap = l.mascot.y > l.chat.y
-      ? l.mascot.y - (l.chat.y + CHAT_SIZE.height)   // chat above
-      : l.chat.y - (l.mascot.y + MASCOT_SIZE.height); // chat below
-    expect(gap).toBe(CHAT_GAP_PX);
+    expect(inkGap(l)).toBe(CHAT_GAP_PX);
   });
 
   it('bounces the chat away from whichever edge the mascot is nearest', () => {
@@ -171,7 +197,8 @@ describe('computeGroupLayout', () => {
     const l = computeGroupLayout({ x: -1000, y: 370, width: 112, height: 112 }, wa2);
     expect(l.chat.x).toBeGreaterThanOrEqual(wa2.x);
     expect(l.chat.x + CHAT_SIZE.width).toBeLessThanOrEqual(wa2.x + wa2.width);
-    expect(rectsOverlap(l.chat, CHAT_SIZE, l.mascot, MASCOT_SIZE)).toBe(false);
+    const ink = mascotInkRect({ ...l.mascot, ...MASCOT_SIZE });
+    expect(rectsOverlap(l.chat, CHAT_SIZE, ink, ink)).toBe(false);
   });
 
   // Destin 2026-07-17: the mascot stops when the chat's right edge hits the

@@ -19,8 +19,47 @@ export const BAR_GAP_PX = 6;
 // 112 (was 80): Destin's 2026-07-16 dev test — the buddy read too small.
 export const MASCOT_SIZE: Size = { width: 112, height: 112 };
 export const CHAT_SIZE: Size = { width: 320, height: 480 };
-// Mascot↔chat gap. Was 12 — halved per Destin (2026-07-16).
-export const CHAT_GAP_PX = 6;
+
+/**
+ * The mascot ARTWORK's insets inside his window, as fractions of window height.
+ *
+ * The canonical rig uses viewBox="-3 -5 30 30" but its ink only spans y=0..23:
+ * 5 units of headroom above the head (authored so raised-arm poses like welcome
+ * and shocked have somewhere to go) and 2 below the feet. At 112px that's 18.7px
+ * of nothing above him and 7.5px below.
+ *
+ * So the window's edges are a poor proxy for where he visually ends — a 6px
+ * window gap reads as ~13px below him but ~25px above, nearly double. Gaps are
+ * therefore measured to the INK and the per-side window gap is derived
+ * (Destin 2026-07-17: "the mascot/buttons should be slightly closer to the chat
+ * window when below it").
+ */
+export const MASCOT_INK_TOP_INSET = 5 / 30;
+export const MASCOT_INK_BOTTOM_INSET = 2 / 30;
+
+/**
+ * Gap between the chat panel and the mascot's ARTWORK — NOT his window edge.
+ * 13 reproduces the old 6px window gap on the below-the-mascot side (6 + 7.5px
+ * of foot padding), which Destin was happy with; the above side now matches it
+ * instead of gaping.
+ */
+export const CHAT_GAP_PX = 13;
+
+/**
+ * The mascot's visible artwork rect. Vertical only — the horizontal insets
+ * exist too (~4px each side) but nothing needs them, and leaving the full width
+ * keeps the "chat never covers him" check conservative.
+ */
+export function mascotInkRect(mascotBounds: Rect): Rect {
+  const top = Math.round(mascotBounds.height * MASCOT_INK_TOP_INSET);
+  const bottom = Math.round(mascotBounds.height * MASCOT_INK_BOTTOM_INSET);
+  return {
+    x: mascotBounds.x,
+    y: mascotBounds.y + top,
+    width: mascotBounds.width,
+    height: mascotBounds.height - top - bottom,
+  };
+}
 
 /**
  * Where the rig's hands sit, as a fraction of the mascot window's height.
@@ -153,11 +192,20 @@ export function computeGroupLayout(mascotBounds: Rect, workArea: Rect): GroupLay
   const x = mascotX + dx;
   const mascot: Point = { x: mascotX, y: mascotBounds.y };
 
-  const belowY = mascotBounds.y + mascotBounds.height + CHAT_GAP_PX;
+  // Window-edge gaps derived per side so the gap to his ARTWORK is CHAT_GAP_PX
+  // both above and below him. gapAbove goes NEGATIVE (his headroom is ~19px of
+  // nothing), i.e. the chat's bottom edge slides over the mascot window's
+  // transparent top strip. That's safe on both counts: the mascot renders above
+  // the chat (BuddyWindowManager.raiseSatellites), and BuddyChat's root carries
+  // 12px of bottom padding, so nothing interactive lives in the overlapped strip.
+  const gapBelow = CHAT_GAP_PX - Math.round(mascotBounds.height * MASCOT_INK_BOTTOM_INSET);
+  const gapAbove = CHAT_GAP_PX - Math.round(mascotBounds.height * MASCOT_INK_TOP_INSET);
+
+  const belowY = mascotBounds.y + mascotBounds.height + gapBelow;
   if (belowY + CHAT_SIZE.height <= workArea.y + workArea.height) {
     return { mascot, chat: { x, y: belowY } };
   }
-  const aboveY = mascotBounds.y - CHAT_SIZE.height - CHAT_GAP_PX;
+  const aboveY = mascotBounds.y - CHAT_SIZE.height - gapAbove;
   if (aboveY >= workArea.y) {
     return { mascot, chat: { x, y: aboveY } };
   }
@@ -170,8 +218,8 @@ export function computeGroupLayout(mascotBounds: Rect, workArea: Rect): GroupLay
   const chatGoesAbove = roomAbove >= roomBelow;
   const chatY = chatGoesAbove ? workArea.y : workArea.y + workArea.height - CHAT_SIZE.height;
   const mascotY = chatGoesAbove
-    ? chatY + CHAT_SIZE.height + CHAT_GAP_PX
-    : chatY - CHAT_GAP_PX - mascotBounds.height;
+    ? chatY + CHAT_SIZE.height + gapAbove
+    : chatY - gapBelow - mascotBounds.height;
   const mascotSize: Size = { width: mascotBounds.width, height: mascotBounds.height };
   return {
     mascot: clampToWorkArea({ x: mascotX, y: mascotY }, mascotSize, workArea),

@@ -249,6 +249,27 @@ export class BuddyWindowManager {
     }, 16);
   }
 
+  /**
+   * Keep the buddy and his buttons ABOVE the chat panel.
+   *
+   * All three windows sit at the same 'screen-saver' always-on-top level, so
+   * their order within that band is just whoever was shown last — and every
+   * chat toggle calls chat.show(), which raises it over the bar (the bar window
+   * is created once and never hidden, so it never re-raises). You could only see
+   * it when the chat slid past during an above/below flip: the mascot stayed on
+   * top but the buttons went behind (Destin 2026-07-17).
+   *
+   * It also has to hold for the negative above-gap in computeGroupLayout, which
+   * deliberately overlaps the chat with the mascot's transparent headroom.
+   *
+   * moveTop() does not focus, so this is safe immediately after chat.show().
+   * Bar first, then the mascot, so the buddy himself ends up highest.
+   */
+  private raiseSatellites(): void {
+    if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) this.bar.moveTop();
+    if (this.mascot && !this.mascot.isDestroyed() && this.mascot.isVisible()) this.mascot.moveTop();
+  }
+
   private applyBarVisible(visible: boolean): void {
     this.barCssVisible = visible;
     if (visible) {
@@ -385,6 +406,8 @@ export class BuddyWindowManager {
       this.barVisibility.setChatOpen(true);
       // Opening the chat is dock 'activity' — a peeking mascot slides out.
       this.dispatchDock({ type: 'activity' });
+      // chat.show() just raised the chat over the bar — put them back.
+      this.raiseSatellites();
       // The chat may have had to claim space the mascot was standing in (see
       // computeGroupLayout tier 3) — glide him out to the pinned distance.
       this.glideGroup(layout.mascot);
@@ -597,6 +620,10 @@ export class BuddyWindowManager {
     this.barVisibility.setChatOpen(true);
     // Opening the chat is dock 'activity' — a peeking mascot slides out.
     this.dispatchDock({ type: 'activity' });
+    // setChatOpen(true) created the bar above the chat, but chat.focus() may
+    // have re-raised the chat — assert the order rather than rely on timing.
+    this.raiseSatellites();
+    this.glideGroup(layout.mascot);
   }
 
   private wireMascotLifecycle(win: BrowserWindow): void {
