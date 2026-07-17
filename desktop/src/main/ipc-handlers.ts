@@ -2112,7 +2112,16 @@ export function registerIpcHandlers(
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     (binding) => providerRegistry.languageModel(binding),
-    async (binding) => modelCatalog.contextLengthFor(binding, await providerRegistry.list()),
+    // Context-window sizing. For LOCAL models, prefer the engine's REAL loaded
+    // window (min of llama-server /props and the GGUF-trained max) over the
+    // catalog's configured -c — the catalog value is a guess that overflows small
+    // models. Remote/API models keep the catalog number.
+    async (binding) => {
+      const providers = await providerRegistry.list();
+      const p = providers.find((x) => x.id === binding.providerId);
+      if (p?.type === 'local-engine') return engineManager.effectiveContextWindow(binding.modelId);
+      return modelCatalog.contextLengthFor(binding, providers);
+    },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
