@@ -51,6 +51,31 @@ describe('SpaceSyncEngine', () => {
     await engine.stop();
   });
 
+  it('ignores the ephemeral *.json.lock dirs cas-write creates', async () => {
+    const t = fakeTransport();
+    const engine = new SpaceSyncEngine(t, { debounceMs: 100, pollMs: 0, onEvent: () => {} });
+    await engine.addSpace({ id: 'personal', kind: 'personal', root: tmp });
+    // cas-write.ts takes a mkdir-based lock (`<file>.json.lock`) around every
+    // conversation/registry write and removes it milliseconds later. Chokidar
+    // racing that rmdir on Windows throws EPERM, which surfaced to the user as
+    // a red "Couldn't sync" on a sync that was working fine.
+    fs.mkdirSync(path.join(tmp, 'e4b946bb-f310-4499-b677-e6c890453ca5.json.lock'), { recursive: true });
+    await new Promise(r => setTimeout(r, 500));
+    expect(t.pushes.length).toBe(0);
+    await engine.stop();
+  });
+
+  it('still syncs real lockfiles a user keeps in a project (Cargo.lock)', async () => {
+    const t = fakeTransport();
+    const engine = new SpaceSyncEngine(t, { debounceMs: 100, pollMs: 0, onEvent: () => {} });
+    await engine.addSpace({ id: 'project:x', kind: 'project', root: tmp });
+    // The lock-dir ignore is scoped to `.json.lock` precisely so real lockfiles
+    // (Cargo.lock, Gemfile.lock, poetry.lock) keep triggering an instant sync.
+    fs.writeFileSync(path.join(tmp, 'Cargo.lock'), 'x');
+    await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: 5000 });
+    await engine.stop();
+  });
+
   it('poll timer pulls without local changes', async () => {
     const t = fakeTransport();
     const engine = new SpaceSyncEngine(t, { debounceMs: 5000, pollMs: 120, onEvent: () => {} });
