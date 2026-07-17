@@ -1,6 +1,6 @@
 // desktop/tests/sync-dot-state.test.ts
 import { describe, it, expect } from 'vitest';
-import { syncDotFor, findSpaceFor, lastSyncedLabel, type SyncStatusData } from '../src/renderer/components/sync-dot-state';
+import { syncDotFor, findSpaceFor, lastSyncedLabel, latestUnresolvedError, type SyncStatusData } from '../src/renderer/components/sync-dot-state';
 
 const status = (over: Partial<SyncStatusData> = {}): SyncStatusData => ({
   enabled: true,
@@ -81,6 +81,65 @@ describe('syncDotFor', () => {
       ],
     }));
     expect(d?.color).toBe('red');
+  });
+});
+
+describe('latestUnresolvedError', () => {
+  it('returns null when status is unavailable', () => {
+    expect(latestUnresolvedError(null)).toBeNull();
+  });
+  it('returns null when no error has ever fired', () => {
+    expect(latestUnresolvedError(status({
+      recentEvents: [{ type: 'synced', spaceId: 'personal' }],
+    }))).toBeNull();
+  });
+  it('surfaces an error that no later synced has superseded', () => {
+    const e = latestUnresolvedError(status({
+      recentEvents: [
+        { type: 'synced', spaceId: 'personal' },
+        { type: 'error', spaceId: 'personal', message: 'EPERM: operation not permitted, watch' },
+      ],
+    }));
+    expect(e?.message).toMatch(/EPERM/);
+  });
+  it('clears a transient error once the SAME space syncs successfully after it', () => {
+    // The reported bug: a one-off watcher EPERM kept the panel red ("Couldn't
+    // sync") for ~50 events while syncs succeeded every 2 minutes behind it.
+    expect(latestUnresolvedError(status({
+      recentEvents: [
+        { type: 'error', spaceId: 'personal', message: 'EPERM: operation not permitted, watch' },
+        { type: 'synced', spaceId: 'personal' },
+      ],
+    }))).toBeNull();
+  });
+  it('does NOT let another space\'s success clear an error (per-space, not global)', () => {
+    const e = latestUnresolvedError(status({
+      recentEvents: [
+        { type: 'error', spaceId: 'project:budget-app', message: 'real breakage' },
+        { type: 'synced', spaceId: 'personal' },
+      ],
+    }));
+    expect(e?.message).toBe('real breakage');
+    expect(e?.spaceId).toBe('project:budget-app');
+  });
+  it('keeps surfacing a genuinely broken sync that re-errors every cycle', () => {
+    const e = latestUnresolvedError(status({
+      recentEvents: [
+        { type: 'error', spaceId: 'personal', message: 'auth failed' },
+        { type: 'synced', spaceId: 'personal' },
+        { type: 'error', spaceId: 'personal', message: 'auth failed' },
+      ],
+    }));
+    expect(e?.message).toBe('auth failed');
+  });
+  it('ignores a notice landing after the error (a notice is not a success)', () => {
+    const e = latestUnresolvedError(status({
+      recentEvents: [
+        { type: 'error', spaceId: 'personal', message: 'boom' },
+        { type: 'notice', spaceId: 'personal', message: 'history is large' },
+      ],
+    }));
+    expect(e?.message).toBe('boom');
   });
 });
 
