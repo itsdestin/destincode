@@ -1,71 +1,42 @@
 /**
- * Decides whether the buddy action bar should be visible.
- * Inputs: per-source hover (mascot window, bar window) and chat-open state.
- * Rule (spec §4.1): visible while hovering OR while the chat is open.
- * A grace timeout on hover-loss lets the cursor cross the ~6px gap between
- * the mascot and the bar without the bar flickering out.
- * Pure logic + injected timers — unit-tested without Electron.
+ * Decides whether the buddy action bar should be visible: it is shown IFF the
+ * chat is open.
+ *
+ * The bar used to also reveal on hover (spec §4.1), but its three actions are
+ * only useful alongside an open chat, so a hover-reveal fired constantly for
+ * nothing — the cursor merely passing over the buddy summoned it. Clicking the
+ * mascot toggles the chat and the bar now rides along with it (Destin
+ * 2026-07-16), which also makes the reveal a deliberate moment worth animating
+ * (styles/buddy.css → buddy-btn-pop).
+ *
+ * That leaves this class trivial, and deliberately so: it exists to hold the
+ * only-fire-on-change rule, which the callers would otherwise each reinvent.
+ * It once tracked hover too, to suppress the docked→peek idle timer; both the
+ * timer and the hover plumbing are gone (see buddy-dock.ts).
+ *
+ * Pure logic — unit-tested without Electron.
  */
 export class BarVisibilityTracker {
-  private hovered = new Set<'mascot' | 'bar'>();
   private chatOpen = false;
-  private graceTimer: NodeJS.Timeout | null = null;
   private visible = false;
 
-  constructor(
-    private readonly onChange: (visible: boolean) => void,
-    private readonly graceMs = 350,
-  ) {}
-
-  setHover(source: 'mascot' | 'bar', hovering: boolean): void {
-    if (hovering) this.hovered.add(source);
-    else this.hovered.delete(source);
-    this.recompute();
-  }
+  constructor(private readonly onChange: (visible: boolean) => void) {}
 
   setChatOpen(open: boolean): void {
     this.chatOpen = open;
-    this.recompute();
+    const want = this.wantsVisible();
+    if (want === this.visible) return;
+    this.visible = want;
+    this.onChange(want);
   }
 
   wantsVisible(): boolean {
-    return this.chatOpen || this.hovered.size > 0;
+    return this.chatOpen;
   }
 
   /** Drop all state without firing onChange — used when the buddy is torn down. */
   reset(): void {
-    this.cancelGrace();
-    this.hovered.clear();
     this.chatOpen = false;
     this.visible = false;
-  }
-
-  private recompute(): void {
-    const want = this.wantsVisible();
-    if (want) {
-      // Any return-to-wanted state cancels a pending hide.
-      this.cancelGrace();
-      if (!this.visible) {
-        this.visible = true;
-        this.onChange(true);
-      }
-      return;
-    }
-    if (!this.visible || this.graceTimer) return;
-    this.graceTimer = setTimeout(() => {
-      this.graceTimer = null;
-      // Re-check: state may have changed while the timer was pending.
-      if (!this.wantsVisible()) {
-        this.visible = false;
-        this.onChange(false);
-      }
-    }, this.graceMs);
-  }
-
-  private cancelGrace(): void {
-    if (this.graceTimer) {
-      clearTimeout(this.graceTimer);
-      this.graceTimer = null;
-    }
   }
 }

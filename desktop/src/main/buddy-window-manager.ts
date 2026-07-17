@@ -1,9 +1,12 @@
 import { BrowserWindow, screen } from 'electron';
 import type { WindowRegistry } from './window-registry';
-import { BAR_SIZE, computeBarPosition } from './buddy-bar-geometry';
+import {
+  BAR_SIZE, MASCOT_SIZE, CHAT_SIZE, computeBarPosition, computeGroupLayout,
+  mascotXRangeForChat, type GroupLayout,
+} from './buddy-bar-geometry';
 import { BarVisibilityTracker } from './buddy-bar-visibility';
 import {
-  dockReducer, detectSnapEdge, dockPosition, FREE_DOCK, PEEK_IDLE_MS,
+  dockReducer, detectSnapEdge, dockPosition, FREE_DOCK,
   type DockState, type DockEvent, type DockEdge,
 } from './buddy-dock';
 
@@ -30,10 +33,8 @@ export function clampToWorkArea(pos: Point, size: Size, workArea: Rect): Point {
   };
 }
 
-const MASCOT_SIZE: Size = { width: 80, height: 80 };
-const CHAT_SIZE: Size = { width: 320, height: 480 };
-// Action-bar size + position math live in buddy-bar-geometry.ts (pure,
-// unit-tested); main.ts imports the same BAR_SIZE so the BrowserWindow
+// Window sizes + all position math live in buddy-bar-geometry.ts (pure,
+// unit-tested); main.ts imports the same constants so the BrowserWindow
 // dimensions and the positioning math can't drift.
 
 export interface BuddyWindowManagerDeps {
@@ -70,7 +71,8 @@ export class BuddyWindowManager {
   // the renderer every time.
   private bar: BrowserWindow | null = null;
   private viewedSessionId: string | null = null;
-  // Decides bar visibility from hover + chat-open (spec §4.1). The bar
+  // Decides bar visibility — chat-open only, as of Destin's 2026-07-16 pass
+  // (see buddy-bar-visibility.ts for why hover no longer reveals it). The bar
   // BrowserWindow stays shown once created; reveals are CSS fades driven by
   // the buddy:bar-state push, and click-through is toggled alongside so the
   // invisible bar never eats clicks meant for windows underneath.
@@ -83,47 +85,26 @@ export class BuddyWindowManager {
   // Dock/peek state machine (spec §6) — pure reducer in buddy-dock.ts; this
   // class owns the timers, the windows, and the persistence.
   private dockState: DockState = FREE_DOCK;
-  private peekTimer: NodeJS.Timeout | null = null;
   private glideTimer: NodeJS.Timeout | null = null;
   private attentionNeeded = false;
 
   constructor(private readonly deps: BuddyWindowManagerDeps) {}
 
-  /** Renderer hover reports land here (buddy:hover-changed IPC). Hover is
-   *  also the dock 'activity' signal that slides a peeking mascot out. */
-  reportHover(source: 'mascot' | 'bar', hovering: boolean): void {
-    this.barVisibility.setHover(source, hovering);
-    if (hovering) this.dispatchDock({ type: 'activity' });
-    else this.schedulePeek();
-  }
-
-  /** Clear hover state stranded by WINDOW movement: pointerleave only fires
-   *  on pointer MOVEMENT, so repositioning the bar/mascot out from under a
-   *  stationary cursor leaves the tracker hovering forever — bar pinned
-   *  visible, docked buddy never peeks. Called after main-driven moves. */
-  private reconcileHoverWithCursor(): void {
-    let cursor: Point;
-    try { cursor = screen.getCursorScreenPoint(); } catch { return; }
-    const contains = (w: BrowserWindow | null) => {
-      if (!w || w.isDestroyed()) return false;
-      const b = w.getBounds();
-      return cursor.x >= b.x && cursor.x < b.x + b.width && cursor.y >= b.y && cursor.y < b.y + b.height;
-    };
-    if (!contains(this.bar)) this.barVisibility.setHover('bar', false);
-    if (!contains(this.mascot)) this.barVisibility.setHover('mascot', false);
-    this.schedulePeek();
-  }
-
   private dispatchDock(event: DockEvent): void {
     const next = dockReducer(this.dockState, event);
-    if (next.mode === this.dockState.mode && next.edge === this.dockState.edge) {
-      this.schedulePeek(); // state unchanged, but activity resets the idle clock
-      return;
-    }
+    if (next.mode === this.dockState.mode && next.edge === this.dockState.edge) return;
     this.dockState = next;
     this.deps.setPersistedDock(next.mode === 'free' ? null : next.edge);
     this.pushMascotState();
-    this.schedulePeek();
+  }
+
+  /** Reconcile the dock with the reasons the buddy has to stay out: an open
+   *  chat, or something needing attention. Anything that changes either calls
+   *  this rather than dispatching engage/disengage itself, so the two reasons
+   *  can't fight (closing the chat while attention is pending must NOT sink him). */
+  private syncEngagement(): void {
+    const engaged = this.barVisibility.wantsVisible() || this.attentionNeeded;
+    this.dispatchDock({ type: engaged ? 'engage' : 'disengage' });
   }
 
   private pushMascotState(): void {
@@ -132,69 +113,119 @@ export class BuddyWindowManager {
     }
   }
 
-  /** (Re)arm the docked→peeking idle timer. Peek only starts when nothing is
-   *  going on: not hovered, chat closed, no attention (spec §6.2). */
-  private schedulePeek(): void {
-    if (this.peekTimer) { clearTimeout(this.peekTimer); this.peekTimer = null; }
-    if (this.dockState.mode !== 'docked') return;
-    if (this.barVisibility.wantsVisible() || this.attentionNeeded) return;
-    this.peekTimer = setTimeout(() => {
-      this.peekTimer = null;
-      // Re-check: state may have changed while the timer was pending.
-      if (this.dockState.mode === 'docked' && !this.barVisibility.wantsVisible() && !this.attentionNeeded) {
-        this.dispatchDock({ type: 'idle-timeout' });
-      }
-    }, PEEK_IDLE_MS);
-  }
-
   /** Called by main.ts from the attention aggregation broadcast — attention
-   *  pops a peeking buddy out (spec §6.2). */
+   *  pops a peeking buddy out and holds him there until it clears (spec §6.2). */
   setAttentionNeeded(needed: boolean): void {
     if (needed === this.attentionNeeded) return;
     this.attentionNeeded = needed;
-    if (needed) this.dispatchDock({ type: 'activity' });
-    else this.schedulePeek();
+    this.syncEngagement();
   }
 
-  /** buddy:drag-ended — run snap detection against final window bounds. */
+  /** buddy:drag-ended — run snap detection against final window bounds, then
+   *  settle the whole group. */
   dragEnded(): void {
     if (!this.mascot || this.mascot.isDestroyed()) return;
     const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
     const edge = detectSnapEdge({ x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
     this.dispatchDock({ type: 'drag-release', snapEdge: edge });
-    if (edge) {
-      const target = dockPosition(edge, { x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
-      this.glideTo(target);
-    }
+    // Glide even when nothing snapped (the mascot then stays put): the
+    // satellites still need to settle back onto their anchors. While dragging
+    // they only track the mascot's delta and clamp at the workArea edges, so a
+    // drag toward an edge leaves the chat out of position — possibly overlapping
+    // the mascot, or on the side it no longer fits. Release is the natural
+    // moment to reconcile that, and glideGroup animates it rather than teleporting.
+    const target = edge
+      ? dockPosition(edge, { x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea)
+      : { x: mb.x, y: mb.y };
+    this.glideGroup(target);
   }
 
-  /** The one sanctioned window-bounds animation (spec §6.1): a short eased
-   *  glide onto the edge. ~10 steps over 150ms; canceled by any new drag. */
-  private glideTo(target: Point, ms = 150): void {
+  /**
+   * The one sanctioned window-bounds animation (spec §6.1): a short eased
+   * settle at the end of a drag. Moves the mascot to `mascotTarget` and both
+   * satellites to the anchors that target implies, on a SINGLE timer so they
+   * arrive together and read as one object. Canceled by any new drag.
+   *
+   * WHY the satellites are in here: this used to be a mascot-only `glideTo`,
+   * so an edge snap left the chat behind by up to SNAP_THRESHOLD_PX and the
+   * bar teleported into place at the end. Anything that moves the mascot must
+   * move what hangs off it, which is why every movement path routes through
+   * one helper now (2026-07-16).
+   *
+   * Anchors are derived from where the mascot is GOING, not where it is — the
+   * satellites must aim at their final homes, not chase the mascot's old ones.
+   */
+  private glideGroup(mascotTarget: Point, ms = 200): void {
     if (this.glideTimer) { clearInterval(this.glideTimer); this.glideTimer = null; }
     const win = this.mascot;
     if (!win || win.isDestroyed()) return;
-    const [sx, sy] = win.getPosition();
+
+    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
+    const layout = this.layoutFor({ ...mascotTarget, ...MASCOT_SIZE });
+    // The mascot only gets pushed back to the pinned distance while the chat is
+    // OPEN. With the chat closed the buddy is free to sit anywhere, including
+    // the band where a chat couldn't fit — shoving him out of it would be a
+    // baffling drag that refuses to end where you dropped it.
+    const mascotFinal = chatVisible ? layout.mascot : mascotTarget;
+    const finalRect: Rect = { ...mascotFinal, ...MASCOT_SIZE };
+
+    const legs: Array<{ win: BrowserWindow; from: Point; to: Point }> = [];
+    const addLeg = (w: BrowserWindow | null, to: Point) => {
+      if (!w || w.isDestroyed()) return;
+      const [x, y] = w.getPosition();
+      // Skip windows already home — a plain click (no drag, no snap) must not
+      // spin up a timer that repositions three windows onto themselves.
+      if (Math.round(x) === Math.round(to.x) && Math.round(y) === Math.round(to.y)) return;
+      legs.push({ win: w, from: { x, y }, to });
+    };
+    addLeg(win, mascotFinal);
+    if (chatVisible) addLeg(this.chat, layout.chat);
+    // Bar follows its CSS visibility, not Electron's — see moveMascot.
+    if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
+      addLeg(this.bar, this.currentBarPosition(finalRect));
+    }
+    if (legs.length === 0) return;
+
     const t0 = Date.now();
     this.glideTimer = setInterval(() => {
-      if (!win || win.isDestroyed()) {
-        if (this.glideTimer) clearInterval(this.glideTimer);
-        this.glideTimer = null;
-        return;
-      }
       const t = Math.min(1, (Date.now() - t0) / ms);
       const ease = 1 - Math.pow(1 - t, 3);
-      win.setPosition(Math.round(sx + (target.x - sx) * ease), Math.round(sy + (target.y - sy) * ease));
-      if (t >= 1) {
+      let alive = false;
+      for (const leg of legs) {
+        if (leg.win.isDestroyed()) continue;
+        alive = true;
+        leg.win.setPosition(
+          Math.round(leg.from.x + (leg.to.x - leg.from.x) * ease),
+          Math.round(leg.from.y + (leg.to.y - leg.from.y) * ease),
+        );
+      }
+      if (t >= 1 || !alive) {
         if (this.glideTimer) clearInterval(this.glideTimer);
         this.glideTimer = null;
-        // Bar may need to flip sides now that the mascot sits on an edge.
-        if (this.barCssVisible) this.applyBarVisible(true);
-        // The glide moved windows under a possibly-stationary cursor.
-        this.reconcileHoverWithCursor();
       }
     }, 16);
+  }
+
+  /**
+   * Keep the buddy and his buttons ABOVE the chat panel.
+   *
+   * All three windows sit at the same 'screen-saver' always-on-top level, so
+   * their order within that band is just whoever was shown last — and every
+   * chat toggle calls chat.show(), which raises it over the bar (the bar window
+   * is created once and never hidden, so it never re-raises). You could only see
+   * it when the chat slid past during an above/below flip: the mascot stayed on
+   * top but the buttons went behind (Destin 2026-07-17).
+   *
+   * It also has to hold for the negative above-gap in computeGroupLayout, which
+   * deliberately overlaps the chat with the mascot's transparent headroom.
+   *
+   * moveTop() does not focus, so this is safe immediately after chat.show().
+   * Bar first, then the mascot, so the buddy himself ends up highest.
+   */
+  private raiseSatellites(): void {
+    if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) this.bar.moveTop();
+    if (this.mascot && !this.mascot.isDestroyed() && this.mascot.isVisible()) this.mascot.moveTop();
   }
 
   private applyBarVisible(visible: boolean): void {
@@ -212,9 +243,10 @@ export class BuddyWindowManager {
       const bar = this.bar;
       if (bar && !bar.isDestroyed()) {
         bar.webContents.send(IPC_BAR_STATE, { visible: false });
-        // Let the 150ms CSS fade finish, then make the window click-through.
-        // forward:true keeps mousemove flowing to the page so hovering the
-        // (invisible) bar zone can still re-summon it — a nice grace region.
+        // Let the CSS fade finish, then make the window click-through.
+        // forward:true keeps mousemove flowing to the page so the hidden bar's
+        // zone still reports hover — that no longer re-summons the bar, but it
+        // does count as engagement and holds off the docked→peek timer.
         setTimeout(() => {
           if (this.bar && !this.bar.isDestroyed() && !this.barCssVisible) {
             this.bar.setIgnoreMouseEvents(true, { forward: true });
@@ -231,7 +263,7 @@ export class BuddyWindowManager {
     }
     const saved = this.deps.getPersistedPosition('mascot');
     const primary = screen.getPrimaryDisplay().workArea;
-    const defaultPos = { x: primary.x + primary.width - 104, y: primary.y + primary.height - 104 };
+    const defaultPos = { x: primary.x + primary.width - MASCOT_SIZE.width - 24, y: primary.y + primary.height - MASCOT_SIZE.height - 24 };
     const raw = saved ?? defaultPos;
     // getDisplayMatching picks the display containing the window's bounds;
     // if the saved position is off-screen entirely, fall back to primary.
@@ -248,11 +280,12 @@ export class BuddyWindowManager {
       const d = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
       const flush = dockPosition(savedEdge, { x: mb.x, y: mb.y }, MASCOT_SIZE, d.workArea);
       this.mascot.setPosition(Math.round(flush.x), Math.round(flush.y));
-      this.dockState = { mode: 'docked', edge: savedEdge };
+      // A buddy put away on an edge comes back put away — peeking is the
+      // resting state at an edge now, not a timer's eventual destination.
+      this.dockState = { mode: 'peeking', edge: savedEdge };
       // Renderer may not have loaded yet — replay state when it has.
       this.mascot.webContents.once('did-finish-load', () => this.pushMascotState());
       this.pushMascotState();
-      this.schedulePeek();
     }
     // Any show() clears "hidden until restart" — Settings' "Show now" is
     // just buddy.show(). Broadcast so open Settings panels update live.
@@ -276,10 +309,8 @@ export class BuddyWindowManager {
 
   hide(): void {
     // Drop tracker state silently so a torn-down buddy doesn't fire a
-    // stale visibility callback against destroyed windows. Dock timers die
-    // with the windows, but the PERSISTED dock edge stays — a dismissed
-    // buddy should come back docked.
-    if (this.peekTimer) { clearTimeout(this.peekTimer); this.peekTimer = null; }
+    // stale visibility callback against destroyed windows. The PERSISTED dock
+    // edge stays — a dismissed buddy should come back on its edge.
     if (this.glideTimer) { clearInterval(this.glideTimer); this.glideTimer = null; }
     this.dockState = FREE_DOCK;
     this.barVisibility.reset();
@@ -318,47 +349,46 @@ export class BuddyWindowManager {
         }
       }, 140);
       this.barVisibility.setChatOpen(false);
-      this.schedulePeek(); // chat closed — the docked idle clock starts now
+      this.syncEngagement(); // chat closed — sink back to peek unless attention holds him
     } else {
       // Re-anchor to current mascot position before showing — the user may
       // have dragged the mascot while the chat was hidden, and the chat
       // should open "wherever the icon is" rather than at its stale last
       // position.
       this.chatOpenIntent = true;
-      const pos = this.computeChatAnchoredPosition();
-      this.chat.setPosition(Math.round(pos.x), Math.round(pos.y));
+      const layout = this.layoutFor();
+      this.chat.setPosition(Math.round(layout.chat.x), Math.round(layout.chat.y));
       this.chat.show();
       this.chat.webContents.send(IPC_CHAT_STATE, { visible: true });
       this.barVisibility.setChatOpen(true);
-      // Opening the chat is dock 'activity' — a peeking mascot slides out.
-      this.dispatchDock({ type: 'activity' });
+      // Opening the chat is what actually brings a peeking buddy out — and keeps
+      // him out, unlike the hover hop.
+      this.syncEngagement();
+      // chat.show() just raised the chat over the bar — put them back.
+      this.raiseSatellites();
+      // The chat may have had to claim space the mascot was standing in (see
+      // computeGroupLayout tier 3) — glide him out to the pinned distance.
+      this.glideGroup(layout.mascot);
     }
   }
 
   /**
-   * Choose the chat window's position relative to the current mascot.
-   * Prefer right-of-mascot; fall back to left-of-mascot if the right side
-   * would clip the workArea. Always clamps to visible workArea as a safety.
-   * Top-align chat with mascot so they read as a single unit — icon sits
-   * alongside the top of its conversation panel.
+   * Resolve the group layout for a given mascot rect. The placement ladder
+   * itself is pure (buddy-bar-geometry.ts → computeGroupLayout); this only
+   * picks the rect and the display to run it against.
+   *
+   * `mascotRect` defaults to the mascot's live bounds; glideGroup passes the
+   * mascot's POST-snap rect so the chat aims at where the buddy will land.
    */
-  private computeChatAnchoredPosition(): Point {
-    if (!this.mascot || this.mascot.isDestroyed()) {
+  private layoutFor(mascotRect?: Rect): GroupLayout {
+    const mb = mascotRect ?? (this.mascot && !this.mascot.isDestroyed() ? this.mascot.getBounds() : null);
+    if (!mb) {
       const primary = screen.getPrimaryDisplay().workArea;
-      return { x: primary.x + primary.width - CHAT_SIZE.width - 24, y: primary.y + primary.height - CHAT_SIZE.height - 24 };
+      const fallback = { x: primary.x + primary.width - CHAT_SIZE.width - 24, y: primary.y + primary.height - CHAT_SIZE.height - 24 };
+      return { mascot: fallback, chat: fallback };
     }
-    const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
-    const wa = display.workArea;
-    // Top-align chat with the mascot (chat.y === mascot.y) so the buddy
-    // icon sits next to the chat's header, not its midpoint or bottom.
-    const y = mb.y;
-    const rightX = mb.x + mb.width + 12;
-    const rightFits = rightX + CHAT_SIZE.width <= wa.x + wa.width;
-    const raw = rightFits
-      ? { x: rightX, y }
-      : { x: mb.x - CHAT_SIZE.width - 12, y };
-    return clampToWorkArea(raw, CHAT_SIZE, wa);
+    return computeGroupLayout(mb, display.workArea);
   }
 
   /** Move the chat's subscription from the previous session to the new one. */
@@ -414,7 +444,23 @@ export class BuddyWindowManager {
     const [oldX, oldY] = this.mascot.getPosition();
     const raw = { x: targetX, y: targetY };
     const display = screen.getDisplayMatching({ ...raw, ...MASCOT_SIZE }) ?? screen.getPrimaryDisplay();
-    const clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
+    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
+    let clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
+    // With the chat open the pair are horizontally rigid, so the mascot STOPS
+    // once the chat's right (or left) edge reaches the workArea edge, rather
+    // than sliding out from under his own chat window (Destin 2026-07-17).
+    // Anchor-based dragging makes the stop harmless: the cursor can run past
+    // the wall and the mascot picks it straight back up on the way back, with
+    // no accumulated drift.
+    //
+    // Horizontal only. Pinning Y the same way would be a disaster: the chat is
+    // 480 tall against an 852 workArea, so it would shrink the draggable band
+    // to a sliver and fight edge docking. Vertical is reconciled at release by
+    // the tier-3 bounce in computeGroupLayout.
+    if (chatVisible) {
+      const range = mascotXRangeForChat({ ...clamped, ...MASCOT_SIZE }, display.workArea);
+      clamped = { x: Math.max(range.min, Math.min(clamped.x, range.max)), y: clamped.y };
+    }
     // setPosition requires integer args. Pointer screenX/Y on HiDPI displays
     // can be fractional, so targetX/Y (and therefore clamped.x/y) may be
     // floats — passing a float throws "Error processing argument at index 1,
@@ -436,7 +482,6 @@ export class BuddyWindowManager {
     // of "squishy" drag latency.
     const actualDx = newX - oldX;
     const actualDy = newY - oldY;
-    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
     if ((actualDx !== 0 || actualDy !== 0) && this.chat && !this.chat.isDestroyed() && chatVisible) {
       const cb = this.chat.getBounds();
       const chatRaw = { x: cb.x + actualDx, y: cb.y + actualDy };
@@ -451,8 +496,6 @@ export class BuddyWindowManager {
     if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
       const pos = this.currentBarPosition();
       this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
-      // The bar just moved — it may have left a stationary cursor behind.
-      this.reconcileHoverWithCursor();
     }
   }
 
@@ -483,17 +526,18 @@ export class BuddyWindowManager {
     if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) this.bar.hide();
   }
 
-  /** Bar position derived from live mascot bounds; falls back to bottom-right
-   *  of the primary display when the mascot is gone (mirrors old behavior). */
-  private currentBarPosition(): Point {
-    if (!this.mascot || this.mascot.isDestroyed()) {
+  /** Bar position for a given mascot rect (defaults to live bounds; glideGroup
+   *  passes the post-snap rect). Falls back to bottom-right of the primary
+   *  display when the mascot is gone (mirrors old behavior). */
+  private currentBarPosition(mascotRect?: Rect): Point {
+    const mb = mascotRect ?? (this.mascot && !this.mascot.isDestroyed() ? this.mascot.getBounds() : null);
+    if (!mb) {
       const primary = screen.getPrimaryDisplay().workArea;
       return {
         x: primary.x + primary.width - BAR_SIZE.width - 24,
         y: primary.y + primary.height - BAR_SIZE.height - 24,
       };
     }
-    const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
     return computeBarPosition(mb, display.workArea);
   }
@@ -516,8 +560,8 @@ export class BuddyWindowManager {
     // intentionally dropped. User's mental model: "chat opens where my
     // buddy is." Drag the mascot, chat follows; open the chat, it's next
     // to the mascot.
-    const pos = this.computeChatAnchoredPosition();
-    const rounded = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    const layout = this.layoutFor();
+    const rounded = { x: Math.round(layout.chat.x), y: Math.round(layout.chat.y) };
     this.chat = this.deps.createBuddyWindow('chat', rounded);
     this.wireChatLifecycle(this.chat);
     // If a session was already chosen (via setViewedSession) before the
@@ -530,8 +574,11 @@ export class BuddyWindowManager {
     this.chat.show();
     this.chat.focus();
     this.barVisibility.setChatOpen(true);
-    // Opening the chat is dock 'activity' — a peeking mascot slides out.
-    this.dispatchDock({ type: 'activity' });
+    this.syncEngagement();
+    // setChatOpen(true) created the bar above the chat, but chat.focus() may
+    // have re-raised the chat — assert the order rather than rely on timing.
+    this.raiseSatellites();
+    this.glideGroup(layout.mascot);
   }
 
   private wireMascotLifecycle(win: BrowserWindow): void {
@@ -571,10 +618,9 @@ export class BuddyWindowManager {
     win.on('closed', () => {
       this.chat = null;
       // FIX: an OS-closed chat (not a toggle) used to strand the action bar
-      // visible with no chat. Tell the tracker so the bar fades out (after
-      // grace) unless the user is still hovering.
+      // visible with no chat. Tell the tracker so the bar fades out.
       this.barVisibility.setChatOpen(false);
-      this.schedulePeek();
+      this.syncEngagement();
     });
   }
 }

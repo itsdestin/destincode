@@ -561,8 +561,6 @@ export interface BuddyApi {
   // ── Buddy upgrades (action bar, dismiss, dock/peek) ──
   // Typed centrally here (instead of `as any` casts at call sites) so the
   // preload, remote-shim, and renderer callers all agree on one contract.
-  /** Fire-and-forget: mascot/bar renderers report pointer enter/leave. */
-  reportHover(payload: { source: 'mascot' | 'bar'; hovering: boolean }): void;
   /** Fire-and-forget: mascot renderer signals drag release (edge-snap check). */
   dragEnded(): void;
   /** Restore + focus the main window, switching to the buddy's viewed session. */
@@ -931,7 +929,6 @@ export const IPC = {
   // ── Buddy upgrades (action bar, dismiss, dock/peek) ──
   // Fire-and-forget: mascot + bar renderers report pointer enter/leave; main
   // coalesces with a grace timeout to decide bar visibility.
-  BUDDY_HOVER_CHANGED: 'buddy:hover-changed',
   // Fire-and-forget: mascot renderer signals drag release so main can run
   // edge-snap detection against the window's final bounds.
   BUDDY_DRAG_ENDED: 'buddy:drag-ended',

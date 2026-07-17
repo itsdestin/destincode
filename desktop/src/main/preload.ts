@@ -271,7 +271,6 @@ const IPC = {
   BUDDY_CAPTURE_DESKTOP: 'buddy:capture-desktop',
   BUDDY_ATTACH_FILE: 'buddy:attach-file',
   // ── Buddy upgrades (action bar, dismiss, dock/peek) ──
-  BUDDY_HOVER_CHANGED: 'buddy:hover-changed',
   BUDDY_DRAG_ENDED: 'buddy:drag-ended',
   BUDDY_OPEN_MAIN: 'buddy:open-main',
   BUDDY_DISMISS: 'buddy:dismiss',
@@ -1038,8 +1037,6 @@ contextBridge.exposeInMainWorld('claude', {
       return () => ipcRenderer.removeListener(IPC.BUDDY_ATTACH_FILE, listener);
     },
     // ── Buddy upgrades ──
-    reportHover: (payload: { source: 'mascot' | 'bar'; hovering: boolean }) =>
-      ipcRenderer.send(IPC.BUDDY_HOVER_CHANGED, payload),
     dragEnded: () => ipcRenderer.send(IPC.BUDDY_DRAG_ENDED),
     openMain: (): Promise<void> => ipcRenderer.invoke(IPC.BUDDY_OPEN_MAIN),
     dismiss: (): Promise<void> => ipcRenderer.invoke(IPC.BUDDY_DISMISS),

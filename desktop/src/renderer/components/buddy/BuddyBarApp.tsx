@@ -2,13 +2,17 @@ import { useCallback, useEffect, useState } from 'react';
 import { ThemeProvider } from '../../state/theme-context';
 
 /**
- * Action-bar floater window (148×44, transparent). Sits directly below the
- * mascot. Three actions: screenshot the desktop, open the main app, hide the
- * buddy for this run. Replaces the old single-purpose BuddyCaptureApp.
+ * Action-bar floater window (transparent). Sits BESIDE the mascot, its row
+ * lined up with his hands. Three actions: screenshot the desktop, open the main
+ * app, hide the buddy for this run.
  *
- * Visibility is CSS-driven (fade+rise) via the buddy:bar-state push — the
- * BrowserWindow itself stays shown so opacity can animate (Task 4 wires the
- * push; until then the bar renders visible whenever the window is shown).
+ * The window is BAR_PADDING larger than the visible 148×44 row on every side so
+ * the buttons' hover/pop scale has somewhere to grow — sizes and the whole
+ * layout live in main/buddy-bar-geometry.ts.
+ *
+ * Visibility is CSS-driven via the buddy:bar-state push — the BrowserWindow
+ * itself stays shown so opacity can animate. The bar appears with the chat, not
+ * on hover (see main/buddy-bar-visibility.ts).
  */
 function BarButton({ label, onClick, busy, children }: {
   label: string;
@@ -23,6 +27,10 @@ function BarButton({ label, onClick, busy, children }: {
       title={label}
       disabled={busy}
       className="buddy-bar-btn"
+      // Busy is an ATTRIBUTE, not an inline style: the hover/press bounce lives
+      // in buddy.css, and an inline `transition`/`transform` here would beat the
+      // stylesheet and kill it (2026-07-17).
+      data-busy={busy ? '1' : '0'}
       // Suppress the pre-click focus so no focus ring flashes (same rationale
       // as the old capture button: frameless window, no keyboard nav).
       onMouseDown={(e) => e.preventDefault()}
@@ -38,12 +46,8 @@ function BarButton({ label, onClick, busy, children }: {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        // Inset highlight only — window is exactly button-height, an outer
-        // shadow would clip at the window edge and read as a square halo.
+        // Inset highlight only — an outer shadow would read as a square halo.
         boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.18)',
-        transition: 'transform 120ms ease, opacity 120ms ease',
-        transform: busy ? 'scale(0.92)' : undefined,
-        opacity: busy ? 0.7 : 1,
         outline: 'none',
         WebkitAppearance: 'none',
       }}
@@ -99,10 +103,6 @@ export function BuddyBarApp() {
       <div
         className="buddy-bar-root"
         data-visible={visible ? '1' : '0'}
-        // Hovering the bar itself pins it visible (crossing the mascot→bar
-        // gap is bridged by the tracker's grace timeout main-side).
-        onPointerEnter={() => window.claude?.buddy?.reportHover?.({ source: 'bar', hovering: true })}
-        onPointerLeave={() => window.claude?.buddy?.reportHover?.({ source: 'bar', hovering: false })}
         style={{
           width: '100vw',
           height: '100vh',

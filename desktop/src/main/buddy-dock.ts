@@ -2,35 +2,45 @@ import { clampToWorkArea, type Point, type Rect, type Size } from './buddy-windo
 
 /**
  * Edge snap + peek state machine (spec §6). Pure — the BuddyWindowManager
- * drives it with events and owns the timers/windows.
+ * drives it with events and owns the windows.
  *
- *   free ──drag-release(near edge)──▶ docked ──8s idle──▶ peeking
- *     ▲                                 ▲                    │
+ *   free ──drag-release(near edge)──▶ peeking ──engage──▶ docked
+ *     ▲                                  ▲                   │
  *     └──drag-release(elsewhere)/drag-start                  │
- *                                       └────── activity ────┘
+ *                                        └─── disengage ─────┘
+ *
+ * Peek is DIRECT and has no timer (Destin 2026-07-17). Dropping the buddy on an
+ * edge snaps him straight into peek and he stays; dragging him off the edge
+ * brings him back out. There used to be an 8s idle timer between `docked` and
+ * `peeking`, which made peek feel like something that happened TO you rather
+ * than something you did — you couldn't put him away, you could only wait.
+ *
+ * `docked` is now the deliberate "out and staying out" state: engage fires when
+ * the chat opens or the buddy needs attention, disengage when both are done.
+ * Hover is NOT an event here — it's a transient hop the renderer animates
+ * locally (BuddyMascot), because it shouldn't change what state he's in.
  */
 export type DockEdge = 'left' | 'right' | 'top' | 'bottom';
 export interface DockState { mode: 'free' | 'docked' | 'peeking'; edge: DockEdge | null; }
 export type DockEvent =
   | { type: 'drag-start' }
   | { type: 'drag-release'; snapEdge: DockEdge | null }
-  | { type: 'idle-timeout' }
-  | { type: 'activity' }; // hover, chat opening, attention
+  | { type: 'engage' }      // chat opened, or attention needed — come out and stay
+  | { type: 'disengage' };  // chat closed and nothing needs attention — sink back
 
 export const FREE_DOCK: DockState = { mode: 'free', edge: null };
 export const SNAP_THRESHOLD_PX = 24;
-export const PEEK_IDLE_MS = 8000;
 
 export function dockReducer(state: DockState, event: DockEvent): DockState {
   switch (event.type) {
     case 'drag-start':
       return FREE_DOCK;
     case 'drag-release':
-      return event.snapEdge ? { mode: 'docked', edge: event.snapEdge } : FREE_DOCK;
-    case 'idle-timeout':
-      return state.mode === 'docked' ? { mode: 'peeking', edge: state.edge } : state;
-    case 'activity':
+      return event.snapEdge ? { mode: 'peeking', edge: event.snapEdge } : FREE_DOCK;
+    case 'engage':
       return state.mode === 'peeking' ? { mode: 'docked', edge: state.edge } : state;
+    case 'disengage':
+      return state.mode === 'docked' ? { mode: 'peeking', edge: state.edge } : state;
   }
 }
 
