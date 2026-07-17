@@ -190,6 +190,7 @@ const IPC = {
   // Device registry (Plan 2b spec §10a) — inlined literals (preload can't import).
   SYNC_SPACES_LIST_DEVICES: 'syncspaces:list-devices',
   SYNC_SPACES_RENAME_DEVICE: 'syncspaces:rename-device',
+  SYNC_SPACES_REMOVE_DEVICE: 'syncspaces:remove-device',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Connect-GitHub modal (device-flow auth) — inlined literals (preload can't import).
   GITHUB_STATUS: 'github:status',
@@ -840,6 +841,10 @@ contextBridge.exposeInMainWorld('claude', {
     listDevices: () => ipcRenderer.invoke(IPC.SYNC_SPACES_LIST_DEVICES),
     renameDevice: (id: string, name: string) =>
       ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_DEVICE, { id, name }),
+    // removeDevice forgets a row whose device is gone. A LIVE device re-registers
+    // itself on its next launch — that's intended, not a bug.
+    removeDevice: (id: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_REMOVE_DEVICE, { id }),
     // Returns an unsubscribe function — callers MUST invoke it on unmount to
     // avoid leaking listeners across mounts.
     onEvent: (cb: (e: unknown) => void) => {
