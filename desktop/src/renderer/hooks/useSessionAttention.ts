@@ -51,7 +51,12 @@ export function useSessionAttention(
         else if (t.status === 'running') hasRunning = true;
         if (hasAwaiting) break;
       }
-      // Priority chain verbatim from the old memo (red → amber → green → blue → gray)
+      // Priority: red (awaiting-approval) → amber (attention banner showing —
+      // stuck or session-died) → green (working) → blue (unseen activity) →
+      // gray (idle). Amber is between red and green: the session needs the
+      // user's eyes but it's not as urgent as a permission prompt, and it's
+      // not "all good, just working" either. Overrides green so a stuck
+      // session doesn't appear identical to a healthy thinking session.
       const needsAttention = chatState.attentionState !== 'ok';
       const status: SessionStatusColor = hasAwaiting ? 'red'
         : needsAttention ? 'amber'
