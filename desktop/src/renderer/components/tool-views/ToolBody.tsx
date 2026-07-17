@@ -997,6 +997,23 @@ function WebFetchView({ tool }: { tool: ToolCallState }) {
   );
 }
 
+// WebSearch results are a markdown string (native + CC both) — render like
+// WebFetchView rather than the raw JSON fallback so the card stays readable.
+function WebSearchView({ tool }: { tool: ToolCallState }) {
+  const query = (tool.input.query as string) || '';
+  return (
+    <div className="space-y-2">
+      {query && <div className="text-xs text-fg-dim italic">“{query}”</div>}
+      {tool.response && (
+        <div className="text-sm text-fg-dim border-t border-edge/60 pt-2">
+          <MarkdownContent content={tool.response} />
+        </div>
+      )}
+      {tool.error && <ErrorBlock error={tool.error} />}
+    </div>
+  );
+}
+
 // --- Raw fallback ---
 
 function RawFallbackView({ tool }: { tool: ToolCallState }) {
@@ -1072,6 +1089,8 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <GlobView tool={tool} />;
       case 'WebFetch':
         return <WebFetchView tool={tool} />;
+      case 'WebSearch':
+        return <WebSearchView tool={tool} />;
       default: {
         // MCP PowerShell is shell-like — reuse ShellView. Other MCP tools fall
         // through to the raw view.

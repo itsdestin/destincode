@@ -1405,6 +1405,7 @@ export function installShim(): void {
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
       setBinding: (sessionId: string, binding: unknown) => invoke('native:set-binding', { sessionId, binding }),
       setPermissionMode: (sessionId: string, mode: string) => invoke('native:set-permission-mode', { sessionId, mode }),
+      getPermissionMode: (sessionId: string) => invoke('native:get-permission-mode', { sessionId }),
       sessionsList: () => invoke('native:sessions-list'),
       onModelState: (cb: (s: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
@@ -1422,6 +1423,14 @@ export function installShim(): void {
       test: (id: string) => invoke('provider:test', { id }),
       setKey: (id: string, key: string) => invoke('provider:set-key', { id, key }),
       catalog: () => invoke('provider:catalog'),
+    },
+    // WebSearch providers (Phase 2 Plan B) — WS transport. Object payloads match
+    // remote-server's WS case reads (payload.backend / payload.key).
+    search: {
+      list: () => invoke('search:list'),
+      setKey: (backend: string, key: string) => invoke('search:set-key', { backend, key }),
+      removeKey: (backend: string) => invoke('search:remove-key', { backend }),
+      test: (backend: string, key: string) => invoke('search:test', { backend, key }),
     },
     // Local llama.cpp engine (Plan B). Server pushes engine:install-progress /
     // engine:status-changed via the WS dispatcher; subscriptions return an

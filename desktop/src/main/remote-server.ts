@@ -13,6 +13,8 @@ import type { SerializedChatState } from '../renderer/state/chat-types';
 import type { NativeSessionHost } from './harness/native-session-host';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
+import type { SearchKeyStore } from './harness/search/search-key-store';
+import type { SearchService } from './harness/search/search-service';
 import type { EngineManager } from './engine/engine-manager';
 import type { ModelManager } from './models/model-manager';
 import { detectEndpoints } from './models/endpoint-detectors';
@@ -74,7 +76,7 @@ export class RemoteServer {
   // native:* / provider:* WS cases no-op until then.
   // Merge note: nativeRuntime carries modelManager (Plan C) AND the leaseWiring
   // field (Plan 2b) — both were added independently on master and this branch.
-  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager } | null = null;
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService } | null = null;
   // Plan 2b Task 11: conversation-lease + device wiring, injected by ipc-handlers
   // via setLeaseWiring() AFTER main.ts builds the lease client/requester (they
   // live in the whenReady scope, not reachable at RemoteServer construction).
@@ -103,7 +105,7 @@ export class RemoteServer {
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
-  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager }): void {
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService }): void {
     this.nativeRuntime = rt;
   }
 
@@ -617,6 +619,13 @@ export class RemoteServer {
         }
         break;
       }
+      case 'native:get-permission-mode': {
+        // Read-only — never throws. Falls back to 'ask' when no native runtime
+        // (mirrors NativeSessionHost.getPermissionMode's default).
+        const mode = this.nativeRuntime ? this.nativeRuntime.nativeHost.getPermissionMode(payload.sessionId) : 'ask';
+        this.respond(client.ws, type, id, mode);
+        break;
+      }
       case 'native:sessions-list': {
         this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
         break;
@@ -675,6 +684,40 @@ export class RemoteServer {
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
         }
+        break;
+      }
+      // WebSearch providers (Phase 2 Plan B) — mirror the desktop IPC handlers so
+      // remote WS clients reach the SAME searchKeyStore/searchService instances.
+      // set/remove-key can throw (empty key, keychain failure); each responds an
+      // error object so the client's request id resolves instead of timing out.
+      // search:test is never-throws — { ok, message } is the result.
+      case 'search:list': {
+        this.respond(client.ws, type, id, this.nativeRuntime ? await this.nativeRuntime.searchKeyStore.list() : []);
+        break;
+      }
+      case 'search:set-key': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.searchKeyStore.setKey(payload.backend, payload.key);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'search:remove-key': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.searchKeyStore.removeKey(payload.backend);
+          this.respond(client.ws, type, id, true);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'search:test': {
+        const res = this.nativeRuntime
+          ? await this.nativeRuntime.searchService.testBackend(payload.backend, payload.key)
+          : { ok: false, message: 'Native runtime not available.' };
+        this.respond(client.ws, type, id, res);
         break;
       }
       case 'tags:list': {

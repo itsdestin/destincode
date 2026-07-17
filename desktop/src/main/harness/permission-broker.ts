@@ -23,6 +23,10 @@ export interface AskDecision {
   behavior: 'allow' | 'deny' | 'canceled';
   /** True when the user chose "Always allow" — caller persists the remembered rule. */
   always?: boolean;
+  /** AskUserQuestion answers ride the SAME channel inside decision.updatedInput
+   *  (ToolCard's AskUserQuestionCard shape) — dropped for ordinary permission
+   *  asks, load-bearing for interactive tools. */
+  updatedInput?: Record<string, unknown>;
 }
 
 export class PermissionBroker extends EventEmitter {
@@ -67,7 +71,12 @@ export class PermissionBroker extends EventEmitter {
       behavior === 'allow' &&
       Array.isArray(decision.updatedPermissions) &&
       decision.updatedPermissions.length > 0;
-    entry.resolve({ behavior, always });
+    // AskUserQuestion answers ride inside decision.updatedInput (the same nested
+    // shape the card sends). Thread it through UNTOUCHED — it is NOT
+    // updatedPermissions and must never influence `always`.
+    const updatedInput = inner.updatedInput && typeof inner.updatedInput === 'object'
+      ? (inner.updatedInput as Record<string, unknown>) : undefined;
+    entry.resolve({ behavior, always, ...(updatedInput ? { updatedInput } : {}) });
     return true;
   }
 

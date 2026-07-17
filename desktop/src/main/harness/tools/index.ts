@@ -6,7 +6,12 @@ import { BashTool } from './bash';
 import { GlobTool } from './glob';
 import { GrepTool } from './grep';
 import { TodoWriteTool } from './todo-write';
+import { WebFetchTool } from './web-fetch';
+import { WebSearchTool } from './web-search';
+import { AskUserQuestionTool } from './ask-user-question';
 
-/** Plan A core set. Plan B appends WebFetch/WebSearch/AskUserQuestion. */
-export const CORE_TOOLS: NativeTool[] = [ReadTool, WriteTool, EditTool, BashTool, GlobTool, GrepTool, TodoWriteTool];
+/** Plan A core set + Plan B tools. WebFetch/WebSearch are the web pair (free in
+ *  every preset/mode — see permission-types.rulesForMode); AskUserQuestion
+ *  (interactive, driver-routed) comes last. */
+export const CORE_TOOLS: NativeTool[] = [ReadTool, WriteTool, EditTool, BashTool, GlobTool, GrepTool, TodoWriteTool, WebFetchTool, WebSearchTool, AskUserQuestionTool];
 export const toolByName = new Map(CORE_TOOLS.map((t) => [t.name, t]));

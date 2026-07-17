@@ -4,6 +4,14 @@
 import type { z } from 'zod';
 import type { StructuredPatchHunk } from '../../../shared/types';
 
+// Runtime services injected into tools that need process-level collaborators
+// (spec §3.2). WebSearch reads services.search — the chain-walking SearchService.
+// Structural (not the concrete class) so tests inject fakes and the tool never
+// imports the service implementation.
+export interface ToolServices {
+  search?: { search(query: string, signal: AbortSignal): Promise<{ results: Array<{ title: string; url: string; snippet?: string }>; source: string }> };
+}
+
 export interface ToolContext {
   sessionId: string;
   cwd: string;
@@ -12,6 +20,9 @@ export interface ToolContext {
   readRegistry: Map<string, number>;
   /** per-session todo list (TodoWrite state) */
   todos: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm: string }>;
+  /** Injected runtime services (e.g. WebSearch's SearchService). Absent for tools
+   *  that need none; a tool depending on one must handle its absence as a config error. */
+  services?: ToolServices;
 }
 
 export interface ToolResultPayload {
@@ -29,5 +40,9 @@ export interface NativeTool<A = any> {
   /** The permission SUBJECT for rule matching: Bash → command string; file
    *  tools → the file path; undefined → tool-name-only matching. */
   permissionSubject(args: A): string | undefined;
+  /** Interactive tools (AskUserQuestion) are routed by the DRIVER straight to
+   *  askUser() — guards/decide are skipped (asking permission to ask a question
+   *  is absurd) and execute() never runs. */
+  interactive?: boolean;
   execute(args: A, ctx: ToolContext): Promise<ToolResultPayload>;
 }

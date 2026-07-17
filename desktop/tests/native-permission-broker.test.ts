@@ -41,6 +41,19 @@ describe('PermissionBroker', () => {
     expect(d.always).toBeFalsy();
   });
 
+  it('passes decision.updatedInput through to the resolver (AskUserQuestion answers)', async () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: { questions: [] }, denyListed: false });
+    const requestId = emitted[0].payload._requestId as string;
+    broker.respond(requestId, { decision: { behavior: 'allow', updatedInput: { questions: [], answers: { 'Q?': 'Blue' } } } });
+    const d = await p;
+    expect(d.behavior).toBe('allow');
+    expect(d.updatedInput).toEqual({ questions: [], answers: { 'Q?': 'Blue' } });
+    expect(d.always).toBe(false); // updatedInput must NOT be mistaken for updatedPermissions/always
+  });
+
   it('respond() returns false for unknown ids (lets ipc-handlers fall through to hookRelay)', () => {
     expect(new PermissionBroker().respond('hook-123', { behavior: 'allow' })).toBe(false);
   });

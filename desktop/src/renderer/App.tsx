@@ -50,7 +50,7 @@ import SettingsPanel from './components/SettingsPanel';
 import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
-import { useNativeBinding, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
+import { useNativeBinding, usePreset, RuntimeBindingFields, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
 import ModelPickerPopup from './components/ModelPickerPopup';
 import OpenTasksPopup from './components/OpenTasksPopup';
 import { useSessionTasks } from './hooks/useSessionTasks';
@@ -356,6 +356,10 @@ function AppInner() {
   const [welcomeRuntime, setWelcomeRuntime] = useState<Runtime>('claude');
   const [welcomeBinding, setWelcomeBinding] = useState<Binding | null>(() => loadLastBinding());
   const welcomeNb = useNativeBinding({ active: welcomeFormOpen, runtime: welcomeRuntime, binding: welcomeBinding, setBinding: setWelcomeBinding });
+  // Native harness preset for the welcome form — shared lifecycle hook (see
+  // RuntimeBinding.usePreset). Follows the folder heuristic until the user picks a
+  // card, then latches; re-arms every time the form (re)opens via welcomeFormOpen.
+  const { preset: welcomePreset, setPreset: setWelcomePreset } = usePreset({ active: welcomeFormOpen, cwd: welcomeCwd });
 
   // Per-session model state — keyed by sessionId, same pattern as permissionModes
   const [sessionModels, setSessionModels] = useState<Map<string, ModelAlias>>(new Map());
@@ -785,6 +789,19 @@ function AppInner() {
           next.add(info.id);
           return next;
         });
+      }
+      // Seed the native permission chip from the harness's ACTUAL starting mode
+      // (a fresh Coder preset starts on 'auto-edit', not the default 'ask') —
+      // fetch async and validate against the known modes, mirroring
+      // cycleNativePermission's guard. Fires for both fresh + resumed native
+      // sessions (both flow through session:created). Skip if already seeded.
+      if (info.provider === 'native' && (window as any).claude?.native?.getPermissionMode) {
+        (window.claude.native as any).getPermissionMode(info.id).then((mode: string) => {
+          const VALID: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
+          if (VALID.includes(mode as NativePermissionMode)) {
+            setNativePermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, mode as NativePermissionMode));
+          }
+        }).catch(() => { /* getPermissionMode unavailable (remote/older host) — chip falls back to 'ask' */ });
       }
     });
 
@@ -1943,7 +1960,7 @@ function AppInner() {
     [sessionId, dispatch, viewModes, getUsageSnapshot, guardedPtySend],
   );
 
-  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }) => {
+  const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }, preset?: string) => {
     // Use the explicitly chosen model; fall back to the current session's model
     const m = sessionModel || currentModel;
     const info = await (window.claude.session.create as any)({
@@ -1959,7 +1976,20 @@ function AppInner() {
       // main handler requires it for a fresh native session (session-manager
       // throws otherwise); undefined for claude sessions.
       binding: provider === 'native' ? binding : undefined,
+      // Native runtime only — the harness preset (Assistant | Coder) the fresh
+      // session is stamped with. Ignored for claude sessions.
+      preset: provider === 'native' ? preset : undefined,
     });
+    // I1 fix: deliver the RESOLVED harnessId to the live session pill. The
+    // session:created event that seeds the sessions entry is emitted+sent
+    // (process.nextTick) BEFORE the main handler finishes create/resume, so on a
+    // resume it carries harnessId=undefined (session-manager can only seed it for
+    // a fresh create; the resumed id is header-derived, known only after
+    // nativeHost.resume awaits). The main handler re-stamps the resolved id onto
+    // the SessionInfo it RETURNS — patch the entry from that invoke result here.
+    if (info?.harnessId) {
+      setSessions((prev) => prev.map((s) => (s.id === info.id ? { ...s, harnessId: info.harnessId } : s)));
+    }
     // Launch-in-new-window: hand the freshly-created session off to a peer
     // window via the same ownership-transfer path used by drag-detach.
     if (launchInNewWindow && info?.id) {
@@ -2032,6 +2062,13 @@ function AppInner() {
         resumeSessionId: claudeSessionId,
       });
       if (!nativeSession?.id) return;
+      // I1 fix (resume path): same invoke-result patch as createSession — the
+      // session:created event seeded this entry with harnessId=undefined (resume
+      // can't seed it synchronously), so the live pill would read "Assistant" for
+      // a resumed Coder session. The returned SessionInfo carries the resolved id.
+      if (nativeSession.harnessId) {
+        setSessions((prev) => prev.map((s) => (s.id === nativeSession.id ? { ...s, harnessId: nativeSession.harnessId } : s)));
+      }
       if (launchInNewWindow) {
         (window as any).claude?.detach?.openDetached?.({ sessionId: nativeSession.id });
       }
@@ -2757,7 +2794,13 @@ function AppInner() {
                   {/* Runtime (Claude Code | YouCoded) + native provider/model
                       picker — same shared control as the SessionStrip form.
                       Self-hides when native.supported is false. */}
-                  <RuntimeBindingFields runtime={welcomeRuntime} onRuntime={setWelcomeRuntime} nb={welcomeNb} />
+                  <RuntimeBindingFields
+                    runtime={welcomeRuntime}
+                    onRuntime={setWelcomeRuntime}
+                    nb={welcomeNb}
+                    preset={welcomePreset}
+                    onPreset={setWelcomePreset}
+                  />
                   {/* Claude model aliases — hidden for the native runtime, which
                       picks its model via the binding picker above. */}
                   {welcomeRuntime !== 'native' && (
@@ -2815,6 +2858,7 @@ function AppInner() {
                           welcomeRuntime,
                           undefined, // welcome form has no launch-in-new-window toggle
                           welcomeRuntime === 'native' ? (welcomeNb.effectiveBinding ?? undefined) : undefined,
+                          welcomeRuntime === 'native' ? welcomePreset : undefined,
                         );
                         setWelcomeFormOpen(false);
                         setWelcomeRuntime('claude');
@@ -2838,6 +2882,8 @@ function AppInner() {
                       setWelcomeCwd(sessionDefaults.projectFolder || '');
                       setWelcomeDangerous(sessionDefaults.skipPermissions || false);
                       setWelcomeModel(sessionDefaults.model || 'sonnet');
+                      // usePreset re-arms the heuristic itself on the welcomeFormOpen
+                      // false→true edge — no manual touched reset needed here.
                       setWelcomeFormOpen(true);
                     }}
                     className="panel-glass w-full px-8 py-2 text-base font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors"

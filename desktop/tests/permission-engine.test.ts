@@ -15,6 +15,14 @@ describe('decidePermission', () => {
     expect(decidePermission('Edit', 'src/a.ts', layers('ask')).action).toBe('ask');
     expect(decidePermission('Bash', 'ls', layers('ask')).action).toBe('ask');
   });
+  it('web tools are free in every mode baseline (spec §3.4 reads + web free)', () => {
+    for (const mode of ['ask', 'auto-edit', 'full-auto'] as const) {
+      const ws = decidePermission('WebSearch', 'anything', layers(mode));
+      expect(ws).toMatchObject({ action: 'allow', denyListed: false });
+      const wf = decidePermission('WebFetch', 'https://example.com', layers(mode));
+      expect(wf).toMatchObject({ action: 'allow', denyListed: false });
+    }
+  });
   it('auto-edit: edits allow, bash still asks', () => {
     expect(decidePermission('Edit', 'src/a.ts', layers('auto-edit')).action).toBe('allow');
     expect(decidePermission('Bash', 'npm test', layers('auto-edit')).action).toBe('ask');

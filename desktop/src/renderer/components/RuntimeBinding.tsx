@@ -1,5 +1,66 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
+import { PRESETS } from '../../shared/harness-manifest';
+
+// The two built-in native harness presets (personality profiles, not capability
+// tiers). A native session is stamped with one at create time; it drives the
+// session's starting permission posture + prompt personality.
+export type PresetId = 'assistant' | 'coder';
+
+/** Spec §3.4 heuristic: a project folder set at form-open → Coder, else Assistant.
+ *  Both new-session forms seed the preset from this until the user picks one. */
+export function defaultPresetFor(cwd: string): PresetId { return cwd.trim() ? 'coder' : 'assistant'; }
+
+// Preset lifecycle (spec §3.4): follow the folder heuristic (folder set → Coder,
+// empty → Assistant) UNTIL the user explicitly picks a card, then latch. Lifted
+// here so both new-session forms share ONE implementation (the whole reason
+// RuntimeBinding exists) — a per-form copy already drifted on the re-arm bug (I2):
+// the old code re-armed by resetting a `touched` ref AND setting cwd back to the
+// default folder, relying on a cwd-change to re-run a `useEffect([cwd])`. But
+// after the first create the folder is ALREADY the default, so `setCwd(same)`
+// caused no state change → the effect didn't re-run → the user's last manual pick
+// stuck even though `touched` was cleared. The fix keys the re-arm on `active`
+// (form open) transitioning false→true and re-derives EXPLICITLY from the current
+// cwd, so an unchanged cwd can no longer trap it.
+export function usePreset({ active, cwd }: { active: boolean; cwd: string }): {
+  preset: PresetId;
+  setPreset: (p: PresetId) => void;   // marks touched (latches the manual pick)
+} {
+  const [preset, setPresetState] = useState<PresetId>(() => defaultPresetFor(cwd));
+  // Has the user manually picked a card this open? While false, `preset` tracks
+  // the folder heuristic; once true, the manual pick sticks even if cwd changes.
+  const touched = useRef(false);
+  // Previous `active`, so we can detect the false→true (fresh open) edge.
+  const prevActive = useRef(active);
+
+  // Track the folder heuristic while the user hasn't picked. Pure derivation from
+  // cwd (no state writes when touched) — can't loop (dep is only cwd).
+  useEffect(() => {
+    if (!touched.current) setPresetState(defaultPresetFor(cwd));
+  }, [cwd]);
+
+  // Re-arm on each fresh OPEN: when the form goes closed→open, drop the latch and
+  // re-derive from the CURRENT cwd DIRECTLY. Keyed on `active` (not cwd), so the
+  // "cwd unchanged after create" trap that broke the per-form copies can't recur —
+  // this always fires on open regardless of whether cwd moved.
+  useEffect(() => {
+    if (active && !prevActive.current) {
+      touched.current = false;
+      setPresetState(defaultPresetFor(cwd));
+    }
+    prevActive.current = active;
+    // cwd is intentionally read but NOT a dependency: the re-arm must trigger on
+    // the `active` edge alone, using whatever cwd is current at that commit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
+  const setPreset = useCallback((p: PresetId) => {
+    touched.current = true;   // latch — the heuristic stops overriding this pick
+    setPresetState(p);
+  }, []);
+
+  return { preset, setPreset };
+}
 
 // Shared "Runtime" selector (Claude Code vs the YouCoded native harness) + the
 // native provider/model binding picker, used by BOTH new-session forms — the
@@ -147,11 +208,16 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
 // The Runtime toggle + (when native is chosen) the provider/model picker.
 // Self-gates on native support — renders nothing when there's only one runtime.
 export function RuntimeBindingFields({
-  runtime, onRuntime, nb,
+  runtime, onRuntime, nb, preset, onPreset,
 }: {
   runtime: Runtime;
   onRuntime: (r: Runtime) => void;
   nb: NativeBinding & { setBinding: (b: Binding) => void };
+  // The chosen native harness preset (Assistant | Coder) + its setter. Only
+  // meaningful when runtime === 'native'; the parent forwards it into the
+  // create call so the session is stamped with the right personality/posture.
+  preset: PresetId;
+  onPreset: (p: PresetId) => void;
 }) {
   if (!nb.nativeSupported) return null;
   return (
@@ -219,6 +285,28 @@ export function RuntimeBindingFields({
                     ))}
                   </select>
                 )}
+              </div>
+
+              {/* Preset picker (spec §3.4): the native harness personality —
+                  Assistant (asks first) vs Coder (agentic, auto-edits). Both carry
+                  the full tool suite; they differ in prompt + starting permission
+                  posture. Stamped at create; drives the resolved harnessId. */}
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Preset</label>
+                <div className="flex gap-2">
+                  {PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => onPreset(p.id as PresetId)}
+                      aria-pressed={preset === p.id}
+                      className={`flex-1 text-left rounded border px-2 py-1.5 ${preset === p.id ? 'border-accent bg-inset' : 'border-edge bg-panel hover:bg-inset'}`}
+                    >
+                      <div className="text-xs text-fg">{p.name}</div>
+                      <div className="text-[10px] text-fg-muted leading-snug">{p.description}</div>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Memory guard (#2): block only when clearly too large; otherwise a

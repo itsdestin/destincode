@@ -18,8 +18,9 @@ import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision } from '../../shared/permission-types';
-import type { NativeTool, ToolContext, ToolResultPayload } from './tools/types';
+import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { checkPathGuard } from './tools/guards';
+import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 
 export interface HarnessSessionOpts {
@@ -39,6 +40,9 @@ export interface HarnessSessionOpts {
   /** System prompt assembled ONCE at init (Task 11); falls back to the
    *  harness's own systemPrompt for the Chat preset. */
   systemPrompt?: string;
+  /** Runtime services threaded into every tool's ToolContext (spec §3.2).
+   *  Injected by NativeSessionHost (e.g. { search } → WebSearch). */
+  toolServices?: ToolServices;
   /** Test hook: step-level retry backoff (ms). Defaults to [1000, 2000, 4000]. */
   retryDelays?: number[];
 }
@@ -72,6 +76,36 @@ function mapStopReason(finishReason: string | undefined): string {
   }
 }
 const APPROX_CHARS_PER_TOKEN = 4;
+
+// Turn a caught provider/SDK error into the most ACTIONABLE message we can show
+// (docs/error-message-standards.md — surface the real detail, never a generic
+// wrapper). The AI SDK wraps a provider HTTP failure as AI_APICallError (with
+// `.statusCode` + a `.responseBody` JSON string) and its retry layer as
+// AI_RetryError (with `.lastError`). The bare `.message` is useless
+// ("Provider returned error" / "Failed after 3 attempts") — the real, usually
+// user-fixable detail lives in the body. OpenRouter, for example, nests the
+// upstream reason at `error.metadata.raw` (e.g. "<model> is temporarily
+// rate-limited upstream. Please retry shortly, or add your own key…").
+export function describeProviderError(err: any): string {
+  const api = err?.lastError ?? err;            // unwrap the retry wrapper
+  const status = api?.statusCode ?? api?.status;
+  let detail: string | undefined;
+  // responseBody is usually a JSON string; some providers pre-parse into `.data`.
+  const parsedBody = (() => {
+    if (api?.data && typeof api.data === 'object') return api.data;
+    if (typeof api?.responseBody === 'string') {
+      try { return JSON.parse(api.responseBody); } catch { /* non-JSON body */ }
+    }
+    return undefined;
+  })();
+  const errObj = parsedBody?.error ?? parsedBody;
+  detail = errObj?.metadata?.raw ?? errObj?.message ?? parsedBody?.message;
+  if (typeof detail === 'string' && detail.trim()) {
+    return status ? `${detail.trim()} (provider error ${status})` : detail.trim();
+  }
+  // No structured detail (network error, etc.) — the SDK message beats nothing.
+  return api?.message ?? err?.message ?? 'The model request failed.';
+}
 // Back-filled into a tool-result when a turn is interrupted mid-step (during a
 // permission ask). Every collected tool-call MUST get a matching tool-result or
 // the persisted history ends on a dangling tool_call that provider APIs reject.
@@ -335,7 +369,7 @@ export class HarnessSession extends EventEmitter {
       if (this.interrupted || err?.name === 'AbortError' || this.abort?.signal.aborted) {
         this.emitEvent('user-interrupt', {});
       } else {
-        this.emitEvent('session-error', { text: err?.message ?? 'The model request failed.' });
+        this.emitEvent('session-error', { text: describeProviderError(err) });
       }
     } finally {
       this.abort = null;
@@ -484,6 +518,20 @@ export class HarnessSession extends EventEmitter {
       recentCalls.length = 0;   // allow resets the window
     }
 
+    // 2.5 Interactive tools (AskUserQuestion): the ask IS the execution. Skip
+    //     guards/decide — there is no side effect to gate; the ask rail supplies
+    //     pause/cancel semantics. The card's answers come back via updatedInput
+    //     (broker passthrough), formatted here into the tool result. Kept BELOW
+    //     the doom-loop check on purpose: a model re-asking the identical question
+    //     three times IS a doom loop and should still trip.
+    if (tool.interactive) {
+      if (!this.opts.askUser) return { text: `No user-interaction handler is wired for this session; ${call.toolName} cannot run. This is a configuration error.`, isError: true };
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: false });
+      if (d.behavior === 'canceled') return 'interrupted';
+      if (d.behavior !== 'allow') return { text: 'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.', isError: true };
+      return { text: formatAnswers(args as any, d.updatedInput) };
+    }
+
     // 3. Tool-layer guards (below ALL configuration) — file tools only. Bash's
     //    subject is a command string (not a path); TodoWrite's is undefined.
     const subject = tool.permissionSubject(args);
@@ -521,6 +569,7 @@ export class HarnessSession extends EventEmitter {
       signal: this.abort!.signal,
       readRegistry: this.readRegistry,
       todos: this.todos,
+      ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),
     });
   }
 

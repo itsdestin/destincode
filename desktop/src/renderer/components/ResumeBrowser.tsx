@@ -171,6 +171,9 @@ interface PastSession {
   // skips the CC-only resume options — model / skip-perms). Typed `string`
   // because Conversation-Store rows (Phase 2a) populate it from a stored string.
   provider?: string;
+  // Native runtime only: the stored harness preset id ('assistant' | 'coder' |
+  // legacy 'chat'). Drives the preset label next to the YouCoded badge.
+  harnessId?: string;
   // Conversation Store (Phase 2a) fields, present on store-fed rows only.
   device?: string;   // last device that ran a turn
   // True when the conversation's project folder is not on THIS device (synced
@@ -593,6 +596,14 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 className="text-[9px] px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
                 title="YouCoded native session"
               >YouCoded</span>
+            )}
+            {/* Preset label — which harness personality this native session runs
+                as. Legacy 'chat' (and any unknown id) falls back to Assistant. */}
+            {s.provider === 'native' && (
+              <span
+                className="text-[9px] px-1.5 py-0.5 rounded bg-inset text-fg-muted shrink-0"
+                title="YouCoded native session"
+              >{s.harnessId === 'coder' ? 'Coder' : 'Assistant'}</span>
             )}
             <span className="truncate">{s.name}</span>
           </div>

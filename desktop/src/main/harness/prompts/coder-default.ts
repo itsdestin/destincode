@@ -1,7 +1,7 @@
-// Plan A's single preset body (Coder-shaped). Plans B/C add the preset family
-// + per-provider variants. Module-not-.txt is deliberate: main-process bundling
-// of loose assets is Plan C scope. POLICY: this text is original — never paste
-// prompt text from other tools.
+// The Coder preset's prompt body (the agentic-coding personality). Its sibling
+// is assistant-default.ts; both are resolved by preset-registry.ts. Module-not-
+// .txt is deliberate: main-process bundling of loose assets is Plan C scope.
+// POLICY: this text is original — never paste prompt text from other tools.
 export const CODER_DEFAULT_BODY = `You help the user work on their software project through conversation.
 
 How you work:

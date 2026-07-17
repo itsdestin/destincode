@@ -672,12 +672,15 @@ describe('native runtime capability parity', () => {
 
 describe('native:*/provider:* channel parity', () => {
   const NEW_TYPES = [
-    'native:send', 'native:interrupt', 'native:set-binding', 'native:set-permission-mode', 'native:sessions-list',
+    'native:send', 'native:interrupt', 'native:set-binding', 'native:set-permission-mode',
+    // Task 14 — read-side mode fetch that seeds the chip on create/resume.
+    'native:get-permission-mode', 'native:sessions-list',
     'provider:list', 'provider:upsert', 'provider:remove', 'provider:test', 'provider:set-key', 'provider:catalog',
   ];
   const CHANNEL_TO_CONST: Record<string, string> = {
     'native:send': 'IPC.NATIVE_SEND', 'native:interrupt': 'IPC.NATIVE_INTERRUPT',
     'native:set-binding': 'IPC.NATIVE_SET_BINDING', 'native:set-permission-mode': 'IPC.NATIVE_SET_PERMISSION_MODE',
+    'native:get-permission-mode': 'IPC.NATIVE_GET_PERMISSION_MODE',
     'native:sessions-list': 'IPC.NATIVE_SESSIONS_LIST',
     'provider:list': 'IPC.PROVIDER_LIST', 'provider:upsert': 'IPC.PROVIDER_UPSERT',
     'provider:remove': 'IPC.PROVIDER_REMOVE', 'provider:test': 'IPC.PROVIDER_TEST',
@@ -695,6 +698,50 @@ describe('native:*/provider:* channel parity', () => {
   it('registered in ipc-handlers.ts (literal or IPC constant)', () => {
     const src = read('src', 'main', 'ipc-handlers.ts');
     for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+  // native:get-permission-mode is the one native channel with a remote-server WS
+  // case (Task 14 — the chip must seed over remote too); assert that fifth surface.
+  it('native:get-permission-mode handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    expect(src, "native:get-permission-mode missing from remote-server.ts").toContain(`'native:get-permission-mode'`);
+  });
+});
+
+// Regression net for the search:* IPC channels (Phase 2 Plan B — keyed Tavily/
+// Exa WebSearch upgrades). Full four-surface parity: preload.ts (inlined
+// literal) / remote-shim.ts (invoke literal) / ipc-handlers.ts (IPC.* constant) /
+// SessionService.kt (not-implemented-on-mobile stub). Drift would silently break
+// the Search provider settings on one platform.
+describe('search:* channel parity', () => {
+  const NEW_TYPES = [
+    'search:list', 'search:set-key', 'search:remove-key', 'search:test',
+  ];
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'search:list': 'IPC.SEARCH_LIST',
+    'search:set-key': 'IPC.SEARCH_SET_KEY',
+    'search:remove-key': 'IPC.SEARCH_REMOVE_KEY',
+    'search:test': 'IPC.SEARCH_TEST',
+  };
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts (literal or IPC constant)', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`'${t}'`);
   });
   it('stubbed in SessionService.kt (Android)', () => {
     const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
