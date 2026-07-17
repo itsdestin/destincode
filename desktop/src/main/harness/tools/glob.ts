@@ -46,6 +46,8 @@ function fileGlobToRegex(glob: string): RegExp {
 export const GlobTool = defineTool({
   name: 'Glob',
   description: 'Find files by glob pattern (e.g. "src/**/*.ts"). Returns paths sorted by modification time, newest first.',
+  // Compact form for small local models (simplified presentation, spec §4.2).
+  shortDescription: 'Find files matching a glob pattern, newest first.',
   inputSchema: z.object({ pattern: z.string(), path: z.string().optional() }),
   permissionSubject: (a) => a.path ?? '.',
   async execute(args, ctx) {

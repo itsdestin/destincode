@@ -1155,16 +1155,11 @@ function AppInner() {
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });
-          // Task 12: mirror this native turn's usage to main so remote browsers +
-          // status-parity consumers (Task 11's cache) get context/tokens/speed too.
-          // Guard on the native provider (sessionsRef stays fresh across this
-          // once-registered handler) — CC sessions get usage from the statusline,
-          // not here. reportUsage is optional-chained: absent on the CC-only shim
-          // and older remote clients.
-          if (event.data.usage
-              && sessionsRef.current?.find?.((s: any) => s.id === event.sessionId)?.provider === 'native') {
-            window.claude.native?.reportUsage?.({ sessionId: event.sessionId, usage: event.data.usage });
-          }
+          // Native StatusBar chips (context/tokens/speed) are sourced from THIS
+          // turn-complete usage via the reducer (App.tsx `nativeStatusUsage` memo →
+          // selectNativeStatusChips), which serves both desktop and remote. The old
+          // reportUsage → native:usage-report → status:data cache path was dead
+          // (nothing read its nativeUsageMap) and was removed in the whole-branch review.
           break;
         case 'assistant-thinking': {
           // Text payload → real reasoning content (collapsible in chat).

@@ -127,3 +127,26 @@ describe('prompt variant overlay', () => {
     expect(p).toMatch(/TodoWrite/);
   });
 });
+
+describe('assembleSystemPrompt — tool-less models (hasTools:false)', () => {
+  const base = { presetBody: 'PRESET_BODY', cwd: process.cwd(), appVersion: '9.9.9' };
+
+  it('omits the tool-guidance line AND the variant overlay when hasTools is false', () => {
+    // A tool-less model (profile.supportsTools === false, e.g. Gemma 3n) gets no
+    // tools attached, so it must not be told to prefer tools or call one at a time.
+    const p = assembleSystemPrompt({ ...base, promptVariant: 'local-small', hasTools: false });
+    expect(p).not.toContain('Prefer dedicated tools');
+    expect(p).not.toContain('one tool at a time');
+    // Identity + preset body are tool-agnostic and must still be present.
+    expect(p).toContain('YouCoded assistant');
+    expect(p).toContain('PRESET_BODY');
+  });
+
+  it('hasTools:true (default) is unchanged — keeps guidance line + overlay', () => {
+    const withTools = assembleSystemPrompt({ ...base, promptVariant: 'local-small', hasTools: true });
+    const defaulted = assembleSystemPrompt({ ...base, promptVariant: 'local-small' });
+    expect(withTools).toBe(defaulted);   // explicit true === default
+    expect(withTools).toContain('Prefer dedicated tools');
+    expect(withTools).toContain('one tool at a time');
+  });
+});

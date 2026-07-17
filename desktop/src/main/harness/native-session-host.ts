@@ -244,8 +244,15 @@ export class NativeSessionHost extends EventEmitter {
    *  falls back to 'openrouter' — the cloud-safe default (full posture). */
   private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
     const raw = await this.contextLengthFor(binding);
-    const contextLength = effectiveContextForModel(raw, binding.modelId);   // registry-ceiling clamp
     const type = (await this.providerTypeFor(binding)) ?? 'openrouter';     // unknown → cloud-safe default
+    // The registry ceiling (effectiveContextForModel) is a LOCAL-model concern: it
+    // caps a small GGUF loaded at a too-large -c to its real trained window. But
+    // matchKnownModel keys ONLY on the model-id regex, so a HOSTED model whose id
+    // happens to match a local family (e.g. OpenRouter `qwen/qwen3.5-9b` matching
+    // the local Qwen entry) would be wrongly clamped, capping a cloud window that
+    // may be far larger. So resolve the provider type FIRST and only clamp locals;
+    // cloud/hosted bindings pass their real window through unchanged.
+    const contextLength = type === 'local-engine' ? effectiveContextForModel(raw, binding.modelId) : raw;
     const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength });
     return { contextLength, profile };
   }
@@ -274,7 +281,9 @@ export class NativeSessionHost extends EventEmitter {
       // would ripple through every construction site for no per-turn benefit
       // (Task 11 review ruling — the sync cost is deliberate and bounded).
       // profile.promptVariant selects the capability-steering overlay (local-small only in v1).
-      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant }),
+      // hasTools mirrors buildAiTools()'s gate: a tool-less profile (supportsTools === false)
+      // gets NO tools attached, so the prompt must also drop the tool-guidance line + overlay.
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools }),
     };
   }
 

@@ -1527,11 +1527,6 @@ export function installShim(): void {
       queueRemove: (sessionId: string, queueId: string) => invoke('native:queue-remove', { sessionId, queueId }),
       // Fire-and-forget: no response expected
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
-      // Shape parity only — native.supported is false over remote, so a browser
-      // never runs a native session to report usage for. The method exists so
-      // window.claude.native is shape-identical across platforms; fire() sends it
-      // and main's inert-on-no-native-session cache simply holds the value.
-      reportUsage: (payload: { sessionId: string; usage: unknown }) => fire('native:usage-report', payload),
       setBinding: (sessionId: string, binding: unknown) => invoke('native:set-binding', { sessionId, binding }),
       setPermissionMode: (sessionId: string, mode: string) => invoke('native:set-permission-mode', { sessionId, mode }),
       getPermissionMode: (sessionId: string) => invoke('native:get-permission-mode', { sessionId }),

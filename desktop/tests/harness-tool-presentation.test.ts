@@ -25,6 +25,11 @@ describe('simplified tool presentation', () => {
     // simplified path would otherwise echo the full description verbatim.)
     expect((simplified.WebSearch.description as string).length).toBeLessThan(200);
     expect((simplified.WebSearch.description as string).length).toBeLessThan((full.WebSearch.description as string).length);
+    // The 7 CORE tools must ALSO shrink under simplified presentation — before
+    // they got a shortDescription they fell back to the full description, so a
+    // small local model still saw the full schema (the feature was hollow). Bash
+    // is the canary: its simplified form must be strictly shorter than its full one.
+    expect((simplified.Bash.description as string).length).toBeLessThan((full.Bash.description as string).length);
   });
   it('full profile keeps rich descriptions and all ten tools', () => {
     expect(Object.keys((makeSession({ tools: CORE_TOOLS, profile: CLOUD_DEFAULT }) as any).buildAiTools())).toHaveLength(10);

@@ -323,6 +323,29 @@ describe('NativeSessionHost', () => {
       expect(profileOf(h, 's').doomLoopThreshold).toBe(3);
       await h.destroyAll();
     });
+
+    // FIX-3 (whole-branch review): the registry context ceiling is a LOCAL concern.
+    // matchKnownModel keys only on the model-id regex, so a HOSTED model whose id
+    // matches a local family (OpenRouter `qwen/qwen3.5-9b` → the local Qwen 3.5 9B
+    // entry, ceiling 262144) must NOT be clamped — its real cloud window (1M here)
+    // passes through untouched. The identical id on a local-engine binding IS clamped.
+    const contextOf = (h: NativeSessionHost, id: string) => ((h as any).live.get(id).session as any).opts.contextLength;
+
+    it('a NON-local binding matching a registry family is NOT clamped to the registry ceiling', async () => {
+      // Same model id, same raw 1M window; only the provider TYPE differs.
+      const bigWindow = async () => 1_000_000;
+      const typeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, bigWindow as any, typeFor as any);
+
+      // Hosted (OpenRouter): real 1M window survives — no local registry clamp.
+      await h.create({ sessionId: 'cloud', cwd: root, binding: { providerId: 'openrouter', modelId: 'qwen/qwen3.5-9b' } });
+      expect(contextOf(h, 'cloud')).toBe(1_000_000);
+
+      // Local-engine, same id: clamped down to the registry's trained ceiling.
+      await h.create({ sessionId: 'local', cwd: root, binding: { providerId: 'local', modelId: 'qwen/qwen3.5-9b' } });
+      expect(contextOf(h, 'local')).toBe(262144);
+      await h.destroyAll();
+    });
   });
 
   // ---- Task 12: per-session permission mode + remembered rules ----

@@ -1132,11 +1132,6 @@ export const IPC = {
   // on create/resume so a fresh Coder session shows AUTO EDIT (not the default ASK).
   NATIVE_GET_PERMISSION_MODE: 'native:get-permission-mode',
   NATIVE_SESSIONS_LIST: 'native:sessions-list',
-  // Renderer→main fire-and-forget: a native session reports its per-turn usage
-  // so main can cache it and feed buildStatusData() → StatusBar chips
-  // (context/tokens/speed) for native sessions AND remote browsers. Mirrors
-  // remote:attention-changed. (Task 11 — spec §4.5)
-  NATIVE_USAGE_REPORT: 'native:usage-report',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_UPSERT: 'provider:upsert',
   PROVIDER_REMOVE: 'provider:remove',

@@ -214,7 +214,7 @@ describe('HarnessSession — multi-step turn driver', () => {
       const results = events.filter((e) => e.type === 'tool-result');
       const last = results[results.length - 1];
       expect(last.data.isError).toBe(true);
-      expect(last.data.toolResult).toMatch(/repeated three times/);
+      expect(last.data.toolResult).toMatch(/repeated 3 times/);   // threshold-accurate (default profile → 3)
       expect((read as any).calls).toHaveLength(2);       // 3rd never executed (doom denied)
     }
     // allow path: doom ask allows, window resets, tool executes.

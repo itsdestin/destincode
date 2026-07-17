@@ -8,6 +8,8 @@ import { toHunks } from './edit';
 export const WriteTool = defineTool({
   name: 'Write',
   description: 'Create a new file or fully overwrite an existing one. To overwrite, you must Read the file first.',
+  // Compact form for small local models (simplified presentation, spec §4.2).
+  shortDescription: 'Create a new file or completely overwrite an existing one with new content.',
   inputSchema: z.object({ file_path: z.string(), content: z.string() }),
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {

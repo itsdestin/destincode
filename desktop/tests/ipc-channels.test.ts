@@ -882,37 +882,10 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
   });
 });
 
-// Regression net for native:usage-report (Phase 2 Plan C, Task 11). A
-// renderer→main fire-and-forget event: a native session's per-turn usage is
-// cached in main and folded into buildStatusData() so the StatusBar chips
-// (context/tokens/speed) work for native sessions AND remote browsers. Mirrors
-// the remote:attention-changed pattern exactly. Four surfaces carry the channel
-// string; remote-shim exposes the reportUsage method so window.claude.native
-// stays shape-identical across platforms. SessionService.kt carries an inert
-// case (Android native runtime is Phase 5 — no reply).
-describe('native:usage-report channel parity', () => {
-  const CHANNEL = 'native:usage-report';
-  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
-
-  it('declared in preload.ts', () => {
-    expect(read('src', 'main', 'preload.ts')).toContain(`'${CHANNEL}'`);
-  });
-  it('reportUsage method + channel referenced in remote-shim.ts', () => {
-    const src = read('src', 'renderer', 'remote-shim.ts');
-    expect(src).toContain(`'${CHANNEL}'`);
-    expect(src).toContain('reportUsage');
-  });
-  it('handled in ipc-handlers.ts', () => {
-    expect(read('src', 'main', 'ipc-handlers.ts')).toContain(`'${CHANNEL}'`);
-  });
-  it('declared as a channel constant in types.ts', () => {
-    expect(read('src', 'shared', 'types.ts')).toContain(`'${CHANNEL}'`);
-  });
-  it('inert case in SessionService.kt (Android)', () => {
-    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
-    expect(kt).toContain(`"${CHANNEL}"`);
-  });
-});
+// (The native:usage-report channel + its four-surface parity net were removed in
+// the Phase 2 Plan C whole-branch review: the renderer→main usage cache
+// (nativeUsageMap) was dead — nothing read it. Native StatusBar chips are sourced
+// from the reducer's turn-complete usage via selectNativeStatusChips instead.)
 
 // Model memory lifecycle (2026-07-14): per-model residency push + memory guard
 // + [Reload Model]. Same self-contained parity shape as the Plan B/C describes.

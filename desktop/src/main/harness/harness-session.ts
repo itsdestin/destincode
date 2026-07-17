@@ -794,7 +794,10 @@ export class HarnessSession extends EventEmitter {
     if (recentCalls.length === threshold && recentCalls.every((s) => s === sig)) {
       const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'doom_loop', toolInput: { repeated: call.toolName }, denyListed: false });
       if (d?.behavior === 'canceled') return 'interrupted';
-      if (d?.behavior !== 'allow') return { text: 'Stopped: this exact call has been repeated three times. Try a different approach.', isError: true };
+      // Threshold-accurate: the doom-loop window length varies by profile (2 for
+      // small local models, 3 for cloud), so quote the ACTUAL threshold, not a
+      // hardcoded "three". Model-facing corrective text, not a user-facing error.
+      if (d?.behavior !== 'allow') return { text: `Stopped: this exact call has been repeated ${threshold} times. Try a different approach.`, isError: true };
       recentCalls.length = 0;   // allow resets the window
     }
 
