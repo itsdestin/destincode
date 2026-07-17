@@ -26,7 +26,16 @@ jobs:
             artifact: desktop/release/*.dmg
             name: macos
           - os: ubuntu-latest
-            artifact: desktop/release/*.AppImage
+            # Mirrors desktop-release.yml. electron-builder.yml has built all
+            # four Linux targets since #98, but this workflow kept globbing only
+            # the AppImage — so a beta silently discarded the deb/rpm/pacman it
+            # had just built, and they were untestable before a release carried
+            # them (#98 postdates the v1.2.4 tag, so none ever has).
+            artifact: |
+              desktop/release/*.AppImage
+              desktop/release/*.deb
+              desktop/release/*.rpm
+              desktop/release/*.pacman
             name: linux
 
     runs-on: ${{ matrix.os }}
