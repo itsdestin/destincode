@@ -8,8 +8,8 @@ import type { PoseName } from '../mascot/mascot-poses';
 const DRAG_THRESHOLD_PX = 4;
 // Drag velocity is normalized to the 80px buddy-window scale before feeding
 // the limb springs (spec §5: k = 80/size × 2.4) so trailing feels identical
-// at any render size. The buddy window IS 80px, so the factor is the 2.4 gain.
-const DRAG_VELOCITY_GAIN = 2.4;
+// at any render size (the buddy renders at 112px since the 2026-07-16 bump).
+const DRAG_VELOCITY_GAIN = (80 / 112) * 2.4;
 
 // Pointer-driven drag state. Anchor-based: we capture the cursor's offset
 // inside the 80×80 mascot at pointerdown (grabOffsetX/Y from e.clientX/Y)
@@ -216,8 +216,9 @@ export function BuddyMascot() {
         !useRig && !reducedEffects && !grabbed && dock.mode !== 'peeking' ? 'mascot-breathing' : '',
       ].filter(Boolean).join(' ')}
       style={{
-        width: 80,
-        height: 80,
+        // 112px window (main.ts buddyDimensions) — sized up 40% per Destin.
+        width: 112,
+        height: 112,
         // NOTE: we deliberately do NOT set -webkit-app-region: drag here.
         // On Windows, Electron implements drag regions via WM_NCHITTEST →
         // HTCAPTION, which makes the OS consume ALL pointer events for

@@ -30,7 +30,8 @@ export function clampToWorkArea(pos: Point, size: Size, workArea: Rect): Point {
   };
 }
 
-const MASCOT_SIZE: Size = { width: 80, height: 80 };
+// 112px (was 80): Destin's 2026-07-16 dev test — the buddy read too small.
+const MASCOT_SIZE: Size = { width: 112, height: 112 };
 const CHAT_SIZE: Size = { width: 320, height: 480 };
 // Action-bar size + position math live in buddy-bar-geometry.ts (pure,
 // unit-tested); main.ts imports the same BAR_SIZE so the BrowserWindow
@@ -231,7 +232,7 @@ export class BuddyWindowManager {
     }
     const saved = this.deps.getPersistedPosition('mascot');
     const primary = screen.getPrimaryDisplay().workArea;
-    const defaultPos = { x: primary.x + primary.width - 104, y: primary.y + primary.height - 104 };
+    const defaultPos = { x: primary.x + primary.width - MASCOT_SIZE.width - 24, y: primary.y + primary.height - MASCOT_SIZE.height - 24 };
     const raw = saved ?? defaultPos;
     // getDisplayMatching picks the display containing the window's bounds;
     // if the saved position is off-screen entirely, fall back to primary.
@@ -350,14 +351,15 @@ export class BuddyWindowManager {
     const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
     const wa = display.workArea;
-    // Top-align chat with the mascot (chat.y === mascot.y) so the buddy
-    // icon sits next to the chat's header, not its midpoint or bottom.
-    const y = mb.y;
-    const rightX = mb.x + mb.width + 12;
-    const rightFits = rightX + CHAT_SIZE.width <= wa.x + wa.width;
-    const raw = rightFits
-      ? { x: rightX, y }
-      : { x: mb.x - CHAT_SIZE.width - 12, y };
+    // Chat opens BELOW the mascot (horizontally centered on it), flipping
+    // ABOVE when the mascot sits too close to the workArea bottom — Destin's
+    // 2026-07-16 dev-test layout: bar beside the buddy, chat underneath.
+    const x = mb.x + Math.round(mb.width / 2) - Math.round(CHAT_SIZE.width / 2);
+    const belowY = mb.y + mb.height + 12;
+    const belowFits = belowY + CHAT_SIZE.height <= wa.y + wa.height;
+    const raw = belowFits
+      ? { x, y: belowY }
+      : { x, y: mb.y - CHAT_SIZE.height - 12 };
     return clampToWorkArea(raw, CHAT_SIZE, wa);
   }
 

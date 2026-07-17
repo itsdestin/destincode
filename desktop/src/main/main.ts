@@ -491,7 +491,7 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
 
   // Buddy window dimensions: mascot = 80×80; chat = 320×480; bar = BAR_SIZE.
   const buddyDimensions: { width?: number; height?: number } = opts?.buddy === 'mascot'
-    ? { width: 80, height: 80 }
+    ? { width: 112, height: 112 }
     : opts?.buddy === 'chat'
     ? { width: 320, height: 480 }
     : opts?.buddy === 'bar'

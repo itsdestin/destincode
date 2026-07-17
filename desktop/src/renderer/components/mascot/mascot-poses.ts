@@ -144,15 +144,18 @@ export function waveSway(t: number): number {
 /** Per-limb rotation targets (degrees) from smoothed drag velocity.
  *  Velocity must be normalized to the 80px buddy-window scale by the caller
  *  (k = 80/renderSize × 2.4) so trailing feels identical at any size.
- *  Limbs trail OPPOSITE the motion — body leads, extremities lag. */
+ *  Limbs trail BEHIND the motion: dragging right swings hanging limbs
+ *  clockwise (POSITIVE — tips lag back-left of their pivots). The original
+ *  sign was inverted and the ±28 lean clamp saturated at slow drags —
+ *  corrected + widened per Destin's 2026-07-16 dev-test feedback so faster
+ *  drags visibly trail further. */
 export function dragTargets(vx: number, vy: number): Record<LimbId, number> {
-  const lean = clamp(-vx * 1.6, -28, 28);
+  const lean = clamp(vx * 2.2, -40, 40);
   const lift = clamp(vy * 0.8, -10, 10);
-  const z = (v: number) => v + 0; // normalize -0 → +0 (vx=0 yields -0 through the negation)
   return {
-    'rig-arm-left': z(clamp(lean * 1.4 + lift, -45, 45)),
-    'rig-arm-right': z(clamp(lean * 1.4 - lift, -45, 45)),
-    'rig-leg-left': z(clamp(lean * 1.1, -45, 45)),
-    'rig-leg-right': z(clamp(lean * 1.1, -45, 45)),
+    'rig-arm-left': clamp(lean * 1.4 + lift, -65, 65),
+    'rig-arm-right': clamp(lean * 1.4 - lift, -65, 65),
+    'rig-leg-left': clamp(lean * 1.1, -55, 55),
+    'rig-leg-right': clamp(lean * 1.1, -55, 55),
   };
 }

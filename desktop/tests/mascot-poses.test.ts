@@ -73,14 +73,17 @@ describe('stepSpring', () => {
 });
 
 describe('dragTargets', () => {
-  it('limbs trail opposite the direction of horizontal motion', () => {
-    const t = dragTargets(10, 0); // moving right → limbs lag left (negative rotation)
-    expect(t['rig-arm-left']).toBeLessThan(0);
-    expect(t['rig-leg-left']).toBeLessThan(0);
+  it('limbs trail behind horizontal motion (drag right → clockwise-positive lag)', () => {
+    // Hanging limbs pivot at the top: when the body moves right the tips lag
+    // back-LEFT of the pivot, which is a CLOCKWISE (positive) rotation.
+    // Pinned after the 2026-07-16 dev test — the original sign read backwards.
+    const t = dragTargets(10, 0);
+    expect(t['rig-arm-left']).toBeGreaterThan(0);
+    expect(t['rig-leg-left']).toBeGreaterThan(0);
   });
   it('is clamped', () => {
     const t = dragTargets(10000, 10000);
-    for (const v of Object.values(t)) expect(Math.abs(v)).toBeLessThanOrEqual(45);
+    for (const v of Object.values(t)) expect(Math.abs(v)).toBeLessThanOrEqual(65);
   });
   it('zero velocity → zero targets', () => {
     const t = dragTargets(0, 0);

@@ -328,8 +328,9 @@ body[data-mode="buddy-mascot"] .mascot-bounce {
 /* ── Dock/peek staging (spec §6.2) ──
    The 80×80 window stays flush on-screen at the edge; the ARTWORK translates
    past the edge. Bottom/top: a plain sink (~42% visible = face + gripping
-   hands from the 'peek' pose). Sides: the approved "75° wider" staging —
-   body 18% visible, shifted up, leaning ∓75° via the independent `rotate`
+   hands from the 'peek' pose). Sides: the "75° wider" staging,
+   opened up to ~55% visible (2026-07-16 dev test: at 18% the head clipped
+   entirely — only mittens showed), shifted up, leaning ∓75° via the independent `rotate`
    property (composes with the wrapper scale + flat-art translate); the
    edge-pinned mittens (PeekHands) are OUTSIDE this element so they stay
    planted on the frame while the body sags between them. */
@@ -341,15 +342,15 @@ body[data-mode="buddy-mascot"] .mascot-sink {
 body[data-mode="buddy-mascot"] .mascot-lean {
   transition: rotate 380ms cubic-bezier(0.34, 1.2, 0.5, 1);
 }
-body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="bottom"] { transform: translateY(58%); }
-body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="top"] { transform: translateY(-58%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="bottom"] { transform: translateY(45%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="top"] { transform: translateY(-45%); }
 /* Side peeks: the sink slides the box past the edge (18% visible), shifted up
    so the body sags below the hand line; the LEAN layer inside rotates the
    body ∓75° about its own (already-moved) center, tipping the head back out
    over the edge — the approved "75° wider" staging. */
-body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] { transform: translate(82%, -22.6%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] { transform: translate(45%, -22.6%); }
 body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] .mascot-lean { rotate: -75deg; }
-body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] { transform: translate(-82%, -22.6%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] { transform: translate(-45%, -22.6%); }
 body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] .mascot-lean { rotate: 75deg; }
 /* Swing-out whip: leaving a side peek releases the lean THROUGH ±14° past
    vertical (~230ms, set by BuddyMascot), then the transition settles it to 0
@@ -361,11 +362,11 @@ body[data-mode="buddy-mascot"] .mascot-sink[data-swing="left"] .mascot-lean { ro
    toward the mascot side (left edge) so it reads as growing out of the buddy. */
 body[data-mode="buddy-chat"] .buddy-chat-enter {
   animation: buddy-chat-in 120ms ease-out;
-  transform-origin: 0% 20%;
+  transform-origin: 50% 0%;
 }
 body[data-mode="buddy-chat"] .buddy-chat-exit {
   animation: buddy-chat-out 120ms ease-in forwards;
-  transform-origin: 0% 20%;
+  transform-origin: 50% 0%;
 }
 @keyframes buddy-chat-in {
   from { opacity: 0; transform: scale(0.92); }

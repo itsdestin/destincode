@@ -1,33 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { BAR_SIZE, computeBarPosition } from '../src/main/buddy-bar-geometry';
+import { BAR_SIZE, BAR_GAP_PX, computeBarPosition } from '../src/main/buddy-bar-geometry';
 
 const wa = { x: 0, y: 0, width: 1920, height: 1080 };
-const mascot = (x: number, y: number) => ({ x, y, width: 80, height: 80 });
+const mascot = (x: number, y: number) => ({ x, y, width: 112, height: 112 });
 
 describe('computeBarPosition', () => {
-  it('centers the bar under the mascot with a 6px gap', () => {
-    // mascot center x = 500 + 40 = 540; bar left = 540 - 74 = 466; y = 300 + 80 + 6
-    expect(computeBarPosition(mascot(500, 300), wa)).toEqual({ x: 466, y: 386 });
+  it('sits to the right of the mascot, vertically centered on it', () => {
+    // mascot center y = 300 + 56; bar top = 356 - 22 = 334; x = 500 + 112 + 6
+    expect(computeBarPosition(mascot(500, 300), wa)).toEqual({ x: 618, y: 334 });
   });
 
-  it('flips above the mascot when below would clip the workArea bottom', () => {
-    // mascot at bottom: below-y = 1000 + 80 + 6 = 1086 > 1080 - 44 → flip above
-    expect(computeBarPosition(mascot(500, 1000), wa)).toEqual({ x: 466, y: 1000 - BAR_SIZE.height - 6 });
+  it('flips to the left when the right side would clip the workArea', () => {
+    // right would need 1820 + 112 + 6 + 148 > 1920 → flip left of the mascot
+    expect(computeBarPosition(mascot(1820, 300), wa)).toEqual({
+      x: 1820 - BAR_SIZE.width - BAR_GAP_PX,
+      y: 334,
+    });
   });
 
-  it('clamps horizontally at the left edge', () => {
-    const pos = computeBarPosition(mascot(0, 300), wa);
-    expect(pos.x).toBe(0); // raw would be 40 - 74 = -34 → clamped
-    expect(pos.y).toBe(386);
+  it('clamps vertically at the top edge', () => {
+    expect(computeBarPosition({ x: 500, y: -40, width: 112, height: 112 }, wa).y).toBe(0);
   });
 
-  it('clamps horizontally at the right edge', () => {
-    const pos = computeBarPosition(mascot(1840, 300), wa);
-    expect(pos.x).toBe(wa.width - BAR_SIZE.width);
+  it('clamps vertically at the bottom edge', () => {
+    const pos = computeBarPosition(mascot(500, 1050), wa);
+    expect(pos.y).toBe(wa.height - BAR_SIZE.height);
   });
 
   it('handles non-zero workArea origin (secondary monitor)', () => {
     const wa2 = { x: 1920, y: 0, width: 1920, height: 1080 };
-    expect(computeBarPosition(mascot(1920, 300), wa2).x).toBe(1920);
+    // mascot flush at wa2's right edge → bar flips left
+    expect(computeBarPosition(mascot(1920 + 1920 - 112, 300), wa2).x)
+      .toBe(1920 + 1920 - 112 - BAR_SIZE.width - BAR_GAP_PX);
   });
 });
