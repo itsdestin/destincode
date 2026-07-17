@@ -124,6 +124,24 @@ describe('usePromptDetector prompt lifecycle', () => {
     expect(show).toBeUndefined();
   });
 
+  it('dispatches nothing while unrecognized menus churn (streaming numbered lists)', () => {
+    renderHook(() => usePromptDetector());
+
+    // Streaming output that happens to parse as menus, with changing ids —
+    // up to ~60 buffer flushes/sec. No prompt was ever shown, so no reducer
+    // dispatches should occur at all.
+    mocks.screen.text = UNRECOGNIZED_MENU;
+    fireBuffer('s1');
+    mocks.screen.text = `Pick a size
+
+ ❯ 1. Small
+   2. Large`;
+    fireBuffer('s1');
+    act(() => { vi.advanceTimersByTime(1000); });
+
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
   it('still dismisses when the menu disappears entirely (existing behavior)', () => {
     renderHook(() => usePromptDetector());
     mocks.screen.text = RESUME_MENU;

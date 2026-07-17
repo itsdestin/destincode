@@ -54,6 +54,11 @@ export function usePromptDetector() {
   const lastMenuRef = useRef<Map<string, string>>(new Map());
   const pendingTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const dismissTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // The menu id whose SHOW_PROMPT actually fired, per session. Gates the
+  // on-id-change dismissal below: false-positive "menus" (numbered lists in
+  // streaming output) churn through ids up to ~60/s, and dispatching a no-op
+  // DISMISS_PROMPT for each would run the reducer per buffer flush.
+  const shownPromptRef = useRef<Map<string, string>>(new Map());
 
   // Track when awaiting-approval was last cleared per session, so the parser
   // can suppress re-detection during the post-permission cooldown window.
@@ -123,14 +128,16 @@ export function usePromptDetector() {
           // orphaned the old timeline entry at completed:false forever —
           // hasPendingInteraction() then blocked all chat sends with a stale
           // "answer the prompt first" toast (seen on crash-resumed sessions,
-          // 2026-07-16). DISMISS_PROMPT is a no-op if the prompt was never
-          // shown or already completed, so dispatching unconditionally is safe.
+          // 2026-07-16). The dispatch is gated on shownPromptRef so id churn
+          // from false-positive menus (streaming numbered lists) doesn't run
+          // the reducer on every buffer flush.
           const existingTimer = pendingTimerRef.current.get(sid);
           if (existingTimer) {
             clearTimeout(existingTimer);
             pendingTimerRef.current.delete(sid);
           }
-          if (lastMenuId) {
+          if (lastMenuId && shownPromptRef.current.get(sid) === lastMenuId) {
+            shownPromptRef.current.delete(sid);
             dispatch({ type: 'DISMISS_PROMPT', sessionId: sid, promptId: lastMenuId });
           }
           lastMenuRef.current.set(sid, menu.id);
@@ -160,6 +167,7 @@ export function usePromptDetector() {
             }
 
             const buttons = menuToButtons(menu);
+            shownPromptRef.current.set(sid, menu.id);
             dispatch({
               type: 'SHOW_PROMPT',
               sessionId: sid,
@@ -186,6 +194,9 @@ export function usePromptDetector() {
           const timer = setTimeout(() => {
             dismissTimerRef.current.delete(sid);
             // Menu has been gone long enough — truly dismiss
+            if (shownPromptRef.current.get(sid) === lastMenuId) {
+              shownPromptRef.current.delete(sid);
+            }
             dispatch({
               type: 'DISMISS_PROMPT',
               sessionId: sid,
