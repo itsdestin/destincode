@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import type { FirstRunState, PrerequisiteState } from '../../shared/first-run-types';
 import BrailleSpinner from './BrailleSpinner';
 import { describeStep } from './first-run/describe-step';
+import { Button } from './ui';
 
 /* ------------------------------------------------------------------ */
 /*  StatusIcon                                                        */
@@ -98,12 +99,12 @@ function AuthScreen({
         Sign in with your Claude Pro or Max plan — no API key or credit card needed.
       </p>
 
-      <button
-        onClick={onOAuth}
-        className="px-6 py-3 rounded-full bg-accent text-on-accent font-semibold text-base hover:opacity-90 transition-opacity"
-      >
+      {/* Documented pill exception: first-run hero CTAs keep rounded-full and
+          their own larger padding. Only the hover and the focus ring normalize —
+          hover:opacity-90 faded the label along with the fill. */}
+      <Button onClick={onOAuth} className="px-6 py-3 rounded-full font-semibold text-base">
         Log in with Claude
-      </button>
+      </Button>
 
       {!showApiKey ? (
         <button
@@ -125,13 +126,13 @@ function AuthScreen({
             Your key is passed directly to Claude Code and stored in its secure config.
             YouCoded never stores, logs, or backs up your key.
           </p>
-          <button
+          <Button
             onClick={() => onApiKey(apiKey)}
             disabled={!apiKey.trim()}
-            className="px-4 py-2 rounded-full bg-accent text-on-accent text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            className="px-4 py-2 rounded-full text-sm"
           >
             Verify &amp; Continue
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -149,12 +150,9 @@ function DevModeScreen({ onEnable }: { onEnable: () => void }) {
         Windows Developer Mode allows YouCoded to create symbolic links, which
         the toolkit uses for configuration files. This is a one-time system setting.
       </p>
-      <button
-        onClick={onEnable}
-        className="px-5 py-2.5 rounded-full bg-accent text-on-accent font-medium hover:opacity-90 transition-opacity"
-      >
+      <Button onClick={onEnable} className="px-5 py-2.5 rounded-full">
         Enable Developer Mode
-      </button>
+      </Button>
       <p className="text-xs text-fg-muted leading-relaxed">
         If the button doesn't work, open{' '}
         <span className="font-mono text-fg-dim">

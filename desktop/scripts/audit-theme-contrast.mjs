@@ -17,7 +17,10 @@
 // Run from anywhere: node scripts/audit-theme-contrast.mjs
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scriptDir = dirname(fileURLToPath(import.meta.url));
 
 // ────────────────────────────────────────────────────────────────────────────
 // Color math — standard sRGB → linear luminance → WCAG contrast ratio.
@@ -45,36 +48,58 @@ function contrast(hexA, hexB) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Built-in themes (defined in desktop/src/renderer/styles/globals.css).
-// Keep in sync with the :root / [data-theme=...] blocks there.
+/** Euclidean RGB distance — the accent-vs-fg guard the engine uses to decide
+ *  whether accent is usable as a link color. */
+function rgbDistance(hexA, hexB) {
+  const pa = hexA?.replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
+  const pb = hexB?.replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
+  if (!pa || !pb) return null;
+  return Math.sqrt(
+    [1, 2, 3].reduce((sum, i) => sum + (parseInt(pa[i], 16) - parseInt(pb[i], 16)) ** 2, 0),
+  );
+}
 
-const builtIn = {
-  light: {
-    canvas: '#F2F2F2', panel: '#EAEAEA', inset: '#E0E0E0', well: '#F7F7F7',
-    accent: '#1A1A1A', 'on-accent': '#F2F2F2',
-    fg: '#1A1A1A', 'fg-2': '#444444', 'fg-dim': '#666666', 'fg-muted': '#888888', 'fg-faint': '#AAAAAA',
-    edge: '#CFCFCF', link: '#2563EB',
-  },
-  dark: {
-    canvas: '#111111', panel: '#191919', inset: '#222222', well: '#1C1C1C',
-    accent: '#D4D4D4', 'on-accent': '#111111',
-    fg: '#E0E0E0', 'fg-2': '#B0B0B0', 'fg-dim': '#999999', 'fg-muted': '#666666', 'fg-faint': '#444444',
-    edge: '#2E2E2E', link: '#66AAFF',
-  },
-  midnight: {
-    canvas: '#0D1117', panel: '#161B22', inset: '#21262D', well: '#0D1117',
-    accent: '#B1BAC4', 'on-accent': '#0D1117',
-    fg: '#C9D1D9', 'fg-2': '#A0AAB4', 'fg-dim': '#8B949E', 'fg-muted': '#6E7681', 'fg-faint': '#484F58',
-    edge: '#30363D', link: '#58A6FF',
-  },
-  creme: {
-    canvas: '#F0E6D6', panel: '#EBE1D1', inset: '#DDD1BE', well: '#F5ECDE',
-    accent: '#3D3229', 'on-accent': '#F0E6D6',
-    fg: '#2C2418', 'fg-2': '#5C4F3E', 'fg-dim': '#7A6E5D', 'fg-muted': '#9E9283', 'fg-faint': '#BEB3A4',
-    edge: '#CBBFAD', link: '#5B4A1E',
-  },
-};
+// Mirrors computeOverlayTokens() in src/renderer/themes/theme-engine.ts — the
+// audit has to check the colors that actually RENDER, and link/destructive/
+// on-destructive are derived at runtime rather than declared by most packs.
+// The two must agree; tests/theme-builtin-sources.test.ts pins them together.
+function withDerivedTokens(data) {
+  const t = { ...data.tokens };
+  const destructive = data.overlay?.destructive ?? '#DD4444';
+  t.destructive = destructive;
+  t['on-destructive'] =
+    contrast('#FFFFFF', destructive) >= contrast('#1A1A1A', destructive) ? '#FFFFFF' : '#1A1A1A';
+  if (!t.link) {
+    const dist = rgbDistance(t.accent, t.fg);
+    t.link = dist != null && dist > 40 ? t.accent : t['fg-2'];
+  }
+  return t;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Built-in themes — read straight from src/renderer/themes/builtin/*.json,
+// which is the single source of truth (it is what the theme engine actually
+// applies at runtime). This used to be a hand-maintained copy and it drifted:
+// creme's fg-muted/fg-faint were fixed in globals.css but not here or in the
+// JSON, so the audit passed values the app never rendered. Reading the JSON
+// removes that failure mode by construction. The globals.css [data-theme]
+// blocks are anti-FOUC only and are pinned against these files by
+// tests/theme-builtin-sources.test.ts.
+
+const builtinRoot = resolve(scriptDir, '..', 'src', 'renderer', 'themes', 'builtin');
+
+function loadBuiltinThemes() {
+  const out = {};
+  for (const file of readdirSync(builtinRoot)) {
+    if (!file.endsWith('.json')) continue;
+    const data = JSON.parse(readFileSync(join(builtinRoot, file), 'utf-8'));
+    if (!data.tokens) continue;
+    out[data.slug || file.replace(/\.json$/, '')] = withDerivedTokens(data);
+  }
+  return out;
+}
+
+const builtIn = loadBuiltinThemes();
 
 // ────────────────────────────────────────────────────────────────────────────
 // Load community themes from wecoded-themes/themes/*/manifest.json.
@@ -92,7 +117,7 @@ function loadCommunityThemes() {
     if (!existsSync(manifest)) continue;
     const data = JSON.parse(readFileSync(manifest, 'utf-8'));
     if (!data.tokens) continue;
-    out[data.slug || dir] = data.tokens;
+    out[data.slug || dir] = withDerivedTokens(data);
   }
   return out;
 }
@@ -111,6 +136,10 @@ const pairs = [
   { name: 'fg/inset',         a: 'fg',         b: 'inset',  min: 4.5,  label: 'primary text on bubbles (AA)' },
   { name: 'on-accent/accent', a: 'on-accent',  b: 'accent', min: 4.5,  label: 'user-bubble text (AA)' },
   { name: 'link/canvas',      a: 'link',       b: 'canvas', min: 4.5,  label: 'link on content (AA)' },
+  // Danger-button label. --destructive is pack-overridable with no guard, and
+  // --on-destructive derives to whichever of white/near-black reads better —
+  // this catches mid-tone destructives where NEITHER label clears AA.
+  { name: 'on-destructive/destructive', a: 'on-destructive', b: 'destructive', min: 4.5, label: 'danger button label (AA)' },
 ];
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -124,23 +153,11 @@ function auditTheme(name, tokens) {
   return results;
 }
 
-// Proposed fixes — added alongside originals so we can confirm thresholds pass.
-const proposed = {
-  'creme (proposed)': {
-    ...builtIn.creme,
-    'fg-muted': '#8A7E6E',  // was #9E9283 → 2.47:1; new target ≥ 3:1
-    'fg-faint': '#B0A595',  // was #BEB3A4 → 1.67:1; new target ≥ 1.8:1
-  },
-  'strawberry-kitty (proposed)': (() => {
-    const community = loadCommunityThemes();
-    return {
-      ...community['strawberry-kitty'],
-      accent: '#CC4060',  // was #D94E6B → 4.00:1; new target ≥ 4.5:1
-    };
-  })(),
-};
+// (A `proposed` staging block used to live here for two in-flight fixes —
+// creme's fg-muted/fg-faint and strawberry-kitty's accent. Both have since
+// landed in their source files, so the synthetic entries were removed.)
 
-const themes = { ...builtIn, ...loadCommunityThemes(), ...proposed };
+const themes = { ...builtIn, ...loadCommunityThemes() };
 const ordered = Object.keys(themes).sort();
 const overallFails = [];
 

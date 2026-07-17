@@ -14,6 +14,14 @@ export interface ThemeTokens {
   'edge-dim': string;
   'scrollbar-thumb': string;
   'scrollbar-hover': string;
+  /** Hyperlink color. OPTIONAL — the engine derives it from accent/fg-2 when a
+   *  pack omits it (see computeOverlayTokens). Before this was derivable, packs
+   *  had no way to set it and silently inherited the Light theme's #2563EB from
+   *  :root, so every community theme rendered light-blue links. The four
+   *  built-ins declare their own hand-picked values. */
+  link?: string;
+  /** Hover state for `link`. Derived as link mixed 85% toward fg when omitted. */
+  'link-hover'?: string;
 }
 
 export interface ThemeShape {
