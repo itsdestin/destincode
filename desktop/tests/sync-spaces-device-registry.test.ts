@@ -201,4 +201,19 @@ describe('device registry store — removal', () => {
     await expect(removeDevice(personal, '')).rejects.toThrow();
     expect(readDevices(personal)).toHaveLength(1);
   });
+
+  it('removeDevice matches conflict copies whose device name contains parens/commas', async () => {
+    // Real engine copies are `<base> (from <device>, <date>).json`, and a device
+    // name can itself contain parens/commas — CONFLICT_RE's greedy `.+` is what
+    // pins the base to `dev-1.json` here. Deleting dev-1 must take its copy but
+    // leave dev-2's identically-shaped copy alone.
+    write('dev-1.json', E({ id: 'dev-1' }));
+    write("dev-1 (from Destin's PC (Home), 2026-07-03).json", E({ id: 'dev-1', name: 'Renamed' }));
+    write('dev-2.json', E({ id: 'dev-2', name: 'Keep Me' }));
+    write("dev-2 (from Destin's PC (Home), 2026-07-03).json", E({ id: 'dev-2', name: 'Keep Me Too' }));
+    await removeDevice(personal, 'dev-1');
+    expect(readDevices(personal).map(d => d.id)).toEqual(['dev-2']);
+    expect(fs.existsSync(path.join(dir(), "dev-1 (from Destin's PC (Home), 2026-07-03).json"))).toBe(false);
+    expect(fs.existsSync(path.join(dir(), "dev-2 (from Destin's PC (Home), 2026-07-03).json"))).toBe(true);
+  });
 });

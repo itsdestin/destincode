@@ -214,7 +214,11 @@ export function renameDevice(personalRoot: string, id: string, name: string): Pr
  *  Fail-soft: an unknown id or a missing dir is a silent no-op.
  *  Known race, accepted: a rename of this device on ANOTHER machine in the same
  *  sync window survives as a conflict copy created by a LATER merge (after this
- *  delete ran), which resurrects the row. Pressing Remove again heals it. */
+ *  delete ran), which resurrects the row. Pressing Remove again heals it.
+ *  Same-machine variant, also accepted: this deliberately does NOT take the
+ *  mutateFileUnderLock lock, so a concurrent local write in flight (dev instance +
+ *  built app) can re-create the file after we delete it — benign for the same
+ *  reason, and it heals the same way. */
 export async function removeDevice(personalRoot: string, id: string): Promise<void> {
   // Guard the empty id: `${''}.json` would match nothing here, but an empty id is
   // always a caller bug — surface it rather than silently no-op.
