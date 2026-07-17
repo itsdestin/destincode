@@ -182,6 +182,17 @@ function matchPermissionMode(mode?: string | null): PermissionMode | 'unknown' {
 }
 
 function AppInner() {
+  // Dev-only: count AppInner's OWN re-renders (the tranche-1 metric — see
+  // AppInnerProfiler). No-dep effect → runs once per AppInner commit; when
+  // AppInner does NOT re-render (a child like ChatView re-rendering on its own
+  // subscription), this does not run, so the counter stays flat — which is the
+  // whole point. DEV-gated body; the hook call itself is unconditional (rules
+  // of hooks). Tree-shaken from prod.
+  useEffect(() => {
+    // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+    if (import.meta.env.DEV && window.__appInnerProfile) window.__appInnerProfile.appInnerRenders += 1;
+  });
+
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
   // Ref mirror of `sessions` for handlers that need to read the latest list
@@ -3019,23 +3030,39 @@ const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?
   },
 );
 
-// Dev-only commit profiler for the AppInner tranche-1 perf work. Accumulates
-// React commit stats on window.__appInnerProfile so before/after numbers can
-// be read via console or scripts/cdp-eval.mjs against the DEV instance.
-// Statically dead code in production builds (DEV-gated), tree-shaken by Vite.
-declare global { interface Window { __appInnerProfile?: { commits: number; totalMs: number; maxMs: number; since: number; reset: () => void } } }
+// Dev-only profiler for the AppInner perf work, read via the dev window's
+// console or scripts/cdp-eval.mjs against the DEV instance. Statically dead
+// code in production builds (DEV-gated), tree-shaken by Vite.
+//
+// TWO distinct metrics — read BOTH:
+// - appInnerRenders — how many times the AppInner COMPONENT itself re-rendered.
+//   This is the tranche-1 metric. Before the tranche it climbed ~1:1 with
+//   transcript dispatches during streaming; after, it should stay near-flat
+//   (only dot-color/attention/active-model/session-switch changes). Counted by
+//   a no-dep effect INSIDE AppInner (see its body), not here.
+// - subtreeCommits / totalMs / maxMs — React.Profiler stats for the whole
+//   AppInner SUBTREE. These stay high during streaming because ChatView
+//   re-renders per transcript event BY DESIGN (the visible session's view must
+//   update). That child cost is what a FUTURE tranche (memoized BottomChrome/
+//   ContentArea) targets — it is NOT what tranche 1 changed, so don't read it
+//   as the tranche-1 result.
+declare global { interface Window { __appInnerProfile?: { appInnerRenders: number; subtreeCommits: number; totalMs: number; maxMs: number; since: number; reset: () => void } } }
+function ensureAppInnerProfile() {
+  if (!window.__appInnerProfile) {
+    window.__appInnerProfile = {
+      appInnerRenders: 0, subtreeCommits: 0, totalMs: 0, maxMs: 0, since: Date.now(),
+      reset() { this.appInnerRenders = 0; this.subtreeCommits = 0; this.totalMs = 0; this.maxMs = 0; this.since = Date.now(); },
+    };
+  }
+  return window.__appInnerProfile;
+}
 function AppInnerProfiler({ children }: { children: React.ReactNode }) {
   // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
   if (!import.meta.env.DEV) return <>{children}</>;
-  if (!window.__appInnerProfile) {
-    window.__appInnerProfile = {
-      commits: 0, totalMs: 0, maxMs: 0, since: Date.now(),
-      reset() { this.commits = 0; this.totalMs = 0; this.maxMs = 0; this.since = Date.now(); },
-    };
-  }
+  ensureAppInnerProfile();
   const onRender: React.ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {
     const p = window.__appInnerProfile!;
-    p.commits += 1;
+    p.subtreeCommits += 1;
     p.totalMs += actualDuration;
     if (actualDuration > p.maxMs) p.maxMs = actualDuration;
   };
