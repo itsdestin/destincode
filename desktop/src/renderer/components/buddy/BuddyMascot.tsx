@@ -250,20 +250,27 @@ export function BuddyMascot() {
         data-dock-edge={dock.edge ?? ''}
         data-swing={swing ?? ''}
       >
-        <div key={bounceKey} className={attention && !reducedEffects ? 'mascot-bounce' : ''} style={{ width: '100%', height: '100%' }}>
-          {useRig ? (
-            <div ref={rigHostRef} style={{ width: '100%', height: '100%' }}>
-              <MascotRig svgUrl={rigUrl} pose={pose} motionRef={motionRef} reducedEffects={reducedEffects} />
-            </div>
-          ) : (
-            <img
-              src={flatMascot!}
-              alt=""
-              style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
-              // Dragging an <img> would otherwise start an HTML drag. Disable.
-              draggable={false}
-            />
-          )}
+        {/* Lean layer: the side-peek ∓75° body lean lives on its OWN element
+            INSIDE the sink translate — CSS resolves an element's `rotate`
+            property BEFORE its `transform`, so rotate+translate on one element
+            would swing the already-translated body around the stale center
+            and out of the window (prototype splits the layers the same way). */}
+        <div className="mascot-lean" style={{ width: '100%', height: '100%' }}>
+          <div key={bounceKey} className={attention && !reducedEffects ? 'mascot-bounce' : ''} style={{ width: '100%', height: '100%' }}>
+            {useRig ? (
+              <div ref={rigHostRef} style={{ width: '100%', height: '100%' }}>
+                <MascotRig svgUrl={rigUrl} pose={pose} motionRef={motionRef} reducedEffects={reducedEffects} />
+              </div>
+            ) : (
+              <img
+                src={flatMascot!}
+                alt=""
+                style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
+                // Dragging an <img> would otherwise start an HTML drag. Disable.
+                draggable={false}
+              />
+            )}
+          </div>
         </div>
       </div>
       {/* Side-peek grip mittens: pinned at the window's edge-side boundary,
@@ -287,26 +294,39 @@ function PeekHands({ side, rigHostRef }: { side: 'left' | 'right'; rigHostRef: R
   const [handSvg, setHandSvg] = useState<string | null>(null);
 
   useEffect(() => {
-    const svg = rigHostRef.current?.querySelector('svg');
-    const hand = svg?.querySelector<SVGGElement>(`#rig-hand-peek-${side}`) ?? null;
-    if (!svg || !hand) { setHandSvg(null); return; }
-    // The hand group ships display:none (only the app's overlay shows it).
-    // getBBox needs a rendered box — flip display on synchronously, measure,
-    // flip back; no paint happens inside one JS task, so nothing flashes.
-    const prevDisplay = hand.style.display;
-    hand.style.display = '';
-    let bbox: DOMRect | null = null;
-    try { bbox = hand.getBBox(); } catch { /* detached/unrenderable — degrade */ }
-    hand.style.display = prevDisplay;
-    if (!bbox || !bbox.width || !bbox.height) { setHandSvg(null); return; }
-    const clone = hand.cloneNode(true) as SVGGElement;
-    clone.style.display = '';
-    clone.removeAttribute('id'); // no duplicate ids in the document
-    const pad = 0.4; // breathing room for the stroke
-    // Content comes from the already-sanitized inlined rig — safe to re-inline.
-    setHandSvg(
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}" width="100%" height="100%">${clone.outerHTML}</svg>`,
-    );
+    let timer: NodeJS.Timeout | null = null;
+    let attempts = 0;
+    const tryExtract = () => {
+      const svg = rigHostRef.current?.querySelector('svg');
+      const hand = svg?.querySelector<SVGGElement>(`#rig-hand-peek-${side}`) ?? null;
+      if (!svg || !hand) {
+        // The rig fetch/sanitize may not have resolved yet (e.g., the buddy
+        // boots straight into a persisted peek) — retry briefly, then give
+        // up: a rig without peek-hand groups degrades to the sink alone.
+        setHandSvg(null);
+        if (attempts++ < 20) timer = setTimeout(tryExtract, 250);
+        return;
+      }
+      // The hand group ships display:none (only the app's overlay shows it).
+      // getBBox needs a rendered box — flip display on synchronously, measure,
+      // flip back; no paint happens inside one JS task, so nothing flashes.
+      const prevDisplay = hand.style.display;
+      hand.style.display = '';
+      let bbox: DOMRect | null = null;
+      try { bbox = hand.getBBox(); } catch { /* detached/unrenderable — degrade */ }
+      hand.style.display = prevDisplay;
+      if (!bbox || !bbox.width || !bbox.height) { setHandSvg(null); return; }
+      const clone = hand.cloneNode(true) as SVGGElement;
+      clone.style.display = '';
+      clone.removeAttribute('id'); // no duplicate ids in the document
+      const pad = 0.4; // breathing room for the stroke
+      // Content comes from the already-sanitized inlined rig — safe to re-inline.
+      setHandSvg(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}" width="100%" height="100%">${clone.outerHTML}</svg>`,
+      );
+    };
+    tryExtract();
+    return () => { if (timer) clearTimeout(timer); };
   }, [side, rigHostRef]);
 
   if (!handSvg) return null;

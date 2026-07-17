@@ -26,6 +26,9 @@ interface MascotRigProps {
 }
 
 interface Parts {
+  /** The svg element these parts were indexed from — identity check for
+   *  lazy re-indexing (see ensureParts). */
+  svg: SVGSVGElement;
   root: SVGGElement | null;
   byId: Map<RigPartId, SVGGElement>;
   // The six expression groups + blink, indexed by face name; absent groups
@@ -87,11 +90,18 @@ export function MascotRig({
     return () => { alive = false; };
   }, [svgUrl]);
 
-  // ── Index parts + set pivots after the SVG lands in the DOM ──
-  useEffect(() => {
-    if (!svgHtml || !hostRef.current) { partsRef.current = null; return; }
-    const svg = hostRef.current.querySelector('svg');
-    if (!svg) { partsRef.current = null; return; }
+  // ── Lazy DOM indexing ──
+  // Keyed on the ACTUAL svg element, not on effect timing: React can recreate
+  // the host div with the same innerHTML (e.g., ThemeMascot re-parents the
+  // mascot into MascotScene once the async theme delivers companions) WITHOUT
+  // svgHtml changing — an effect keyed on [svgHtml] then never re-runs and
+  // every pose/face/spring write lands on the detached old svg (2026-07-16
+  // dev2 verification bug). ensureParts() re-indexes whenever the svg in the
+  // DOM isn't the one we indexed, and callers run it before touching parts.
+  const ensureParts = (): Parts | null => {
+    const svg = hostRef.current?.querySelector('svg');
+    if (!svg) { partsRef.current = null; return null; }
+    if (partsRef.current?.svg === svg) return partsRef.current;
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
     const byId = new Map<RigPartId, SVGGElement>();
@@ -119,38 +129,56 @@ export function MascotRig({
     // The idle body loops rotate/scale in viewBox coordinates.
     if (root) (root.style as unknown as Record<string, string>).transformBox = 'view-box';
     partsRef.current = {
+      svg,
       root,
       byId,
       faces,
       pupils: Array.from(svg.querySelectorAll<SVGGElement>('.pupil')),
     };
     springsRef.current = new Map();
+    // Fresh DOM starts from the authored state — write the full current look.
     applyPose(partsRef.current, poseRef.current, blinking, true);
+    applyLoopClass(partsRef.current);
+    return partsRef.current;
+  };
+
+  const applyLoopClass = (parts: Parts): void => {
+    const { root } = parts;
+    const host = hostRef.current;
+    if (!root || !host) return;
+    root.classList.remove(...ALL_LOOP_CLASSES);
+    // --amp feeds the loop keyframes' amplitude (mascot.css).
+    host.style.setProperty('--amp', String(intensityRef.current));
+    if (reducedEffects) return;
+    const p = poseRef.current;
+    if (p === 'dizzy') { root.classList.add('rig-dizzy-sway'); return; }
+    if (p.startsWith('peek')) return; // peeking bodies hold still — the grip carries the read
+    root.classList.add(IDLE_LOOP_CLASS[styleRef.current]);
+    if (styleRef.current === 'hyper') root.classList.add('rig-fast-breath');
+  };
+
+  // ── Index after the SVG lands in the DOM (ensureParts also self-heals
+  //    from the rAF loop if the DOM is replaced between effect runs) ──
+  useEffect(() => {
+    ensureParts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [svgHtml]);
 
   // ── Face swap on pose/blink change (limb transforms are spring-owned) ──
   useEffect(() => {
-    const parts = partsRef.current;
+    const parts = ensureParts();
     if (!parts) return;
     applyFace(parts, pose, blinking);
     // Reduced effects: springs don't run — write pose transforms directly.
     if (reducedEffects) applyPose(parts, pose, blinking, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pose, blinking, reducedEffects, svgHtml]);
 
   // ── Idle body loop class on rig-root (motion style + intensity) ──
   useEffect(() => {
-    const root = partsRef.current?.root;
-    const host = hostRef.current;
-    if (!root || !host) return;
-    root.classList.remove(...ALL_LOOP_CLASSES);
-    // --amp feeds the loop keyframes' amplitude (mascot.css).
-    host.style.setProperty('--amp', String(intensity));
-    if (reducedEffects) return;
-    if (pose === 'dizzy') { root.classList.add('rig-dizzy-sway'); return; }
-    if (pose.startsWith('peek')) return; // peeking bodies hold still — the grip carries the read
-    root.classList.add(IDLE_LOOP_CLASS[motionStyle]);
-    if (motionStyle === 'hyper') root.classList.add('rig-fast-breath');
+    const parts = ensureParts();
+    if (parts) applyLoopClass(parts);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [motionStyle, intensity, reducedEffects, pose, svgHtml]);
 
   // ── Blink loop (per-style cadence) ──
@@ -217,7 +245,9 @@ export function MascotRig({
       raf = requestAnimationFrame(tick);
       const dt = now - last;
       last = now;
-      const parts = partsRef.current;
+      // Self-healing: re-indexes (and restyles) if React replaced the svg DOM
+      // since the last frame — see the ensureParts comment.
+      const parts = ensureParts();
       if (!parts) return;
       const m = motionRef.current;
       const style = styleRef.current;

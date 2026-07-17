@@ -97,6 +97,23 @@ export class BuddyWindowManager {
     else this.schedulePeek();
   }
 
+  /** Clear hover state stranded by WINDOW movement: pointerleave only fires
+   *  on pointer MOVEMENT, so repositioning the bar/mascot out from under a
+   *  stationary cursor leaves the tracker hovering forever — bar pinned
+   *  visible, docked buddy never peeks. Called after main-driven moves. */
+  private reconcileHoverWithCursor(): void {
+    let cursor: Point;
+    try { cursor = screen.getCursorScreenPoint(); } catch { return; }
+    const contains = (w: BrowserWindow | null) => {
+      if (!w || w.isDestroyed()) return false;
+      const b = w.getBounds();
+      return cursor.x >= b.x && cursor.x < b.x + b.width && cursor.y >= b.y && cursor.y < b.y + b.height;
+    };
+    if (!contains(this.bar)) this.barVisibility.setHover('bar', false);
+    if (!contains(this.mascot)) this.barVisibility.setHover('mascot', false);
+    this.schedulePeek();
+  }
+
   private dispatchDock(event: DockEvent): void {
     const next = dockReducer(this.dockState, event);
     if (next.mode === this.dockState.mode && next.edge === this.dockState.edge) {
@@ -174,6 +191,8 @@ export class BuddyWindowManager {
         this.glideTimer = null;
         // Bar may need to flip sides now that the mascot sits on an edge.
         if (this.barCssVisible) this.applyBarVisible(true);
+        // The glide moved windows under a possibly-stationary cursor.
+        this.reconcileHoverWithCursor();
       }
     }, 16);
   }
@@ -432,6 +451,8 @@ export class BuddyWindowManager {
     if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
       const pos = this.currentBarPosition();
       this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
+      // The bar just moved — it may have left a stationary cursor behind.
+      this.reconcileHoverWithCursor();
     }
   }
 
@@ -520,6 +541,13 @@ export class BuddyWindowManager {
       this.deps.setPersistedPosition('mascot', { x, y });
     }, 300);
     win.on('move', save);
+    // Replay dock state on every page load: a renderer reload (crash
+    // recovery, dev hot reload) resets the component's local state and there
+    // is no pull-side getter — without this a docked/peeking mascot renders
+    // free until the next dock transition.
+    win.webContents.on('did-finish-load', () => {
+      if (!win.isDestroyed()) win.webContents.send(IPC_MASCOT_STATE, this.dockState);
+    });
     // Catch non-clean teardowns (crashes, OOM, force-kill). Clean renderer
     // reloads during `npm run dev` fire with reason === 'clean-exit' — those
     // should NOT trigger hide(), otherwise the buddy vanishes on every hot
