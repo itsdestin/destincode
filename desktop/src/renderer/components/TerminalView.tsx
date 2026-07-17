@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import { usePtyOutput } from '../hooks/useIpc';
 import { usePtyRawBytes } from '../hooks/usePtyRawBytes';
 import { registerTerminal, unregisterTerminal, notifyBufferReady } from '../hooks/terminal-registry';
+import { createTerminalKeyHandler } from './terminal-key-handler';
 import { useTheme } from '../state/theme-context';
 import { isTouchDevice } from '../platform';
 
@@ -195,28 +196,11 @@ export default function TerminalView({ sessionId, visible }: Props) {
     attachWebgl();
     attachWebglRef.current = attachWebgl;
 
-    // Ctrl+C copies the selection (if any) instead of sending SIGINT;
-    // Ctrl+C with no selection falls through to xterm's default so users
-    // can still interrupt a runaway process. Ctrl+V reads the system
-    // clipboard and pastes into the PTY. Matches VS Code / Windows
-    // Terminal conventions. Shift+Ctrl variants are left alone.
-    terminal.attachCustomKeyEventHandler((e) => {
-      if (e.type !== 'keydown') return true;
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod || e.shiftKey || e.altKey) return true;
-      const key = e.key.toLowerCase();
-      if (key === 'c' && terminal.hasSelection()) {
-        navigator.clipboard.writeText(terminal.getSelection()).catch(() => {});
-        return false;
-      }
-      if (key === 'v') {
-        navigator.clipboard.readText().then((text) => {
-          if (text) terminal.paste(text);
-        }).catch(() => {});
-        return false;
-      }
-      return true;
-    });
+    // Clipboard keys (Ctrl+C copy / Ctrl+V paste) — extracted to
+    // terminal-key-handler.ts. The Ctrl+V branch preventDefaults the keydown
+    // so the browser's native paste event can't ALSO deliver the clipboard to
+    // xterm's paste listener (which made every Ctrl+V paste twice).
+    terminal.attachCustomKeyEventHandler(createTerminalKeyHandler(terminal));
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;

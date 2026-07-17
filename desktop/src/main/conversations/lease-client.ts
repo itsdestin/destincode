@@ -33,8 +33,9 @@ export interface LeaseClientOpts {
   hubRequest: (op: string, sessionId: string, deviceId: string) => Promise<LeaseResult | null>;
   // Upward callback the caller (Task 8 service) supplies to trigger holder-side
   // teardown (interrupt -> mirror -> release -> destroy). `from` is OPTIONAL — a
-  // deliberate deviation from the plan's non-optional shape: the renew-failure
-  // path (we lost the lease to a force-acquire) has no `from` to supply.
+  // deliberate deviation from the plan's non-optional shape: renew-failure
+  // teardowns attribute the takeover from the reply's holder when the hub
+  // reports one, but a race where the holder is unknown still has no `from`.
   onTakeoverRequest: (sessionId: string, from?: { deviceId: string; device: string }) => void;
 }
 
@@ -153,14 +154,47 @@ export function createLeaseClient(opts: LeaseClientOpts): LeaseClient {
         if (!held.has(sessionId)) return; // released while the renew was in flight
 
         if (r && !r.ok) {
-          // WE LOST THE LEASE: another device force-acquired it (spec §3 step 5 —
-          // "A's client, whenever it wakes, sees it no longer holds the lease").
-          // Stop renewing, drop local state + file, and drive the upward teardown
-          // with NO `from` (the force-acquirer isn't carried on a renew reply).
-          stopTimer(sessionId);
-          held.delete(sessionId);
-          deleteLeaseFile(sessionId);
-          opts.onTakeoverRequest(sessionId);
+          // A failed renew has TWO distinct causes and only one is a takeover:
+          //   holder present (≠ us) → another device force-acquired it (spec §3
+          //     step 5). Tear down and attribute the takeover to that device.
+          //   holder null → the lease lazily EXPIRED server-side because our
+          //     heartbeat was suspended past the 300s TTL (system sleep, screen
+          //     lock, OS throttling an idle process) and NOBODY has taken it.
+          //     That's a lapse, not a takeover — re-acquire in place. Treating
+          //     it as a takeover showed a spurious "session was taken over on
+          //     another device" on idle sessions (2026-07-16).
+          const holder = r.holder;
+          if (holder && holder.deviceId && holder.deviceId !== opts.deviceId) {
+            stopTimer(sessionId);
+            held.delete(sessionId);
+            deleteLeaseFile(sessionId);
+            opts.onTakeoverRequest(sessionId, { deviceId: holder.deviceId, device: holder.device });
+            return;
+          }
+
+          const re = await opts.hubRequest('acquire', sessionId, opts.deviceId);
+          if (gen.get(sessionId) !== myGen) return; // superseded while re-acquiring
+          if (!held.has(sessionId)) return; // released while re-acquiring
+          if (re && !re.ok) {
+            // Raced: another device claimed the lapsed lease between the expiry
+            // and our re-acquire. Genuine loss — tear down with attribution.
+            stopTimer(sessionId);
+            held.delete(sessionId);
+            deleteLeaseFile(sessionId);
+            const h = re.holder;
+            opts.onTakeoverRequest(
+              sessionId,
+              h && h.deviceId && h.deviceId !== opts.deviceId
+                ? { deviceId: h.deviceId, device: h.device }
+                : undefined,
+            );
+            return;
+          }
+          // Re-acquired (re.ok), or hub went down mid-recovery (re === null) —
+          // on the null path we hold optimistically, same never-block rule as
+          // the transient-null branch below.
+          writeLeaseFile(sessionId, re?.holder?.expiresAt ?? Date.now() + LEASE_TTL_MS);
+          schedule();
           return;
         }
 

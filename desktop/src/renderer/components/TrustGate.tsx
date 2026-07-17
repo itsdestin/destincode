@@ -1,6 +1,7 @@
 import React, { useCallback } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { InteractivePrompt } from '../state/chat-types';
+import { TRUST_PROMPT_TITLE } from '../parser/ink-select-parser';
 import { AppIcon, ThemeMascot } from './Icons';
 
 interface Props {
@@ -29,8 +30,12 @@ const intentStyles = {
 function findTrustPrompt(sessionId: string, state: ReturnType<typeof useChatState>): InteractivePrompt | null {
   for (const entry of state.timeline) {
     if (entry.kind === 'prompt' && !entry.prompt.completed) {
-      const title = entry.prompt.title.toLowerCase();
-      if (title.includes('trust')) {
+      // Exact match on the parser's canonical trust title. A substring match
+      // on 'trust' let this full-screen takeover (with its hardcoded
+      // folder-permission body text) hijack ANY prompt whose title contained
+      // the word — e.g. the Fable 5 safeguard prompt when the parser
+      // mislabeled it (2026-07-16).
+      if (entry.prompt.title === TRUST_PROMPT_TITLE) {
         return entry.prompt;
       }
     }

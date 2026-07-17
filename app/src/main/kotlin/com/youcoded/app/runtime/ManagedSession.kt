@@ -411,6 +411,7 @@ class ManagedSession(
         "Resume Session", // Stale session resume — lets user choose summary vs full resume
         "Usage Limit Reached", // /rate-limit-options menu — Upgrade / Stop and wait
         "Enable auto mode?", // CC v2.1.83+ first-run opt-in — 4-option auto-mode confirmation
+        "Message Flagged", // Model-safeguard fallback — Switch model / Edit prompt and retry
     )
 
     /** Detect permission mode from visible screen only (not raw buffer).

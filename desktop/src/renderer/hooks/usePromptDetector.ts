@@ -21,6 +21,7 @@ const SETUP_PROMPT_TITLES = new Set([
   'Resume Session', // Stale session resume — lets user choose summary vs full resume
   'Usage Limit Reached', // /rate-limit-options menu — Upgrade / Stop and wait
   'Enable auto mode?', // CC v2.1.83+ first-run opt-in: 4-option auto-mode confirmation
+  'Message Flagged', // Fable 5 model-safeguard fallback — Switch model / Edit prompt and retry
 ]);
 
 // After a permission response (PERMISSION_RESPONDED/EXPIRED clears
@@ -53,6 +54,11 @@ export function usePromptDetector() {
   const lastMenuRef = useRef<Map<string, string>>(new Map());
   const pendingTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const dismissTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // The menu id whose SHOW_PROMPT actually fired, per session. Gates the
+  // on-id-change dismissal below: false-positive "menus" (numbered lists in
+  // streaming output) churn through ids up to ~60/s, and dispatching a no-op
+  // DISMISS_PROMPT for each would run the reducer per buffer flush.
+  const shownPromptRef = useRef<Map<string, string>>(new Map());
 
   // Track when awaiting-approval was last cleared per session, so the parser
   // can suppress re-detection during the post-permission cooldown window.
@@ -115,16 +121,31 @@ export function usePromptDetector() {
         }
 
         if (menu.id !== lastMenuId) {
+          // A DIFFERENT menu replaced the previous one. Retire the old prompt
+          // BEFORE the recognized-title gate below can bail out: cancel its
+          // pending show timer and dismiss any already-shown prompt. Without
+          // this, a recognized prompt followed by an unrecognized menu
+          // orphaned the old timeline entry at completed:false forever —
+          // hasPendingInteraction() then blocked all chat sends with a stale
+          // "answer the prompt first" toast (seen on crash-resumed sessions,
+          // 2026-07-16). The dispatch is gated on shownPromptRef so id churn
+          // from false-positive menus (streaming numbered lists) doesn't run
+          // the reducer on every buffer flush.
+          const existingTimer = pendingTimerRef.current.get(sid);
+          if (existingTimer) {
+            clearTimeout(existingTimer);
+            pendingTimerRef.current.delete(sid);
+          }
+          if (lastMenuId && shownPromptRef.current.get(sid) === lastMenuId) {
+            shownPromptRef.current.delete(sid);
+            dispatch({ type: 'DISMISS_PROMPT', sessionId: sid, promptId: lastMenuId });
+          }
           lastMenuRef.current.set(sid, menu.id);
 
           // Only show PromptCards for known setup prompts. Permission prompts
           // and false positives (numbered lists) are skipped — hooks handle
           // permissions, and numbered lists aren't real menus.
           if (!SETUP_PROMPT_TITLES.has(menu.title)) return;
-
-          // Cancel any previous pending prompt for this session
-          const existingTimer = pendingTimerRef.current.get(sid);
-          if (existingTimer) clearTimeout(existingTimer);
 
           // Debounce: wait before showing, giving hook system time to arrive
           const timer = setTimeout(() => {
@@ -146,6 +167,7 @@ export function usePromptDetector() {
             }
 
             const buttons = menuToButtons(menu);
+            shownPromptRef.current.set(sid, menu.id);
             dispatch({
               type: 'SHOW_PROMPT',
               sessionId: sid,
@@ -172,6 +194,9 @@ export function usePromptDetector() {
           const timer = setTimeout(() => {
             dismissTimerRef.current.delete(sid);
             // Menu has been gone long enough — truly dismiss
+            if (shownPromptRef.current.get(sid) === lastMenuId) {
+              shownPromptRef.current.delete(sid);
+            }
             dispatch({
               type: 'DISMISS_PROMPT',
               sessionId: sid,
