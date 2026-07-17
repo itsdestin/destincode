@@ -21,7 +21,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
 import GamePanel from './components/game/GamePanel';
-import { ChatProvider, useChatDispatch, useChatState, useChatStateMap, useChatStore } from './state/chat-context';
+import { ChatProvider, useChatDispatch, useChatState, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { categorizeArtifact } from '../shared/artifacts/categorization';
@@ -41,6 +41,7 @@ import { usePartyGame } from './hooks/usePartyGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
+import { useActiveSessionModel } from './hooks/useActiveSessionModel';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
 import { AppIcon, WelcomeAppIcon, ThemeMascot } from './components/Icons';
 import CommandDrawer from './components/CommandDrawer';
@@ -462,7 +463,6 @@ function AppInner() {
   // data-theme-layout anymore, so the effect was dead code.
 
   const dispatch = useChatDispatch();
-  const chatStateMap = useChatStateMap();
   const chatStore = useChatStore();
   // Artifact tracker — global reducer for session/project artifact state.
   const [artifactState, dispatchArtifact] = useReducer(artifactReducer, initialArtifactState);
@@ -473,8 +473,14 @@ function AppInner() {
   useEffect(() => { artifactStateRef.current = artifactState; }, [artifactState]);
   // Latest-value ref so transcript-shrink and turn-complete handlers see
   // up-to-date compactionPending state without re-subscribing on every reducer tick.
-  const chatStateMapRef = useRef(chatStateMap);
-  useEffect(() => { chatStateMapRef.current = chatStateMap; }, [chatStateMap]);
+  // Tranche 1: fed by a store subscription instead of a [chatStateMap] effect,
+  // so AppInner no longer re-renders per dispatch just to keep this ref current.
+  // The ~12 chatStateMapRef.current reads all over this file are unchanged.
+  const chatStateMapRef = useRef(chatStore.getState());
+  useEffect(() => {
+    chatStateMapRef.current = chatStore.getState();
+    return chatStore.subscribeAll(() => { chatStateMapRef.current = chatStore.getState(); });
+  }, [chatStore]);
 
   // Guarded PTY send for command-shaped writes triggered by UI actions
   // (command drawer, skill runs, /sync, /config, /model, Settings sends).
@@ -512,44 +518,53 @@ function AppInner() {
   // real shrink event arrived but had no pending flag to key off of, so the
   // user saw "may have failed" even though compaction succeeded.
   const compactWatchdogs = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Tranche 1: store subscription instead of a [chatStateMap] effect. Same
+  // activity-aware body (the timer still resets on every dispatch while a
+  // compaction is pending); AppInner no longer re-renders per dispatch to run
+  // it. The pre-existing no-clear-timers-on-unmount behavior is preserved.
   useEffect(() => {
-    // Perf: this effect fires on every reducer dispatch. Steady state (no
-    // compaction in flight, no live watchdogs) short-circuits without walking
-    // the session map. When a compaction is live we still iterate — preserving
-    // the activity-awareness described above (timer resets on every dispatch).
-    if (compactWatchdogs.current.size === 0) {
-      let anyPending = false;
-      for (const session of chatStateMap.values()) {
-        if (session.compactionPending) { anyPending = true; break; }
+    const check = () => {
+      const map = chatStore.getState();
+      // Perf: this runs on every reducer dispatch. Steady state (no compaction
+      // in flight, no live watchdogs) short-circuits without walking the
+      // session map. When a compaction is live we still iterate — preserving
+      // the activity-awareness described above (timer resets on every dispatch).
+      if (compactWatchdogs.current.size === 0) {
+        let anyPending = false;
+        for (const session of map.values()) {
+          if (session.compactionPending) { anyPending = true; break; }
+        }
+        if (!anyPending) return;
       }
-      if (!anyPending) return;
-    }
-    for (const [sid, session] of chatStateMap) {
-      const existing = compactWatchdogs.current.get(sid);
-      if (session.compactionPending) {
-        // Reset on every reducer tick while pending — if transcript events are
-        // flowing for this session, the timer keeps bumping and never fires.
-        if (existing) clearTimeout(existing);
-        const timer = setTimeout(() => {
-          const current = chatStateMapRef.current.get(sid);
-          if (current?.compactionPending) {
-            dispatch({
-              type: 'COMPACTION_COMPLETE',
-              sessionId: sid,
-              markerId: `compact-timeout-${Date.now()}`,
-              afterContextTokens: null,
-              aborted: true,
-            });
-          }
+      for (const [sid, session] of map) {
+        const existing = compactWatchdogs.current.get(sid);
+        if (session.compactionPending) {
+          // Reset on every reducer tick while pending — if transcript events are
+          // flowing for this session, the timer keeps bumping and never fires.
+          if (existing) clearTimeout(existing);
+          const timer = setTimeout(() => {
+            const current = chatStateMapRef.current.get(sid);
+            if (current?.compactionPending) {
+              dispatch({
+                type: 'COMPACTION_COMPLETE',
+                sessionId: sid,
+                markerId: `compact-timeout-${Date.now()}`,
+                afterContextTokens: null,
+                aborted: true,
+              });
+            }
+            compactWatchdogs.current.delete(sid);
+          }, 180_000);
+          compactWatchdogs.current.set(sid, timer);
+        } else if (existing) {
+          clearTimeout(existing);
           compactWatchdogs.current.delete(sid);
-        }, 180_000);
-        compactWatchdogs.current.set(sid, timer);
-      } else if (existing) {
-        clearTimeout(existing);
-        compactWatchdogs.current.delete(sid);
+        }
       }
-    }
-  }, [chatStateMap, dispatch]);
+    };
+    check();
+    return chatStore.subscribeAll(check);
+  }, [chatStore, dispatch]);
 
   // Attention-reporter ref declared up here so hooks-order stays deterministic;
   // the useEffect that writes to it lives AFTER sessionStatuses is computed
@@ -1619,27 +1634,36 @@ function AppInner() {
   }, [sessionId]);
 
   // Clear viewed status when a session starts thinking (user sent a new message).
-  // Early-exit: skip iteration if no sessions are currently thinking.
+  // Tranche 1: store subscription instead of a [chatStateMap] effect — reads
+  // sessionsRef.current (the existing mirror) so it doesn't need `sessions` as a
+  // dep. setViewedSessions is a stable setState, safe from a subscription cb.
   useEffect(() => {
-    let anyThinking = false;
-    for (const s of sessions) {
-      const chatState = chatStateMap.get(s.id);
-      if (chatState?.isThinking) { anyThinking = true; break; }
-    }
-    if (!anyThinking) return;
-
-    for (const s of sessions) {
-      const chatState = chatStateMap.get(s.id);
-      if (chatState?.isThinking) {
-        setViewedSessions((prev) => {
-          if (!prev.has(s.id)) return prev;
-          const next = new Set(prev);
-          next.delete(s.id);
-          return next;
-        });
+    const check = () => {
+      const map = chatStore.getState();
+      const sessions = sessionsRef.current;
+      // Early-exit: skip iteration if no sessions are currently thinking.
+      let anyThinking = false;
+      for (const s of sessions) {
+        const chatState = map.get(s.id);
+        if (chatState?.isThinking) { anyThinking = true; break; }
       }
-    }
-  }, [sessions, chatStateMap]);
+      if (!anyThinking) return;
+
+      for (const s of sessions) {
+        const chatState = map.get(s.id);
+        if (chatState?.isThinking) {
+          setViewedSessions((prev) => {
+            if (!prev.has(s.id)) return prev;
+            const next = new Set(prev);
+            next.delete(s.id);
+            return next;
+          });
+        }
+      }
+    };
+    check();
+    return chatStore.subscribeAll(check);
+  }, [chatStore]);
 
   // Check if remote setup banner is active (show badge on gear icon)
   // Badge shows whenever the blue "Set Up Remote Access" banner would be visible
@@ -1811,43 +1835,30 @@ function AppInner() {
   // Gated on !pendingModel so this doesn't race with the verify effect during
   // a user-initiated switch (the in-flight turn still carries the old model
   // and would cause this effect to undo the user's intent prematurely).
+  //
+  // Tranche 1: the timeline walk moved into useActiveSessionModel (a cached
+  // store selector). That preserves BOTH of this effect's original triggers —
+  // a transcript event that reveals a new model for the active session
+  // (activeSessionModel dep), AND a session switch (sessionId dep, so switching
+  // INTO a session that drifted while backgrounded still reconciles its pill) —
+  // without AppInner re-rendering on every dispatch the way the old
+  // [chatStateMap] dep forced. See the plan's Task 9 option (c).
+  const activeSessionModel = useActiveSessionModel(sessionId);
   useEffect(() => {
     if (!sessionId || pendingModel) return;
-    const session = chatStateMap.get(sessionId);
-    if (!session) return;
-
-    // Walk backward through the timeline for the most recent assistant-turn
-    // with a known model. turn.model is null until the first assistant-text
-    // arrives, so new/empty sessions exit here.
-    let latestModel: string | null = null;
-    for (let i = session.timeline.length - 1; i >= 0; i--) {
-      const entry = session.timeline[i];
-      if (entry.kind === 'assistant-turn') {
-        const turn = session.assistantTurns.get(entry.turnId);
-        if (turn?.model) {
-          latestModel = turn.model;
-          break;
-        }
-      }
-    }
-    if (!latestModel) return;
-
-    // Match the raw transcript model (e.g. 'claude-opus-4-7') → ModelAlias,
-    // mirroring the SessionInfo matcher at line 372.
-    const alias = MODELS.find((m) => latestModel!.includes(m.replace(/\[.*\]/, '')));
-    if (!alias) return;
+    if (!activeSessionModel) return;
 
     const currentAlias = sessionModels.get(sessionId);
-    if (currentAlias && currentAlias !== alias) {
+    if (currentAlias && currentAlias !== activeSessionModel) {
       // Drift detected — reconcile silently. Also the self-heal path for a pill
       // stuck on the 'unknown' sentinel: the moment a real model shows up in
       // the transcript, this overwrites it. setPreference persists to disk
       // (so next session boots with the correct default); setSessionModels
       // updates the status-bar pill + Shift+Space cycle start point.
-      (window.claude as any).model?.setPreference(alias);
-      setSessionModels((prev) => new Map(prev).set(sessionId, alias));
+      (window.claude as any).model?.setPreference(activeSessionModel);
+      setSessionModels((prev) => new Map(prev).set(sessionId, activeSessionModel));
     }
-  }, [sessionId, chatStateMap, sessionModels, pendingModel]);
+  }, [sessionId, activeSessionModel, sessionModels, pendingModel]);
 
   // Snapshot factory for /cost and /usage. Pulls live stats from statusData
   // and freezes them as a point-in-time snapshot. Returns null if stats haven't
