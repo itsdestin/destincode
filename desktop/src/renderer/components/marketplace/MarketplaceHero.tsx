@@ -6,6 +6,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import type { FeaturedHeroSlot, SkillEntry } from "../../../shared/types";
+import { Button } from "../ui";
 
 const ROTATION_MS = 6000;
 // Minimum horizontal travel to count as a swipe, in pixels. Below this, the
@@ -76,13 +77,12 @@ export default function MarketplaceHero({ slots, lookup, onOpen }: Props) {
           {entry?.displayName || slot.id}
         </h2>
         <p className="text-sm text-fg-2 max-w-xl mt-1 line-clamp-1 sm:line-clamp-none">{slot.blurb}</p>
-        <button
-          type="button"
-          onClick={() => onOpen(slot.id)}
-          className="mt-3 self-start px-3 py-1.5 rounded-md bg-accent text-on-accent text-sm font-medium hover:opacity-90 transition-opacity"
-        >
+        {/* Page-level CTA -> lg. hover:opacity-90 faded the whole button, LABEL
+            included; the fill now fades toward the surface and the text stays
+            crisp. */}
+        <Button size="lg" onClick={() => onOpen(slot.id)} className="mt-3 self-start">
           View details
-        </button>
+        </Button>
       </div>
       {slots.length > 1 && (
         <div className="absolute bottom-3 right-4 flex gap-1.5 z-10">

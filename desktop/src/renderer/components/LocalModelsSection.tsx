@@ -9,6 +9,7 @@
 // plain-word status (never ●◐○ glyphs), consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
+import { Button } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
@@ -456,12 +457,9 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
           </p>
         </div>
         {!confirming && (
-          <button
-            onClick={() => setConfirming(true)}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-red-500/40 text-red-500 hover:bg-red-500/10 transition-colors shrink-0"
-          >
+          <Button variant="danger-outline" onClick={() => setConfirming(true)} className="shrink-0">
             Delete
-          </button>
+          </Button>
         )}
       </div>
 
@@ -472,19 +470,19 @@ function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefr
             This removes the model file ({gb(model.sizeBytes)}) from this computer. Re-downloading it later will take a while.
           </p>
           <div className="flex gap-2">
-            <button
-              onClick={() => setConfirming(false)}
-              className="flex-1 text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-            >
+            {/* Keep collapses the confirm rather than closing anything, so it
+                survives the "no redundant text cancel" rule. */}
+            <Button variant="secondary" onClick={() => setConfirming(false)} className="flex-1">
               Keep
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="danger"
               onClick={() => void doDelete()}
               disabled={busy}
-              className="flex-1 text-xs font-medium py-2 rounded-lg bg-red-500 text-white hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1"
             >
               {busy ? 'Deleting…' : 'Delete model'}
-            </button>
+            </Button>
           </div>
           {delError && <p className="text-[10px] text-red-500">{delError}</p>}
         </div>

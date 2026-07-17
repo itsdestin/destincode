@@ -1,0 +1,93 @@
+import { describe, it, expect } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+/**
+ * Built-in theme colors exist in two places and MUST agree:
+ *
+ *   1. src/renderer/themes/builtin/<slug>.json  — the source of truth. The theme
+ *      engine applies these at runtime, so these are the values users actually see.
+ *   2. styles/globals.css [data-theme="<slug>"] — anti-FOUC only. Applied before
+ *      React mounts so the first paint isn't unstyled; overwritten moments later
+ *      by the engine.
+ *
+ * They drifted before, and it shipped: creme's fg-muted (#9E9283, 2.47:1) and
+ * fg-faint (#BEB3A4, 1.67:1) were corrected in globals.css but not in the JSON.
+ * Because the JSON is what renders, users kept seeing the failing values while
+ * the CSS and the contrast audit both claimed they were fixed.
+ *
+ * A third copy used to live in scripts/audit-theme-contrast.mjs; it now reads the
+ * JSON directly, so this test only has two sources left to reconcile.
+ */
+
+const builtinDir = resolve(__dirname, '..', 'src', 'renderer', 'themes', 'builtin');
+const globalsCss = readFileSync(
+  resolve(__dirname, '..', 'src', 'renderer', 'styles', 'globals.css'),
+  'utf-8',
+);
+
+/** Pulls the CSS custom properties out of the `[data-theme="<slug>"]` block. */
+function parseThemeBlock(slug: string): Record<string, string> {
+  const re = new RegExp(`\\[data-theme="${slug}"\\][^{]*\\{([^}]*)\\}`);
+  const match = globalsCss.match(re);
+  if (!match) throw new Error(`globals.css has no [data-theme="${slug}"] block`);
+
+  const vars: Record<string, string> = {};
+  for (const line of match[1].split('\n')) {
+    const decl = line.match(/^\s*(--[\w-]+)\s*:\s*([^;]+);/);
+    if (decl) vars[decl[1]] = decl[2].trim();
+  }
+  return vars;
+}
+
+function loadBuiltins() {
+  return readdirSync(builtinDir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => JSON.parse(readFileSync(join(builtinDir, f), 'utf-8')));
+}
+
+describe('built-in theme sources agree', () => {
+  const builtins = loadBuiltins();
+
+  it('finds the four built-in themes', () => {
+    expect(builtins.map((t) => t.slug).sort()).toEqual(['creme', 'dark', 'light', 'midnight']);
+  });
+
+  for (const theme of loadBuiltins()) {
+    describe(theme.slug, () => {
+      const cssVars = parseThemeBlock(theme.slug);
+
+      for (const [token, value] of Object.entries(theme.tokens as Record<string, string>)) {
+        it(`--${token} matches globals.css`, () => {
+          // Hex is case-insensitive in CSS, so compare case-folded — we care
+          // about the color drifting, not the letter casing.
+          expect(cssVars[`--${token}`]?.toLowerCase()).toBe(value.toLowerCase());
+        });
+      }
+    });
+  }
+});
+
+describe('creme legibility fix stays fixed', () => {
+  // The exact values that shipped broken. Guards against a revert restoring
+  // sub-threshold text colors (fg-muted needs >= 3:1, fg-faint >= 1.8:1 vs canvas).
+  it('does not reintroduce the failing fg-muted / fg-faint', () => {
+    const creme = loadBuiltins().find((t) => t.slug === 'creme')!;
+    expect(creme.tokens['fg-muted']).not.toBe('#9E9283');
+    expect(creme.tokens['fg-faint']).not.toBe('#BEB3A4');
+    expect(creme.tokens['fg-muted']).toBe('#8A7E6E');
+    expect(creme.tokens['fg-faint']).toBe('#B0A595');
+  });
+});
+
+describe('built-ins declare their own link colors', () => {
+  // link/link-hover are optional pack tokens the engine derives when absent.
+  // The four built-ins have hand-picked values that must NOT fall back to
+  // derivation, or their links would visibly change color.
+  it('every built-in sets link and link-hover', () => {
+    for (const theme of loadBuiltins()) {
+      expect(theme.tokens.link, `${theme.slug} link`).toMatch(/^#[0-9A-Fa-f]{6}$/);
+      expect(theme.tokens['link-hover'], `${theme.slug} link-hover`).toMatch(/^#[0-9A-Fa-f]{6}$/);
+    }
+  });
+});

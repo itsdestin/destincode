@@ -12,6 +12,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { getPlatform } from '../platform';
+import { Button } from './ui';
 
 type Stage = 'checking' | 'gh-missing' | 'code' | 'done' | 'error';
 
@@ -223,14 +224,23 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
             {installNote?.kind === 'manual' && (
               <div className="space-y-1">
                 <div className="text-[11px] text-fg-muted">Run this in your terminal, then choose “Check again”:</div>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 font-mono text-xs text-fg-dim bg-inset px-2 py-1.5 rounded break-all">{installNote.text}</code>
-                  <button
+                {/* copy-inside-container: the Copy button docks INSIDE the code
+                    block instead of floating beside it as a second surface.
+                    hover:bg-edge overrides ghost's hover:bg-inset, which would be
+                    invisible sitting on an inset container. */}
+                <div
+                  className="flex items-center gap-2 bg-inset rounded"
+                  style={{ padding: '4px 4px 4px 8px' }}
+                >
+                  <code className="flex-1 font-mono text-xs text-fg-dim break-all">{installNote.text}</code>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="hover:bg-edge shrink-0"
                     onClick={() => navigator.clipboard?.writeText(installNote.text).catch(() => {})}
-                    className="text-xs px-2 py-1 rounded bg-inset hover:bg-edge text-fg-dim shrink-0"
                   >
                     Copy
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
@@ -238,27 +248,17 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
               <div role="alert" className="text-xs text-red-500">{installNote.text}</div>
             )}
 
+            {/* "Never mind" removed: it called the same handleClose as the ✕ in
+                the header, so it was a second way to do one thing. Dialogs with
+                an ✕ get no redundant text cancel. */}
             <div className="flex justify-end gap-2 pt-1">
-              <button
-                onClick={handleClose}
-                className="text-sm px-3 py-1 rounded text-fg-dim hover:text-fg hover:bg-inset transition-colors"
-              >
-                Never mind
-              </button>
-              <button
-                onClick={() => void runCheck()}
-                disabled={installBusy}
-                className="text-sm px-3 py-1 rounded border border-edge-dim text-fg-2 hover:bg-inset disabled:opacity-50"
-              >
+              <Button variant="secondary" onClick={() => void runCheck()} disabled={installBusy}>
                 Check again
-              </button>
-              <button
-                onClick={() => void handleInstallGh()}
-                disabled={installBusy}
-                className="text-sm px-3 py-1 rounded bg-accent text-on-accent disabled:opacity-50"
-              >
+              </Button>
+              {/* This primary had NO hover state at all before. */}
+              <Button onClick={() => void handleInstallGh()} disabled={installBusy}>
                 {installBusy ? 'Installing…' : 'Install GitHub CLI'}
-              </button>
+              </Button>
             </div>
           </div>
         )}

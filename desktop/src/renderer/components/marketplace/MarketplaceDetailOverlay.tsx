@@ -18,6 +18,7 @@ import RatingSubmitModal from "./RatingSubmitModal";
 import ReviewList from "./ReviewList";
 import LikeButton from "./LikeButton";
 import FileViewerOverlay, { type FileViewerTarget } from "./FileViewerOverlay";
+import { Button } from "../ui";
 
 export type DetailTarget =
   | { kind: "skill"; id: string }
@@ -279,26 +280,31 @@ function SkillBody({
             (() => {
               const bundled = isBundledPlugin(entry.id);
               return (
-                <button
-                  type="button"
+                // Was a FILLED inset button, which read as a second primary
+                // sitting next to Install. Bordered secondary makes the hierarchy
+                // obvious.
+                <Button
+                  variant="secondary"
+                  size="lg"
                   onClick={onUninstall}
                   disabled={bundled}
                   title={bundled ? BUNDLED_REASON : undefined}
-                  className="px-4 py-2 rounded-md bg-inset text-fg border border-edge hover:border-edge-dim disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-edge"
                 >
                   Uninstall
-                </button>
+                </Button>
               );
             })()
           ) : (
-            <button
-              type="button"
+            <Button
+              size="lg"
               onClick={onInstall}
-              className={`px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90 ${installError ? 'ring-2 ring-red-500' : ''}`}
+              // ring-red-500 -> the destructive token: identical #DD4444 today,
+              // but theme-overridable now.
+              className={installError ? 'ring-2 ring-destructive' : ''}
               title={installError || undefined}
             >
               {installError ? 'Retry Install' : 'Install'}
-            </button>
+            </Button>
           )}
         </div>
       </header>
@@ -545,31 +551,35 @@ function ThemeBody({
               Installing…
             </button>
           ) : !installed ? (
-            <button
-              type="button"
+            <Button
+              size="lg"
               onClick={onInstall}
-              className={`px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90 ${installError ? 'ring-2 ring-red-500' : ''}`}
+              // ring-red-500 -> the destructive token: identical #DD4444 today,
+              // but theme-overridable now.
+              className={installError ? 'ring-2 ring-destructive' : ''}
               title={installError || undefined}
             >
               {installError ? 'Retry Install' : 'Install'}
-            </button>
+            </Button>
           ) : isActive ? (
             <>
-              <button type="button" disabled className="px-4 py-2 rounded-md bg-inset text-fg-dim border border-edge cursor-default">
+              {/* "Active" is a disabled state marker, not an action — secondary
+                  reads as the inert sibling of the ghost Uninstall beside it. */}
+              <Button variant="secondary" size="lg" disabled>
                 Active
-              </button>
-              <button type="button" onClick={handleUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
+              </Button>
+              <Button variant="ghost" size="lg" onClick={handleUninstall}>
                 Uninstall
-              </button>
+              </Button>
             </>
           ) : (
             <>
-              <button type="button" onClick={onApply} className="px-4 py-2 rounded-md bg-accent text-on-accent hover:opacity-90">
+              <Button size="lg" onClick={onApply}>
                 Apply theme
-              </button>
-              <button type="button" onClick={handleUninstall} className="px-3 py-2 rounded-md text-fg-dim hover:text-fg text-sm">
+              </Button>
+              <Button variant="ghost" size="lg" onClick={handleUninstall}>
                 Uninstall
-              </button>
+              </Button>
             </>
           )}
         </div>

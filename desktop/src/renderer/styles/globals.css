@@ -207,6 +207,20 @@
   --color-red-500: #DD4444;
   --color-amber-700: #FF9800;
 
+  /* Type scale below Tailwind's text-xs (12px). The renderer had ~538 raw
+     `text-[11px]` / `text-[10px]` / `text-[9px]` sites; these name the three
+     real sizes so the scale is enumerable and greppable. Same pixel values —
+     naming them is a no-op visually. New rule: no arbitrary `text-[Npx]`. */
+  --text-2xs: 11px;
+  --text-3xs: 10px;
+  --text-4xs: 9px;
+
+  /* Label color for filled --destructive surfaces (danger buttons/toggles).
+     Derived per-theme in theme-engine.ts rather than hardcoded white, because
+     --destructive is community-overridable with no contrast guard — a pack can
+     set a pale red that white text disappears against. */
+  --color-on-destructive: var(--on-destructive);
+
   /* All-monospace typography (matches YouCoded's Cascadia Mono everywhere) */
   --font-sans: 'Cascadia Mono', 'Cascadia Code', 'Fira Code', monospace;
   --font-mono: 'Cascadia Mono', 'Cascadia Code', 'Fira Code', monospace;
@@ -730,13 +744,18 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 
 /* Inside glass overlays, children use opaque backgrounds so the
-   blurred wallpaper doesn't leak through nested elements */
+   blurred wallpaper doesn't leak through nested elements.
+   Same unlayered-beats-layered hover carve-out as the .layer-surface
+   protection cascade below — see the long comment there for why. */
 .glass-overlay .bg-inset {
   background-color: var(--inset);
 }
 
-.glass-overlay .bg-accent {
+.glass-overlay .bg-accent:not(:hover) {
   background-color: var(--accent);
+}
+.glass-overlay .bg-accent:hover {
+  background-color: color-mix(in oklab, var(--accent) 90%, var(--panel));
 }
 
 /* Chat bubbles — solid themes: plain opaque tokens. Wallpaper themes:
@@ -822,8 +841,16 @@ body[data-mode="buddy-chat"] #theme-bg {
 [data-wallpaper] .panel-glass.bg-inset {
   background-color: color-mix(in srgb, var(--inset) calc(var(--panels-opacity, 1) * 100%), transparent);
 }
-[data-wallpaper] .panel-glass.bg-accent {
+/* Same unlayered-vs-@layer-utilities hover carve-out as the protection cascade
+   (see the .layer-surface comment). panel-glass elements ARE the surface, so
+   their base stays translucent at panels-opacity and the hover fades by scaling
+   that alpha to 90% — the same 10% fade toward the backdrop that
+   `hover:bg-accent/90` gives on solid themes. */
+[data-wallpaper] .panel-glass.bg-accent:not(:hover) {
   background-color: color-mix(in srgb, var(--accent) calc(var(--panels-opacity, 1) * 100%), transparent);
+}
+[data-wallpaper] .panel-glass.bg-accent:hover {
+  background-color: color-mix(in srgb, var(--accent) calc(var(--panels-opacity, 1) * 90%), transparent);
 }
 
 /* Destructive variant — danger-tinted border + ring for delete/clear dialogs */
@@ -836,13 +863,71 @@ body[data-mode="buddy-chat"] #theme-bg {
 /* Protection cascade: inside any popup/overlay, nested .bg-inset / .bg-accent
    elements stay opaque so the blurred background and bubble-opacity setting
    don't leak through soft buttons, dividers, or inline chips. Unconditional
-   (was gated on [data-panels-blur] before the refactor). */
+   (was gated on [data-panels-blur] before the refactor).
+
+   The :not(:hover) carve-out below is load-bearing — do not "simplify" it away.
+   These rules are UNLAYERED, and Tailwind v4 emits every utility inside
+   `@layer utilities`. Unlayered beats layered no matter the specificity, so a
+   plain `.layer-surface .bg-accent` silently overrode `hover:bg-accent/90` and
+   left every primary button in every popup with a dead hover. Splitting the
+   rule hands the hovered state back, and the companion re-states the hover as
+   an opaque color-mix so wallpaper themes don't get double translucency.
+
+   Only .bg-accent needs this. Of the ui/Button variants, primary is the only
+   one with BOTH a base background and a background hover: secondary/ghost/
+   danger-outline hover up from a transparent base (no base class to collide
+   with), and danger uses .bg-destructive — which has no wallpaper-translucency
+   rule, so it needs no protection at all. Adding a `.layer-surface
+   .bg-destructive` rule would not fix anything; it would newly BREAK
+   `hover:bg-destructive/90` the same way this bug worked. */
 .layer-surface .bg-inset {
   background-color: var(--inset);
 }
 
-.layer-surface .bg-accent {
+.layer-surface .bg-accent:not(:hover) {
   background-color: var(--accent);
+}
+.layer-surface .bg-accent:hover {
+  background-color: color-mix(in oklab, var(--accent) 90%, var(--panel));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Coarse-pointer hit expansion
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* This renderer is ALSO the Android UI — the same React bundle runs in the
+   WebView — so every control here is a phone control. Several are far below the
+   ~44-48dp touch guideline: sm buttons are ~22px tall, icon buttons 28px,
+   Checkbox/Radio 14px. This paints an invisible, centered hit target of at
+   least 44x44 on touch devices only.
+   Zero visual change anywhere: the pseudo-element has no paint, and the whole
+   rule is behind pointer:coarse so desktop never sees it. Clicks on the
+   pseudo-element hit the control because it's the control's own child. */
+@media (pointer: coarse) {
+  .coarse-hit {
+    position: relative;
+  }
+  .coarse-hit::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 100%;
+    height: 100%;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* For list rows that can't use an overflowing hit box because they sit
+     shoulder-to-shoulder (Select options) — an expanded ::after would overlap
+     its neighbours and steal their taps. Grow the row itself instead.
+     Unlike everywhere else in this file, unlayered-beats-@layer-utilities is
+     working FOR us here: this deliberately overrides the py-1.5 utility. */
+  .coarse-roomy {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
