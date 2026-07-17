@@ -1,0 +1,58 @@
+// desktop/src/renderer/components/sync-space-error-summary.ts
+//
+// Turns a raw space-sync error string (thrown by the git transport / engine and
+// surfaced verbatim before this) into a user-friendly summary for the Sync card.
+//
+// WHY this exists: the card used to render the raw git stderr directly — e.g.
+// "fatal: Unable to create '…/index.lock': File exists. Another git process…" —
+// which violates docs/error-message-standards.md (a wall of jargon, no next
+// step). This maps the one cause we can identify with certainty (an interrupted
+// write that left a git lock, now auto-healed by GitTransport.reapStaleLocks) to
+// a specific+accurate message, and everything else to a general, non-committal
+// message that points at the existing Settings → Development report path. It
+// never INVENTS a cause: unknown stays unknown. The raw text is still shown by
+// the card behind a "Show details" toggle, so nothing is lost for debugging.
+//
+// Pure + string-only so it's trivially unit-tested (mirrors sync-error-classifier.ts).
+
+export interface SpaceSyncErrorSummary {
+  /** True when the failure is a stale/held git lock from an interrupted write —
+   *  the self-healing case (reapStaleLocks clears it within a few minutes). */
+  interrupted: boolean;
+  /** One-line, plain-language summary shown as the card sub-text. */
+  summary: string;
+}
+
+// Substrings that identify an interrupted-write / leftover-git-lock failure.
+// Matched case-insensitively against the raw error. Kept as specific phrases
+// (not loose regex) to avoid misclassifying unrelated errors as self-healing.
+const INTERRUPTED_MARKERS = [
+  'index.lock',            // index write collision
+  'unable to create',      // "Unable to create '<path>.lock': File exists" (index OR ref locks)
+  'another git process',   // git's own follow-on line for a held lock
+  'could not complete',    // "Sync merge could not complete for <id>: …"
+];
+
+export function summarizeSpaceSyncError(raw: string | null | undefined): SpaceSyncErrorSummary {
+  const text = (raw ?? '').toLowerCase();
+  const interrupted = INTERRUPTED_MARKERS.some((m) => text.includes(m));
+
+  if (interrupted) {
+    // Specific + accurate: we know the cause, and the transport now clears the
+    // leftover lock automatically, so we tell the user it resolves on its own.
+    return {
+      interrupted: true,
+      summary:
+        'A previous sync was interrupted before it finished. It’s being cleaned up ' +
+        'automatically and usually clears on its own within a few minutes.',
+    };
+  }
+
+  // General but non-committal — no guessed cause, plus where to report it.
+  return {
+    interrupted: false,
+    summary:
+      'Sync hit an unexpected problem. It will keep retrying automatically; if it ' +
+      'keeps failing, report it from Settings → Development.',
+  };
+}

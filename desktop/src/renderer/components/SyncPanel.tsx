@@ -22,6 +22,7 @@ import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
 import SettingsRow from './SettingsRow';
 import { latestUnresolvedError, type SyncStatusData } from './sync-dot-state';
+import { summarizeSpaceSyncError } from './sync-space-error-summary';
 
 // --- Explainer content (updated for V2 multi-instance model) ---
 
@@ -921,12 +922,17 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               const syncedSub = ['GitHub', login, instant, lastRel].filter(Boolean).join(' · ');
               const syncingSub = ['GitHub', login].filter(Boolean).join(' · ');
 
-              // space-manager's error string is a pinned UI contract — shown verbatim.
+              // The raw space-manager error string is developer-grade git stderr
+              // (e.g. "fatal: Unable to create '…/index.lock': File exists"). Per
+              // docs/error-message-standards.md we surface a plain-language SUMMARY
+              // as the sub-text and keep the raw text behind a "Show details"
+              // disclosure below — never a wall of jargon as the primary message.
+              const errorSummary = errorMsg ? summarizeSpaceSyncError(errorMsg as string) : null;
               const sub =
                 hk === 'setup' ? 'Creating your private repositories — a few seconds.' :
                 hk === 'off' ? 'Turn on to back up and sync across your devices' :
                 hk === 'waiting-github' ? 'Connect your account to start syncing' :
-                hk === 'error' ? (errorMsg as string) :
+                hk === 'error' ? (errorSummary?.summary ?? 'Sync hit an unexpected problem.') :
                 hk === 'syncing' ? syncingSub :
                 syncedSub;
               const subWarn = hk === 'error';
@@ -936,9 +942,9 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               // hide the failure entirely — e.g. an enable attempt that failed for a
               // non-GitHub reason looked like nothing happened. Surface the error as
               // its own red line under the off sub, mirroring how the enabled+error
-              // state shows errorMsg in red. (Error strings are shown verbatim —
-              // same pinned-contract rule as the 'error' sub above.)
-              const offError = hk === 'off' && errorMsg ? (errorMsg as string) : null;
+              // state shows the failure in red — using the same plain-language
+              // summary (raw text stays in the "Show details" disclosure below).
+              const offError = hk === 'off' && errorSummary ? errorSummary.summary : null;
 
               // Toggle reflects the real enabled state (or the pending enable) so its
               // click always flips the correct direction. Disabled only while setting up.
@@ -1006,6 +1012,15 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                     </div>
                     {/* Action tucked under the reason — same box, no divider. */}
                     {cta && <div className="mt-2 flex items-center gap-2 pl-[18px]">{cta}</div>}
+                    {/* Raw git/transport error kept available for debugging without
+                        making it the primary message (error-message-standards.md).
+                        Native <details> — no React state needed inside this render. */}
+                    {errorMsg && (hk === 'error' || offError) && (
+                      <details className="mt-2 pl-[18px]">
+                        <summary className="text-[11px] text-fg-muted cursor-pointer hover:text-fg-2 select-none">Show details</summary>
+                        <pre className="mt-1 text-[10px] leading-relaxed text-fg-dim whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{errorMsg as string}</pre>
+                      </details>
+                    )}
                   </div>
 
                   {/* Count tabs + switchable list (only when enabled & healthy). */}
