@@ -33,6 +33,8 @@ export function clampToWorkArea(pos: Point, size: Size, workArea: Rect): Point {
 // 112px (was 80): Destin's 2026-07-16 dev test — the buddy read too small.
 const MASCOT_SIZE: Size = { width: 112, height: 112 };
 const CHAT_SIZE: Size = { width: 320, height: 480 };
+// Mascot↔chat vertical gap. Was 12 — halved per Destin (2026-07-16).
+const CHAT_GAP_PX = 6;
 // Action-bar size + position math live in buddy-bar-geometry.ts (pure,
 // unit-tested); main.ts imports the same BAR_SIZE so the BrowserWindow
 // dimensions and the positioning math can't drift.
@@ -360,12 +362,13 @@ export class BuddyWindowManager {
     const barPos = computeBarPosition(mb, wa);
     const groupLeft = Math.min(mb.x, barPos.x);
     const groupRight = Math.max(mb.x + mb.width, barPos.x + BAR_SIZE.width);
-    const x = Math.round((groupLeft + groupRight) / 2) - Math.round(CHAT_SIZE.width / 2);
-    const belowY = mb.y + mb.height + 12;
+    // +10: nudged right of true group center per Destin's eye (2026-07-16).
+    const x = Math.round((groupLeft + groupRight) / 2) - Math.round(CHAT_SIZE.width / 2) + 10;
+    const belowY = mb.y + mb.height + CHAT_GAP_PX;
     const belowFits = belowY + CHAT_SIZE.height <= wa.y + wa.height;
     const raw = belowFits
       ? { x, y: belowY }
-      : { x, y: mb.y - CHAT_SIZE.height - 12 };
+      : { x, y: mb.y - CHAT_SIZE.height - CHAT_GAP_PX };
     return clampToWorkArea(raw, CHAT_SIZE, wa);
   }
 

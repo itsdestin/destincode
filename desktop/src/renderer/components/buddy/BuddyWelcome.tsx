@@ -1,14 +1,15 @@
 import { useCallback, useState } from 'react';
-import { ThemeMascot, WelcomeAppIcon } from '../Icons';
 import { BuddyNewSessionForm } from './BuddyNewSessionForm';
 
 /**
  * Buddy empty-state — mirrors the main app's no-active-session screen
- * (mascot + "No Active Session" + New Session/Resume buttons). When the
- * user clicks New Session, we swap the CTA cluster for the shared
- * BuddyNewSessionForm (folder picker, model, skip-perms, create/cancel).
- * That form is also reused by SessionPill's dropdown so the two buddy
- * entry points cannot drift.
+ * ("No Active Session" + New Session/Resume buttons — deliberately NO
+ * mascot here: the buddy floater right next to this window IS the mascot,
+ * a second one read as clutter — Destin 2026-07-16). When the user clicks
+ * New Session, we swap the CTA cluster for the shared BuddyNewSessionForm
+ * (folder picker, model, skip-perms, create/cancel). That form is also
+ * reused by SessionPill's dropdown so the two buddy entry points cannot
+ * drift.
  */
 interface Props {
   /** Called with the newly-created session id so BuddyChat can subscribe + set view. */
@@ -42,7 +43,6 @@ export function BuddyWelcome({ onSessionCreated }: Props) {
       {!formOpen ? (
         // Collapsed state — mirrors App.tsx:1652-1676
         <>
-          <ThemeMascot variant="welcome" fallback={WelcomeAppIcon} className="w-24 h-24 text-fg-dim" />
           <p style={{ fontSize: 14, color: 'var(--fg-muted)', margin: 0 }}>No Active Session</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%', marginTop: 4 }}>
             <button
