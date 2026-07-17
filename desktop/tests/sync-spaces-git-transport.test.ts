@@ -1,5 +1,5 @@
 // desktop/tests/sync-spaces-git-transport.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -7,6 +7,15 @@ import { execFileSync } from 'child_process';
 import { GitTransport } from '../src/main/sync-spaces/git-transport';
 import type { SyncSpace } from '../src/main/sync-spaces/types';
 import { describeTransportContract, TransportHarness } from './sync-transport-contract';
+
+// INTEGRATION test, not a unit test: every case spawns real `git` subprocesses,
+// so its wall-clock scales with machine load — and vitest's parallel pool
+// guarantees load. The 5s default (and even 30s) is a fixed-budget bet that
+// loses on a busy machine, which made this file time out nondeterministically
+// and block release builds (`npm test` gates the Build step). A generous ceiling
+// only bounds the FAILURE case; passing tests return as soon as they finish.
+// Applies to the describeTransportContract() cases below too — verified.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 // Real git, local bare repo as the "GitHub" remote. Needs git on PATH (CI has it).
 async function makeHarness(): Promise<TransportHarness> {
@@ -26,7 +35,11 @@ async function makeHarness(): Promise<TransportHarness> {
       await transport.setRemote(space, bare);
       return space;
     },
-    async cleanup() { fs.rmSync(tmp, { recursive: true, force: true }); },
+    // Windows holds handles briefly after the git subprocesses exit, so a bare
+    // rmSync here threw `EPERM: operation not permitted` under parallel load.
+    // Node retries EPERM/EBUSY/ENOTEMPTY natively with linear backoff — same
+    // pattern sync-spaces-project-discovery.test.ts already uses.
+    async cleanup() { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); },
   };
 }
 
@@ -45,7 +58,7 @@ describe('GitTransport specifics', () => {
     expect(r.pushed).toBe(true);
     expect(r.oversize).toEqual(['big.bin']);
     await h.cleanup();
-  }, 30000);
+  });
 
   it('a tracked file that grows past the cap is excluded ONCE, not re-appended every sync', async () => {
     const h = await makeHarness();
@@ -64,7 +77,7 @@ describe('GitTransport specifics', () => {
     const exclude = fs.readFileSync(path.join(a.root, '.youcoded', 'sync.git', 'info', 'exclude'), 'utf8');
     expect(exclude.split('\n').filter(l => l === '/log.txt').length).toBe(1);
     await h.cleanup();
-  }, 30000);
+  });
 
   it('a merge that cannot complete surfaces an error instead of silently reporting no update', async () => {
     const h = await makeHarness();
@@ -95,7 +108,7 @@ describe('GitTransport specifics', () => {
     expect(retry.conflictCopies.length).toBe(1);
     expect(fs.readFileSync(path.join(b.root, 'plan.md'), 'utf8')).toBe('A version\n');
     await h.cleanup();
-  }, 30000);
+  });
 
   it('maybeGc advances the persisted counter and gc actually repacks on the Nth sync', async () => {
     const h = await makeHarness();
@@ -149,7 +162,7 @@ describe('GitTransport specifics', () => {
     await expect(t.maybeGc(a)).resolves.toBeUndefined();
     expect(fs.readFileSync(counterFile, 'utf8').trim()).toBe('1');
     await h.cleanup();
-  }, 30000);
+  });
 
   it('gitDirSizeBytes returns >0 for a real repo and 0 for a missing dir', async () => {
     const h = await makeHarness();
@@ -165,5 +178,5 @@ describe('GitTransport specifics', () => {
     fs.mkdirSync(empty.root, { recursive: true });
     expect(await t.gitDirSizeBytes(empty)).toBe(0);
     await h.cleanup();
-  }, 30000);
+  });
 });

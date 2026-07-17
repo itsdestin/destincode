@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -33,9 +33,21 @@ function toolUseLine(uuid: string, toolUseId: string, toolName: string, input: a
   };
 }
 
+// Fixed sleep. ONLY valid before a NEGATIVE assertion ("nothing was emitted"),
+// where there is no condition to poll for — a too-short sleep there fails safe
+// (the assertion still holds). NEVER sleep before a POSITIVE assertion: the
+// watcher's reads are async and fs.watch delivery is load-dependent (macOS
+// FSEvents coalescing, Windows under vitest's parallel pool), so a fixed budget
+// is a bet that loses as the machine gets busy — that was this file's flake.
+// Use `vi.waitFor(...)` to poll until the condition actually holds instead.
 function wait(ms = 50): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
+
+// Generous ceilings — these only bound the FAILURE case. A passing assertion
+// returns as soon as it holds, so raising them costs nothing on green runs.
+const SETTLE_MS = 5_000;   // in-process: watcher read + emit
+const WATCH_MS = 15_000;   // fs.watch/stat-poll delivery of an external write
 
 describe('SubagentWatcher', () => {
   let tmpRoot: string;
@@ -69,9 +81,8 @@ describe('SubagentWatcher', () => {
 
     index.recordParentAgentToolUse('toolu_parent', 'Find bug', 'Explore');
     watcher.start();
-    await wait(100);
+    await vi.waitFor(() => expect(emitted).toHaveLength(1), { timeout: SETTLE_MS });
 
-    expect(emitted).toHaveLength(1);
     expect(emitted[0].type).toBe('tool-use');
     expect(emitted[0].data.parentAgentToolUseId).toBe('toolu_parent');
     expect(emitted[0].data.agentId).toBe('abc');
@@ -84,10 +95,14 @@ describe('SubagentWatcher', () => {
 
     writeMeta(subagentsDir, 'abc', 'Find bug', 'Explore');
     appendLine(subagentsDir, 'abc', toolUseLine('u1', 'toolu_X', 'Read', { file_path: '/a' }));
-    await wait(1500); // allow fs.watch/poll to fire
 
-    const stamped = emitted.find(e => e.type === 'tool-use');
-    expect(stamped?.data.parentAgentToolUseId).toBe('toolu_parent');
+    // Was `await wait(1500) // allow fs.watch/poll to fire`, which failed every
+    // macOS build: FSEvents coalescing latency exceeds 1500ms under runner load.
+    // Poll for the event instead of betting on a fixed budget.
+    await vi.waitFor(() => {
+      const stamped = emitted.find(e => e.type === 'tool-use');
+      expect(stamped?.data.parentAgentToolUseId).toBe('toolu_parent');
+    }, { timeout: WATCH_MS });
   });
 
   it('streams new lines appended to an existing subagent file', async () => {
@@ -96,11 +111,13 @@ describe('SubagentWatcher', () => {
 
     index.recordParentAgentToolUse('toolu_parent', 'Find bug', 'Explore');
     watcher.start();
-    await wait(100);
-    expect(emitted).toHaveLength(1);
+    await vi.waitFor(() => expect(emitted).toHaveLength(1), { timeout: SETTLE_MS });
 
     appendLine(subagentsDir, 'abc', toolUseLine('u2', 'toolu_Y', 'Grep', { pattern: 'foo' }));
-    await wait(1500);
+    // fs.watch delivery of the append — poll, don't sleep (see wait() above).
+    await vi.waitFor(() => {
+      expect(emitted.find(e => e.data.toolName === 'Grep')).toBeDefined();
+    }, { timeout: WATCH_MS });
 
     expect(emitted.length).toBeGreaterThanOrEqual(2);
     const grep = emitted.find(e => e.data.toolName === 'Grep');
@@ -114,13 +131,19 @@ describe('SubagentWatcher', () => {
 
     watcher.start();
     await wait(100);
+    // Negative assertion, so the fixed sleep is fine: with no parent binding the
+    // watcher CANNOT emit, whether or not its read has landed yet.
     expect(emitted).toHaveLength(0); // buffered
 
     index.recordParentAgentToolUse('toolu_parent', 'Find bug', 'Explore');
-    watcher.flushPendingFor('abc');
-    await wait(50);
-
-    expect(emitted).toHaveLength(1);
+    // Retry the flush rather than flushing once behind a fixed sleep: the read
+    // is async, so under load the single flush ran against an empty buffer and
+    // the assertion below never saw the event. A flush with nothing pending is a
+    // no-op, so retrying is safe.
+    await vi.waitFor(() => {
+      watcher.flushPendingFor('abc');
+      expect(emitted).toHaveLength(1);
+    }, { timeout: SETTLE_MS });
     expect(emitted[0].data.parentAgentToolUseId).toBe('toolu_parent');
   });
 
@@ -130,12 +153,11 @@ describe('SubagentWatcher', () => {
 
     index.recordParentAgentToolUse('toolu_parent', 'Find bug', 'Explore');
     watcher.start();
-    await wait(100);
-    expect(emitted).toHaveLength(1);
+    await vi.waitFor(() => expect(emitted).toHaveLength(1), { timeout: SETTLE_MS });
 
     // Simulate file-size shrink then re-growth (e.g. poll triggers redundant read).
     watcher.forceRereadFor('abc');
-    await wait(50);
+    await wait(50); // negative assertion below — a fixed settle is correct here
     expect(emitted).toHaveLength(1); // no duplicate emit
   });
 
@@ -166,13 +188,18 @@ describe('SubagentWatcher', () => {
 
     watcher.start();
     await wait(100);
+    // Negative — safe as a fixed sleep (no parent binding ⇒ no emit possible).
     expect(emitted).toHaveLength(0); // both lines buffered, no parent yet
 
     index.recordParentAgentToolUse('toolu_parent', 'Find bug', 'Explore');
-    watcher.flushAllPending();
-    await wait(50);
-
-    expect(emitted).toHaveLength(2);
+    // Retry the flush until the async read has buffered both lines. This is the
+    // exact case that failed on Windows under vitest's parallel pool: the read
+    // landed after the fixed 100ms sleep, so flushAllPending() found an empty
+    // buffer and the length-2 assertion below saw nothing.
+    await vi.waitFor(() => {
+      watcher.flushAllPending();
+      expect(emitted).toHaveLength(2);
+    }, { timeout: SETTLE_MS });
     // Preserved order: first buffered event still emits first.
     expect(emitted[0].data.toolName).toBe('Read');
     expect(emitted[1].data.toolName).toBe('Grep');
@@ -238,12 +265,13 @@ describe('SubagentWatcher read integrity', () => {
     await wait(150);
     expect(emitted).toHaveLength(0);
 
-    // Second half completes the line.
+    // Second half completes the line. Poll the reread until the carried bytes
+    // reassemble (was a 20x50ms loop — a 1s ceiling is the same fixed-budget bet).
     fs.appendFileSync(jsonlPath, full.subarray(splitAt));
-    for (let i = 0; i < 20 && emitted.length === 0; i++) {
+    await vi.waitFor(() => {
       watcher.forceRereadFor('utf8');
-      await wait(50);
-    }
+      expect(emitted.length).toBeGreaterThan(0);
+    }, { timeout: SETTLE_MS });
 
     const text = emitted.find(e => e.type === 'assistant-text');
     expect(text).toBeDefined();
@@ -294,9 +322,9 @@ describe('SubagentWatcher timer lifecycle', () => {
     appendLine(subagentsDir, 'kick', toolUseLine('u-kick', 'toolu_K', 'Read', { file_path: '/k' }));
 
     watcher.kickScan();
-    await wait(150);
-
-    expect(emitted.some(e => e.data.agentId === 'kick')).toBe(true);
+    await vi.waitFor(() => {
+      expect(emitted.some(e => e.data.agentId === 'kick')).toBe(true);
+    }, { timeout: SETTLE_MS });
   });
 
   it('settleByParent stops the file poll but keeps fs.watch delivering late writes', async () => {
@@ -306,8 +334,7 @@ describe('SubagentWatcher timer lifecycle', () => {
     appendLine(subagentsDir, 'done', toolUseLine('u-d1', 'toolu_D1', 'Read', { file_path: '/d' }));
 
     watcher.start();
-    await wait(150);
-    expect(emitted.length).toBeGreaterThanOrEqual(1);
+    await vi.waitFor(() => expect(emitted.length).toBeGreaterThanOrEqual(1), { timeout: SETTLE_MS });
     expect(watcher.hasActivePoll('done')).toBe(true);
 
     await watcher.settleByParent('toolu_parent_done');
@@ -317,8 +344,9 @@ describe('SubagentWatcher timer lifecycle', () => {
     // the settle only removes the belt-and-suspenders stat poll).
     const before = emitted.length;
     appendLine(subagentsDir, 'done', toolUseLine('u-d2', 'toolu_D2', 'Grep', { pattern: 'x' }));
-    for (let i = 0; i < 20 && emitted.length === before; i++) await wait(50);
-    expect(emitted.length).toBeGreaterThan(before);
+    // fs.watch delivery of an external append — the old 20x50ms (1s) ceiling was
+    // far under macOS FSEvents coalescing latency on a loaded runner.
+    await vi.waitFor(() => expect(emitted.length).toBeGreaterThan(before), { timeout: WATCH_MS });
   });
 
   it('settleByParent for an unknown parent is a harmless no-op', async () => {

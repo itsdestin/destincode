@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -8,6 +8,18 @@ import {
   TranscriptWatcher,
 } from '../src/main/transcript-watcher';
 import type { TranscriptEvent } from '../src/shared/types';
+
+// Fixed sleep. ONLY valid before a NEGATIVE assertion ("nothing emitted yet") or
+// as a settle that lets a WRONG extra event land before asserting it didn't —
+// a too-short sleep there fails safe. NEVER sleep before a POSITIVE assertion:
+// reads are async and fs.watch delivery is load-dependent, so a fixed budget is
+// a bet that loses as the machine gets busy. Use `vi.waitFor(...)` to poll.
+const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+// Generous ceilings — they only bound the FAILURE case; a passing assertion
+// returns the moment it holds, so raising them costs nothing on green runs.
+const SETTLE_MS = 5_000;   // in-process: watcher read + emit
+const WATCH_MS = 15_000;   // fs.watch/stat-poll delivery of an external write
 
 // ---------------------------------------------------------------------------
 // parseTranscriptLine
@@ -374,8 +386,14 @@ describe('TranscriptWatcher', () => {
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
-    // readNewLines is async — wait for the initial read triggered by startWatching
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // readNewLines is async — poll for the initial read rather than betting on a
+    // fixed 100ms, which lost under vitest's parallel pool.
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1), { timeout: SETTLE_MS });
+    // Settle before the dedup assertion: both lines were written before the
+    // watch started so they arrive in ONE read, but waiting only for "length is
+    // 1" would let a regression that DOES emit the dup pass at the instant the
+    // count first hits 1.
+    await wait(50);
 
     // Only the first occurrence should be emitted (second uuid-dup is deduplicated)
     expect(events).toHaveLength(1);
@@ -426,14 +444,13 @@ describe('TranscriptWatcher', () => {
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await wait(200); // negative assertion below — a fixed settle is correct here
     expect(events).toHaveLength(0); // Incomplete line, no events
 
     // Append the rest with newline — now the full line is parseable
     fs.appendFileSync(jsonlPath, fullLine.substring(50) + '\n');
-    // Wait for fs.watch or polling to pick up the change
-    await new Promise((resolve) => setTimeout(resolve, 2500));
-    expect(events).toHaveLength(1);
+    // fs.watch/poll delivery — poll for it instead of betting 2500ms.
+    await vi.waitFor(() => expect(events).toHaveLength(1), { timeout: WATCH_MS });
     expect(events[0].data.text).toBe('partial test');
   });
 
@@ -463,10 +480,9 @@ describe('TranscriptWatcher', () => {
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
-    // readNewLines is async — wait for the initial read triggered by startWatching
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // readNewLines is async — poll for the initial read, don't bet on 100ms.
+    await vi.waitFor(() => expect(events).toHaveLength(2), { timeout: SETTLE_MS });
 
-    expect(events).toHaveLength(2);
     expect(events[0].type).toBe('assistant-text');
     expect(events[1].type).toBe('turn-complete');
   });
@@ -498,10 +514,10 @@ describe('TranscriptWatcher', () => {
     });
     fs.writeFileSync(jsonlPath, line + '\n');
 
-    // Wait for the poll interval to pick up the file
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Poll until the watcher's own poll interval picks the file up — a fixed
+    // 1500ms is under the interval's worst case on a loaded machine.
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1), { timeout: WATCH_MS });
 
-    expect(events.length).toBeGreaterThanOrEqual(1);
     expect(events[0].data.text).toBe('From polling');
   });
 
@@ -548,10 +564,10 @@ describe('TranscriptWatcher', () => {
     });
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
-    expect(received).toContain('msg A');
-    expect(received).toContain('msg C');
+    await vi.waitFor(() => {
+      expect(received).toContain('msg A');
+      expect(received).toContain('msg C');
+    }, { timeout: SETTLE_MS });
   });
 
   it('records Agent tool_use in SubagentIndex for correlation', async () => {
@@ -665,7 +681,14 @@ describe('TranscriptWatcher read integrity', () => {
     watcher.readNewLinesForSession('desktop-race');
     watcher.readNewLinesForSession('desktop-race');
 
-    await new Promise((r) => setTimeout(r, 500));
+    // Poll for the first emit (the read is async — a fixed 500ms raced it under
+    // load), THEN settle so a second, racing emit would have landed before we
+    // assert it didn't. The old single sleep was doing both jobs at once.
+    await vi.waitFor(
+      () => expect(events.filter((e) => e.type === 'user-message').length).toBeGreaterThanOrEqual(1),
+      { timeout: SETTLE_MS },
+    );
+    await wait(200);
 
     const userMessages = events.filter((e) => e.type === 'user-message');
     expect(userMessages.length).toBe(1);
