@@ -34,7 +34,7 @@ const EMPTY_SESSION_STATE: SessionChatState = Object.freeze(createSessionChatSta
 // stability is preserved: the reducer returns the same session object when an
 // action doesn't affect that session, so unrelated sessions don't notify.
 
-interface ChatStore {
+export interface ChatStore {
   getState: () => ChatState;
   getSession: (id: string) => SessionChatState;
   subscribeSession: (id: string, callback: () => void) => () => void;
@@ -129,6 +129,16 @@ export function useChatState(sessionId: string): SessionChatState {
 
 export function useChatDispatch(): Dispatch<ChatAction> {
   return useStore().dispatch;
+}
+
+// Public store accessor for effect-only consumers (subscriptions/timers that
+// read state without needing re-renders). Render-path consumers should keep
+// using useChatState/useChatStateMap or a cached selector hook — reading
+// getState() during render bypasses React's subscription and can tear.
+// (The ChatStore type is exported at its declaration above — a second
+// `export type { ChatStore }` here would be a duplicate export, TS2484.)
+export function useChatStore(): ChatStore {
+  return useStore();
 }
 
 export function useChatStateMap(): ChatState {

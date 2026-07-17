@@ -3227,6 +3227,29 @@ function StatsWithHealthBridge({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Dev-only commit profiler for the AppInner tranche-1 perf work. Accumulates
+// React commit stats on window.__appInnerProfile so before/after numbers can
+// be read via console or scripts/cdp-eval.mjs against the DEV instance.
+// Statically dead code in production builds (DEV-gated), tree-shaken by Vite.
+declare global { interface Window { __appInnerProfile?: { commits: number; totalMs: number; maxMs: number; since: number; reset: () => void } } }
+function AppInnerProfiler({ children }: { children: React.ReactNode }) {
+  // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+  if (!import.meta.env.DEV) return <>{children}</>;
+  if (!window.__appInnerProfile) {
+    window.__appInnerProfile = {
+      commits: 0, totalMs: 0, maxMs: 0, since: Date.now(),
+      reset() { this.commits = 0; this.totalMs = 0; this.maxMs = 0; this.since = Date.now(); },
+    };
+  }
+  const onRender: React.ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {
+    const p = window.__appInnerProfile!;
+    p.commits += 1;
+    p.totalMs += actualDuration;
+    if (actualDuration > p.maxMs) p.maxMs = actualDuration;
+  };
+  return <React.Profiler id="AppInner" onRender={onRender}>{children}</React.Profiler>;
+}
+
 export default function App() {
   // Auto-show buddy on launch if the user previously enabled it. The effect
   // is called unconditionally (React rules-of-hooks) but no-ops inside
@@ -3288,7 +3311,9 @@ export default function App() {
                         SettingsPanel (outside the library/marketplace view) can
                         consume useMarketplace() for the favorites star + filter. */}
                     <MarketplaceProvider>
-                      <AppInner />
+                      <AppInnerProfiler>
+                        <AppInner />
+                      </AppInnerProfiler>
                     </MarketplaceProvider>
                   </ChatProvider>
                 </GameProvider>
