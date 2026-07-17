@@ -78,7 +78,7 @@ import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
-import { BuddyCaptureApp } from './components/buddy/BuddyCaptureApp';
+import { BuddyBarApp } from './components/buddy/BuddyBarApp';
 
 // Dev-only ToolCard fixture sandbox wrapper. The React.lazy + dynamic
 // import() live inside a `import.meta.env.DEV` ternary so Vite statically
@@ -3173,7 +3173,7 @@ export default function App() {
   // Buddy windows render as isolated placeholders without main-app providers
   if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
   if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
-  if (buddyMode === 'buddy-capture') return <BuddyCaptureApp />;
+  if (buddyMode === 'buddy-bar') return <BuddyBarApp />;
 
   // Main app wrapped in providers
   return (

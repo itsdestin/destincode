@@ -3,7 +3,7 @@
 
 body[data-mode="buddy-chat"],
 body[data-mode="buddy-mascot"],
-body[data-mode="buddy-capture"] {
+body[data-mode="buddy-bar"] {
   background: transparent !important;
   --canvas: transparent;
 }
@@ -22,17 +22,17 @@ body[data-mode="buddy-capture"] {
    Electron window. */
 html[data-mode="buddy-mascot"],
 html[data-mode="buddy-chat"],
-html[data-mode="buddy-capture"] {
+html[data-mode="buddy-bar"] {
   background: transparent !important;
   color-scheme: normal !important;
 }
 html[data-mode="buddy-mascot"] body,
 html[data-mode="buddy-chat"] body,
-html[data-mode="buddy-capture"] body {
+html[data-mode="buddy-bar"] body {
   background: transparent !important;
 }
 html[data-mode="buddy-mascot"] #root,
-html[data-mode="buddy-capture"] #root {
+html[data-mode="buddy-bar"] #root {
   background: transparent !important;
 }
 
@@ -136,7 +136,7 @@ html[data-mode="buddy-chat"] #root::before {
    in globals.css as a belt-and-suspenders guard.) */
 html[data-mode="buddy-mascot"] #theme-effects-overlay,
 html[data-mode="buddy-chat"] #theme-effects-overlay,
-html[data-mode="buddy-capture"] #theme-effects-overlay {
+html[data-mode="buddy-bar"] #theme-effects-overlay {
   display: none !important;
 }
 

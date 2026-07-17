@@ -552,6 +552,12 @@ export interface BuddyApi {
   // cannot accumulate drift between the cursor and the mascot.
   moveMascot(target: { targetX: number; targetY: number }): void;
   onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
+  // Pre-existing preload methods that were missing from this interface —
+  // added while typing the buddy-upgrades members so call sites don't need
+  // `(window as any)` casts. Main does the hide/capture/restore dance and
+  // pushes the PNG path to the chat renderer on BUDDY_ATTACH_FILE.
+  captureDesktop(): Promise<string | null>;
+  onAttachFile(cb: (filePath: string) => void): () => void;
   // ── Buddy upgrades (action bar, dismiss, dock/peek) ──
   // Typed centrally here (instead of `as any` casts at call sites) so the
   // preload, remote-shim, and renderer callers all agree on one contract.

@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
 import type { WindowRegistry } from './window-registry';
+import { BAR_SIZE, computeBarPosition } from './buddy-bar-geometry';
 
 export interface Rect { x: number; y: number; width: number; height: number; }
 export interface Point { x: number; y: number; }
@@ -20,15 +21,14 @@ export function clampToWorkArea(pos: Point, size: Size, workArea: Rect): Point {
 
 const MASCOT_SIZE: Size = { width: 80, height: 80 };
 const CHAT_SIZE: Size = { width: 320, height: 480 };
-// Screenshot capture icon — small action button pinned directly below
-// the mascot. Size + gap mirror main.ts's buddyDimensions — keep in sync.
-const CAPTURE_SIZE: Size = { width: 44, height: 44 };
-const CAPTURE_GAP_PX = 6;
+// Action-bar size + position math live in buddy-bar-geometry.ts (pure,
+// unit-tested); main.ts imports the same BAR_SIZE so the BrowserWindow
+// dimensions and the positioning math can't drift.
 
 export interface BuddyWindowManagerDeps {
-  createBuddyWindow(variant: 'mascot' | 'chat' | 'capture', opts: { x: number; y: number }): BrowserWindow;
-  getPersistedPosition(key: 'mascot' | 'chat'): Point | null;
-  setPersistedPosition(key: 'mascot' | 'chat', pos: Point): void;
+  createBuddyWindow(variant: 'mascot' | 'chat' | 'bar', opts: { x: number; y: number }): BrowserWindow;
+  getPersistedPosition(key: 'mascot'): Point | null;
+  setPersistedPosition(key: 'mascot', pos: Point): void;
   registry: WindowRegistry;
   mainWindow: () => BrowserWindow | null;
 }
@@ -48,10 +48,10 @@ export interface BuddyWindowManagerDeps {
 export class BuddyWindowManager {
   private mascot: BrowserWindow | null = null;
   private chat: BrowserWindow | null = null;
-  // Small action-button window pinned below the mascot while the chat is
+  // 3-button action-bar window pinned below the mascot while the chat is
   // open. Hidden (not destroyed) on chat-close so toggling doesn't rebuild
   // the renderer every time.
-  private capture: BrowserWindow | null = null;
+  private bar: BrowserWindow | null = null;
   private viewedSessionId: string | null = null;
 
   constructor(private readonly deps: BuddyWindowManagerDeps) {}
@@ -75,10 +75,10 @@ export class BuddyWindowManager {
   }
 
   hide(): void {
-    if (this.capture && !this.capture.isDestroyed()) this.capture.destroy();
+    if (this.bar && !this.bar.isDestroyed()) this.bar.destroy();
     if (this.chat && !this.chat.isDestroyed()) this.chat.destroy();
     if (this.mascot && !this.mascot.isDestroyed()) this.mascot.destroy();
-    this.capture = null;
+    this.bar = null;
     this.chat = null;
     this.mascot = null;
     // Reset so a subsequent show() + setViewedSession(sameId) doesn't
@@ -89,12 +89,12 @@ export class BuddyWindowManager {
   toggleChat(): void {
     if (!this.chat || this.chat.isDestroyed()) {
       this.createChat();
-      this.showCapture();
+      this.showBar();
       return;
     }
     if (this.chat.isVisible()) {
       this.chat.hide();
-      this.hideCapture();
+      this.hideBar();
     } else {
       // Re-anchor to current mascot position before showing — the user may
       // have dragged the mascot while the chat was hidden, and the chat
@@ -103,7 +103,7 @@ export class BuddyWindowManager {
       const pos = this.computeChatAnchoredPosition();
       this.chat.setPosition(Math.round(pos.x), Math.round(pos.y));
       this.chat.show();
-      this.showCapture();
+      this.showBar();
     }
   }
 
@@ -150,18 +150,18 @@ export class BuddyWindowManager {
   }
 
   /** True iff `win` is one of the buddy windows this manager owns
-   *  (mascot, chat, or the capture-icon action window). main.ts uses this
+   *  (mascot, chat, or the action-bar window). main.ts uses this
    *  to decide when to tear the buddy down — spec §7.6 says buddy closes
    *  with the last main window. */
   isBuddyWindow(win: BrowserWindow): boolean {
-    return win === this.mascot || win === this.chat || win === this.capture;
+    return win === this.mascot || win === this.chat || win === this.bar;
   }
 
   /** Read-only accessors for the main-process capture handler, which needs
    *  to hide every buddy window before calling desktopCapturer. */
   getMascotWindow(): BrowserWindow | null { return this.mascot; }
   getChatWindow(): BrowserWindow | null { return this.chat; }
-  getCaptureWindow(): BrowserWindow | null { return this.capture; }
+  getBarWindow(): BrowserWindow | null { return this.bar; }
 
   /**
    * Place the mascot at an anchor-based target position from the renderer
@@ -200,7 +200,7 @@ export class BuddyWindowManager {
     // computeChatAnchoredPosition() on show, so there's nothing a hidden
     // chat can do with a pending position. Every extra setPosition on a
     // frameless Windows BrowserWindow hits DWM, and stacking three per
-    // pointermove (mascot + chat + capture icon) was a measurable source
+    // pointermove (mascot + chat + action bar) was a measurable source
     // of "squishy" drag latency.
     const actualDx = newX - oldX;
     const actualDy = newY - oldY;
@@ -212,70 +212,56 @@ export class BuddyWindowManager {
       const chatClamped = clampToWorkArea(chatRaw, CHAT_SIZE, chatDisplay.workArea);
       this.chat.setPosition(Math.round(chatClamped.x), Math.round(chatClamped.y));
     }
-    // Capture icon is only visible while the chat is visible (showCapture /
-    // hideCapture are chained off toggleChat), so gate on the same flag.
-    // Recompute from scratch on visible: if the mascot lands on a bottom
-    // edge the icon needs to flip above automatically.
-    if (this.capture && !this.capture.isDestroyed() && chatVisible) {
-      const pos = this.computeCapturePosition();
-      this.capture.setPosition(Math.round(pos.x), Math.round(pos.y));
+    // Bar follows its own visibility (not the chat's): in the hover-reveal
+    // model the bar can be visible without the chat. Recompute from scratch
+    // on visible: if the mascot lands on a bottom edge the bar needs to
+    // flip above automatically.
+    if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) {
+      const pos = this.currentBarPosition();
+      this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
     }
   }
 
-  /**
-   * Position for the capture-icon window — centered horizontally on the
-   * mascot, CAPTURE_GAP_PX below it. Flips to above when below would
-   * clip the workArea. Always clamped to the visible workArea.
-   */
-  private computeCapturePosition(): Point {
+  /** Create-if-needed and show the action-bar window.
+   *  FIX (youcoded buddy bug): ALWAYS recompute position from the current
+   *  mascot bounds before showing. The old code only computed position at
+   *  creation, so dragging the mascot while the chat was closed left the
+   *  re-shown icon stranded at the mascot's OLD position. */
+  private showBar(): void {
+    const pos = this.currentBarPosition();
+    if (!this.bar || this.bar.isDestroyed()) {
+      this.bar = this.deps.createBuddyWindow('bar', { x: Math.round(pos.x), y: Math.round(pos.y) });
+      this.wireBarLifecycle(this.bar);
+    } else {
+      this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
+    }
+    if (!this.bar.isVisible()) this.bar.showInactive();
+  }
+
+  private hideBar(): void {
+    if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) this.bar.hide();
+  }
+
+  /** Bar position derived from live mascot bounds; falls back to bottom-right
+   *  of the primary display when the mascot is gone (mirrors old behavior). */
+  private currentBarPosition(): Point {
     if (!this.mascot || this.mascot.isDestroyed()) {
       const primary = screen.getPrimaryDisplay().workArea;
       return {
-        x: primary.x + primary.width - CAPTURE_SIZE.width - 24,
-        y: primary.y + primary.height - CAPTURE_SIZE.height - 24,
+        x: primary.x + primary.width - BAR_SIZE.width - 24,
+        y: primary.y + primary.height - BAR_SIZE.height - 24,
       };
     }
     const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
-    const wa = display.workArea;
-    const centerX = mb.x + Math.round(mb.width / 2) - Math.round(CAPTURE_SIZE.width / 2);
-    const belowY = mb.y + mb.height + CAPTURE_GAP_PX;
-    const belowFits = belowY + CAPTURE_SIZE.height <= wa.y + wa.height;
-    const raw = belowFits
-      ? { x: centerX, y: belowY }
-      : { x: centerX, y: mb.y - CAPTURE_SIZE.height - CAPTURE_GAP_PX };
-    return clampToWorkArea(raw, CAPTURE_SIZE, wa);
+    return computeBarPosition(mb, display.workArea);
   }
 
-  /** Create-if-needed and show the capture-icon window. Called whenever
-   *  the chat becomes visible; no-op if already visible. */
-  private showCapture(): void {
-    if (!this.capture || this.capture.isDestroyed()) {
-      const pos = this.computeCapturePosition();
-      this.capture = this.deps.createBuddyWindow('capture', {
-        x: Math.round(pos.x),
-        y: Math.round(pos.y),
-      });
-      this.wireCaptureLifecycle(this.capture);
-    }
-    if (this.capture && !this.capture.isDestroyed() && !this.capture.isVisible()) {
-      this.capture.showInactive();
-    }
-  }
-
-  /** Hide (not destroy) the capture icon when the chat closes. Preserves
-   *  the renderer so re-opening the chat doesn't spin up a fresh one. */
-  private hideCapture(): void {
-    if (this.capture && !this.capture.isDestroyed() && this.capture.isVisible()) {
-      this.capture.hide();
-    }
-  }
-
-  private wireCaptureLifecycle(win: BrowserWindow): void {
+  private wireBarLifecycle(win: BrowserWindow): void {
     win.webContents.on('render-process-gone', (_evt, details) => {
       if (details.reason !== 'clean-exit') this.hide();
     });
-    win.on('closed', () => { this.capture = null; });
+    win.on('closed', () => { this.bar = null; });
   }
 
   private createChat(): void {
@@ -319,16 +305,18 @@ export class BuddyWindowManager {
   }
 
   private wireChatLifecycle(win: BrowserWindow): void {
-    const save = debounce(() => {
-      if (win.isDestroyed()) return;
-      const { x, y } = win.getBounds();
-      this.deps.setPersistedPosition('chat', { x, y });
-    }, 300);
-    win.on('move', save);
+    // WHY no move-persistence here: chat position was written but never
+    // read — the chat is always re-anchored to the mascot on show. Dead
+    // code removed; persistence keys narrowed to 'mascot' in the deps.
     win.webContents.on('render-process-gone', (_evt, details) => {
       if (details.reason !== 'clean-exit') this.hide();
     });
-    win.on('closed', () => { this.chat = null; });
+    win.on('closed', () => {
+      this.chat = null;
+      // FIX: an OS-closed chat (not a toggle) used to strand the action bar
+      // visible with no chat. Drop the bar too until the next reveal.
+      this.hideBar();
+    });
   }
 }
 

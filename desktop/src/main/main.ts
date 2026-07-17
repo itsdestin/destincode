@@ -41,6 +41,7 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
+import { BAR_SIZE } from './buddy-bar-geometry';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
 import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
@@ -437,7 +438,7 @@ function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
   });
 }
 
-function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'capture' }): BrowserWindow {
+function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'bar' }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const isMac = process.platform === 'darwin';
@@ -486,17 +487,15 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
       }
     : {};
 
-  // Buddy window dimensions: mascot = 80×80; chat = 320×480; capture = 44×44
-  // (Fluent-ish action-button size — big enough for a 20 px camera glyph
-  // with a generous click target without dominating the mascot it sits
-  // below.) Adjust both constants here AND the stack-offsets in
-  // BuddyWindowManager.computeCapturePosition if you change them.
+  // Buddy window dimensions: mascot = 80×80; chat = 320×480; bar = BAR_SIZE.
   const buddyDimensions: { width?: number; height?: number } = opts?.buddy === 'mascot'
     ? { width: 80, height: 80 }
     : opts?.buddy === 'chat'
     ? { width: 320, height: 480 }
-    : opts?.buddy === 'capture'
-    ? { width: 44, height: 44 }
+    : opts?.buddy === 'bar'
+    // Action bar: three 44px buttons. Size lives in buddy-bar-geometry.ts so
+    // the window and the positioning math can never drift apart.
+    ? { width: BAR_SIZE.width, height: BAR_SIZE.height }
     : {};
 
   const win = new BrowserWindow({
@@ -1357,8 +1356,9 @@ app.whenReady().then(async () => {
   registerDetachIpc();
 
   // Buddy window position persistence — JSON file in userData so restarts
-  // restore the mascot and chat to where the user left them. Keyed by
-  // 'mascot' / 'chat'.
+  // restore the mascot to where the user left it. Keyed by 'mascot' only:
+  // the chat key was dropped (written but never read — chat is always
+  // re-anchored to the mascot on show).
   const BUDDY_POS_FILE = path.join(app.getPath('userData'), 'buddy-positions.json');
   function loadBuddyPositions(): Record<string, { x: number; y: number } | undefined> {
     try { return JSON.parse(fs.readFileSync(BUDDY_POS_FILE, 'utf8')); } catch { return {}; }
@@ -1434,7 +1434,7 @@ app.whenReady().then(async () => {
     const { desktopCapturer } = require('electron') as typeof import('electron');
     const mascotWin = buddyManager.getMascotWindow();
     const chatWin = buddyManager.getChatWindow();
-    const captureWin = buddyManager.getCaptureWindow();
+    const barWin = buddyManager.getBarWindow();
     // Pick the display the mascot lives on — multi-monitor users expect
     // "screenshot my desktop" to mean the one their buddy is sitting on,
     // not every monitor merged into one long strip.
@@ -1447,7 +1447,7 @@ app.whenReady().then(async () => {
     // desktopCapturer and we skip the opacity dip entirely.
     const needsOpacityFallback = !nativeCaptureExclusionAvailable();
     const buddyWindows = needsOpacityFallback
-      ? [mascotWin, chatWin, captureWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
+      ? [mascotWin, chatWin, barWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
       : [];
 
     try {
