@@ -10,11 +10,6 @@ const DRAG_THRESHOLD_PX = 4;
 // the limb springs (spec §5: k = 80/size × 2.4) so trailing feels identical
 // at any render size (the buddy renders at 112px since the 2026-07-16 bump).
 const DRAG_VELOCITY_GAIN = (80 / 112) * 2.4;
-// Hover-hop dwell. The sink transition is 380ms each way, so this leaves him
-// fully out for a beat before he sinks back — long enough to read as a peek-a-boo
-// rather than a glitch, short enough to still read as "immediately" (Destin).
-const HOP_MS = 700;
-
 // Pointer-driven drag state. Anchor-based: we capture the cursor's offset
 // inside the 80×80 mascot at pointerdown (grabOffsetX/Y from e.clientX/Y)
 // and recompute the absolute target on every pointermove as
@@ -79,25 +74,35 @@ export function BuddyMascot() {
     return off;
   }, [triggerSwing]);
 
-  // Hover hop (Destin 2026-07-17): hovering a peeking buddy pops him out for a
-  // beat and then he sinks straight back — an acknowledgement, not a mode
-  // change, which is why it lives here and not in the dock reducer. Only a
-  // CLICK brings him out for real (it opens the chat, which engages the dock
-  // main-side). Peek itself is now entered by dropping him on an edge; there is
-  // no idle timer any more.
+  // Hover peek-out (Destin 2026-07-17): hovering a peeking buddy swings him OUT
+  // of the edge and stands him up in idle for as long as the cursor stays over
+  // his window; moving away sinks him smoothly back into peek. It's a transient
+  // visual acknowledgement, not a dock-state change (only a CLICK brings him out
+  // for real — that opens the chat, which engages the dock main-side), which is
+  // why `hopping` lives here and not in the dock reducer. Hover-HELD, not timed:
+  // he stays out while you're on him and returns the moment you leave, so it
+  // never yanks him back under a resting cursor.
   const [hopping, setHopping] = useState(false);
-  const hopTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Hover is only "armed" after a genuine pointer LEAVE. A press disarms it, so
+  // when a drag drops the buddy into peek with the cursor still sitting on him,
+  // the hover-swing-out does NOT fire immediately — otherwise you'd get
+  // drag→peek → (release, cursor still there) → swing-out → (move away) → re-peek
+  // (Destin 2026-07-17). He has to leave and come back before hovering pops him.
+  const hoverArmedRef = useRef(true);
   const onPointerEnter = useCallback(() => {
     if (dock.mode !== 'peeking') return;
+    if (!hoverArmedRef.current) return; // still holding the post-drag/press state
+    // Side peeks whip upright through the lean on the way out; top/bottom slide.
     if (dock.edge === 'left' || dock.edge === 'right') triggerSwing(dock.edge);
     setHopping(true);
-    if (hopTimerRef.current) clearTimeout(hopTimerRef.current);
-    hopTimerRef.current = setTimeout(() => setHopping(false), HOP_MS);
   }, [dock.mode, dock.edge, triggerSwing]);
+  const onPointerLeave = useCallback(() => {
+    hoverArmedRef.current = true; // a real leave — the next enter is a genuine hover
+    setHopping(false);
+  }, []);
   // Any dock change ends a hop — he's somewhere else now.
   useEffect(() => { setHopping(false); }, [dock.mode, dock.edge]);
   useEffect(() => () => {
-    if (hopTimerRef.current) clearTimeout(hopTimerRef.current);
     if (swingTimerRef.current) clearTimeout(swingTimerRef.current);
   }, []);
 
@@ -166,6 +171,10 @@ export function BuddyMascot() {
   }, []);
 
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // Disarm hover-swing-out for the duration of this press and until the
+    // cursor next leaves (see hoverArmedRef): a drag that ends in peek must not
+    // immediately pop back out just because the cursor is still on him.
+    hoverArmedRef.current = false;
     // setPointerCapture keeps pointermove/up flowing even if the pointer
     // leaves the 80×80 window during a fast drag.
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
@@ -276,13 +285,20 @@ export function BuddyMascot() {
       onLostPointerCapture={onLostPointerCapture}
       onPointerCancel={onPointerCancel}
       onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
     >
       {/* Sink layer: dock/peek transforms + the side-peek lean (independent
           `rotate` so it composes with the wrapper's hover/grab `scale` and
           the flat-art breathing `translate`). data-attrs → buddy.css. */}
       <div
         className="mascot-sink"
-        data-dock-mode={peeking ? 'peeking' : dock.mode}
+        // During a hover-hop force 'free' so the sink transform RELEASES and he
+        // swings out of the edge — `dock.mode` is still 'peeking' mid-hop (hover
+        // doesn't touch dock state), so the old `peeking ? 'peeking' : dock.mode`
+        // kept him pinned in the sunk position and only the pose changed (Destin
+        // 2026-07-17: "swaps between peek and idle despite staying in the same
+        // position"). The 380ms transform+rotate transitions carry the move.
+        data-dock-mode={hopping ? 'free' : dock.mode}
         data-dock-edge={dock.edge ?? ''}
         data-swing={swing ?? ''}
       >
@@ -314,7 +330,10 @@ export function BuddyMascot() {
           screen edge while the body sags between them (spec §6.2 "75° wider").
           Rig-only; flat art degrades to the sink alone. */}
       {useRig && sidePeek && (
-        <PeekHands side={dock.edge as 'left' | 'right'} rigHostRef={rigHostRef} />
+        // key on the rig URL so a theme switch REMOUNTS the hands (handSvg
+        // resets to null) instead of leaving the new mascot wearing the old
+        // theme's mittens — see PeekHands (Destin 2026-07-17).
+        <PeekHands key={rigUrl ?? 'default'} side={dock.edge as 'left' | 'right'} rigHostRef={rigHostRef} />
       )}
     </div>
   );
@@ -329,29 +348,35 @@ export function BuddyMascot() {
 function PeekHands({ side, rigHostRef }: { side: 'left' | 'right'; rigHostRef: React.RefObject<HTMLDivElement | null> }) {
   const [handSvg, setHandSvg] = useState<string | null>(null);
 
+  // Re-extract the mitten art whenever the rig svg inside the host changes.
+  // A theme switch swaps a whole new rig into rigHostRef WITHOUT this
+  // component's props changing, so the old one-shot extraction left the NEW
+  // mascot wearing the OLD theme's hands (Destin 2026-07-17). A MutationObserver
+  // on the stable host catches BOTH the async first load (boot into a persisted
+  // peek) and every later theme swap. The call site also keys us on rigUrl, so
+  // handSvg resets to null on switch — a new rig that happens to lack peek hands
+  // then degrades to the sink alone instead of bleeding the previous hands.
   useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
-    let attempts = 0;
-    const tryExtract = () => {
-      const svg = rigHostRef.current?.querySelector('svg');
+    const host = rigHostRef.current;
+    if (!host) return;
+    let cancelled = false;
+    const extract = () => {
+      if (cancelled) return;
+      const svg = host.querySelector('svg');
       const hand = svg?.querySelector<SVGGElement>(`#rig-hand-peek-${side}`) ?? null;
-      if (!svg || !hand) {
-        // The rig fetch/sanitize may not have resolved yet (e.g., the buddy
-        // boots straight into a persisted peek) — retry briefly, then give
-        // up: a rig without peek-hand groups degrades to the sink alone.
-        setHandSvg(null);
-        if (attempts++ < 20) timer = setTimeout(tryExtract, 250);
-        return;
-      }
-      // The hand group ships display:none (only the app's overlay shows it).
-      // getBBox needs a rendered box — flip display on synchronously, measure,
-      // flip back; no paint happens inside one JS task, so nothing flashes.
+      // Rig not landed yet, or this rig has no mittens — leave whatever we have;
+      // the observer fires again on the next DOM change (e.g. the rig landing).
+      if (!svg || !hand) return;
+      // The hand group ships display:none (only this overlay shows it). getBBox
+      // needs a rendered box — flip display on synchronously, measure, flip
+      // back; no paint happens inside one JS task. We observe childList only
+      // (not attributes), so this flip can't re-trigger the observer.
       const prevDisplay = hand.style.display;
       hand.style.display = '';
       let bbox: DOMRect | null = null;
-      try { bbox = hand.getBBox(); } catch { /* detached/unrenderable — degrade */ }
+      try { bbox = hand.getBBox(); } catch { /* detached/unrenderable — skip */ }
       hand.style.display = prevDisplay;
-      if (!bbox || !bbox.width || !bbox.height) { setHandSvg(null); return; }
+      if (!bbox || !bbox.width || !bbox.height) return;
       const clone = hand.cloneNode(true) as SVGGElement;
       clone.style.display = '';
       clone.removeAttribute('id'); // no duplicate ids in the document
@@ -361,32 +386,51 @@ function PeekHands({ side, rigHostRef }: { side: 'left' | 'right'; rigHostRef: R
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}" width="100%" height="100%">${clone.outerHTML}</svg>`,
       );
     };
-    tryExtract();
-    return () => { if (timer) clearTimeout(timer); };
+    extract(); // the rig may already be present (peek toggled with a stable rig)
+    const obs = new MutationObserver(extract);
+    obs.observe(host, { childList: true, subtree: true });
+    return () => { cancelled = true; obs.disconnect(); };
   }, [side, rigHostRef]);
 
   if (!handSvg) return null;
-  // Grip geometry in fractions of the 80px window (workbench values / 230):
-  // mitten width 0.15, centers at mid ± gap/2 with gap 0.73.
+  // Grip geometry in fractions of the buddy window. Mittens are ~17% tall
+  // (bumped from 15% — Destin 2026-07-17 wanted them slightly taller); width
+  // stays 15% and the art meet-fits inside, so it reads as a small vertical
+  // grow. Centered on centerFrac; the two centers sit at mid ± gap/2, gap 0.73.
+  const H = 0.17;
   const mitten = (centerFrac: number, tilt: number) => (
     <div
       aria-hidden="true"
       style={{
         position: 'absolute',
         [side]: 0,
-        top: `${(centerFrac - 0.075) * 100}%`,
+        top: `${(centerFrac - H / 2) * 100}%`,
         width: '15%',
-        height: '15%',
+        height: `${H * 100}%`,
         rotate: `${tilt}deg`,
         pointerEvents: 'none',
       }}
       dangerouslySetInnerHTML={{ __html: handSvg }}
     />
   );
+  // Straddle the BODY, not the window. The leaning body's face sits at ~0.39 of
+  // the window height (0.5 minus the -11% peek up-shift in buddy.css), so the
+  // two mittens must center on 0.39 — centering on 0.5 rode the whole grip low
+  // and floated the bottom hand well beneath the compact leaning body (Destin
+  // 2026-07-17: "the body should be right between the hands"). Half-gap pulled
+  // in from 0.365 too: at the old width, re-centering on 0.39 would shove the
+  // top mitten off the top edge (0.39 − 0.365 − H/2 < 0).
+  // Grip center sits a touch BELOW the body's face (~0.39) — Destin wanted the
+  // pair shifted down slightly from dead-centered, so the head leans up and out
+  // over the top hand. Shifting down also buys top-edge headroom, which is what
+  // lets the gap widen past the old 0.30 ceiling without the top mitten
+  // clipping (top edge = GRIP_CENTER − HALF_GAP − H/2 must stay ≥ 0).
+  const GRIP_CENTER = 0.46;
+  const HALF_GAP = 0.34;
   return (
     <>
-      {mitten(0.5 - 0.365, side === 'right' ? -4 : 4)}
-      {mitten(0.5 + 0.365, side === 'right' ? 4 : -4)}
+      {mitten(GRIP_CENTER - HALF_GAP, side === 'right' ? -4 : 4)}
+      {mitten(GRIP_CENTER + HALF_GAP, side === 'right' ? 4 : -4)}
     </>
   );
 }

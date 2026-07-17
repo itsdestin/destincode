@@ -16,7 +16,7 @@ export type RigPartId = LimbId | 'rig-tail' | 'rig-body';
 export type FaceName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy';
 export type PoseName = 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'peek' | 'peek-right' | 'peek-left';
 
-export interface PartPose { rotate?: number; tx?: number; ty?: number; }
+export interface PartPose { rotate?: number; tx?: number; ty?: number; hidden?: boolean; }
 export interface PoseDef { parts: Partial<Record<RigPartId, PartPose>>; face: FaceName; wave?: boolean; }
 
 // Rotation values assume limbs drawn HANGING DOWN from their pivot (the
@@ -41,10 +41,14 @@ export const POSES: Record<PoseName, PoseDef> = {
   // Bottom/top peek: arms curled INWARD = little hands gripping the screen
   // edge while the body sinks past it (BuddyMascot applies the sink transform).
   peek:    { parts: { 'rig-arm-left': { rotate: -160 }, 'rig-arm-right': { rotate: 160 } }, face: 'welcome' },
-  // Side peek: arms parked via translate (the edge-pinned mittens do the
-  // gripping — see spec §6.2 "75° wider"), one leg cocked, curious face.
-  'peek-right': { parts: { 'rig-arm-left': { rotate: 0, tx: 4.5 }, 'rig-arm-right': { rotate: 0 }, 'rig-leg-left': { rotate: -10 } }, face: 'curious' },
-  'peek-left':  { parts: { 'rig-arm-right': { rotate: 0, tx: -4.5 }, 'rig-arm-left': { rotate: 0 }, 'rig-leg-right': { rotate: 10 } }, face: 'curious' },
+  // Side peek: the edge-pinned grip mittens (rig-hand-peek-*, cloned to the
+  // screen edge by BuddyMascot) ARE the hands here, so the rig's OWN arms are
+  // HIDDEN — otherwise the 75°-leaning body shows a stray third arm poking out
+  // past it, alongside the two mittens (Destin 2026-07-17). One leg cocks out,
+  // curious face. (Top/bottom 'peek' above keeps its arms — there the curled
+  // arms themselves are the grip, no mittens.)
+  'peek-right': { parts: { 'rig-arm-left': { hidden: true }, 'rig-arm-right': { hidden: true }, 'rig-leg-left': { rotate: -10 } }, face: 'curious' },
+  'peek-left':  { parts: { 'rig-arm-left': { hidden: true }, 'rig-arm-right': { hidden: true }, 'rig-leg-right': { rotate: 10 } }, face: 'curious' },
 };
 
 /** Parse a data-pivot="x y" attribute (viewBox coordinates). */

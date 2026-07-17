@@ -401,10 +401,19 @@ body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-
 /* Side peeks: the sink slides the box past the edge (18% visible), shifted up
    so the body sags below the hand line; the LEAN layer inside rotates the
    body ∓75° about its own (already-moved) center, tipping the head back out
-   over the edge — the approved "75° wider" staging. */
-body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] { transform: translate(45%, -22.6%); }
+   over the edge — the approved "75° wider" staging.
+
+   The up-shift IS the head-to-hands relationship, so it's the one number to
+   tune here (Destin 2026-07-17: "the head is slightly too high relative to the
+   hands", twice). The rig's face sits at viewBox y≈10, i.e. dead center of the
+   -5..25 box, and a rotation about that center leaves it there — so the face
+   renders at 50% − shift of the window, against mittens pinned at 13.5%/86.5%.
+   Walked down over two rounds: -22.6% (face at 27.4%, crowding the top mitten)
+   → -16% (34%, still reading high) → -11% (39%, head sitting just under the
+   grip line). */
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] { transform: translate(45%, -11%); }
 body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] .mascot-lean { rotate: -75deg; }
-body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] { transform: translate(-45%, -22.6%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] { transform: translate(-45%, -11%); }
 body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] .mascot-lean { rotate: 75deg; }
 /* Swing-out whip: leaving a side peek releases the lean THROUGH ±14° past
    vertical (~230ms, set by BuddyMascot), then the transition settles it to 0

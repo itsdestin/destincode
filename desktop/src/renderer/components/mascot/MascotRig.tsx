@@ -138,6 +138,7 @@ export function MascotRig({
     springsRef.current = new Map();
     // Fresh DOM starts from the authored state — write the full current look.
     applyPose(partsRef.current, poseRef.current, blinking, true);
+    applyLimbVisibility(partsRef.current, poseRef.current);
     applyLoopClass(partsRef.current);
     return partsRef.current;
   };
@@ -169,6 +170,7 @@ export function MascotRig({
     const parts = ensureParts();
     if (!parts) return;
     applyFace(parts, pose, blinking);
+    applyLimbVisibility(parts, pose);
     // Reduced effects: springs don't run — write pose transforms directly.
     if (reducedEffects) applyPose(parts, pose, blinking, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -326,6 +328,18 @@ function applyPose(parts: Parts, pose: PoseName, blinking: boolean, instant: boo
     el.style.transform = `translate(${p.tx ?? 0}px, ${p.ty ?? 0}px) rotate(${p.rotate ?? 0}deg)`;
   }
   applyFace(parts, pose, blinking);
+}
+
+/** Show/hide whole limbs per the pose's `hidden` flags. Not spring-animated —
+ *  visibility is a discrete pose property (side-peek hides the rig arms because
+ *  the edge-pinned mittens stand in for the hands). Set on pose change only;
+ *  the rAF spring loop writes transforms and never touches display. */
+function applyLimbVisibility(parts: Parts, pose: PoseName): void {
+  const def = POSES[pose];
+  for (const id of LIMB_IDS) {
+    const el = parts.byId.get(id);
+    if (el) el.style.display = def.parts[id]?.hidden ? 'none' : '';
+  }
 }
 
 function applyFace(parts: Parts, pose: PoseName, blinking: boolean): void {
