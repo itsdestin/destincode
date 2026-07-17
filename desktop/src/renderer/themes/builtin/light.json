@@ -18,6 +18,8 @@
     "edge": "#CFCFCF",
     "edge-dim": "#DCDCDC80",
     "scrollbar-thumb": "#C0C0C0",
-    "scrollbar-hover": "#999999"
+    "scrollbar-hover": "#999999",
+    "link": "#2563EB",
+    "link-hover": "#1D4ED8"
   }
 }

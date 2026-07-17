@@ -170,6 +170,16 @@ function rgbLuminance(r: number, g: number, b: number): number {
   return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 }
 
+/** WCAG 2.0 contrast ratio between two hex colors (1:1 … 21:1).
+ *  Mirrors scripts/audit-theme-contrast.mjs so runtime derivation and the CI
+ *  audit agree on what "readable" means. */
+function contrastRatio(hexA: string, hexB: string): number {
+  const lA = rgbLuminance(...parseHex(hexA));
+  const lB = rgbLuminance(...parseHex(hexB));
+  const [hi, lo] = lA > lB ? [lA, lB] : [lB, lA];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 /** Computes overlay CSS custom properties from existing theme tokens.
  *  After the glassmorphism refactor, overlay surfaces consume --panels-blur /
  *  --panels-opacity directly (set globally in applyThemeToDom), so this helper
@@ -207,13 +217,42 @@ export function computeOverlayTokens(
   );
   const code = accentFgDistance > 40 ? tokens.accent : tokens['fg-2'];
 
+  // Link color — same accent-vs-fg guard as --code above, for the same reason:
+  // themes that set accent == fg would otherwise render links invisible against
+  // prose. Packs may declare `link` explicitly to opt out of the derivation.
+  // Built-ins all declare their own, so this branch only runs for community packs.
+  const link = tokens.link ?? (accentFgDistance > 40 ? tokens.accent : tokens['fg-2']);
+  const linkHover = tokens['link-hover'] ?? `color-mix(in oklab, ${link} 85%, ${tokens.fg})`;
+
+  // Label color for filled --destructive surfaces (danger buttons, danger toggles).
+  // --destructive is pack-overridable with NO contrast guard, so hardcoding white
+  // can render white-on-pale-pink. Pick whichever of white / near-black reads
+  // better against the theme's actual destructive.
+  //
+  // NOTE: this is a max-contrast pick, NOT the "white if >= 4.5, else near-black"
+  // threshold the UI spec asked for. That rule was written believing white on the
+  // default #DD4444 scored 4.7:1; it actually scores 4.213:1, so the threshold
+  // would fail for EVERY theme and flip every danger button to near-black — which
+  // is both a visible regression and lower contrast than the white it replaced
+  // (near-black on #DD4444 is 4.131:1). Picking the better of the two delivers
+  // what the spec intended: white everywhere today, near-black only for packs
+  // whose destructive is genuinely too light to carry it.
+  const destructive = overlay?.destructive ?? '#DD4444';
+  const onDestructive =
+    contrastRatio('#FFFFFF', destructive) >= contrastRatio('#1A1A1A', destructive)
+      ? '#FFFFFF'
+      : '#1A1A1A';
+
   const result: Record<string, string> = {
     '--scrim': overlay?.scrim ?? `rgba(${scrimR}, ${scrimG}, ${scrimB}, 0.5)`,
     '--scrim-heavy': overlay?.['scrim-heavy'] ?? `rgba(${scrimR}, ${scrimG}, ${scrimB}, 0.7)`,
     '--shadow-strength': String(shadowStrength),
-    '--destructive': overlay?.destructive ?? '#DD4444',
-    '--destructive-dim': `rgba(${parseHex(overlay?.destructive ?? '#DD4444').join(', ')}, 0.15)`,
+    '--destructive': destructive,
+    '--destructive-dim': `rgba(${parseHex(destructive).join(', ')}, 0.15)`,
+    '--on-destructive': onDestructive,
     '--code': code,
+    '--link': link,
+    '--link-hover': linkHover,
   };
 
   return result;
@@ -450,14 +489,4 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   applyEffects(reducedEffects ? undefined : theme.effects);
 }
 
-const TOKEN_CSS_PROPS = [
-  '--canvas', '--panel', '--inset', '--well', '--accent', '--on-accent',
-  '--fg', '--fg-2', '--fg-dim', '--fg-muted', '--fg-faint',
-  '--edge', '--edge-dim', '--scrollbar-thumb', '--scrollbar-hover',
-  // Overlay tokens (computed by theme engine from color tokens)
-  '--scrim', '--scrim-heavy',
-  '--shadow-strength', '--destructive', '--destructive-dim',
-  // Glassmorphism vars — always present with safe defaults (blur 0, opacity 1)
-  '--panels-blur', '--panels-opacity', '--bubble-blur', '--bubble-opacity',
-] as const;
 
