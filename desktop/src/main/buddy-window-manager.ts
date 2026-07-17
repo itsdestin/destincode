@@ -111,6 +111,29 @@ export class BuddyWindowManager {
   private syncEngagement(): void {
     const engaged = this.barVisibility.wantsVisible() || this.attentionNeeded;
     this.dispatchDock({ type: engaged ? 'engage' : 'disengage' });
+    // Self-heal the peek position. `peeking` is only guaranteed flush-to-edge
+    // when moveMascot's live drag-peek enters it (it sets the window flush in
+    // the same step). Reaching `peeking` via disengage — chat closed, or
+    // attention cleared — only changes the POSE; if opening the chat had
+    // pushed the mascot off his edge to make room (computeGroupLayout tier-3
+    // bounce), he'd otherwise lean + grip in mid-air with no screen edge under
+    // him (Destin 2026-07-17: "peek occasionally hangs off of nothing").
+    this.reconcilePeekPosition();
+  }
+
+  /** Glide a peeking mascot flush against his dock edge if he isn't already.
+   *  No-op unless the state is `peeking` (free/docked own their positions) and
+   *  he's actually off the edge — the common left-edge case opens the chat to
+   *  his free side and never moves him, so this costs nothing there. */
+  private reconcilePeekPosition(): void {
+    const { mode, edge } = this.dockState;
+    if (mode !== 'peeking' || !edge) return;
+    if (!this.mascot || this.mascot.isDestroyed()) return;
+    const mb = this.mascot.getBounds();
+    const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
+    const flush = dockPosition(edge, { x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
+    if (Math.round(mb.x) === Math.round(flush.x) && Math.round(mb.y) === Math.round(flush.y)) return;
+    this.glideGroup(flush);
   }
 
   private pushMascotState(): void {
@@ -175,7 +198,11 @@ export class BuddyWindowManager {
     const win = this.mascot;
     if (!win || win.isDestroyed()) return;
 
-    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
+    // Gate on the INTENT to have the chat open, not live isVisible() — during
+    // the 140ms close fade the window is still shown but chatOpenIntent is
+    // already false, and a reconcile-to-peek glide must move ONLY the mascot
+    // (leaving the fading chat to fade in place), not chase it to layout.mascot.
+    const chatVisible = !!(this.chatOpenIntent && this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
     const layout = this.layoutFor({ ...mascotTarget, ...MASCOT_SIZE });
     // The mascot only gets pushed back to the pinned distance while the chat is
     // OPEN. With the chat closed the buddy is free to sit anywhere, including
