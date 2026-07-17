@@ -21,7 +21,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
 import GamePanel from './components/game/GamePanel';
-import { ChatProvider, useChatDispatch, useChatState, useChatStore } from './state/chat-context';
+import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { categorizeArtifact } from '../shared/artifacts/categorization';
@@ -653,27 +653,33 @@ function AppInner() {
   // currently-viewed session (blue requires "unseen, not active"). Thinking-false
   // is the actual "response finished" signal and fires regardless of visibility.
   const prevThinkingRef = useRef<Map<string, boolean>>(new Map());
-  // Store-subscribed (tranche 1): the old [chatStateMap] effect required
-  // AppInner to re-render on every dispatch just to observe isThinking.
-  // Body + skip-on-first-observation semantics unchanged.
+  // Tranche 1: this MUST stay a React effect keyed on [sessionAttention], NOT a
+  // per-dispatch store subscription (mirrors the attention-sound effect above,
+  // deliberately left keyed on [sessionStatuses]). A per-dispatch subscription
+  // observed every INTRA-BATCH isThinking toggle: transcript replay/hydrate
+  // dispatches N turn events inside one rAF flush, and a session with K
+  // completed turns toggles isThinking true→false K times within the batch →
+  // K spurious 'ready' chimes where the old coalesced [chatStateMap] effect
+  // stayed silent (adversarial review finding #1, 2026-07-17). Keying on the
+  // selector coalesces to one post-commit run on the final state, and reading
+  // raw isThinking from the store there is safe (effect body, not render). This
+  // catches every real transition because isThinking→false only happens via
+  // endTurn / process-exit / native-error, each of which also flips the status
+  // triple → sessionAttention identity changes → this effect runs.
   useEffect(() => {
-    const check = () => {
-      const prev = prevThinkingRef.current;
-      const next = new Map<string, boolean>();
-      for (const [id, state] of chatStore.getState()) {
-        const was = prev.get(id);
-        const isThinking = !!state.isThinking;
-        next.set(id, isThinking);
-        // Only fire when we actually observed a true → false transition. Skip if
-        // the session just appeared (was === undefined) to avoid a spurious chime
-        // on reducer init or remote hydrate when isThinking arrives already false.
-        if (was === true && !isThinking) playSound('ready');
-      }
-      prevThinkingRef.current = next;
-    };
-    check();
-    return chatStore.subscribeAll(check);
-  }, [chatStore]);
+    const prev = prevThinkingRef.current;
+    const next = new Map<string, boolean>();
+    for (const [id, state] of chatStore.getState()) {
+      const was = prev.get(id);
+      const isThinking = !!state.isThinking;
+      next.set(id, isThinking);
+      // Only fire when we actually observed a true → false transition. Skip if
+      // the session just appeared (was === undefined) to avoid a spurious chime
+      // on reducer init or remote hydrate when isThinking arrives already false.
+      if (was === true && !isThinking) playSound('ready');
+    }
+    prevThinkingRef.current = next;
+  }, [sessionAttention]);
 
   // Attention reporter effect: pushes per-session attention state + the
   // derived dot color to main whenever sessionAttention changes. Main

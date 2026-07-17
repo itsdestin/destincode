@@ -15,9 +15,13 @@ export interface SessionAttentionInfo {
 // replaces AppInner's whole-map subscription (tranche 1). Derivation logic is
 // verbatim from the old sessionStatuses memo (App.tsx) + attention-reporter
 // triple; keep the two consumers (HeaderBar dots, attention.report) in sync
-// with this ONE computation. Iterates sessions ∪ chatStateMap keys so
-// chat-state-only sessions still get reported (status 'gray'), matching the
-// old reporter exactly.
+// with this ONE computation. Iterates sessions ∪ chatStateMap keys: the old
+// dot memo used `sessions`, the old reporter used `chatStateMap` — the union
+// serves both. Minor benign delta vs the old reporter (review finding #3):
+// a session in the list but not yet in chat state now gets one extra
+// gray/ok/false report during the startup/hydrate window (old reporter stayed
+// silent until it had chat state). Self-correcting — gray/ok is the neutral
+// default and the switcher already knows every session.
 export function useSessionAttention(
   sessions: Array<{ id: string }>,
   viewedSessions: Set<string>,
