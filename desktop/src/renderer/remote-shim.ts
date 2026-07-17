@@ -1364,6 +1364,20 @@ export function installShim(): void {
       // but the cost of being defensive is one line).
       moveMascot: (_t: { targetX: number; targetY: number }) => { /* desktop-only */ },
       onAttentionSummary: () => () => { /* no-op unsubscribe */ },
+      // ── Buddy upgrades — same desktop-only contract as the methods above.
+      // reportHover/dragEnded are no-ops (not throws): they fire from pointer
+      // handlers and throwing would spam the console if a buddy surface ever
+      // loaded remote-shim. The on* listeners return no-op unsubscribers.
+      reportHover: (_p: { source: 'mascot' | 'bar'; hovering: boolean }) => { /* desktop-only */ },
+      dragEnded: () => { /* desktop-only */ },
+      openMain: () => { throw new Error('Buddy is desktop-only in this version'); },
+      dismiss: () => { throw new Error('Buddy is desktop-only in this version'); },
+      getStatus: () => { throw new Error('Buddy is desktop-only in this version'); },
+      onStatusChanged: () => () => { /* no-op unsubscribe */ },
+      onBarState: () => () => { /* no-op unsubscribe */ },
+      onMascotState: () => () => { /* no-op unsubscribe */ },
+      onChatState: () => () => { /* no-op unsubscribe */ },
+      onFocusSession: () => () => { /* no-op unsubscribe */ },
     },
     // Remote clients do not participate in buddy attention aggregation —
     // main-process aggregation is desktop-Electron only.

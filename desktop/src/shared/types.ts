@@ -552,6 +552,23 @@ export interface BuddyApi {
   // cannot accumulate drift between the cursor and the mascot.
   moveMascot(target: { targetX: number; targetY: number }): void;
   onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
+  // ── Buddy upgrades (action bar, dismiss, dock/peek) ──
+  // Typed centrally here (instead of `as any` casts at call sites) so the
+  // preload, remote-shim, and renderer callers all agree on one contract.
+  /** Fire-and-forget: mascot/bar renderers report pointer enter/leave. */
+  reportHover(payload: { source: 'mascot' | 'bar'; hovering: boolean }): void;
+  /** Fire-and-forget: mascot renderer signals drag release (edge-snap check). */
+  dragEnded(): void;
+  /** Restore + focus the main window, switching to the buddy's viewed session. */
+  openMain(): Promise<void>;
+  /** Hide the buddy for this app run only (preference stays enabled). */
+  dismiss(): Promise<void>;
+  getStatus(): Promise<{ dismissed: boolean; visible: boolean }>;
+  onStatusChanged(cb: (s: { dismissed: boolean; visible: boolean }) => void): () => void;
+  onBarState(cb: (s: { visible: boolean }) => void): () => void;
+  onMascotState(cb: (s: { mode: 'free' | 'docked' | 'peeking'; edge: string | null }) => void): () => void;
+  onChatState(cb: (s: { visible: boolean }) => void): () => void;
+  onFocusSession(cb: (sessionId: string) => void): () => void;
 }
 
 // Marketplace redesign Phase 1 — per-entry component inventory for the
@@ -905,6 +922,28 @@ export const IPC = {
   // Main → chat-renderer push. Chat renderer's InputBar listens and adds
   // the file as an attachment (same pipeline as clipboard-image paste).
   BUDDY_ATTACH_FILE: 'buddy:attach-file',
+  // ── Buddy upgrades (action bar, dismiss, dock/peek) ──
+  // Fire-and-forget: mascot + bar renderers report pointer enter/leave; main
+  // coalesces with a grace timeout to decide bar visibility.
+  BUDDY_HOVER_CHANGED: 'buddy:hover-changed',
+  // Fire-and-forget: mascot renderer signals drag release so main can run
+  // edge-snap detection against the window's final bounds.
+  BUDDY_DRAG_ENDED: 'buddy:drag-ended',
+  // Restore + focus the main window and switch it to the buddy's viewed session.
+  BUDDY_OPEN_MAIN: 'buddy:open-main',
+  // Hide the buddy for this app run only (preference stays enabled).
+  BUDDY_DISMISS: 'buddy:dismiss',
+  BUDDY_GET_STATUS: 'buddy:get-status',
+  // Main → all windows: { dismissed, visible } so open Settings panels update live.
+  BUDDY_STATUS_CHANGED: 'buddy:status-changed',
+  // Main → bar renderer: fade the action bar in/out (window stays shown; CSS animates).
+  BUDDY_BAR_STATE: 'buddy:bar-state',
+  // Main → mascot renderer: dock/peek state for the sink animation + peek pose.
+  BUDDY_MASCOT_STATE: 'buddy:mascot-state',
+  // Main → chat renderer: entrance/exit animation cue around show/hide.
+  BUDDY_CHAT_STATE: 'buddy:chat-state',
+  // Main → main window: switch active session (sent by buddy:open-main).
+  SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
   // Settings → Development feature (bug report, contribute, known issues)
