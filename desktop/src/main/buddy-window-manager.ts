@@ -36,6 +36,8 @@ export interface BuddyWindowManagerDeps {
   setPersistedPosition(key: 'mascot', pos: Point): void;
   registry: WindowRegistry;
   mainWindow: () => BrowserWindow | null;
+  /** Broadcast { dismissed, visible } to all windows (buddy:status-changed). */
+  onStatusChanged(status: { dismissed: boolean; visible: boolean }): void;
 }
 
 /**
@@ -64,6 +66,10 @@ export class BuddyWindowManager {
   // invisible bar never eats clicks meant for windows underneath.
   private readonly barVisibility = new BarVisibilityTracker((visible) => this.applyBarVisible(visible));
   private barCssVisible = false;
+  // "Hide until restart": set by the bar's hide button (buddy:dismiss), cleared
+  // by any show(). localStorage['youcoded-buddy-enabled'] is untouched — the
+  // preference stays on; only this run's windows go away. (spec §7)
+  private dismissed = false;
 
   constructor(private readonly deps: BuddyWindowManagerDeps) {}
 
@@ -115,6 +121,24 @@ export class BuddyWindowManager {
     this.mascot = this.deps.createBuddyWindow('mascot', clamped);
     this.wireMascotLifecycle(this.mascot);
     this.mascot.showInactive();
+    // Any show() clears "hidden until restart" — Settings' "Show now" is
+    // just buddy.show(). Broadcast so open Settings panels update live.
+    this.dismissed = false;
+    this.deps.onStatusChanged(this.getStatus());
+  }
+
+  getStatus(): { dismissed: boolean; visible: boolean } {
+    return {
+      dismissed: this.dismissed,
+      visible: !!(this.mascot && !this.mascot.isDestroyed()),
+    };
+  }
+
+  /** Hide-for-this-run (bar hide button). Preference untouched. */
+  dismiss(): void {
+    this.hide();
+    this.dismissed = true;
+    this.deps.onStatusChanged(this.getStatus());
   }
 
   hide(): void {
@@ -131,6 +155,11 @@ export class BuddyWindowManager {
     // Reset so a subsequent show() + setViewedSession(sameId) doesn't
     // early-return in setViewedSession and skip re-subscription.
     this.viewedSessionId = null;
+    // Settings-off also clears the dismissed flag — a disabled buddy isn't
+    // "hidden until restart". (dismiss() re-sets the flag AFTER calling
+    // hide(), so this order works; it then broadcasts the final value.)
+    this.dismissed = false;
+    this.deps.onStatusChanged(this.getStatus());
   }
 
   toggleChat(): void {

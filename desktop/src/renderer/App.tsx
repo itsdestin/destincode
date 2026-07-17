@@ -716,6 +716,20 @@ function AppInner() {
     }
   }, [chatStateMap, sessionStatuses]);
 
+  // Buddy "open main app" → land on the buddy's viewed session. Reads the
+  // existing sessionsRef mirror so the IPC subscription survives
+  // sessions-array churn without resubscribing.
+  useEffect(() => {
+    const off = window.claude?.buddy?.onFocusSession?.((sid: string) => {
+      if (sessionsRef.current.some((s: any) => s.id === sid)) {
+        setSessionId(sid);
+        // Notify Android/remote bridge so the native terminal view switches too
+        (window as any).claude?.session?.switch?.(sid);
+      }
+    });
+    return off;
+  }, []);
+
   // Push stack-state changes to the host. On Android, MainActivity uses this
   // to flip OnBackPressedCallback.isEnabled so hardware back is intercepted
   // when an overlay is open and falls through to Android default (background)

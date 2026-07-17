@@ -1377,6 +1377,13 @@ app.whenReady().then(async () => {
     },
     registry: windowRegistry,
     mainWindow: () => mainWindow,
+    // Status pushes go to every window (main app Settings panels + buddy
+    // surfaces) so the "Hidden until restart" row state renders live.
+    onStatusChanged: (status) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send(IPC.BUDDY_STATUS_CHANGED, status);
+      }
+    },
   });
   // Publish to module scope so createAppWindow's 'closed' handler can see it.
   buddyManagerRef = buddyManager;
@@ -1413,6 +1420,20 @@ app.whenReady().then(async () => {
     if (p && (p.source === 'mascot' || p.source === 'bar')) {
       buddyManager.reportHover(p.source, !!p.hovering);
     }
+  });
+  ipcMain.handle(IPC.BUDDY_DISMISS, () => buddyManager.dismiss());
+  ipcMain.handle(IPC.BUDDY_GET_STATUS, () => buddyManager.getStatus());
+  // Restore + focus the main window, then ask it to switch to the buddy's
+  // viewed session so the user lands in the same conversation (spec §4.2).
+  ipcMain.handle(IPC.BUDDY_OPEN_MAIN, () => {
+    // Same source of truth the buddyManager deps use for mainWindow.
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    const sid = buddyManager.getViewedSession();
+    if (sid) win.webContents.send(IPC.SESSION_FOCUS_REQUEST, sid);
   });
 
   // Desktop-capture action: screenshot the display the mascot sits on,
