@@ -373,6 +373,8 @@ function recomputeAndBroadcastAttention(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.SESSION_ATTENTION_SUMMARY, summary);
   }
+  // Dock/peek activity signal: attention pops a peeking buddy out (spec §6.2).
+  buddyManagerRef?.setAttentionNeeded(anyNeedsAttention);
 }
 
 // 100ms debounce — coalesces bursts of classifier transitions so buddy
@@ -1360,10 +1362,16 @@ app.whenReady().then(async () => {
   // the chat key was dropped (written but never read — chat is always
   // re-anchored to the mascot on show).
   const BUDDY_POS_FILE = path.join(app.getPath('userData'), 'buddy-positions.json');
-  function loadBuddyPositions(): Record<string, { x: number; y: number } | undefined> {
+  // `mascot` = last free position; `dock` = edge the buddy was docked to
+  // (spec §6.1 — a docked buddy is still docked after a restart).
+  interface BuddyPositionsFile {
+    mascot?: { x: number; y: number };
+    dock?: 'left' | 'right' | 'top' | 'bottom';
+  }
+  function loadBuddyPositions(): BuddyPositionsFile {
     try { return JSON.parse(fs.readFileSync(BUDDY_POS_FILE, 'utf8')); } catch { return {}; }
   }
-  function saveBuddyPositions(obj: Record<string, { x: number; y: number } | undefined>): void {
+  function saveBuddyPositions(obj: BuddyPositionsFile): void {
     try { fs.writeFileSync(BUDDY_POS_FILE, JSON.stringify(obj)); } catch {}
   }
   const buddyPositions = loadBuddyPositions();
@@ -1373,6 +1381,12 @@ app.whenReady().then(async () => {
     getPersistedPosition: (key) => buddyPositions[key] ?? null,
     setPersistedPosition: (key, pos) => {
       buddyPositions[key] = pos;
+      saveBuddyPositions(buddyPositions);
+    },
+    getPersistedDock: () => buddyPositions.dock ?? null,
+    setPersistedDock: (edge) => {
+      if (edge) buddyPositions.dock = edge;
+      else delete buddyPositions.dock;
       saveBuddyPositions(buddyPositions);
     },
     registry: windowRegistry,
@@ -1421,6 +1435,8 @@ app.whenReady().then(async () => {
       buddyManager.reportHover(p.source, !!p.hovering);
     }
   });
+  // Drag release → edge-snap detection against the window's final bounds.
+  ipcMain.on(IPC.BUDDY_DRAG_ENDED, () => buddyManager.dragEnded());
   ipcMain.handle(IPC.BUDDY_DISMISS, () => buddyManager.dismiss());
   ipcMain.handle(IPC.BUDDY_GET_STATUS, () => buddyManager.getStatus());
   // Restore + focus the main window, then ask it to switch to the buddy's
