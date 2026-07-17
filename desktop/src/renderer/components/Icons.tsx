@@ -3,6 +3,7 @@ import { useThemeMascot } from '../hooks/useThemeMascot';
 import { useTheme } from '../state/theme-context';
 import { isAndroid, isRemoteMode } from '../platform';
 import { MascotRig, type RigMotion } from './mascot/MascotRig';
+import { MascotScene } from './mascot/MascotScene';
 import type { PoseName } from './mascot/mascot-poses';
 import type { MascotVariant } from '../themes/theme-types';
 
@@ -250,6 +251,10 @@ interface ThemeMascotProps {
   variant: MascotVariant;
   fallback: React.ComponentType<IconProps>;
   className?: string;
+  /** Render the theme's scene companions (sun, motes, sparkles) around the
+   *  mascot. Only for big-canvas hero surfaces (welcome screen) — satellites
+   *  orbit well outside the mascot box and would clip or clutter tiles. */
+  scene?: boolean;
 }
 
 // Static motion for non-buddy surfaces — never dragging, so the rig's limb
@@ -267,19 +272,22 @@ const VARIANT_POSE: Record<MascotVariant, PoseName> = {
 
 /** Renders a themed mascot: the rig when the theme ships one (rig-first, spec §3.5),
  *  else the flat variant image, else the built-in fallback glyph. */
-export function ThemeMascot({ variant, fallback: Fallback, className = 'w-6 h-6' }: ThemeMascotProps) {
+export function ThemeMascot({ variant, fallback: Fallback, className = 'w-6 h-6', scene = false }: ThemeMascotProps) {
   const { activeTheme, reducedEffects } = useTheme();
   const overrideSrc = useThemeMascot(variant);
   // Rig rendering is Electron-desktop-only for now: it fetches theme-asset://
   // URLs, which don't exist in the Android WebView or the remote-browser shim.
   // Those platforms keep the flat path until rig asset delivery is ported.
-  const rigSrc = !isAndroid() && !isRemoteMode() ? activeTheme?.mascot?.rig ?? null : null;
+  const desktop = !isAndroid() && !isRemoteMode();
+  const rigSrc = desktop ? activeTheme?.mascot?.rig ?? null : null;
+  const companions = scene && desktop ? activeTheme?.companions ?? [] : [];
 
+  let mascot: React.ReactNode;
   if (rigSrc) {
     // Inline rig render — the whole reason rigs exist: the <img> path below
     // can't resolve CSS variables (currentColor renders black) and can't
     // swap faces. MascotRig sanitizes the SVG before inlining it.
-    return (
+    mascot = (
       <div
         className={className}
         aria-hidden="true"
@@ -299,11 +307,18 @@ export function ThemeMascot({ variant, fallback: Fallback, className = 'w-6 h-6'
         />
       </div>
     );
+  } else if (overrideSrc) {
+    mascot = <img src={overrideSrc} className={className} alt="" aria-hidden="true" draggable={false} />;
+  } else {
+    mascot = <Fallback className={className} />;
   }
 
-  if (overrideSrc) {
-    return <img src={overrideSrc} className={className} alt="" aria-hidden="true" draggable={false} />;
+  if (companions.length) {
+    return (
+      <MascotScene companions={companions} reducedEffects={reducedEffects}>
+        {mascot}
+      </MascotScene>
+    );
   }
-
-  return <Fallback className={className} />;
+  return mascot;
 }

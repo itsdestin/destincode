@@ -96,6 +96,33 @@ export type ThemeMascot = Partial<Record<MascotVariant, string>> & {
   rig?: string;
 };
 
+/** A scene companion: a small flourish SVG that accompanies the mascot (spec
+ *  §5 — Golden Sunbreak's sun, Halftone's chromatic ghost, Kuromi's sparkles).
+ *  All lengths are FRACTIONS of the mascot's rendered size, so the same
+ *  declaration works at any surface scale. Declared as a TOP-LEVEL manifest
+ *  key (not inside `mascot`) so app versions that predate companions ignore
+ *  it — a non-string value inside `mascot` crashes their asset resolver. */
+export interface MascotCompanion {
+  /** Relative asset path (resolved to theme-asset:// like other assets). */
+  asset: string;
+  /** Width as a fraction of the mascot's rendered size. */
+  size: number;
+  /** Optional height fraction for non-square art (defaults to `size`). */
+  height?: number;
+  /** Preferred offset of the companion's center from the mascot's center. */
+  dx: number;
+  dy: number;
+  /** Follow-spring tuning (buddy floater; static surfaces ignore these). */
+  stiffness?: number;
+  damping?: number;
+  /** Idle bob amplitude (fraction of mascot size) + period. */
+  float?: number;
+  floatMs?: number;
+  /** Lag-distance after-image: invisible at rest, fades in while trailing.
+   *  Static surfaces skip ghosts entirely (nothing lags on a still mascot). */
+  ghost?: boolean;
+}
+
 export interface ThemeScrollbar {
   'thumb-image'?: string;
   'track-color'?: string;
@@ -133,6 +160,8 @@ export interface ThemeDefinition {
   effects?: ThemeEffects;
   icons?: ThemeIcons;
   mascot?: ThemeMascot;
+  /** Scene companions — TOP-LEVEL by design, see MascotCompanion. */
+  companions?: MascotCompanion[];
   cursor?: string;
   scrollbar?: ThemeScrollbar;
   /** Overlay appearance — scrim color, shadow strength, destructive accent.

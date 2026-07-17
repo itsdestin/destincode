@@ -79,6 +79,68 @@ export function isSettled(s: SpringState, target: number): boolean {
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+// ── Motion styles (spec §5) ──
+// Five personalities. Each defines an idle body loop (CSS class on rig-root —
+// keyframes in styles/mascot.css, amplitude via --amp), per-limb idle sway fed
+// through the SAME springs as drag trailing, and a blink cadence. How a style
+// gets picked is still an open UI question (spec §5) — the engine ships all
+// five; callers default to 'chill'.
+export type MotionStyle = 'chill' | 'bouncy' | 'floaty' | 'hyper' | 'sleepy';
+
+/** Blink cadence per style: [min gap ms, random range ms, closed duration ms]. */
+export const BLINK_CFG: Record<MotionStyle, [number, number, number]> = {
+  chill: [6000, 6000, 120],
+  bouncy: [5000, 4000, 100],
+  floaty: [7000, 7000, 160],
+  hyper: [2200, 2800, 80],
+  sleepy: [3000, 3000, 430],
+};
+
+/** Idle body-loop CSS class applied to #rig-root (keyframes in mascot.css).
+ *  Hyper reuses the breathe loop at 1.8s via the extra fastBreath class. */
+export const IDLE_LOOP_CLASS: Record<MotionStyle, string> = {
+  chill: 'rig-breathing',
+  bouncy: 'rig-bounce-loop',
+  floaty: 'rig-float-loop',
+  hyper: 'rig-breathing',
+  sleepy: 'rig-sleep-loop',
+};
+
+export type SwayTargets = Partial<Record<LimbId | 'rig-tail', number>>;
+const SWAY_ZERO: SwayTargets = {};
+
+/** Per-style idle limb sway (degrees added to the pose base). Values are the
+ *  workbench-approved ones — the sway rides the springs, so style switches
+ *  and pose changes settle with the same overshoot physics as everything else. */
+export function idleSway(t: number, style: MotionStyle, intensity: number): SwayTargets {
+  const I = intensity;
+  if (style === 'bouncy') {
+    const a = Math.sin(t / 165) * 2.4 * I;
+    return { 'rig-arm-left': -a, 'rig-arm-right': a, 'rig-leg-left': a * 0.5, 'rig-leg-right': -a * 0.5, 'rig-tail': a * 2.2 };
+  }
+  if (style === 'floaty') {
+    const a = Math.sin(t / 1250) * 7 * I;
+    const b = Math.sin(t / 1250 + 2.1) * 4 * I;
+    return { 'rig-arm-left': -8 * I + a, 'rig-arm-right': 8 * I - a, 'rig-leg-left': b, 'rig-leg-right': -b, 'rig-tail': a };
+  }
+  if (style === 'sleepy') {
+    const a = Math.sin(t / 1700) * 1.6 * I;
+    return { 'rig-arm-left': -7 * I + a, 'rig-arm-right': 7 * I - a, 'rig-tail': a };
+  }
+  if (style === 'hyper') {
+    const a = Math.sin(t / 300) * 1.2 * I;
+    return { 'rig-arm-left': a, 'rig-arm-right': -a, 'rig-tail': Math.sin(t / 220) * 5 * I };
+  }
+  return SWAY_ZERO;
+}
+
+/** Welcome-pose wave: a sinusoid on the waving arm's spring target (±8°,
+ *  ~700ms period — the workbench waveWiggle, but through the physics since
+ *  published rigs don't carry a waveInner wrapper group). */
+export function waveSway(t: number): number {
+  return Math.sin((t / 700) * Math.PI * 2) * 8;
+}
+
 /** Per-limb rotation targets (degrees) from smoothed drag velocity.
  *  Velocity must be normalized to the 80px buddy-window scale by the caller
  *  (k = 80/renderSize × 2.4) so trailing feels identical at any size.

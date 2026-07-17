@@ -78,7 +78,7 @@ import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
-import { BuddyCaptureApp } from './components/buddy/BuddyCaptureApp';
+import { BuddyBarApp } from './components/buddy/BuddyBarApp';
 
 // Dev-only ToolCard fixture sandbox wrapper. The React.lazy + dynamic
 // import() live inside a `import.meta.env.DEV` ternary so Vite statically
@@ -715,6 +715,20 @@ function AppInner() {
       }
     }
   }, [chatStateMap, sessionStatuses]);
+
+  // Buddy "open main app" → land on the buddy's viewed session. Reads the
+  // existing sessionsRef mirror so the IPC subscription survives
+  // sessions-array churn without resubscribing.
+  useEffect(() => {
+    const off = window.claude?.buddy?.onFocusSession?.((sid: string) => {
+      if (sessionsRef.current.some((s: any) => s.id === sid)) {
+        setSessionId(sid);
+        // Notify Android/remote bridge so the native terminal view switches too
+        (window as any).claude?.session?.switch?.(sid);
+      }
+    });
+    return off;
+  }, []);
 
   // Push stack-state changes to the host. On Android, MainActivity uses this
   // to flip OnBackPressedCallback.isEnabled so hardware back is intercepted
@@ -2775,7 +2789,9 @@ function AppInner() {
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-3">
             <p className="text-xl text-fg-muted">No Active Session</p>
-            <ThemeMascot variant="welcome" fallback={WelcomeAppIcon} className="w-36 h-36 text-fg-dim" />
+            {/* scene: the hero surface renders the theme's companions (sun,
+                motes, sparkles) orbiting the mascot — big canvas, no clipping. */}
+            <ThemeMascot variant="welcome" fallback={WelcomeAppIcon} className="w-36 h-36 text-fg-dim" scene />
             {/* Welcome screen: New Session (expandable) + Resume Session */}
             <div className="flex flex-col items-center gap-2 mt-1 w-64">
               {welcomeFormOpen ? (
@@ -3173,7 +3189,7 @@ export default function App() {
   // Buddy windows render as isolated placeholders without main-app providers
   if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
   if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
-  if (buddyMode === 'buddy-capture') return <BuddyCaptureApp />;
+  if (buddyMode === 'buddy-bar') return <BuddyBarApp />;
 
   // Main app wrapped in providers
   return (

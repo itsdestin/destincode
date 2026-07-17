@@ -270,6 +270,17 @@ const IPC = {
   BUDDY_MOVE_MASCOT: 'buddy:move-mascot',
   BUDDY_CAPTURE_DESKTOP: 'buddy:capture-desktop',
   BUDDY_ATTACH_FILE: 'buddy:attach-file',
+  // ── Buddy upgrades (action bar, dismiss, dock/peek) ──
+  BUDDY_HOVER_CHANGED: 'buddy:hover-changed',
+  BUDDY_DRAG_ENDED: 'buddy:drag-ended',
+  BUDDY_OPEN_MAIN: 'buddy:open-main',
+  BUDDY_DISMISS: 'buddy:dismiss',
+  BUDDY_GET_STATUS: 'buddy:get-status',
+  BUDDY_STATUS_CHANGED: 'buddy:status-changed',
+  BUDDY_BAR_STATE: 'buddy:bar-state',
+  BUDDY_MASCOT_STATE: 'buddy:mascot-state',
+  BUDDY_CHAT_STATE: 'buddy:chat-state',
+  SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
   // Settings → Development feature (bug report, contribute, known issues)
@@ -1025,6 +1036,39 @@ contextBridge.exposeInMainWorld('claude', {
       const listener = (_: unknown, filePath: string) => cb(filePath);
       ipcRenderer.on(IPC.BUDDY_ATTACH_FILE, listener);
       return () => ipcRenderer.removeListener(IPC.BUDDY_ATTACH_FILE, listener);
+    },
+    // ── Buddy upgrades ──
+    reportHover: (payload: { source: 'mascot' | 'bar'; hovering: boolean }) =>
+      ipcRenderer.send(IPC.BUDDY_HOVER_CHANGED, payload),
+    dragEnded: () => ipcRenderer.send(IPC.BUDDY_DRAG_ENDED),
+    openMain: (): Promise<void> => ipcRenderer.invoke(IPC.BUDDY_OPEN_MAIN),
+    dismiss: (): Promise<void> => ipcRenderer.invoke(IPC.BUDDY_DISMISS),
+    getStatus: (): Promise<{ dismissed: boolean; visible: boolean }> =>
+      ipcRenderer.invoke(IPC.BUDDY_GET_STATUS),
+    onStatusChanged: (cb: (s: { dismissed: boolean; visible: boolean }) => void) => {
+      const listener = (_: unknown, s: { dismissed: boolean; visible: boolean }) => cb(s);
+      ipcRenderer.on(IPC.BUDDY_STATUS_CHANGED, listener);
+      return () => ipcRenderer.removeListener(IPC.BUDDY_STATUS_CHANGED, listener);
+    },
+    onBarState: (cb: (s: { visible: boolean }) => void) => {
+      const listener = (_: unknown, s: { visible: boolean }) => cb(s);
+      ipcRenderer.on(IPC.BUDDY_BAR_STATE, listener);
+      return () => ipcRenderer.removeListener(IPC.BUDDY_BAR_STATE, listener);
+    },
+    onMascotState: (cb: (s: { mode: 'free' | 'docked' | 'peeking'; edge: string | null }) => void) => {
+      const listener = (_: unknown, s: { mode: 'free' | 'docked' | 'peeking'; edge: string | null }) => cb(s);
+      ipcRenderer.on(IPC.BUDDY_MASCOT_STATE, listener);
+      return () => ipcRenderer.removeListener(IPC.BUDDY_MASCOT_STATE, listener);
+    },
+    onChatState: (cb: (s: { visible: boolean }) => void) => {
+      const listener = (_: unknown, s: { visible: boolean }) => cb(s);
+      ipcRenderer.on(IPC.BUDDY_CHAT_STATE, listener);
+      return () => ipcRenderer.removeListener(IPC.BUDDY_CHAT_STATE, listener);
+    },
+    onFocusSession: (cb: (sessionId: string) => void) => {
+      const listener = (_: unknown, sessionId: string) => cb(sessionId);
+      ipcRenderer.on(IPC.SESSION_FOCUS_REQUEST, listener);
+      return () => ipcRenderer.removeListener(IPC.SESSION_FOCUS_REQUEST, listener);
     },
   },
   // Renderer pushes per-session attention state to main whenever the chat

@@ -3,7 +3,7 @@
 
 body[data-mode="buddy-chat"],
 body[data-mode="buddy-mascot"],
-body[data-mode="buddy-capture"] {
+body[data-mode="buddy-bar"] {
   background: transparent !important;
   --canvas: transparent;
 }
@@ -22,17 +22,17 @@ body[data-mode="buddy-capture"] {
    Electron window. */
 html[data-mode="buddy-mascot"],
 html[data-mode="buddy-chat"],
-html[data-mode="buddy-capture"] {
+html[data-mode="buddy-bar"] {
   background: transparent !important;
   color-scheme: normal !important;
 }
 html[data-mode="buddy-mascot"] body,
 html[data-mode="buddy-chat"] body,
-html[data-mode="buddy-capture"] body {
+html[data-mode="buddy-bar"] body {
   background: transparent !important;
 }
 html[data-mode="buddy-mascot"] #root,
-html[data-mode="buddy-capture"] #root {
+html[data-mode="buddy-bar"] #root {
   background: transparent !important;
 }
 
@@ -136,7 +136,7 @@ html[data-mode="buddy-chat"] #root::before {
    in globals.css as a belt-and-suspenders guard.) */
 html[data-mode="buddy-mascot"] #theme-effects-overlay,
 html[data-mode="buddy-chat"] #theme-effects-overlay,
-html[data-mode="buddy-capture"] #theme-effects-overlay {
+html[data-mode="buddy-bar"] #theme-effects-overlay {
   display: none !important;
 }
 
@@ -276,4 +276,102 @@ body[data-mode="buddy-chat"] ::-webkit-scrollbar-thumb {
 }
 body[data-mode="buddy-chat"] ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover);
+}
+
+/* Action bar fade+rise. The BrowserWindow stays shown; reveal/dismiss is CSS
+   so it can animate (Electron show/hide cannot). Click-through while hidden
+   is enforced main-side via setIgnoreMouseEvents. */
+body[data-mode="buddy-bar"] .buddy-bar-root {
+  transition: opacity 150ms ease, translate 150ms ease;
+}
+body[data-mode="buddy-bar"] .buddy-bar-root[data-visible="0"] {
+  opacity: 0;
+  translate: 0 4px;
+  pointer-events: none;
+}
+
+/* ── Alive & responsive (spec §5) ──
+   All mascot motion is transforms INSIDE the fixed 80×80 window.
+   `scale` (hover/grab) and `translate` (flat-art breathing) are independent
+   CSS properties so the animations compose without clobbering each other.
+   (Rig mascots breathe internally — the motion-style loop on #rig-root.) */
+body[data-mode="buddy-mascot"] .mascot-wrap {
+  position: relative; /* anchors the edge-pinned peek mittens */
+  width: 100%;
+  height: 100%;
+  transition: scale 120ms ease;
+}
+body[data-mode="buddy-mascot"] .mascot-wrap:hover { scale: 1.06; }
+body[data-mode="buddy-mascot"] .mascot-wrap.mascot-grabbed { scale: 0.94; }
+
+body[data-mode="buddy-mascot"] .mascot-breathing {
+  animation: buddy-breathe 4s ease-in-out infinite;
+}
+@keyframes buddy-breathe {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -2.5px; }
+}
+
+/* Attention bounce — retriggered via a React key swap each time attention
+   flips on, so repeat alerts bounce again. */
+body[data-mode="buddy-mascot"] .mascot-bounce {
+  animation: buddy-bounce 500ms cubic-bezier(0.28, 0.84, 0.42, 1);
+}
+@keyframes buddy-bounce {
+  0% { translate: 0 0; }
+  30% { translate: 0 -9px; }
+  55% { translate: 0 0; }
+  72% { translate: 0 -4px; }
+  100% { translate: 0 0; }
+}
+
+/* ── Dock/peek staging (spec §6.2) ──
+   The 80×80 window stays flush on-screen at the edge; the ARTWORK translates
+   past the edge. Bottom/top: a plain sink (~42% visible = face + gripping
+   hands from the 'peek' pose). Sides: the approved "75° wider" staging —
+   body 18% visible, shifted up, leaning ∓75° via the independent `rotate`
+   property (composes with the wrapper scale + flat-art translate); the
+   edge-pinned mittens (PeekHands) are OUTSIDE this element so they stay
+   planted on the frame while the body sags between them. */
+body[data-mode="buddy-mascot"] .mascot-sink {
+  width: 100%;
+  height: 100%;
+  transition: transform 380ms cubic-bezier(0.34, 1.2, 0.5, 1);
+}
+body[data-mode="buddy-mascot"] .mascot-lean {
+  transition: rotate 380ms cubic-bezier(0.34, 1.2, 0.5, 1);
+}
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="bottom"] { transform: translateY(58%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="top"] { transform: translateY(-58%); }
+/* Side peeks: the sink slides the box past the edge (18% visible), shifted up
+   so the body sags below the hand line; the LEAN layer inside rotates the
+   body ∓75° about its own (already-moved) center, tipping the head back out
+   over the edge — the approved "75° wider" staging. */
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] { transform: translate(82%, -22.6%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="right"] .mascot-lean { rotate: -75deg; }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] { transform: translate(-82%, -22.6%); }
+body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-edge="left"] .mascot-lean { rotate: 75deg; }
+/* Swing-out whip: leaving a side peek releases the lean THROUGH ±14° past
+   vertical (~230ms, set by BuddyMascot), then the transition settles it to 0
+   — the "whips around the edge" read from the workbench. */
+body[data-mode="buddy-mascot"] .mascot-sink[data-swing="right"] .mascot-lean { rotate: 14deg; }
+body[data-mode="buddy-mascot"] .mascot-sink[data-swing="left"] .mascot-lean { rotate: -14deg; }
+
+/* Chat open/close: fade + scale instead of popping (spec §5). Origin leans
+   toward the mascot side (left edge) so it reads as growing out of the buddy. */
+body[data-mode="buddy-chat"] .buddy-chat-enter {
+  animation: buddy-chat-in 120ms ease-out;
+  transform-origin: 0% 20%;
+}
+body[data-mode="buddy-chat"] .buddy-chat-exit {
+  animation: buddy-chat-out 120ms ease-in forwards;
+  transform-origin: 0% 20%;
+}
+@keyframes buddy-chat-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes buddy-chat-out {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.95); }
 }

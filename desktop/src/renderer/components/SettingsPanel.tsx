@@ -692,8 +692,24 @@ function BuddyButton() {
   const [enabled, setEnabled] = useState<boolean>(() =>
     localStorage.getItem('youcoded-buddy-enabled') === '1',
   );
+  // "Hidden until restart": the bar's hide button dismisses the buddy for
+  // this run only (localStorage preference untouched). Main broadcasts
+  // buddy:status-changed so this row updates live, with an inline Show-now
+  // recovery (show() clears the dismissed flag main-side).
+  const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    window.claude.buddy?.getStatus?.()
+      .then((s: { dismissed: boolean }) => { if (alive) setDismissed(!!s?.dismissed); })
+      .catch(() => {});
+    const off = window.claude.buddy?.onStatusChanged?.(
+      (s: { dismissed: boolean }) => setDismissed(!!s?.dismissed),
+    );
+    return () => { alive = false; off?.(); };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -712,12 +728,22 @@ function BuddyButton() {
     else window.claude.buddy?.hide?.();
   }, [enabled]);
 
+  const showNow = useCallback(() => {
+    window.claude.buddy?.show?.(); // show() clears the dismissed flag main-side
+  }, []);
+
+  const status = !enabled
+    ? 'Off'
+    : dismissed
+    ? 'Hidden until restart'
+    : 'On — floating on your desktop';
+
   return (
     <>
       <SettingsRow
         icon={<BuddyIcon />}
         title="Buddy Floater"
-        subtitle={enabled ? 'Enabled' : 'Disabled'}
+        subtitle={status}
         onClick={() => setOpen(true)}
       />
 
@@ -744,6 +770,12 @@ function BuddyButton() {
                 <Toggle enabled={enabled} onToggle={toggle} />
               </div>
               <p className="text-[10px] text-fg-muted mt-2">A small always-on-top mascot that stays visible even when the app is minimized.</p>
+              {enabled && dismissed && (
+                <p className="text-[10px] text-fg-muted mt-2">
+                  Hidden until restart{' · '}
+                  <button onClick={showNow} className="text-accent hover:underline">Show now</button>
+                </p>
+              )}
             </div>
           </div>
         </>,

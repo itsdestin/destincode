@@ -41,6 +41,7 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
+import { BAR_SIZE } from './buddy-bar-geometry';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
 import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
@@ -372,6 +373,8 @@ function recomputeAndBroadcastAttention(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.SESSION_ATTENTION_SUMMARY, summary);
   }
+  // Dock/peek activity signal: attention pops a peeking buddy out (spec §6.2).
+  buddyManagerRef?.setAttentionNeeded(anyNeedsAttention);
 }
 
 // 100ms debounce — coalesces bursts of classifier transitions so buddy
@@ -437,7 +440,7 @@ function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
   });
 }
 
-function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'capture' }): BrowserWindow {
+function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'bar' }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const isMac = process.platform === 'darwin';
@@ -486,17 +489,15 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
       }
     : {};
 
-  // Buddy window dimensions: mascot = 80×80; chat = 320×480; capture = 44×44
-  // (Fluent-ish action-button size — big enough for a 20 px camera glyph
-  // with a generous click target without dominating the mascot it sits
-  // below.) Adjust both constants here AND the stack-offsets in
-  // BuddyWindowManager.computeCapturePosition if you change them.
+  // Buddy window dimensions: mascot = 80×80; chat = 320×480; bar = BAR_SIZE.
   const buddyDimensions: { width?: number; height?: number } = opts?.buddy === 'mascot'
     ? { width: 80, height: 80 }
     : opts?.buddy === 'chat'
     ? { width: 320, height: 480 }
-    : opts?.buddy === 'capture'
-    ? { width: 44, height: 44 }
+    : opts?.buddy === 'bar'
+    // Action bar: three 44px buttons. Size lives in buddy-bar-geometry.ts so
+    // the window and the positioning math can never drift apart.
+    ? { width: BAR_SIZE.width, height: BAR_SIZE.height }
     : {};
 
   const win = new BrowserWindow({
@@ -1357,13 +1358,20 @@ app.whenReady().then(async () => {
   registerDetachIpc();
 
   // Buddy window position persistence — JSON file in userData so restarts
-  // restore the mascot and chat to where the user left them. Keyed by
-  // 'mascot' / 'chat'.
+  // restore the mascot to where the user left it. Keyed by 'mascot' only:
+  // the chat key was dropped (written but never read — chat is always
+  // re-anchored to the mascot on show).
   const BUDDY_POS_FILE = path.join(app.getPath('userData'), 'buddy-positions.json');
-  function loadBuddyPositions(): Record<string, { x: number; y: number } | undefined> {
+  // `mascot` = last free position; `dock` = edge the buddy was docked to
+  // (spec §6.1 — a docked buddy is still docked after a restart).
+  interface BuddyPositionsFile {
+    mascot?: { x: number; y: number };
+    dock?: 'left' | 'right' | 'top' | 'bottom';
+  }
+  function loadBuddyPositions(): BuddyPositionsFile {
     try { return JSON.parse(fs.readFileSync(BUDDY_POS_FILE, 'utf8')); } catch { return {}; }
   }
-  function saveBuddyPositions(obj: Record<string, { x: number; y: number } | undefined>): void {
+  function saveBuddyPositions(obj: BuddyPositionsFile): void {
     try { fs.writeFileSync(BUDDY_POS_FILE, JSON.stringify(obj)); } catch {}
   }
   const buddyPositions = loadBuddyPositions();
@@ -1375,8 +1383,21 @@ app.whenReady().then(async () => {
       buddyPositions[key] = pos;
       saveBuddyPositions(buddyPositions);
     },
+    getPersistedDock: () => buddyPositions.dock ?? null,
+    setPersistedDock: (edge) => {
+      if (edge) buddyPositions.dock = edge;
+      else delete buddyPositions.dock;
+      saveBuddyPositions(buddyPositions);
+    },
     registry: windowRegistry,
     mainWindow: () => mainWindow,
+    // Status pushes go to every window (main app Settings panels + buddy
+    // surfaces) so the "Hidden until restart" row state renders live.
+    onStatusChanged: (status) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send(IPC.BUDDY_STATUS_CHANGED, status);
+      }
+    },
   });
   // Publish to module scope so createAppWindow's 'closed' handler can see it.
   buddyManagerRef = buddyManager;
@@ -1408,6 +1429,28 @@ app.whenReady().then(async () => {
   ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, target: { targetX: number; targetY: number }) => {
     buddyManager.moveMascot(target.targetX, target.targetY);
   });
+  // High-frequency-ish (pointer enter/leave) — fire-and-forget like move-mascot.
+  ipcMain.on(IPC.BUDDY_HOVER_CHANGED, (_evt, p: { source: 'mascot' | 'bar'; hovering: boolean }) => {
+    if (p && (p.source === 'mascot' || p.source === 'bar')) {
+      buddyManager.reportHover(p.source, !!p.hovering);
+    }
+  });
+  // Drag release → edge-snap detection against the window's final bounds.
+  ipcMain.on(IPC.BUDDY_DRAG_ENDED, () => buddyManager.dragEnded());
+  ipcMain.handle(IPC.BUDDY_DISMISS, () => buddyManager.dismiss());
+  ipcMain.handle(IPC.BUDDY_GET_STATUS, () => buddyManager.getStatus());
+  // Restore + focus the main window, then ask it to switch to the buddy's
+  // viewed session so the user lands in the same conversation (spec §4.2).
+  ipcMain.handle(IPC.BUDDY_OPEN_MAIN, () => {
+    // Same source of truth the buddyManager deps use for mainWindow.
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    const sid = buddyManager.getViewedSession();
+    if (sid) win.webContents.send(IPC.SESSION_FOCUS_REQUEST, sid);
+  });
 
   // Desktop-capture action: screenshot the display the mascot sits on,
   // excluding the buddy windows themselves.
@@ -1434,7 +1477,7 @@ app.whenReady().then(async () => {
     const { desktopCapturer } = require('electron') as typeof import('electron');
     const mascotWin = buddyManager.getMascotWindow();
     const chatWin = buddyManager.getChatWindow();
-    const captureWin = buddyManager.getCaptureWindow();
+    const barWin = buddyManager.getBarWindow();
     // Pick the display the mascot lives on — multi-monitor users expect
     // "screenshot my desktop" to mean the one their buddy is sitting on,
     // not every monitor merged into one long strip.
@@ -1447,7 +1490,7 @@ app.whenReady().then(async () => {
     // desktopCapturer and we skip the opacity dip entirely.
     const needsOpacityFallback = !nativeCaptureExclusionAvailable();
     const buddyWindows = needsOpacityFallback
-      ? [mascotWin, chatWin, captureWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
+      ? [mascotWin, chatWin, barWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
       : [];
 
     try {

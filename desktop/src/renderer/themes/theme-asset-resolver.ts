@@ -66,10 +66,22 @@ export function resolveAllAssetPaths<T extends ThemeDefinition | LoadedTheme>(th
   if (resolved.mascot) {
     const mascot = { ...resolved.mascot };
     for (const [key, val] of Object.entries(mascot)) {
+      // Guard: only resolve string entries. A future manifest may put
+      // structured values here and resolveAssetPath would throw on them.
+      if (typeof val !== 'string') continue;
       const r = resolveAssetPath(val, slug);
       if (r) (mascot as Record<string, string>)[key] = r;
     }
     resolved.mascot = mascot;
+  }
+
+  // Scene companions (top-level key — see MascotCompanion in theme-types)
+  if (Array.isArray(resolved.companions)) {
+    resolved.companions = resolved.companions.map((c) => {
+      if (!c || typeof c.asset !== 'string') return c;
+      const r = resolveAssetPath(c.asset, slug);
+      return r ? { ...c, asset: r } : c;
+    });
   }
 
   // Cursor
