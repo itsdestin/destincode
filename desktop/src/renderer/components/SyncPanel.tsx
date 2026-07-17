@@ -666,7 +666,16 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   const loadDevices = useCallback(async (): Promise<DeviceRow[]> => {
     const fn = (window as any).claude?.syncSpaces?.listDevices;
     if (typeof fn !== 'function') { setDevices([]); return []; }
-    try { const list = await fn(); setDevices(list); return list; } catch { setDevices([]); return []; }
+    try {
+      const list = await fn();
+      // Fix: the method EXISTING doesn't mean it answered with a list. Android's
+      // stub replies { ok:false, error:'not-implemented-on-mobile' } and the remote
+      // shim always RESOLVES (it never rejects on ok:false), so a non-array lands
+      // here and .map()/.some() would throw and take the whole Devices tab down.
+      const rows = Array.isArray(list) ? list : [];
+      setDevices(rows);
+      return rows;
+    } catch { setDevices([]); return []; }
   }, []);
   const handleRenameDevice = useCallback(async (id: string, name: string) => {
     const fn = (window as any).claude?.syncSpaces?.renameDevice;
