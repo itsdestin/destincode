@@ -1,0 +1,124 @@
+import React from 'react';
+
+/**
+ * The one button. Every button in the app goes through this — never hand-roll
+ * `bg-accent text-on-accent` (design rule 1).
+ *
+ * Before this existed the renderer had ~15 button treatments across ~50 files:
+ * 5 radii, 4 hover idioms, a hardcoded-blue family, and ~80% with no focus ring.
+ *
+ * Recipes below are the ones approved 2026-07-16 — see
+ * docs/active/specs/2026-07-16-ui-consistency-design-spec.md §1.1. Each was an
+ * explicit pick among rendered alternatives; the rejected ones are noted so they
+ * don't get reintroduced as "improvements".
+ */
+
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-outline';
+export type ButtonSize = 'sm' | 'md' | 'lg' | 'icon';
+
+/** The one focus ring — every interactive control shares it (design rule 4),
+ *  so it lives here and Toggle/Checkbox/Radio/Select/SegmentedTabs import it.
+ *
+ *  The canvas offset was challenged post-approval: it's a solid fill, so on a
+ *  panel or popup surface it paints a canvas-colored halo rather than a
+ *  transparent gap, and no such ring existed anywhere in the codebase before.
+ *  Destin reviewed both variants rendered in a real popup footer on 2026-07-16
+ *  and KEPT the offset — the halo is known and accepted. Don't "fix" it.
+ *  Community custom_css focus styles still override by specificity, on purpose:
+ *  packs keep that power. */
+export const FOCUS_RING =
+  'focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas';
+
+/** Always applied.
+ *  rounded-lg is the one control radius (12px built-in / 24px on big-radius
+ *  packs, since --radius-lg is a theme token). Rejected: sm, md, full-everywhere.
+ *  Pills survive only as a documented exception (first-run hero CTAs), via
+ *  className override. */
+export const BUTTON_BASE =
+  'inline-flex items-center justify-center gap-1.5 font-medium rounded-lg transition-colors ' +
+  'disabled:opacity-50 disabled:cursor-not-allowed ' +
+  FOCUS_RING;
+
+/** Hover is ALWAYS a background fade toward the surface — the label stays crisp.
+ *  Rejected: `hover:brightness-110` (invisible on Light/Crème's near-black accent)
+ *  and `hover:opacity-90` (fades the label too, and on glow themes like Halftone
+ *  the fill fades out from under the theme's own box-shadow glow).
+ *
+ *  danger uses text-on-destructive, NOT text-white: --destructive is
+ *  pack-overridable with no contrast guard, so hardcoded white can go
+ *  white-on-pale. The engine derives the label color per theme. */
+export const BUTTON_VARIANT: Record<ButtonVariant, string> = {
+  primary: 'bg-accent text-on-accent hover:bg-accent/90',
+  secondary: 'border border-edge-dim text-fg-2 hover:bg-inset',
+  ghost: 'text-fg-dim hover:text-fg hover:bg-inset',
+  danger: 'bg-destructive text-on-destructive hover:bg-destructive/90',
+  'danger-outline': 'border border-destructive/50 text-destructive hover:bg-destructive/10',
+};
+
+/** sm  — inline row actions (EngineCard, provider rows, chips)
+ *  md  — forms, popup footers, most actions
+ *  lg  — page-level CTAs (sign-in, marketplace hero)
+ *  icon— icon-only square; aria-label is required by the type signature */
+export const BUTTON_SIZE: Record<ButtonSize, string> = {
+  sm: 'text-2xs px-2.5 py-1',
+  md: 'text-xs px-3 py-1.5',
+  lg: 'text-sm px-4 py-2',
+  icon: 'w-7 h-7 p-0',
+};
+
+/** sm (~22px tall) and icon (28px) are under the ~44dp touch guideline, and this
+ *  renderer is also the Android UI. `.coarse-hit` expands the tap target on
+ *  touch devices only — no visual change. See globals.css. */
+const NEEDS_COARSE_HIT: ReadonlySet<ButtonSize> = new Set<ButtonSize>(['sm', 'icon']);
+
+type NativeButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement>;
+
+type CommonProps = NativeButtonProps & {
+  variant?: ButtonVariant;
+};
+
+/** Icon buttons have no text, so aria-label isn't optional — the type enforces
+ *  what a lint rule otherwise would (design rule 16). */
+type SizeProps =
+  | { size?: Exclude<ButtonSize, 'icon'> }
+  | { size: 'icon'; 'aria-label': string };
+
+export type ButtonProps = CommonProps & SizeProps;
+
+export function buttonClasses(
+  variant: ButtonVariant = 'primary',
+  size: ButtonSize = 'md',
+  className = '',
+): string {
+  return [
+    BUTTON_BASE,
+    BUTTON_VARIANT[variant],
+    BUTTON_SIZE[size],
+    NEEDS_COARSE_HIT.has(size) ? 'coarse-hit' : '',
+    className,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
+
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { variant = 'primary', className = '', type, ...rest },
+  ref,
+) {
+  const size = (rest as { size?: ButtonSize }).size ?? 'md';
+  const { size: _omit, ...domProps } = rest as NativeButtonProps & { size?: ButtonSize };
+
+  return (
+    <button
+      ref={ref}
+      // Default to "button" so a Button inside a <form> can't accidentally submit it.
+      // Callers that DO want submit pass type="submit" explicitly.
+      type={type ?? 'button'}
+      className={buttonClasses(variant, size, className)}
+      {...domProps}
+    />
+  );
+});
+
+export default Button;
