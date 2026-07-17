@@ -1586,7 +1586,7 @@ export class RemoteServer {
       }
       // Device registry (Plan 2b spec §10a). readDevices/renameDevice are direct
       // service-level calls (like the syncspaces:* rows above); self:true marks
-      // the current machine via the injected deviceId.
+      // the current machine via the injected machineId.
       case 'syncspaces:list-devices': {
         const pr = getManagedRoots()?.personalRoot;
         // machineId — must match the Electron handler exactly (ipc-channels.test.ts

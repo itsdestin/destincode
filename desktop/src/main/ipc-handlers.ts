@@ -126,9 +126,6 @@ export function registerIpcHandlers(
     // deviceId + hubLeaseRequest + materializeOne + syncSpacesSyncNow are all
     // reachable). The three lease IPC handlers below are thin passthroughs to it.
     requester: import('./conversations/takeover').RequesterTakeoverType;
-    // deviceId + hubLeaseRequest + materializeOne + syncSpacesSyncNow are all
-    // built in main.ts (the whenReady scope) and injected here.
-    //
     // deviceId  — per-INSTALL. Leases ONLY. Distinguishes the dev instance from
     //             the built app on one machine; never use it for the registry.
     // machineId — per-MACHINE. Device registry ONLY (self-marking). '' when this
