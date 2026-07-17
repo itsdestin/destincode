@@ -2789,7 +2789,9 @@ function AppInner() {
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-3">
             <p className="text-xl text-fg-muted">No Active Session</p>
-            <ThemeMascot variant="welcome" fallback={WelcomeAppIcon} className="w-36 h-36 text-fg-dim" />
+            {/* scene: the hero surface renders the theme's companions (sun,
+                motes, sparkles) orbiting the mascot — big canvas, no clipping. */}
+            <ThemeMascot variant="welcome" fallback={WelcomeAppIcon} className="w-36 h-36 text-fg-dim" scene />
             {/* Welcome screen: New Session (expandable) + Resume Session */}
             <div className="flex flex-col items-center gap-2 mt-1 w-64">
               {welcomeFormOpen ? (
