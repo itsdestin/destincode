@@ -3,7 +3,7 @@
 // transcript-event protocol the chat reducer already consumes. These tests pin
 // the emit surface — it's the contract Phase 2's tool agent must not move.
 import { describe, it, expect } from 'vitest';
-import { HarnessSession } from '../src/main/harness/harness-session';
+import { HarnessSession, describeProviderError } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import type { TranscriptEvent } from '../src/shared/types';
 // MockLanguageModelV4 + simulateReadableStream confirmed present in ai@7.0.22
@@ -129,6 +129,58 @@ describe('HarnessSession', () => {
     expect(err.data.text).toMatch(/502/);
     expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);   // an error is not an interrupt
     expect(events.find((e) => e.type === 'turn-complete')).toBeUndefined();
+  });
+
+  it('a wrapped provider error surfaces the ACTIONABLE detail, not the generic wrapper', async () => {
+    // The exact shape captured from OpenRouter during live acceptance: an
+    // AI_RetryError wrapping an AI_APICallError whose responseBody nests the
+    // upstream reason at error.metadata.raw. The bare .message is useless
+    // ("Provider returned error" / "Failed after 3 attempts").
+    const apiErr: any = new Error('Provider returned error');
+    apiErr.name = 'AI_APICallError';
+    apiErr.statusCode = 429;
+    apiErr.responseBody = JSON.stringify({
+      error: {
+        message: 'Provider returned error', code: 429,
+        metadata: { raw: 'moonshotai/kimi-k3 is temporarily rate-limited upstream. Please retry shortly, or add your own key.' },
+      },
+    });
+    const retryErr: any = new Error('Failed after 3 attempts. Last error: Provider returned error');
+    retryErr.name = 'AI_RetryError';
+    retryErr.lastError = apiErr;
+
+    const session = new HarnessSession(opts, async () => { throw retryErr; });
+    const events = collect(session);
+    await session.send('hi');
+    const err = events.find((e) => e.type === 'session-error')!;
+    expect(err.data.text).toMatch(/rate-limited upstream/);
+    expect(err.data.text).toMatch(/add your own key/);
+    expect(err.data.text).toMatch(/429/);
+    expect(err.data.text).not.toMatch(/Failed after 3 attempts/); // the useless wrapper is gone
+  });
+
+  describe('describeProviderError', () => {
+    it('unwraps AI_RetryError → responseBody error.metadata.raw (OpenRouter)', () => {
+      const api: any = new Error('Provider returned error');
+      api.statusCode = 402;
+      api.responseBody = JSON.stringify({ error: { metadata: { raw: 'Insufficient credits.' } } });
+      const retry: any = new Error('Failed after 3 attempts.'); retry.lastError = api;
+      expect(describeProviderError(retry)).toBe('Insufficient credits. (provider error 402)');
+    });
+    it('falls back to error.message when there is no metadata.raw', () => {
+      const api: any = new Error('x'); api.statusCode = 400;
+      api.responseBody = JSON.stringify({ error: { message: 'model not found' } });
+      expect(describeProviderError(api)).toBe('model not found (provider error 400)');
+    });
+    it('reads a pre-parsed .data body', () => {
+      const api: any = new Error('x'); api.statusCode = 401;
+      api.data = { error: { message: 'invalid api key' } };
+      expect(describeProviderError(api)).toBe('invalid api key (provider error 401)');
+    });
+    it('falls back to the raw message for a non-HTTP error (network, etc.)', () => {
+      expect(describeProviderError(new Error('fetch failed'))).toBe('fetch failed');
+      expect(describeProviderError(undefined)).toBe('The model request failed.');
+    });
   });
 
   it('distinct text partIds are preserved per delta (deltas are not all merged under one id)', async () => {

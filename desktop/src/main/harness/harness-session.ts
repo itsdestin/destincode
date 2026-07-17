@@ -76,6 +76,36 @@ function mapStopReason(finishReason: string | undefined): string {
   }
 }
 const APPROX_CHARS_PER_TOKEN = 4;
+
+// Turn a caught provider/SDK error into the most ACTIONABLE message we can show
+// (docs/error-message-standards.md — surface the real detail, never a generic
+// wrapper). The AI SDK wraps a provider HTTP failure as AI_APICallError (with
+// `.statusCode` + a `.responseBody` JSON string) and its retry layer as
+// AI_RetryError (with `.lastError`). The bare `.message` is useless
+// ("Provider returned error" / "Failed after 3 attempts") — the real, usually
+// user-fixable detail lives in the body. OpenRouter, for example, nests the
+// upstream reason at `error.metadata.raw` (e.g. "<model> is temporarily
+// rate-limited upstream. Please retry shortly, or add your own key…").
+export function describeProviderError(err: any): string {
+  const api = err?.lastError ?? err;            // unwrap the retry wrapper
+  const status = api?.statusCode ?? api?.status;
+  let detail: string | undefined;
+  // responseBody is usually a JSON string; some providers pre-parse into `.data`.
+  const parsedBody = (() => {
+    if (api?.data && typeof api.data === 'object') return api.data;
+    if (typeof api?.responseBody === 'string') {
+      try { return JSON.parse(api.responseBody); } catch { /* non-JSON body */ }
+    }
+    return undefined;
+  })();
+  const errObj = parsedBody?.error ?? parsedBody;
+  detail = errObj?.metadata?.raw ?? errObj?.message ?? parsedBody?.message;
+  if (typeof detail === 'string' && detail.trim()) {
+    return status ? `${detail.trim()} (provider error ${status})` : detail.trim();
+  }
+  // No structured detail (network error, etc.) — the SDK message beats nothing.
+  return api?.message ?? err?.message ?? 'The model request failed.';
+}
 // Back-filled into a tool-result when a turn is interrupted mid-step (during a
 // permission ask). Every collected tool-call MUST get a matching tool-result or
 // the persisted history ends on a dangling tool_call that provider APIs reject.
@@ -339,7 +369,7 @@ export class HarnessSession extends EventEmitter {
       if (this.interrupted || err?.name === 'AbortError' || this.abort?.signal.aborted) {
         this.emitEvent('user-interrupt', {});
       } else {
-        this.emitEvent('session-error', { text: err?.message ?? 'The model request failed.' });
+        this.emitEvent('session-error', { text: describeProviderError(err) });
       }
     } finally {
       this.abort = null;
