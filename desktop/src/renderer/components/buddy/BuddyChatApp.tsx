@@ -26,7 +26,14 @@ export function BuddyChatApp() {
           has its own isolated React tree — it does NOT share the main window's
           ChatProvider instance. */}
       <ChatProvider>
-        <div key={replayKey} className={phase === 'enter' ? 'buddy-chat-enter' : 'buddy-chat-exit'} style={{ width: '100%', height: '100%' }}>
+        {/* buddy-chat-panel carries the frosted-glass chrome (buddy.css) — it
+            has to be the same element the enter/exit animation scales, or the
+            glass rectangle appears instantly and only the contents animate. */}
+        <div
+          key={replayKey}
+          className={`buddy-chat-panel ${phase === 'enter' ? 'buddy-chat-enter' : 'buddy-chat-exit'}`}
+          style={{ width: '100%', height: '100%' }}
+        >
           <BuddyChat />
         </div>
       </ChatProvider>

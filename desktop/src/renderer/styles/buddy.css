@@ -32,6 +32,7 @@ html[data-mode="buddy-bar"] body {
   background: transparent !important;
 }
 html[data-mode="buddy-mascot"] #root,
+html[data-mode="buddy-chat"] #root,
 html[data-mode="buddy-bar"] #root {
   background: transparent !important;
 }
@@ -72,9 +73,16 @@ html[data-mode="buddy-bar"] #root {
    has --panels-blur > 0). overflow:hidden clips the bubble feed + input
    pill to the rounded corner curve during scroll.
    isolation:isolate establishes a stacking context so the ::before
-   noise layer with z-index:-1 stays confined between the #root
-   background and the chat UI, without bleeding into the parent. */
-html[data-mode="buddy-chat"] #root {
+   noise layer with z-index:-1 stays confined between the panel
+   background and the chat UI, without bleeding into the parent.
+
+   WHY this lives on .buddy-chat-panel and not #root: the panel chrome has
+   to be on the SAME element as the open/close animation, otherwise the glass
+   rectangle pops into existence with the window and only its contents
+   animate — which made the bouncy entrance invisible (Destin 2026-07-16).
+   BuddyChatApp puts .buddy-chat-panel on the animated div, which is #root's
+   only child at 100%×100%, so the geometry is unchanged. */
+html[data-mode="buddy-chat"] .buddy-chat-panel {
   background:
     linear-gradient(
       180deg,
@@ -108,9 +116,9 @@ html[data-mode="buddy-chat"] #root {
 /* Frosted grain overlay: tiled SVG fractalNoise converted to white-with-
    alpha-from-luminance via feColorMatrix, overlaid with mix-blend-mode
    so the grain picks up the panel tint underneath. z-index:-1 inside
-   #root's isolated stacking context keeps it ABOVE the panel tint and
+   the panel's isolated stacking context keeps it ABOVE the panel tint and
    BELOW the chat UI. 120×120 tile with stitchTiles avoids visible seams. */
-html[data-mode="buddy-chat"] #root::before {
+html[data-mode="buddy-chat"] .buddy-chat-panel::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -278,16 +286,42 @@ body[data-mode="buddy-chat"] ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover);
 }
 
-/* Action bar fade+rise. The BrowserWindow stays shown; reveal/dismiss is CSS
-   so it can animate (Electron show/hide cannot). Click-through while hidden
-   is enforced main-side via setIgnoreMouseEvents. */
+/* Action bar reveal. The BrowserWindow stays shown; reveal/dismiss is CSS so
+   it can animate (Electron show/hide cannot). Click-through while hidden is
+   enforced main-side via setIgnoreMouseEvents.
+
+   The bar now appears only alongside the chat (buddy-bar-visibility.ts), i.e.
+   on a deliberate mascot click rather than an incidental hover — so the reveal
+   gets a real entrance: the buttons pop in one after another, left to right.
+   The root only carries the fade; the pop lives on the buttons. */
 body[data-mode="buddy-bar"] .buddy-bar-root {
-  transition: opacity 150ms ease, translate 150ms ease;
+  transition: opacity 140ms ease;
 }
 body[data-mode="buddy-bar"] .buddy-bar-root[data-visible="0"] {
   opacity: 0;
-  translate: 0 4px;
   pointer-events: none;
+}
+
+/* Staggered pop-in (Destin 2026-07-16). `backwards` fill is load-bearing: it
+   holds each button at the 0% keyframe through its delay, so buttons 2 and 3
+   stay invisible until their turn instead of flashing in at full size first.
+   The overshoot comes from the ease-out-back curve rather than extra keyframe
+   stops — a two-stop track keeps the animation from fighting BarButton's
+   inline `scale(0.92)` busy transform, which resumes control the moment the
+   animation ends (no `forwards`). Re-runs on every reveal because the
+   [data-visible="1"] selector stops matching while hidden. */
+body[data-mode="buddy-bar"] .buddy-bar-root[data-visible="1"] .buddy-bar-btn {
+  animation: buddy-btn-pop 300ms cubic-bezier(0.34, 1.62, 0.64, 1) backwards;
+}
+body[data-mode="buddy-bar"] .buddy-bar-root[data-visible="1"] .buddy-bar-btn:nth-child(2) {
+  animation-delay: 70ms;
+}
+body[data-mode="buddy-bar"] .buddy-bar-root[data-visible="1"] .buddy-bar-btn:nth-child(3) {
+  animation-delay: 140ms;
+}
+@keyframes buddy-btn-pop {
+  from { opacity: 0; transform: scale(0.2); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /* ── Alive & responsive (spec §5) ──
@@ -358,10 +392,20 @@ body[data-mode="buddy-mascot"] .mascot-sink[data-dock-mode="peeking"][data-dock-
 body[data-mode="buddy-mascot"] .mascot-sink[data-swing="right"] .mascot-lean { rotate: 14deg; }
 body[data-mode="buddy-mascot"] .mascot-sink[data-swing="left"] .mascot-lean { rotate: -14deg; }
 
-/* Chat open/close: fade + scale instead of popping (spec §5). Origin leans
-   toward the mascot side (left edge) so it reads as growing out of the buddy. */
+/* Chat open/close: fade + scale instead of popping (spec §5). Origin is the
+   top edge — the chat normally hangs BELOW the mascot, so growing downward
+   from there reads as the panel dropping out of the buddy.
+
+   Open is deliberately springy (Destin 2026-07-16 — the old 120ms ease-out
+   read as a flat fade): an ease-out-back curve carries the panel past 100%
+   and settles it back, and the small upward offset in the `from` frame starts
+   it tucked against the mascot. The overshoot is entirely in the timing
+   function, so the track stays two-stop.
+
+   Close stays quick and non-bouncy: main hides the window 140ms after cueing
+   the exit, and anything longer would just get truncated mid-animation. */
 body[data-mode="buddy-chat"] .buddy-chat-enter {
-  animation: buddy-chat-in 120ms ease-out;
+  animation: buddy-chat-in 340ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform-origin: 50% 0%;
 }
 body[data-mode="buddy-chat"] .buddy-chat-exit {
@@ -369,8 +413,8 @@ body[data-mode="buddy-chat"] .buddy-chat-exit {
   transform-origin: 50% 0%;
 }
 @keyframes buddy-chat-in {
-  from { opacity: 0; transform: scale(0.92); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; transform: scale(0.82) translateY(-12px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
 }
 @keyframes buddy-chat-out {
   from { opacity: 1; transform: scale(1); }

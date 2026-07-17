@@ -73,7 +73,8 @@ export class BuddyWindowManager {
   // the renderer every time.
   private bar: BrowserWindow | null = null;
   private viewedSessionId: string | null = null;
-  // Decides bar visibility from hover + chat-open (spec §4.1). The bar
+  // Decides bar visibility — chat-open only, as of Destin's 2026-07-16 pass
+  // (see buddy-bar-visibility.ts for why hover no longer reveals it). The bar
   // BrowserWindow stays shown once created; reveals are CSS fades driven by
   // the buddy:bar-state push, and click-through is toggled alongside so the
   // invisible bar never eats clicks meant for windows underneath.
@@ -102,8 +103,8 @@ export class BuddyWindowManager {
 
   /** Clear hover state stranded by WINDOW movement: pointerleave only fires
    *  on pointer MOVEMENT, so repositioning the bar/mascot out from under a
-   *  stationary cursor leaves the tracker hovering forever — bar pinned
-   *  visible, docked buddy never peeks. Called after main-driven moves. */
+   *  stationary cursor leaves the tracker hovering forever — and a docked
+   *  buddy then never peeks. Called after main-driven moves. */
   private reconcileHoverWithCursor(): void {
     let cursor: Point;
     try { cursor = screen.getCursorScreenPoint(); } catch { return; }
@@ -140,11 +141,11 @@ export class BuddyWindowManager {
   private schedulePeek(): void {
     if (this.peekTimer) { clearTimeout(this.peekTimer); this.peekTimer = null; }
     if (this.dockState.mode !== 'docked') return;
-    if (this.barVisibility.wantsVisible() || this.attentionNeeded) return;
+    if (this.barVisibility.isEngaged() || this.attentionNeeded) return;
     this.peekTimer = setTimeout(() => {
       this.peekTimer = null;
       // Re-check: state may have changed while the timer was pending.
-      if (this.dockState.mode === 'docked' && !this.barVisibility.wantsVisible() && !this.attentionNeeded) {
+      if (this.dockState.mode === 'docked' && !this.barVisibility.isEngaged() && !this.attentionNeeded) {
         this.dispatchDock({ type: 'idle-timeout' });
       }
     }, PEEK_IDLE_MS);
@@ -215,9 +216,10 @@ export class BuddyWindowManager {
       const bar = this.bar;
       if (bar && !bar.isDestroyed()) {
         bar.webContents.send(IPC_BAR_STATE, { visible: false });
-        // Let the 150ms CSS fade finish, then make the window click-through.
-        // forward:true keeps mousemove flowing to the page so hovering the
-        // (invisible) bar zone can still re-summon it — a nice grace region.
+        // Let the CSS fade finish, then make the window click-through.
+        // forward:true keeps mousemove flowing to the page so the hidden bar's
+        // zone still reports hover — that no longer re-summons the bar, but it
+        // does count as engagement and holds off the docked→peek timer.
         setTimeout(() => {
           if (this.bar && !this.bar.isDestroyed() && !this.barCssVisible) {
             this.bar.setIgnoreMouseEvents(true, { forward: true });
