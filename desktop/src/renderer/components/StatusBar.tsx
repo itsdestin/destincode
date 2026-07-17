@@ -58,13 +58,16 @@ interface StatusData {
 const MODELS = ['haiku', 'sonnet', 'opus[1m]', 'fable'] as const;
 type ModelAlias = typeof MODELS[number];
 
-const MODEL_DISPLAY: Record<ModelAlias, { label: string; color: string; bg: string; border: string }> = {
+const MODEL_DISPLAY: Record<ModelAlias | 'unknown', { label: string; color: string; bg: string; border: string }> = {
   sonnet:      { label: 'Sonnet', color: '#9CA3AF', bg: 'rgba(156,163,175,0.15)', border: 'rgba(156,163,175,0.25)' },
   'opus[1m]':  { label: 'Opus',   color: '#818CF8', bg: 'rgba(129,140,248,0.15)', border: 'rgba(129,140,248,0.25)' },
   haiku:       { label: 'Haiku',  color: '#2DD4BF', bg: 'rgba(45,212,191,0.15)',  border: 'rgba(45,212,191,0.25)' },
   // Fable 5 — most capable. Fuchsia pill reads as the top/premium tier, distinct
   // from Opus's indigo and the amber reserved for AUTO permission mode.
   fable:       { label: 'Fable',  color: '#E879F9', bg: 'rgba(232,121,249,0.15)', border: 'rgba(232,121,249,0.25)' },
+  // Error state, not a real model — red like the high-danger usage threshold
+  // (utilizationColor/contextColor) so it reads as "wrong", never as a normal pill.
+  unknown:     { label: 'Model Unknown', color: '#DD4444', bg: 'rgba(221,68,68,0.15)', border: 'rgba(221,68,68,0.3)' },
 };
 
 // Amber (#F2B33D) for AUTO matches CC's own banner color and visually sits
@@ -77,7 +80,7 @@ const MODEL_DISPLAY: Record<ModelAlias, { label: string; color: string; bg: stri
 // the same "increasing autonomy = warmer color" convention: ask ≈ normal (muted),
 // auto-edit ≈ auto-accept (accent, mostly safe), full-auto = amber (autonomous,
 // but still deny-list-guarded so not the salmon reserved for CC's bypass).
-const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode, { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
+const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode | 'unknown', { label: string; shortLabel: string; color: string; bg: string; border: string }> = {
   normal:        { label: 'NORMAL',             shortLabel: 'NORMAL',  color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
   'auto-accept': { label: 'ACCEPT CHANGES',     shortLabel: 'ACCEPT',  color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
   plan:          { label: 'PLAN MODE',           shortLabel: 'PLAN',    color: 'var(--fg-2)',     bg: 'var(--inset)',  border: 'var(--edge)' },
@@ -87,6 +90,10 @@ const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode, { label:
   ask:           { label: 'ASK FIRST',          shortLabel: 'ASK',     color: 'var(--fg-muted)', bg: 'var(--inset)',  border: 'var(--edge-dim)' },
   'auto-edit':   { label: 'AUTO EDIT',          shortLabel: 'EDIT',    color: 'var(--accent)',   bg: 'var(--well)',   border: 'var(--edge)' },
   'full-auto':   { label: 'FULL AUTO',          shortLabel: 'FULL',    color: '#F2B33D', bg: 'rgba(242,179,61,0.15)',  border: 'rgba(242,179,61,0.25)' },
+  // Error state — App.tsx passes this when the real mode can't be confirmed
+  // (unrecognized value, missing data on resume/reconnect) rather than guessing
+  // 'normal'/'ask', which would misrepresent what's actually enforced.
+  unknown:       { label: 'PERMISSION UNKNOWN',  shortLabel: 'UNKNOWN', color: '#DD4444', bg: 'rgba(221,68,68,0.15)', border: 'rgba(221,68,68,0.3)' },
 };
 
 function utilizationColor(pct: number): string {
@@ -151,11 +158,15 @@ interface Props {
   statusData: StatusData;
   onRunSync?: () => void;
   onOpenSync?: () => void;
-  model?: ModelAlias;
+  // 'unknown' renders a distinct error-styled chip — App.tsx passes it whenever
+  // it can't confidently determine the session's real model/mode (unrecognized
+  // model id, missing/invalid data on resume or reconnect) instead of silently
+  // guessing a default, which would misrepresent what's actually running.
+  model?: ModelAlias | 'unknown';
   onCycleModel?: () => void;
   // CC sessions pass a PermissionMode; native sessions pass a NativePermissionMode.
   // The chip renders identically for both — only the value + cycle handler differ.
-  permissionMode?: PermissionMode | NativePermissionMode;
+  permissionMode?: PermissionMode | NativePermissionMode | 'unknown';
   onCyclePermission?: () => void;
   // Fast + effort state and opener. When non-default, chips render next to the model
   // chip. Clicking either (or the model chip directly) opens the ModelPickerPopup.
@@ -683,11 +694,17 @@ export default function StatusBar({
             color: MODEL_DISPLAY[model].color,
             borderColor: MODEL_DISPLAY[model].border,
           }}
-          title="Click to change model and effort (Shift+Space cycles model)"
+          title={model === 'unknown'
+            ? "YouCoded couldn't confirm which model this session is using — click to set one explicitly"
+            : 'Click to change model and effort (Shift+Space cycles model)'}
         >
           <span>{MODEL_DISPLAY[model].label}</span>
-          <span className="opacity-40">|</span>
-          <span className="capitalize">{effort || 'auto'} Effort</span>
+          {model !== 'unknown' && (
+            <>
+              <span className="opacity-40">|</span>
+              <span className="capitalize">{effort || 'auto'} Effort</span>
+            </>
+          )}
         </button>
       )}
 
@@ -713,7 +730,9 @@ export default function StatusBar({
             color: PERMISSION_DISPLAY[permissionMode].color,
             borderColor: PERMISSION_DISPLAY[permissionMode].border,
           }}
-          title="Click to cycle permission mode (Shift+Tab)"
+          title={permissionMode === 'unknown'
+            ? "YouCoded couldn't confirm this session's permission mode — click to set one explicitly"
+            : 'Click to cycle permission mode (Shift+Tab)'}
         >
           <span className="sm:hidden">{PERMISSION_DISPLAY[permissionMode].shortLabel}</span>
           <span className="hidden sm:inline">{PERMISSION_DISPLAY[permissionMode].label}</span>

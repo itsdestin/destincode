@@ -149,6 +149,32 @@ interface StatusDataState {
   backupMeta: any;
 }
 
+// Match a raw model id (e.g. 'claude-sonnet-4-6') back to a status-bar
+// ModelAlias (e.g. 'claude-sonnet-4-6' → 'sonnet'). Returns 'unknown' — never
+// a guessed alias — when the string is missing or doesn't match anything
+// YouCoded recognizes (crash/resume state with a model id that predates this
+// build, a wiring bug upstream, etc.) so the badge can say so honestly instead
+// of silently mislabeling the session as whatever the previous default was.
+function matchModelAlias(modelStr?: string | null): ModelAlias | 'unknown' {
+  return MODELS.find((m) => modelStr?.includes(m.replace(/\[.*\]/, ''))) ?? 'unknown';
+}
+
+// For call sites that need a REAL model to send to CC (new/resumed session
+// creation) rather than something to display — 'unknown' is only ever a
+// display sentinel and must never be sent as a literal `/model unknown`.
+function realModelAlias(model: ModelAlias | 'unknown'): ModelAlias {
+  return model === 'unknown' ? 'sonnet' : model;
+}
+
+const VALID_PERMISSION_MODES: PermissionMode[] = ['normal', 'auto-accept', 'plan', 'auto', 'bypass'];
+
+// Same idea as matchModelAlias for permission mode: only accept a value that's
+// actually one of CC's known modes, otherwise surface 'unknown' rather than
+// defaulting to 'normal' and implying a permission posture that may not be real.
+function matchPermissionMode(mode?: string | null): PermissionMode | 'unknown' {
+  return VALID_PERMISSION_MODES.includes(mode as PermissionMode) ? (mode as PermissionMode) : 'unknown';
+}
+
 function AppInner() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -173,12 +199,14 @@ function AppInner() {
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
   });
 
-  const [permissionModes, setPermissionModes] = useState<Map<string, PermissionMode>>(new Map());
+  // 'unknown' is a display-only sentinel (never fed back into the real
+  // PermissionMode enforcement logic) — see matchPermissionMode below.
+  const [permissionModes, setPermissionModes] = useState<Map<string, PermissionMode | 'unknown'>>(new Map());
   // Native sessions carry a SEPARATE permission mode (harness policy, not a CC
   // PTY mode). Kept in its own map so the two unions never mix; default 'ask' is
   // read lazily (no per-session seeding) since NativeSessionHost also defaults to
   // 'ask' and the chip is the only setter. Task 13.
-  const [nativePermissionModes, setNativePermissionModes] = useState<Map<string, NativePermissionMode>>(new Map());
+  const [nativePermissionModes, setNativePermissionModes] = useState<Map<string, NativePermissionMode | 'unknown'>>(new Map());
   // Sessions that have received their first hook event (Claude is initialized).
   // Until this fires, show an "Initializing" overlay to prevent premature input.
   const [initializedSessions, setInitializedSessions] = useState<Set<string>>(new Set());
@@ -361,9 +389,10 @@ function AppInner() {
   // card, then latches; re-arms every time the form (re)opens via welcomeFormOpen.
   const { preset: welcomePreset, setPreset: setWelcomePreset } = usePreset({ active: welcomeFormOpen, cwd: welcomeCwd });
 
-  // Per-session model state — keyed by sessionId, same pattern as permissionModes
-  const [sessionModels, setSessionModels] = useState<Map<string, ModelAlias>>(new Map());
-  const currentModel: ModelAlias = sessionId ? (sessionModels.get(sessionId) ?? 'sonnet') : 'sonnet';
+  // Per-session model state — keyed by sessionId, same pattern as permissionModes.
+  // 'unknown' is a display-only sentinel — never a real /model target.
+  const [sessionModels, setSessionModels] = useState<Map<string, ModelAlias | 'unknown'>>(new Map());
+  const currentModel: ModelAlias | 'unknown' = sessionId ? (sessionModels.get(sessionId) ?? 'unknown') : 'sonnet';
   const [pendingModel, setPendingModel] = useState<ModelAlias | null>(null);
   const consecutiveFailures = useRef(0);
   // Fix: track whether a new user turn has started after the model switch.
@@ -787,12 +816,10 @@ function AppInner() {
       // default to chat. (Gemini, the old terminal-only provider, is gone.)
       const defaultView = 'chat';
       setViewModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, defaultView));
-      setPermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, info.permissionMode || 'normal'));
+      setPermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, matchPermissionMode(info.permissionMode)));
       setSessionModels((prev) => {
         if (prev.has(info.id)) return prev;
-        // Match the model string from SessionInfo back to a ModelAlias (e.g. 'claude-sonnet-4-6' → 'sonnet')
-        const alias = MODELS.find((m) => info.model?.includes(m.replace(/\[.*\]/, ''))) ?? 'sonnet';
-        return new Map(prev).set(info.id, alias);
+        return new Map(prev).set(info.id, matchModelAlias(info.model));
       });
       // Native harness sessions (roadmap Phase 1+) have no hook relay, so they'd
       // never trigger the "first hook = initialized" gate. Mark them ready immediately.
@@ -812,10 +839,18 @@ function AppInner() {
       if (info.provider === 'native' && (window as any).claude?.native?.getPermissionMode) {
         (window.claude.native as any).getPermissionMode(info.id).then((mode: string) => {
           const VALID: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
-          if (VALID.includes(mode as NativePermissionMode)) {
-            setNativePermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, mode as NativePermissionMode));
-          }
-        }).catch(() => { /* getPermissionMode unavailable (remote/older host) — chip falls back to 'ask' */ });
+          // Unrecognized response → 'unknown', not a silent 'ask' guess: an
+          // older/remote host that answered with something we don't understand
+          // could actually be sitting on 'full-auto', and showing 'ASK FIRST'
+          // in that case would understate what the session is allowed to do.
+          setNativePermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(
+            info.id, VALID.includes(mode as NativePermissionMode) ? (mode as NativePermissionMode) : 'unknown',
+          ));
+        }).catch(() => {
+          // getPermissionMode unavailable (remote/older host) — we genuinely
+          // don't know the mode, so say so instead of defaulting to 'ask'.
+          setNativePermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, 'unknown'));
+        });
       }
     });
 
@@ -1437,7 +1472,11 @@ function AppInner() {
         for (const s of newSessions) {
           dispatch({ type: 'SESSION_INIT', sessionId: s.id });
           setViewModes((vm) => vm.has(s.id) ? vm : new Map(vm).set(s.id, 'chat'));
-          setPermissionModes((pm) => pm.has(s.id) ? pm : new Map(pm).set(s.id, s.permissionMode || 'normal'));
+          setPermissionModes((pm) => pm.has(s.id) ? pm : new Map(pm).set(s.id, matchPermissionMode(s.permissionMode)));
+          // These sessions were already running before this window's event
+          // handlers attached (e.g. a remote reconnect) — session:created never
+          // fired for them, so this is the only place their model gets seeded.
+          setSessionModels((sm) => sm.has(s.id) ? sm : new Map(sm).set(s.id, matchModelAlias(s.model)));
         }
         return [...prev, ...newSessions];
       });
@@ -1506,7 +1545,10 @@ function AppInner() {
       // default to chat. (Gemini, the old terminal-only provider, is gone.)
       const defaultView = 'chat';
       setViewModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, defaultView));
-      setPermissionModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, sessionInfo.permissionMode || 'normal'));
+      setPermissionModes((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, matchPermissionMode(sessionInfo.permissionMode)));
+      // A window-transfer handoff never fires session:created here — this is
+      // the only place this window seeds the transferred session's model.
+      setSessionModels((prev) => prev.has(sid) ? prev : new Map(prev).set(sid, matchModelAlias(sessionInfo.model)));
       // Transferred sessions were already initialized on the source — skip the
       // "Initializing" overlay, it would flash briefly before replay completes.
       setInitializedSessions((prev) => {
@@ -1578,6 +1620,7 @@ function AppInner() {
       setViewModes(new Map());
       setPermissionModes(new Map());
       setNativePermissionModes(new Map());
+      setSessionModels(new Map());
       setInitializedSessions(new Set());
       setViewedSessions(new Set());
       dispatch({ type: 'RESET' });
@@ -1589,7 +1632,8 @@ function AppInner() {
         for (const s of list) {
           dispatch({ type: 'SESSION_INIT', sessionId: s.id });
           setViewModes((vm) => new Map(vm).set(s.id, 'chat'));
-          setPermissionModes((pm) => new Map(pm).set(s.id, s.permissionMode || 'normal'));
+          setPermissionModes((pm) => new Map(pm).set(s.id, matchPermissionMode(s.permissionMode)));
+          setSessionModels((sm) => new Map(sm).set(s.id, matchModelAlias(s.model)));
         }
         setSessionId(list[0].id);
         // Mark existing sessions as initialized (already running)
@@ -1692,7 +1736,9 @@ function AppInner() {
   const cycleModelRef = useRef<(() => void) | null>(null);
   const cycleModel = useCallback(() => {
     if (!sessionId) return;
-    const idx = MODELS.indexOf(currentModel);
+    // currentModel may be 'unknown' — indexOf then legitimately returns -1,
+    // which wraps to index 0 below, so cycling from an unknown state starts fresh.
+    const idx = MODELS.indexOf(currentModel as ModelAlias);
     const next = MODELS[(idx + 1) % MODELS.length];
     // Send first, guarded: while a prompt is pending, "/model …\r" would land
     // on CC's live Ink menu and answer it. Refusing BEFORE the optimistic
@@ -1830,7 +1876,9 @@ function AppInner() {
 
     const currentAlias = sessionModels.get(sessionId);
     if (currentAlias && currentAlias !== alias) {
-      // Drift detected — reconcile silently. setPreference persists to disk
+      // Drift detected — reconcile silently. Also the self-heal path for a pill
+      // stuck on the 'unknown' sentinel: the moment a real model shows up in
+      // the transcript, this overwrites it. setPreference persists to disk
       // (so next session boots with the correct default); setSessionModels
       // updates the status-bar pill + Shift+Space cycle start point.
       (window.claude as any).model?.setPreference(alias);
@@ -1975,8 +2023,9 @@ function AppInner() {
   );
 
   const createSession = useCallback(async (cwd: string, dangerous: boolean, sessionModel?: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }, preset?: string) => {
-    // Use the explicitly chosen model; fall back to the current session's model
-    const m = sessionModel || currentModel;
+    // Use the explicitly chosen model; fall back to the current session's model.
+    // realModelAlias guards against sending the literal 'unknown' sentinel to CC.
+    const m = sessionModel || realModelAlias(currentModel);
     const info = await (window.claude.session.create as any)({
       name: 'New Session',
       cwd,
@@ -2092,8 +2141,9 @@ function AppInner() {
       return;
     }
 
-    // Use explicitly chosen resume model; fall back to the current session's model
-    const m = resumeModel || currentModel;
+    // Use explicitly chosen resume model; fall back to the current session's model.
+    // realModelAlias guards against sending the literal 'unknown' sentinel to CC.
+    const m = resumeModel || realModelAlias(currentModel);
 
     // Pass --resume flag so Claude Code boots directly into the resumed session
     const newSession = await (window.claude.session.create as any)({
@@ -2239,9 +2289,15 @@ function AppInner() {
   // Native sessions: permission modes are a harness policy (Phase 2), not a
   // PTY shift+tab cycle — hide the badge + cycle affordance for them.
   const isNativeSession = currentSession?.provider === 'native';
-  const currentPermissionMode = sessionId ? (permissionModes.get(sessionId) || 'normal') : 'normal';
-  // Native mode defaults to 'ask' (mirrors NativeSessionHost's default).
-  const currentNativeMode: NativePermissionMode = sessionId ? (nativePermissionModes.get(sessionId) || 'ask') : 'ask';
+  // A session with no map entry at all (a gap in the seeding paths above) reads
+  // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
+  // permission posture instead of admitting YouCoded hasn't determined it yet.
+  const currentPermissionMode: PermissionMode | 'unknown' = sessionId ? (permissionModes.get(sessionId) ?? 'unknown') : 'normal';
+  // Native mode defaults to 'ask' only for the brief window before the async
+  // getPermissionMode() call above resolves (mirrors NativeSessionHost's real
+  // starting mode) — once it resolves, the map always holds either the real
+  // mode or the explicit 'unknown' sentinel, never a guess.
+  const currentNativeMode: NativePermissionMode | 'unknown' = sessionId ? (nativePermissionModes.get(sessionId) ?? 'ask') : 'ask';
 
   // Native permission chip: cycle ask → auto-edit → full-auto → ask via the
   // Task 12 IPC (NOT a PTY Shift+Tab — native sessions have no PTY). The IPC
@@ -2250,7 +2306,9 @@ function AppInner() {
   const cycleNativePermission = useCallback(async () => {
     if (!sessionId) return;
     const cycle: NativePermissionMode[] = ['ask', 'auto-edit', 'full-auto'];
-    const idx = cycle.indexOf(currentNativeMode);
+    // currentNativeMode may be 'unknown' — indexOf then legitimately returns -1,
+    // which wraps to index 0 below, so cycling from an unknown state starts fresh.
+    const idx = cycle.indexOf(currentNativeMode as NativePermissionMode);
     const next = cycle[(idx + 1) % cycle.length];
     try {
       const applied = await window.claude.native.setPermissionMode(sessionId, next);
@@ -2289,7 +2347,9 @@ function AppInner() {
       ...(canAuto ? ['auto' as PermissionMode] : []),
       ...(canBypass ? ['bypass' as PermissionMode] : []),
     ];
-    const idx = cycle.indexOf(currentPermissionMode);
+    // currentPermissionMode may be 'unknown' — indexOf then legitimately returns
+    // -1, which wraps to index 0 below, so cycling from an unknown state starts fresh.
+    const idx = cycle.indexOf(currentPermissionMode as PermissionMode);
     const next = cycle[(idx + 1) % cycle.length];
     setPermissionModes((prev) => new Map(prev).set(sessionId, next));
     // Send Shift+Tab to the PTY to cycle Claude Code's permission mode
@@ -2995,7 +3055,10 @@ function AppInner() {
         open={modelPickerOpen}
         onClose={() => setModelPickerOpen(false)}
         sessionId={sessionId}
-        currentModel={currentModel}
+        // The popup only knows real ModelAlias values (highlights the active
+        // row) — 'unknown' has no row to highlight, so pass null, same as
+        // "no session yet".
+        currentModel={currentModel === 'unknown' ? null : currentModel}
         onSelectModel={(m) => {
           if (!sessionId) return;
           // Send first, guarded (pending-prompt gate) — refusing before the
