@@ -672,6 +672,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     try { await fn(id, name); } catch {}
     await loadDevices(); // re-fetch so the fold-on-read authoritative name is shown
   }, [loadDevices]);
+  const handleRemoveDevice = useCallback(async (id: string) => {
+    const fn = (window as any).claude?.syncSpaces?.removeDevice;
+    if (typeof fn !== 'function') return;
+    try { await fn(id); } catch {}
+    await loadDevices(); // re-fetch so a refused remove (self) doesn't lie about the list
+  }, [loadDevices]);
   // Load devices on mount and whenever sync flips on — the first enable provisions the
   // Personal space that backs the registry, so the list can go empty -> populated.
   useEffect(() => { void loadDevices(); }, [loadDevices, spacesStatus?.enabled]);
@@ -994,7 +1000,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         })}
                       </div>
                       <div role="tabpanel" className="border-t border-edge-dim px-3 py-2.5">
-                        {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} />}
+                        {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} onRemove={handleRemoveDevice} />}
                         {countTab === 'proj' && (() => {
                           const projects = ((spacesStatus?.spaces ?? []) as any[]).filter(s => s.kind === 'project');
                           if (projects.length === 0) return <p className="text-[11px] text-fg-muted">Turn on sync for a project folder to add it here.</p>;
@@ -1469,9 +1475,13 @@ interface DeviceRow {
   self: boolean; // marks THIS machine (matched by deviceId in the main handler)
 }
 
-function DevicesTab({ devices, onRename }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void }) {
+function DevicesTab({ devices, onRename, onRemove }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void; onRemove: (id: string) => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  // Two-step confirm: the id awaiting confirmation, if any. Removal is recoverable
+  // (a live device re-registers), so this is a plain inline confirm rather than the
+  // typed-confirm gate reserved for irreversible edits.
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   // Commit a rename: reject empty/whitespace and skip a no-op rename so we don't
   // fire a pointless invoke + refetch. The parent (SyncPopup) owns the IPC call.
@@ -1523,7 +1533,39 @@ function DevicesTab({ devices, onRename }: { devices: DeviceRow[] | null; onRena
               )}
               {d.self && <span className="text-[10px] text-fg-muted shrink-0">(this device)</span>}
             </div>
-            <span className="text-[10px] text-fg-muted shrink-0">{right}</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[10px] text-fg-muted">{right}</span>
+              {/* No Remove for self: upsertSelf re-creates this row on the next
+                  launch, so offering it would read as a button that does nothing. */}
+              {!d.self && (confirmingId === d.id ? (
+                <span className="flex items-center gap-1.5 text-[10px]">
+                  <span className="text-fg-muted">Remove?</span>
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmingId(null); onRemove(d.id); }}
+                    className="text-red-500 hover:underline"
+                  >
+                    Remove
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingId(null)}
+                    className="text-fg-muted hover:text-fg"
+                  >
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingId(d.id)}
+                  className="text-[10px] text-fg-muted hover:text-fg"
+                  title="Forget this device. If it syncs again, it comes back."
+                >
+                  Remove
+                </button>
+              ))}
+            </div>
           </li>
         );
       })}
