@@ -69,12 +69,14 @@ import type { NativePermissionMode } from '../shared/permission-types';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
-import { ThemeProvider, useTheme } from './state/theme-context';
+import { ThemeProvider } from './state/theme-context';
 import { SkillProvider } from './state/skill-context';
 import { AccountProvider } from './state/account-context';
 import HandlePrompt from './components/HandlePrompt';
-import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
-import { WorkerHealthProvider, useWorkerHealth } from './state/worker-health-context';
+import { WorkerHealthProvider } from './state/worker-health-context';
+import { ThemeBg } from './components/ThemeBg';
+import { StatsWithHealthBridge } from './components/StatsWithHealthBridge';
+import { RootErrorBoundary } from './components/RootErrorBoundary';
 import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
@@ -3180,27 +3182,6 @@ const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?
   },
 );
 
-function ThemeBg() {
-  const { bgStyle, patternStyle } = useTheme();
-  return (
-    <>
-      {bgStyle && <div id="theme-bg" style={bgStyle as unknown as React.CSSProperties} aria-hidden="true" />}
-      {patternStyle && <div id="theme-pattern" style={patternStyle as unknown as React.CSSProperties} aria-hidden="true" />}
-    </>
-  );
-}
-
-// Bridge: reads reportResult from WorkerHealthContext and passes it to MarketplaceStatsProvider.
-// Must be a child of WorkerHealthProvider and parent of anything that consumes useMarketplaceStats().
-function StatsWithHealthBridge({ children }: { children: React.ReactNode }) {
-  const { reportResult } = useWorkerHealth();
-  return (
-    <MarketplaceStatsProvider onNetworkResult={reportResult}>
-      {children}
-    </MarketplaceStatsProvider>
-  );
-}
-
 // Dev-only commit profiler for the AppInner tranche-1 perf work. Accumulates
 // React commit stats on window.__appInnerProfile so before/after numbers can
 // be read via console or scripts/cdp-eval.mjs against the DEV instance.
@@ -3299,57 +3280,4 @@ export default function App() {
       </EscCloseProvider>
     </RootErrorBoundary>
   );
-}
-
-/**
- * Outermost error boundary — renders without any provider context.
- * Inline styles only so it works even if CSS/themes fail to load.
- */
-class RootErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  { error: Error | null }
-> {
-  state = { error: null as Error | null };
-
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-
-  componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error('[RootErrorBoundary]', error, info.componentStack);
-  }
-
-  render() {
-    if (this.state.error) {
-      return (
-        <div style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          justifyContent: 'center', height: '100vh', fontFamily: 'system-ui, sans-serif',
-          background: '#1a1a2e', color: '#ccc', padding: 24, textAlign: 'center',
-        }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>:(</div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: '#e55' }}>
-            YouCoded failed to start
-          </div>
-          <div style={{
-            fontSize: 12, color: '#888', marginTop: 8, maxWidth: 400,
-            wordBreak: 'break-word',
-          }}>
-            {this.state.error.message}
-          </div>
-          <button
-            onClick={() => this.setState({ error: null })}
-            style={{
-              marginTop: 16, padding: '6px 16px', borderRadius: 4,
-              border: '1px solid #444', background: '#2a2a3e', color: '#ccc',
-              cursor: 'pointer', fontSize: 12,
-            }}
-          >
-            Retry
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
 }
