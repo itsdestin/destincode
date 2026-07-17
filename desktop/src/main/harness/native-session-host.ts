@@ -25,6 +25,7 @@ import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
 import { rulesForMode, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
+import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
 import type { ToolServices } from './tools/types';
 import { log } from '../logger';
@@ -124,6 +125,12 @@ export class NativeSessionHost extends EventEmitter {
     private store: SessionStore,
     private modelFactory: ModelFactory,
     private contextLengthFor: (binding: ModelBinding) => Promise<number | null>,
+    // Resolves a binding's provider TYPE (local-engine / openrouter / anthropic /
+    // …) so the host can pick the right CapabilityProfile (Task 5). A binding
+    // whose provider is unknown returns null → resolveContextAndProfile falls back
+    // to a cloud-safe default. Positioned right after contextLengthFor because the
+    // two are resolved together for every create/resume/swap.
+    private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 3-arg test constructions still compile; the
     // real wiring (ipc-handlers) injects a PermissionStore over ~/.youcoded/.
@@ -229,12 +236,29 @@ export class NativeSessionHost extends EventEmitter {
     });
   }
 
+  /** Resolve BOTH the clamped context window AND the capability profile for a
+   *  binding, together (create/resume/swap all need the pair). The context is the
+   *  engine's real loaded window (Task 4) clamped to a known model's trained
+   *  ceiling (Task 5's registry clamp); the profile is resolved from the binding's
+   *  provider type + model id + that clamped context. An unknown provider type
+   *  falls back to 'openrouter' — the cloud-safe default (full posture). */
+  private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
+    const raw = await this.contextLengthFor(binding);
+    const contextLength = effectiveContextForModel(raw, binding.modelId);   // registry-ceiling clamp
+    const type = (await this.providerTypeFor(binding)) ?? 'openrouter';     // unknown → cloud-safe default
+    const profile = resolveProfile({ providerType: type, modelId: binding.modelId, contextLength });
+    return { contextLength, profile };
+  }
+
   /** Tool + permission + prompt wiring shared by create() and resume(). Both v1
    *  presets (Assistant, Coder) are personality profiles, not capability tiers
    *  (spec decisions 8/9): EVERY native session carries the full CORE_TOOLS
    *  suite — presets differ only in prompt body (preset.body) and permission
-   *  posture (preset.presetRules + the seeded starting mode). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices'> {
+   *  posture (preset.presetRules + the seeded starting mode). The resolved
+   *  `profile` is accepted here so Task 6 can add a prompt variant without another
+   *  signature change; this task doesn't use it yet (the session itself carries it
+   *  via opts.profile). */
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, _profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices'> {
     return {
       tools: CORE_TOOLS,
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
@@ -308,7 +332,7 @@ export class NativeSessionHost extends EventEmitter {
       await this.destroy(opts.sessionId);
     }
     const preset = resolvePreset(opts.presetId);
-    const contextLength = await this.contextLengthFor(opts.binding);
+    const { contextLength, profile } = await this.resolveContextAndProfile(opts.binding);
     await this.store.create({
       v: 1,
       sessionId: opts.sessionId,
@@ -321,8 +345,8 @@ export class NativeSessionHost extends EventEmitter {
     // wins — modeFor is never overwritten here (plan decision 3).
     if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
     const session = new HarnessSession(
-      { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength,
-        ...this.toolWiring(opts.sessionId, opts.cwd, preset) },
+      { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
+        ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
       this.modelFactory,
     );
     this.presetIdFor.set(opts.sessionId, preset.manifest.id);
@@ -361,14 +385,20 @@ export class NativeSessionHost extends EventEmitter {
     // resolves to Assistant. The stored header is NEVER rewritten (spec
     // decision 8) — the mapping lives only here + in presetIdFor.
     const preset = resolvePreset(header.harnessId);
+    // MERGE RECONCILIATION (Plan C × M2): the capability profile must be resolved
+    // for the binding we are ACTUALLY going to run, which is the resume-time
+    // override when the user picked a model in the picker — not the one frozen in
+    // the header. Profiling header.binding here would size the context window and
+    // tool posture for the wrong model on every overridden resume.
     const binding = bindingOverride ?? header.binding;
-    const contextLength = await this.contextLengthFor(binding);
+    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
     const session = new HarnessSession(
-      { sessionId, cwd, harness: preset.manifest, binding, contextLength,
-        ...this.toolWiring(sessionId, cwd, preset) },
+      // `binding` (not header.binding) — same override reason as above.
+      { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
+        ...this.toolWiring(sessionId, cwd, preset, profile) },
       this.modelFactory,
     );
     this.presetIdFor.set(sessionId, preset.manifest.id);
@@ -529,7 +559,11 @@ export class NativeSessionHost extends EventEmitter {
     const entry = this.live.get(sessionId);
     if (!entry) return false;
     const oldModelId = entry.session.binding.modelId;
-    entry.session.setBinding(binding, await this.contextLengthFor(binding));
+    // Re-resolve BOTH context + profile on a swap: a cloud → small-local swap
+    // (or vice versa) crosses capability tiers, so the driver must pick up the
+    // new doom-loop window / tool posture on the next turn.
+    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    entry.session.setBinding(binding, contextLength, profile);
     if (oldModelId !== binding.modelId) {
       // Swap the ref-count: releasing the old model may unload it if this was
       // its last session (#1); retain the new one so it isn't unloaded.

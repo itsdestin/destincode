@@ -7,9 +7,8 @@
 // and doom_loop surface as permission ASKS (askUser), never as new events.
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
-import { HarnessSession, type HarnessSessionOpts } from '../src/main/harness/harness-session';
+import { HarnessSession } from '../src/main/harness/harness-session';
 import type { HarnessManifest } from '../src/shared/harness-manifest';
-import type { NativeTool } from '../src/main/harness/tools/types';
 import type { TranscriptEvent } from '../src/shared/types';
 import type { PermissionDecision } from '../src/shared/permission-types';
 import type { AskRequest, AskDecision } from '../src/main/harness/permission-broker';
@@ -17,26 +16,9 @@ import type { AskRequest, AskDecision } from '../src/main/harness/permission-bro
 // (Task 10) drives the same mock model so its deep-equal contract exercises the
 // exact grouping this suite pins.
 import { textChunks, toolCallChunk, finishChunk, stream, scriptedModel } from './helpers/scripted-model';
-
-// A permissive fake tool that RECORDS executions. subject undefined by default
-// (so the tool-layer guards are skipped and decide() is the sole gate — the
-// happy-path guard behavior is covered elsewhere).
-function fakeTool(name: string, over: Partial<NativeTool> & { schema?: z.ZodType; onExecute?: (args: any, ctx: any) => any } = {}): NativeTool {
-  const calls: any[] = [];
-  const t: NativeTool = {
-    name,
-    description: `fake ${name}`,
-    inputSchema: over.schema ?? z.object({ file_path: z.string() }),
-    permissionSubject: over.permissionSubject ?? (() => undefined),
-    async execute(args, ctx) {
-      calls.push(args);
-      if (over.onExecute) return over.onExecute(args, ctx);
-      return { text: `${name} ran` };
-    },
-  };
-  (t as any).calls = calls;
-  return t;
-}
+// Session-construction scaffolding (HARNESS/makeOpts/fakeTool) lives in a shared
+// helper so the profile-driven driver test (Task 5) reuses the exact same setup.
+import { HARNESS, makeOpts, fakeTool } from './helpers/harness-fakes';
 
 function collect(session: HarnessSession): TranscriptEvent[] {
   const events: TranscriptEvent[] = [];
@@ -44,20 +26,6 @@ function collect(session: HarnessSession): TranscriptEvent[] {
   return events;
 }
 function types(events: TranscriptEvent[]) { return events.map((e) => e.type); }
-
-const HARNESS: HarnessManifest = {
-  schema: 1, id: 'agent', name: 'Agent', systemPrompt: 'sys', tools: [],
-  permissionPolicy: 'ask', limits: { maxTokens: 256 },
-};
-
-function makeOpts(over: Partial<HarnessSessionOpts>): HarnessSessionOpts {
-  return {
-    sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
-    binding: { providerId: 'openrouter', modelId: 'm' },
-    retryDelays: [1, 1, 1],   // test hook: near-zero backoff so the suite stays fast
-    ...over,
-  } as HarnessSessionOpts;
-}
 
 const ALLOW: PermissionDecision = { action: 'allow', denyListed: false };
 

@@ -35,6 +35,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
+import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
 // WebSearch provider stack (Phase 2 Plan B): keyed Tavily/Exa upgrades + the
 // chain-walking SearchService injected into the native tool framework.
@@ -2121,6 +2122,13 @@ export function registerIpcHandlers(
       const p = providers.find((x) => x.id === binding.providerId);
       if (p?.type === 'local-engine') return engineManager.effectiveContextWindow(binding.modelId);
       return modelCatalog.contextLengthFor(binding, providers);
+    },
+    // Provider TYPE resolver (Task 5): the host picks a CapabilityProfile from
+    // this. Unknown provider → null, so the host falls back to a cloud-safe
+    // default. ProviderType and ProfileProviderType are the same union today.
+    async (binding) => {
+      const p = (await providerRegistry.list()).find((x) => x.id === binding.providerId);
+      return (p?.type as ProfileProviderType) ?? null;
     },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt

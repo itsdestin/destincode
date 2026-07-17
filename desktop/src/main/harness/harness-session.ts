@@ -23,6 +23,7 @@ import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
+import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
@@ -51,6 +52,9 @@ export interface HarnessSessionOpts {
    *  triggers the auto-retry / session-error. Default 60_000 / 15_000. */
   stallWarningMs?: number;
   stallCountdownMs?: number;
+  /** Resolved capability profile (Task 5): steers the doom-loop window and
+   *  whether tools are attached at all. Absent → CLOUD_DEFAULT (full posture). */
+  profile?: CapabilityProfile;
 }
 export type ModelFactory = (binding: ModelBinding) => Promise<LanguageModel>;
 
@@ -165,12 +169,16 @@ export class HarnessSession extends EventEmitter {
    *  never persisted to the transcript, so it resets on resume. */
   private shellCwd: string | null = null;
   private retryDelays: number[];
+  // Resolved capability profile (Task 5). Drives the doom-loop window + tool
+  // attachment; re-assigned by setBinding on a mid-session model swap.
+  private profile: CapabilityProfile;
 
   constructor(private opts: HarnessSessionOpts, private modelFactory: ModelFactory) {
     super();
     this.binding = opts.binding;
     this.toolByName = new Map((opts.tools ?? []).map((t) => [t.name, t]));
     this.retryDelays = opts.retryDelays ?? [1000, 2000, 4000];
+    this.profile = opts.profile ?? CLOUD_DEFAULT;
   }
 
   /** Resume path: NativeSessionHost rebuilds history from stored events. */
@@ -186,10 +194,13 @@ export class HarnessSession extends EventEmitter {
     this.shellCwd = null; // a resumed session starts back at the workspace root
   }
 
-  /** Mid-session model swap (next turn uses the new binding). */
-  setBinding(binding: ModelBinding, contextLength?: number | null): void {
+  /** Mid-session model swap (next turn uses the new binding). A swap can cross
+   *  capability tiers (e.g. cloud → small local), so the host re-resolves the
+   *  profile and passes it in; applied only when provided. */
+  setBinding(binding: ModelBinding, contextLength?: number | null, profile?: CapabilityProfile): void {
     this.binding = binding;
     if (contextLength !== undefined) this.opts.contextLength = contextLength;
+    if (profile) this.profile = profile;
   }
 
   /** Effective system prompt: the assembled one (Task 11) or the harness's own. */
@@ -204,6 +215,10 @@ export class HarnessSession extends EventEmitter {
    *  name. No execute => the SDK emits 'tool-call' parts and finishes with
    *  'tool-calls' WITHOUT looping (verified ai@7 contract) — WE own the loop. */
   private buildAiTools(): Record<string, any> {
+    // Plain-chat model (profile.supportsTools === false): attach NO tools so the
+    // SDK never sends a tool schema. WHY: a small local model the registry marks
+    // tool-less would otherwise emit malformed tool-calls we can't honor.
+    if (!this.profile.supportsTools) return {};
     const out: Record<string, any> = {};
     for (const t of this.toolByName.values()) {
       out[t.name] = tool({ description: t.description, inputSchema: zodSchema(t.inputSchema) });
@@ -625,9 +640,13 @@ export class HarnessSession extends EventEmitter {
     //    `args` is parsed.data (zod-NORMALIZED), so the signature is canonical:
     //    two calls that differ only in JSON key order still count as identical.
     const sig = `${call.toolName}:${JSON.stringify(args)}`;
+    // Window length = the profile's doom-loop threshold (Task 5): small local
+    // models (threshold 2) trip sooner than cloud models (default 3). Trip when
+    // the last `threshold` calls are all identical; an allow resets the window.
+    const threshold = this.profile.doomLoopThreshold;
     recentCalls.push(sig);
-    if (recentCalls.length > 3) recentCalls.shift();
-    if (recentCalls.length === 3 && recentCalls.every((s) => s === sig)) {
+    if (recentCalls.length > threshold) recentCalls.shift();
+    if (recentCalls.length === threshold && recentCalls.every((s) => s === sig)) {
       const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'doom_loop', toolInput: { repeated: call.toolName }, denyListed: false });
       if (d?.behavior === 'canceled') return 'interrupted';
       if (d?.behavior !== 'allow') return { text: 'Stopped: this exact call has been repeated three times. Try a different approach.', isError: true };

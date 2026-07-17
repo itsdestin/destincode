@@ -90,7 +90,7 @@ describe('NativeSessionHost', () => {
   let root: string; let host: NativeSessionHost;
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-'));
-    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
   });
   afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
@@ -115,7 +115,7 @@ describe('NativeSessionHost', () => {
     await host.drain('s-1');
     await host.destroyAll();
 
-    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+    const host2 = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
     const resumed = await host2.resume('s-1', root);
     expect(resumed).toBe(true);
     expect(host2.getHistory('s-1')!.length).toBe(3);
@@ -180,7 +180,7 @@ describe('NativeSessionHost', () => {
 
   it('destroy() while a stream is mid-emit: no throw, coherent prefix persisted', async () => {
     const store = new SessionStore(new NativeHome(root));
-    const midHost = new NativeSessionHost(store, delayedFactory, async () => null);
+    const midHost = new NativeSessionHost(store, delayedFactory, async () => null, async () => null);
     const gotDelta = new Promise<void>((res) => {
       midHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
@@ -255,7 +255,7 @@ describe('NativeSessionHost', () => {
       if (!threw && event.type === 'assistant-text') { threw = true; throw new Error('disk hiccup'); }
       return realAppend(cwd, event);
     });
-    const failHost = new NativeSessionHost(store, factory, async () => null);
+    const failHost = new NativeSessionHost(store, factory, async () => null, async () => null);
     await failHost.create({ sessionId: 's-f', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     failHost.send('s-f', 'hello');       // M1: dispatch-only — wait for the turn separately
     await waitForTurnComplete(failHost, 1);
@@ -302,12 +302,35 @@ describe('NativeSessionHost', () => {
     });
   });
 
+  // ---- Task 5: the host resolves + threads a CapabilityProfile per binding ----
+  describe('capability profile threading', () => {
+    // Binding-aware fakes: a 'local' provider is a small local engine; anything
+    // else is a cloud provider. Reach into the live session's resolved profile.
+    const providerTypeFor = async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter');
+    const contextLengthFor = async (b: any) => (b.providerId === 'local' ? 8192 : 200_000);
+    const profileOf = (h: NativeSessionHost, id: string) => ((h as any).live.get(id).session as any).profile;
+
+    it('a small local-engine binding yields a simplified profile; a swap to cloud re-resolves to full', async () => {
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, contextLengthFor as any, providerTypeFor as any);
+      await h.create({ sessionId: 's', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
+      expect(profileOf(h, 's').maxToolPresentation).toBe('simplified');
+      expect(profileOf(h, 's').promptVariant).toBe('local-small');
+      expect(profileOf(h, 's').doomLoopThreshold).toBe(2);
+
+      // Swap to a cloud model — the re-resolved profile must flip to full posture.
+      await h.setBinding('s', { providerId: 'openrouter', modelId: 'gpt-4o' });
+      expect(profileOf(h, 's').maxToolPresentation).toBe('full');
+      expect(profileOf(h, 's').doomLoopThreshold).toBe(3);
+      await h.destroyAll();
+    });
+  });
+
   // ---- Task 12: per-session permission mode + remembered rules ----
   describe('permission mode + remembered rules', () => {
     // A host wired with a REAL PermissionStore (over the temp home) + an injected
     // app version, driving the Write-then-stop turn.
     const permHost = () => new NativeSessionHost(
-      new SessionStore(new NativeHome(root)), writeFactory, async () => null,
+      new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null,
       new PermissionStore(new NativeHome(root)), '9.9.9',
     );
 
@@ -383,7 +406,7 @@ describe('NativeSessionHost', () => {
     it('Always allow persists a remembered rule via PermissionStore (host owns cwd scoping)', async () => {
       const store = new PermissionStore(new NativeHome(root));
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, store, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, store, '9.9.9',
       );
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const ask = firstAsk(p);
@@ -414,7 +437,7 @@ describe('NativeSessionHost', () => {
         remember: () => new Promise<void>(() => { /* never resolves */ }),
       };
       const p = new NativeSessionHost(
-        new SessionStore(new NativeHome(root)), writeFactory, async () => null, hangingStore, '9.9.9',
+        new SessionStore(new NativeHome(root)), writeFactory, async () => null, async () => null, hangingStore, '9.9.9',
       );
       const asks: any[] = []; p.on('hook-event', (e) => { if (e.type === 'PermissionRequest') asks.push(e); });
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -444,7 +467,7 @@ describe('NativeSessionHost', () => {
 
     it('create stamps the chosen preset in the header and seeds its default mode', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null);
+      const h = new NativeSessionHost(store, factory, async () => null, async () => null);
       await h.create({ sessionId: 's1', cwd: root, binding, presetId: 'coder' });
       expect(store.readHeader('s1', root)?.harnessId).toBe('coder');
       expect(h.getPermissionMode('s1')).toBe('auto-edit');
@@ -453,7 +476,7 @@ describe('NativeSessionHost', () => {
 
     it('create defaults to assistant when no preset is given', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null);
+      const h = new NativeSessionHost(store, factory, async () => null, async () => null);
       await h.create({ sessionId: 's2', cwd: root, binding });
       expect(store.readHeader('s2', root)?.harnessId).toBe('assistant');
       expect(h.getPermissionMode('s2')).toBe('ask');
@@ -465,7 +488,7 @@ describe('NativeSessionHost', () => {
       const store = new SessionStore(new NativeHome(root));
       await store.create({ v: 1, sessionId: 'legacy1', harnessId: 'chat', binding, cwd: root, createdAt: Date.now() });
 
-      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null);
+      const h = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, async () => null, async () => null);
       expect(await h.resume('legacy1', root)).toBe(true);
       expect(h.getHarnessId('legacy1')).toBe('assistant');
       expect(store.readHeader('legacy1', root)?.harnessId).toBe('chat'); // header untouched — mapping is read-side
@@ -474,7 +497,7 @@ describe('NativeSessionHost', () => {
 
     it('an explicit user mode flip still beats the preset default', async () => {
       const store = new SessionStore(new NativeHome(root));
-      const h = new NativeSessionHost(store, factory, async () => null);
+      const h = new NativeSessionHost(store, factory, async () => null, async () => null);
       await h.create({ sessionId: 's3', cwd: root, binding, presetId: 'coder' });
       h.setPermissionMode('s3', 'ask');
       expect(h.getPermissionMode('s3')).toBe('ask');

@@ -51,6 +51,19 @@ function localFallback(ctx: number | null): CapabilityProfile {
   };
 }
 
+// The context window a session should ACTUALLY use: the real loaded window (from
+// the engine, Task 4) further clamped to a KNOWN model's documented trained ceiling
+// (the registry's maxContextWindow). Without this, a small model loaded at a large
+// -c would be sized past its real ceiling and silently degrade — the GGUF-header
+// reader that would catch this generically isn't built, so the registry ceiling is
+// the pragmatic stand-in for known models. Unknown models / cloud models (no
+// registry match) pass through unchanged.
+export function effectiveContextForModel(loadedContext: number | null, modelId: string, registry: KnownModelEntry[] = KNOWN_MODELS): number | null {
+  const ceiling = matchKnownModel(modelId, registry)?.maxContextWindow;
+  if (loadedContext == null) return ceiling ?? null;
+  return ceiling ? Math.min(loadedContext, ceiling) : loadedContext;
+}
+
 export function resolveProfile(d: DiscoveredModel, registry: KnownModelEntry[] = KNOWN_MODELS): CapabilityProfile {
   if (d.providerType !== 'local-engine') {
     return { ...CLOUD_DEFAULT, promptVariant: cloudVariant(d.providerType) };

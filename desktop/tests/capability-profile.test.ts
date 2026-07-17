@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProfile, CLOUD_DEFAULT, type DiscoveredModel } from '../src/main/harness/capability-profile';
+import { resolveProfile, effectiveContextForModel, CLOUD_DEFAULT, type DiscoveredModel } from '../src/main/harness/capability-profile';
 import type { KnownModelEntry } from '../src/main/harness/known-models';
 
 const local = (modelId: string, contextLength: number | null): DiscoveredModel => ({ providerType: 'local-engine', modelId, contextLength });
@@ -48,5 +48,20 @@ describe('resolveProfile — Layer selection', () => {
 
   it('null/unknown context is treated as small (conservative)', () => {
     expect(resolveProfile(local('x', null)).maxToolPresentation).toBe('simplified');
+  });
+});
+
+describe('effectiveContextForModel', () => {
+  const reg = [{ match: 'tiny-model', label: 'Tiny', maxContextWindow: 8192, supportsTools: true }];
+  it('clamps a loaded window down to a known model ceiling', () => {
+    expect(effectiveContextForModel(32_768, 'tiny-model-q4', reg)).toBe(8192);
+  });
+  it('passes through when loaded is under the ceiling or the model is unknown', () => {
+    expect(effectiveContextForModel(4096, 'tiny-model-q4', reg)).toBe(4096);
+    expect(effectiveContextForModel(32_768, 'unknown-model', reg)).toBe(32_768);
+  });
+  it('uses the ceiling when the loaded window is unknown', () => {
+    expect(effectiveContextForModel(null, 'tiny-model-q4', reg)).toBe(8192);
+    expect(effectiveContextForModel(null, 'unknown-model', reg)).toBe(null);
   });
 });
