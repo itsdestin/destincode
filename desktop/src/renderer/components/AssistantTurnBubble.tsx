@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AssistantTurn } from '../state/chat-types';
-import { ToolCallState, ToolGroupState } from '../../shared/types';
+import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
+import { assistantName } from '../utils/assistant-name';
 import MarkdownContent from './MarkdownContent';
 import ToolCard from './ToolCard';
 import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
@@ -14,6 +15,8 @@ interface Props {
   toolGroups: Map<string, ToolGroupState>;
   toolCalls: Map<string, ToolCallState>;
   sessionId: string;
+  /** Session provider — drives provider-aware stop-reason copy (native vs Claude). */
+  provider?: SessionProvider;
   showTimestamps: boolean;
 }
 
@@ -23,13 +26,20 @@ interface Props {
 // reaches the reducer but is filtered at the render gate below, because it
 // carries no abnormal signal worth surfacing. The four keys below are the
 // ones that ARE worth surfacing (truncation / refusal / etc.).
-const STOP_REASON_COPY: Record<string, string> = {
-  max_tokens: 'Response truncated — Claude hit the output token limit.',
-  stop_sequence: 'Response stopped at a configured stop sequence.',
-  refusal: 'Claude declined to respond.',
-  pause_turn: 'Extended thinking paused mid-turn.',
-  interrupted: 'Interrupted.',
-};
+// Provider-aware: native (local/cloud) sessions must not be labelled "Claude".
+// The two subject-carrying lines swap in the assistant's display name; the rest
+// are provider-neutral.
+function stopReasonCopy(reason: string, provider: SessionProvider | undefined): string {
+  const name = assistantName(provider, { capitalized: true }); // "Claude" | "Your Assistant"
+  const map: Record<string, string> = {
+    max_tokens: `Response truncated — ${name} hit the output token limit.`,
+    stop_sequence: 'Response stopped at a configured stop sequence.',
+    refusal: `${name} declined to respond.`,
+    pause_turn: 'Extended thinking paused mid-turn.',
+    interrupted: 'Interrupted.',
+  };
+  return map[reason] ?? `Response ended: ${reason}.`;
+}
 
 // Collapsible disclosure for the model's reasoning / chain of thought.
 // Collapsed by default — user explicitly chose this UX so reasoning doesn't
@@ -58,8 +68,8 @@ function ReasoningSection({ content }: { content: string }) {
   );
 }
 
-function StopReasonFooter({ reason }: { reason: string }) {
-  const copy = STOP_REASON_COPY[reason] ?? `Response ended: ${reason}.`;
+function StopReasonFooter({ reason, provider }: { reason: string; provider: SessionProvider | undefined }) {
+  const copy = stopReasonCopy(reason, provider);
   return (
     <div className="text-xs text-fg-muted italic mt-1 pl-1 border-l-2 border-edge-dim" role="status">
       {copy}
@@ -262,7 +272,7 @@ function collectTurnSkills(
   return skills;
 }
 
-export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolCalls, sessionId, showTimestamps }: Props) {
+export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolCalls, sessionId, provider, showTimestamps }: Props) {
   // Read opt-in metadata preference here so the strip below only renders when
   // the user has explicitly turned it on in PreferencesPopup (default false).
   const { showTurnMetadata } = useTheme();
@@ -333,7 +343,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
               {/* Render stopReason explainer only once per turn — on the last bubble.
                   Gate out `end_turn` (normal completion) — it reaches the reducer but
                   carries no abnormal signal worth surfacing to the user. */}
-              {isLastBubble && turn.stopReason && turn.stopReason !== 'end_turn' && <StopReasonFooter reason={turn.stopReason} />}
+              {isLastBubble && turn.stopReason && turn.stopReason !== 'end_turn' && <StopReasonFooter reason={turn.stopReason} provider={provider} />}
               {showTimestamps && isLastBubble && turn.timestamp && (
                 <div className="bubble-timestamp text-[9px] text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
                   {formatBubbleTime(turn.timestamp)}

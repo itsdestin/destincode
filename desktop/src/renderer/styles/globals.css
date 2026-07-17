@@ -330,7 +330,9 @@ html, body, #root {
 }
 .terminal-scrollbar-thumb {
   position: absolute;
-  right: 2px;
+  /* Track the content's right edge: shift in by the terminal side inset so the
+     thumb sits inside the frame edge on framed themes, not over it. */
+  right: calc(2px + var(--terminal-side-inset, 0px));
   width: 6px;
   background: var(--scrollbar-thumb);
   border-radius: 3px;
@@ -1417,6 +1419,76 @@ body[data-mode="buddy-chat"] #theme-bg {
   --chat-right-offset: calc(var(--frame-edge) * 2 + var(--right-pane-width, 480px));
 }
 
+/* ─── Terminal-view frame insets (desktop electron only) ─────────────────
+   Scoped to [data-platform="electron"] because the bottom-chrome collapse
+   below is electron-only (App.tsx gates it on getPlatform()==='electron');
+   on Android/browser the input bar stays visible in terminal view, so
+   --bottom-chrome-height is a real measured height and must not be overridden.
+
+   TOP inset: Claude Code wipes the screen (\e[2J) and repaints its UI from
+   row 1 with absolute cursor positioning, so a new session's banner always
+   renders at the top of the viewport — which sat behind the overlaid header.
+   Start the terminal viewport below the header instead. Applied in BOTH views
+   (TerminalView reads --terminal-top-inset directly) so the terminal keeps one
+   stable size — a view-gated inset would resize the PTY on every toggle and
+   ConPTY would re-emit its buffer (duplicated chrome). = header height.
+   BOTTOM edge: in chat view the ~5rem input+status chrome holds the donut's
+   bottom cutout well above the window bottom, so the frame reads as closed. In
+   terminal view the bottom chrome collapses to 0 (App.tsx sets the bottom
+   wrapper to width:0/height:0), so --bottom-chrome-height measures 0 and the
+   cutout runs to 100% — the left/right edges dead-end at the window bottom with
+   no closing edge. Give the donut a --frame-edge-thick bottom strip so the
+   bottom matches the sides, and inset the terminal content by the same amount
+   so xterm's last row isn't painted over. Floating-chrome themes have no frame
+   chrome (chrome-glass is display:none), so they opt out of the bottom strip. */
+html[data-platform="electron"] {
+  --terminal-top-inset: var(--top-chrome-bottom, 3rem);
+}
+/* SIDE inset: framed themes paint --frame-edge-wide chrome strips down the left
+   and right (via chrome-glass). The chat pane is inset by those edges through
+   the framed-shell flex layout, but the terminal is a separate full-width layer,
+   so its edge columns get clipped by the strips. Inset the terminal content by
+   --frame-edge on framed themes to match. Theme-driven (not view-driven) so the
+   terminal stays one width across chat/terminal toggles — no ConPTY reflow.
+   Floating themes have no side chrome, so they keep the default 0. */
+html[data-platform="electron"] body:not([data-chrome-style="floating"]):not([data-input-style="floating"]) {
+  --terminal-side-inset: var(--frame-edge);
+}
+html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
+  --bottom-chrome-height: var(--frame-edge);
+}
+html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-style="floating"]):not([data-input-style="floating"]) .app-content {
+  margin-bottom: var(--frame-edge);
+}
+
+/* ─── Terminal-view right-slot overlay (Bug #2) ──────────────────────────
+   TerminalRightSlot renders a framed-shell clone over the terminal so the
+   artifact drawer / game pane are visible in terminal view (their real home
+   in ChatView's framed-shell is hidden there). It sits inside .app-content, so
+   it inherits the same --frame-edge bottom inset as the terminal and stays
+   aligned with the frame. The container + empty chat-pane spacer are
+   click-through so the terminal underneath stays interactive; only the
+   .drawer-pane takes pointer events. No z-index on the shell: the drawer-pane
+   keeps its base z-index:11 so it paints above chrome-glass (z 10) and the
+   terminal, exactly like the chat-view drawer. */
+.terminal-panel-shell {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+.terminal-panel-shell > .framed-shell {
+  pointer-events: none;
+}
+.terminal-panel-shell .terminal-panel-spacer {
+  background: transparent;
+  pointer-events: none;
+}
+.terminal-panel-shell .drawer-pane {
+  pointer-events: auto;
+}
+
 /* Framed-shell: flex row that holds chat-pane + optional drawer-pane.
    Fills the available height inside ChatView's absolute wrapper.
    Container is TRANSPARENT so theme wallpapers / gradients / glassmorphism
@@ -1675,6 +1747,17 @@ body[data-mode="buddy-chat"] #theme-bg {
 [data-wallpaper] [data-chrome-style='floating'] .framed-shell > .drawer-pane,
 [data-wallpaper] [data-input-style='floating'] .framed-shell > .drawer-pane {
   background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 1) * 100%), transparent);
+}
+
+/* Expanded floating drawer: keep a LEFT gap matching the 8px right margin.
+   When expanded, the chat pane is hidden and the drawer flexes to fill the
+   whole width. In framed themes the frame edges provide the left inset, but
+   floating themes have no edges — without this the pill runs flush to the
+   left screen edge while keeping its 8px right gap (asymmetric). Mirror the
+   right margin so both sides breathe equally. */
+[data-chrome-style='floating'] .framed-shell.drawer-expanded > .drawer-pane,
+[data-input-style='floating'] .framed-shell.drawer-expanded > .drawer-pane {
+  margin-left: 8px;
 }
 
 /* Narrow-screen (phone / narrow window) responsive collapse (Task 6.3)

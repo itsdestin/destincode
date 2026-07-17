@@ -21,6 +21,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
 import GamePanel from './components/game/GamePanel';
+import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
@@ -2633,6 +2634,18 @@ function AppInner() {
     );
   }
 
+  // The active session's game pane. Hoisted so BOTH ChatView (chat view) and
+  // TerminalRightSlot (terminal view) can place it — only one renders at a
+  // time (ChatView gates on `visible`, the overlay only mounts in terminal
+  // view), so this single element is never mounted twice. The live connection
+  // lives in App's usePartyGame hook, so re-placing GamePanel on a view toggle
+  // is a cheap view remount, not a reconnect.
+  const activeGamePane = gameState.panelOpen ? (
+    <ErrorBoundary name="Game">
+      <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
+    </ErrorBoundary>
+  ) : null;
+
   return (
     // ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
     // subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
@@ -2721,7 +2734,12 @@ function AppInner() {
               />
             </div>
             <div
-              className="flex-1 overflow-hidden relative"
+              // app-content: the chat/terminal content region. In framed
+              // terminal view it gets a --frame-edge bottom margin so xterm
+              // sits above the bottom frame strip (see globals.css). The
+              // terminal-panel overlay (below) is a child so it inherits the
+              // same inset and stays aligned with the frame.
+              className="app-content flex-1 overflow-hidden relative"
             >
               {/* Tier 2 of android-terminal-data-parity: xterm.js is the sole
                   terminal renderer on every platform. The Android-only style
@@ -2745,11 +2763,9 @@ function AppInner() {
                       // Game pane lives in the active session's framed-shell
                       // right slot. Only the active session renders it (others
                       // get null) so there's a single GamePanel instance.
-                      gamePane={s.id === sessionId && gameState.panelOpen ? (
-                        <ErrorBoundary name="Game">
-                          <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
-                        </ErrorBoundary>
-                      ) : null}
+                      // ChatView only actually mounts it in chat view; in
+                      // terminal view TerminalRightSlot (below) places it.
+                      gamePane={s.id === sessionId ? activeGamePane : null}
                       // Provider-config error bubble → open Settings straight to
                       // the Model Providers section so the key can be fixed.
                       onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
@@ -2763,6 +2779,24 @@ function AppInner() {
                   </ErrorBoundary>
                 </React.Fragment>
               ))}
+              {/* Terminal-view right-slot panel (Bug #2): the artifact drawer +
+                 game pane live in ChatView's framed-shell, which is hidden in
+                 terminal view — so opening one there expanded the frame but
+                 showed nothing. Render a single framed-shell clone here, only
+                 in terminal view, so the same panel overlays the terminal's
+                 right side. ChatView gates its own copy on `visible`, so
+                 exactly one instance mounts. Electron-only for now (Android's
+                 terminal overlay sizing is native — separate follow-up). */}
+              {getPlatform() === 'electron' && currentViewMode === 'terminal' && sessionId
+                && (activeDrawerOpen || gameState.panelOpen) && (
+                <TerminalRightSlot
+                  sessionId={sessionId}
+                  cwd={currentSession?.cwd}
+                  gamePane={gameState.panelOpen ? activeGamePane : null}
+                  drawerOpen={activeDrawerOpen}
+                  expanded={artifactState.drawerExpanded}
+                />
+              )}
               {/* Initializing overlay — shown before Claude is ready, but only in chat view.
                  Terminal view must stay accessible during init so the user can interact there.
                  z-10: must stay below glassmorphism chrome (z-20) so header/bottom bars remain accessible */}
