@@ -1,6 +1,8 @@
 import { BrowserWindow, screen } from 'electron';
 import type { WindowRegistry } from './window-registry';
-import { BAR_SIZE, MASCOT_SIZE, CHAT_SIZE, computeBarPosition, computeChatPosition } from './buddy-bar-geometry';
+import {
+  BAR_SIZE, MASCOT_SIZE, CHAT_SIZE, computeBarPosition, computeGroupLayout, type GroupLayout,
+} from './buddy-bar-geometry';
 import { BarVisibilityTracker } from './buddy-bar-visibility';
 import {
   dockReducer, detectSnapEdge, dockPosition, FREE_DOCK, PEEK_IDLE_MS,
@@ -194,7 +196,15 @@ export class BuddyWindowManager {
     if (this.glideTimer) { clearInterval(this.glideTimer); this.glideTimer = null; }
     const win = this.mascot;
     if (!win || win.isDestroyed()) return;
-    const finalRect: Rect = { ...mascotTarget, ...MASCOT_SIZE };
+
+    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
+    const layout = this.layoutFor({ ...mascotTarget, ...MASCOT_SIZE });
+    // The mascot only gets pushed back to the pinned distance while the chat is
+    // OPEN. With the chat closed the buddy is free to sit anywhere, including
+    // the band where a chat couldn't fit — shoving him out of it would be a
+    // baffling drag that refuses to end where you dropped it.
+    const mascotFinal = chatVisible ? layout.mascot : mascotTarget;
+    const finalRect: Rect = { ...mascotFinal, ...MASCOT_SIZE };
 
     const legs: Array<{ win: BrowserWindow; from: Point; to: Point }> = [];
     const addLeg = (w: BrowserWindow | null, to: Point) => {
@@ -205,10 +215,8 @@ export class BuddyWindowManager {
       if (Math.round(x) === Math.round(to.x) && Math.round(y) === Math.round(to.y)) return;
       legs.push({ win: w, from: { x, y }, to });
     };
-    addLeg(win, mascotTarget);
-    if (this.chat && !this.chat.isDestroyed() && this.chat.isVisible()) {
-      addLeg(this.chat, this.computeChatAnchoredPosition(finalRect));
-    }
+    addLeg(win, mascotFinal);
+    if (chatVisible) addLeg(this.chat, layout.chat);
     // Bar follows its CSS visibility, not Electron's — see moveMascot.
     if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
       addLeg(this.bar, this.currentBarPosition(finalRect));
@@ -369,32 +377,36 @@ export class BuddyWindowManager {
       // should open "wherever the icon is" rather than at its stale last
       // position.
       this.chatOpenIntent = true;
-      const pos = this.computeChatAnchoredPosition();
-      this.chat.setPosition(Math.round(pos.x), Math.round(pos.y));
+      const layout = this.layoutFor();
+      this.chat.setPosition(Math.round(layout.chat.x), Math.round(layout.chat.y));
       this.chat.show();
       this.chat.webContents.send(IPC_CHAT_STATE, { visible: true });
       this.barVisibility.setChatOpen(true);
       // Opening the chat is dock 'activity' — a peeking mascot slides out.
       this.dispatchDock({ type: 'activity' });
+      // The chat may have had to claim space the mascot was standing in (see
+      // computeGroupLayout tier 3) — glide him out to the pinned distance.
+      this.glideGroup(layout.mascot);
     }
   }
 
   /**
-   * Resolve the chat's home for a given mascot rect. The placement ladder
-   * itself is pure (buddy-bar-geometry.ts → computeChatPosition); this only
+   * Resolve the group layout for a given mascot rect. The placement ladder
+   * itself is pure (buddy-bar-geometry.ts → computeGroupLayout); this only
    * picks the rect and the display to run it against.
    *
    * `mascotRect` defaults to the mascot's live bounds; glideGroup passes the
    * mascot's POST-snap rect so the chat aims at where the buddy will land.
    */
-  private computeChatAnchoredPosition(mascotRect?: Rect): Point {
+  private layoutFor(mascotRect?: Rect): GroupLayout {
     const mb = mascotRect ?? (this.mascot && !this.mascot.isDestroyed() ? this.mascot.getBounds() : null);
     if (!mb) {
       const primary = screen.getPrimaryDisplay().workArea;
-      return { x: primary.x + primary.width - CHAT_SIZE.width - 24, y: primary.y + primary.height - CHAT_SIZE.height - 24 };
+      const fallback = { x: primary.x + primary.width - CHAT_SIZE.width - 24, y: primary.y + primary.height - CHAT_SIZE.height - 24 };
+      return { mascot: fallback, chat: fallback };
     }
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
-    return computeChatPosition(mb, display.workArea);
+    return computeGroupLayout(mb, display.workArea);
   }
 
   /** Move the chat's subscription from the previous session to the new one. */
@@ -553,8 +565,8 @@ export class BuddyWindowManager {
     // intentionally dropped. User's mental model: "chat opens where my
     // buddy is." Drag the mascot, chat follows; open the chat, it's next
     // to the mascot.
-    const pos = this.computeChatAnchoredPosition();
-    const rounded = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    const layout = this.layoutFor();
+    const rounded = { x: Math.round(layout.chat.x), y: Math.round(layout.chat.y) };
     this.chat = this.deps.createBuddyWindow('chat', rounded);
     this.wireChatLifecycle(this.chat);
     // If a session was already chosen (via setViewedSession) before the

@@ -324,6 +324,22 @@ body[data-mode="buddy-bar"] .buddy-bar-root[data-visible="1"] .buddy-bar-btn:nth
   to { opacity: 1; transform: scale(1); }
 }
 
+/* Hover/press bounce, matching the floater's own feel (Destin 2026-07-17).
+   Uses the independent `scale` property, NOT `transform` — the pop-in above
+   animates `transform`, and the two compose instead of clobbering each other.
+   Exactly the trick .mascot-wrap uses for hover-scale vs breathing-translate.
+   The bar window is padded (BAR_PADDING in buddy-bar-geometry.ts) so the grown
+   button has room; without that it would clip against the window frame. */
+body[data-mode="buddy-bar"] .buddy-bar-btn {
+  transition: scale 160ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 120ms ease;
+}
+body[data-mode="buddy-bar"] .buddy-bar-btn:hover { scale: 1.14; }
+body[data-mode="buddy-bar"] .buddy-bar-btn:active { scale: 0.94; }
+body[data-mode="buddy-bar"] .buddy-bar-btn[data-busy="1"] {
+  scale: 0.92;
+  opacity: 0.7;
+}
+
 /* ── Alive & responsive (spec §5) ──
    All mascot motion is transforms INSIDE the fixed 80×80 window.
    `scale` (hover/grab) and `translate` (flat-art breathing) are independent
