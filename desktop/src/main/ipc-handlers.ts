@@ -52,7 +52,7 @@ import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
   syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled,
 } from './sync-spaces/service';
-import { readDevices, renameDevice } from './sync-spaces/device-registry';
+import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 // Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
 // createGithubConnect is the stateful orchestrator that owns the in-flight flow.
 import { detectGh, installGh } from './github-auth';
@@ -2471,6 +2471,18 @@ export function registerIpcHandlers(
     const pr = getManagedRoots()?.personalRoot;
     if (!pr) return { ok: false };
     try { await renameDevice(pr, String(p?.id ?? ''), String(p?.name ?? '')); return { ok: true }; }
+    catch { return { ok: false }; }
+  });
+  ipcMain.handle(IPC.SYNC_SPACES_REMOVE_DEVICE, async (_e, p: { id: string }) => {
+    const pr = getManagedRoots()?.personalRoot;
+    if (!pr) return { ok: false };
+    const id = String(p?.id ?? '');
+    if (!id) return { ok: false };
+    // Refuse to remove THIS machine: upsertSelf re-creates the row on the next
+    // launch, so it would read as a no-op that "didn't work". The UI hides the
+    // affordance for self; this is the enforcement half (remote clients too).
+    if (id === (leaseWiring?.machineId ?? '')) return { ok: false, error: 'cannot remove this device' };
+    try { await removeDevice(pr, id); return { ok: true }; }
     catch { return { ok: false }; }
   });
 

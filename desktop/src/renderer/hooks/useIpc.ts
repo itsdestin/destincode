@@ -338,6 +338,9 @@ declare global {
         // the current machine with self:true; renameDevice sets a friendly label.
         listDevices?: () => Promise<Array<{ schemaVersion: number; id: string; name: string; platform: string; lastSeen: number; updatedAt: number; self: boolean }>>;
         renameDevice?: (id: string, name: string) => Promise<{ ok: boolean }>;
+        // Returns { ok:false, error } on the self-guard path (the handlers refuse to
+        // remove THIS machine's own row, since upsertSelf re-creates it next launch).
+        removeDevice?: (id: string) => Promise<{ ok: boolean; error?: string }>;
         onEvent: (cb: (e: unknown) => void) => () => void;
       };
     };

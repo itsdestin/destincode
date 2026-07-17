@@ -3609,6 +3609,7 @@ class SessionService : Service() {
             "syncspaces:lease-force",
             "syncspaces:list-devices",
             "syncspaces:rename-device",
+            "syncspaces:remove-device",
             // Connect-GitHub modal (device-flow auth) is desktop-only. Android
             // signs into GitHub via its own gh-auth flow; the shared React modal
             // degrades — these invokes reject fast with this stub instead of

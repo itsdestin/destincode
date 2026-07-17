@@ -1116,6 +1116,7 @@ export function installShim(): void {
       // match the shim's convention; routed by remote-server (Task 11).
       listDevices: () => invoke('syncspaces:list-devices'),
       renameDevice: (id: string, name: string) => invoke('syncspaces:rename-device', { id, name }),
+      removeDevice: (id: string) => invoke('syncspaces:remove-device', { id }),
       onEvent: (cb: (e: unknown) => void) => {
         const handler: Callback = (e: any) => cb(e);
         addListener('syncspaces:event', handler);

@@ -25,7 +25,7 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
 import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
-import { readDevices, renameDevice } from './sync-spaces/device-registry';
+import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 // Connect-GitHub modal (device-flow auth). status/install are stateless direct
 // calls; connect start/cancel drive the shared orchestrator singleton created in
@@ -1600,6 +1600,21 @@ export class RemoteServer {
         const pr = getManagedRoots()?.personalRoot;
         if (!pr) { this.respond(client.ws, type, id, { ok: false }); break; }
         try { await renameDevice(pr, String(payload?.id ?? ''), String(payload?.name ?? '')); this.respond(client.ws, type, id, { ok: true }); }
+        catch { this.respond(client.ws, type, id, { ok: false }); }
+        break;
+      }
+      case 'syncspaces:remove-device': {
+        const pr = getManagedRoots()?.personalRoot;
+        if (!pr) { this.respond(client.ws, type, id, { ok: false }); break; }
+        const target = String(payload?.id ?? '');
+        if (!target) { this.respond(client.ws, type, id, { ok: false }); break; }
+        // Same self-guard as the Electron handler — a remote client must not be
+        // able to remove the host machine's own row (it re-registers anyway).
+        if (target === (this.leaseWiring?.machineId ?? '')) {
+          this.respond(client.ws, type, id, { ok: false, error: 'cannot remove this device' });
+          break;
+        }
+        try { await removeDevice(pr, target); this.respond(client.ws, type, id, { ok: true }); }
         catch { this.respond(client.ws, type, id, { ok: false }); }
         break;
       }
