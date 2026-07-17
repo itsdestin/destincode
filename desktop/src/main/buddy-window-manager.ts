@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
 import type { WindowRegistry } from './window-registry';
-import { BAR_SIZE, computeBarPosition } from './buddy-bar-geometry';
+import { BAR_SIZE, MASCOT_SIZE, CHAT_SIZE, computeBarPosition, computeChatPosition } from './buddy-bar-geometry';
 import { BarVisibilityTracker } from './buddy-bar-visibility';
 import {
   dockReducer, detectSnapEdge, dockPosition, FREE_DOCK, PEEK_IDLE_MS,
@@ -30,13 +30,8 @@ export function clampToWorkArea(pos: Point, size: Size, workArea: Rect): Point {
   };
 }
 
-// 112px (was 80): Destin's 2026-07-16 dev test — the buddy read too small.
-const MASCOT_SIZE: Size = { width: 112, height: 112 };
-const CHAT_SIZE: Size = { width: 320, height: 480 };
-// Mascot↔chat vertical gap. Was 12 — halved per Destin (2026-07-16).
-const CHAT_GAP_PX = 6;
-// Action-bar size + position math live in buddy-bar-geometry.ts (pure,
-// unit-tested); main.ts imports the same BAR_SIZE so the BrowserWindow
+// Window sizes + all position math live in buddy-bar-geometry.ts (pure,
+// unit-tested); main.ts imports the same constants so the BrowserWindow
 // dimensions and the positioning math can't drift.
 
 export interface BuddyWindowManagerDeps {
@@ -385,9 +380,9 @@ export class BuddyWindowManager {
   }
 
   /**
-   * Where the chat belongs for a given mascot rect: below the mascot+bar
-   * group, centered on the group's span, flipping above when it won't fit.
-   * Always clamps to the visible workArea as a safety.
+   * Resolve the chat's home for a given mascot rect. The placement ladder
+   * itself is pure (buddy-bar-geometry.ts → computeChatPosition); this only
+   * picks the rect and the display to run it against.
    *
    * `mascotRect` defaults to the mascot's live bounds; glideGroup passes the
    * mascot's POST-snap rect so the chat aims at where the buddy will land.
@@ -399,24 +394,7 @@ export class BuddyWindowManager {
       return { x: primary.x + primary.width - CHAT_SIZE.width - 24, y: primary.y + primary.height - CHAT_SIZE.height - 24 };
     }
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
-    const wa = display.workArea;
-    // Chat opens BELOW the mascot+bar GROUP, centered on the group's span
-    // (not the mascot alone), flipping ABOVE when too close to the workArea
-    // bottom. The horizontal relationship is pinned — above/below is the only
-    // positional mode (Destin 2026-07-16). The bar rect is computed with the
-    // same pure math showBar uses, so this holds even before the bar window
-    // exists on a first reveal.
-    const barPos = computeBarPosition(mb, wa);
-    const groupLeft = Math.min(mb.x, barPos.x);
-    const groupRight = Math.max(mb.x + mb.width, barPos.x + BAR_SIZE.width);
-    // +10: nudged right of true group center per Destin's eye (2026-07-16).
-    const x = Math.round((groupLeft + groupRight) / 2) - Math.round(CHAT_SIZE.width / 2) + 10;
-    const belowY = mb.y + mb.height + CHAT_GAP_PX;
-    const belowFits = belowY + CHAT_SIZE.height <= wa.y + wa.height;
-    const raw = belowFits
-      ? { x, y: belowY }
-      : { x, y: mb.y - CHAT_SIZE.height - CHAT_GAP_PX };
-    return clampToWorkArea(raw, CHAT_SIZE, wa);
+    return computeChatPosition(mb, display.workArea);
   }
 
   /** Move the chat's subscription from the previous session to the new one. */

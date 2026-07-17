@@ -41,7 +41,7 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
-import { BAR_SIZE } from './buddy-bar-geometry';
+import { BAR_SIZE, MASCOT_SIZE, CHAT_SIZE } from './buddy-bar-geometry';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
 import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
@@ -489,14 +489,15 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
       }
     : {};
 
-  // Buddy window dimensions: mascot = 80×80; chat = 320×480; bar = BAR_SIZE.
+  // Buddy window dimensions. Every size comes from buddy-bar-geometry.ts so
+  // the BrowserWindows and the positioning math can never drift apart — the
+  // mascot and chat used to be hardcoded here and the comment had already gone
+  // stale against the 112px bump.
   const buddyDimensions: { width?: number; height?: number } = opts?.buddy === 'mascot'
-    ? { width: 112, height: 112 }
+    ? { width: MASCOT_SIZE.width, height: MASCOT_SIZE.height }
     : opts?.buddy === 'chat'
-    ? { width: 320, height: 480 }
+    ? { width: CHAT_SIZE.width, height: CHAT_SIZE.height }
     : opts?.buddy === 'bar'
-    // Action bar: three 44px buttons. Size lives in buddy-bar-geometry.ts so
-    // the window and the positioning math can never drift apart.
     ? { width: BAR_SIZE.width, height: BAR_SIZE.height }
     : {};
 
