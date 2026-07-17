@@ -20,7 +20,17 @@ export function describeTransportContract(name: string, makeHarness: () => Promi
     // slowest contract test does ~6 sequential git round-trips (~8s on Windows).
     // Own a generous timeout here so bare `vitest run` stays green while the
     // global default stays tight for fast unit tests.
-    vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+    //
+    // 30_000 -> 120_000 (2026-07-17): the old ceiling was sized against that ~8s
+    // ISOLATED measurement, but these tests spawn real `git`, so their wall-clock
+    // scales with machine load — and vitest's parallel pool guarantees load. At
+    // 30s this timed out nondeterministically under a full-suite run and blocked
+    // release builds (`npm test` gates Build). The ceiling only bounds the
+    // FAILURE case: a passing test returns as soon as it finishes, so a higher
+    // number costs nothing on green runs. NOTE this is file-wide (vi.setConfig
+    // is per-file, not per-describe), so it also governs the calling transport
+    // file's own tests.
+    vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
     let h: TransportHarness;
     beforeEach(async () => { h = await makeHarness(); });

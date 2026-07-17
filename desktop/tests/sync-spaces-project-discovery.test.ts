@@ -3,7 +3,7 @@
 // 2026-07-12). Two ManagedRoots + real bare remotes, mirroring
 // sync-spaces-two-device.test.ts. Exercises the registry + planner + transport
 // directly (no service/Electron layer) so convergence is provable against git.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -16,6 +16,11 @@ import {
 } from '../src/main/sync-spaces/project-registry';
 import { planReconcile, activeManagedSpaces } from '../src/main/sync-spaces/materialization-planner';
 import type { SyncSpace } from '../src/main/sync-spaces/types';
+
+// INTEGRATION test: spawns real `git`, and measured 19.6-27.3s in ISOLATION —
+// i.e. 65-90% of the old 30s budget before any parallel load, so vitest's pool
+// reliably pushed it over. A generous ceiling only bounds the FAILURE case.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-disc-')); });
@@ -113,4 +118,7 @@ it('device B discovers, materializes, and (after a stop) detaches a project', as
   expect(plan2.toStop).toEqual([]); // no live space to stop
 
   await lEngine.stop(); await dEngine.stop();
-}, 30_000);
+// Timeout comes from the file-level vi.setConfig above. It used to be an inline
+// `}, 30_000)` third argument, which SILENTLY OVERRIDES vi.setConfig — that's
+// why raising the file config alone didn't fix this test.
+});
