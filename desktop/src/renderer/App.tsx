@@ -48,6 +48,7 @@ import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
+import { useNativeSessionUsage } from './hooks/useNativeSessionUsage';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -1154,6 +1155,16 @@ function AppInner() {
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });
+          // Task 12: mirror this native turn's usage to main so remote browsers +
+          // status-parity consumers (Task 11's cache) get context/tokens/speed too.
+          // Guard on the native provider (sessionsRef stays fresh across this
+          // once-registered handler) — CC sessions get usage from the statusline,
+          // not here. reportUsage is optional-chained: absent on the CC-only shim
+          // and older remote clients.
+          if (event.data.usage
+              && sessionsRef.current?.find?.((s: any) => s.id === event.sessionId)?.provider === 'native') {
+            window.claude.native?.reportUsage?.({ sessionId: event.sessionId, usage: event.data.usage });
+          }
           break;
         case 'assistant-thinking': {
           // Text payload → real reasoning content (collapsible in chat).
@@ -2469,6 +2480,13 @@ function AppInner() {
   // What the StatusBar model chip renders — see model-chip.ts for why native
   // sessions bypass the Claude Code alias matcher entirely.
   const modelChip = modelChipFor(currentSession, currentModel);
+  // Native StatusBar chips (Plan C Task 12): the active native session's
+  // most-recent completed-turn usage. MERGE RECONCILIATION — this was originally
+  // a useMemo over `chatStateMap`, but AppInner perf tranche 1 replaced that
+  // reactive value with `chatStateMapRef` (a ref fed by a store subscription), so
+  // the memo no longer compiles and a ref would never re-render the chips. It is
+  // re-expressed here as a cached store selector, mirroring useActiveSessionModel.
+  const nativeStatusUsage = useNativeSessionUsage(isNativeSession ? sessionId : null);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -2922,6 +2940,8 @@ function AppInner() {
                   }}
                   openTasksCounts={sessionId ? { running: openTasks.counts.running, pending: openTasks.counts.pending } : undefined}
                   onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
+                  nativeUsage={nativeStatusUsage}
+                  nativeContextLength={nativeStatusUsage?.contextLength ?? null}
                 />
               </div>
           </>

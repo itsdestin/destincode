@@ -129,6 +129,55 @@ const PERMISSION_DISPLAY: Record<PermissionMode | NativePermissionMode | 'unknow
   unknown:       { label: 'PERMISSION UNKNOWN',  shortLabel: 'UNKNOWN', color: '#DD4444', bg: 'rgba(221,68,68,0.15)', border: 'rgba(221,68,68,0.3)' },
 };
 
+// --- Native (local-model) StatusBar chips (Task 12) ---
+// Native-runtime sessions have no CC statusline writing .usage-cache.json, so
+// their context/tokens/speed chips are derived directly from the per-turn usage
+// stamped on turn-complete (see chat-reducer TRANSCRIPT_TURN_COMPLETE). This is
+// a small PURE function so the derivation is unit-tested in isolation.
+//
+// v1 limitation (spec decision 7): chips reflect the LAST COMPLETED turn, not
+// mid-turn progress — during a long agentic turn the context chip lags until the
+// turn completes. Mid-turn liveness is a deliberate follow-up, not this task.
+
+/** Usage payload shape the selector accepts. Superset-tolerant: only in/out
+ *  tokens are required; tokensPerSecond + cache fields are optional so both the
+ *  full turn-complete payload and a trimmed test fixture satisfy it. */
+export interface NativeUsageInput {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  tokensPerSecond?: number;
+}
+
+export interface NativeStatusChips {
+  /** Percent of the model's context window REMAINING (100 = empty, 0 = full).
+   *  null when the real context window is unknown — the other two chips still show. */
+  contextPct: number | null;
+  totalTokens: number;
+  tokensPerSecond: number;
+}
+
+/** Derive the native context/tokens/speed chips from a turn's usage + the
+ *  session's REAL context window (resolved in main, Task 4/5). Returns null when
+ *  there's no usage yet so CC / idle sessions render nothing extra. */
+export function selectNativeStatusChips(
+  usage: NativeUsageInput | undefined | null,
+  contextLength: number | undefined | null,
+): NativeStatusChips | null {
+  if (!usage) return null;
+  const totalTokens = usage.inputTokens + usage.outputTokens;
+  const tokensPerSecond = usage.tokensPerSecond ?? 0;
+  // contextPct is REMAINING context. Falsy contextLength (unknown window) → null
+  // so we never fabricate a percentage; tokens + speed chips remain valid.
+  let contextPct: number | null = null;
+  if (contextLength) {
+    const remaining = Math.round(((contextLength - totalTokens) / contextLength) * 100);
+    contextPct = Math.max(0, Math.min(100, remaining)); // clamp to [0,100]
+  }
+  return { contextPct, totalTokens, tokensPerSecond };
+}
+
 function utilizationColor(pct: number): string {
   if (pct >= 80) return 'text-[#DD4444]';
   if (pct >= 50) return 'text-[#FF9800]';
@@ -222,6 +271,13 @@ interface Props {
   openTasksCounts?: { running: number; pending: number };
   /** Fired when the user clicks the Open Tasks chip. */
   onOpenOpenTasks?: () => void;
+  /** Native-runtime sessions only (Task 12): the active session's most-recent
+   *  turn-complete usage. null/absent for CC + idle sessions (chips stay hidden). */
+  nativeUsage?: NativeUsageInput | null;
+  /** Native-runtime sessions only: the session's REAL context window (resolved in
+   *  main, Task 4/5) carried on the same usage payload. null when unknown → the
+   *  context % chip is omitted but tokens + speed still render. */
+  nativeContextLength?: number | null;
 }
 
 
@@ -703,6 +759,7 @@ export default function StatusBar({
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
+  nativeUsage, nativeContextLength,
 }: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncStatus, syncWarnings } = statusData;
 
@@ -720,6 +777,12 @@ export default function StatusBar({
 
   const show = (id: WidgetId) => visible.has(id);
   const ss = sessionStats; // shorthand
+
+  // Native-runtime chips (Task 12). Non-null only for native sessions that have
+  // completed at least one turn; CC/idle sessions get null and render nothing
+  // extra. Fed the session's real context window (resolved in main) so the
+  // context % is accurate for the local model, not a hardcoded guess.
+  const nativeChips = selectNativeStatusChips(nativeUsage, nativeContextLength);
 
   return (
     <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-[10px] text-fg-muted">
@@ -852,6 +915,52 @@ export default function StatusBar({
           <span className={contextColor(contextPercent)}>{contextPercent}%</span>
           <span>Remaining</span>
         </button>
+      )}
+
+      {/* Native-runtime chips (Task 12) — context %, total tokens, tokens/sec
+          derived from the local model's last turn-complete usage. These populate
+          the same conceptual slots as the CC context/token/speed chips but are
+          fed from `nativeUsage` (turn-complete) instead of the CC statusline.
+          The CC context chip above renders from `contextPercent`, which is always
+          null for native sessions (they write no .context-* file), so there is no
+          duplicate context chip. Reuses the exact CC chip markup — no restyle.
+
+          v1 limitation: values reflect the LAST COMPLETED turn, so during a long
+          agentic turn the context chip lags until the turn finishes (spec #7). */}
+      {nativeChips && (
+        <>
+          {/* Context remaining — reuses the CC context chip's visual style. Not a
+              button: the CC version opens ContextPopup (CC-only /compact + /clear
+              actions); native compaction is engine-driven, so this is display-only. */}
+          {show('context') && nativeChips.contextPct != null && (
+            <span
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+              title={`Context: ${nativeChips.contextPct}% of the model's window remaining`}
+            >
+              <span>Context:</span>
+              <span className={contextColor(nativeChips.contextPct)}>{nativeChips.contextPct}%</span>
+              <span>Remaining</span>
+            </span>
+          )}
+
+          {/* Total tokens this turn — reuses the input-tokens chip style. */}
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title={`Tokens this turn: ${nativeChips.totalTokens.toLocaleString()} (input + output)`}
+          >
+            <span className="text-fg-faint">Tokens:</span>
+            <span className="text-fg-2">{formatTokens(nativeChips.totalTokens)}</span>
+          </span>
+
+          {/* Output speed — reuses the output-speed chip style. */}
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title="Output tokens per second on the last turn"
+          >
+            <span className="text-fg-faint">Speed:</span>
+            <span className="text-fg-2">{nativeChips.tokensPerSecond} tok/s</span>
+          </span>
+        </>
       )}
 
       {/* Session cost — estimated USD cost for this session */}

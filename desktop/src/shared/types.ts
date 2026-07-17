@@ -152,6 +152,10 @@ export interface TranscriptEvent {
       cacheCreationTokens: number;
       /** Native runtime only: output tokens / stream seconds. CC never reports this. */
       tokensPerSecond?: number;
+      /** Native runtime only: the session's REAL context window (resolved in main,
+       *  Task 4/5). Carried on the per-turn payload so the renderer's StatusBar can
+       *  compute context % without a separate IPC. Constant per session; CC omits it. */
+      contextLength?: number | null;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies

@@ -46,6 +46,13 @@ export interface TurnUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Native runtime only: output tokens / stream seconds (from turn-complete).
+   *  Absent for CC turns. Feeds the StatusBar native speed chip (Task 12). */
+  tokensPerSecond?: number;
+  /** Native runtime only: the session's REAL context window (resolved in main,
+   *  Task 4/5), carried on the turn-complete payload. Feeds the StatusBar native
+   *  context % chip (Task 12). Constant per session; absent for CC turns. */
+  contextLength?: number | null;
 }
 
 export interface AssistantTurn {

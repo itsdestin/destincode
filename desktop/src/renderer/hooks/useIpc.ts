@@ -265,6 +265,9 @@ declare global {
         // Per-session native permission mode (StatusBar chip, Task 13). Returns
         // the APPLIED mode — authoritative; the chip renders the return value.
         setPermissionMode: (sessionId: string, mode: 'ask' | 'auto-edit' | 'full-auto') => Promise<'ask' | 'auto-edit' | 'full-auto'>;
+        // Fire-and-forget: report a native turn's usage to main so remote browsers
+        // + status-parity consumers get context/tokens/speed chips (Task 11/12).
+        reportUsage: (payload: { sessionId: string; usage: unknown }) => void;
         sessionsList: () => Promise<any[]>;
         // Per-session bound-model residency push (2026-07-14): { sessionId,
         // modelId, state: 'unloaded'|'loading'|'loaded'|'sleeping', sizeBytes }.

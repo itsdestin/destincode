@@ -552,7 +552,15 @@ export class HarnessSession extends EventEmitter {
       this.emitEvent('turn-complete', {
         model: this.binding.modelId,
         stopReason,
-        usage: { ...turnUsage, tokensPerSecond: Math.round(turnUsage.outputTokens / seconds) },
+        // Carry the session's REAL context window (Task 4/5) on the usage payload so
+        // the renderer's StatusBar can compute context % without a separate IPC. It's
+        // a session constant, but co-locating it with per-turn usage keeps the whole
+        // native-chip payload on one existing event (Task 12). null when unknown.
+        usage: {
+          ...turnUsage,
+          tokensPerSecond: Math.round(turnUsage.outputTokens / seconds),
+          contextLength: this.opts.contextLength ?? null,
+        },
       });
     } catch (err: any) {
       // v0's catch, unchanged: push any in-flight partial, then split
