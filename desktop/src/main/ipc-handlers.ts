@@ -1877,6 +1877,14 @@ export function registerIpcHandlers(
   // is registered further down where the handler block begins.
   const lastAttentionBySession = new Map<string, string>();
 
+  // Per-session native per-turn usage, populated by the `native:usage-report`
+  // IPC listener (below) and folded into buildStatusData() so the StatusBar
+  // chips (context/tokens/speed) work for native-runtime sessions AND remote
+  // browsers. Mirrors the attention cache — CC sessions get usage from
+  // .usage-cache.json / statusline, but native sessions have no statusline, so
+  // the renderer reports it directly and we cache it here.
+  const lastNativeUsageBySession = new Map<string, any>();
+
   function buildStatusData() {
     const usage = readJsonFile(usageCachePath);
     const announcement = readJsonFile(announcementCachePath);
@@ -1945,10 +1953,19 @@ export function registerIpcHandlers(
       if (state) attentionMap[desktopId] = state;
     }
 
+    // Per-session native per-turn usage populated by the `native:usage-report`
+    // IPC listener. Native sessions have no statusline writing .usage-cache.json,
+    // so their StatusBar chips are fed from this cache instead. Keyed by session
+    // id (not restricted to sessionIdMap, which only tracks CC sessions).
+    const nativeUsageMap: Record<string, any> = {};
+    for (const [sessionId, usageVal] of lastNativeUsageBySession) {
+      nativeUsageMap[sessionId] = usageVal;
+    }
+
     // (The background bulk-conversations pull + its restore-progress chip were
     // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
+    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap, nativeUsageMap };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -2061,6 +2078,16 @@ export function registerIpcHandlers(
       const data = buildStatusData();
       remoteServer.broadcastStatusData(data);
     }
+  });
+
+  // Native sessions have no statusline writing .usage-cache.json, so the
+  // renderer reports each turn's usage here. Cache it and rebroadcast so the
+  // StatusBar chips update on both desktop and remote without waiting for the
+  // 10s timer. Mirrors remote:attention-changed exactly.
+  ipcMain.on('native:usage-report', (_e, payload: { sessionId: string; usage: any }) => {
+    if (!payload?.sessionId) return;
+    lastNativeUsageBySession.set(payload.sessionId, payload.usage);
+    if (remoteServer) remoteServer.broadcastStatusData(buildStatusData());
   });
 
   const transcriptWatcher = new TranscriptWatcher();
@@ -2607,6 +2634,7 @@ export function registerIpcHandlers(
     }
     sessionIdMap.delete(sessionId);
     lastAttentionBySession.delete(sessionId);
+    lastNativeUsageBySession.delete(sessionId);
     // Drop the last-known status values so buildStatusData doesn't keep
     // broadcasting chips for a session that's gone.
     delete lastContextByDesktopId[sessionId];

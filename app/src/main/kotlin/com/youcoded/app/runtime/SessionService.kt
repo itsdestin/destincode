@@ -3687,6 +3687,11 @@ class SessionService : Service() {
             "native:set-permission-mode",
             "native:get-permission-mode",
             "native:sessions-list",
+            // native:usage-report is a fire-and-forget event (no msg.id) that
+            // caches native per-turn usage in desktop main; Android has no native
+            // runtime yet (Phase 5), so the msg.id?.let guard makes this an inert
+            // no-op — the case exists only to keep the channel string in parity.
+            "native:usage-report",
             "provider:list",
             "provider:upsert",
             "provider:remove",
