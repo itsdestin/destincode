@@ -7,6 +7,7 @@ import {
   TimelineEntry,
   createSessionChatState,
   deserializeChatState,
+  HISTORY_EXPAND_PROMPT_ID,
 } from './chat-types';
 import { SubagentSegment, ToolCallState } from '../../shared/types';
 
@@ -1030,7 +1031,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         historyTimeline.push({
           kind: 'prompt',
           prompt: {
-            promptId: '_history_expand',
+            promptId: HISTORY_EXPAND_PROMPT_ID,
             title: 'See previous messages',
             buttons: [],
           },
@@ -1041,7 +1042,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const existingTimeline = action.hasMore
         ? session.timeline
         : session.timeline.filter((e) => {
-            if (e.kind === 'prompt' && e.prompt.promptId === '_history_expand') return false;
+            if (e.kind === 'prompt' && e.prompt.promptId === HISTORY_EXPAND_PROMPT_ID) return false;
             if (e.kind === 'user' && e.message.id.startsWith('hist-')) return false;
             if (e.kind === 'assistant-turn' && e.turnId.startsWith('hist-')) return false;
             return true;

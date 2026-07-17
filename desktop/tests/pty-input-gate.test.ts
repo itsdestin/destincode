@@ -3,7 +3,7 @@ import {
   hasPendingInteraction,
   canRetrySubmit,
 } from '../src/renderer/state/pty-input-gate';
-import { createSessionChatState, SessionChatState } from '../src/renderer/state/chat-types';
+import { createSessionChatState, SessionChatState, HISTORY_EXPAND_PROMPT_ID } from '../src/renderer/state/chat-types';
 import type { ToolCallState } from '../src/renderer/state/chat-types';
 
 // Why these tests exist: Claude Code keeps its native Ink select menu live in
@@ -69,6 +69,34 @@ describe('hasPendingInteraction', () => {
       prompt: { promptId: 'p1', title: 'Trust this folder?', buttons: [], completed: 'Yes' },
     });
     expect(hasPendingInteraction(session)).toBe(false);
+  });
+
+  it('is false when the ONLY uncompleted prompt is the "See previous messages" marker', () => {
+    // Regression (2026-07-17): HISTORY_LOADED pushes this marker (no buttons,
+    // no `completed`) on EVERY resumed session with history. It rides the
+    // `prompt` kind for rendering but is not a live Ink menu — counting it here
+    // silently locked all sends until the user clicked "See previous messages".
+    const session = createSessionChatState();
+    session.timeline.push({
+      kind: 'prompt',
+      prompt: { promptId: HISTORY_EXPAND_PROMPT_ID, title: 'See previous messages', buttons: [] },
+    });
+    expect(hasPendingInteraction(session)).toBe(false);
+  });
+
+  it('still blocks when a REAL prompt sits alongside the history-expand marker', () => {
+    // The marker exclusion must be scoped to the marker id only — a genuine
+    // interactive prompt in the same timeline must still gate sends.
+    const session = createSessionChatState();
+    session.timeline.push({
+      kind: 'prompt',
+      prompt: { promptId: HISTORY_EXPAND_PROMPT_ID, title: 'See previous messages', buttons: [] },
+    });
+    session.timeline.push({
+      kind: 'prompt',
+      prompt: { promptId: 'p1', title: 'Trust this folder?', buttons: [{ label: 'Yes', input: '1\r' }] },
+    });
+    expect(hasPendingInteraction(session)).toBe(true);
   });
 });
 

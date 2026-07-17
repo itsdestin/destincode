@@ -11,6 +11,15 @@ export interface InteractivePrompt {
   completed?: string; // label of the selected option, if completed
 }
 
+// Sentinel promptId for the "See previous messages" affordance. It rides the
+// `prompt` timeline kind so ChatView can render it, but it is NOT an interactive
+// menu waiting on the user — so the pty-input send gate must NOT treat it as a
+// pending interaction (see hasPendingInteraction). One constant, four call
+// sites (chat-reducer push + filter, ChatView render, pty-input-gate skip), so
+// the magic string can't drift. Fix 2026-07-17: it was silently locking chat on
+// every resumed session.
+export const HISTORY_EXPAND_PROMPT_ID = '_history_expand';
+
 // --- Assistant turn types ---
 
 export type AssistantTurnSegment =
