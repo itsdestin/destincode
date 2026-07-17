@@ -15,6 +15,8 @@ import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
 import { useArtifact } from '../state/ArtifactContext';
 import { SessionDrawer } from './SessionDrawer';
+import { useActiveProject } from '../hooks/useActiveProject';
+import { assistantName } from '../utils/assistant-name';
 import { ContentFindBar } from './ContentFindBar';
 
 interface Props {
@@ -96,47 +98,11 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   // Either occupant means the right slot is in use → frame the chat accordingly.
   const rightPaneOpen = gameOpen || drawerOpen;
 
-  // Resolve the active project when the artifact drawer opens. We need
-  // projectRoot / projectId / projectName to pass to SessionDrawer so its
-  // in-place edit `save` IPC call knows which project sidecar to write.
-  // The lookup is lazy (only fires when drawerOpen && cwd is available) and
-  // non-blocking — SessionDrawer renders with empty strings until it resolves.
-  const [activeProject, setActiveProject] = useState<{
-    id: string;
-    name: string;
-    path: string;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!drawerOpen || !cwd) {
-      setActiveProject(null);
-      return;
-    }
-    (window.claude as any).artifacts.listProjectsIndex().then((res: any) => {
-      if (!res || !res.ok || !Array.isArray(res.projects)) {
-        // Fallback: pass cwd as the path so the save IPC can still locate the
-        // sidecar directory — the handler uses projectRoot as a filesystem path,
-        // not as a registry lookup key, so this works even without an index entry.
-        setActiveProject({ id: '', name: 'project', path: cwd });
-        return;
-      }
-      // Normalize separators for comparison (Windows paths use backslashes).
-      const normalizedCwd = cwd.replace(/\\/g, '/');
-      const candidate = (res.projects as Array<{ id: string; name: string; path: string }>).find(
-        (p) => p.path === cwd || p.path === normalizedCwd || p.path === normalizedCwd.toLowerCase(),
-      );
-      if (candidate) {
-        setActiveProject({ id: candidate.id, name: candidate.name, path: candidate.path });
-      } else {
-        // cwd not in the index yet (ensureProject may not have fired) — fall
-        // back to raw cwd so the drawer still has a valid root path.
-        setActiveProject({ id: '', name: 'project', path: cwd });
-      }
-    }).catch(() => {
-      // IPC failure — still provide cwd so the drawer is not completely broken.
-      if (cwd) setActiveProject({ id: '', name: 'project', path: cwd });
-    });
-  }, [drawerOpen, cwd]);
+  // Resolve the active project when the artifact drawer opens — SessionDrawer's
+  // in-place `save` IPC needs projectRoot/id/name. Lazy + non-blocking (renders
+  // with empty strings until it resolves). Shared with TerminalRightSlot via
+  // the useActiveProject hook so both resolve the same target.
+  const activeProject = useActiveProject(cwd, drawerOpen);
 
   // Backfill this session's artifact list from the on-disk sidecar so the chat
   // artifact drawer AND inline filepath pills work immediately after an app
@@ -501,13 +467,23 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               onClose={() => setFindOpen(false)}
             />
           )}
+          {/* Empty-state hint — absolutely centered in the chat-pane between the
+              top and bottom chrome. Uses --top-chrome-bottom (not the broken
+              h-full centering it replaces) so it clears a FLOATING header pill,
+              which sits below --top-chrome-height by its own margin; otherwise
+              the text tucked slightly behind the pill. Provider-aware: native
+              (local/cloud) sessions shouldn't be told to talk to "Claude". */}
+          {state.timeline.length === 0 && !state.isThinking && (
+            <div
+              className="absolute inset-x-0 flex items-center justify-center text-fg-muted text-sm pointer-events-none"
+              style={{ top: 'var(--top-chrome-bottom, 3rem)', bottom: 'var(--bottom-chrome-height, 5rem)' }}
+            >
+              Start a conversation with {assistantName(provider)}
+            </div>
+          )}
           <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
            <div ref={contentRef}>
-        {state.timeline.length === 0 && !state.isThinking ? (
-          <div className="flex items-center justify-center h-full text-fg-muted text-sm">
-            Start a conversation with Claude
-          </div>
-        ) : (
+        {state.timeline.length === 0 && !state.isThinking ? null : (
           <>
             {(() => {
               // Find the most recent compaction marker so we can visually fade
@@ -541,6 +517,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                       toolGroups={state.toolGroups}
                       toolCalls={state.toolCalls}
                       sessionId={sessionId}
+                      provider={provider}
                       showTimestamps={showTimestamps}
                     />
                   );
@@ -687,7 +664,11 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
             (App keeps them mutually exclusive, so normally only one is open).
             Both render as a .drawer-pane so they share the framed chrome; the
             game pane is narrower via --right-pane-width (set by App). */}
-        {gameOpen ? (
+        {/* Gate the actual pane render on `visible`: in terminal view this
+            ChatView is hidden and TerminalRightSlot renders the panel instead.
+            Without this gate the drawer/game would mount in BOTH places at
+            once (double SessionDrawer / GamePanel). */}
+        {visible && (gameOpen ? (
           <>
             <div className="frame-divider" />
             <div className="drawer-pane game-pane">{gamePane}</div>
@@ -704,7 +685,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               />
             </div>
           </>
-        )}
+        ))}
         <div className="frame-edge" />
       </div>
 
