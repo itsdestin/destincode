@@ -1,7 +1,8 @@
 import { BrowserWindow, screen } from 'electron';
 import type { WindowRegistry } from './window-registry';
 import {
-  BAR_SIZE, MASCOT_SIZE, CHAT_SIZE, computeBarPosition, computeGroupLayout, type GroupLayout,
+  BAR_SIZE, MASCOT_SIZE, CHAT_SIZE, computeBarPosition, computeGroupLayout,
+  mascotXRangeForChat, type GroupLayout,
 } from './buddy-bar-geometry';
 import { BarVisibilityTracker } from './buddy-bar-visibility';
 import {
@@ -462,7 +463,23 @@ export class BuddyWindowManager {
     const [oldX, oldY] = this.mascot.getPosition();
     const raw = { x: targetX, y: targetY };
     const display = screen.getDisplayMatching({ ...raw, ...MASCOT_SIZE }) ?? screen.getPrimaryDisplay();
-    const clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
+    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
+    let clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
+    // With the chat open the pair are horizontally rigid, so the mascot STOPS
+    // once the chat's right (or left) edge reaches the workArea edge, rather
+    // than sliding out from under his own chat window (Destin 2026-07-17).
+    // Anchor-based dragging makes the stop harmless: the cursor can run past
+    // the wall and the mascot picks it straight back up on the way back, with
+    // no accumulated drift.
+    //
+    // Horizontal only. Pinning Y the same way would be a disaster: the chat is
+    // 480 tall against an 852 workArea, so it would shrink the draggable band
+    // to a sliver and fight edge docking. Vertical is reconciled at release by
+    // the tier-3 bounce in computeGroupLayout.
+    if (chatVisible) {
+      const range = mascotXRangeForChat({ ...clamped, ...MASCOT_SIZE }, display.workArea);
+      clamped = { x: Math.max(range.min, Math.min(clamped.x, range.max)), y: clamped.y };
+    }
     // setPosition requires integer args. Pointer screenX/Y on HiDPI displays
     // can be fractional, so targetX/Y (and therefore clamped.x/y) may be
     // floats — passing a float throws "Error processing argument at index 1,
@@ -484,7 +501,6 @@ export class BuddyWindowManager {
     // of "squishy" drag latency.
     const actualDx = newX - oldX;
     const actualDy = newY - oldY;
-    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
     if ((actualDx !== 0 || actualDy !== 0) && this.chat && !this.chat.isDestroyed() && chatVisible) {
       const cb = this.chat.getBounds();
       const chatRaw = { x: cb.x + actualDx, y: cb.y + actualDy };

@@ -34,26 +34,72 @@ export const CHAT_GAP_PX = 6;
  */
 export const HANDS_CENTER_FRACTION = 0.583;
 
+/** Chat's horizontal nudge off the group's true centre — Destin's eye, 2026-07-16. */
+export const CHAT_NUDGE_X = 10;
+
 /**
- * The VISIBLE button row's rect — beside the mascot, vertically centred on its
- * hands, preferring the right and flipping left when the right would clip.
- * The bar window sits BAR_PADDING outside this on every side; positioning math
- * works in content space so the padding can change without moving the buttons.
+ * The VISIBLE button row's rect — ALWAYS to the mascot's right, vertically
+ * centred on his hands. The bar window sits BAR_PADDING outside this on every
+ * side; positioning math works in content space so the padding can change
+ * without moving the buttons.
+ *
+ * WHY no left/right flip any more (Destin 2026-07-17): the bar only exists
+ * while the chat is open (buddy-bar-visibility.ts), and an open chat pins the
+ * mascot to an x where the chat itself fits on screen — see
+ * mascotXRangeForChat. The chat reaches 303px right of the mascot and the bar
+ * window only 274px, so wherever the chat fits, the bar already does. The flip
+ * was unreachable code that could only make the bar jump for no reason.
+ *
  * Pure — unit-tested.
  */
-export function computeBarContentRect(mascotBounds: Rect, workArea: Rect): Rect {
+export function computeBarContentRect(mascotBounds: Rect): Rect {
   const handsY = mascotBounds.y + Math.round(mascotBounds.height * HANDS_CENTER_FRACTION);
-  const y = handsY - Math.round(BAR_CONTENT.height / 2);
-  const rightX = mascotBounds.x + mascotBounds.width + BAR_GAP_PX;
-  // The window, not just the row, has to clear the workArea edge.
-  const rightFits = rightX + BAR_CONTENT.width + BAR_PADDING <= workArea.x + workArea.width;
-  const x = rightFits ? rightX : mascotBounds.x - BAR_CONTENT.width - BAR_GAP_PX;
-  return { x, y, width: BAR_CONTENT.width, height: BAR_CONTENT.height };
+  return {
+    x: mascotBounds.x + mascotBounds.width + BAR_GAP_PX,
+    y: handsY - Math.round(BAR_CONTENT.height / 2),
+    width: BAR_CONTENT.width,
+    height: BAR_CONTENT.height,
+  };
+}
+
+/**
+ * How far the chat's left edge sits from the mascot's, in px. Constant (−17
+ * with today's sizes): the chat is centred on the mascot+bar span and nudged
+ * CHAT_NUDGE_X right, and nothing in that depends on the mascot's position, so
+ * the pair are horizontally RIGID — the mascot sits at the chat's left-hand
+ * side and stays there.
+ */
+export function chatOffsetX(mascotBounds: Rect): number {
+  const bar = computeBarContentRect(mascotBounds);
+  const groupLeft = Math.min(mascotBounds.x, bar.x);
+  const groupRight = Math.max(mascotBounds.x + mascotBounds.width, bar.x + bar.width);
+  const chatX = Math.round((groupLeft + groupRight) / 2) - Math.round(CHAT_SIZE.width / 2) + CHAT_NUDGE_X;
+  return chatX - mascotBounds.x;
+}
+
+/**
+ * The mascot-x range that keeps the CHAT fully on screen.
+ *
+ * Because the pair are horizontally rigid, "keep the chat on screen" is a
+ * constraint on the MASCOT: he stops when the chat's right edge reaches the
+ * workArea's right edge rather than sliding out from under it (Destin
+ * 2026-07-17). BuddyWindowManager applies this while dragging, so the buddy
+ * simply stops; the vertical axis is NOT constrained this way — the chat is
+ * 480 tall against an 852 workArea, so pinning y would shrink the draggable
+ * area to a sliver. Vertical is handled by the tier-3 bounce in
+ * computeGroupLayout instead, at drag-release.
+ */
+export function mascotXRangeForChat(mascotBounds: Rect, workArea: Rect): { min: number; max: number } {
+  const dx = chatOffsetX(mascotBounds);
+  const min = workArea.x - dx;
+  const max = workArea.x + workArea.width - CHAT_SIZE.width - dx;
+  // max < min only if the workArea is narrower than the chat — pin to min.
+  return { min, max: Math.max(min, max) };
 }
 
 /** Bar WINDOW position (the content rect grown by BAR_PADDING), clamped. */
 export function computeBarPosition(mascotBounds: Rect, workArea: Rect): Point {
-  const c = computeBarContentRect(mascotBounds, workArea);
+  const c = computeBarContentRect(mascotBounds);
   return clampToWorkArea({ x: c.x - BAR_PADDING, y: c.y - BAR_PADDING }, BAR_SIZE, workArea);
 }
 
@@ -65,8 +111,13 @@ export interface GroupLayout {
 }
 
 /**
- * Lay out the buddy group (mascot + chat) for a given mascot rect.
+ * Lay out the buddy group (mascot + chat) for a given mascot rect. The pair are
+ * RIGID: the chat's position follows from the mascot's, so whenever the chat
+ * would leave the screen it's the MASCOT that gives way, never the offset.
  *
+ * Horizontally the mascot is simply pinned to mascotXRangeForChat.
+ *
+ * Vertically:
  *   1. Chat BELOW the mascot+bar group, centred on the group's visible span.
  *   2. Chat ABOVE, when it won't fit below. The horizontal relationship is
  *      pinned — above/below is the only flip (Destin 2026-07-16).
@@ -94,20 +145,21 @@ export interface GroupLayout {
  * Pure — unit-tested, including "the chat never covers the mascot".
  */
 export function computeGroupLayout(mascotBounds: Rect, workArea: Rect): GroupLayout {
-  const bar = computeBarContentRect(mascotBounds, workArea);
-  const groupLeft = Math.min(mascotBounds.x, bar.x);
-  const groupRight = Math.max(mascotBounds.x + mascotBounds.width, bar.x + bar.width);
-  // +10: nudged right of true group centre per Destin's eye (2026-07-16).
-  const x = Math.round((groupLeft + groupRight) / 2) - Math.round(CHAT_SIZE.width / 2) + 10;
-  const mascot: Point = { x: mascotBounds.x, y: mascotBounds.y };
+  // Horizontal: pin the MASCOT so the chat lands on screen, keeping the rigid
+  // offset intact rather than sliding the chat relative to him.
+  const dx = chatOffsetX(mascotBounds);
+  const range = mascotXRangeForChat(mascotBounds, workArea);
+  const mascotX = Math.round(Math.max(range.min, Math.min(mascotBounds.x, range.max)));
+  const x = mascotX + dx;
+  const mascot: Point = { x: mascotX, y: mascotBounds.y };
 
   const belowY = mascotBounds.y + mascotBounds.height + CHAT_GAP_PX;
   if (belowY + CHAT_SIZE.height <= workArea.y + workArea.height) {
-    return { mascot, chat: clampToWorkArea({ x, y: belowY }, CHAT_SIZE, workArea) };
+    return { mascot, chat: { x, y: belowY } };
   }
   const aboveY = mascotBounds.y - CHAT_SIZE.height - CHAT_GAP_PX;
   if (aboveY >= workArea.y) {
-    return { mascot, chat: clampToWorkArea({ x, y: aboveY }, CHAT_SIZE, workArea) };
+    return { mascot, chat: { x, y: aboveY } };
   }
 
   // Tier 3. Bounce away from the nearer edge: a mascot low on the screen sends
@@ -122,7 +174,7 @@ export function computeGroupLayout(mascotBounds: Rect, workArea: Rect): GroupLay
     : chatY - CHAT_GAP_PX - mascotBounds.height;
   const mascotSize: Size = { width: mascotBounds.width, height: mascotBounds.height };
   return {
-    mascot: clampToWorkArea({ x: mascotBounds.x, y: mascotY }, mascotSize, workArea),
-    chat: clampToWorkArea({ x, y: chatY }, CHAT_SIZE, workArea),
+    mascot: clampToWorkArea({ x: mascotX, y: mascotY }, mascotSize, workArea),
+    chat: { x, y: chatY },
   };
 }

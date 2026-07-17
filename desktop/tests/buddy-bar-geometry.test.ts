@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  BAR_CONTENT, BAR_PADDING, BAR_GAP_PX, CHAT_SIZE, CHAT_GAP_PX, MASCOT_SIZE,
-  computeBarContentRect, computeBarPosition, computeGroupLayout,
+  BAR_CONTENT, BAR_PADDING, BAR_GAP_PX, BAR_SIZE, CHAT_SIZE, CHAT_GAP_PX, MASCOT_SIZE,
+  computeBarContentRect, computeBarPosition, computeGroupLayout, chatOffsetX,
+  mascotXRangeForChat,
 } from '../src/main/buddy-bar-geometry';
 
 const wa = { x: 0, y: 0, width: 1920, height: 1080 };
@@ -19,7 +20,7 @@ const rectsOverlap = (
 
 describe('computeBarContentRect', () => {
   it('sits to the right of the mascot, centered on his hands (not his midline)', () => {
-    const r = computeBarContentRect(mascot(500, 300), wa);
+    const r = computeBarContentRect(mascot(500, 300));
     expect(r.x).toBe(500 + 112 + BAR_GAP_PX);
     // Hands sit at 58.3% of the mascot's height, below the 50% midline.
     const handsY = 300 + Math.round(112 * 0.583);
@@ -27,22 +28,28 @@ describe('computeBarContentRect', () => {
     expect(handsY).toBeGreaterThan(300 + 56); // strictly below center
   });
 
-  it('flips to the left when the right side would clip the workArea', () => {
-    const r = computeBarContentRect(mascot(1820, 300), wa);
-    expect(r.x).toBe(1820 - BAR_CONTENT.width - BAR_GAP_PX);
+  it('never flips sides — it is always to the mascot\'s right', () => {
+    // Destin 2026-07-17: the bar only exists alongside an open chat, and an
+    // open chat pins the mascot where the chat (which reaches further right
+    // than the bar) fits. So the flip was unreachable and only added jump.
+    for (const x of [0, 500, 1820, 5000]) {
+      expect(computeBarContentRect(mascot(x, 300)).x).toBe(x + 112 + BAR_GAP_PX);
+    }
   });
 
-  it('leaves room for the window padding when deciding to flip', () => {
-    // Content alone would fit on the right, but content+padding would not.
-    const x = wa.width - 112 - BAR_GAP_PX - BAR_CONTENT.width - (BAR_PADDING - 2);
-    const r = computeBarContentRect(mascot(x, 300), wa);
-    expect(r.x).toBeLessThan(x); // flipped left
+  it('always fits on screen wherever an open chat allows the mascot to be', () => {
+    const range = mascotXRangeForChat(mascot(0, 300), SHORT_WA);
+    for (let x = range.min; x <= range.max; x += 1) {
+      const bar = computeBarContentRect(mascot(x, 300));
+      expect(bar.x - BAR_PADDING).toBeGreaterThanOrEqual(SHORT_WA.x);
+      expect(bar.x + bar.width + BAR_PADDING).toBeLessThanOrEqual(SHORT_WA.x + SHORT_WA.width);
+    }
   });
 });
 
 describe('computeBarPosition', () => {
   it('is the content rect grown by BAR_PADDING', () => {
-    const c = computeBarContentRect(mascot(500, 300), wa);
+    const c = computeBarContentRect(mascot(500, 300));
     expect(computeBarPosition(mascot(500, 300), wa)).toEqual({
       x: c.x - BAR_PADDING,
       y: c.y - BAR_PADDING,
@@ -53,10 +60,31 @@ describe('computeBarPosition', () => {
     expect(computeBarPosition(mascot(500, -40), wa).y).toBe(0);
   });
 
-  it('handles non-zero workArea origin (secondary monitor)', () => {
-    const wa2 = { x: 1920, y: 0, width: 1920, height: 1080 };
-    const r = computeBarContentRect(mascot(1920 + 1920 - 112, 300), wa2);
-    expect(r.x).toBe(1920 + 1920 - 112 - BAR_CONTENT.width - BAR_GAP_PX);
+  it('window size accounts for the padding on both sides', () => {
+    expect(BAR_SIZE.width).toBe(BAR_CONTENT.width + BAR_PADDING * 2);
+    expect(BAR_SIZE.height).toBe(BAR_CONTENT.height + BAR_PADDING * 2);
+  });
+});
+
+describe('mascotXRangeForChat', () => {
+  it('stops the mascot exactly where the chat\'s right edge meets the screen', () => {
+    const range = mascotXRangeForChat(mascot(0, 300), SHORT_WA);
+    const dx = chatOffsetX(mascot(0, 300));
+    // At max, the chat's right edge is flush with the workArea's right edge.
+    expect(range.max + dx + CHAT_SIZE.width).toBe(SHORT_WA.x + SHORT_WA.width);
+    // At min, the chat's left edge is flush with the workArea's left edge.
+    expect(range.min + dx).toBe(SHORT_WA.x);
+  });
+
+  it('the mascot sits at the chat\'s left-hand side', () => {
+    const dx = chatOffsetX(mascot(700, 300));
+    // Chat starts slightly left of the mascot and extends well past his right.
+    expect(dx).toBeLessThan(0);
+    expect(dx + CHAT_SIZE.width).toBeGreaterThan(MASCOT_SIZE.width);
+  });
+
+  it('does not depend on the mascot position (the pair are rigid)', () => {
+    expect(chatOffsetX(mascot(0, 0))).toBe(chatOffsetX(mascot(1234, 567)));
   });
 });
 
@@ -144,5 +172,24 @@ describe('computeGroupLayout', () => {
     expect(l.chat.x).toBeGreaterThanOrEqual(wa2.x);
     expect(l.chat.x + CHAT_SIZE.width).toBeLessThanOrEqual(wa2.x + wa2.width);
     expect(rectsOverlap(l.chat, CHAT_SIZE, l.mascot, MASCOT_SIZE)).toBe(false);
+  });
+
+  // Destin 2026-07-17: the mascot stops when the chat's right edge hits the
+  // screen's right edge — the offset never stretches to keep the chat on screen.
+  it('pushes the mascot left rather than sliding the chat off the right edge', () => {
+    const far = computeGroupLayout(mascot(SHORT_WA.width - 112, 100), SHORT_WA);
+    expect(far.mascot.x).toBeLessThan(SHORT_WA.width - 112); // he got stopped
+    expect(far.chat.x + CHAT_SIZE.width).toBe(SHORT_WA.x + SHORT_WA.width);
+  });
+
+  it('holds the rigid offset at every mascot x, including past both edges', () => {
+    const dx = chatOffsetX(mascot(0, 100));
+    for (let x = -400; x <= SHORT_WA.width + 400; x += 7) {
+      const l = computeGroupLayout(mascot(x, 100), SHORT_WA);
+      // The offset is never stretched — the mascot moved instead.
+      expect(l.chat.x - l.mascot.x, `mascot x=${x}`).toBe(dx);
+      expect(l.chat.x).toBeGreaterThanOrEqual(SHORT_WA.x);
+      expect(l.chat.x + CHAT_SIZE.width).toBeLessThanOrEqual(SHORT_WA.x + SHORT_WA.width);
+    }
   });
 });
