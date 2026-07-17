@@ -160,41 +160,85 @@ export class BuddyWindowManager {
     else this.schedulePeek();
   }
 
-  /** buddy:drag-ended — run snap detection against final window bounds. */
+  /** buddy:drag-ended — run snap detection against final window bounds, then
+   *  settle the whole group. */
   dragEnded(): void {
     if (!this.mascot || this.mascot.isDestroyed()) return;
     const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
     const edge = detectSnapEdge({ x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
     this.dispatchDock({ type: 'drag-release', snapEdge: edge });
-    if (edge) {
-      const target = dockPosition(edge, { x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
-      this.glideTo(target);
-    }
+    // Glide even when nothing snapped (the mascot then stays put): the
+    // satellites still need to settle back onto their anchors. While dragging
+    // they only track the mascot's delta and clamp at the workArea edges, so a
+    // drag toward an edge leaves the chat out of position — possibly overlapping
+    // the mascot, or on the side it no longer fits. Release is the natural
+    // moment to reconcile that, and glideGroup animates it rather than teleporting.
+    const target = edge
+      ? dockPosition(edge, { x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea)
+      : { x: mb.x, y: mb.y };
+    this.glideGroup(target);
   }
 
-  /** The one sanctioned window-bounds animation (spec §6.1): a short eased
-   *  glide onto the edge. ~10 steps over 150ms; canceled by any new drag. */
-  private glideTo(target: Point, ms = 150): void {
+  /**
+   * The one sanctioned window-bounds animation (spec §6.1): a short eased
+   * settle at the end of a drag. Moves the mascot to `mascotTarget` and both
+   * satellites to the anchors that target implies, on a SINGLE timer so they
+   * arrive together and read as one object. Canceled by any new drag.
+   *
+   * WHY the satellites are in here: this used to be a mascot-only `glideTo`,
+   * so an edge snap left the chat behind by up to SNAP_THRESHOLD_PX and the
+   * bar teleported into place at the end. Anything that moves the mascot must
+   * move what hangs off it, which is why every movement path routes through
+   * one helper now (2026-07-16).
+   *
+   * Anchors are derived from where the mascot is GOING, not where it is — the
+   * satellites must aim at their final homes, not chase the mascot's old ones.
+   */
+  private glideGroup(mascotTarget: Point, ms = 200): void {
     if (this.glideTimer) { clearInterval(this.glideTimer); this.glideTimer = null; }
     const win = this.mascot;
     if (!win || win.isDestroyed()) return;
-    const [sx, sy] = win.getPosition();
+    const finalRect: Rect = { ...mascotTarget, ...MASCOT_SIZE };
+
+    const legs: Array<{ win: BrowserWindow; from: Point; to: Point }> = [];
+    const addLeg = (w: BrowserWindow | null, to: Point) => {
+      if (!w || w.isDestroyed()) return;
+      const [x, y] = w.getPosition();
+      // Skip windows already home — a plain click (no drag, no snap) must not
+      // spin up a timer that repositions three windows onto themselves.
+      if (Math.round(x) === Math.round(to.x) && Math.round(y) === Math.round(to.y)) return;
+      legs.push({ win: w, from: { x, y }, to });
+    };
+    addLeg(win, mascotTarget);
+    if (this.chat && !this.chat.isDestroyed() && this.chat.isVisible()) {
+      addLeg(this.chat, this.computeChatAnchoredPosition(finalRect));
+    }
+    // Bar follows its CSS visibility, not Electron's — see moveMascot.
+    if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
+      addLeg(this.bar, this.currentBarPosition(finalRect));
+    }
+    if (legs.length === 0) {
+      this.reconcileHoverWithCursor();
+      return;
+    }
+
     const t0 = Date.now();
     this.glideTimer = setInterval(() => {
-      if (!win || win.isDestroyed()) {
-        if (this.glideTimer) clearInterval(this.glideTimer);
-        this.glideTimer = null;
-        return;
-      }
       const t = Math.min(1, (Date.now() - t0) / ms);
       const ease = 1 - Math.pow(1 - t, 3);
-      win.setPosition(Math.round(sx + (target.x - sx) * ease), Math.round(sy + (target.y - sy) * ease));
-      if (t >= 1) {
+      let alive = false;
+      for (const leg of legs) {
+        if (leg.win.isDestroyed()) continue;
+        alive = true;
+        leg.win.setPosition(
+          Math.round(leg.from.x + (leg.to.x - leg.from.x) * ease),
+          Math.round(leg.from.y + (leg.to.y - leg.from.y) * ease),
+        );
+      }
+      if (t >= 1 || !alive) {
         if (this.glideTimer) clearInterval(this.glideTimer);
         this.glideTimer = null;
-        // Bar may need to flip sides now that the mascot sits on an edge.
-        if (this.barCssVisible) this.applyBarVisible(true);
         // The glide moved windows under a possibly-stationary cursor.
         this.reconcileHoverWithCursor();
       }
@@ -341,18 +385,19 @@ export class BuddyWindowManager {
   }
 
   /**
-   * Choose the chat window's position relative to the current mascot.
-   * Prefer right-of-mascot; fall back to left-of-mascot if the right side
-   * would clip the workArea. Always clamps to visible workArea as a safety.
-   * Top-align chat with mascot so they read as a single unit — icon sits
-   * alongside the top of its conversation panel.
+   * Where the chat belongs for a given mascot rect: below the mascot+bar
+   * group, centered on the group's span, flipping above when it won't fit.
+   * Always clamps to the visible workArea as a safety.
+   *
+   * `mascotRect` defaults to the mascot's live bounds; glideGroup passes the
+   * mascot's POST-snap rect so the chat aims at where the buddy will land.
    */
-  private computeChatAnchoredPosition(): Point {
-    if (!this.mascot || this.mascot.isDestroyed()) {
+  private computeChatAnchoredPosition(mascotRect?: Rect): Point {
+    const mb = mascotRect ?? (this.mascot && !this.mascot.isDestroyed() ? this.mascot.getBounds() : null);
+    if (!mb) {
       const primary = screen.getPrimaryDisplay().workArea;
       return { x: primary.x + primary.width - CHAT_SIZE.width - 24, y: primary.y + primary.height - CHAT_SIZE.height - 24 };
     }
-    const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
     const wa = display.workArea;
     // Chat opens BELOW the mascot+bar GROUP, centered on the group's span
@@ -496,17 +541,18 @@ export class BuddyWindowManager {
     if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) this.bar.hide();
   }
 
-  /** Bar position derived from live mascot bounds; falls back to bottom-right
-   *  of the primary display when the mascot is gone (mirrors old behavior). */
-  private currentBarPosition(): Point {
-    if (!this.mascot || this.mascot.isDestroyed()) {
+  /** Bar position for a given mascot rect (defaults to live bounds; glideGroup
+   *  passes the post-snap rect). Falls back to bottom-right of the primary
+   *  display when the mascot is gone (mirrors old behavior). */
+  private currentBarPosition(mascotRect?: Rect): Point {
+    const mb = mascotRect ?? (this.mascot && !this.mascot.isDestroyed() ? this.mascot.getBounds() : null);
+    if (!mb) {
       const primary = screen.getPrimaryDisplay().workArea;
       return {
         x: primary.x + primary.width - BAR_SIZE.width - 24,
         y: primary.y + primary.height - BAR_SIZE.height - 24,
       };
     }
-    const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
     return computeBarPosition(mb, display.workArea);
   }
