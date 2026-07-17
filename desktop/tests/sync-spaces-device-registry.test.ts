@@ -7,7 +7,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
-  readDevices, upsertSelf, renameDevice,
+  readDevices, upsertSelf, renameDevice, removeDevice,
   mergeDeviceEntries, foldDeviceEntries, DEVICE_REGISTRY_SCHEMA, type DeviceRecord,
 } from '../src/main/sync-spaces/device-registry';
 
@@ -154,5 +154,51 @@ describe('device registry store — pure merge', () => {
     expect(abc).toEqual(cba);
     expect(abc).toEqual(bca);
     expect(abc.lastSeen).toBe(30); // max across all three
+  });
+});
+
+describe('device registry store — removal', () => {
+  it('removeDevice deletes the canonical record and drops it from readDevices', async () => {
+    await upsertSelf(personal, { id: 'dev-1', name: 'Old Laptop', platform: 'win32' });
+    await upsertSelf(personal, { id: 'dev-2', name: 'Desktop', platform: 'linux' });
+    await removeDevice(personal, 'dev-1');
+    expect(fs.existsSync(path.join(dir(), 'dev-1.json'))).toBe(false);
+    expect(readDevices(personal).map(d => d.id)).toEqual(['dev-2']);
+  });
+
+  it('removeDevice also deletes conflict copies — a surviving copy resurrects the row', async () => {
+    // readDevices folds `<id> (from X).json` into the group keyed by the record's
+    // own id, and that grouping does NOT require the canonical file to exist. So
+    // deleting only the canonical would leave the device still listed.
+    write('dev-1.json', E({ id: 'dev-1' }));
+    write('dev-1 (from Phone).json', E({ id: 'dev-1', name: 'Renamed On Phone' }));
+    await removeDevice(personal, 'dev-1');
+    expect(fs.readdirSync(dir())).toEqual([]);
+    expect(readDevices(personal)).toEqual([]);
+  });
+
+  it('removeDevice leaves OTHER devices and their conflict copies untouched', async () => {
+    write('dev-1.json', E({ id: 'dev-1' }));
+    write('dev-2.json', E({ id: 'dev-2', name: 'Keep Me' }));
+    write('dev-2 (from Phone).json', E({ id: 'dev-2', name: 'Keep Me Too' }));
+    await removeDevice(personal, 'dev-1');
+    expect(readDevices(personal).map(d => d.id)).toEqual(['dev-2']);
+    expect(fs.existsSync(path.join(dir(), 'dev-2 (from Phone).json'))).toBe(true);
+  });
+
+  it('removeDevice on an unknown id is a silent no-op (never throws)', async () => {
+    await upsertSelf(personal, { id: 'dev-1', name: 'Laptop', platform: 'win32' });
+    await expect(removeDevice(personal, 'nope')).resolves.toBeUndefined();
+    expect(readDevices(personal)).toHaveLength(1);
+  });
+
+  it('removeDevice with a missing Devices dir is a silent no-op (never throws)', async () => {
+    await expect(removeDevice(personal, 'dev-1')).resolves.toBeUndefined();
+  });
+
+  it('removeDevice refuses an empty id rather than globbing the whole dir', async () => {
+    await upsertSelf(personal, { id: 'dev-1', name: 'Laptop', platform: 'win32' });
+    await expect(removeDevice(personal, '')).rejects.toThrow();
+    expect(readDevices(personal)).toHaveLength(1);
   });
 });

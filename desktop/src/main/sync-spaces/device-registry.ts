@@ -197,3 +197,35 @@ export function renameDevice(personalRoot: string, id: string, name: string): Pr
     };
   });
 }
+
+/** Remove a device row entirely: the canonical `<id>.json` AND every conflict copy
+ *  that folds into it.
+ *
+ *  Deleting the conflict copies is load-bearing, not tidiness: readDevices groups
+ *  by extractConflictBase and only checks that the base matches the record's own
+ *  id — it does NOT require the canonical file to exist. Leaving a copy behind
+ *  keeps the device listed after a "remove".
+ *
+ *  Deliberately a plain delete, not a tombstone (unlike the Project Registry's
+ *  stopped-dominates state). "Remove" means "forget this device"; a device that
+ *  is still alive re-registering on its next launch is CORRECT. Only a device
+ *  that never comes back — the case this exists for — stays gone.
+ *
+ *  Fail-soft: an unknown id or a missing dir is a silent no-op.
+ *  Known race, accepted: a rename of this device on ANOTHER machine in the same
+ *  sync window survives as a conflict copy created by a LATER merge (after this
+ *  delete ran), which resurrects the row. Pressing Remove again heals it. */
+export async function removeDevice(personalRoot: string, id: string): Promise<void> {
+  // Guard the empty id: `${''}.json` would match nothing here, but an empty id is
+  // always a caller bug — surface it rather than silently no-op.
+  if (!id || typeof id !== 'string') throw new Error(`device-registry: invalid id '${id}'`);
+  const dir = registryDir(personalRoot);
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return; } // no dir — nothing to remove
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const base = isConflictCopyName(n) ? extractConflictBase(n) : n;
+    if (base !== `${id}.json`) continue;
+    try { fs.rmSync(path.join(dir, n), { force: true }); } catch { /* vanished / locked — skip */ }
+  }
+}
