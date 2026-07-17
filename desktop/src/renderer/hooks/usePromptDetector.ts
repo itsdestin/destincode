@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { parseInkSelect, menuToButtons } from '../parser/ink-select-parser';
-import { useChatDispatch, useChatStateMap } from '../state/chat-context';
+import { useChatDispatch, useChatStore } from '../state/chat-context';
 import { getVisibleScreenText, onBufferReady } from './terminal-registry';
 
 // How long to wait before showing a parser-detected prompt, giving the hook
@@ -48,9 +48,7 @@ const DISMISS_DEBOUNCE_MS = 600;
  */
 export function usePromptDetector() {
   const dispatch = useChatDispatch();
-  const chatState = useChatStateMap();
-  const chatStateRef = useRef(chatState);
-  chatStateRef.current = chatState;
+  const store = useChatStore();
   const lastMenuRef = useRef<Map<string, string>>(new Map());
   const pendingTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const dismissTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -70,26 +68,33 @@ export function usePromptDetector() {
   // rule #2) rather than the session-lifetime toolCalls Map. With many
   // concurrent sessions accumulating hundreds of tool entries over time, the
   // old render-body loop was O(sessions × toolCalls) on every dispatch.
+  // Perf (tranche 1): direct store subscription instead of a [chatState]
+  // effect — this hook no longer re-renders its host (AppInner) on every
+  // dispatch. Body is unchanged from the previous effect.
   useEffect(() => {
-    for (const [sid, session] of chatState) {
-      let hasAwaiting = false;
-      for (const toolId of session.activeTurnToolIds) {
-        const tool = session.toolCalls.get(toolId);
-        if (tool && tool.status === 'awaiting-approval') { hasAwaiting = true; break; }
+    const check = () => {
+      for (const [sid, session] of store.getState()) {
+        let hasAwaiting = false;
+        for (const toolId of session.activeTurnToolIds) {
+          const tool = session.toolCalls.get(toolId);
+          if (tool && tool.status === 'awaiting-approval') { hasAwaiting = true; break; }
+        }
+        const wasAwaiting = prevAwaitingRef.current.get(sid) ?? false;
+        if (wasAwaiting && !hasAwaiting) {
+          lastPermissionClearedRef.current.set(sid, Date.now());
+        }
+        prevAwaitingRef.current.set(sid, hasAwaiting);
       }
-      const wasAwaiting = prevAwaitingRef.current.get(sid) ?? false;
-      if (wasAwaiting && !hasAwaiting) {
-        lastPermissionClearedRef.current.set(sid, Date.now());
-      }
-      prevAwaitingRef.current.set(sid, hasAwaiting);
-    }
-  }, [chatState]);
+    };
+    check();
+    return store.subscribeAll(check);
+  }, [store]);
 
   useEffect(() => {
     const unsub = onBufferReady((sid: string) => {
       // Skip prompt detection when a PermissionRequest approval is active
       // (the hook-based UI is handling the permission flow)
-      const sessionState = chatStateRef.current.get(sid);
+      const sessionState = store.getState().get(sid);
       if (sessionState) {
         for (const [, tool] of sessionState.toolCalls) {
           if (tool.status === 'awaiting-approval') return;
@@ -153,7 +158,7 @@ export function usePromptDetector() {
 
             // Re-check: if a PermissionRequest arrived during the debounce,
             // a tool will be in awaiting-approval — don't show the prompt
-            const currentSession = chatStateRef.current.get(sid);
+            const currentSession = store.getState().get(sid);
             if (currentSession) {
               for (const [, tool] of currentSession.toolCalls) {
                 if (tool.status === 'awaiting-approval') return;

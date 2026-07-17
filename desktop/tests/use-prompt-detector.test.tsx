@@ -15,6 +15,15 @@ const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
   callbacks: [] as Array<(sid: string) => void>,
   screen: { text: '' },
+  // Minimal ChatStore stand-in (tranche 1: the detector reads the store
+  // directly instead of subscribing to the whole chat map). These tests drive
+  // the detector purely through terminal buffer events, so chat state stays
+  // empty — no awaiting-approval tools — and nothing ever notifies. Identity
+  // is stable across renders, matching the real store's per-provider lifetime.
+  store: {
+    getState: () => new Map(),
+    subscribeAll: () => () => {},
+  },
 }));
 
 vi.mock('../src/renderer/hooks/terminal-registry', () => ({
@@ -30,7 +39,7 @@ vi.mock('../src/renderer/hooks/terminal-registry', () => ({
 
 vi.mock('../src/renderer/state/chat-context', () => ({
   useChatDispatch: () => mocks.dispatch,
-  useChatStateMap: () => new Map(),
+  useChatStore: () => mocks.store,
 }));
 
 import { usePromptDetector } from '../src/renderer/hooks/usePromptDetector';
