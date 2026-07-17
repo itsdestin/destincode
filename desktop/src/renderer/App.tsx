@@ -1461,23 +1461,36 @@ function AppInner() {
   }, [sessions]);
 
   // Fetch session list on mount — catches sessions that existed before event handlers were registered
-  // (e.g., remote browser reconnecting after the replay buffer events already fired)
+  // (e.g., remote browser reconnecting after the replay buffer events already fired, or a renderer
+  // crash/reload, where main kept every session alive but this is a brand-new React tree).
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
       if (!list || list.length === 0) return;
+
+      // Fix: this per-session seeding used to run INSIDE the setSessions updater
+      // below. Updaters must be PURE — React re-invokes them (concurrent
+      // rendering, StrictMode) and keeps only the returned value, so nested
+      // dispatch/setState calls could be replayed or dropped on the floor. That
+      // left the session list populated while the model/permission maps stayed
+      // empty, which surfaces as "Model Unknown" / "PERMISSION UNKNOWN" chips
+      // after a reload. Every setter here is has()-guarded, so running it across
+      // the whole list (rather than only the not-yet-known ones) is idempotent
+      // and never clobbers what session:created already seeded.
+      for (const s of list) {
+        dispatch({ type: 'SESSION_INIT', sessionId: s.id });
+        setViewModes((vm) => vm.has(s.id) ? vm : new Map(vm).set(s.id, 'chat'));
+        setPermissionModes((pm) => pm.has(s.id) ? pm : new Map(pm).set(s.id, matchPermissionMode(s.permissionMode)));
+        // These sessions were already running before this window's event
+        // handlers attached (e.g. a remote reconnect) — session:created never
+        // fired for them, so this is the only place their model gets seeded.
+        setSessionModels((sm) => sm.has(s.id) ? sm : new Map(sm).set(s.id, matchModelAlias(s.model)));
+      }
+
+      // Pure updater — dedup against whatever session:created already added.
       setSessions((prev) => {
         const existingIds = new Set(prev.map((s) => s.id));
         const newSessions = list.filter((s) => !existingIds.has(s.id));
         if (newSessions.length === 0) return prev;
-        for (const s of newSessions) {
-          dispatch({ type: 'SESSION_INIT', sessionId: s.id });
-          setViewModes((vm) => vm.has(s.id) ? vm : new Map(vm).set(s.id, 'chat'));
-          setPermissionModes((pm) => pm.has(s.id) ? pm : new Map(pm).set(s.id, matchPermissionMode(s.permissionMode)));
-          // These sessions were already running before this window's event
-          // handlers attached (e.g. a remote reconnect) — session:created never
-          // fired for them, so this is the only place their model gets seeded.
-          setSessionModels((sm) => sm.has(s.id) ? sm : new Map(sm).set(s.id, matchModelAlias(s.model)));
-        }
         return [...prev, ...newSessions];
       });
       setSessionId((prev) => prev ?? list[0].id);
@@ -1488,6 +1501,23 @@ function AppInner() {
         for (const s of list) next.add(s.id);
         return next;
       });
+
+      // Rehydrate each session's chat from disk. Fix: without this, a renderer
+      // reload (crash, Ctrl+R) left every pre-existing session with an EMPTY
+      // timeline — SESSION_INIT only allocates a blank slot, and no live
+      // transcript event ever re-sends history, so the conversation looked
+      // deleted. Every OTHER entry into an already-running session already
+      // replays (ownership handoff, native resume, buddy feed); the mount path
+      // was the one that didn't.
+      //
+      // Ordering: the transcript:event listener is registered by an effect
+      // declared ABOVE this one, so it is already attached when these replayed
+      // events stream back; uuid dedup absorbs any overlap with live events.
+      // No-op on remote/Android (remote-shim stubs requestTranscriptReplay) —
+      // those hydrate via chat:hydrate on connect instead.
+      for (const s of list) {
+        (window as any).claude?.detach?.requestTranscriptReplay?.(s.id);
+      }
     }).catch(() => {});
   }, [dispatch]);
 
@@ -1850,6 +1880,13 @@ function AppInner() {
   // and would cause this effect to undo the user's intent prematurely).
   useEffect(() => {
     if (!sessionId || pendingModel) return;
+    // A moved session (Plan 2b Moved Gate) deliberately deletes its sessionModels
+    // entry while KEEPING its timeline (destroyedHandler, ~line 870). Without this
+    // guard the loosened `currentAlias !== alias` check below would read that
+    // undefined entry as drift, fire a spurious GLOBAL setPreference() for a
+    // session the user didn't pick and this window no longer owns, and resurrect
+    // the map entry the gate just cleaned up. Skip self-heal for moved sessions.
+    if (movedSessionsRef.current.has(sessionId)) return;
     const session = chatStateMap.get(sessionId);
     if (!session) return;
 
@@ -1875,7 +1912,14 @@ function AppInner() {
     if (!alias) return;
 
     const currentAlias = sessionModels.get(sessionId);
-    if (currentAlias && currentAlias !== alias) {
+    // Fix: this guard used to be `currentAlias && currentAlias !== alias`. The
+    // truthiness check disabled the self-heal in the one case that needs it
+    // most: a session with NO map entry renders as 'unknown' on the pill
+    // (currentModel falls back to the sentinel when the map misses), but
+    // currentAlias is `undefined` here — falsy — so the repair was skipped and
+    // the pill stayed red forever. Comparing directly heals both the explicit
+    // 'unknown' sentinel and the missing-entry case.
+    if (currentAlias !== alias) {
       // Drift detected — reconcile silently. Also the self-heal path for a pill
       // stuck on the 'unknown' sentinel: the moment a real model shows up in
       // the transcript, this overwrites it. setPreference persists to disk
