@@ -2112,7 +2112,8 @@ export function registerIpcHandlers(
   );
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
-    (binding) => providerRegistry.languageModel(binding),
+    // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
+    (binding, opts) => providerRegistry.languageModel(binding, opts),
     // Context-window sizing. For LOCAL models, prefer the engine's REAL loaded
     // window (min of llama-server /props and the GGUF-trained max) over the
     // catalog's configured -c — the catalog value is a guess that overflows small

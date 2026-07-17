@@ -177,8 +177,10 @@ export class ProviderRegistry {
     return (await this.secrets.get(p.secretRef)) ?? undefined;
   }
 
-  /** THE factory (spec §2.2). Throws plain-language errors — they surface in the UI error banner. */
-  async languageModel(binding: ModelBinding): Promise<LanguageModel> {
+  /** THE factory (spec §2.2). Throws plain-language errors — they surface in the UI error banner.
+   *  `opts.serialToolCalls` (spec §4.2) is honored ONLY on the local-engine branch —
+   *  cloud providers handle parallel tool calls fine and ignore it. */
+  async languageModel(binding: ModelBinding, opts?: { serialToolCalls?: boolean }): Promise<LanguageModel> {
     const p = this.readAll().find((x) => x.id === binding.providerId);
     if (!p) throw new Error(`Provider '${binding.providerId}' is not configured.`);
     if (!p.enabled) throw new Error(`${p.label} is disabled in Settings → Providers.`);
@@ -195,6 +197,12 @@ export class ProviderRegistry {
           name: 'local',
           baseURL: base,
           fetch: this.localEngine.fetchImpl(),
+          // Serial-only for small local models (spec §4.2): llama-server honors
+          // parallel_tool_calls:false; --jinja already grammar-constrains the args.
+          // NEVER a top-level json_schema — that would force JSON on every reply.
+          // Only attach the hook when serialToolCalls is requested so unconstrained
+          // local models keep the SDK's default (parallel-capable) body untouched.
+          ...(opts?.serialToolCalls ? { transformRequestBody: (b: Record<string, any>) => ({ ...b, parallel_tool_calls: false }) } : {}),
         })(binding.modelId);
       }
       case 'openrouter': {

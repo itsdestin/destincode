@@ -57,7 +57,10 @@ export interface HarnessSessionOpts {
    *  whether tools are attached at all. Absent → CLOUD_DEFAULT (full posture). */
   profile?: CapabilityProfile;
 }
-export type ModelFactory = (binding: ModelBinding) => Promise<LanguageModel>;
+// The opts second arg carries per-turn model construction hints. `serialToolCalls`
+// (Task 10 / spec §4.2) tells the local-engine factory to inject
+// parallel_tool_calls:false; cloud factories ignore it.
+export type ModelFactory = (binding: ModelBinding, opts?: { serialToolCalls?: boolean }) => Promise<LanguageModel>;
 
 // One collected tool-call from a step's stream (input already PARSED to an
 // object by streamText — see the ai@7 contract test).
@@ -220,9 +223,14 @@ export class HarnessSession extends EventEmitter {
     // SDK never sends a tool schema. WHY: a small local model the registry marks
     // tool-less would otherwise emit malformed tool-calls we can't honor.
     if (!this.profile.supportsTools) return {};
+    // Simplified presentation (spec §4.2): small local models get each tool's
+    // compact shortDescription (falling back to the full description when a tool
+    // defines none) so the schema stays small enough for a weak model to follow.
+    // The tool SET is identical either way — we only shrink the wording.
+    const simplified = this.profile.maxToolPresentation === 'simplified';
     const out: Record<string, any> = {};
     for (const t of this.toolByName.values()) {
-      out[t.name] = tool({ description: t.description, inputSchema: zodSchema(t.inputSchema) });
+      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: zodSchema(t.inputSchema) });
     }
     return out;
   }
@@ -420,7 +428,10 @@ export class HarnessSession extends EventEmitter {
     let partialAssistantText = '';
 
     try {
-      const model = await this.modelFactory(this.binding);
+      // Serial-only when the profile constrains args AND the model can't do parallel
+      // tool calls (spec §4.2 — small local models): the factory injects
+      // parallel_tool_calls:false on the local-engine branch. Cloud factories ignore it.
+      const model = await this.modelFactory(this.binding, { serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls });
       const aiTools = this.buildAiTools();       // {} when no tools → v0 chat path
 
       // Tracks the LAST step's real input-token count (from provider usage) so

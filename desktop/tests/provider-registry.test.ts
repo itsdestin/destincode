@@ -155,5 +155,29 @@ describe('ProviderRegistry', () => {
       await expect(reg.languageModel({ providerId: 'local', modelId: 'x' }))
         .rejects.toThrow(/not available yet/);
     });
+
+    // Serial-only constraint (Task 10 / spec §4.2): small local models can't handle
+    // parallel tool calls, so when the harness asks for serialToolCalls the
+    // local-engine model must inject `parallel_tool_calls:false` into the request
+    // body. We assert on the createOpenAICompatible config's transformRequestBody
+    // hook (verified against @ai-sdk/openai-compatible@3.0.7: the config object,
+    // incl. our hook, is stored on the model instance as `.config`).
+    it('languageModel(local): serialToolCalls injects parallel_tool_calls:false via transformRequestBody', async () => {
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook());
+      await reg.init();
+      const model = await reg.languageModel({ providerId: 'local', modelId: 'm' }, { serialToolCalls: true });
+      const body = (model as any).config.transformRequestBody({ messages: [], model: 'm' });
+      expect(body.parallel_tool_calls).toBe(false);
+      // The hook is additive — it must not drop the rest of the request body.
+      expect(body.model).toBe('m');
+    });
+
+    it('languageModel(local): WITHOUT serialToolCalls attaches no transformRequestBody hook', async () => {
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook());
+      await reg.init();
+      const model = await reg.languageModel({ providerId: 'local', modelId: 'm' });
+      // No hook configured → the SDK leaves the body untouched (default parallel).
+      expect((model as any).config.transformRequestBody).toBeUndefined();
+    });
   });
 });
