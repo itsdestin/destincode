@@ -30,16 +30,74 @@ export class GitTransport implements SyncTransport {
   private deviceName: string;
   private maxFileBytes: number;
   private gcInterval: number;
+  private lockStaleMs: number;
 
-  constructor(opts: { deviceName: string; maxFileBytes?: number; gcInterval?: number }) {
+  constructor(opts: { deviceName: string; maxFileBytes?: number; gcInterval?: number; lockStaleMs?: number }) {
     this.deviceName = opts.deviceName;
     this.maxFileBytes = opts.maxFileBytes ?? MAX_SYNC_FILE_BYTES;
     // Injectable so tests can force a gc after a couple of syncs instead of 50.
     this.gcInterval = opts.gcInterval ?? DEFAULT_GC_INTERVAL;
+    // A git *.lock older than this is treated as orphaned and reaped before a
+    // sync (see reapStaleLocks). Default = GIT_TIMEOUT: any legitimate holder
+    // would already have been SIGTERM-killed by the exec timeout, so a lock that
+    // has survived longer than that is provably dead. Injectable so tests don't
+    // have to wait 5 real minutes.
+    this.lockStaleMs = opts.lockStaleMs ?? GIT_TIMEOUT;
   }
 
   private gitDir(space: SyncSpace): string {
     return path.join(space.root, '.youcoded', 'sync.git');
+  }
+
+  /** Remove orphaned git `*.lock` files before a sync so a space that was wedged
+   *  by an interrupted write self-heals instead of failing forever.
+   *
+   *  WHY this is needed: git creates `index.lock` (and, during a ref update,
+   *  `<ref>.lock`) at the start of every write and deletes it when done. If the
+   *  git process dies in between — the 5-min exec timeout SIGTERM-killing a slow
+   *  op, the app quitting, the machine sleeping, or a SECOND app instance racing
+   *  the same sync.git (dev + built app both syncing ~/YouCoded/Personal, since
+   *  the engine's single-flight is per-instance, not cross-process) — the lock is
+   *  left behind. Git then refuses EVERY subsequent write ("Unable to create
+   *  index.lock: File exists"), so the space stays broken until the file is
+   *  deleted by hand. This is the same self-heal the two OTHER lock systems in
+   *  this app already have (cas-write.ts's 30s age-break, sync-service.ts's
+   *  pid-liveness check); the git transport was the only one missing it.
+   *
+   *  WHY age-gated (never remove a fresh lock): a lock younger than lockStaleMs
+   *  might be held by a genuinely-live git — most plausibly a second instance
+   *  mid-write. Deleting it would corrupt that write. The default threshold is
+   *  GIT_TIMEOUT, so any lock we reap is older than the longest a live op could
+   *  possibly run before the exec timeout kills it — i.e. provably orphaned.
+   *  Synchronous + best-effort: a reap failure must never itself break a sync. */
+  private reapStaleLocks(space: SyncSpace): void {
+    const gd = this.gitDir(space);
+    const now = Date.now();
+    const reapIfStale = (p: string): void => {
+      try {
+        if (now - fs.statSync(p).mtimeMs > this.lockStaleMs) fs.rmSync(p, { force: true });
+      } catch { /* vanished or unreadable between listing and here — nothing to do */ }
+    };
+    // Top-level lock files: index.lock, HEAD.lock, config.lock, packed-refs.lock,
+    // ORIG_HEAD.lock, shallow.lock, gc.log.lock, … Match any *.lock. (gc.pid is
+    // deliberately NOT touched — it isn't a *.lock and git manages its own
+    // staleness for it.)
+    let top: string[];
+    try { top = fs.readdirSync(gd); } catch { return; } // no repo dir yet → nothing to reap
+    for (const name of top) if (name.endsWith('.lock')) reapIfStale(path.join(gd, name));
+    // Ref-update locks live under refs/ (refs/heads/<b>.lock, refs/remotes/**,
+    // refs/tags/…). A stale one wedges commits/pushes exactly like index.lock.
+    const walkRefs = (dir: string, depth: number): void => {
+      if (depth > 20) return; // refs nest shallowly; bound the walk defensively
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walkRefs(full, depth + 1);
+        else if (e.name.endsWith('.lock')) reapIfStale(full);
+      }
+    };
+    walkRefs(path.join(gd, 'refs'), 0);
   }
 
   private async git(space: SyncSpace, args: string[]): Promise<ExecResult> {
@@ -111,6 +169,7 @@ export class GitTransport implements SyncTransport {
 
   /** Stage everything, unstage+exclude oversize files, commit, push. */
   async push(space: SyncSpace, message: string): Promise<PushResult> {
+    this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
     await this.git(space, ['add', '-A']);
     const oversize = await this.unstageOversize(space);
     const staged = await this.git(space, ['diff', '--cached', '--name-only']);
@@ -167,6 +226,7 @@ export class GitTransport implements SyncTransport {
    *  REMOTE wins the canonical filename; LOCAL content is preserved as a
    *  visible conflict copy. Both devices converge to identical trees. */
   async pull(space: SyncSpace): Promise<PullResult> {
+    this.reapStaleLocks(space); // heal an orphaned lock from a crashed prior write
     // Snapshot local changes first so merge never runs on a dirty tree.
     await this.git(space, ['add', '-A']);
     await this.unstageOversize(space);
@@ -231,6 +291,11 @@ export class GitTransport implements SyncTransport {
       // silent {updated:false} made a persistently unmergeable space look
       // healthy while it quietly stopped converging (2026-07-15 review finding).
       // The abort restores the pre-merge state, so the next sync retries clean.
+      // NOTE: a *stale* index.lock can no longer be the cause of this failure —
+      // pull() reaps orphaned locks before the merge runs (reapStaleLocks), so
+      // the abort itself is never blocked by one. (Historically a lock-caused
+      // commit failure made this abort a silent no-op — it needs index.lock too —
+      // leaving the repo mid-merge; the pre-merge reap removes that hazard.)
       await this.git(space, ['merge', '--abort']);
       throw new Error(`Sync merge could not complete for ${space.id}: ${commit.stderr.trim() || 'git commit failed'}`);
     }
