@@ -661,10 +661,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
 
   // Device registry fetch (lifted from YourDevices). Method-exists guard so remote /
   // older Android without the handler degrades to an empty list instead of throwing.
-  const loadDevices = useCallback(async () => {
+  // Returns the list it fetched as well as storing it: handleRemoveDevice has to
+  // inspect the FRESH list synchronously (React state won't have updated yet).
+  const loadDevices = useCallback(async (): Promise<DeviceRow[]> => {
     const fn = (window as any).claude?.syncSpaces?.listDevices;
-    if (typeof fn !== 'function') { setDevices([]); return; }
-    try { setDevices(await fn()); } catch { setDevices([]); }
+    if (typeof fn !== 'function') { setDevices([]); return []; }
+    try { const list = await fn(); setDevices(list); return list; } catch { setDevices([]); return []; }
   }, []);
   const handleRenameDevice = useCallback(async (id: string, name: string) => {
     const fn = (window as any).claude?.syncSpaces?.renameDevice;
@@ -672,11 +674,31 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     try { await fn(id, name); } catch {}
     await loadDevices(); // re-fetch so the fold-on-read authoritative name is shown
   }, [loadDevices]);
-  const handleRemoveDevice = useCallback(async (id: string) => {
+  // Returns a plain-words failure note, or null on success — DevicesTab renders it.
+  // Discarding the result would be wrong: both handlers answer { ok:false } for a
+  // real failure and { ok:false, error } for the self-guard, so silence would leave
+  // the user staring at a row that didn't go away with no idea why.
+  const handleRemoveDevice = useCallback(async (id: string): Promise<string | null> => {
     const fn = (window as any).claude?.syncSpaces?.removeDevice;
-    if (typeof fn !== 'function') return;
-    try { await fn(id); } catch {}
-    await loadDevices(); // re-fetch so a refused remove (self) doesn't lie about the list
+    if (typeof fn !== 'function') return 'Removing devices is not available here.';
+    let res: { ok?: boolean; error?: string } | undefined;
+    try {
+      res = await fn(id);
+    } catch (e) {
+      await loadDevices();
+      return e instanceof Error ? e.message : 'Could not remove this device.';
+    }
+    // Re-fetch first so a refused remove doesn't lie about the list.
+    const after = await loadDevices();
+    // Surface the handler's OWN reason when it gave one (the self-guard does);
+    // otherwise stay non-committal — we genuinely don't know why it failed, and
+    // guessing a cause here would be a misleading error.
+    if (!res?.ok) return res?.error || 'Could not remove this device.';
+    // ok:true is not proof the row is gone: removeDevice skips a file it can't
+    // delete (a locked or permission-denied handle on Windows) and still resolves.
+    // Trust the refetch over the answer — but say nothing about a cause we can't see.
+    if (after.some(d => d.id === id)) return 'This device is still listed. The remove did not take.';
+    return null;
   }, [loadDevices]);
   // Load devices on mount and whenever sync flips on — the first enable provisions the
   // Personal space that backs the registry, so the list can go empty -> populated.
@@ -1472,16 +1494,28 @@ interface DeviceRow {
   platform: string;
   lastSeen: number;
   updatedAt: number;
-  self: boolean; // marks THIS machine (matched by deviceId in the main handler)
+  // Marks THIS machine — matched by machineId (per-MACHINE) in the main handler.
+  // NOT the per-install deviceId: that's the lease id and matches no registry row.
+  self: boolean;
 }
 
-function DevicesTab({ devices, onRename, onRemove }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void; onRemove: (id: string) => void }) {
+function DevicesTab({ devices, onRename, onRemove }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void; onRemove: (id: string) => Promise<string | null> }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   // Two-step confirm: the id awaiting confirmation, if any. Removal is recoverable
   // (a live device re-registers), so this is a plain inline confirm rather than the
   // typed-confirm gate reserved for irreversible edits.
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  // Per-row failure note from the last remove attempt (ProvidersSection idiom).
+  const [removeNote, setRemoveNote] = useState<{ id: string; text: string } | null>(null);
+
+  const confirmRemove = useCallback(async (id: string) => {
+    setConfirmingId(null);
+    setRemoveNote(null);
+    const failure = await onRemove(id);
+    // On success the row simply disappears on the refetch — no note needed.
+    if (failure) setRemoveNote({ id, text: failure });
+  }, [onRemove]);
 
   // Commit a rename: reject empty/whitespace and skip a no-op rename so we don't
   // fire a pointless invoke + refetch. The parent (SyncPopup) owns the IPC call.
@@ -1506,66 +1540,90 @@ function DevicesTab({ devices, onRename, onRemove }: { devices: DeviceRow[] | nu
         const activity = d.self ? 'active now' : `last seen ${relativeMs(d.lastSeen)}`;
         const right = plat ? `${plat} · ${activity}` : activity;
         return (
-          <li key={d.id} className="flex items-center justify-between gap-2">
-            <div className="min-w-0 flex items-center gap-1.5">
-              {editingId === d.id ? (
-                <input
-                  value={draft}
-                  autoFocus
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(d.id);
-                    if (e.key === 'Escape') setEditingId(null); // cancel — no rename
-                  }}
-                  onBlur={() => commitRename(d.id)}
-                  className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none min-w-0"
-                />
-              ) : (
-                // Click the name to edit — it's just a nickname, so no confirm gate.
-                <button
-                  type="button"
-                  onClick={() => { setEditingId(d.id); setDraft(d.name); }}
-                  className="text-xs text-fg-2 hover:text-fg truncate text-left"
-                  title="Click to rename this device"
-                >
-                  {d.name}
-                </button>
-              )}
-              {d.self && <span className="text-[10px] text-fg-muted shrink-0">(this device)</span>}
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[10px] text-fg-muted">{right}</span>
-              {/* No Remove for self: upsertSelf re-creates this row on the next
-                  launch, so offering it would read as a button that does nothing. */}
-              {!d.self && (confirmingId === d.id ? (
-                <span className="flex items-center gap-1.5 text-[10px]">
-                  <span className="text-fg-muted">Remove?</span>
+          <li key={d.id}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex items-center gap-1.5">
+                {editingId === d.id ? (
+                  <input
+                    value={draft}
+                    autoFocus
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename(d.id);
+                      if (e.key === 'Escape') setEditingId(null); // cancel — no rename
+                    }}
+                    onBlur={() => commitRename(d.id)}
+                    className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none min-w-0"
+                  />
+                ) : (
+                  // Click the name to edit — it's just a nickname, so no confirm gate.
                   <button
                     type="button"
-                    onClick={() => { setConfirmingId(null); onRemove(d.id); }}
-                    className="text-red-500 hover:underline"
+                    onClick={() => { setEditingId(d.id); setDraft(d.name); }}
+                    className="text-xs text-fg-2 hover:text-fg truncate text-left"
+                    title="Click to rename this device"
+                  >
+                    {d.name}
+                  </button>
+                )}
+                {d.self && <span className="text-[10px] text-fg-muted shrink-0">(this device)</span>}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px] text-fg-muted">{right}</span>
+                {/* No Remove for self: upsertSelf re-creates this row on the next
+                    launch, so offering it would read as a button that does nothing.
+                    Hidden while confirming — the confirm block below replaces it. */}
+                {!d.self && confirmingId !== d.id && (
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmingId(d.id); setRemoveNote(null); }}
+                    aria-label={`Remove ${d.name}`}
+                    className="text-[10px] text-fg-muted hover:text-fg"
                   >
                     Remove
                   </button>
+                )}
+              </div>
+            </div>
+            {/* Confirm block. The consequence lives HERE, at the point of decision —
+                it used to be a title= tooltip on the trigger, which unmounts the
+                moment this renders (and never shows on touch or to a screen reader). */}
+            {confirmingId === d.id && (
+              <div
+                className="mt-1.5 space-y-2 rounded-lg bg-inset border border-edge-dim p-2.5"
+                onKeyDown={(e) => { if (e.key === 'Escape') setConfirmingId(null); }} // matches the rename input's Escape
+              >
+                <p className="text-[11px] text-fg-dim leading-relaxed">
+                  Remove {d.name}? It stops being listed here. If this device syncs again, it comes back.
+                </p>
+                <div className="flex gap-2">
                   <button
                     type="button"
                     onClick={() => setConfirmingId(null)}
-                    className="text-fg-muted hover:text-fg"
+                    aria-label={`Keep ${d.name}`}
+                    className="flex-1 text-xs font-medium py-1.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
                   >
                     Cancel
                   </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setConfirmingId(d.id)}
-                  className="text-[10px] text-fg-muted hover:text-fg"
-                  title="Forget this device. If it syncs again, it comes back."
-                >
-                  Remove
-                </button>
-              ))}
-            </div>
+                  {/* autoFocus: the trigger just unmounted, so without this the focus
+                      falls to <body> and a keyboard user re-tabs from the top. */}
+                  <button
+                    type="button"
+                    autoFocus
+                    onClick={() => void confirmRemove(d.id)}
+                    aria-label={`Confirm removing ${d.name}`}
+                    className="flex-1 text-xs font-medium py-1.5 rounded-lg border border-red-500/50 text-red-500 hover:bg-red-500/10 transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            )}
+            {/* Why the remove didn't take. Never invents a cause: the handler's own
+                reason when it gave one, otherwise non-committal. */}
+            {removeNote?.id === d.id && (
+              <p className="text-[10px] text-red-500 mt-1">{removeNote.text}</p>
+            )}
           </li>
         );
       })}
