@@ -163,25 +163,91 @@ describe('lease-client', () => {
     expect(takeoverSpy).not.toHaveBeenCalled();
   });
 
-  it('renew failure (force-acquired) stops the timer, deletes the file, and calls onTakeoverRequest', async () => {
+  it('renew failure (force-acquired) stops the timer, deletes the file, and attributes the takeover', async () => {
     hubRequest.mockResolvedValue(okResult('acquire', 's1', Date.now() + 300_000));
     await client.acquire('s1');
     expect(fs.existsSync(leaseFilePath(tmpRoot, 's1'))).toBe(true);
 
-    // Next renew fails — another device force-acquired.
+    // Next renew fails — another device force-acquired (holder is now dev-B).
     hubRequest.mockClear();
     hubRequest.mockResolvedValue(lostResult('renew', 's1'));
     await vi.advanceTimersByTimeAsync(RENEW_MS);
 
     expect(client.isHeld('s1')).toBe(false);
     expect(fs.existsSync(leaseFilePath(tmpRoot, 's1'))).toBe(false);
-    // Called with sessionId only (no `from` on the force-acquire path).
-    expect(takeoverSpy).toHaveBeenCalledWith('s1');
+    // The renew reply carries the new holder — the takeover is attributed so
+    // the MovedGate can name the device instead of "another device".
+    expect(takeoverSpy).toHaveBeenCalledWith('s1', { deviceId: 'dev-B', device: 'phone-B' });
 
     // Timer is stopped — no further renew.
     hubRequest.mockClear();
     await vi.advanceTimersByTimeAsync(RENEW_MS * 2);
     expect(hubRequest).not.toHaveBeenCalledWith('renew', 's1', DEVICE_ID);
+  });
+
+  // Regression (2026-07-16): a renew that fails because the lease lazily
+  // EXPIRED (heartbeat suspended by system sleep / screen lock / OS throttling
+  // past the 300s TTL) carries holder:null — nobody took the session. That is
+  // a lapse, not a takeover, and must NOT fire the "taken over on another
+  // device" teardown. The client re-acquires in place instead.
+  it('renew ok:false with NO holder (lapsed lease) re-acquires instead of tearing down', async () => {
+    hubRequest.mockResolvedValue(okResult('acquire', 's1', Date.now() + 300_000));
+    await client.acquire('s1');
+
+    hubRequest.mockClear();
+    hubRequest.mockImplementation(async (op: string) =>
+      op === 'renew'
+        ? { ok: false, op: 'renew', sessionId: 's1', holder: null }
+        : okResult('acquire', 's1', Date.now() + 300_000),
+    );
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+
+    expect(hubRequest).toHaveBeenCalledWith('acquire', 's1', DEVICE_ID);
+    expect(client.isHeld('s1')).toBe(true);
+    expect(takeoverSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(leaseFilePath(tmpRoot, 's1'))).toBe(true);
+
+    // The heartbeat loop survived — the next tick renews again.
+    hubRequest.mockClear();
+    hubRequest.mockResolvedValue(okResult('renew', 's1', Date.now() + 300_000));
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+    expect(hubRequest).toHaveBeenCalledWith('renew', 's1', DEVICE_ID);
+    expect(client.isHeld('s1')).toBe(true);
+  });
+
+  it('lapsed renew whose re-acquire is rejected tears down with the new holder attributed', async () => {
+    hubRequest.mockResolvedValue(okResult('acquire', 's1', Date.now() + 300_000));
+    await client.acquire('s1');
+
+    // Renew reports the lease lapsed (no holder); the re-acquire then loses a
+    // race — dev-B claimed it between the expiry and our re-acquire.
+    hubRequest.mockClear();
+    hubRequest.mockImplementation(async (op: string) =>
+      op === 'renew'
+        ? { ok: false, op: 'renew', sessionId: 's1', holder: null }
+        : lostResult('acquire', 's1'),
+    );
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+
+    expect(client.isHeld('s1')).toBe(false);
+    expect(fs.existsSync(leaseFilePath(tmpRoot, 's1'))).toBe(false);
+    expect(takeoverSpy).toHaveBeenCalledWith('s1', { deviceId: 'dev-B', device: 'phone-B' });
+  });
+
+  it('lapsed renew with the hub down during re-acquire keeps the lease optimistically', async () => {
+    hubRequest.mockResolvedValue(okResult('acquire', 's1', Date.now() + 300_000));
+    await client.acquire('s1');
+
+    hubRequest.mockClear();
+    hubRequest.mockImplementation(async (op: string) =>
+      op === 'renew' ? { ok: false, op: 'renew', sessionId: 's1', holder: null } : null,
+    );
+    await vi.advanceTimersByTimeAsync(RENEW_MS);
+
+    // Never-block: hub loss mid-recovery must not drop the lease.
+    expect(client.isHeld('s1')).toBe(true);
+    expect(takeoverSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(leaseFilePath(tmpRoot, 's1'))).toBe(true);
   });
 
   it('transient-null renew keeps the lease and keeps renewing', async () => {
