@@ -243,13 +243,14 @@ export class BuddyWindowManager {
       const bar = this.bar;
       if (bar && !bar.isDestroyed()) {
         bar.webContents.send(IPC_BAR_STATE, { visible: false });
-        // Let the CSS fade finish, then make the window click-through.
-        // forward:true keeps mousemove flowing to the page so the hidden bar's
-        // zone still reports hover — that no longer re-summons the bar, but it
-        // does count as engagement and holds off the docked→peek timer.
+        // Let the CSS fade finish, then make the window click-through so the
+        // invisible bar doesn't eat clicks meant for whatever is underneath.
+        // (forward:true kept mousemove flowing to the page back when hover could
+        // re-summon the bar; the bar now opens only with the chat and nothing
+        // reads hover, so no forwarding is needed.)
         setTimeout(() => {
           if (this.bar && !this.bar.isDestroyed() && !this.barCssVisible) {
-            this.bar.setIgnoreMouseEvents(true, { forward: true });
+            this.bar.setIgnoreMouseEvents(true);
           }
         }, 180);
       }
