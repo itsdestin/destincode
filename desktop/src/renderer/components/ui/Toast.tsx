@@ -50,13 +50,17 @@ export function Toast({
       role="status"
       aria-live="polite"
       className={[
-        // rounded-lg overrides .layer-surface's radius-xl — a toast is a control-
-        // sized surface, not a panel.
-        'flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-fg pointer-events-none',
+        'flex items-center gap-2 px-4 py-2 text-sm text-fg pointer-events-none',
         variant === 'global'
           ? 'fixed bottom-16 left-1/2 -translate-x-1/2'
           : 'absolute bottom-full right-0 mb-1 whitespace-nowrap',
       ].join(' ')}
+      // A toast is a control-sized surface, not a panel, so it wants radius-lg
+      // rather than .layer-surface's radius-xl. Set inline, NOT via a rounded-lg
+      // class: .layer-surface's border-radius is unlayered CSS and Tailwind emits
+      // utilities inside @layer utilities, so the class would lose and the toast
+      // would silently keep the panel radius.
+      style={{ borderRadius: 'var(--radius-lg)' }}
     >
       {tone === 'error' && (
         // The state family's failure mark (§1.6) — same dot ErrorState uses.

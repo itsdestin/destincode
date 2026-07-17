@@ -25,6 +25,7 @@ import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
 import SettingsRow from './SettingsRow';
 import { formatVersionLine } from '../../shared/version-line';
+import { Button } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -915,8 +916,11 @@ function RemoteButton({
                   <>
                     {/* Setup banner — shown when no clients connected */}
                     {!hasClients && (
-                      <div className="bg-blue-500/10 border border-blue-500/25 rounded-lg p-3">
-                        <p className="text-xs text-blue-400 mb-2">
+                      // Info callouts are accent-tinted, warnings are amber. The
+                      // amber "setup required" boxes below stay amber — they're a
+                      // true warning status, not information.
+                      <div className="bg-accent/10 border border-accent/25 rounded-lg p-3">
+                        <p className="text-xs text-fg-2 mb-2">
                           Remote access lets you use YouCoded from any device — phone, tablet, or another computer.
                         </p>
 
@@ -933,12 +937,9 @@ function RemoteButton({
                                 <QRCodeSVG value={tailscale.url} size={140} />
                               </div>
                               <p className="text-[10px] text-fg-muted mt-2 text-center font-mono">{tailscale.url}</p>
-                              <button
-                                onClick={onCopyLink}
-                                className="w-full mt-2 px-3 py-1 rounded-sm bg-inset hover:bg-edge text-[10px] text-fg-dim"
-                              >
+                              <Button variant="secondary" size="sm" onClick={onCopyLink} className="w-full mt-2">
                                 {copied ? 'Copied!' : 'Copy link'}
-                              </button>
+                              </Button>
                             </div>
                           ) : (
                             <div className="space-y-2">
@@ -947,20 +948,20 @@ function RemoteButton({
                                 <p className="text-[10px] text-amber-400 font-medium mb-0.5">Other device setup required:</p>
                                 <p className="text-[10px] text-fg-muted">Download Tailscale on your other device, sign in to the same account, and make sure it's running before scanning. The page won't load without it.</p>
                               </div>
-                              <button
-                                onClick={() => onSetShowSetupQR(true)}
-                                className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
-                              >
+                              {/* Was bg-blue-600 with NO text-color class, so the
+                                  label inherited the theme fg — near-black on blue
+                                  on Creme. Button primary carries text-on-accent. */}
+                              <Button onClick={() => onSetShowSetupQR(true)} className="w-full">
                                 Set Up Remote Access
-                              </button>
+                              </Button>
                             </div>
                           )
                         ) : setupStatus === 'confirm' ? (
                           <div className="space-y-2">
                             <p className="text-[10px] text-fg-2 text-center">This will download and install Tailscale (~50MB) for secure remote access.</p>
                             <div className="flex gap-2">
-                              <button onClick={onCancelSetup} className="flex-1 px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs">Cancel</button>
-                              <button onClick={onConfirmSetup} className="flex-1 px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium">Install</button>
+                              <Button variant="secondary" onClick={onCancelSetup} className="flex-1">Cancel</Button>
+                              <Button onClick={onConfirmSetup} className="flex-1">Install</Button>
                             </div>
                           </div>
                         ) : setupStatus === 'installing' ? (
@@ -978,7 +979,7 @@ function RemoteButton({
                         ) : setupStatus === 'error' ? (
                           <div className="space-y-2">
                             <p className="text-xs text-red-400 text-center">{setupError || 'Setup failed'}</p>
-                            <button onClick={onRunSetup} className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium">Retry</button>
+                            <Button onClick={onRunSetup} className="w-full">Retry</Button>
                           </div>
                         ) : tailscale?.installed && !tailscale.connected ? (
                           // Fix: Tailscale is installed but VPN is off — tailscale.url is null in this state,
@@ -993,12 +994,9 @@ function RemoteButton({
                             Set a password below to finish enabling remote access.
                           </p>
                         ) : (
-                          <button
-                            onClick={onRunSetup}
-                            className="w-full px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-500 text-xs font-medium"
-                          >
+                          <Button onClick={onRunSetup} className="w-full">
                             Set Up Remote Access
-                          </button>
+                          </Button>
                         )}
                       </div>
                     )}
@@ -1868,18 +1866,14 @@ function ConnectToDesktopButton() {
                   )}
                   {!showConnectForm ? (
                     <div className="space-y-2">
-                      <button
-                        onClick={handleScanQr}
-                        className="w-full px-3 py-2 rounded-sm bg-accent text-on-accent text-xs font-medium active:brightness-110"
-                      >
+                      {/* Both only had an active: state, so on desktop nothing
+                          happened on hover at all. */}
+                      <Button onClick={handleScanQr} className="w-full">
                         Scan QR Code
-                      </button>
-                      <button
-                        onClick={() => setShowConnectForm(true)}
-                        className="w-full px-3 py-2 rounded-sm border border-edge text-fg-dim text-xs active:bg-inset"
-                      >
+                      </Button>
+                      <Button variant="secondary" onClick={() => setShowConnectForm(true)} className="w-full">
                         Enter Manually
-                      </button>
+                      </Button>
                     </div>
                   ) : (
                     <div className="space-y-3 bg-inset/50 rounded-lg p-3">
@@ -1924,19 +1918,14 @@ function ConnectToDesktopButton() {
                         />
                       </div>
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => setShowConnectForm(false)}
-                          className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs text-fg-2"
-                        >
+                        {/* Collapses the add-device form rather than closing the
+                            panel, so it isn't a redundant text cancel. */}
+                        <Button variant="secondary" onClick={() => setShowConnectForm(false)}>
                           Cancel
-                        </button>
-                        <button
-                          onClick={handleSaveDevice}
-                          disabled={!formHost.trim()}
-                          className="flex-1 px-3 py-1.5 rounded-sm bg-accent text-on-accent text-xs font-medium disabled:opacity-50 active:brightness-110"
-                        >
-                          Save & Connect
-                        </button>
+                        </Button>
+                        <Button onClick={handleSaveDevice} disabled={!formHost.trim()} className="flex-1">
+                          Save &amp; Connect
+                        </Button>
                       </div>
                     </div>
                   )}

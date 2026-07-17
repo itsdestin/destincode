@@ -6,6 +6,7 @@ import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
 import SettingsRow from './SettingsRow';
+import { Button } from './ui';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Auth-token state and mutations
@@ -144,7 +145,11 @@ function SignedOutBody({
       <p className="text-[11px] text-fg-dim leading-relaxed">
         One sign-in for the marketplace and games — GitHub only sees your public profile.
       </p>
-      <button
+      {/* Page-level CTA -> lg. Also drops hover:brightness-110, which was
+          invisible on Light/Creme (their accent is already near-black), and
+          gains the focus ring it never had. */}
+      <Button
+        size="lg"
         onClick={() => {
           setSignInError(null);
           startSignIn().catch((e) =>
@@ -152,11 +157,10 @@ function SignedOutBody({
           );
         }}
         disabled={signInPending}
-        className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
       >
         <GitHubIcon />
         {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
-      </button>
+      </Button>
       {signInError && <p className="text-[10px] text-red-500">{signInError}</p>}
     </div>
   );
@@ -595,12 +599,11 @@ function EditAccountBody({
       <section className="space-y-2">
         <h4 className="text-[10px] font-medium text-red-500 uppercase tracking-wider">Danger zone</h4>
         {!deleteExpanded ? (
-          <button
-            onClick={() => setDeleteExpanded(true)}
-            className="w-full text-xs font-medium py-2.5 rounded-lg border border-red-500/50 text-red-500 hover:bg-red-500/10 transition-colors"
-          >
+          // Arming step -> danger-outline. red-500 becomes the --destructive
+          // token so packs can restyle it (identical #DD4444 today).
+          <Button variant="danger-outline" onClick={() => setDeleteExpanded(true)} className="w-full">
             Delete account
-          </button>
+          </Button>
         ) : (
           <div className="space-y-2">
             <p className="text-[11px] text-fg-dim leading-relaxed">
@@ -625,19 +628,27 @@ function EditAccountBody({
               className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-red-500"
             />
             <div className="flex gap-2">
-              <button
+              {/* This Cancel earns its place next to the ✕ rule: it collapses the
+                  danger-zone confirm rather than closing the popup, so it does
+                  something the ✕ doesn't. */}
+              <Button
+                variant="secondary"
                 onClick={() => { setDeleteExpanded(false); setDeleteConfirm(''); setDeleteError(null); }}
-                className="flex-1 text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+                className="flex-1"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              {/* text-white becomes the derived --on-destructive: --destructive is
+                  pack-overridable with no contrast guard, so white can vanish on a
+                  pale red. */}
+              <Button
+                variant="danger"
                 onClick={() => void confirmDelete()}
                 disabled={deleteConfirm.trim() !== 'delete' || deleting}
-                className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-red-500 text-white hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1"
               >
                 {deleting ? 'Deleting…' : 'Delete my account'}
-              </button>
+              </Button>
             </div>
             {deleteError && <p className="text-[10px] text-red-500">{deleteError}</p>}
           </div>

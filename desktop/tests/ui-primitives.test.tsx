@@ -119,6 +119,59 @@ describe('Button', () => {
     render(<Button className="rounded-full px-8">Get started</Button>);
     expect(screen.getByRole('button')).toHaveClass('rounded-full', 'px-8');
   });
+
+  // A className override has to REPLACE the base class, not sit beside it.
+  // Tailwind resolves competing utilities by CSS source order, not by attribute
+  // order — and measured in our bundle, .rounded-full (26057) is emitted BEFORE
+  // .rounded-lg (26104), so both-present means rounded-lg wins and the pill
+  // silently isn't a pill. Same for .text-base (51062) vs .text-sm (51252).
+  describe('className override actually overrides', () => {
+    it('drops the base radius when the caller supplies one (change 7 pills)', () => {
+      const cls = buttonClasses('primary', 'lg', 'rounded-full');
+      expect(cls).toContain('rounded-full');
+      expect(cls).not.toContain('rounded-lg');
+    });
+
+    it('drops the base font size when the caller supplies one', () => {
+      const cls = buttonClasses('primary', 'lg', 'text-base');
+      expect(cls).toContain('text-base');
+      expect(cls.split(/\s+/)).not.toContain('text-sm');
+    });
+
+    it('drops the base padding when the caller supplies its own', () => {
+      const cls = buttonClasses('primary', 'lg', 'px-6 py-3');
+      expect(cls).toContain('px-6');
+      expect(cls).toContain('py-3');
+      expect(cls.split(/\s+/)).not.toContain('px-4');
+      expect(cls.split(/\s+/)).not.toContain('py-2');
+    });
+
+    it('lets the terminal scroll buttons keep w-10 h-10 over icon size (change 41)', () => {
+      const cls = buttonClasses('ghost', 'icon', 'w-10 h-10');
+      expect(cls).toContain('w-10');
+      expect(cls).toContain('h-10');
+      expect(cls.split(/\s+/)).not.toContain('w-7');
+      expect(cls.split(/\s+/)).not.toContain('h-7');
+    });
+
+    it('never mistakes a text COLOR for a text size', () => {
+      // text-on-accent / text-fg-2 must survive a text-base override.
+      expect(buttonClasses('primary', 'md', 'text-base')).toContain('text-on-accent');
+      expect(buttonClasses('secondary', 'md', 'text-base')).toContain('text-fg-2');
+    });
+
+    it('keeps variant-prefixed classes, which never conflict', () => {
+      const cls = buttonClasses('primary', 'md', 'rounded-full');
+      expect(cls).toContain('hover:bg-accent/90');
+      expect(cls).toContain('disabled:opacity-50');
+      expect(cls).toContain('focus-visible:ring-2');
+    });
+
+    it('leaves the base untouched when nothing is overridden', () => {
+      expect(buttonClasses('primary', 'lg')).toContain('rounded-lg');
+      expect(buttonClasses('primary', 'lg')).toContain('text-sm');
+    });
+  });
 });
 
 describe('CloseButton', () => {

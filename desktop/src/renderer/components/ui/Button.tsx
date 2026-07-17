@@ -85,21 +85,68 @@ type SizeProps =
 
 export type ButtonProps = CommonProps & SizeProps;
 
+/**
+ * Utility groups where a caller's className must REPLACE the base rather than
+ * pile on next to it.
+ *
+ * This is not optional politeness — Tailwind resolves two competing utilities by
+ * CSS SOURCE ORDER, not by the order you list them in the class attribute, and
+ * the order is Tailwind's, not ours. Measured in our own bundle: `.rounded-full`
+ * is emitted at 26057 and `.rounded-lg` at 26104, so `<Button className="rounded-full">`
+ * silently renders ROUNDED-LG. Same trap for `.text-base` (51062) vs `.text-sm`
+ * (51252). The spec's documented pill exception (change 7: "first-run hero CTAs
+ * keep rounded-full + their own larger padding via className override") would
+ * have quietly produced rounded rectangles.
+ *
+ * The usual fix is tailwind-merge. This is a deliberately tiny stand-in: we own
+ * every class in BUTTON_BASE/VARIANT/SIZE, so we only need to resolve the few
+ * groups we actually emit, and adding a dependency for that is not worth it.
+ * Patterns match RAW tokens, so variant-prefixed classes (`hover:bg-inset`,
+ * `disabled:opacity-50`) never match and are always kept.
+ */
+const CONFLICT_GROUPS: readonly RegExp[] = [
+  /^rounded(-|$)/,
+  // Font SIZE only — must not swallow text-on-accent / text-fg-2 (colors).
+  /^text-(4xs|3xs|2xs|xs|sm|base|lg|xl)$/,
+  /^p[xytrbl]?-/,
+  /^w-/,
+  /^h-/,
+  /^gap-/,
+  /^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/,
+];
+
+/** Drops base tokens whose group the caller has overridden, then appends theirs. */
+export function mergeClasses(base: string, override: string): string {
+  const overrides = override.split(/\s+/).filter(Boolean);
+  if (overrides.length === 0) return base;
+
+  const kept = base
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((token) => {
+      const group = CONFLICT_GROUPS.find((re) => re.test(token));
+      if (!group) return true;
+      return !overrides.some((o) => group.test(o));
+    });
+
+  return [...kept, ...overrides].join(' ');
+}
+
 export function buttonClasses(
   variant: ButtonVariant = 'primary',
   size: ButtonSize = 'md',
   className = '',
 ): string {
-  return [
+  const base = [
     BUTTON_BASE,
     BUTTON_VARIANT[variant],
     BUTTON_SIZE[size],
     NEEDS_COARSE_HIT.has(size) ? 'coarse-hit' : '',
-    className,
   ]
     .filter(Boolean)
-    .join(' ')
-    .trim();
+    .join(' ');
+
+  return mergeClasses(base, className).trim();
 }
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
