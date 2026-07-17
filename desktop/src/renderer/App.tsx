@@ -21,7 +21,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
 import GamePanel from './components/game/GamePanel';
-import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './state/chat-context';
+import { ChatProvider, useChatDispatch, useChatState, useChatStateMap, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { categorizeArtifact } from '../shared/artifacts/categorization';
@@ -40,6 +40,7 @@ import { usePresence } from './hooks/usePresence';
 import { usePartyGame } from './hooks/usePartyGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
+import { useSessionAttention } from './hooks/useSessionAttention';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
 import { AppIcon, WelcomeAppIcon, ThemeMascot } from './components/Icons';
 import CommandDrawer from './components/CommandDrawer';
@@ -462,6 +463,7 @@ function AppInner() {
 
   const dispatch = useChatDispatch();
   const chatStateMap = useChatStateMap();
+  const chatStore = useChatStore();
   // Artifact tracker — global reducer for session/project artifact state.
   const [artifactState, dispatchArtifact] = useReducer(artifactReducer, initialArtifactState);
   // Ref mirror of artifact state so the (once-registered) tool-use handler can
@@ -603,59 +605,15 @@ function AppInner() {
     reconnectLobby: lobby.reconnect,
   }), [game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
 
-  // Derive session status colors for status dots.
-  // chatStateMap is a new Map reference on every dispatch, so we stabilize with
-  // a ref — return the previous reference when the derived values haven't changed.
-  const sessionStatusesRef = useRef<Map<string, SessionStatusColor>>(new Map());
-
+  // Tranche 1: sessionStatuses now derives from the cached selector — AppInner
+  // re-renders only when a triple changes, not on every dispatch (see
+  // useSessionAttention). sessionStatuses keeps its old shape for HeaderBar.
+  const sessionAttention = useSessionAttention(sessions, viewedSessions, sessionId);
   const sessionStatuses = useMemo(() => {
-    const newStatuses = new Map<string, SessionStatusColor>();
-    let changed = false;
-
-    for (const s of sessions) {
-      const chatState = chatStateMap.get(s.id);
-      if (!chatState) { newStatuses.set(s.id, 'gray'); }
-      else {
-        // Only check tools in the active turn — stale tools from old turns are invisible
-        let hasAwaiting = false;
-        let hasRunning = false;
-        for (const id of chatState.activeTurnToolIds) {
-          const t = chatState.toolCalls.get(id);
-          if (!t) continue;
-          if (t.status === 'awaiting-approval') hasAwaiting = true;
-          else if (t.status === 'running') hasRunning = true;
-          if (hasAwaiting) break;
-        }
-
-        // Priority: red (awaiting-approval) → amber (attention banner showing —
-        // stuck or session-died) → green (working) → blue (unseen activity) →
-        // gray (idle). Amber is between red and green: the session needs the
-        // user's eyes but it's not as urgent as a permission prompt, and it's
-        // not "all good, just working" either. Overrides green so a stuck
-        // session doesn't appear identical to a healthy thinking session.
-        const needsAttention = chatState.attentionState !== 'ok';
-        const status: SessionStatusColor = hasAwaiting
-          ? 'red'
-          : needsAttention
-            ? 'amber'
-            : (chatState.isThinking || hasRunning)
-              ? 'green'
-              : (chatState.timeline.length > 0 && !viewedSessions.has(s.id) && s.id !== sessionId)
-                ? 'blue'
-                : 'gray';
-        newStatuses.set(s.id, status);
-      }
-
-      const prev = sessionStatusesRef.current.get(s.id);
-      if (prev !== newStatuses.get(s.id)) changed = true;
-    }
-
-    if (!changed && newStatuses.size === sessionStatusesRef.current.size) {
-      return sessionStatusesRef.current;
-    }
-    sessionStatusesRef.current = newStatuses;
-    return newStatuses;
-  }, [sessions, chatStateMap, viewedSessions, sessionId]);
+    const m = new Map<string, SessionStatusColor>();
+    for (const [id, info] of sessionAttention) m.set(id, info.status);
+    return m;
+  }, [sessionAttention]);
 
   // Play the 'attention' sound when any session transitions to red (awaiting
   // approval). Red is a visible state, so color-driven dedup is correct here.
@@ -685,48 +643,53 @@ function AppInner() {
   // currently-viewed session (blue requires "unseen, not active"). Thinking-false
   // is the actual "response finished" signal and fires regardless of visibility.
   const prevThinkingRef = useRef<Map<string, boolean>>(new Map());
+  // Store-subscribed (tranche 1): the old [chatStateMap] effect required
+  // AppInner to re-render on every dispatch just to observe isThinking.
+  // Body + skip-on-first-observation semantics unchanged.
   useEffect(() => {
-    const prev = prevThinkingRef.current;
-    const next = new Map<string, boolean>();
-    for (const [id, state] of chatStateMap) {
-      const was = prev.get(id);
-      const isThinking = !!state.isThinking;
-      next.set(id, isThinking);
-      // Only fire when we actually observed a true → false transition. Skip if
-      // the session just appeared (was === undefined) to avoid a spurious chime
-      // on reducer init or remote hydrate when isThinking arrives already false.
-      if (was === true && !isThinking) playSound('ready');
-    }
-    prevThinkingRef.current = next;
-  }, [chatStateMap]);
+    const check = () => {
+      const prev = prevThinkingRef.current;
+      const next = new Map<string, boolean>();
+      for (const [id, state] of chatStore.getState()) {
+        const was = prev.get(id);
+        const isThinking = !!state.isThinking;
+        next.set(id, isThinking);
+        // Only fire when we actually observed a true → false transition. Skip if
+        // the session just appeared (was === undefined) to avoid a spurious chime
+        // on reducer init or remote hydrate when isThinking arrives already false.
+        if (was === true && !isThinking) playSound('ready');
+      }
+      prevThinkingRef.current = next;
+    };
+    check();
+    return chatStore.subscribeAll(check);
+  }, [chatStore]);
 
   // Attention reporter effect: pushes per-session attention state + the
-  // derived dot color to main whenever chatStateMap or sessionStatuses
-  // changes. Main aggregates across all windows and broadcasts
+  // derived dot color to main whenever sessionAttention changes. Main
+  // aggregates across all windows and broadcasts
   // session:attention-summary so buddy surfaces can render the same dots.
   //
   // A ref-based diff ensures we only report when state actually changes —
-  // chatStateMap is a new Map reference on every dispatch, so we compare
-  // the derived triple before sending. Session removal sends
+  // the selector already collapses no-op dispatches, and we compare the
+  // derived triple before sending as a second guard. Session removal sends
   // { clear: true } so main drops stale entries.
   //
-  // Declared here (not where the ref is) because the status comes from
-  // sessionStatuses, which is computed above — running the effect before
-  // that would read `undefined`.
+  // Tranche 1: the triple (attentionState, awaitingApproval, status) now
+  // comes from the useSessionAttention selector rather than being re-derived
+  // here from chatStateMap + sessionStatuses.
+  //
+  // Stays a REACT EFFECT (not a store subscription) and is declared here (not
+  // where the ref is) because it must observe the post-render selector output
+  // — running it before sessionAttention is computed would read `undefined`.
   useEffect(() => {
     const prev = lastAttentionReportedRef.current;
     const currentIds = new Set<string>();
-    for (const [sid, state] of chatStateMap) {
+    for (const [sid, info] of sessionAttention) {
       currentIds.add(sid);
-      let awaitingApproval = false;
-      for (const id of state.activeTurnToolIds) {
-        const t = state.toolCalls.get(id);
-        if (t?.status === 'awaiting-approval') { awaitingApproval = true; break; }
-      }
       // Thread the same dot color the main switcher renders for this
       // session so the buddy pill's dot is visually identical.
-      const status = sessionStatuses.get(sid) ?? 'gray';
-      const next = { attentionState: state.attentionState, awaitingApproval, status };
+      const next = { attentionState: info.attentionState, awaitingApproval: info.awaitingApproval, status: info.status };
       const last = prev.get(sid);
       if (!last
         || last.attentionState !== next.attentionState
@@ -743,7 +706,7 @@ function AppInner() {
         prev.delete(sid);
       }
     }
-  }, [chatStateMap, sessionStatuses]);
+  }, [sessionAttention]);
 
   // Buddy "open main app" → land on the buddy's viewed session. Reads the
   // existing sessionsRef mirror so the IPC subscription survives
