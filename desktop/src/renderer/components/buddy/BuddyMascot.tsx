@@ -70,18 +70,22 @@ export function BuddyMascot() {
     return off;
   }, []);
 
-  const sidePeek = dock.mode === 'peeking' && (dock.edge === 'left' || dock.edge === 'right');
-  const pose: PoseName = attention
-    ? 'shocked'
-    : dock.mode === 'peeking'
-      ? (dock.edge === 'left' ? 'peek-left' : dock.edge === 'right' ? 'peek-right' : 'peek')
-      : 'idle';
-
   // Attention bounce: retrigger the CSS animation each time attention flips on.
   const [bounceKey, setBounceKey] = useState(0);
   useEffect(() => { if (attention) setBounceKey((k) => k + 1); }, [attention]);
 
   const [grabbed, setGrabbed] = useState(false);
+
+  const sidePeek = dock.mode === 'peeking' && (dock.edge === 'left' || dock.edge === 'right');
+  // Resting = 'idle' (open-eyed welcome face); the rig-authored chevron-eye
+  // face lives in 'pressed', shown only while held (Destin 2026-07-16).
+  const pose: PoseName = attention
+    ? 'shocked'
+    : dock.mode === 'peeking'
+      ? (dock.edge === 'left' ? 'peek-left' : dock.edge === 'right' ? 'peek-right' : 'peek')
+      : grabbed
+        ? 'pressed'
+        : 'idle';
   const dragRef = useRef<DragState | null>(null);
   // Smoothed drag velocity for the rig's limb springs. A ref — pointermove-rate
   // React state would re-render 60×/s for nothing.

@@ -14,7 +14,7 @@ export type LimbId = (typeof LIMB_IDS)[number];
 // pose entries of its own today, so it stays out of LIMB_IDS.
 export type RigPartId = LimbId | 'rig-tail' | 'rig-body';
 export type FaceName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy';
-export type PoseName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'peek' | 'peek-right' | 'peek-left';
+export type PoseName = 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'peek' | 'peek-right' | 'peek-left';
 
 export interface PartPose { rotate?: number; tx?: number; ty?: number; }
 export interface PoseDef { parts: Partial<Record<RigPartId, PartPose>>; face: FaceName; wave?: boolean; }
@@ -26,14 +26,21 @@ export interface PoseDef { parts: Partial<Record<RigPartId, PartPose>>; face: Fa
 // outward is POSITIVE. +160 on the right arm waves ACROSS THE FACE — an
 // earlier sketch had it backwards; the unit tests pin the corrected signs.
 export const POSES: Record<PoseName, PoseDef> = {
-  idle:    { parts: {}, face: 'idle' },
+  // Resting default (Destin 2026-07-16): idle POSTURE with the OPEN-EYED
+  // welcome face — the rig-authored 'idle' face (chevron/closed eyes on some
+  // skins) is reserved for the pressed state below. Arms hang a touch lower
+  // than the authored rest for a more relaxed read.
+  idle:    { parts: { 'rig-arm-left': { ty: 0.5 }, 'rig-arm-right': { ty: 0.5 } }, face: 'welcome' },
+  // Push-down/grab state: the authored 'idle' face (chevron eyes). Same arm
+  // drop as idle so grabbing doesn't pop the shoulders.
+  pressed: { parts: { 'rig-arm-left': { ty: 0.5 }, 'rig-arm-right': { ty: 0.5 } }, face: 'idle' },
   welcome: { parts: { 'rig-arm-right': { rotate: -160 } }, face: 'welcome', wave: true },
   curious: { parts: {}, face: 'curious' },
   shocked: { parts: { 'rig-arm-left': { rotate: 130 }, 'rig-arm-right': { rotate: -130 } }, face: 'shocked' },
   dizzy:   { parts: { 'rig-arm-left': { rotate: -14 }, 'rig-arm-right': { rotate: 14 } }, face: 'dizzy' },
   // Bottom/top peek: arms curled INWARD = little hands gripping the screen
   // edge while the body sinks past it (BuddyMascot applies the sink transform).
-  peek:    { parts: { 'rig-arm-left': { rotate: -160 }, 'rig-arm-right': { rotate: 160 } }, face: 'idle' },
+  peek:    { parts: { 'rig-arm-left': { rotate: -160 }, 'rig-arm-right': { rotate: 160 } }, face: 'welcome' },
   // Side peek: arms parked via translate (the edge-pinned mittens do the
   // gripping — see spec §6.2 "75° wider"), one leg cocked, curious face.
   'peek-right': { parts: { 'rig-arm-left': { rotate: 0, tx: 4.5 }, 'rig-arm-right': { rotate: 0 }, 'rig-leg-left': { rotate: -10 } }, face: 'curious' },

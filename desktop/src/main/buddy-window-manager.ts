@@ -351,10 +351,16 @@ export class BuddyWindowManager {
     const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
     const wa = display.workArea;
-    // Chat opens BELOW the mascot (horizontally centered on it), flipping
-    // ABOVE when the mascot sits too close to the workArea bottom — Destin's
-    // 2026-07-16 dev-test layout: bar beside the buddy, chat underneath.
-    const x = mb.x + Math.round(mb.width / 2) - Math.round(CHAT_SIZE.width / 2);
+    // Chat opens BELOW the mascot+bar GROUP, centered on the group's span
+    // (not the mascot alone), flipping ABOVE when too close to the workArea
+    // bottom. The horizontal relationship is pinned — above/below is the only
+    // positional mode (Destin 2026-07-16). The bar rect is computed with the
+    // same pure math showBar uses, so this holds even before the bar window
+    // exists on a first reveal.
+    const barPos = computeBarPosition(mb, wa);
+    const groupLeft = Math.min(mb.x, barPos.x);
+    const groupRight = Math.max(mb.x + mb.width, barPos.x + BAR_SIZE.width);
+    const x = Math.round((groupLeft + groupRight) / 2) - Math.round(CHAT_SIZE.width / 2);
     const belowY = mb.y + mb.height + 12;
     const belowFits = belowY + CHAT_SIZE.height <= wa.y + wa.height;
     const raw = belowFits
