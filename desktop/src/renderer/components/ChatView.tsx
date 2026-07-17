@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
+import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
 import UserMessage from './UserMessage';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
@@ -547,7 +548,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                   break;
                 }
                 case 'prompt':
-                  if (entry.prompt.promptId === '_history_expand' && !entry.prompt.completed) {
+                  if (entry.prompt.promptId === HISTORY_EXPAND_PROMPT_ID && !entry.prompt.completed) {
                     return (
                       <div key={entry.prompt.promptId} ref={observeEntry} className="timeline-entry">
                         <HistoryExpandButton sessionId={sessionId} resumeInfo={resumeInfo} />
