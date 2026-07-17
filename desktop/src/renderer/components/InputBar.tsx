@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
@@ -355,7 +355,15 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     }
   }, []);
 
-  useEffect(() => {
+  // Fix (intermittent empty-input-expands-to-3-lines bug): recompute the
+  // textarea height SYNCHRONOUSLY before paint, not after. The height is an
+  // imperative inline style React doesn't track, so when `text` shrinks back
+  // to '' via a cascading update (e.g. the session-switch effect calling
+  // setText, or send/clear), a plain useEffect could let React paint one frame
+  // with the empty value but the stale multi-line height still applied — the
+  // placeholder floated to the top of a 3-line box until the next keystroke
+  // re-ran this. useLayoutEffect closes that paint-before-correction window.
+  useLayoutEffect(() => {
     autoResize();
   }, [text, autoResize]);
 
