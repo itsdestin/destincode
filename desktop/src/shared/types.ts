@@ -184,6 +184,16 @@ export interface TranscriptEvent {
      * the otherwise-thin "Compacted" divider.
      */
     summary?: string;
+    /**
+     * Native runtime only: set on a `compact-summary` emitted by the harness's
+     * SPONTANEOUS two-stage compaction (spec §4.4). CC's transcript-watcher
+     * compact-summary events never carry it. The renderer renders the marker for
+     * an auto-compaction without the manual-/compact `compactionPending` flag —
+     * without it a native auto-compaction would replace ~all history and show
+     * NOTHING. Kept off CC's path so manual /compact and resume-from-summary are
+     * unchanged.
+     */
+    autoCompaction?: boolean;
   };
 }
 

@@ -1194,17 +1194,22 @@ function AppInner() {
           // for both in-session /compact (appends to same JSONL, so shrink
           // never fires) and resume-from-summary (first entry of new JSONL).
           const sessionState = chatStateMapRef.current.get(event.sessionId);
-          if (sessionState?.compactionPending) {
+          // event.data.autoCompaction marks a SPONTANEOUS native compaction —
+          // it has no compactionPending flag (that's only set by /compact), yet
+          // the user must still see a marker since ~all their history was just
+          // summarized away. Render it in that case too, bypassing the guard.
+          if (sessionState?.compactionPending || event.data.autoCompaction) {
             const contextTokens = statusData.sessionStatsMap[event.sessionId]?.contextTokens ?? null;
             dispatch({
               type: 'COMPACTION_COMPLETE',
               sessionId: event.sessionId,
               markerId: `compact-done-${Date.now()}`,
               afterContextTokens: contextTokens,
-              // Forward CC's summary text so the SystemMarker can offer
+              // Forward the summary text so the SystemMarker can offer
               // click-to-expand (replaces the dead "ctrl+o to see full summary"
               // affordance from CC's TUI, which never worked inside YouCoded).
               ...(event.data.summary ? { summary: event.data.summary } : {}),
+              ...(event.data.autoCompaction ? { auto: true } : {}),
             });
           }
           break;

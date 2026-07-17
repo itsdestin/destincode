@@ -1284,8 +1284,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'COMPACTION_COMPLETE': {
       const session = next.get(action.sessionId);
       if (!session) return state;
-      if (!session.compactionPending) return state; // Stale event — ignore
-      const before = session.compactionPending.beforeContextTokens;
+      // Native auto-compaction (action.auto) has no compactionPending to satisfy —
+      // it fired spontaneously, not from /compact — so it bypasses this guard. For
+      // the manual/CC path the guard still drops stale/spurious events (notably CC
+      // resume-from-summary, which must NOT insert a marker).
+      if (!session.compactionPending && !action.auto) return state; // Stale event — ignore
+      const before = session.compactionPending?.beforeContextTokens ?? null;
       const after = action.afterContextTokens;
       let label: string;
       if (action.aborted) {

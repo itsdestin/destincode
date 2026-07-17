@@ -279,10 +279,20 @@ export class HarnessSession extends EventEmitter {
     return kept;
   }
 
+  // Below this many tokens a span isn't worth a model round-trip to summarize
+  // (spends a call to save almost nothing). Also the thrash floor — see I3 note
+  // in maybeCompact.
+  private static readonly MIN_SUMMARIZE_SPAN_TOKENS = 500;
+
   /** Compaction thresholds scaled to the model window. Big models protect ~40k
    *  and only prune when it saves ≥20k; tiny local windows scale those down so
    *  the trigger/prune/protect bands are actually REACHABLE in an 8k (or smaller)
-   *  window — otherwise a small model would never compact until it 400'd. */
+   *  window — otherwise a small model would never compact until it 400'd.
+   *  CAVEAT (very small windows, ctx ~4–8k): fitToContext's own budget
+   *  (ctx − maxTokens − 1024) can land at or below protectedTokens here, so a
+   *  freshly-written summary may be largely re-truncated by fitToContext anyway.
+   *  Accepted — one degraded turn beats a hard 400 — but documented so it isn't
+   *  mistaken for a bug. */
   private compactionConfig(): CompactionConfig {
     const ctx = this.opts.contextLength ?? 32_768;
     const big = ctx >= 100_000;
@@ -304,10 +314,23 @@ export class HarnessSession extends EventEmitter {
     if (cut <= 0) return;                                  // nothing safely condensable → pruned history stands
     const keep = this.history.slice(cut);
     const span = this.history.slice(0, cut);              // already pruned
+    // I3 thrash guard: if the last-2-turns `keep` span ALONE exceeds the trigger
+    // (e.g. a fresh 6k-token tool result in an 8k window), the condensable `span`
+    // is tiny yet planCompaction keeps saying 'summarize' every step. Re-summarizing
+    // a near-empty span burns a model call + emits a dead compact-summary each step
+    // (~25/turn). Bail when the span is trivial — the pruned history stands and
+    // fitToContext remains the floor.
+    if (span.length <= 1 || estimateTokens(span) < HarnessSession.MIN_SUMMARIZE_SPAN_TOKENS) return;
     let summary = '';
     try { summary = await this.generateSummary(model, span); } catch { summary = ''; }
     if (!summary.trim()) return;                          // FAIL-SAFE: no summary → leave pruned history
-    this.emitEvent('compact-summary', { text: summary }); // existing frozen event → expandable SystemMarker
+    // Existing frozen event (no new type). `summary` is the canonical field the
+    // renderer reads (types.ts / App.tsx / BubbleFeed.tsx). `autoCompaction` tags
+    // this as a SPONTANEOUS native compaction so the renderer surfaces the marker
+    // even though the manual-/compact `compactionPending` flag was never set —
+    // CC's own compact-summary events never carry it, so the manual path is
+    // untouched.
+    this.emitEvent('compact-summary', { summary, autoCompaction: true });
     this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
   }
 
@@ -320,13 +343,53 @@ export class HarnessSession extends EventEmitter {
 
   /** Model-generated summary of the condensed span. Bounds the span first so the
    *  summary call itself can't overflow (hard-trim oldest messages until it fits ~60%
-   *  of the window). Uses textStream; the caller wraps this in try/catch (fail-safe). */
+   *  of the window). The caller wraps this in try/catch (fail-safe).
+   *
+   *  C1 — the summary runs on the SAME (possibly stalled) local model this whole
+   *  branch targets, so we consume it EXACTLY like consumeStep does: an explicit
+   *  iterator raced against BOTH the turn's abort signal AND a wall-clock timeout.
+   *  A plain `for await` would block forever on a provider that stops emitting
+   *  without honoring abort — ESC could not break it, send() would never resolve,
+   *  and this.abort would stay non-null, bricking every future send() via the
+   *  re-entrancy guard. On abort OR timeout we stop consuming and return whatever
+   *  partial text we have (the fail-safe tolerates ''): the summary never wedges
+   *  the turn. */
   private async generateSummary(model: LanguageModel, span: ModelMessage[]): Promise<string> {
     const cfg = this.compactionConfig();
     let bounded = span;
     while (estimateTokens(bounded) > cfg.contextLength * 0.6 && bounded.length > 1) bounded = bounded.slice(1);
     const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...bounded, { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
-    let text = ''; for await (const part of result.textStream) text += part;
+
+    // Race iterator.next() against the abort signal AND a 30s wall-clock floor —
+    // the same hardening consumeStep uses, since a stalled local stream honors
+    // neither on its own.
+    const iterator = (result.textStream as AsyncIterable<string>)[Symbol.asyncIterator]();
+    const abortSignal = this.abort!.signal;
+    const stopPromise = new Promise<'stop'>((resolve) => {
+      if (abortSignal.aborted) { resolve('stop'); return; }
+      const timer = setTimeout(() => resolve('stop'), 30_000);
+      abortSignal.addEventListener('abort', () => { clearTimeout(timer); resolve('stop'); }, { once: true });
+    });
+
+    let text = '';
+    while (true) {
+      const nextPromise = iterator.next();
+      const chunk = await Promise.race([nextPromise, stopPromise]);
+      if (chunk === 'stop') {
+        // Abort or timeout won: release the reader/socket (a provider that ignores
+        // abort would otherwise leak it) and stop with the partial text so far.
+        nextPromise.catch(() => {});
+        iterator.return?.().catch(() => {});
+        break;
+      }
+      if (chunk.done) break;
+      if (chunk.value) text += chunk.value;
+    }
+    // WHY the summary call's tokens are NOT folded into turnUsage: awaiting
+    // result.usage would only settle once the stream ends cleanly — on the
+    // abort/timeout break above it may never settle, which would reintroduce the
+    // exact hang C1 exists to prevent. Under-reporting the (small) summary-call
+    // tokens is the accepted trade for a summary that can never wedge the turn.
     return text.trim();
   }
 

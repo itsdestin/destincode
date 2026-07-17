@@ -213,9 +213,11 @@ export function BubbleFeed({ sessionId }: Props) {
           break;
         // compact-summary: buddy doesn't drive compaction UI (no /compact command),
         // but we still need to close any pending compaction spinner if it was opened
-        // because the owner session triggered compaction.
+        // because the owner session triggered compaction. A native auto-compaction
+        // (event.data.autoCompaction) has no pending flag but must still show a
+        // marker — bypass the guard in that case (mirror App.tsx).
         case 'compact-summary':
-          if (stateRef.current.compactionPending) {
+          if (stateRef.current.compactionPending || event.data.autoCompaction) {
             batchDispatch({
               type: 'COMPACTION_COMPLETE',
               sessionId: event.sessionId,
@@ -223,6 +225,7 @@ export function BubbleFeed({ sessionId }: Props) {
               afterContextTokens: null,
               // Forward summary so buddy's marker matches main window's expandable behavior.
               ...(event.data.summary ? { summary: event.data.summary } : {}),
+              ...(event.data.autoCompaction ? { auto: true } : {}),
             });
           }
           break;

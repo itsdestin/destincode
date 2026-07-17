@@ -90,6 +90,26 @@ export function scriptModel(steps: ScriptStep[]) {
   });
 }
 
+// A model whose FIRST doStream call HANGS forever — its stream never emits and
+// never closes, simulating a stalled local model (the exact case the summary
+// abort-race + timeout must survive). `onFirstCall` fires once the hang begins so
+// a test can then interrupt(). Every later call stops cleanly, so the turn can
+// still unwind after the interrupt without wedging on a repeated hang.
+export function hangingFirstCallModel(onFirstCall: () => void) {
+  let call = 0;
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      call++;
+      if (call === 1) {
+        onFirstCall();
+        // Never enqueue, never close → textStream.next() never resolves on its own.
+        return { stream: new ReadableStream<any>({ start() { /* intentionally idle */ } }) };
+      }
+      return { stream: simulateReadableStream({ chunks: stream(finishChunk('stop')) }) };
+    },
+  });
+}
+
 export interface MakeSessionOver {
   profile?: CapabilityProfile;
   askUser?: (req: AskRequest) => Promise<AskDecision>;

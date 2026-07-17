@@ -535,6 +535,10 @@ export type ChatAction =
       afterContextTokens: number | null;
       aborted?: boolean;       // true when watchdog fires — marker text differs
       summary?: string;        // Full compaction summary, surfaced as expandable section under the marker
+      // Native spontaneous compaction (no manual /compact): there is no
+      // compactionPending flag to satisfy the stale-event guard, so this bypasses
+      // it to insert the marker. CC's paths never set it.
+      auto?: boolean;
     }
   // /copy picker for multi-block turns
   | {
