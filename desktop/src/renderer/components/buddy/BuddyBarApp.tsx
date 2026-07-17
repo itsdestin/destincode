@@ -62,9 +62,17 @@ const ICON_PROPS = {
 
 export function BuddyBarApp() {
   const [capturing, setCapturing] = useState(false);
+  // CSS-driven reveal: main pushes buddy:bar-state; the window itself stays
+  // Electron-shown so opacity can animate (see buddy.css fade rules).
+  const [visible, setVisible] = useState(true);
 
   useEffect(() => {
     document.body.setAttribute('data-mode', 'buddy-bar');
+  }, []);
+
+  useEffect(() => {
+    const off = window.claude?.buddy?.onBarState?.((s: { visible: boolean }) => setVisible(!!s.visible));
+    return off;
   }, []);
 
   const onCapture = useCallback(async () => {
@@ -90,6 +98,11 @@ export function BuddyBarApp() {
     <ThemeProvider>
       <div
         className="buddy-bar-root"
+        data-visible={visible ? '1' : '0'}
+        // Hovering the bar itself pins it visible (crossing the mascot→bar
+        // gap is bridged by the tracker's grace timeout main-side).
+        onPointerEnter={() => window.claude?.buddy?.reportHover?.({ source: 'bar', hovering: true })}
+        onPointerLeave={() => window.claude?.buddy?.reportHover?.({ source: 'bar', hovering: false })}
         style={{
           width: '100vw',
           height: '100vh',

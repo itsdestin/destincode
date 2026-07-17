@@ -1408,6 +1408,12 @@ app.whenReady().then(async () => {
   ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, target: { targetX: number; targetY: number }) => {
     buddyManager.moveMascot(target.targetX, target.targetY);
   });
+  // High-frequency-ish (pointer enter/leave) — fire-and-forget like move-mascot.
+  ipcMain.on(IPC.BUDDY_HOVER_CHANGED, (_evt, p: { source: 'mascot' | 'bar'; hovering: boolean }) => {
+    if (p && (p.source === 'mascot' || p.source === 'bar')) {
+      buddyManager.reportHover(p.source, !!p.hovering);
+    }
+  });
 
   // Desktop-capture action: screenshot the display the mascot sits on,
   // excluding the buddy windows themselves.

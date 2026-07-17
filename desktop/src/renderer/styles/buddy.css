@@ -277,3 +277,15 @@ body[data-mode="buddy-chat"] ::-webkit-scrollbar-thumb {
 body[data-mode="buddy-chat"] ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover);
 }
+
+/* Action bar fade+rise. The BrowserWindow stays shown; reveal/dismiss is CSS
+   so it can animate (Electron show/hide cannot). Click-through while hidden
+   is enforced main-side via setIgnoreMouseEvents. */
+body[data-mode="buddy-bar"] .buddy-bar-root {
+  transition: opacity 150ms ease, translate 150ms ease;
+}
+body[data-mode="buddy-bar"] .buddy-bar-root[data-visible="0"] {
+  opacity: 0;
+  translate: 0 4px;
+  pointer-events: none;
+}

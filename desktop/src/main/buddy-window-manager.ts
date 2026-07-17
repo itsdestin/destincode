@@ -1,6 +1,11 @@
 import { BrowserWindow, screen } from 'electron';
 import type { WindowRegistry } from './window-registry';
 import { BAR_SIZE, computeBarPosition } from './buddy-bar-geometry';
+import { BarVisibilityTracker } from './buddy-bar-visibility';
+
+// Push-channel names (kept as local consts — this module deliberately doesn't
+// import shared/types; values must match IPC.* in src/shared/types.ts).
+const IPC_BAR_STATE = 'buddy:bar-state';
 
 export interface Rect { x: number; y: number; width: number; height: number; }
 export interface Point { x: number; y: number; }
@@ -53,8 +58,46 @@ export class BuddyWindowManager {
   // the renderer every time.
   private bar: BrowserWindow | null = null;
   private viewedSessionId: string | null = null;
+  // Decides bar visibility from hover + chat-open (spec §4.1). The bar
+  // BrowserWindow stays shown once created; reveals are CSS fades driven by
+  // the buddy:bar-state push, and click-through is toggled alongside so the
+  // invisible bar never eats clicks meant for windows underneath.
+  private readonly barVisibility = new BarVisibilityTracker((visible) => this.applyBarVisible(visible));
+  private barCssVisible = false;
 
   constructor(private readonly deps: BuddyWindowManagerDeps) {}
+
+  /** Renderer hover reports land here (buddy:hover-changed IPC). */
+  reportHover(source: 'mascot' | 'bar', hovering: boolean): void {
+    this.barVisibility.setHover(source, hovering);
+  }
+
+  private applyBarVisible(visible: boolean): void {
+    this.barCssVisible = visible;
+    if (visible) {
+      // Reposition-before-reveal: mascot may have moved while the bar was
+      // hidden (the Task 3 bug class — never show at a stale position).
+      this.showBar();
+      const bar = this.bar;
+      if (bar && !bar.isDestroyed()) {
+        bar.setIgnoreMouseEvents(false);
+        bar.webContents.send(IPC_BAR_STATE, { visible: true });
+      }
+    } else {
+      const bar = this.bar;
+      if (bar && !bar.isDestroyed()) {
+        bar.webContents.send(IPC_BAR_STATE, { visible: false });
+        // Let the 150ms CSS fade finish, then make the window click-through.
+        // forward:true keeps mousemove flowing to the page so hovering the
+        // (invisible) bar zone can still re-summon it — a nice grace region.
+        setTimeout(() => {
+          if (this.bar && !this.bar.isDestroyed() && !this.barCssVisible) {
+            this.bar.setIgnoreMouseEvents(true, { forward: true });
+          }
+        }, 180);
+      }
+    }
+  }
 
   show(): void {
     if (this.mascot && !this.mascot.isDestroyed()) {
@@ -75,6 +118,10 @@ export class BuddyWindowManager {
   }
 
   hide(): void {
+    // Drop tracker state silently so a torn-down buddy doesn't fire a
+    // stale visibility callback against destroyed windows.
+    this.barVisibility.reset();
+    this.barCssVisible = false;
     if (this.bar && !this.bar.isDestroyed()) this.bar.destroy();
     if (this.chat && !this.chat.isDestroyed()) this.chat.destroy();
     if (this.mascot && !this.mascot.isDestroyed()) this.mascot.destroy();
@@ -89,12 +136,11 @@ export class BuddyWindowManager {
   toggleChat(): void {
     if (!this.chat || this.chat.isDestroyed()) {
       this.createChat();
-      this.showBar();
       return;
     }
     if (this.chat.isVisible()) {
       this.chat.hide();
-      this.hideBar();
+      this.barVisibility.setChatOpen(false);
     } else {
       // Re-anchor to current mascot position before showing — the user may
       // have dragged the mascot while the chat was hidden, and the chat
@@ -103,7 +149,7 @@ export class BuddyWindowManager {
       const pos = this.computeChatAnchoredPosition();
       this.chat.setPosition(Math.round(pos.x), Math.round(pos.y));
       this.chat.show();
-      this.showBar();
+      this.barVisibility.setChatOpen(true);
     }
   }
 
@@ -212,11 +258,11 @@ export class BuddyWindowManager {
       const chatClamped = clampToWorkArea(chatRaw, CHAT_SIZE, chatDisplay.workArea);
       this.chat.setPosition(Math.round(chatClamped.x), Math.round(chatClamped.y));
     }
-    // Bar follows its own visibility (not the chat's): in the hover-reveal
-    // model the bar can be visible without the chat. Recompute from scratch
-    // on visible: if the mascot lands on a bottom edge the bar needs to
-    // flip above automatically.
-    if (this.bar && !this.bar.isDestroyed() && this.bar.isVisible()) {
+    // Bar follows its own CSS visibility (not Electron isVisible() — the
+    // window stays Electron-shown once created; reveals are CSS fades).
+    // Recompute from scratch on visible: if the mascot lands on a bottom
+    // edge the bar needs to flip above automatically.
+    if (this.bar && !this.bar.isDestroyed() && this.barCssVisible) {
       const pos = this.currentBarPosition();
       this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
     }
@@ -232,6 +278,13 @@ export class BuddyWindowManager {
     if (!this.bar || this.bar.isDestroyed()) {
       this.bar = this.deps.createBuddyWindow('bar', { x: Math.round(pos.x), y: Math.round(pos.y) });
       this.wireBarLifecycle(this.bar);
+      // First reveal races page load — re-push the current CSS-visibility
+      // state once the renderer is actually listening.
+      this.bar.webContents.once('did-finish-load', () => {
+        if (this.bar && !this.bar.isDestroyed()) {
+          this.bar.webContents.send(IPC_BAR_STATE, { visible: this.barCssVisible });
+        }
+      });
     } else {
       this.bar.setPosition(Math.round(pos.x), Math.round(pos.y));
     }
@@ -282,6 +335,7 @@ export class BuddyWindowManager {
     }
     this.chat.show();
     this.chat.focus();
+    this.barVisibility.setChatOpen(true);
   }
 
   private wireMascotLifecycle(win: BrowserWindow): void {
@@ -314,8 +368,9 @@ export class BuddyWindowManager {
     win.on('closed', () => {
       this.chat = null;
       // FIX: an OS-closed chat (not a toggle) used to strand the action bar
-      // visible with no chat. Drop the bar too until the next reveal.
-      this.hideBar();
+      // visible with no chat. Tell the tracker so the bar fades out (after
+      // grace) unless the user is still hovering.
+      this.barVisibility.setChatOpen(false);
     });
   }
 }

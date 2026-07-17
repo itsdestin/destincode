@@ -165,6 +165,10 @@ export function BuddyMascot() {
       onPointerUp={onPointerUp}
       onLostPointerCapture={onLostPointerCapture}
       onPointerCancel={onPointerCancel}
+      // Hover reveals the action bar: main coalesces mascot+bar hover with a
+      // grace timeout (BarVisibilityTracker) to decide bar visibility.
+      onPointerEnter={() => window.claude?.buddy?.reportHover?.({ source: 'mascot', hovering: true })}
+      onPointerLeave={() => window.claude?.buddy?.reportHover?.({ source: 'mascot', hovering: false })}
     >
       {customMascot ? (
         <img
