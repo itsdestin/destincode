@@ -272,11 +272,74 @@ function collectTurnSkills(
   return skills;
 }
 
+/**
+ * Returns the IDs of every tool group this turn renders (its own `tool-group`
+ * segments). A turn's rendered output depends ONLY on its own segments plus
+ * the tool/group entries reachable from these IDs — not on the rest of the
+ * session-lifetime `toolCalls`/`toolGroups` Maps. This set is the basis for
+ * the memo comparator below.
+ */
+function turnGroupIds(turn: AssistantTurn): string[] {
+  const ids: string[] = [];
+  for (const seg of turn.segments) {
+    if (seg.type === 'tool-group') ids.push(seg.groupId);
+  }
+  return ids;
+}
+
+/**
+ * Custom equality for React.memo.
+ *
+ * WHY: `toolCalls` and `toolGroups` are session-lifetime Maps shared by EVERY
+ * turn in the conversation. The reducer hands ChatView a fresh Map reference
+ * whenever ANY tool updates, so React's default shallow compare (which treats
+ * two Maps with identical contents as different) re-renders every assistant
+ * turn on every streaming frame — even completed turns whose tools never
+ * changed. Each of those re-renders re-runs splitIntoBubbles() and re-parses
+ * the turn's markdown (react-markdown + highlight.js), which was the dominant
+ * per-frame cost while Claude types.
+ *
+ * A turn's rendered output is a pure function of:
+ *   - `turn` (its segments/metadata) — compared by reference; the reducer
+ *     replaces the turn object only when that turn actually changes.
+ *   - the tool/group entries REACHABLE from the turn's own tool-group segments.
+ * So we compare those entries individually. If none of THIS turn's tools or
+ * groups changed, a sibling turn's activity must not re-render this one.
+ *
+ * The primitives (sessionId/provider/showTimestamps) are compared by value.
+ *
+ * Returns true when the component can skip re-rendering.
+ */
+function assistantTurnPropsAreEqual(prev: Props, next: Props): boolean {
+  if (prev.turn !== next.turn) return false;
+  if (prev.sessionId !== next.sessionId) return false;
+  if (prev.provider !== next.provider) return false;
+  if (prev.showTimestamps !== next.showTimestamps) return false;
+
+  // Same turn object (checked above) ⇒ same segments ⇒ same group IDs. We only
+  // need to walk one side's IDs.
+  const groupIds = turnGroupIds(next.turn);
+  for (const gid of groupIds) {
+    const prevGroup = prev.toolGroups.get(gid);
+    const nextGroup = next.toolGroups.get(gid);
+    if (prevGroup !== nextGroup) return false;
+    if (!nextGroup) continue;
+    for (const toolId of nextGroup.toolIds) {
+      if (prev.toolCalls.get(toolId) !== next.toolCalls.get(toolId)) return false;
+    }
+  }
+  return true;
+}
+
 export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolCalls, sessionId, provider, showTimestamps }: Props) {
   // Read opt-in metadata preference here so the strip below only renders when
   // the user has explicitly turned it on in PreferencesPopup (default false).
   const { showTurnMetadata } = useTheme();
-  const bubbles = splitIntoBubbles(turn);
+  // splitIntoBubbles is pure over `turn`, so cache it and only recompute when
+  // the turn object itself changes — not on every parent re-render. Combined
+  // with the memo comparator below, completed turns no longer re-split (and
+  // re-parse their markdown) on every streaming frame.
+  const bubbles = React.useMemo(() => splitIntoBubbles(turn), [turn]);
   // Skills are reordered to the end of the turn's last bubble (view-layer only).
   // ToolGroupInline filters Skills out of their groups; this list backs the
   // trailing standalone-card row below.
@@ -355,7 +418,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
       })}
     </>
   );
-});
+}, assistantTurnPropsAreEqual);
 
 /**
  * Renders a plan-mode plan (from ExitPlanMode tool input) as a distinct section
