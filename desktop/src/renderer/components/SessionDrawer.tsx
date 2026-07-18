@@ -573,7 +573,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               onClose={() => setFindOpen(false)}
             />
           )}
-          <div ref={contentRef} className="h-full overflow-hidden">
+          <div ref={contentRef} className="h-full overflow-hidden artifact-content-pane">
             <ActiveArtifactView
               ref={editRef}
               artifact={active}
