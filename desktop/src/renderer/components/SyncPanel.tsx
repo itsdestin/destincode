@@ -22,6 +22,9 @@ import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
 import SettingsRow from './SettingsRow';
 import { latestUnresolvedError, type SyncStatusData } from './sync-dot-state';
+// relativeMs is co-located in the pure device-activity-label module (single
+// wording ladder, shared by the device recency label and the fallback below).
+import { deviceActivityLabel, relativeMs } from './device-activity-label';
 import { summarizeSpaceSyncError } from './sync-space-error-summary';
 
 // --- Explainer content (updated for V2 multi-instance model) ---
@@ -99,6 +102,11 @@ interface SyncStatus {
   syncInProgress: boolean;
   syncingBackendId: string | null;
   syncedCategories: string[];
+  // Per-device sync recency: key = device machineId (= the row's `d.id`), value =
+  // epoch-ms of that device's most recent successful sync. Carried over the
+  // SyncHub Durable Object (never git). Optional — an older main process that
+  // doesn't populate it makes device rows fall back to the launch-time value.
+  lastSyncByDevice?: Record<string, number>;
 }
 
 // --- Helpers ---
@@ -112,21 +120,6 @@ function timeAgo(epoch: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-// Relative time from a MILLISECOND epoch (the device registry stores lastSeen in
-// ms, unlike the sync backends above which use seconds). Plain words on purpose —
-// the "Your devices" list is spec'd as plain text with no status glyphs.
-function relativeMs(ms: number): string {
-  if (!ms || !Number.isFinite(ms)) return 'unknown';
-  const seconds = Math.floor((Date.now() - ms) / 1000);
-  if (seconds < 45) return 'just now';
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-  const days = Math.round(hours / 24);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
 // Map process.platform to a plain, human word. Empty string (unknown platform)
@@ -309,6 +302,9 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
           lastSyncEpoch: data.lastSyncEpoch ?? prev.lastSyncEpoch,
           syncInProgress: data.syncInProgress ?? prev.syncInProgress,
           backupMeta: data.backupMeta ?? prev.backupMeta,
+          // Keep per-device recency live between full refetches (same pattern as
+          // lastSyncEpoch). Absent on the push → keep the last-known map.
+          lastSyncByDevice: data.lastSyncByDevice ?? prev.lastSyncByDevice,
         };
       });
     });
@@ -495,6 +491,8 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 lastSyncEpoch: epoch ?? prev.lastSyncEpoch,
                 syncInProgress: data.syncInProgress ?? prev.syncInProgress,
                 backupMeta: data.backupMeta ?? prev.backupMeta,
+                // Per-device recency rides the same push (feeds the device list).
+                lastSyncByDevice: data.lastSyncByDevice ?? prev.lastSyncByDevice,
               }
             : prev,
         );
@@ -1058,7 +1056,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         })}
                       </div>
                       <div role="tabpanel" className="border-t border-edge-dim px-3 py-2.5">
-                        {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} onRemove={handleRemoveDevice} />}
+                        {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} onRemove={handleRemoveDevice} syncInProgress={status?.syncInProgress ?? false} lastSyncByDevice={status?.lastSyncByDevice} lastSyncEpoch={status?.lastSyncEpoch ?? null} />}
                         {countTab === 'proj' && (() => {
                           const projects = ((spacesStatus?.spaces ?? []) as any[]).filter(s => s.kind === 'project');
                           if (projects.length === 0) return <p className="text-[11px] text-fg-muted">Turn on sync for a project folder to add it here.</p>;
@@ -1535,7 +1533,7 @@ interface DeviceRow {
   self: boolean;
 }
 
-function DevicesTab({ devices, onRename, onRemove }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void; onRemove: (id: string) => Promise<string | null> }) {
+function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDevice, lastSyncEpoch }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void; onRemove: (id: string) => Promise<string | null>; syncInProgress: boolean; lastSyncByDevice?: Record<string, number>; lastSyncEpoch: number | null }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   // Two-step confirm: the id awaiting confirmation, if any. Removal is recoverable
@@ -1573,7 +1571,25 @@ function DevicesTab({ devices, onRename, onRemove }: { devices: DeviceRow[] | nu
     <ul className="space-y-1">
       {(devices ?? []).map(d => {
         const plat = platformLabel(d.platform);
-        const activity = d.self ? 'active now' : `last seen ${relativeMs(d.lastSeen)}`;
+        // Real sync recency instead of the frozen launch-time "last seen":
+        // "Synced just now" (<5 min), "Last synced 12 minutes ago" (older), or —
+        // when there's no sync record (older main process / never-synced peer) —
+        // the launch-time fallback. Self shows a live "Syncing…" mid-sync.
+        // lastSyncByDevice is keyed by machineId, which is exactly `d.id`.
+        // Self's recency comes from the LOCAL live marker (lastSyncEpoch, in
+        // SECONDS → ms), not the DO map: the SyncHub never echoes a device's own
+        // signal back to it, so self's own map entry only refreshes on reconnect
+        // and would otherwise drift stale (row saying "20 min ago" while the panel
+        // header says "just now"). Peers use the map, updated live from relayed signals.
+        const lastSyncAt = d.self
+          ? (lastSyncEpoch != null ? lastSyncEpoch * 1000 : null)
+          : (lastSyncByDevice?.[d.id] ?? null);
+        const activity = deviceActivityLabel({
+          isSelf: d.self,
+          syncInProgress,
+          lastSyncAt,
+          gitLastSeen: d.lastSeen,
+        }, Date.now());
         const right = plat ? `${plat} · ${activity}` : activity;
         return (
           <li key={d.id}>
