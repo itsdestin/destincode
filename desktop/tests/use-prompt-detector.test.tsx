@@ -151,6 +151,29 @@ describe('usePromptDetector prompt lifecycle', () => {
     expect(mocks.dispatch).not.toHaveBeenCalled();
   });
 
+  it('does NOT show a prompt if the menu vanished during the debounce with no trailing flush', () => {
+    // Regression (2026-07-17): the show timer captured `menu` at schedule time
+    // and dispatched SHOW_PROMPT without re-checking the screen. If the PTY
+    // advanced past the menu during the 350ms debounce and then went IDLE (no
+    // further buffer flush to run the disappear branch), a completed:false
+    // prompt entry stranded with nothing on screen — locking every send.
+    renderHook(() => usePromptDetector());
+
+    // Recognized menu appears, scheduling the show timer.
+    mocks.screen.text = RESUME_MENU;
+    fireBuffer('s1');
+    act(() => { vi.advanceTimersByTime(100); }); // < PROMPT_DEBOUNCE_MS
+
+    // The menu left the screen, but NO further buffer flush fires (idle PTY).
+    mocks.screen.text = 'plain output, no menu here';
+
+    // Let the show timer fire. Its re-check must see the menu is gone and bail.
+    act(() => { vi.advanceTimersByTime(400); });
+
+    const show = mocks.dispatch.mock.calls.find((c) => c[0].type === 'SHOW_PROMPT');
+    expect(show).toBeUndefined();
+  });
+
   it('still dismisses when the menu disappears entirely (existing behavior)', () => {
     renderHook(() => usePromptDetector());
     mocks.screen.text = RESUME_MENU;

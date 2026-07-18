@@ -34,6 +34,20 @@ describe('dockReducer', () => {
     expect(dockReducer(FREE_DOCK, { type: 'drag-release', snapEdge: 'bottom' }))
       .toEqual({ mode: 'peeking', edge: 'bottom' });
   });
+  // Destin 2026-07-17: peek now engages LIVE, mid-drag — dragging against an
+  // edge snaps him into peek while you're still holding him (moveMascot fires
+  // drag-peek), and sliding along the edge just re-affirms the same edge.
+  it('drag-peek engages peek while the drag is still in progress', () => {
+    expect(dockReducer(FREE_DOCK, { type: 'drag-peek', edge: 'right' }))
+      .toEqual({ mode: 'peeking', edge: 'right' });
+  });
+  it('drag-peek can switch the peeked edge mid-drag (corner cross-over)', () => {
+    expect(dockReducer({ mode: 'peeking', edge: 'right' }, { type: 'drag-peek', edge: 'bottom' }))
+      .toEqual({ mode: 'peeking', edge: 'bottom' });
+  });
+  it('drag-start frees a live-peeking buddy (dragged back off the edge)', () => {
+    expect(dockReducer({ mode: 'peeking', edge: 'right' }, { type: 'drag-start' })).toEqual(FREE_DOCK);
+  });
   it('drag-release away from edges frees', () => {
     expect(dockReducer({ mode: 'peeking', edge: 'left' }, { type: 'drag-release', snapEdge: null }))
       .toEqual(FREE_DOCK);

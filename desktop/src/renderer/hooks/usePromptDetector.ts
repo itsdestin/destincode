@@ -171,6 +171,18 @@ export function usePromptDetector() {
               return;
             }
 
+            // Re-check the menu is STILL on screen. `menu` was captured when the
+            // timer was scheduled; the PTY may have advanced past it during the
+            // debounce. Showing a card for a menu that's already gone strands a
+            // completed:false prompt entry whose ONLY clearer is a LATER buffer
+            // flush (the disappear branch below) — and an idle terminal produces
+            // none, so hasPendingInteraction() would then block every send with
+            // nothing live on screen. Re-parse now; bail if the menu left.
+            // (fix 2026-07-17 — the "SHOW fired for a vanished menu" race.)
+            const nowScreen = getVisibleScreenText(sid);
+            const nowMenu = nowScreen ? parseInkSelect(nowScreen) : null;
+            if (!nowMenu || nowMenu.id !== menu.id) return;
+
             const buttons = menuToButtons(menu);
             shownPromptRef.current.set(sid, menu.id);
             dispatch({

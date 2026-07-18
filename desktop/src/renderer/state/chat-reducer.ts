@@ -7,6 +7,7 @@ import {
   TimelineEntry,
   createSessionChatState,
   deserializeChatState,
+  HISTORY_EXPAND_PROMPT_ID,
 } from './chat-types';
 import { SubagentSegment, ToolCallState } from '../../shared/types';
 
@@ -493,6 +494,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const session = next.get(action.sessionId);
       if (!session) return state;
 
+      // Replay/live dedup: a renderer-crash reload replays this session's
+      // transcript from disk while live events still arrive. If this uuid was
+      // already applied, drop it — otherwise it appends a duplicate bubble
+      // (there is no pending match on the second delivery). See seenUuids.
+      if (action.uuid && session.seenUuids.has(action.uuid)) return state;
+      const seenUuids = action.uuid
+        ? new Set(session.seenUuids).add(action.uuid)
+        : session.seenUuids;
+
       // Find the OLDEST pending entry with matching content and confirm it
       // (clear the `pending` flag). This replaces the old last-10-entries
       // content-match dedup, which suppressed legitimate rapid-fire repeats.
@@ -527,6 +537,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         next.set(action.sessionId, {
           ...session,
           timeline,
+          seenUuids,
           isThinking: true,
           currentGroupId: null,
           currentTurnId: null,
@@ -547,6 +558,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       next.set(action.sessionId, {
         ...session,
         timeline: [...session.timeline, { kind: 'user', message, pending: false }],
+        seenUuids,
         isThinking: true,
         currentGroupId: null,
         currentTurnId: null,
@@ -562,6 +574,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (action.parentAgentToolUseId) return applySubagentEvent(state, action);
       const session = next.get(action.sessionId);
       if (!session) return state;
+
+      // Replay/live dedup (see seenUuids): drop a text line already applied.
+      // CC uuids are stable per line; native deltas each get a unique uuid, so
+      // this only fires on a genuine replay/live overlap — never on distinct
+      // streaming deltas (which merge by partId below).
+      if (action.uuid && session.seenUuids.has(action.uuid)) return state;
+      const seenUuids = action.uuid
+        ? new Set(session.seenUuids).add(action.uuid)
+        : session.seenUuids;
 
       const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const turn = assistantTurns.get(currentTurnId)!;
@@ -587,7 +608,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       });
 
       next.set(action.sessionId, {
-        ...session, assistantTurns, timeline, currentTurnId,
+        ...session, assistantTurns, timeline, currentTurnId, seenUuids,
         currentGroupId: null, // next tool_use creates a new group
         lastActivityAt: Date.now(),
         attentionState: 'ok',
@@ -1010,7 +1031,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         historyTimeline.push({
           kind: 'prompt',
           prompt: {
-            promptId: '_history_expand',
+            promptId: HISTORY_EXPAND_PROMPT_ID,
             title: 'See previous messages',
             buttons: [],
           },
@@ -1021,7 +1042,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const existingTimeline = action.hasMore
         ? session.timeline
         : session.timeline.filter((e) => {
-            if (e.kind === 'prompt' && e.prompt.promptId === '_history_expand') return false;
+            if (e.kind === 'prompt' && e.prompt.promptId === HISTORY_EXPAND_PROMPT_ID) return false;
             if (e.kind === 'user' && e.message.id.startsWith('hist-')) return false;
             if (e.kind === 'assistant-turn' && e.turnId.startsWith('hist-')) return false;
             return true;

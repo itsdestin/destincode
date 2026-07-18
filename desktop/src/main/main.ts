@@ -22,7 +22,7 @@ import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyn
 // Plan 2b Task 8: conversation-lease lifecycle. The lease client coordinates
 // which device "holds" a conversation so two devices don't append to the same
 // transcript. Constructed in the main process (needs userData-scoped device id).
-import { getDeviceIdentity } from './device-identity';
+import { getDeviceIdentity, getMachineIdentity } from './device-identity';
 import { createLeaseClient, type LeaseClient } from './conversations/lease-client';
 // Plan 2b Task 9: the requester-side takeover flow (ask-hand-off, poll, pull,
 // acquire). Built here where deviceId + hubLeaseRequest + materializeOne +
@@ -101,6 +101,9 @@ let cleanupIpcHandlers: (() => void) | null = null;
 // (it needs sessionIdMap, which is local to registerIpcHandlers).
 let leaseClient: LeaseClient | null = null;
 let deviceIdentity: { id: string } | null = null;
+// The per-MACHINE id backing the device registry — distinct from deviceIdentity
+// (per-INSTALL, for leases). null = no durable machine identity: register nothing.
+let machineIdentity: { id: string } | null = null;
 const holderTakeoverRef: { fn: (sessionId: string, from?: { deviceId: string; device: string }) => void } = { fn: () => {} };
 const sessionManager = new SessionManager();
 
@@ -192,6 +195,12 @@ const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || `http://localhost:${VI
 // (dev2, feature-x, etc.) can't accidentally re-enable hook installation.
 // Must be called before app.whenReady().
 const DEV_PROFILE = process.env.YOUCODED_PROFILE;
+// Captured BEFORE the override below, so this is the BUILT app's userData dir even
+// in a dev instance — Electron derives it from the app name, so nothing here has to
+// hardcode 'youcoded' (a productName added to package.json would change it).
+// It holds the machine identity backing the device registry: a dev profile READS
+// this dir rather than minting its own id. See device-identity.ts.
+const BUILT_APP_USER_DATA = app.getPath('userData');
 if (DEV_PROFILE) {
   app.setPath('userData', path.join(app.getPath('appData'), `youcoded-${DEV_PROFILE}`));
   app.setName(DEV_PROFILE === 'dev' ? 'YouCoded Dev' : `YouCoded Dev (${DEV_PROFILE})`);
@@ -681,6 +690,11 @@ function createWindow(firstRunManager?: FirstRunManager) {
   // lazily. onTakeoverRequest routes through holderTakeoverRef, which
   // registerIpcHandlers fills in (it owns sessionIdMap).
   deviceIdentity = getDeviceIdentity(app.getPath('userData'));
+  // Per-MACHINE id for the device registry, from the BUILT app's userData — so a
+  // dev profile heartbeats the machine's real row instead of minting its own.
+  // In the built app this resolves the id getDeviceIdentity just wrote; in a dev
+  // profile it reads across to the built app's dir.
+  machineIdentity = getMachineIdentity(BUILT_APP_USER_DATA);
   leaseClient = createLeaseClient({
     deviceId: deviceIdentity.id,
     deviceName: os.hostname(),
@@ -705,7 +719,8 @@ function createWindow(firstRunManager?: FirstRunManager) {
   });
 
   cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
-    { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester, deviceId: deviceIdentity.id });
+    { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester,
+      deviceId: deviceIdentity.id, machineId: machineIdentity?.id ?? '' });
 
   if (firstRunManager) {
     registerFirstRunIpc(mainWindow, firstRunManager);
@@ -1603,12 +1618,19 @@ app.whenReady().then(async () => {
     (m) => log('INFO', 'SyncSpaces', m),
   ).catch(e => log('ERROR', 'Main', 'SyncSpaces start failed', { error: String(e) }));
 
-  // Device registry (spec §10a, Plan 2b): stamp this device's own record
-  // (friendly name + lastSeen) on launch so Task 12's "Your devices" list is
-  // never empty. No-op when sync is off (no personal root yet).
+  // Device registry (spec §10a, Plan 2b): stamp this MACHINE's record (friendly
+  // name + lastSeen) on launch so the "Your devices" list is never empty. No-op
+  // when sync is off (no personal root yet).
+  //
+  // Keys on machineIdentity, NOT deviceIdentity: deviceIdentity is per-INSTALL, so
+  // registering it gave every YOUCODED_PROFILE its own permanent "GalaxyBook" row.
+  // A null machineIdentity means no durable id (no built app on this machine, or
+  // the id write failed) — register NOTHING. Registering an ephemeral id would
+  // leave a fresh orphan row on every launch, which is the same bug, worse.
   try {
     const pr = getManagedRoots()?.personalRoot;
-    if (pr && deviceIdentity) void upsertSelf(pr, { id: deviceIdentity.id, platform: process.platform }).catch(() => { /* best-effort */ });
+    if (pr && machineIdentity) void upsertSelf(pr, { id: machineIdentity.id, platform: process.platform }).catch(() => { /* best-effort */ });
+    else if (pr) log('INFO', 'Main', 'Device registry: no durable machine identity — skipping self-registration');
   } catch { /* sync not configured */ }
 
   // Conversation Store (Phase 2a): records + transcript sync ride the personal

@@ -1,4 +1,5 @@
 import type { SessionChatState } from './chat-types';
+import { HISTORY_EXPAND_PROMPT_ID } from './chat-types';
 
 // Shared safety gate for programmatic PTY writes.
 //
@@ -30,7 +31,17 @@ export function hasPendingInteraction(session: SessionChatState): boolean {
     if (session.toolCalls.get(id)?.status === 'awaiting-approval') return true;
   }
   for (const entry of session.timeline) {
-    if (entry.kind === 'prompt' && !entry.prompt.completed) return true;
+    // The "See previous messages" marker rides the `prompt` kind but is a
+    // display affordance, not a live Ink menu — it has no answerable buttons
+    // and no keystroke is waiting on it. Counting it here silently locked ALL
+    // sends on every resumed session (HISTORY_LOADED pushes it with hasMore),
+    // until the user happened to click "See previous messages". Skip it — the
+    // renderer already special-cases the same id when rendering. (fix 2026-07-17)
+    if (entry.kind === 'prompt'
+        && entry.prompt.promptId !== HISTORY_EXPAND_PROMPT_ID
+        && !entry.prompt.completed) {
+      return true;
+    }
   }
   return false;
 }

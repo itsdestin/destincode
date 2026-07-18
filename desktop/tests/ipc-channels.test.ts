@@ -554,6 +554,7 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     ['syncspaces:lease-force', 'IPC.SYNC_SPACES_LEASE_FORCE'],
     ['syncspaces:list-devices', 'IPC.SYNC_SPACES_LIST_DEVICES'],
     ['syncspaces:rename-device', 'IPC.SYNC_SPACES_RENAME_DEVICE'],
+    ['syncspaces:remove-device', 'IPC.SYNC_SPACES_REMOVE_DEVICE'],
   ];
   const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
   const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
@@ -582,6 +583,7 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     'syncspaces:lease-force',
     'syncspaces:list-devices',
     'syncspaces:rename-device',
+    'syncspaces:remove-device',
   ];
   if (fs.existsSync(kotlinPath)) {
     const kotlin = fs.readFileSync(kotlinPath, 'utf8');

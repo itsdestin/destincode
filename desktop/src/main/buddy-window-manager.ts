@@ -6,7 +6,7 @@ import {
 } from './buddy-bar-geometry';
 import { BarVisibilityTracker } from './buddy-bar-visibility';
 import {
-  dockReducer, detectSnapEdge, dockPosition, FREE_DOCK,
+  dockReducer, detectSnapEdge, dockPosition, FREE_DOCK, SNAP_THRESHOLD_PX,
   type DockState, type DockEvent, type DockEdge,
 } from './buddy-dock';
 
@@ -15,6 +15,12 @@ import {
 const IPC_BAR_STATE = 'buddy:bar-state';
 const IPC_CHAT_STATE = 'buddy:chat-state';
 const IPC_MASCOT_STATE = 'buddy:mascot-state';
+
+// How close (px) the raw drag target must get to a screen edge, WITH the chat
+// open, to read as "put him away" — close the chat and peek. Deliberately much
+// smaller than SNAP_THRESHOLD_PX: the chat-open x-pin already parks the mascot
+// ~17px off the left edge, so a 24px test would fire on ordinary positioning.
+const PEEK_PAST_EDGE_PX = 6;
 
 export interface Rect { x: number; y: number; width: number; height: number; }
 export interface Point { x: number; y: number; }
@@ -105,6 +111,29 @@ export class BuddyWindowManager {
   private syncEngagement(): void {
     const engaged = this.barVisibility.wantsVisible() || this.attentionNeeded;
     this.dispatchDock({ type: engaged ? 'engage' : 'disengage' });
+    // Self-heal the peek position. `peeking` is only guaranteed flush-to-edge
+    // when moveMascot's live drag-peek enters it (it sets the window flush in
+    // the same step). Reaching `peeking` via disengage — chat closed, or
+    // attention cleared — only changes the POSE; if opening the chat had
+    // pushed the mascot off his edge to make room (computeGroupLayout tier-3
+    // bounce), he'd otherwise lean + grip in mid-air with no screen edge under
+    // him (Destin 2026-07-17: "peek occasionally hangs off of nothing").
+    this.reconcilePeekPosition();
+  }
+
+  /** Glide a peeking mascot flush against his dock edge if he isn't already.
+   *  No-op unless the state is `peeking` (free/docked own their positions) and
+   *  he's actually off the edge — the common left-edge case opens the chat to
+   *  his free side and never moves him, so this costs nothing there. */
+  private reconcilePeekPosition(): void {
+    const { mode, edge } = this.dockState;
+    if (mode !== 'peeking' || !edge) return;
+    if (!this.mascot || this.mascot.isDestroyed()) return;
+    const mb = this.mascot.getBounds();
+    const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
+    const flush = dockPosition(edge, { x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
+    if (Math.round(mb.x) === Math.round(flush.x) && Math.round(mb.y) === Math.round(flush.y)) return;
+    this.glideGroup(flush);
   }
 
   private pushMascotState(): void {
@@ -127,7 +156,15 @@ export class BuddyWindowManager {
     if (!this.mascot || this.mascot.isDestroyed()) return;
     const mb = this.mascot.getBounds();
     const display = screen.getDisplayMatching(mb) ?? screen.getPrimaryDisplay();
-    const edge = detectSnapEdge({ x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
+    // Peek is a chat-CLOSED state. While the chat is open the mascot is x-pinned
+    // ~17px off the left edge (and y-free on top/bottom), which used to false-
+    // snap into peek at a non-flush spot on release — and that inconsistent
+    // "peeking + chat open" state then survived closing the chat (Destin
+    // 2026-07-17). Putting him away now goes through the shove-past-edge path in
+    // moveMascot, which closes the chat first; so if the chat is STILL open on
+    // release, never peek — just settle the pair back onto its layout.
+    const chatOpen = !!(this.chatOpenIntent && this.chat && !this.chat.isDestroyed());
+    const edge = chatOpen ? null : detectSnapEdge({ x: mb.x, y: mb.y }, MASCOT_SIZE, display.workArea);
     this.dispatchDock({ type: 'drag-release', snapEdge: edge });
     // Glide even when nothing snapped (the mascot then stays put): the
     // satellites still need to settle back onto their anchors. While dragging
@@ -161,7 +198,11 @@ export class BuddyWindowManager {
     const win = this.mascot;
     if (!win || win.isDestroyed()) return;
 
-    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
+    // Gate on the INTENT to have the chat open, not live isVisible() — during
+    // the 140ms close fade the window is still shown but chatOpenIntent is
+    // already false, and a reconcile-to-peek glide must move ONLY the mascot
+    // (leaving the fading chat to fade in place), not chase it to layout.mascot.
+    const chatVisible = !!(this.chatOpenIntent && this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
     const layout = this.layoutFor({ ...mascotTarget, ...MASCOT_SIZE });
     // The mascot only gets pushed back to the pinned distance while the chat is
     // OPEN. With the chat closed the buddy is free to sit anywhere, including
@@ -243,13 +284,14 @@ export class BuddyWindowManager {
       const bar = this.bar;
       if (bar && !bar.isDestroyed()) {
         bar.webContents.send(IPC_BAR_STATE, { visible: false });
-        // Let the CSS fade finish, then make the window click-through.
-        // forward:true keeps mousemove flowing to the page so the hidden bar's
-        // zone still reports hover — that no longer re-summons the bar, but it
-        // does count as engagement and holds off the docked→peek timer.
+        // Let the CSS fade finish, then make the window click-through so the
+        // invisible bar doesn't eat clicks meant for whatever is underneath.
+        // (forward:true kept mousemove flowing to the page back when hover could
+        // re-summon the bar; the bar now opens only with the chat and nothing
+        // reads hover, so no forwarding is needed.)
         setTimeout(() => {
           if (this.bar && !this.bar.isDestroyed() && !this.barCssVisible) {
-            this.bar.setIgnoreMouseEvents(true, { forward: true });
+            this.bar.setIgnoreMouseEvents(true);
           }
         }, 180);
       }
@@ -331,24 +373,36 @@ export class BuddyWindowManager {
     this.deps.onStatusChanged(this.getStatus());
   }
 
+  /**
+   * Animated chat close: cue the renderer's fade, hide the window once it plays,
+   * and fade the action bar out alongside it. `chatOpenIntent` flips false
+   * immediately (before the delayed hide) so drag logic treats the chat as gone
+   * at once, and it also guards the timeout against a rapid re-open.
+   *
+   * Does NOT reconcile the dock — callers decide what happens next: toggleChat
+   * syncs engagement (sink back to peek), the drag-to-peek path dispatches
+   * drag-peek itself.
+   */
+  private closeChat(): void {
+    if (!this.chat || this.chat.isDestroyed() || !this.chat.isVisible()) return;
+    this.chatOpenIntent = false;
+    this.chat.webContents.send(IPC_CHAT_STATE, { visible: false });
+    const chatRef = this.chat;
+    setTimeout(() => {
+      if (chatRef && !chatRef.isDestroyed() && chatRef === this.chat && !this.chatOpenIntent) {
+        chatRef.hide();
+      }
+    }, 140);
+    this.barVisibility.setChatOpen(false);
+  }
+
   toggleChat(): void {
     if (!this.chat || this.chat.isDestroyed()) {
       this.createChat();
       return;
     }
     if (this.chat.isVisible()) {
-      this.chatOpenIntent = false;
-      // Exit animation: cue the renderer, let the 120ms fade play, THEN hide
-      // the window. Guarded so a rapid re-toggle inside the delay can't hide
-      // a window the user just re-opened.
-      this.chat.webContents.send(IPC_CHAT_STATE, { visible: false });
-      const chatRef = this.chat;
-      setTimeout(() => {
-        if (chatRef && !chatRef.isDestroyed() && chatRef === this.chat && !this.chatOpenIntent) {
-          chatRef.hide();
-        }
-      }, 140);
-      this.barVisibility.setChatOpen(false);
+      this.closeChat();
       this.syncEngagement(); // chat closed — sink back to peek unless attention holds him
     } else {
       // Re-anchor to current mascot position before showing — the user may
@@ -437,29 +491,59 @@ export class BuddyWindowManager {
    */
   moveMascot(targetX: number, targetY: number): void {
     if (!this.mascot || this.mascot.isDestroyed()) return;
-    // A live drag cancels any in-flight snap glide and pops the mascot out
-    // of its dock (spec §6.1 — dragging always frees).
+    // A live drag cancels any in-flight snap glide.
     if (this.glideTimer) { clearInterval(this.glideTimer); this.glideTimer = null; }
-    if (this.dockState.mode !== 'free') this.dispatchDock({ type: 'drag-start' });
     const [oldX, oldY] = this.mascot.getPosition();
     const raw = { x: targetX, y: targetY };
     const display = screen.getDisplayMatching({ ...raw, ...MASCOT_SIZE }) ?? screen.getPrimaryDisplay();
-    const chatVisible = !!(this.chat && !this.chat.isDestroyed() && this.chat.isVisible());
-    let clamped = clampToWorkArea(raw, MASCOT_SIZE, display.workArea);
-    // With the chat open the pair are horizontally rigid, so the mascot STOPS
-    // once the chat's right (or left) edge reaches the workArea edge, rather
-    // than sliding out from under his own chat window (Destin 2026-07-17).
-    // Anchor-based dragging makes the stop harmless: the cursor can run past
-    // the wall and the mascot picks it straight back up on the way back, with
-    // no accumulated drift.
-    //
-    // Horizontal only. Pinning Y the same way would be a disaster: the chat is
-    // 480 tall against an 852 workArea, so it would shrink the draggable band
-    // to a sliver and fight edge docking. Vertical is reconciled at release by
-    // the tier-3 bounce in computeGroupLayout.
-    if (chatVisible) {
-      const range = mascotXRangeForChat({ ...clamped, ...MASCOT_SIZE }, display.workArea);
+    const wa = display.workArea;
+    // Gate on the INTENT to have the chat open, not the window's live
+    // isVisible() — the exit animation keeps the window shown for 140ms after a
+    // close, and drag logic must treat the chat as already gone the instant it
+    // starts closing (so the shove-to-peek below hands off cleanly).
+    const chatOpen = !!(this.chatOpenIntent && this.chat && !this.chat.isDestroyed());
+    let clamped = clampToWorkArea(raw, MASCOT_SIZE, wa);
+
+    if (chatOpen) {
+      // With the chat open the pair are horizontally rigid, so the mascot is
+      // x-pinned to keep the chat on-screen. But dragging the buddy ALL THE WAY
+      // to a screen edge means "put him away": shoving the cursor past the edge
+      // (the raw target lands within PEEK_PAST_EDGE_PX of it, i.e. essentially
+      // flush) closes the chat + bar (animated) and hands straight off to the
+      // edge-peek — Destin 2026-07-17. A small threshold, NOT SNAP_THRESHOLD_PX:
+      // the left pin already parks the mascot ~17px off the edge, so a 24px test
+      // would false-trigger on ordinary positioning.
+      const shove = detectSnapEdge(clamped, MASCOT_SIZE, wa, PEEK_PAST_EDGE_PX);
+      if (shove) {
+        this.closeChat(); // fades chat + bar out; chatOpenIntent flips false now
+        this.dispatchDock({ type: 'drag-peek', edge: shove });
+        const pos = dockPosition(shove, clamped, MASCOT_SIZE, wa);
+        this.mascot.setPosition(Math.round(pos.x), Math.round(pos.y));
+        return;
+      }
+      if (this.dockState.mode !== 'free') this.dispatchDock({ type: 'drag-start' });
+      // Horizontal pin only. Pinning Y would shrink the draggable band to a
+      // sliver (chat 480 tall vs 852 workArea) and fight edge docking; vertical
+      // is reconciled at release by computeGroupLayout's tier-3 bounce.
+      const range = mascotXRangeForChat({ ...clamped, ...MASCOT_SIZE }, wa);
       clamped = { x: Math.max(range.min, Math.min(clamped.x, range.max)), y: clamped.y };
+    } else {
+      // Chat closed: live edge-peek. Dragging the buddy against an edge snaps
+      // him into peek mid-drag and he slides along it; pulling away past the
+      // threshold frees him (the renderer plays the swing-out on peeking→free).
+      // Hysteresis: enter at SNAP_THRESHOLD_PX, hold until the cursor pulls 2.5×
+      // further away, so a hand at the boundary can't flutter him in and out
+      // (each toggle would fire the 380ms swing).
+      const peeking = this.dockState.mode === 'peeking';
+      const threshold = peeking ? SNAP_THRESHOLD_PX * 2.5 : SNAP_THRESHOLD_PX;
+      const edge = detectSnapEdge(clamped, MASCOT_SIZE, wa, threshold);
+      if (edge) {
+        this.dispatchDock({ type: 'drag-peek', edge });
+        const pos = dockPosition(edge, clamped, MASCOT_SIZE, wa);
+        this.mascot.setPosition(Math.round(pos.x), Math.round(pos.y));
+        return; // flush against the edge; chat closed → no satellites to follow
+      }
+      this.dispatchDock({ type: 'drag-start' }); // in open space → free/idle
     }
     // setPosition requires integer args. Pointer screenX/Y on HiDPI displays
     // can be fractional, so targetX/Y (and therefore clamped.x/y) may be
@@ -482,7 +566,7 @@ export class BuddyWindowManager {
     // of "squishy" drag latency.
     const actualDx = newX - oldX;
     const actualDy = newY - oldY;
-    if ((actualDx !== 0 || actualDy !== 0) && this.chat && !this.chat.isDestroyed() && chatVisible) {
+    if ((actualDx !== 0 || actualDy !== 0) && this.chat && !this.chat.isDestroyed() && chatOpen) {
       const cb = this.chat.getBounds();
       const chatRaw = { x: cb.x + actualDx, y: cb.y + actualDy };
       const chatDisplay = screen.getDisplayMatching({ ...chatRaw, ...CHAT_SIZE }) ?? screen.getPrimaryDisplay();

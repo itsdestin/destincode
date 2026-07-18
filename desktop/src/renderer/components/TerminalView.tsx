@@ -135,7 +135,11 @@ export default function TerminalView({ sessionId, visible }: Props) {
       const thumbH = Math.max(24, (rows / total) * trackH);
       const maxTop = trackH - thumbH;
       const scrollFraction = buf.viewportY / (total - rows);
-      const top = 4 + scrollFraction * maxTop;
+      // The thumb lives in the wrapper but must track the xterm content, which
+      // is inset below the header (--terminal-top-inset). offsetTop is that
+      // inset in px, so the thumb starts at the content's top, not the wrapper's.
+      const contentTop = containerRef.current?.offsetTop ?? 0;
+      const top = contentTop + 4 + scrollFraction * maxTop;
       thumb.style.height = `${thumbH}px`;
       thumb.style.top = `${top}px`;
       thumb.style.opacity = '0.55';
@@ -437,6 +441,13 @@ export default function TerminalView({ sessionId, visible }: Props) {
       className={wrapperClass}
       style={{
         position: 'absolute',
+        // Wrapper stays full-bleed (top: 0). Only the xterm CONTENT is inset
+        // below the header (see the container's --terminal-top-inset top). This
+        // keeps the terminal's background layer (terminalBg / --canvas) running
+        // continuously up behind the header, so there's no boundary or exposed
+        // rounded-corner box between the terminal and the region above it — the
+        // header just floats over one continuous surface, as it did before the
+        // content was inset.
         top: 0,
         left: 0,
         right: 0,
@@ -477,6 +488,29 @@ export default function TerminalView({ sessionId, visible }: Props) {
           }}
         />
       )}
+      {/* Header-gap backdrop for gradient/glass themes (seeThrough but no
+          terminalBg image to fill the gap). The xterm content is inset below
+          the header and dims its backdrop via the container's opacity; without
+          this, the strip above the content would show the theme background at
+          FULL brightness, leaving a visible brightness step at the header edge.
+          Replicate the terminal's dimmed surface — --canvas at the same
+          --terminal-xterm-opacity — over just the gap so it reads as one
+          continuous surface. Solid themes need nothing (the strip already shows
+          --canvas); wallpaper themes are covered by the full-bleed terminalBg. */}
+      {seeThrough && !terminalBg && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 'var(--terminal-top-inset, 0px)',
+            backgroundColor: 'var(--canvas)',
+            opacity: 'var(--terminal-xterm-opacity, 0.6)',
+          }}
+        />
+      )}
       <div
         ref={thumbRef}
         className="terminal-scrollbar-thumb"
@@ -486,7 +520,27 @@ export default function TerminalView({ sessionId, visible }: Props) {
         ref={containerRef}
         style={{
           position: 'absolute',
-          inset: 0,
+          // Content (the xterm grid) starts BELOW the header. Claude Code wipes
+          // the screen (\e[2J) and repaints from row 1 with absolute cursor
+          // positioning every render, so a new session's banner always lands at
+          // the top of the viewport — which sat behind the overlaid header.
+          // Insetting the grid is the only way to bring it into view (seeded
+          // blank lines can't survive the \e[2J). Only the grid moves; the
+          // background layers above stay full-bleed for a seamless surface.
+          // --terminal-top-inset (globals.css) = header height on desktop
+          // electron, set in BOTH views so the terminal is one stable size —
+          // a view-gated inset would resize the PTY per toggle and ConPTY would
+          // re-emit its buffer (duplicated chrome).
+          top: 'var(--terminal-top-inset, 0px)',
+          // Left/right inset so the framed themes' side frame edges (--frame-edge
+          // wide, painted by chrome-glass) don't clip the TUI's edge columns —
+          // the chat pane is inset by those edges via the framed-shell flex, but
+          // the terminal is a separate full-width layer, so it needs a matching
+          // inset. --terminal-side-inset is theme-driven (= --frame-edge on
+          // framed, 0 on floating), the same in both views → no toggle reflow.
+          left: 'var(--terminal-side-inset, 0px)',
+          right: 'var(--terminal-side-inset, 0px)',
+          bottom: 0,
           opacity: xtermOpacityStyle,
           // xterm renders cell rows to a canvas; if container height isn't a
           // whole multiple of cell height (typical — fonts round irregularly),

@@ -865,6 +865,7 @@ export const IPC = {
   // Device registry (Plan 2b spec §10a) — the "Your devices" list + rename.
   SYNC_SPACES_LIST_DEVICES: 'syncspaces:list-devices',
   SYNC_SPACES_RENAME_DEVICE: 'syncspaces:rename-device',
+  SYNC_SPACES_REMOVE_DEVICE: 'syncspaces:remove-device',
   SYNC_SPACES_EVENT: 'syncspaces:event',
   // Connect-GitHub modal (device-flow auth) — lets non-developers connect GitHub
   // in-app so enabling Sync never dead-ends on "gh not installed / not signed in".

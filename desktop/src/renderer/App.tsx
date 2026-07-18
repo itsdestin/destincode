@@ -21,6 +21,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
 import GamePanel from './components/game/GamePanel';
+import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
@@ -416,7 +417,12 @@ function AppInner() {
   // Events from the in-flight turn (before the switch takes effect) use the
   // old model and would cause false "failed to switch" errors.
   const postSwitchTurnReady = useRef(false);
-  const [toast, setToast] = useState<string | null>(null);
+  // A toast is either a plain message or a message with one action button
+  // (used by the pending-prompt "Send anyway" override). Keeping the string
+  // form means the ~8 plain setToast('…') call sites need no change.
+  type ToastState = string | { message: string; action: { label: string; onClick: () => void } };
+  const [toast, setToast] = useState<ToastState | null>(null);
+  // Zoom state + handlers extracted to useZoomControls (tranche 1).
   const { zoomPercent, zoomVisible, handleZoomIn, handleZoomOut, handleZoomReset } = useZoomControls();
 
   const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
@@ -1451,23 +1457,36 @@ function AppInner() {
   }, [sessions]);
 
   // Fetch session list on mount — catches sessions that existed before event handlers were registered
-  // (e.g., remote browser reconnecting after the replay buffer events already fired)
+  // (e.g., remote browser reconnecting after the replay buffer events already fired, or a renderer
+  // crash/reload, where main kept every session alive but this is a brand-new React tree).
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
       if (!list || list.length === 0) return;
+
+      // Fix: this per-session seeding used to run INSIDE the setSessions updater
+      // below. Updaters must be PURE — React re-invokes them (concurrent
+      // rendering, StrictMode) and keeps only the returned value, so nested
+      // dispatch/setState calls could be replayed or dropped on the floor. That
+      // left the session list populated while the model/permission maps stayed
+      // empty, which surfaces as "Model Unknown" / "PERMISSION UNKNOWN" chips
+      // after a reload. Every setter here is has()-guarded, so running it across
+      // the whole list (rather than only the not-yet-known ones) is idempotent
+      // and never clobbers what session:created already seeded.
+      for (const s of list) {
+        dispatch({ type: 'SESSION_INIT', sessionId: s.id });
+        setViewModes((vm) => vm.has(s.id) ? vm : new Map(vm).set(s.id, 'chat'));
+        setPermissionModes((pm) => pm.has(s.id) ? pm : new Map(pm).set(s.id, matchPermissionMode(s.permissionMode)));
+        // These sessions were already running before this window's event
+        // handlers attached (e.g. a remote reconnect) — session:created never
+        // fired for them, so this is the only place their model gets seeded.
+        setSessionModels((sm) => sm.has(s.id) ? sm : new Map(sm).set(s.id, matchModelAlias(s.model)));
+      }
+
+      // Pure updater — dedup against whatever session:created already added.
       setSessions((prev) => {
         const existingIds = new Set(prev.map((s) => s.id));
         const newSessions = list.filter((s) => !existingIds.has(s.id));
         if (newSessions.length === 0) return prev;
-        for (const s of newSessions) {
-          dispatch({ type: 'SESSION_INIT', sessionId: s.id });
-          setViewModes((vm) => vm.has(s.id) ? vm : new Map(vm).set(s.id, 'chat'));
-          setPermissionModes((pm) => pm.has(s.id) ? pm : new Map(pm).set(s.id, matchPermissionMode(s.permissionMode)));
-          // These sessions were already running before this window's event
-          // handlers attached (e.g. a remote reconnect) — session:created never
-          // fired for them, so this is the only place their model gets seeded.
-          setSessionModels((sm) => sm.has(s.id) ? sm : new Map(sm).set(s.id, matchModelAlias(s.model)));
-        }
         return [...prev, ...newSessions];
       });
       setSessionId((prev) => prev ?? list[0].id);
@@ -1478,6 +1497,23 @@ function AppInner() {
         for (const s of list) next.add(s.id);
         return next;
       });
+
+      // Rehydrate each session's chat from disk. Fix: without this, a renderer
+      // reload (crash, Ctrl+R) left every pre-existing session with an EMPTY
+      // timeline — SESSION_INIT only allocates a blank slot, and no live
+      // transcript event ever re-sends history, so the conversation looked
+      // deleted. Every OTHER entry into an already-running session already
+      // replays (ownership handoff, native resume, buddy feed); the mount path
+      // was the one that didn't.
+      //
+      // Ordering: the transcript:event listener is registered by an effect
+      // declared ABOVE this one, so it is already attached when these replayed
+      // events stream back; uuid dedup absorbs any overlap with live events.
+      // No-op on remote/Android (remote-shim stubs requestTranscriptReplay) —
+      // those hydrate via chat:hydrate on connect instead.
+      for (const s of list) {
+        (window as any).claude?.detach?.requestTranscriptReplay?.(s.id);
+      }
     }).catch(() => {});
   }, [dispatch]);
 
@@ -1858,10 +1894,22 @@ function AppInner() {
   const activeSessionModel = useActiveSessionModel(sessionId);
   useEffect(() => {
     if (!sessionId || pendingModel) return;
+    // Moved-session guard (merged from master's self-heal fix): a moved session
+    // (Plan 2b Moved Gate) deliberately deletes its sessionModels entry while
+    // KEEPING its timeline (destroyedHandler). Without this guard the loosened
+    // check below would read that undefined entry as drift, fire a spurious
+    // GLOBAL setPreference() for a session the user didn't pick and this window
+    // no longer owns, and resurrect the map entry the gate just cleaned up.
+    if (movedSessionsRef.current.has(sessionId)) return;
     if (!activeSessionModel) return;
 
     const currentAlias = sessionModels.get(sessionId);
-    if (currentAlias && currentAlias !== activeSessionModel) {
+    // Compare directly, NOT `currentAlias && currentAlias !== …` (master's fix):
+    // a session with NO map entry renders 'unknown' on the pill, but currentAlias
+    // is `undefined` here — falsy — so the old truthiness gate skipped the repair
+    // and the pill stayed stuck (red/unknown) forever. Direct comparison heals
+    // both the explicit 'unknown' sentinel and the missing-entry case.
+    if (currentAlias !== activeSessionModel) {
       // Drift detected — reconcile silently. Also the self-heal path for a pill
       // stuck on the 'unknown' sentinel: the moment a real model shows up in
       // the transcript, this overwrites it. setPreference persists to disk
@@ -2409,6 +2457,18 @@ function AppInner() {
     );
   }
 
+  // The active session's game pane. Hoisted so BOTH ChatView (chat view) and
+  // TerminalRightSlot (terminal view) can place it — only one renders at a
+  // time (ChatView gates on `visible`, the overlay only mounts in terminal
+  // view), so this single element is never mounted twice. The live connection
+  // lives in App's usePartyGame hook, so re-placing GamePanel on a view toggle
+  // is a cheap view remount, not a reconnect.
+  const activeGamePane = gameState.panelOpen ? (
+    <ErrorBoundary name="Game">
+      <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
+    </ErrorBoundary>
+  ) : null;
+
   return (
     // ArtifactProvider: exposes artifact state + dispatch to the entire AppInner
     // subtree. Sits inside all top-level providers (ChatProvider, ThemeProvider,
@@ -2497,7 +2557,12 @@ function AppInner() {
               />
             </div>
             <div
-              className="flex-1 overflow-hidden relative"
+              // app-content: the chat/terminal content region. In framed
+              // terminal view it gets a --frame-edge bottom margin so xterm
+              // sits above the bottom frame strip (see globals.css). The
+              // terminal-panel overlay (below) is a child so it inherits the
+              // same inset and stays aligned with the frame.
+              className="app-content flex-1 overflow-hidden relative"
             >
               {/* Tier 2 of android-terminal-data-parity: xterm.js is the sole
                   terminal renderer on every platform. The Android-only style
@@ -2521,11 +2586,9 @@ function AppInner() {
                       // Game pane lives in the active session's framed-shell
                       // right slot. Only the active session renders it (others
                       // get null) so there's a single GamePanel instance.
-                      gamePane={s.id === sessionId && gameState.panelOpen ? (
-                        <ErrorBoundary name="Game">
-                          <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
-                        </ErrorBoundary>
-                      ) : null}
+                      // ChatView only actually mounts it in chat view; in
+                      // terminal view TerminalRightSlot (below) places it.
+                      gamePane={s.id === sessionId ? activeGamePane : null}
                       // Provider-config error bubble → open Settings straight to
                       // the Model Providers section so the key can be fixed.
                       onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
@@ -2539,6 +2602,24 @@ function AppInner() {
                   </ErrorBoundary>
                 </React.Fragment>
               ))}
+              {/* Terminal-view right-slot panel (Bug #2): the artifact drawer +
+                 game pane live in ChatView's framed-shell, which is hidden in
+                 terminal view — so opening one there expanded the frame but
+                 showed nothing. Render a single framed-shell clone here, only
+                 in terminal view, so the same panel overlays the terminal's
+                 right side. ChatView gates its own copy on `visible`, so
+                 exactly one instance mounts. Electron-only for now (Android's
+                 terminal overlay sizing is native — separate follow-up). */}
+              {getPlatform() === 'electron' && currentViewMode === 'terminal' && sessionId
+                && (activeDrawerOpen || gameState.panelOpen) && (
+                <TerminalRightSlot
+                  sessionId={sessionId}
+                  cwd={currentSession?.cwd}
+                  gamePane={gameState.panelOpen ? activeGamePane : null}
+                  drawerOpen={activeDrawerOpen}
+                  expanded={artifactState.drawerExpanded}
+                />
+              )}
               {/* Initializing overlay — shown before Claude is ready, but only in chat view.
                  Terminal view must stay accessible during init so the user can interact there.
                  z-10: must stay below glassmorphism chrome (z-20) so header/bottom bars remain accessible */}
@@ -2605,7 +2686,7 @@ function AppInner() {
                 {/* TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
                     ChatInputBar when minimal={isTerminalTouch}, slotted in
                     the QuickChips position so both modes share one container. */}
-                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
+                <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); }} onSendBlocked={(retry) => { setToast({ message: 'Claude is waiting for your response — answer the prompt first.', action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } }); setTimeout(() => setToast(null), 8000); }} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
                     usage: statusData.usage,
@@ -2956,8 +3037,17 @@ function AppInner() {
         <ShareSheet skillId={shareSkillId} onClose={() => setShareSkillId(null)} />
       )}
       {toast && (
-        <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-panel border border-edge text-sm text-fg shadow-lg">
-          {toast}
+        <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-panel border border-edge text-sm text-fg shadow-lg flex items-center gap-3">
+          <span>{typeof toast === 'string' ? toast : toast.message}</span>
+          {typeof toast !== 'string' && (
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-edge px-2 py-0.5 text-xs font-medium text-fg hover:bg-inset"
+              onClick={toast.action.onClick}
+            >
+              {toast.action.label}
+            </button>
+          )}
         </div>
       )}
       {/* Plan 2b Task 9 — conversation-lease takeover confirm dialog. L2 popup via
@@ -3024,9 +3114,9 @@ function AppInner() {
 // getUsageSnapshot lets /cost and /usage snapshot live stats from App state.
 import type { UsageSnapshot } from './state/chat-types';
 import type { SessionChatState } from './state/chat-types';
-const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?: ViewMode; onOpenDrawer: (searchMode: boolean) => void; onCloseDrawer?: () => void; onDrawerSearch?: (query: string) => void; disabled?: boolean; minimal?: boolean; onResumeCommand?: () => void; getUsageSnapshot?: (sessionId: string) => UsageSnapshot | null; onOpenPreferences?: () => void; onToast?: (msg: string) => void; getSessionState?: (sessionId: string) => SessionChatState | undefined; onOpenModelPicker?: () => void; initialInput?: string; provider?: 'claude' | 'native' }>(
-  function ChatInputBar({ sessionId, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, disabled, minimal, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
-    return <InputBar ref={ref} sessionId={sessionId} view={view} onOpenDrawer={onOpenDrawer} onCloseDrawer={onCloseDrawer} onDrawerSearch={onDrawerSearch} disabled={disabled} minimal={minimal} onResumeCommand={onResumeCommand} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={onOpenPreferences} onToast={onToast} getSessionState={getSessionState} onOpenModelPicker={onOpenModelPicker} initialInput={initialInput} provider={provider} />;
+const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?: ViewMode; onOpenDrawer: (searchMode: boolean) => void; onCloseDrawer?: () => void; onDrawerSearch?: (query: string) => void; disabled?: boolean; minimal?: boolean; onResumeCommand?: () => void; getUsageSnapshot?: (sessionId: string) => UsageSnapshot | null; onOpenPreferences?: () => void; onToast?: (msg: string) => void; onSendBlocked?: (retry: () => void) => void; getSessionState?: (sessionId: string) => SessionChatState | undefined; onOpenModelPicker?: () => void; initialInput?: string; provider?: 'claude' | 'native' }>(
+  function ChatInputBar({ sessionId, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, disabled, minimal, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
+    return <InputBar ref={ref} sessionId={sessionId} view={view} onOpenDrawer={onOpenDrawer} onCloseDrawer={onCloseDrawer} onDrawerSearch={onDrawerSearch} disabled={disabled} minimal={minimal} onResumeCommand={onResumeCommand} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={onOpenPreferences} onToast={onToast} onSendBlocked={onSendBlocked} getSessionState={getSessionState} onOpenModelPicker={onOpenModelPicker} initialInput={initialInput} provider={provider} />;
   },
 );
 

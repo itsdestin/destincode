@@ -180,3 +180,90 @@ describe('GitTransport specifics', () => {
     await h.cleanup();
   });
 });
+
+// Stale git-lock recovery: a git write killed mid-operation (5-min timeout
+// SIGTERM, app quit, machine sleep, or a second instance racing the same
+// sync.git) leaves an orphaned `*.lock` behind. Git then refuses EVERY
+// subsequent write ("Unable to create index.lock: File exists"), wedging the
+// space forever until the file is deleted by hand. The transport reaps locks
+// older than its stale threshold before each sync so the space self-heals —
+// age-gated so we never yank a lock a genuinely-live writer still holds.
+describe('GitTransport stale-lock recovery', () => {
+  const gitDirOf = (space: SyncSpace) => path.join(space.root, '.youcoded', 'sync.git');
+  // Backdate a file's mtime so the age gate treats it as stale. utimes takes seconds.
+  const backdate = (file: string, ms: number) => {
+    const t = (Date.now() - ms) / 1000;
+    fs.utimesSync(file, t, t);
+  };
+
+  it('reaps a stale index.lock so a wedged push commits and pushes again', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    // Tiny stale threshold so the test never waits the real 5-minute default.
+    const t = new GitTransport({ deviceName: 'T', lockStaleMs: 50 });
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v1');
+    await t.push(a, 'v1');
+    // Simulate the crash: an empty, orphaned index.lock aged past the threshold.
+    const lock = path.join(gitDirOf(a), 'index.lock');
+    fs.writeFileSync(lock, '');
+    backdate(lock, 10_000);
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v2');
+    const r = await t.push(a, 'v2');
+    expect(r.pushed).toBe(true);
+    expect(fs.existsSync(lock)).toBe(false);
+    await h.cleanup();
+  });
+
+  it('reaps a stale index.lock so a wedged pull merge no longer throws', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    const t = new GitTransport({ deviceName: 'T', lockStaleMs: 50 });
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v1');
+    await t.push(a, 'v1');
+    const lock = path.join(gitDirOf(a), 'index.lock');
+    fs.writeFileSync(lock, '');
+    backdate(lock, 10_000);
+    // pull() snapshots local changes with a commit — that commit throws the
+    // "Sync merge could not complete" error when the lock is present.
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v2');
+    await expect(t.pull(a)).resolves.toBeDefined();
+    expect(fs.existsSync(lock)).toBe(false);
+    await h.cleanup();
+  });
+
+  it('leaves a FRESH lock untouched (a live writer may still hold it)', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    // Real 5-minute threshold: a just-created lock is well under it.
+    const t = new GitTransport({ deviceName: 'T', lockStaleMs: 5 * 60 * 1000 });
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v1');
+    await t.push(a, 'v1');
+    const lock = path.join(gitDirOf(a), 'index.lock');
+    fs.writeFileSync(lock, ''); // fresh — mtime is now
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v2');
+    const r = await t.push(a, 'v2');
+    // The fresh lock must survive, and because it survived the push could not commit.
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(r.pushed).toBe(false);
+    await h.cleanup();
+  });
+
+  it('reaps a stale ref lock under refs/, not just index.lock', async () => {
+    const h = await makeHarness();
+    const a = await h.makeDeviceSpace();
+    const t = new GitTransport({ deviceName: 'T', lockStaleMs: 50 });
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v1');
+    await t.push(a, 'v1');
+    // A commit updates refs/heads/main, which needs main.lock — a stale one
+    // from a crashed ref update wedges the space just like index.lock.
+    const refLock = path.join(gitDirOf(a), 'refs', 'heads', 'main.lock');
+    fs.mkdirSync(path.dirname(refLock), { recursive: true });
+    fs.writeFileSync(refLock, '');
+    backdate(refLock, 10_000);
+    fs.writeFileSync(path.join(a.root, 'note.md'), 'v2');
+    const r = await t.push(a, 'v2');
+    expect(r.pushed).toBe(true);
+    expect(fs.existsSync(refLock)).toBe(false);
+    await h.cleanup();
+  });
+});

@@ -52,7 +52,7 @@ import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
   syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled,
 } from './sync-spaces/service';
-import { readDevices, renameDevice } from './sync-spaces/device-registry';
+import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 // Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
 // createGithubConnect is the stateful orchestrator that owns the in-flight flow.
 import { detectGh, installGh } from './github-auth';
@@ -126,9 +126,13 @@ export function registerIpcHandlers(
     // deviceId + hubLeaseRequest + materializeOne + syncSpacesSyncNow are all
     // reachable). The three lease IPC handlers below are thin passthroughs to it.
     requester: import('./conversations/takeover').RequesterTakeoverType;
-    // Plan 2b Task 11: this machine's device id, so the list-devices handler can
-    // mark the current device with self:true.
+    // deviceId  — per-INSTALL. Leases ONLY. Distinguishes the dev instance from
+    //             the built app on one machine; never use it for the registry.
+    // machineId — per-MACHINE. Device registry ONLY (self-marking). '' when this
+    //             machine has no durable identity, which matches no row — correct,
+    //             since nothing was registered either.
     deviceId: string;
+    machineId: string;
   },
 ) {
   // Broadcast a non-session-scoped event to every renderer. Status data, UI
@@ -1942,7 +1946,7 @@ export function registerIpcHandlers(
   // deviceId so its WS clients reach the identical lease/device state the
   // Electron IPC handlers use (mirrors setNativeRuntime). Absent when sync is off.
   if (leaseWiring && remoteServer) {
-    remoteServer.setLeaseWiring({ client: leaseWiring.client, requester: leaseWiring.requester, deviceId: leaseWiring.deviceId });
+    remoteServer.setLeaseWiring({ client: leaseWiring.client, requester: leaseWiring.requester, deviceId: leaseWiring.deviceId, machineId: leaseWiring.machineId });
   }
 
   // Transcript replay: a window that just acquired a session asks for every
@@ -2458,13 +2462,27 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SYNC_SPACES_LIST_DEVICES, () => {
     const pr = getManagedRoots()?.personalRoot;
     if (!pr) return [];
-    const selfId = leaseWiring?.deviceId ?? '';
-    return readDevices(pr).map((d) => ({ ...d, self: d.id === selfId }));
+    // machineId, not deviceId — rows are keyed per-MACHINE, so the per-install
+    // lease id would never match and no row would render "(this device)".
+    const selfId = leaseWiring?.machineId ?? '';
+    return readDevices(pr).map((d) => ({ ...d, self: !!selfId && d.id === selfId }));
   });
   ipcMain.handle(IPC.SYNC_SPACES_RENAME_DEVICE, async (_e, p: { id: string; name: string }) => {
     const pr = getManagedRoots()?.personalRoot;
     if (!pr) return { ok: false };
     try { await renameDevice(pr, String(p?.id ?? ''), String(p?.name ?? '')); return { ok: true }; }
+    catch { return { ok: false }; }
+  });
+  ipcMain.handle(IPC.SYNC_SPACES_REMOVE_DEVICE, async (_e, p: { id: string }) => {
+    const pr = getManagedRoots()?.personalRoot;
+    if (!pr) return { ok: false };
+    const id = String(p?.id ?? '');
+    if (!id) return { ok: false };
+    // Refuse to remove THIS machine: upsertSelf re-creates the row on the next
+    // launch, so it would read as a no-op that "didn't work". The UI hides the
+    // affordance for self; this is the enforcement half (remote clients too).
+    if (id === (leaseWiring?.machineId ?? '')) return { ok: false, error: 'cannot remove this device' };
+    try { await removeDevice(pr, id); return { ok: true }; }
     catch { return { ok: false }; }
   });
 

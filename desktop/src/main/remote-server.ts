@@ -25,7 +25,7 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
 import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
-import { readDevices, renameDevice } from './sync-spaces/device-registry';
+import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 // Connect-GitHub modal (device-flow auth). status/install are stateless direct
 // calls; connect start/cancel drive the shared orchestrator singleton created in
@@ -85,7 +85,8 @@ export class RemoteServer {
   private leaseWiring: {
     client: import('./conversations/lease-client').LeaseClient;
     requester: import('./conversations/takeover').RequesterTakeoverType;
-    deviceId: string;
+    deviceId: string;  // per-INSTALL — leases only
+    machineId: string; // per-MACHINE — device-registry self-marking only
   } | null = null;
 
   constructor(
@@ -111,11 +112,13 @@ export class RemoteServer {
 
   /** Injected by ipc-handlers after main.ts builds the lease client/requester,
    *  so remote WS clients reach the SAME lease state the Electron IPC handlers
-   *  use (mirrors setNativeRuntime). deviceId marks self in list-devices. */
+   *  use (mirrors setNativeRuntime). machineId marks self in list-devices —
+   *  deviceId is the per-INSTALL lease id and must NOT be used for that. */
   setLeaseWiring(w: {
     client: import('./conversations/lease-client').LeaseClient;
     requester: import('./conversations/takeover').RequesterTakeoverType;
     deviceId: string;
+    machineId: string;
   }): void {
     this.leaseWiring = w;
   }
@@ -1583,18 +1586,35 @@ export class RemoteServer {
       }
       // Device registry (Plan 2b spec §10a). readDevices/renameDevice are direct
       // service-level calls (like the syncspaces:* rows above); self:true marks
-      // the current machine via the injected deviceId.
+      // the current machine via the injected machineId.
       case 'syncspaces:list-devices': {
         const pr = getManagedRoots()?.personalRoot;
-        const selfId = this.leaseWiring?.deviceId ?? '';
+        // machineId — must match the Electron handler exactly (ipc-channels.test.ts
+        // pins the channel pair; this is the semantic half it can't see).
+        const selfId = this.leaseWiring?.machineId ?? '';
         this.respond(client.ws, type, id,
-          pr ? readDevices(pr).map((d) => ({ ...d, self: d.id === selfId })) : []);
+          pr ? readDevices(pr).map((d) => ({ ...d, self: !!selfId && d.id === selfId })) : []);
         break;
       }
       case 'syncspaces:rename-device': {
         const pr = getManagedRoots()?.personalRoot;
         if (!pr) { this.respond(client.ws, type, id, { ok: false }); break; }
         try { await renameDevice(pr, String(payload?.id ?? ''), String(payload?.name ?? '')); this.respond(client.ws, type, id, { ok: true }); }
+        catch { this.respond(client.ws, type, id, { ok: false }); }
+        break;
+      }
+      case 'syncspaces:remove-device': {
+        const pr = getManagedRoots()?.personalRoot;
+        if (!pr) { this.respond(client.ws, type, id, { ok: false }); break; }
+        const target = String(payload?.id ?? '');
+        if (!target) { this.respond(client.ws, type, id, { ok: false }); break; }
+        // Same self-guard as the Electron handler — a remote client must not be
+        // able to remove the host machine's own row (it re-registers anyway).
+        if (target === (this.leaseWiring?.machineId ?? '')) {
+          this.respond(client.ws, type, id, { ok: false, error: 'cannot remove this device' });
+          break;
+        }
+        try { await removeDevice(pr, target); this.respond(client.ws, type, id, { ok: true }); }
         catch { this.respond(client.ws, type, id, { ok: false }); }
         break;
       }

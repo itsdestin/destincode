@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
 import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
@@ -35,6 +35,10 @@ interface Props {
   onOpenPreferences?: () => void;
   // Toast channel for dispatcher warnings ("Attachments ignored with /clear", etc.)
   onToast?: (message: string) => void;
+  // Pending-prompt send was refused. App surfaces a "Send anyway" affordance
+  // wired to `retry`, which presses ESC (to neutralize any genuinely-live Ink
+  // menu) then re-sends bypassing the gate. See sendMessage's gate branch.
+  onSendBlocked?: (retry: () => void) => void;
   // /copy needs to read assistant turns from session state to extract blocks
   getSessionState?: (sessionId: string) => import('../state/chat-types').SessionChatState | undefined;
   // Bare /model, /fast, /effort open the unified ModelPickerPopup
@@ -65,7 +69,7 @@ function fileNameFromPath(p: string): string {
   return p.replace(/\\/g, '/').split('/').pop() || p;
 }
 
-const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
+const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -129,7 +133,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
 
   // Ref to always-current send function so the global keydown handler
   // (which only depends on [disabled]) can call it without stale closures
-  const sendRef = useRef<() => void>(() => {});
+  const sendRef = useRef<(force?: boolean) => void>(() => {});
 
   useImperativeHandle(ref, () => ({
     clear: () => {
@@ -226,7 +230,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // Returns true when the message was consumed (input can clear), false when
   // the send was refused and the draft should stay in the input bar.
   const sendMessage = useCallback(
-    (message: string, files: Attachment[] = []): boolean => {
+    (message: string, files: Attachment[] = [], force = false): boolean => {
       // Prompt gate: while a permission request / AskUserQuestion / plan
       // approval / trust prompt is pending, Claude Code's native Ink select
       // menu is LIVE in the PTY. Anything we write would be interpreted as
@@ -237,10 +241,24 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // Native sessions have no PTY and no Ink select menu — the pending-
       // interaction gate is a PTY-only concern, so skip it. (A provider/stream
       // failure surfaces on the error banner instead of blocking sends.)
-      if (provider !== 'native') {
+      // `force` is the "Send anyway" override (below): the gate already refused
+      // once and the user chose to push through, so skip the re-check.
+      if (!force && provider !== 'native') {
         const session = getSessionState?.(sessionId);
         if (session && hasPendingInteraction(session)) {
-          onToast?.('Claude is waiting for your response — answer the prompt first.');
+          // Offer an ESC-first escape hatch instead of a dead-end toast: press
+          // ESC (closes any genuinely-live Ink menu; a no-op on an idle input
+          // bar, so it can NEVER answer a real menu), then re-send with the
+          // gate bypassed. Falls back to a plain toast where App wired no
+          // handler (e.g. the minimal touch bar). See pty-input-gate.ts.
+          if (onSendBlocked) {
+            onSendBlocked(() => {
+              window.claude.session.sendInput(sessionId, '\x1b');
+              sendRef.current(true);
+            });
+          } else {
+            onToast?.('Claude is waiting for your response — answer the prompt first.');
+          }
           return false;
         }
       }
@@ -333,7 +351,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       }, submitStart);
       return true;
     },
-    [sessionId, disabled, dispatch, view, provider, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, getSessionState, onOpenModelPicker],
+    [sessionId, disabled, dispatch, view, provider, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker],
   );
 
   // Auto-resize textarea to fit content, up to 3 lines then scroll
@@ -355,17 +373,26 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     }
   }, []);
 
-  useEffect(() => {
+  // Fix (intermittent empty-input-expands-to-3-lines bug): recompute the
+  // textarea height SYNCHRONOUSLY before paint, not after. The height is an
+  // imperative inline style React doesn't track, so when `text` shrinks back
+  // to '' via a cascading update (e.g. the session-switch effect calling
+  // setText, or send/clear), a plain useEffect could let React paint one frame
+  // with the empty value but the stale multi-line height still applied — the
+  // placeholder floated to the top of a 3-line box until the next keystroke
+  // re-ran this. useLayoutEffect closes that paint-before-correction window.
+  useLayoutEffect(() => {
     autoResize();
   }, [text, autoResize]);
 
-  const send = useCallback(() => {
+  const send = useCallback((force = false) => {
     // Read directly from the DOM element to avoid stale-closure races
     // where paste + immediate Enter outrun React's render cycle
     const currentText = inputRef.current?.value ?? text;
     // A refused send (pending prompt gate, disabled session) keeps the draft
-    // in the input bar so the user's text isn't lost.
-    if (!sendMessage(currentText, attachments)) return;
+    // in the input bar so the user's text isn't lost. `force` is the "Send
+    // anyway" override, which re-enters here past the gate (see sendMessage).
+    if (!sendMessage(currentText, attachments, force)) return;
     setText('');
     setAttachments([]);
     draftsRef.current.delete(sessionId); // Clear stored draft after sending
