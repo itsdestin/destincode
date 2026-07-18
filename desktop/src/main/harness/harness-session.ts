@@ -160,6 +160,10 @@ export class HarnessSession extends EventEmitter {
   private toolByName: Map<string, NativeTool>;
   private readRegistry = new Map<string, number>();  // canonical path → mtimeMs at last Read
   private todos: ToolContext['todos'] = [];
+  /** Scoped-persistence shell cwd (ROADMAP 2026-07-17): where the next Bash call
+   *  starts. null → the session root. Session runtime like readRegistry/todos —
+   *  never persisted to the transcript, so it resets on resume. */
+  private shellCwd: string | null = null;
   private retryDelays: number[];
 
   constructor(private opts: HarnessSessionOpts, private modelFactory: ModelFactory) {
@@ -179,6 +183,7 @@ export class HarnessSession extends EventEmitter {
     // satisfying the read-before-edit gate on the first edit after resume.
     this.readRegistry.clear();
     this.todos.length = 0;
+    this.shellCwd = null; // a resumed session starts back at the workspace root
   }
 
   /** Mid-session model swap (next turn uses the new binding). */
@@ -679,6 +684,10 @@ export class HarnessSession extends EventEmitter {
       cwd: this.opts.cwd,
       signal: this.abort!.signal,
       readRegistry: this.readRegistry,
+      shellCwd: this.shellCwd ?? this.opts.cwd,
+      setShellCwd: (next: string) => {
+        this.shellCwd = next;
+      },
       todos: this.todos,
       ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),
     });

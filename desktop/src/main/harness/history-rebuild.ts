@@ -16,9 +16,10 @@
 // step 2's text from merging into step 1's assistant message); an assistant-text
 // or tool-use arriving flushes any open tool-results.
 //
-// Deliberately NOT reconstructed: readRegistry (read-before-edit mtimes) and the
-// todo list — those are per-session RUNTIME state, never persisted, and
-// seedHistory() clears them on resume (the reset-on-resume ruling, spec §2.5).
+// Deliberately NOT reconstructed: readRegistry (read-before-edit mtimes), the
+// todo list, and the tracked shell cwd — those are per-session RUNTIME state,
+// never persisted, and seedHistory() clears them on resume (the reset-on-resume
+// ruling, spec §2.5). A resumed session's Bash therefore starts at the root again.
 // assistant-thinking / compact-summary / session-error never entered model
 // history live either, so they're skipped here too.
 import type { TranscriptEvent } from '../../shared/types';
