@@ -22,7 +22,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
-import { ChatProvider, useChatDispatch, useChatState, useChatStateMap } from './state/chat-context';
+import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { categorizeArtifact } from '../shared/artifacts/categorization';
@@ -41,6 +41,10 @@ import { usePresence } from './hooks/usePresence';
 import { usePartyGame } from './hooks/usePartyGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
+import { useSessionAttention } from './hooks/useSessionAttention';
+import { useActiveSessionModel } from './hooks/useActiveSessionModel';
+import { useZoomControls } from './hooks/useZoomControls';
+import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
 import { AppIcon, WelcomeAppIcon, ThemeMascot } from './components/Icons';
 import CommandDrawer from './components/CommandDrawer';
@@ -68,12 +72,14 @@ import type { NativePermissionMode } from '../shared/permission-types';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
-import { ThemeProvider, useTheme } from './state/theme-context';
+import { ThemeProvider } from './state/theme-context';
 import { SkillProvider } from './state/skill-context';
 import { AccountProvider } from './state/account-context';
 import HandlePrompt from './components/HandlePrompt';
-import { MarketplaceStatsProvider } from './state/marketplace-stats-context';
-import { WorkerHealthProvider, useWorkerHealth } from './state/worker-health-context';
+import { WorkerHealthProvider } from './state/worker-health-context';
+import { ThemeBg } from './components/ThemeBg';
+import { StatsWithHealthBridge } from './components/StatsWithHealthBridge';
+import { RootErrorBoundary } from './components/RootErrorBoundary';
 import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
@@ -177,6 +183,17 @@ function matchPermissionMode(mode?: string | null): PermissionMode | 'unknown' {
 }
 
 function AppInner() {
+  // Dev-only: count AppInner's OWN re-renders (the tranche-1 metric — see
+  // AppInnerProfiler). No-dep effect → runs once per AppInner commit; when
+  // AppInner does NOT re-render (a child like ChatView re-rendering on its own
+  // subscription), this does not run, so the counter stays flat — which is the
+  // whole point. DEV-gated body; the hook call itself is unconditional (rules
+  // of hooks). Tree-shaken from prod.
+  useEffect(() => {
+    // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+    if (import.meta.env.DEV && window.__appInnerProfile) window.__appInnerProfile.appInnerRenders += 1;
+  });
+
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
   // Ref mirror of `sessions` for handlers that need to read the latest list
@@ -405,16 +422,8 @@ function AppInner() {
   // form means the ~8 plain setToast('…') call sites need no change.
   type ToastState = string | { message: string; action: { label: string; onClick: () => void } };
   const [toast, setToast] = useState<ToastState | null>(null);
-  const [zoomPercent, setZoomPercent] = useState(100);
-  const [zoomVisible, setZoomVisible] = useState(false);
-  const zoomHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Fetch actual zoom level on mount — Electron may have persisted a non-100% zoom
-  useEffect(() => {
-    (window as any).claude?.zoom?.get?.().then((p: number) => {
-      if (p && p !== 100) setZoomPercent(p);
-    }).catch(() => {});
-  }, []);
+  // Zoom state + handlers extracted to useZoomControls (tranche 1).
+  const { zoomPercent, zoomVisible, handleZoomIn, handleZoomOut, handleZoomReset } = useZoomControls();
 
   const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
 
@@ -466,7 +475,7 @@ function AppInner() {
   // data-theme-layout anymore, so the effect was dead code.
 
   const dispatch = useChatDispatch();
-  const chatStateMap = useChatStateMap();
+  const chatStore = useChatStore();
   // Artifact tracker — global reducer for session/project artifact state.
   const [artifactState, dispatchArtifact] = useReducer(artifactReducer, initialArtifactState);
   // Ref mirror of artifact state so the (once-registered) tool-use handler can
@@ -476,8 +485,14 @@ function AppInner() {
   useEffect(() => { artifactStateRef.current = artifactState; }, [artifactState]);
   // Latest-value ref so transcript-shrink and turn-complete handlers see
   // up-to-date compactionPending state without re-subscribing on every reducer tick.
-  const chatStateMapRef = useRef(chatStateMap);
-  useEffect(() => { chatStateMapRef.current = chatStateMap; }, [chatStateMap]);
+  // Tranche 1: fed by a store subscription instead of a [chatStateMap] effect,
+  // so AppInner no longer re-renders per dispatch just to keep this ref current.
+  // The ~12 chatStateMapRef.current reads all over this file are unchanged.
+  const chatStateMapRef = useRef(chatStore.getState());
+  useEffect(() => {
+    chatStateMapRef.current = chatStore.getState();
+    return chatStore.subscribeAll(() => { chatStateMapRef.current = chatStore.getState(); });
+  }, [chatStore]);
 
   // Guarded PTY send for command-shaped writes triggered by UI actions
   // (command drawer, skill runs, /sync, /config, /model, Settings sends).
@@ -515,44 +530,53 @@ function AppInner() {
   // real shrink event arrived but had no pending flag to key off of, so the
   // user saw "may have failed" even though compaction succeeded.
   const compactWatchdogs = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Tranche 1: store subscription instead of a [chatStateMap] effect. Same
+  // activity-aware body (the timer still resets on every dispatch while a
+  // compaction is pending); AppInner no longer re-renders per dispatch to run
+  // it. The pre-existing no-clear-timers-on-unmount behavior is preserved.
   useEffect(() => {
-    // Perf: this effect fires on every reducer dispatch. Steady state (no
-    // compaction in flight, no live watchdogs) short-circuits without walking
-    // the session map. When a compaction is live we still iterate — preserving
-    // the activity-awareness described above (timer resets on every dispatch).
-    if (compactWatchdogs.current.size === 0) {
-      let anyPending = false;
-      for (const session of chatStateMap.values()) {
-        if (session.compactionPending) { anyPending = true; break; }
+    const check = () => {
+      const map = chatStore.getState();
+      // Perf: this runs on every reducer dispatch. Steady state (no compaction
+      // in flight, no live watchdogs) short-circuits without walking the
+      // session map. When a compaction is live we still iterate — preserving
+      // the activity-awareness described above (timer resets on every dispatch).
+      if (compactWatchdogs.current.size === 0) {
+        let anyPending = false;
+        for (const session of map.values()) {
+          if (session.compactionPending) { anyPending = true; break; }
+        }
+        if (!anyPending) return;
       }
-      if (!anyPending) return;
-    }
-    for (const [sid, session] of chatStateMap) {
-      const existing = compactWatchdogs.current.get(sid);
-      if (session.compactionPending) {
-        // Reset on every reducer tick while pending — if transcript events are
-        // flowing for this session, the timer keeps bumping and never fires.
-        if (existing) clearTimeout(existing);
-        const timer = setTimeout(() => {
-          const current = chatStateMapRef.current.get(sid);
-          if (current?.compactionPending) {
-            dispatch({
-              type: 'COMPACTION_COMPLETE',
-              sessionId: sid,
-              markerId: `compact-timeout-${Date.now()}`,
-              afterContextTokens: null,
-              aborted: true,
-            });
-          }
+      for (const [sid, session] of map) {
+        const existing = compactWatchdogs.current.get(sid);
+        if (session.compactionPending) {
+          // Reset on every reducer tick while pending — if transcript events are
+          // flowing for this session, the timer keeps bumping and never fires.
+          if (existing) clearTimeout(existing);
+          const timer = setTimeout(() => {
+            const current = chatStateMapRef.current.get(sid);
+            if (current?.compactionPending) {
+              dispatch({
+                type: 'COMPACTION_COMPLETE',
+                sessionId: sid,
+                markerId: `compact-timeout-${Date.now()}`,
+                afterContextTokens: null,
+                aborted: true,
+              });
+            }
+            compactWatchdogs.current.delete(sid);
+          }, 180_000);
+          compactWatchdogs.current.set(sid, timer);
+        } else if (existing) {
+          clearTimeout(existing);
           compactWatchdogs.current.delete(sid);
-        }, 180_000);
-        compactWatchdogs.current.set(sid, timer);
-      } else if (existing) {
-        clearTimeout(existing);
-        compactWatchdogs.current.delete(sid);
+        }
       }
-    }
-  }, [chatStateMap, dispatch]);
+    };
+    check();
+    return chatStore.subscribeAll(check);
+  }, [chatStore, dispatch]);
 
   // Attention-reporter ref declared up here so hooks-order stays deterministic;
   // the useEffect that writes to it lives AFTER sessionStatuses is computed
@@ -608,59 +632,15 @@ function AppInner() {
     reconnectLobby: lobby.reconnect,
   }), [game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
 
-  // Derive session status colors for status dots.
-  // chatStateMap is a new Map reference on every dispatch, so we stabilize with
-  // a ref — return the previous reference when the derived values haven't changed.
-  const sessionStatusesRef = useRef<Map<string, SessionStatusColor>>(new Map());
-
+  // Tranche 1: sessionStatuses now derives from the cached selector — AppInner
+  // re-renders only when a triple changes, not on every dispatch (see
+  // useSessionAttention). sessionStatuses keeps its old shape for HeaderBar.
+  const sessionAttention = useSessionAttention(sessions, viewedSessions, sessionId);
   const sessionStatuses = useMemo(() => {
-    const newStatuses = new Map<string, SessionStatusColor>();
-    let changed = false;
-
-    for (const s of sessions) {
-      const chatState = chatStateMap.get(s.id);
-      if (!chatState) { newStatuses.set(s.id, 'gray'); }
-      else {
-        // Only check tools in the active turn — stale tools from old turns are invisible
-        let hasAwaiting = false;
-        let hasRunning = false;
-        for (const id of chatState.activeTurnToolIds) {
-          const t = chatState.toolCalls.get(id);
-          if (!t) continue;
-          if (t.status === 'awaiting-approval') hasAwaiting = true;
-          else if (t.status === 'running') hasRunning = true;
-          if (hasAwaiting) break;
-        }
-
-        // Priority: red (awaiting-approval) → amber (attention banner showing —
-        // stuck or session-died) → green (working) → blue (unseen activity) →
-        // gray (idle). Amber is between red and green: the session needs the
-        // user's eyes but it's not as urgent as a permission prompt, and it's
-        // not "all good, just working" either. Overrides green so a stuck
-        // session doesn't appear identical to a healthy thinking session.
-        const needsAttention = chatState.attentionState !== 'ok';
-        const status: SessionStatusColor = hasAwaiting
-          ? 'red'
-          : needsAttention
-            ? 'amber'
-            : (chatState.isThinking || hasRunning)
-              ? 'green'
-              : (chatState.timeline.length > 0 && !viewedSessions.has(s.id) && s.id !== sessionId)
-                ? 'blue'
-                : 'gray';
-        newStatuses.set(s.id, status);
-      }
-
-      const prev = sessionStatusesRef.current.get(s.id);
-      if (prev !== newStatuses.get(s.id)) changed = true;
-    }
-
-    if (!changed && newStatuses.size === sessionStatusesRef.current.size) {
-      return sessionStatusesRef.current;
-    }
-    sessionStatusesRef.current = newStatuses;
-    return newStatuses;
-  }, [sessions, chatStateMap, viewedSessions, sessionId]);
+    const m = new Map<string, SessionStatusColor>();
+    for (const [id, info] of sessionAttention) m.set(id, info.status);
+    return m;
+  }, [sessionAttention]);
 
   // Play the 'attention' sound when any session transitions to red (awaiting
   // approval). Red is a visible state, so color-driven dedup is correct here.
@@ -690,10 +670,23 @@ function AppInner() {
   // currently-viewed session (blue requires "unseen, not active"). Thinking-false
   // is the actual "response finished" signal and fires regardless of visibility.
   const prevThinkingRef = useRef<Map<string, boolean>>(new Map());
+  // Tranche 1: this MUST stay a React effect keyed on [sessionAttention], NOT a
+  // per-dispatch store subscription (mirrors the attention-sound effect above,
+  // deliberately left keyed on [sessionStatuses]). A per-dispatch subscription
+  // observed every INTRA-BATCH isThinking toggle: transcript replay/hydrate
+  // dispatches N turn events inside one rAF flush, and a session with K
+  // completed turns toggles isThinking true→false K times within the batch →
+  // K spurious 'ready' chimes where the old coalesced [chatStateMap] effect
+  // stayed silent (adversarial review finding #1, 2026-07-17). Keying on the
+  // selector coalesces to one post-commit run on the final state, and reading
+  // raw isThinking from the store there is safe (effect body, not render). This
+  // catches every real transition because isThinking→false only happens via
+  // endTurn / process-exit / native-error, each of which also flips the status
+  // triple → sessionAttention identity changes → this effect runs.
   useEffect(() => {
     const prev = prevThinkingRef.current;
     const next = new Map<string, boolean>();
-    for (const [id, state] of chatStateMap) {
+    for (const [id, state] of chatStore.getState()) {
       const was = prev.get(id);
       const isThinking = !!state.isThinking;
       next.set(id, isThinking);
@@ -703,35 +696,33 @@ function AppInner() {
       if (was === true && !isThinking) playSound('ready');
     }
     prevThinkingRef.current = next;
-  }, [chatStateMap]);
+  }, [sessionAttention]);
 
   // Attention reporter effect: pushes per-session attention state + the
-  // derived dot color to main whenever chatStateMap or sessionStatuses
-  // changes. Main aggregates across all windows and broadcasts
+  // derived dot color to main whenever sessionAttention changes. Main
+  // aggregates across all windows and broadcasts
   // session:attention-summary so buddy surfaces can render the same dots.
   //
   // A ref-based diff ensures we only report when state actually changes —
-  // chatStateMap is a new Map reference on every dispatch, so we compare
-  // the derived triple before sending. Session removal sends
+  // the selector already collapses no-op dispatches, and we compare the
+  // derived triple before sending as a second guard. Session removal sends
   // { clear: true } so main drops stale entries.
   //
-  // Declared here (not where the ref is) because the status comes from
-  // sessionStatuses, which is computed above — running the effect before
-  // that would read `undefined`.
+  // Tranche 1: the triple (attentionState, awaitingApproval, status) now
+  // comes from the useSessionAttention selector rather than being re-derived
+  // here from chatStateMap + sessionStatuses.
+  //
+  // Stays a REACT EFFECT (not a store subscription) and is declared here (not
+  // where the ref is) because it must observe the post-render selector output
+  // — running it before sessionAttention is computed would read `undefined`.
   useEffect(() => {
     const prev = lastAttentionReportedRef.current;
     const currentIds = new Set<string>();
-    for (const [sid, state] of chatStateMap) {
+    for (const [sid, info] of sessionAttention) {
       currentIds.add(sid);
-      let awaitingApproval = false;
-      for (const id of state.activeTurnToolIds) {
-        const t = state.toolCalls.get(id);
-        if (t?.status === 'awaiting-approval') { awaitingApproval = true; break; }
-      }
       // Thread the same dot color the main switcher renders for this
       // session so the buddy pill's dot is visually identical.
-      const status = sessionStatuses.get(sid) ?? 'gray';
-      const next = { attentionState: state.attentionState, awaitingApproval, status };
+      const next = { attentionState: info.attentionState, awaitingApproval: info.awaitingApproval, status: info.status };
       const last = prev.get(sid);
       if (!last
         || last.attentionState !== next.attentionState
@@ -748,7 +739,7 @@ function AppInner() {
         prev.delete(sid);
       }
     }
-  }, [chatStateMap, sessionStatuses]);
+  }, [sessionAttention]);
 
   // Buddy "open main app" → land on the buddy's viewed session. Reads the
   // existing sessionsRef mirror so the IPC subscription survives
@@ -1691,27 +1682,36 @@ function AppInner() {
   }, [sessionId]);
 
   // Clear viewed status when a session starts thinking (user sent a new message).
-  // Early-exit: skip iteration if no sessions are currently thinking.
+  // Tranche 1: store subscription instead of a [chatStateMap] effect — reads
+  // sessionsRef.current (the existing mirror) so it doesn't need `sessions` as a
+  // dep. setViewedSessions is a stable setState, safe from a subscription cb.
   useEffect(() => {
-    let anyThinking = false;
-    for (const s of sessions) {
-      const chatState = chatStateMap.get(s.id);
-      if (chatState?.isThinking) { anyThinking = true; break; }
-    }
-    if (!anyThinking) return;
-
-    for (const s of sessions) {
-      const chatState = chatStateMap.get(s.id);
-      if (chatState?.isThinking) {
-        setViewedSessions((prev) => {
-          if (!prev.has(s.id)) return prev;
-          const next = new Set(prev);
-          next.delete(s.id);
-          return next;
-        });
+    const check = () => {
+      const map = chatStore.getState();
+      const sessions = sessionsRef.current;
+      // Early-exit: skip iteration if no sessions are currently thinking.
+      let anyThinking = false;
+      for (const s of sessions) {
+        const chatState = map.get(s.id);
+        if (chatState?.isThinking) { anyThinking = true; break; }
       }
-    }
-  }, [sessions, chatStateMap]);
+      if (!anyThinking) return;
+
+      for (const s of sessions) {
+        const chatState = map.get(s.id);
+        if (chatState?.isThinking) {
+          setViewedSessions((prev) => {
+            if (!prev.has(s.id)) return prev;
+            const next = new Set(prev);
+            next.delete(s.id);
+            return next;
+          });
+        }
+      }
+    };
+    check();
+    return chatStore.subscribeAll(check);
+  }, [chatStore]);
 
   // Check if remote setup banner is active (show badge on gear icon)
   // Badge shows whenever the blue "Set Up Remote Access" banner would be visible
@@ -1883,57 +1883,42 @@ function AppInner() {
   // Gated on !pendingModel so this doesn't race with the verify effect during
   // a user-initiated switch (the in-flight turn still carries the old model
   // and would cause this effect to undo the user's intent prematurely).
+  //
+  // Tranche 1: the timeline walk moved into useActiveSessionModel (a cached
+  // store selector). That preserves BOTH of this effect's original triggers —
+  // a transcript event that reveals a new model for the active session
+  // (activeSessionModel dep), AND a session switch (sessionId dep, so switching
+  // INTO a session that drifted while backgrounded still reconciles its pill) —
+  // without AppInner re-rendering on every dispatch the way the old
+  // [chatStateMap] dep forced. See the plan's Task 9 option (c).
+  const activeSessionModel = useActiveSessionModel(sessionId);
   useEffect(() => {
     if (!sessionId || pendingModel) return;
-    // A moved session (Plan 2b Moved Gate) deliberately deletes its sessionModels
-    // entry while KEEPING its timeline (destroyedHandler, ~line 870). Without this
-    // guard the loosened `currentAlias !== alias` check below would read that
-    // undefined entry as drift, fire a spurious GLOBAL setPreference() for a
-    // session the user didn't pick and this window no longer owns, and resurrect
-    // the map entry the gate just cleaned up. Skip self-heal for moved sessions.
+    // Moved-session guard (merged from master's self-heal fix): a moved session
+    // (Plan 2b Moved Gate) deliberately deletes its sessionModels entry while
+    // KEEPING its timeline (destroyedHandler). Without this guard the loosened
+    // check below would read that undefined entry as drift, fire a spurious
+    // GLOBAL setPreference() for a session the user didn't pick and this window
+    // no longer owns, and resurrect the map entry the gate just cleaned up.
     if (movedSessionsRef.current.has(sessionId)) return;
-    const session = chatStateMap.get(sessionId);
-    if (!session) return;
-
-    // Walk backward through the timeline for the most recent assistant-turn
-    // with a known model. turn.model is null until the first assistant-text
-    // arrives, so new/empty sessions exit here.
-    let latestModel: string | null = null;
-    for (let i = session.timeline.length - 1; i >= 0; i--) {
-      const entry = session.timeline[i];
-      if (entry.kind === 'assistant-turn') {
-        const turn = session.assistantTurns.get(entry.turnId);
-        if (turn?.model) {
-          latestModel = turn.model;
-          break;
-        }
-      }
-    }
-    if (!latestModel) return;
-
-    // Match the raw transcript model (e.g. 'claude-opus-4-7') → ModelAlias,
-    // mirroring the SessionInfo matcher at line 372.
-    const alias = MODELS.find((m) => latestModel!.includes(m.replace(/\[.*\]/, '')));
-    if (!alias) return;
+    if (!activeSessionModel) return;
 
     const currentAlias = sessionModels.get(sessionId);
-    // Fix: this guard used to be `currentAlias && currentAlias !== alias`. The
-    // truthiness check disabled the self-heal in the one case that needs it
-    // most: a session with NO map entry renders as 'unknown' on the pill
-    // (currentModel falls back to the sentinel when the map misses), but
-    // currentAlias is `undefined` here — falsy — so the repair was skipped and
-    // the pill stayed red forever. Comparing directly heals both the explicit
-    // 'unknown' sentinel and the missing-entry case.
-    if (currentAlias !== alias) {
+    // Compare directly, NOT `currentAlias && currentAlias !== …` (master's fix):
+    // a session with NO map entry renders 'unknown' on the pill, but currentAlias
+    // is `undefined` here — falsy — so the old truthiness gate skipped the repair
+    // and the pill stayed stuck (red/unknown) forever. Direct comparison heals
+    // both the explicit 'unknown' sentinel and the missing-entry case.
+    if (currentAlias !== activeSessionModel) {
       // Drift detected — reconcile silently. Also the self-heal path for a pill
       // stuck on the 'unknown' sentinel: the moment a real model shows up in
       // the transcript, this overwrites it. setPreference persists to disk
       // (so next session boots with the correct default); setSessionModels
       // updates the status-bar pill + Shift+Space cycle start point.
-      (window.claude as any).model?.setPreference(alias);
-      setSessionModels((prev) => new Map(prev).set(sessionId, alias));
+      (window.claude as any).model?.setPreference(activeSessionModel);
+      setSessionModels((prev) => new Map(prev).set(sessionId, activeSessionModel));
     }
-  }, [sessionId, chatStateMap, sessionModels, pendingModel]);
+  }, [sessionId, activeSessionModel, sessionModels, pendingModel]);
 
   // Snapshot factory for /cost and /usage. Pulls live stats from statusData
   // and freezes them as a point-in-time snapshot. Returns null if stats haven't
@@ -2417,89 +2402,6 @@ function AppInner() {
     return () => window.removeEventListener('keydown', handler, true);
   }, []);
 
-  // --- Zoom controls (Ctrl+/-, Ctrl+0, trackpad pinch) ---
-  const showZoom = useCallback((percent: number) => {
-    setZoomPercent(percent);
-    setZoomVisible(true);
-    if (zoomHideTimer.current) clearTimeout(zoomHideTimer.current);
-    zoomHideTimer.current = setTimeout(() => setZoomVisible(false), 1500);
-  }, []);
-
-  const handleZoomIn = useCallback(async () => {
-    const percent = await (window as any).claude.zoom.zoomIn();
-    showZoom(percent);
-  }, [showZoom]);
-
-  const handleZoomOut = useCallback(async () => {
-    const percent = await (window as any).claude.zoom.zoomOut();
-    showZoom(percent);
-  }, [showZoom]);
-
-  const handleZoomReset = useCallback(async () => {
-    const percent = await (window as any).claude.zoom.reset();
-    showZoom(percent);
-  }, [showZoom]);
-
-  // Refs so the event listeners always see the latest callbacks without re-registering
-  const zoomInRef = useRef(handleZoomIn);
-  const zoomOutRef = useRef(handleZoomOut);
-  const zoomResetRef = useRef(handleZoomReset);
-  zoomInRef.current = handleZoomIn;
-  zoomOutRef.current = handleZoomOut;
-  zoomResetRef.current = handleZoomReset;
-
-  // Keyboard: Ctrl+Plus, Ctrl+Minus, Ctrl+0
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-      // '+' comes as '=' on US keyboards (Shift not required), or '+' with Shift,
-      // or via numpad ('+'). Ctrl+= is the standard "zoom in" shortcut.
-      if (e.key === '=' || e.key === '+') {
-        e.preventDefault();
-        zoomInRef.current();
-      } else if (e.key === '-') {
-        e.preventDefault();
-        zoomOutRef.current();
-      } else if (e.key === '0') {
-        e.preventDefault();
-        zoomResetRef.current();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, []);
-
-  // Trackpad pinch-to-zoom — Chromium/Electron fires wheel events with ctrlKey
-  // set to true for pinch gestures. Debounce to avoid spamming IPC.
-  const pinchAccumulator = useRef(0);
-  const pinchFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const handler = (e: WheelEvent) => {
-      if (!e.ctrlKey) return; // Only intercept pinch (ctrlKey) wheel events
-      e.preventDefault();
-
-      // Accumulate delta and flush after a short pause — prevents one pinch
-      // gesture from firing dozens of IPC calls
-      pinchAccumulator.current += e.deltaY;
-
-      if (pinchFlushTimer.current) clearTimeout(pinchFlushTimer.current);
-      pinchFlushTimer.current = setTimeout(async () => {
-        const delta = pinchAccumulator.current;
-        pinchAccumulator.current = 0;
-        if (Math.abs(delta) < 5) return; // Ignore tiny jitter
-        if (delta < 0) {
-          zoomInRef.current();
-        } else {
-          zoomOutRef.current();
-        }
-      }, 50);
-    };
-    // Must use { passive: false } to allow preventDefault on wheel
-    window.addEventListener('wheel', handler, { passive: false, capture: true });
-    return () => window.removeEventListener('wheel', handler, true);
-  }, []);
-
   const trustGateActive = useTrustGateActive(sessionId);
 
   // Once trust gate activates, permanently mark the session as initialized
@@ -2536,89 +2438,10 @@ function AppInner() {
   // Terminal mode on touch/remote platforms — show minimal input with special keys
   const isTerminalTouch = currentViewMode === 'terminal' && getPlatform() !== 'electron';
 
-  // Track bottom chrome height for glassmorphism scroll-behind.
-  // Sets --bottom-chrome-height CSS variable so .chat-scroll can add matching
-  // padding-bottom, allowing messages to scroll behind the frosted input/status bars.
-  useEffect(() => {
-    const bottom = bottomBarRef.current;
-    if (!bottom) return;
-    const update = () => {
-      const h = Math.ceil(bottom.getBoundingClientRect().height);
-      document.documentElement.style.setProperty('--bottom-chrome-height', `${h}px`);
-    };
-    const observer = new ResizeObserver(update);
-    observer.observe(bottom);
-    update();
-    return () => {
-      observer.disconnect();
-      document.documentElement.style.removeProperty('--bottom-chrome-height');
-    };
-  }, [sessionId, currentViewMode]);
-
-  // Track top chrome (HeaderBar) bottom edge for the artifact drawer.
-  // The drawer-pane sits inside .framed-shell beneath the absolute HeaderBar,
-  // so its content needs to clear the rendered bottom of the header. Two vars
-  // are published:
-  //   --top-chrome-height — the header element's own height. Used by
-  //     .chat-scroll padding-top so chat content scrolls behind the chrome.
-  //   --top-chrome-bottom — the y-coordinate of the header's BOTTOM in the
-  //     window. Used by .drawer-pane to position itself just below the
-  //     header. The distinction matters for floating-chrome themes where
-  //     the header pill carries its own margin-top — the header's
-  //     bottom is then at `margin + height`, not just `height`, so
-  //     drawer.margin-top must use the rect's bottom value or the drawer
-  //     ends up flush against the floating header with no gap.
-  // Both vars track ResizeObserver updates on the .header-bar element.
-  //
-  // NOTE: we measure the inner .header-bar element, NOT the chrome-wrapper at
-  // headerRef. The wrapper has no specified height and its only child is the
-  // position: absolute .header-bar (no flow content) — measuring the wrapper
-  // returns 0, which is what made the first attempt at this observer ineffective.
-  useEffect(() => {
-    const wrapper = headerRef.current;
-    if (!wrapper) return;
-    const headerBar = wrapper.querySelector('.header-bar');
-    if (!headerBar) return;
-    const update = () => {
-      const rect = (headerBar as HTMLElement).getBoundingClientRect();
-      document.documentElement.style.setProperty('--top-chrome-height', `${Math.ceil(rect.height)}px`);
-      document.documentElement.style.setProperty('--top-chrome-bottom', `${Math.ceil(rect.bottom)}px`);
-    };
-    const observer = new ResizeObserver(update);
-    observer.observe(headerBar);
-    update();
-    return () => {
-      observer.disconnect();
-      document.documentElement.style.removeProperty('--top-chrome-height');
-      document.documentElement.style.removeProperty('--top-chrome-bottom');
-    };
-  }, [sessionId, currentViewMode]);
-
-  // Report header/bottom bar heights to native Android side for terminal overlay sizing.
-  // Must be before early returns to maintain consistent hook ordering across renders.
-  useEffect(() => {
-    if (getPlatform() !== 'android') return;
-    const header = headerRef.current;
-    const bottom = bottomBarRef.current;
-    if (!header && !bottom) return;
-
-    const report = () => {
-      const headerH = header?.getBoundingClientRect().height || 0;
-      const bottomH = bottom?.getBoundingClientRect().height || 0;
-      (window as any).claude?.remote?.broadcastAction?.({
-        action: 'layout-update',
-        headerHeight: Math.round(headerH),
-        bottomHeight: Math.round(bottomH),
-      });
-    };
-
-    const observer = new ResizeObserver(report);
-    if (header) observer.observe(header);
-    if (bottom) observer.observe(bottom);
-    // Report immediately on mount
-    report();
-    return () => observer.disconnect();
-  }, [sessionId, currentViewMode]);
+  // Chrome geometry observers (--bottom/top-chrome-* CSS vars + Android layout
+  // report). Extracted to useChromeMeasurements in tranche 1 — logic unchanged.
+  // Called here (before the early returns below) so hook order stays stable.
+  useChromeMeasurements(headerRef, bottomBarRef, sessionId, currentViewMode);
 
   // Still loading first-run check
   if (isFirstRun === null) {
@@ -3297,25 +3120,43 @@ const ChatInputBar = React.forwardRef<InputBarHandle, { sessionId: string; view?
   },
 );
 
-function ThemeBg() {
-  const { bgStyle, patternStyle } = useTheme();
-  return (
-    <>
-      {bgStyle && <div id="theme-bg" style={bgStyle as unknown as React.CSSProperties} aria-hidden="true" />}
-      {patternStyle && <div id="theme-pattern" style={patternStyle as unknown as React.CSSProperties} aria-hidden="true" />}
-    </>
-  );
+// Dev-only profiler for the AppInner perf work, read via the dev window's
+// console or scripts/cdp-eval.mjs against the DEV instance. Statically dead
+// code in production builds (DEV-gated), tree-shaken by Vite.
+//
+// TWO distinct metrics — read BOTH:
+// - appInnerRenders — how many times the AppInner COMPONENT itself re-rendered.
+//   This is the tranche-1 metric. Before the tranche it climbed ~1:1 with
+//   transcript dispatches during streaming; after, it should stay near-flat
+//   (only dot-color/attention/active-model/session-switch changes). Counted by
+//   a no-dep effect INSIDE AppInner (see its body), not here.
+// - subtreeCommits / totalMs / maxMs — React.Profiler stats for the whole
+//   AppInner SUBTREE. These stay high during streaming because ChatView
+//   re-renders per transcript event BY DESIGN (the visible session's view must
+//   update). That child cost is what a FUTURE tranche (memoized BottomChrome/
+//   ContentArea) targets — it is NOT what tranche 1 changed, so don't read it
+//   as the tranche-1 result.
+declare global { interface Window { __appInnerProfile?: { appInnerRenders: number; subtreeCommits: number; totalMs: number; maxMs: number; since: number; reset: () => void } } }
+function ensureAppInnerProfile() {
+  if (!window.__appInnerProfile) {
+    window.__appInnerProfile = {
+      appInnerRenders: 0, subtreeCommits: 0, totalMs: 0, maxMs: 0, since: Date.now(),
+      reset() { this.appInnerRenders = 0; this.subtreeCommits = 0; this.totalMs = 0; this.maxMs = 0; this.since = Date.now(); },
+    };
+  }
+  return window.__appInnerProfile;
 }
-
-// Bridge: reads reportResult from WorkerHealthContext and passes it to MarketplaceStatsProvider.
-// Must be a child of WorkerHealthProvider and parent of anything that consumes useMarketplaceStats().
-function StatsWithHealthBridge({ children }: { children: React.ReactNode }) {
-  const { reportResult } = useWorkerHealth();
-  return (
-    <MarketplaceStatsProvider onNetworkResult={reportResult}>
-      {children}
-    </MarketplaceStatsProvider>
-  );
+function AppInnerProfiler({ children }: { children: React.ReactNode }) {
+  // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+  if (!import.meta.env.DEV) return <>{children}</>;
+  ensureAppInnerProfile();
+  const onRender: React.ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {
+    const p = window.__appInnerProfile!;
+    p.subtreeCommits += 1;
+    p.totalMs += actualDuration;
+    if (actualDuration > p.maxMs) p.maxMs = actualDuration;
+  };
+  return <React.Profiler id="AppInner" onRender={onRender}>{children}</React.Profiler>;
 }
 
 export default function App() {
@@ -3379,7 +3220,9 @@ export default function App() {
                         SettingsPanel (outside the library/marketplace view) can
                         consume useMarketplace() for the favorites star + filter. */}
                     <MarketplaceProvider>
-                      <AppInner />
+                      <AppInnerProfiler>
+                        <AppInner />
+                      </AppInnerProfiler>
                     </MarketplaceProvider>
                   </ChatProvider>
                 </GameProvider>
@@ -3391,57 +3234,4 @@ export default function App() {
       </EscCloseProvider>
     </RootErrorBoundary>
   );
-}
-
-/**
- * Outermost error boundary — renders without any provider context.
- * Inline styles only so it works even if CSS/themes fail to load.
- */
-class RootErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  { error: Error | null }
-> {
-  state = { error: null as Error | null };
-
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-
-  componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error('[RootErrorBoundary]', error, info.componentStack);
-  }
-
-  render() {
-    if (this.state.error) {
-      return (
-        <div style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          justifyContent: 'center', height: '100vh', fontFamily: 'system-ui, sans-serif',
-          background: '#1a1a2e', color: '#ccc', padding: 24, textAlign: 'center',
-        }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>:(</div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: '#e55' }}>
-            YouCoded failed to start
-          </div>
-          <div style={{
-            fontSize: 12, color: '#888', marginTop: 8, maxWidth: 400,
-            wordBreak: 'break-word',
-          }}>
-            {this.state.error.message}
-          </div>
-          <button
-            onClick={() => this.setState({ error: null })}
-            style={{
-              marginTop: 16, padding: '6px 16px', borderRadius: 4,
-              border: '1px solid #444', background: '#2a2a3e', color: '#ccc',
-              cursor: 'pointer', fontSize: 12,
-            }}
-          >
-            Retry
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
 }
