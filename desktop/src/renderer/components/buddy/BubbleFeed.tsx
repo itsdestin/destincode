@@ -196,6 +196,9 @@ export function BubbleFeed({ sessionId }: Props) {
             batchDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
+              // Native watchdog stall countdown — payload sets it, absence clears
+              // it. MUST mirror App.tsx or the two windows diverge.
+              stallWarning: event.data?.stallWarning,
             });
           }
           break;

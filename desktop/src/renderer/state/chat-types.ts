@@ -155,6 +155,16 @@ export interface SessionChatState {
    */
   errorMessage: string | null;
   /**
+   * Native sessions only. Set when the streaming watchdog detects the provider
+   * has gone silent (no chunk for ~60s). Drives ThinkingIndicator's "This is
+   * taking a while… Retrying in Ns" countdown. `willRetry` is true when the
+   * harness will auto-retry the stalled step at countdown-end (nothing had
+   * streamed yet), false when it will surface a session-error instead. Set by a
+   * `stallWarning`-bearing TRANSCRIPT_THINKING_HEARTBEAT; cleared (→ null) by any
+   * subsequent activity (a plain heartbeat, reasoning/text delta) and by endTurn().
+   */
+  stallWarning: { retryInMs: number; willRetry: boolean } | null;
+  /**
    * Wall-clock of the last non-spinner buffer change (set by classifier).
    * Used to distinguish "spinner is ticking but nothing else is changing"
    * from "buffer is actively producing new output."
@@ -217,6 +227,7 @@ export function createSessionChatState(): SessionChatState {
     activeTurnToolIds: new Set(),
     attentionState: 'ok',
     errorMessage: null,
+    stallWarning: null,
     lastBufferActivityAt: 0,
     compactionPending: null,
     modelState: null,
@@ -318,6 +329,10 @@ export type ChatAction =
       // clears attentionState back to 'ok'.
       type: 'TRANSCRIPT_THINKING_HEARTBEAT';
       sessionId: string;
+      // Native watchdog: present → the stream has stalled; drives the
+      // ThinkingIndicator countdown. Absent → a normal heartbeat that CLEARS any
+      // active stall warning (activity resumed).
+      stallWarning?: { retryInMs: number; willRetry: boolean };
     }
   | {
       // Streaming reasoning chunk WITH text payload. Per-token deltas are
@@ -505,6 +520,8 @@ export interface SerializedSessionChatState {
   activeTurnToolIds: string[];
   attentionState: AttentionState;
   errorMessage: string | null;
+  // Optional so a pre-field snapshot from an older host still deserializes.
+  stallWarning?: { retryInMs: number; willRetry: boolean } | null;
   lastBufferActivityAt: number;
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
   modelState?: import('../../shared/engine-types').EngineModelState | null;
@@ -537,6 +554,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         activeTurnToolIds: Array.from(s.activeTurnToolIds),
         attentionState: s.attentionState,
         errorMessage: s.errorMessage,
+        stallWarning: s.stallWarning,
         lastBufferActivityAt: s.lastBufferActivityAt,
         compactionPending: s.compactionPending,
         modelState: s.modelState,
@@ -568,6 +586,8 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       // Older remote hosts predate errorMessage — default null so a
       // pre-field snapshot hydrates without an undefined leaking into state.
       errorMessage: ser.errorMessage ?? null,
+      // Older hosts predate stallWarning — default null so a pre-field snapshot hydrates.
+      stallWarning: ser.stallWarning ?? null,
       lastBufferActivityAt: ser.lastBufferActivityAt,
       compactionPending: ser.compactionPending,
       // Older hosts predate these — default null so a pre-field snapshot hydrates.

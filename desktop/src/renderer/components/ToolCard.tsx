@@ -195,6 +195,27 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       return { label: 'Plan ready — would you like to proceed?', detail: '' };
     }
 
+    // Native runtime budget gates — synthetic "tools" the harness raises as
+    // permission asks (harness-session.ts). They have no real tool call; render
+    // plain-language "Continue?" copy, NOT the raw internal name.
+    case 'max_steps': {
+      const steps = Number(input.steps) || 0;
+      return {
+        label: 'Continue?',
+        detail: `↳ Claude has taken ${steps} steps on this task without stopping`,
+      };
+    }
+
+    case 'doom_loop': {
+      const repeated = typeof input.repeated === 'string' ? input.repeated : '';
+      return {
+        label: 'Continue?',
+        detail: repeated
+          ? `↳ Claude keeps repeating the same action (${repeated})`
+          : '↳ Claude appears to be repeating the same action',
+      };
+    }
+
     default: {
       // MCP tools: mcp__{server}__{action}
       if (toolName.startsWith('mcp__')) {
@@ -224,11 +245,14 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-function PermissionButtons({ requestId, suggestions, denyListed, onResponded, onFailed }: {
+function PermissionButtons({ requestId, suggestions, denyListed, suppressAlwaysAllow, onResponded, onFailed }: {
   requestId: string;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
   denyListed?: boolean;
+  /** Budget gates (max_steps / doom_loop) are a binary "Continue?" — never offer
+   *  "Always Allow" (it'd persist a rule that permanently disables the guard). */
+  suppressAlwaysAllow?: boolean;
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
@@ -239,7 +263,7 @@ function PermissionButtons({ requestId, suggestions, denyListed, onResponded, on
   // thread. CC keeps its suggestions-gated behavior unchanged.
   const isNative = requestId.startsWith('native-');
   const hasSuggestions = !!(suggestions?.length);
-  const canAlwaysAllow = hasSuggestions || isNative;
+  const canAlwaysAllow = (hasSuggestions || isNative) && !suppressAlwaysAllow;
   // Consequence-gated confirm strip (deny-listed asks) — mirrors the delete-model
   // confirm in LocalModelsSection: replace the button row with a plain-language
   // warning + Cancel / confirm.
@@ -747,6 +771,8 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             requestId={tool.requestId}
             suggestions={tool.permissionSuggestions}
             denyListed={tool.denyListed}
+            // Budget gates are a plain Yes/No "Continue?" — no "Always Allow".
+            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop'}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

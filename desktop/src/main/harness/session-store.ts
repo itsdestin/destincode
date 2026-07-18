@@ -2,7 +2,9 @@
 // transcript events. Streaming deltas are coalesced per partId before hitting
 // disk (one event per part — identical reducer state on replay, ~50x smaller
 // files). 'session-error' is display-only and never persisted (a stale error
-// banner on resume would describe a failure that isn't happening anymore).
+// banner on resume would describe a failure that isn't happening anymore); the
+// streaming-watchdog heartbeats (stall warning + clear — a text-less, partId-less
+// assistant-thinking) are display-only for the same reason.
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 // WHY imported from transcript-watcher: the slug MUST match CC's project-dir
@@ -68,6 +70,16 @@ export class SessionStore {
     // The user already saw that text live; resume must show it too.
     if (event.type === 'session-error') {
       await this.flush(event.sessionId);
+      return;
+    }
+
+    // Streaming-watchdog heartbeats (the stall warning and its clear) are
+    // transient UI signals — an assistant-thinking with NO text and NO partId.
+    // Display-only: never persisted (a replayed stall countdown on a long-since
+    // completed turn is meaningless), and — unlike session-error — NOT a turn
+    // boundary, so it must NOT flush the open streaming part. (Reasoning deltas
+    // always carry text + partId, so they never match here.)
+    if (event.type === 'assistant-thinking' && !event.data?.text && !event.data?.partId) {
       return;
     }
 

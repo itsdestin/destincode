@@ -184,6 +184,9 @@ function endTurn(
     // endTurn() so they override these resets.
     attentionState: 'ok' as const,
     errorMessage: null,
+    // Any turn end also dismisses a pending stall countdown (the give-up path
+    // ends the turn via NATIVE_SESSION_ERROR, which spreads endTurn()).
+    stallWarning: null,
   };
 }
 
@@ -323,6 +326,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // (attentionState + errorMessage) so a fresh turn starts clean.
         attentionState: 'ok',
         errorMessage: null,
+        stallWarning: null,
       });
       return next;
     }
@@ -469,6 +473,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     // Thinking blocks are genuine activity — bump lastActivityAt and clear
     // any stale attention state back to 'ok'. No timeline change.
+    // A heartbeat carrying a `stallWarning` is the native watchdog firing: it
+    // SETS the countdown. A plain heartbeat means activity resumed → clears it.
     case 'TRANSCRIPT_THINKING_HEARTBEAT': {
       const session = next.get(action.sessionId);
       if (!session) return state;
@@ -476,6 +482,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...session,
         lastActivityAt: Date.now(),
         attentionState: 'ok',
+        stallWarning: action.stallWarning ?? null,
       });
       return next;
     }
@@ -612,6 +619,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         currentGroupId: null, // next tool_use creates a new group
         lastActivityAt: Date.now(),
         attentionState: 'ok',
+        // Real answer text resumed → dismiss any pending stall countdown.
+        stallWarning: null,
       });
       return next;
     }
@@ -650,6 +659,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         currentGroupId: null,
         lastActivityAt: Date.now(),
         attentionState: 'ok',
+        // Real reasoning resumed → dismiss any pending stall countdown.
+        stallWarning: null,
       });
       return next;
     }

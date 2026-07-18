@@ -133,6 +133,15 @@ export interface TranscriptEvent {
     /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */
     partId?: string;
     /**
+     * Native runtime only. Set on an `assistant-thinking` heartbeat when the
+     * streaming watchdog has seen NO chunk for STALL_WARNING_MS. Drives the
+     * ThinkingIndicator's "taking a while… retrying" countdown. `willRetry` =
+     * the harness will auto-retry the step when the countdown ends (nothing had
+     * streamed yet); false = it will surface a session-error instead. A heartbeat
+     * WITHOUT this field means activity resumed and clears the warning.
+     */
+    stallWarning?: { retryInMs: number; willRetry: boolean };
+    /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
      * (plain) vs `[Request interrupted by user for tool use]` (tool-use).

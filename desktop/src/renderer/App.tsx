@@ -1085,6 +1085,9 @@ function AppInner() {
             batchTranscriptDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
+              // Native watchdog: a stall-warning payload drives the countdown; a
+              // plain heartbeat (no payload) clears it. MUST mirror BubbleFeed.tsx.
+              stallWarning: event.data?.stallWarning,
             });
           }
           break;
