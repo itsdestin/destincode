@@ -17,6 +17,11 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import type { SyncService } from './sync-service';
+// Per-device sync recency lives in the sync-spaces service (it owns the SyncHub
+// socket that receives it). Surfaced here so getSyncStatus() — the SyncPanel's
+// full-snapshot source — carries it alongside the other sync fields. No cycle:
+// sync-spaces/service.ts does not import sync-state.
+import { getLastSyncByDevice } from './sync-spaces/service';
 
 // --- SyncService delegation ---
 // When the SyncService is running, forceSync() delegates to it instead
@@ -99,6 +104,11 @@ export interface SyncStatus {
   syncInProgress: boolean;
   syncingBackendId: string | null;     // Which backend is currently syncing
   syncedCategories: string[];
+  // Per-device sync recency (machineId → epoch-ms of that device's most recent
+  // successful sync), carried over the SyncHub. Keyed by the same machineId the
+  // "Your devices" rows use, so the UI reads `lastSyncByDevice[d.id]`. Empty when
+  // the hub is down / never connected — rows then fall back to their launch value.
+  lastSyncByDevice: Record<string, number>;
 }
 
 /** Config shape for the multi-instance model. */
@@ -426,6 +436,8 @@ export async function getSyncStatus(): Promise<SyncStatus> {
     syncInProgress: lockExists,
     syncingBackendId: null, // Set by SyncService at runtime via event
     syncedCategories: categoryChecks.filter(Boolean) as string[],
+    // Snapshot the SyncHub-carried per-device recency map (see interface note).
+    lastSyncByDevice: getLastSyncByDevice(),
   };
 }
 
