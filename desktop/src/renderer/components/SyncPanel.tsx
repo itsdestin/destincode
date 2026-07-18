@@ -1056,7 +1056,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                         })}
                       </div>
                       <div role="tabpanel" className="border-t border-edge-dim px-3 py-2.5">
-                        {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} onRemove={handleRemoveDevice} syncInProgress={status?.syncInProgress ?? false} lastSyncByDevice={status?.lastSyncByDevice} />}
+                        {countTab === 'dev' && <DevicesTab devices={devices} onRename={handleRenameDevice} onRemove={handleRemoveDevice} syncInProgress={status?.syncInProgress ?? false} lastSyncByDevice={status?.lastSyncByDevice} lastSyncEpoch={status?.lastSyncEpoch ?? null} />}
                         {countTab === 'proj' && (() => {
                           const projects = ((spacesStatus?.spaces ?? []) as any[]).filter(s => s.kind === 'project');
                           if (projects.length === 0) return <p className="text-[11px] text-fg-muted">Turn on sync for a project folder to add it here.</p>;
@@ -1533,7 +1533,7 @@ interface DeviceRow {
   self: boolean;
 }
 
-function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDevice }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void; onRemove: (id: string) => Promise<string | null>; syncInProgress: boolean; lastSyncByDevice?: Record<string, number> }) {
+function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDevice, lastSyncEpoch }: { devices: DeviceRow[] | null; onRename: (id: string, name: string) => void; onRemove: (id: string) => Promise<string | null>; syncInProgress: boolean; lastSyncByDevice?: Record<string, number>; lastSyncEpoch: number | null }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   // Two-step confirm: the id awaiting confirmation, if any. Removal is recoverable
@@ -1576,10 +1576,18 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
         // when there's no sync record (older main process / never-synced peer) —
         // the launch-time fallback. Self shows a live "Syncing…" mid-sync.
         // lastSyncByDevice is keyed by machineId, which is exactly `d.id`.
+        // Self's recency comes from the LOCAL live marker (lastSyncEpoch, in
+        // SECONDS → ms), not the DO map: the SyncHub never echoes a device's own
+        // signal back to it, so self's own map entry only refreshes on reconnect
+        // and would otherwise drift stale (row saying "20 min ago" while the panel
+        // header says "just now"). Peers use the map, updated live from relayed signals.
+        const lastSyncAt = d.self
+          ? (lastSyncEpoch != null ? lastSyncEpoch * 1000 : null)
+          : (lastSyncByDevice?.[d.id] ?? null);
         const activity = deviceActivityLabel({
           isSelf: d.self,
           syncInProgress,
-          lastSyncAt: lastSyncByDevice?.[d.id] ?? null,
+          lastSyncAt,
           gitLastSeen: d.lastSeen,
         }, Date.now());
         const right = plat ? `${plat} · ${activity}` : activity;
