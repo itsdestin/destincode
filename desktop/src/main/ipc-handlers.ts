@@ -184,6 +184,30 @@ export function registerIpcHandlers(
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   };
 
+  // Broadcast a session-scoped channel to EVERY registered main window. Use this
+  // (not sendForSession) when the payload is self-scoping — i.e. the renderer only
+  // acts on it if it's actually displaying that session — AND the session may have
+  // no registered owner. sendForSession's ownerless fallback targets only the
+  // PRIMARY mainWindow (window 1), which is the wrong window when the session is
+  // shown in a secondary window: the 2026-07-18 "moved pill never appears, session
+  // looks like it vanished" bug. A no-op in non-displaying windows makes the
+  // fan-out safe. (SESSION_MOVED is such a payload: recordMoved is keyed by
+  // sessionId and ignores sessions the window isn't showing.)
+  const sendToAllMainWindows = (channel: string, ...args: any[]) => {
+    const ids = windowRegistry ? windowRegistry.getWindowIds() : [];
+    if (ids.length === 0) {
+      // No registry / nothing registered — preserve the pre-buddy single-window
+      // behavior so the event still reaches a renderer.
+      if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
+      return;
+    }
+    for (const wid of ids) {
+      if (windowRegistry && windowRegistry.getKind(wid) !== 'main') continue; // skip buddy floaters
+      const wc = webContents.fromId(wid);
+      if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
+    }
+  };
+
   // Registry-wide push (not session-scoped): notify every window. Mirrors the
   // getAllWindows loop already used for 'appearance:sync' / 'update:progress'.
   const broadcastToAllWindows = (channel: string, payload: any) => {
@@ -501,6 +525,30 @@ export function registerIpcHandlers(
         // preset badge + resume rows can read it. getHarnessId is authoritative
         // after create/resume awaited above.
         info.harnessId = nativeHost.getHarnessId(info.id) ?? undefined;
+
+        // Native sessions emit NO CC SessionStart hook, so the CC lease path
+        // (sessionIdMap + acquire at the SessionStart listener) never fires for
+        // them — without this they run with NO takeover protection at all: a
+        // leaseQuery always answers held:false and the resume gate never offers a
+        // handoff, so two devices could both resume the same native conversation
+        // (2026-07-18 investigation §3.5). For native, info.id IS the claude
+        // session id (createSession uses resumeSessionId as the id; fresh native
+        // sessions mint one), so the mapping is identity. The existing session-exit
+        // release + holder teardown both key off sessionIdMap, so they pick native
+        // sessions up unchanged once the entry exists. Registered here (after the
+        // host create/resume succeeded) so a FAILED start doesn't take a lease on a
+        // dead session.
+        sessionIdMap.set(info.id, info.id);
+        noteSessionStarted(info.id, info.cwd);
+        if (isSyncSpacesEnabled()) {
+          void leaseWiring?.client.acquire(info.id)
+            .then((res) => {
+              if (res && res.ok === false) {
+                log('WARN', 'Lease', 'native session running without its lease (held by another device)', { sessionId: info.id, holder: res.holder });
+              }
+            })
+            .catch(() => { /* never-block */ });
+        }
       } catch (e) {
         log('ERROR', 'IPC', 'native session start failed', { sessionId: info.id, error: String(e) });
       }
@@ -1832,7 +1880,13 @@ export function registerIpcHandlers(
       const projectPath = info?.cwd;
       const projectSlug = projectPath ? ccProjectSlug(projectPath) : undefined;
       const payload = { sessionId: desktopId, device, claudeSessionId, projectSlug, projectPath };
-      sendForSession(desktopId, IPC.SESSION_MOVED, payload);          // owning renderer window
+      // Broadcast to ALL main windows, not sendForSession: at push time the holder
+      // session still exists but may have no registered owner (e.g. it's shown in a
+      // secondary window), and sendForSession's ownerless fallback hits only the
+      // PRIMARY window — the Moved pill would never render and the conversation would
+      // look like it vanished. recordMoved is keyed by sessionId and no-ops in windows
+      // not showing this session, so the fan-out is safe.
+      sendToAllMainWindows(IPC.SESSION_MOVED, payload);               // every main renderer window
       remoteServer?.broadcast({ type: IPC.SESSION_MOVED, payload }); // remote clients
     };
     const holderTakeover = createHolderTakeover({
@@ -2246,7 +2300,20 @@ export function registerIpcHandlers(
         // Leases/ dir for no reason. Release on session-exit stays UNCONDITIONAL
         // (idempotent — harmless if never acquired) so a session that acquired while
         // sync was on still releases if sync later flips off.
-        if (isSyncSpacesEnabled()) void leaseWiring?.client.acquire(claudeId).catch(() => { /* never-block */ });
+        // Log a denied acquire: today a session can run its whole life NOT owning
+        // its lease with zero trace, which is exactly how the 2026-07-18 handoff
+        // timeout went undiagnosed (the holder never held, so it never responded).
+        // Still never-block — the resume must not wait on the lease — but leave a
+        // breadcrumb so the next "takeover didn't respond" is diagnosable.
+        if (isSyncSpacesEnabled()) {
+          void leaseWiring?.client.acquire(claudeId)
+            .then((res) => {
+              if (res && res.ok === false) {
+                log('WARN', 'Lease', 'session running without its lease (held by another device)', { claudeId, holder: res.holder });
+              }
+            })
+            .catch(() => { /* never-block */ });
+        }
       }
     });
   }

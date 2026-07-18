@@ -455,6 +455,34 @@ export async function syncSpacesSyncNow(spaceId?: string) {
   return { ok: true };
 }
 
+// Awaitable counterpart to syncSpacesSyncNow, for the takeover handoff barrier.
+// syncSpacesSyncNow is fire-and-forget (void engine.syncSpace) so a UI "Sync now"
+// click never blocks on the network — but that means its Promise resolves BEFORE
+// any git pull/push runs, which is exactly why the takeover "mirror-before-release"
+// barrier didn't exist (2026-07-18 investigation §3.2): the holder's flush and the
+// requester's pre-materialize pull both returned before the final turn reached the
+// space. This variant resolves only AFTER each targeted space's pull+push settles,
+// so the caller can genuinely sequence "push landed" before "peer pulls".
+//
+// Bounded by timeoutMs: on timeout we resolve anyway (the push keeps running in the
+// background) because a handoff must never hard-block on a slow network — the cost
+// of a timed-out wait is the pre-fix behavior (the turn may arrive a beat late),
+// never a wedged handoff. engine.syncSpace never throws (fully try/caught inside),
+// so allSettled is belt-and-suspenders.
+export async function syncSpacesSyncNowAwaited(spaceId: string, timeoutMs: number): Promise<void> {
+  // Capture engine/roots into locals: both are module-level `let` nulled on teardown,
+  // and a sync-disable could null them between the guard and the async resolution.
+  const eng = engine;
+  const r = roots;
+  if (!eng || !r) return;
+  const targets = r.spaces().filter((s) => s.id === spaceId);
+  if (targets.length === 0) return;
+  await Promise.race([
+    Promise.allSettled(targets.map((s) => eng.syncSpace(s))),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 // Register a project so peers can discover it. repoName is derived purely from
 // the id, so ensureProjectEntry writes the same file on every device (§8).
 function registerProject(name: string, root: string): void {

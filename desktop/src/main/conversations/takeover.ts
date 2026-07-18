@@ -51,35 +51,36 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
         try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
         return;
       }
-      // Pick-first is deliberate: the rare same-claudeId-in-two-live-windows case
-      // hands off only the first holder (the others' leases drop on their own exit).
-      const desktopId = liveDesktopIds[0];
+      // 3. Interrupt EVERY live holder, not just the first. A create+resume pair can
+      //    leave two desktop ids mapped to one claude id; the old pick-first behavior
+      //    interrupted only one and left the OTHER running as a silent second writer
+      //    on the same transcript (never interrupted, flushed, or told it moved). The
+      //    single ESC byte is safe to write directly per PITFALLS "Keyboard Routing"
+      //    (single-byte writes reach Ink as a fresh keystroke regardless of timing).
+      for (const desktopId of liveDesktopIds) {
+        try { deps.sessionManager.sendInput(desktopId, '\x1b'); } catch { /* best-effort */ }
+      }
 
-      // 3. Interrupt the in-flight turn. Single ESC byte — safe to write directly
-      //    per PITFALLS "Keyboard Routing" (single-byte writes reach Ink as a fresh
-      //    keystroke regardless of timing; no paste-classification applies).
-      try { deps.sessionManager.sendInput(desktopId, '\x1b'); } catch { /* best-effort */ }
-
-      // 4-5. Wait for CC to finish flushing the interrupted turn, mirror local->space,
-      //      and nudge a personal-space sync. MIRROR-BEFORE-RELEASE is load-bearing:
-      //      the requester pulls the moment it sees the release, so the final turn
-      //      must already be in the space (flushSessionToSpace does both steps).
+      // 4-5. Wait for CC to finish flushing the interrupted turn(s), mirror
+      //      local->space, and AWAIT the personal-space push. Keyed on the claude id,
+      //      so one flush covers every live holder. MIRROR-BEFORE-RELEASE is
+      //      load-bearing: the requester pulls the moment it sees the release, so the
+      //      final turn must already be in the space.
       try { await deps.flushSessionToSpace(claudeId); } catch { /* best-effort */ }
 
       // 6. Release the lease so the requester can acquire. Idempotent + best-effort.
       try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
 
-      // 7. Tell the renderer + remote this conversation moved. BEFORE destroy, while
-      //    the session still exists so the "moved to <device>" banner can attach.
-      //    Guarded: pushMoved fans out to remoteServer.broadcast -> ws.send in a
-      //    loop, which can THROW synchronously if a remote socket is mid-teardown
-      //    (readyState checked, then transitions to CLOSING). An escape here would
-      //    skip step 8 (leaving the local CC session alive → half-done handoff).
-      try { deps.pushMoved(desktopId, from?.device); } catch { /* best-effort */ }
-
-      // 8. End the holder's session — fires session-exit -> Task 7 cleanup +
-      //    idempotent lease release.
-      try { deps.sessionManager.destroySession(desktopId); } catch { /* best-effort */ }
+      // 7-8. Tell the renderer + remote each moved session, then destroy it. pushMoved
+      //    runs BEFORE destroy, while the session still exists so the "moved to
+      //    <device>" banner can attach. Guarded: pushMoved fans out to
+      //    remoteServer.broadcast -> ws.send in a loop, which can THROW synchronously
+      //    if a remote socket is mid-teardown. Each id is independently try/caught so
+      //    one bad push can't leave a sibling session alive (half-done handoff).
+      for (const desktopId of liveDesktopIds) {
+        try { deps.pushMoved(desktopId, from?.device); } catch { /* best-effort */ }
+        try { deps.sessionManager.destroySession(desktopId); } catch { /* best-effort */ }
+      }
     } catch { /* never surface out of a fire-and-forget hub-event handler */ }
   };
 }
@@ -117,7 +118,15 @@ export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' }
 export type RequesterTakeoverType = ReturnType<typeof createRequesterTakeover>;
 
 export function createRequesterTakeover(deps: RequesterTakeoverDeps) {
-  const POLL_MS = 1_000, MAX_MS = 10_000;
+  const POLL_MS = 1_000;
+  // Poll budget for a clean handoff. COUPLED to the holder's costs (see
+  // HANDOFF_SYNC_TIMEOUT_MS in conversations/service.ts): a healthy handoff now
+  // takes up to QUIESCE_MAX_MS (6s, waiting for the interrupted turn to flush)
+  // + a genuinely-awaited git push (≤15s). 10s was sized for the fire-and-forget
+  // sync that never actually waited — once the flush awaits its push, 10s trips
+  // the force dialog on a HEALTHY holder. 25s = 6s quiesce + 15s push + slack, so
+  // the force offer is reserved for a genuinely unresponsive holder.
+  const MAX_MS = 25_000;
   return {
     async takeover(sessionId: string): Promise<RequesterOutcome> {
       try {

@@ -2138,9 +2138,22 @@ function AppInner() {
         if (r?.outcome === 'timeout') {
           const forced = await askTakeover(device, 'force');
           if (!forced) return; // "Never mind" — abort
-          await window.claude.syncSpaces?.leaseForce?.(claudeSessionId);
+          const fr = await window.claude.syncSpaces?.leaseForce?.(claudeSessionId);
+          // A failed force means the lease was never overwritten — the other device
+          // may STILL be live and holding it. Never-block (proceed with the resume),
+          // but say so: the user is about to have two writers on one transcript and
+          // recent turns may be missing. Silent here was the 2026-07-18 bug's mask.
+          if (fr && fr.ok === false) {
+            setToast(`Couldn't confirm the handoff from ${device} — it may still be editing this conversation, and recent turns may be missing.`);
+            setTimeout(() => setToast(null), 8000);
+          }
+        } else if (r?.outcome === 'error') {
+          // The takeover request itself failed (hub error / exception). Same deal:
+          // proceed (never-block) but warn that the other device may still be live.
+          setToast(`Couldn't reach ${device} to hand off this conversation — it may still be editing, and recent turns may be missing.`);
+          setTimeout(() => setToast(null), 8000);
         }
-        // 'acquired' or 'error' -> fall through and resume (never-block).
+        // 'acquired' -> clean handoff, fall through and resume.
       }
     } catch { /* never-block: a lease query/takeover failure must not stop the resume */ }
 
