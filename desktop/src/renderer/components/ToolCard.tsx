@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
+import { useArtifactOptional } from '../state/ArtifactContext';
 import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
@@ -224,11 +225,20 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-function PermissionButtons({ requestId, suggestions, denyListed, onResponded, onFailed }: {
+function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, onResponded, onFailed }: {
   requestId: string;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
   denyListed?: boolean;
+  /** The exact command the remembered rule will store, echoed in the confirm so
+   *  the user can see precisely what they're granting. Deny-listed asks are
+   *  Bash-only (DESTRUCTIVE_DENY_LIST has no non-Bash entries), so this is
+   *  `input.command` — the same string harness-session.ts:562 persists. */
+  command?: string;
+  /** Basename of the session cwd. The rule is scoped to that directory's slug
+   *  (permission-store.ts:35-43), so naming the folder is what makes the grant's
+   *  scope checkable — a worktree does NOT inherit its parent repo's rules. */
+  folderName?: string;
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
@@ -320,21 +330,35 @@ function PermissionButtons({ requestId, suggestions, denyListed, onResponded, on
   if (confirmingAlways) {
     return (
       <div className="px-3 py-2 space-y-2 border-t border-edge bg-inset/30">
+        {/* The header carries the ask so the body only has to carry the risk.
+            Naming the folder keeps the promise checkable — the remembered rule is
+            cwd-scoped, so "in this folder" alone would be unverifiable. */}
+        <p className="text-xs font-medium text-fg-2">
+          Always allow this exact command{folderName ? ` in ${folderName}` : ''}?
+        </p>
+        {command && (
+          <p className="text-[11px] leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
+            {command}
+          </p>
+        )}
         <p className="text-[11px] text-fg-dim leading-relaxed">
-          This lets the assistant run commands like this without asking, including ones that can delete files or push code. You can undo this later in Settings.
+          It can delete files or change published code, and you won't be asked again.
         </p>
         <div className="flex items-center gap-2">
+          {/* "Allow once" IS the plain-allow decision, so it wears the same green
+              as Yes. Previously this slot was Cancel, which dead-ended back on the
+              button row and still left the user owing an answer. */}
           <button
             disabled={responding}
-            onClick={() => setConfirmingAlways(false)}
-            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-inset/60 hover:bg-inset text-fg-muted transition-colors disabled:opacity-50`}
+            onClick={() => handleRespond({ decision: { behavior: 'allow' } })}
+            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50`}
           >
-            Cancel
+            Nevermind, allow once
           </button>
           <button
             disabled={responding}
             onClick={() => handleRespond(alwaysAllowDecision())}
-            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-amber-600/60 hover:bg-amber-600/80 text-amber-50 transition-colors disabled:opacity-50`}
+            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50`}
           >
             Always allow
           </button>
@@ -648,6 +672,11 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   const [expanded, setExpanded] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   const dispatch = useChatDispatch();
+  // Optional: the tool sandbox (?mode=tool-sandbox) renders ToolCard outside the
+  // ArtifactProvider. Missing cwd just drops the folder name from the confirm
+  // header rather than crashing the card.
+  const artifacts = useArtifactOptional();
+  const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
   const display = friendlyToolDisplay(tool);
   // Skill tool calls always return "Launching skill: X" with success — the body
   // is pure ceremony. Render header only, no chevron, non-interactive, with a
@@ -747,6 +776,8 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             requestId={tool.requestId}
             suggestions={tool.permissionSuggestions}
             denyListed={tool.denyListed}
+            command={typeof (tool.input as any)?.command === 'string' ? (tool.input as any).command : undefined}
+            folderName={sessionCwd ? basename(sessionCwd) : undefined}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />
