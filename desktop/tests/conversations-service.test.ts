@@ -34,6 +34,9 @@ const h = vi.hoisted(() => {
     mirrorIn: vi.fn((_o: any) => ({ copied: true })),
     materializeOut: vi.fn((_o: any) => ({ copied: true })),
     syncSpacesSyncNow: vi.fn(async (_spaceId?: string) => ({ ok: true })),
+    // Awaitable variant (2026-07-18): flushSessionToSpace now pushes via this, not
+    // the fire-and-forget syncSpacesSyncNow, so the handoff barrier is real.
+    syncSpacesSyncNowAwaited: vi.fn(async (_spaceId?: string, _timeoutMs?: number) => {}),
     // onSyncSpacesEvent subscribers — fireSync() drives them like the real
     // broadcast() fan-out would.
     syncListeners: new Set<(e: any) => void>(),
@@ -63,6 +66,7 @@ vi.mock('../src/main/sync-spaces/service', () => ({
     return () => h.syncListeners.delete(fn);
   },
   syncSpacesSyncNow: (spaceId?: string) => h.syncSpacesSyncNow(spaceId),
+  syncSpacesSyncNowAwaited: (spaceId?: string, timeoutMs?: number) => h.syncSpacesSyncNowAwaited(spaceId, timeoutMs),
   getManagedRoots: () => h.managedRoots,
 }));
 vi.mock('../src/main/saved-folders', () => ({
@@ -102,6 +106,7 @@ describe('conversations service composition root', () => {
     h.mirrorIn.mockReset().mockReturnValue({ copied: true } as any);
     h.materializeOut.mockReset().mockReturnValue({ copied: true } as any);
     h.syncSpacesSyncNow.mockReset().mockResolvedValue({ ok: true } as any);
+    h.syncSpacesSyncNowAwaited.mockReset().mockResolvedValue(undefined as any);
     h.savedFolders = [];
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-svc-'));
     h.managedRoots = { personalRoot: path.join(tmpRoot, 'Personal'), listProjects: () => [] };
@@ -445,7 +450,9 @@ describe('conversations service composition root', () => {
     expect(h.mirrorIn.mock.calls[0][0].localJsonlPath).toBe(localPath);
     // Space transcript path is <root>/claude/transcripts/<projectKey>/<id>.jsonl.
     expect(h.mirrorIn.mock.calls[0][0].spaceTranscriptPath).toContain(`${id}.jsonl`);
-    expect(h.syncSpacesSyncNow).toHaveBeenCalledWith('personal');
+    // flush pushes via the AWAITABLE variant (mirror-before-release barrier), not
+    // the fire-and-forget syncSpacesSyncNow.
+    expect(h.syncSpacesSyncNowAwaited).toHaveBeenCalledWith('personal', expect.any(Number));
     svc.stopConversationStore();
     vi.useRealTimers();
   });
@@ -455,7 +462,7 @@ describe('conversations service composition root', () => {
     const svc = await freshService(startOpts());
     await svc.flushSessionToSpace('never-announced');
     expect(h.mirrorIn).not.toHaveBeenCalled();
-    expect(h.syncSpacesSyncNow).not.toHaveBeenCalled();
+    expect(h.syncSpacesSyncNowAwaited).not.toHaveBeenCalled();
   });
 
   // Store not started (or stopped) → noteSessionEnded must be a silent no-op,

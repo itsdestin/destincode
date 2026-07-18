@@ -130,4 +130,31 @@ describe('createHolderTakeover', () => {
     expect(deps.pushMoved).toHaveBeenCalledWith('d1', 'X');
     expect(deps.sessionManager.destroySession).toHaveBeenCalledWith('d1');
   });
+
+  it('interrupts + destroys EVERY live holder when two desktop ids map to one claude id', async () => {
+    // A create+resume pair can leave TWO live desktop ids on one claude id. The old
+    // pick-first behavior interrupted only the first and left the other running as a
+    // silent second writer. Now both must be interrupted, moved, and destroyed; the
+    // claude-id-keyed flush + release run once.
+    const deps = makeDeps({ liveDesktopIds: ['d1', 'd2'] });
+    deps.sessionIdMap.set('d1', 'c1');
+    deps.sessionIdMap.set('d2', 'c1');
+    const handler = createHolderTakeover(deps as any);
+    await handler('c1', { deviceId: 'dev-b', device: 'Laptop-B' });
+
+    // Both holders interrupted, both moved, both destroyed.
+    expect(deps.sessionManager.sendInput).toHaveBeenCalledWith('d1', '\x1b');
+    expect(deps.sessionManager.sendInput).toHaveBeenCalledWith('d2', '\x1b');
+    expect(deps.pushMoved).toHaveBeenCalledWith('d1', 'Laptop-B');
+    expect(deps.pushMoved).toHaveBeenCalledWith('d2', 'Laptop-B');
+    expect(deps.sessionManager.destroySession).toHaveBeenCalledWith('d1');
+    expect(deps.sessionManager.destroySession).toHaveBeenCalledWith('d2');
+    // Flush + release are claude-id-keyed: exactly once each, not per-holder.
+    expect(deps.flushSessionToSpace).toHaveBeenCalledTimes(1);
+    expect(deps.leaseClient.release).toHaveBeenCalledTimes(1);
+    // Every interrupt happens before the single flush (both turns quiesce before push).
+    const iFlush = deps.order.indexOf('flush:c1');
+    expect(deps.order.indexOf('interrupt:d1:"\\u001b"')).toBeLessThan(iFlush);
+    expect(deps.order.indexOf('interrupt:d2:"\\u001b"')).toBeLessThan(iFlush);
+  });
 });

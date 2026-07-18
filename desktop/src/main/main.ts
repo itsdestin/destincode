@@ -18,7 +18,7 @@ import { FirstRunManager } from './first-run';
 import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
-import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore, hubLeaseRequest, setSyncSpacesLeaseEventListener, getManagedRoots, syncSpacesSyncNow } from './sync-spaces/service';
+import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore, hubLeaseRequest, setSyncSpacesLeaseEventListener, getManagedRoots, syncSpacesSyncNowAwaited } from './sync-spaces/service';
 // Plan 2b Task 8: conversation-lease lifecycle. The lease client coordinates
 // which device "holds" a conversation so two devices don't append to the same
 // transcript. Constructed in the main process (needs userData-scoped device id).
@@ -32,7 +32,7 @@ import { upsertSelf } from './sync-spaces/device-registry';
 // Conversation Store (Phase 2a): records + transcript sync ride the personal
 // space. Imported statically like the sync-spaces stop so the non-async quit
 // handler can call stopConversationStore() directly.
-import { startConversationStore, stopConversationStore, materializeOne } from './conversations/service';
+import { startConversationStore, stopConversationStore, materializeOne, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
@@ -712,7 +712,11 @@ function createWindow(firstRunManager?: FirstRunManager) {
   // installs share a hostname (the dev instance + built app dogfood gate).
   const requester = createRequesterTakeover({
     leaseClient,
-    syncNow: () => syncSpacesSyncNow('personal'),
+    // AWAITABLE sync (not the fire-and-forget syncSpacesSyncNow): the requester
+    // pulls the holder's final turn right after this, so the pull must not run
+    // until the push it depends on has actually landed. Bounded so a slow network
+    // can't wedge the resume.
+    syncNow: () => syncSpacesSyncNowAwaited('personal', HANDOFF_SYNC_TIMEOUT_MS),
     materializeOne: (id) => materializeOne(id),
     forceAcquire: (id) => hubLeaseRequest('force-acquire', id, deviceIdentity!.id),
     delay: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1595,10 +1599,28 @@ app.whenReady().then(async () => {
   // lazily per-connect so sign-in/out mid-session is picked up without a restart.
   // Must be set before startSyncSpaces so a sync enabled at boot can connect.
   setSyncSpacesAuthStore(marketplaceAuthStore);
-  // Plan 2b Task 8: route hub takeover-requests to the lease client, which
-  // filters to sessions THIS device actually holds before driving the handoff.
+  // Plan 2b Task 8: route hub lease events to the lease client, which filters to
+  // sessions THIS device actually holds before driving the handoff.
+  //
+  // BOTH 'takeover-request' AND 'taken' drive the holder teardown:
+  //   - 'takeover-request': a peer asked politely — interrupt, flush, release so it
+  //     can acquire. The requester is waiting on our release.
+  //   - 'taken': a peer FORCE-acquired the lease (its user confirmed the steal after
+  //     we didn't respond in time). The lease is already gone; if we don't interrupt
+  //     + flush NOW, our in-flight turn never reaches the space and the requester
+  //     resumes a stale copy (the 2026-07-18 lost-turns bug). handleTakeoverRequest's
+  //     held.has() guard no-ops the ATTACKER (who doesn't hold the session) so only
+  //     the VICTIM tears down — the 'taken' frame carries no deviceId to compare.
+  //
+  // KNOWN RESIDUAL WINDOW: on 'taken' the requester has already force-acquired and is
+  // pulling immediately, so it may grab the pre-flush copy. The holder's awaited flush
+  // (HANDOFF_SYNC_TIMEOUT_MS) shrinks this from "never flushes" to a ~1s race, but
+  // fully closing it needs the requester to wait on a holder ack — the deferred
+  // holder-ack protocol (investigation Fix 4). Do not assume 'taken' => turn saved.
   setSyncSpacesLeaseEventListener((ev) => {
-    if (ev.kind === 'takeover-request') leaseClient?.handleTakeoverRequest(ev.sessionId, ev.from);
+    if (ev.kind === 'takeover-request' || ev.kind === 'taken') {
+      leaseClient?.handleTakeoverRequest(ev.sessionId, ev.from);
+    }
   });
   startSyncSpaces(
     async () => {

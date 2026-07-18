@@ -1,6 +1,6 @@
 // Plan 2b Task 9 — pins the requester-side takeover flow (createRequesterTakeover).
 // When the user resumes a conversation another device holds, THIS device asks the
-// holder to hand off, polls the lease until it frees (or times out at 10s), then
+// holder to hand off, polls the lease until it frees (or times out at MAX_MS), then
 // pulls the peer's final turn and acquires the lease. All collaborators are
 // injected fakes; the poll loop is driven with fake timers. The flow must NEVER
 // throw (spec §3 never-block) — errors surface as {outcome:'error'}/{ok:false}.
@@ -101,7 +101,9 @@ describe('createRequesterTakeover', () => {
     const deps = makeDeps({ queryResults: [{ held: true, device: 'This-Device', self: false }] });
     const flow = createRequesterTakeover(deps as any);
     const p = flow.takeover('c1');
-    await vi.advanceTimersByTimeAsync(11_000);
+    // Advance past the 25s MAX_MS (raised from 10s once the holder's flush genuinely
+    // awaits its push — see takeover.ts) so the poll loop exhausts its budget.
+    await vi.advanceTimersByTimeAsync(26_000);
     const res = await p;
     expect(res).toEqual({ outcome: 'timeout' });
     // Did NOT short-circuit on a same-label lease: no free-path work ran.
@@ -110,12 +112,13 @@ describe('createRequesterTakeover', () => {
     expect(deps.materializeOne).not.toHaveBeenCalled();
   });
 
-  it('takeover: holder never releases -> timeout after 10s (no acquire)', async () => {
+  it('takeover: holder never releases -> timeout after MAX_MS (no acquire)', async () => {
     const deps = makeDeps({ queryResults: [{ held: true, device: 'Laptop-B' }] });
     const flow = createRequesterTakeover(deps as any);
     const p = flow.takeover('c1');
-    // Advance well past MAX_MS so every poll interval elapses and the loop exits.
-    await vi.advanceTimersByTimeAsync(11_000);
+    // Advance well past MAX_MS (now 25s — see takeover.ts) so every poll interval
+    // elapses and the loop exits.
+    await vi.advanceTimersByTimeAsync(26_000);
     const res = await p;
     expect(res).toEqual({ outcome: 'timeout' });
     expect(deps.leaseClient.acquire).not.toHaveBeenCalled();
@@ -150,5 +153,33 @@ describe('createRequesterTakeover', () => {
     const flow = createRequesterTakeover(deps as any);
     const res = await flow.force('c1');
     expect(res).toEqual({ ok: false });
+  });
+
+  it('takeover: materializeOne is NOT called until the syncNow promise RESOLVES (mirror-before-pull)', async () => {
+    // §3.2 regression guard. The requester pulls the peer's final turn via
+    // materializeOne right after syncNow. If syncNow is fire-and-forget (resolves
+    // before the git push/pull actually runs), materialize grabs the STALE copy —
+    // the lost-turns bug. The flow must AWAIT the injected syncNow before calling
+    // materializeOne. Today's real syncNow is syncSpacesSyncNowAwaited (resolves only
+    // after the push lands); this test pins that the flow honors the promise.
+    const deps = makeDeps({ queryResults: [{ held: false }] });
+    let releaseSync!: () => void;
+    const syncGate = new Promise<void>((r) => { releaseSync = r; });
+    (deps.syncNow as any) = vi.fn(() => { deps.order.push('syncNow'); return syncGate; });
+    const flow = createRequesterTakeover(deps as any);
+    const p = flow.takeover('c1');
+
+    // Let the microtask queue drain: takeover + query + syncNow have run, but the
+    // flow is now parked awaiting syncGate. materializeOne must NOT have run yet.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(deps.syncNow).toHaveBeenCalled();
+    expect(deps.materializeOne).not.toHaveBeenCalled();
+    expect(deps.leaseClient.acquire).not.toHaveBeenCalled();
+
+    // Release the sync (push landed) -> NOW materialize + acquire run.
+    releaseSync();
+    const res = await p;
+    expect(res).toEqual({ outcome: 'acquired' });
+    expect(deps.order).toEqual(['takeover:c1', 'syncNow', 'materialize:c1', 'acquire:c1']);
   });
 });

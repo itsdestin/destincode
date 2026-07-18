@@ -163,6 +163,27 @@ describe('lease-client', () => {
     expect(takeoverSpy).not.toHaveBeenCalled();
   });
 
+  it('handleTakeoverRequest is the victim-only guard for BOTH takeover-request AND taken', async () => {
+    // main.ts routes BOTH 'takeover-request' and 'taken' (force-acquire) lease events
+    // into handleTakeoverRequest. The 'taken' frame carries NO deviceId to compare, so
+    // the held.has() guard is what separates VICTIM from ATTACKER: the device that
+    // forced the steal does NOT hold the session (no-op), the device that holds it is
+    // the victim (tears down). Pin that contract here — if the guard ever keyed on a
+    // payload field instead of held.has(), a force would tear down the wrong device.
+    hubRequest.mockResolvedValue(okResult('acquire', 's-held', Date.now() + 300_000));
+    await client.acquire('s-held'); // WE hold it -> we are the victim
+
+    // A 'taken' event arrives with NO `from` (the DO's taken frame has no deviceId).
+    client.handleTakeoverRequest('s-held', undefined);
+    expect(takeoverSpy).toHaveBeenCalledWith('s-held', undefined);
+
+    // The attacker's perspective: it does NOT hold the session, so the same event
+    // no-ops (it must NOT tear down the session it just stole).
+    takeoverSpy.mockClear();
+    client.handleTakeoverRequest('s-not-ours', undefined);
+    expect(takeoverSpy).not.toHaveBeenCalled();
+  });
+
   it('renew failure (force-acquired) stops the timer, deletes the file, and attributes the takeover', async () => {
     hubRequest.mockResolvedValue(okResult('acquire', 's1', Date.now() + 300_000));
     await client.acquire('s1');

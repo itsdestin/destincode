@@ -269,6 +269,50 @@ describe('sync-spaces service transition serialization', () => {
     expect(engine.syncSpace.mock.calls.length).toBeGreaterThan(1);
   });
 
+  // ---- Awaitable sync variant (2026-07-18 takeover mirror-before-release fix) ----
+  // syncSpacesSyncNowAwaited backs the takeover handoff barrier: it must NOT resolve
+  // until the targeted space's push settles (unlike fire-and-forget syncSpacesSyncNow).
+
+  it('syncSpacesSyncNowAwaited does NOT resolve until the targeted space sync settles', async () => {
+    const svc = await enabledMultiSpaceService();
+    const engine = h.engines[0];
+    // Gate the matching space's sync so we control when it "lands".
+    let releaseSync!: () => void;
+    engine.syncSpace = vi.fn((space: { id: string }) =>
+      space.id === 'project:beta'
+        ? new Promise<void>((r) => { releaseSync = r; })
+        : Promise.resolve()) as any;
+
+    let resolved = false;
+    const p = svc.syncSpacesSyncNowAwaited('project:beta', 10_000).then(() => { resolved = true; });
+    await new Promise((r) => setTimeout(r, 20)); // let the call reach the engine
+    expect(engine.syncSpace).toHaveBeenCalled();
+    expect(resolved).toBe(false); // parked awaiting the push — must not have resolved
+
+    releaseSync();
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it('syncSpacesSyncNowAwaited resolves after the timeout even if the sync never settles', async () => {
+    const svc = await enabledMultiSpaceService();
+    const engine = h.engines[0];
+    engine.syncSpace = vi.fn(() => new Promise<void>(() => { /* never settles */ })) as any;
+    const start = Date.now();
+    // 50ms timeout: the handoff must never hard-block on a stuck push.
+    await svc.syncSpacesSyncNowAwaited('project:beta', 50);
+    expect(Date.now() - start).toBeLessThan(5_000); // resolved via the timeout, not the sync
+  });
+
+  it('syncSpacesSyncNowAwaited targets ONLY the matching space', async () => {
+    const svc = await enabledMultiSpaceService();
+    const engine = h.engines[0];
+    engine.syncSpace.mockClear();
+    await svc.syncSpacesSyncNowAwaited('project:alpha', 10_000);
+    expect(engine.syncSpace).toHaveBeenCalledTimes(1);
+    expect(engine.syncSpace.mock.calls[0][0].id).toBe('project:alpha');
+  });
+
   it('broadcast stamps events with an `at` timestamp', async () => {
     const svc = await enabledMultiSpaceService();
     // Fire the engine's onEvent hook (= service.broadcast) the way the real

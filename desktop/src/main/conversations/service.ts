@@ -11,7 +11,7 @@ import { createConversationStore, ConversationStore } from './conversation-store
 import { mirrorIn, materializeOut } from './transcript-mirror';
 import { reconcile } from './reconciler';
 import { ccProjectSlug } from '../project-conversations';
-import { onSyncSpacesEvent, syncSpacesSyncNow, getManagedRoots } from '../sync-spaces/service';
+import { onSyncSpacesEvent, syncSpacesSyncNow, syncSpacesSyncNowAwaited, getManagedRoots } from '../sync-spaces/service';
 import { readFolders } from '../saved-folders';
 import { resolveLocalProject } from './resolve-local-project';
 import type { TranscriptEvent } from '../../shared/types';
@@ -25,6 +25,12 @@ const RECONCILE_INTERVAL_MS = 30 * 60_000; // slow tick; the startup scan is the
 // local file to stop growing — two equal-size stats this far apart = CC done.
 const QUIESCE_PROBE_MS = 750;   // gap between size probes
 const QUIESCE_MAX_MS = 6_000;   // give up waiting; skip this round (reconciler/startup sweep catch up)
+// Handoff sync budget: how long flushSessionToSpace waits for the final turn's push
+// to actually land before giving up (and letting the push continue in the background).
+// COUPLED to the requester's takeover poll budget (MAX_MS in takeover.ts): that budget
+// must exceed QUIESCE_MAX_MS + HANDOFF_SYNC_TIMEOUT_MS or a healthy handoff trips the
+// force dialog. Keep all three constants in sync if you change one.
+export const HANDOFF_SYNC_TIMEOUT_MS = 15_000;
 
 interface SessionCtx { cwd: string }
 
@@ -348,7 +354,12 @@ export async function flushSessionToSpace(claudeSessionId: string): Promise<void
   await waitForQuiescence(localPath); // best-effort wait; push regardless of the result
   try { mirrorIn({ localJsonlPath: localPath, spaceTranscriptPath: spaceTranscriptPath(key, claudeSessionId) }); }
   catch { /* best-effort; the reconciler re-mirrors */ }
-  try { await Promise.resolve(syncSpacesSyncNow('personal')); } catch { /* the poll covers a miss */ }
+  // MIRROR-BEFORE-RELEASE is load-bearing: genuinely AWAIT the push so the final
+  // turn is in the space before the requester pulls. syncSpacesSyncNow would be
+  // fire-and-forget here (resolves before git runs) — the awaitable variant is what
+  // makes the barrier real. Bounded by HANDOFF_SYNC_TIMEOUT_MS so a slow network
+  // can't wedge the handoff.
+  try { await syncSpacesSyncNowAwaited('personal', HANDOFF_SYNC_TIMEOUT_MS); } catch { /* the poll covers a miss */ }
 }
 
 function runReconcile(): void {
