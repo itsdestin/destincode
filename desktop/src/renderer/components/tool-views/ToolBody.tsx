@@ -356,7 +356,10 @@ function DiffView({
   // new-file number. Pad to the widest number so the column stays aligned —
   // with structuredPatch, numbers can be large (e.g. line 2854).
   const gutterWidth = Math.max(2, String(maxLineNum).length);
-  const gutterCh = `${gutterWidth}ch`;
+  // calc(), not a bare `Nch`: Tailwind's global box-sizing:border-box makes a
+  // plain width include the span's px-1.5 padding, leaving too little room
+  // for the digits and wrapping "12" into "1"/"2" stacked lines.
+  const gutterCh = `calc(${gutterWidth}ch + 0.75rem)`;
 
   return (
     <>
@@ -392,7 +395,7 @@ function DiffView({
               )}
               <div className={`flex items-start ${rowClass}`}>
                 <span
-                  className="text-right px-1.5 py-0.5 text-fg-muted select-none shrink-0"
+                  className="text-right px-1.5 py-0.5 text-fg-muted select-none shrink-0 whitespace-nowrap"
                   style={{ width: gutterCh }}
                 >
                   {lineNum}
