@@ -335,6 +335,14 @@ describe('Bash', () => {
       expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
     });
 
+    // Regression (2026-07-18): a dangling `&&` absorbs the probe's `__yc_rc=$?`
+    // line, so `exit $__yc_rc` fell through to printf's status — a FAILED
+    // command reported success. Malformed commands must skip the probe.
+    it('a dangling && does not mask a failing command as success', async () => {
+      const r = await BashTool.execute({ command: 'false &&' }, trackingCtx(dir));
+      expect(r.isError).toBe(true);
+    });
+
     it('a context without setShellCwd still works (stateless fallback)', async () => {
       const r = await BashTool.execute({ command: 'echo plain' }, makeCtx(dir));
       expect(r.text).toBe('plain');

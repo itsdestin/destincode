@@ -42,7 +42,12 @@ function withCwdProbe(command: string): string {
   // the pipe AFTER the sentinel, and without a terminator that text concatenates
   // onto the path — yielding a garbage cwd, a spurious reset notice, and output
   // silently dropped from the result. Verified 2026-07-18.
-  return `${command}\n__yc_rc=$?\nprintf '\\n${CWD_SENTINEL}%s\\n' "$PWD"\nexit $__yc_rc`;
+  // `pwd -W` is the MSYS/Git Bash builtin that prints a WINDOWS-style path
+  // (C:/Users/...). Without it $PWD is /c/Users/... which path.resolve() on
+  // Windows turns into C:\\c\\Users\\... — never inside ctx.cwd, so EVERY call
+  // would emit a bogus reset notice. Invalid on Linux/macOS bash, where the
+  // `|| pwd` fallback takes over (stderr suppressed so it can't reach output).
+  return `${command}\n__yc_rc=$?\nprintf '\\n${CWD_SENTINEL}%s\\n' "$(pwd -W 2>/dev/null || pwd)"\nexit $__yc_rc`;
 }
 
 /** Split the sentinel back off the combined stdout+stderr. Returns the text the
@@ -100,8 +105,11 @@ export const BashTool = defineTool({
     const tracked = ctx.shellCwd;
     const startCwd =
       tracked && tracked !== ctx.cwd && fs.existsSync(tracked) && fs.statSync(tracked).isDirectory() ? tracked : ctx.cwd;
-    // A command ending in a line-continuation would swallow our probe lines.
-    const probe = tracksCwd && !/\\\s*$/.test(args.command);
+    // Skip the probe when the command's last line would ABSORB ours: a trailing
+    // line-continuation, or a dangling `&&`/`||`/`|` (which swallows the
+    // `__yc_rc=$?` line, so a FAILED command would exit 0 — verified 2026-07-18).
+    // Such commands are malformed anyway; skipping restores the plain behavior.
+    const probe = tracksCwd && !/(\\|&&|\|\||\|)\s*$/.test(args.command);
     return new Promise((resolve) => {
       const child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command) : args.command], {
         cwd: startCwd,
