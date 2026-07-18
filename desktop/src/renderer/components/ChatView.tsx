@@ -743,7 +743,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                       </div>
                     </div>
                   )
-                  : <ThinkingIndicator />;
+                  : <ThinkingIndicator stallWarning={state.stallWarning} />;
               }
               if (state.attentionState !== 'ok' && (thinkingArea || terminalAttention)) {
                 return (

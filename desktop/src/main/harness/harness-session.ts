@@ -19,6 +19,7 @@ import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision } from '../../shared/permission-types';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
+import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard } from './tools/guards';
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
@@ -45,6 +46,11 @@ export interface HarnessSessionOpts {
   toolServices?: ToolServices;
   /** Test hook: step-level retry backoff (ms). Defaults to [1000, 2000, 4000]. */
   retryDelays?: number[];
+  /** Test hook: streaming inactivity watchdog timings (ms). Silence past
+   *  `stallWarningMs` warns the user; a further `stallCountdownMs` of silence
+   *  triggers the auto-retry / session-error. Default 60_000 / 15_000. */
+  stallWarningMs?: number;
+  stallCountdownMs?: number;
 }
 export type ModelFactory = (binding: ModelBinding) => Promise<LanguageModel>;
 
@@ -110,6 +116,33 @@ export function describeProviderError(err: any): string {
 // permission ask). Every collected tool-call MUST get a matching tool-result or
 // the persisted history ends on a dangling tool_call that provider APIs reject.
 const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
+
+// Streaming inactivity watchdog (native runtime). The abort-race below only
+// breaks the stream on a USER interrupt — a provider that holds the socket open
+// but stops emitting (OpenRouter keep-alive pings while an upstream stalls, or a
+// half-open connection after a network/suspend blip) sends no chunk, no finish,
+// and no error, so the turn would hang forever with the "Thinking" spinner up
+// and ESC the only escape. The watchdog bounds that silence: warn the user after
+// STALL_WARNING_MS, then act after a further STALL_RETRY_COUNTDOWN_MS grace.
+const STALL_WARNING_MS = 60_000;          // silence tolerated before we warn
+const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acting
+// consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
+// so the step can be safely re-run once (re-running after content streamed would
+// duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
+const STALL_RETRY = Symbol('stall-retry');
+// Thrown when silence outlasts the countdown AND a retry isn't safe (content
+// already streamed, or the one allowed retry was already spent). Routes through
+// send()'s catch → session-error. Message is specific + accurate (we KNOW it's a
+// timeout — docs/error-message-standards.md: never guess an unverified cause).
+class StreamStallError extends Error {
+  constructor(totalMs: number) {
+    super(
+      `The model stopped responding — no data received for ${Math.round(totalMs / 1000)} seconds. `
+      + `The provider may be stalled; send your message again to retry.`,
+    );
+    this.name = 'StreamStallError';
+  }
+}
 
 // CONCURRENCY PRECONDITION: `send()` is NOT re-entrant. `abort`, `interrupted`,
 // and `history` are single-slot per session — a second send() before the first
@@ -240,7 +273,10 @@ export class HarnessSession extends EventEmitter {
     const startedAt = Date.now();
     const turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     const recentCalls: string[] = [];           // doom-loop window (turn-level)
-    const maxSteps = this.opts.harness.limits?.maxSteps ?? 25;
+    // Budget precedence: an explicit harness override wins; otherwise the step
+    // ceiling is chosen by MODEL tier (frontier models sustain longer autonomous
+    // runs than the conservative 25 — see model-step-budget.ts).
+    const maxSteps = this.opts.harness.limits?.maxSteps ?? stepBudgetFor(this.binding.modelId);
     let stepsSinceApproval = 0;
     let stopReason = 'end_turn';
     // Latest step's partial text — the ONLY thing the catch pushes to history
@@ -386,6 +422,31 @@ export class HarnessSession extends EventEmitter {
     aiTools: Record<string, any>,
     reportPartial: (text: string) => void,
   ): Promise<StepResult> {
+    // At most ONE auto-retry: attempt 0 stalls with nothing streamed →
+    // runStreamOnce returns STALL_RETRY → we re-run. A stall on attempt 1 (or a
+    // stall after content streamed) is fatal (StreamStallError), so the loop can
+    // iterate at most twice — runStreamOnce only returns STALL_RETRY when it was
+    // told this is the first attempt.
+    for (let attempt = 0; ; attempt++) {
+      const outcome = await this.runStreamOnce(model, aiTools, reportPartial, attempt === 0);
+      if (outcome !== STALL_RETRY) return outcome;
+      // Auto-retrying after a silent stall: clear the on-screen stall warning
+      // back to a plain "Thinking" heartbeat so the countdown doesn't linger at
+      // 0 while the fresh stream spins up.
+      this.emitEvent('assistant-thinking', {});
+    }
+  }
+
+  /** Consume ONE stream attempt with an inactivity watchdog. Returns a normal
+   *  StepResult, or the STALL_RETRY sentinel when the stream went silent past
+   *  the countdown with nothing streamed on a first attempt (caller re-runs).
+   *  Throws StreamStallError when a stall isn't safely retryable. */
+  private async runStreamOnce(
+    model: LanguageModel,
+    aiTools: Record<string, any>,
+    reportPartial: (text: string) => void,
+    isFirstAttempt: boolean,
+  ): Promise<StepResult | typeof STALL_RETRY> {
     const streamArgs: any = {
       model,
       system: this.systemText,
@@ -402,6 +463,9 @@ export class HarnessSession extends EventEmitter {
     let outputChars = 0;
     const toolCalls: ToolCall[] = [];
     let interrupted = false;
+    // Any delta/tool-call this attempt means a retry would DUPLICATE output, so
+    // a later stall must fail rather than re-run.
+    let emittedAny = false;
 
     // Consume the stream via an explicit iterator raced against the abort
     // signal. A plain `for await` blocks forever if the underlying provider
@@ -414,56 +478,103 @@ export class HarnessSession extends EventEmitter {
       else abortSignal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });
 
-    while (true) {
-      const nextPromise = iterator.next();
-      const chunk = await Promise.race([nextPromise, abortPromise]);
-      if (chunk === 'aborted') {
-        // The abort won the race; swallow the pending read's late rejection and
-        // release the underlying reader/socket (a provider that IGNORES the abort
-        // would otherwise leak it until GC — the exact case this race exists for).
-        nextPromise.catch(() => {});
-        iterator.return?.().catch(() => {});
-        this.interrupted = true;
-        interrupted = true;
-        break;
-      }
-      if (chunk.done) break;
-      const part = chunk.value;
-      switch (part.type) {
-        case 'text-delta': {
-          const t = deltaText(part);
-          if (!t) break;
-          assistantText += t; outputChars += t.length;
-          reportPartial(assistantText);
-          // partId = the SDK's part id (fresh per streamText call). A tool-group
-          // segment always separates consecutive text STEPS in the reducer, so a
-          // repeated id across steps can't wrongly merge two bubbles.
-          this.emitEvent('assistant-text', { text: t, partId: part.id ?? 'text-0' });
-          break;
-        }
-        case 'reasoning-delta': {
-          const t = deltaText(part);
-          if (!t) break;
-          outputChars += t.length;
-          // assistant-thinking WITH data.text → the reducer's reasoning path;
-          // payload-less would stay a heartbeat.
-          this.emitEvent('assistant-thinking', { text: t, partId: part.id ?? 'reasoning-0' });
-          break;
-        }
-        case 'tool-call':
-          // input is the PARSED object here (streamText parses the raw JSON-string
-          // args — verified ai@7 contract). Collected; executed by the loop.
-          toolCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
-          break;
-        case 'abort':
-          // The SDK can surface an interrupt as a clean 'abort' part (instead of
-          // a thrown AbortError). Mark it so the loop emits user-interrupt.
+    // Inactivity watchdog, raced alongside each chunk read. Stage 1 (silence for
+    // STALL_WARNING_MS) emits the stall-warning heartbeat that drives the UI
+    // countdown; stage 2 (a further STALL_RETRY_COUNTDOWN_MS of silence) resolves
+    // the race with 'stall'. Re-armed on every real chunk so it fires ONLY on a
+    // genuinely silent stream — an actively-streaming reasoning model never trips it.
+    const warnMs = this.opts.stallWarningMs ?? STALL_WARNING_MS;
+    const countdownMs = this.opts.stallCountdownMs ?? STALL_RETRY_COUNTDOWN_MS;
+    let warned = false;
+    let stageTimer: ReturnType<typeof setTimeout> | undefined;
+    let resolveStall: (v: 'stall') => void;
+    const stallPromise = new Promise<'stall'>((resolve) => { resolveStall = resolve; });
+    const armWatchdog = () => {
+      clearTimeout(stageTimer);
+      stageTimer = setTimeout(() => {
+        warned = true;
+        // willRetry: we can safely re-run only if nothing streamed AND this is
+        // the first attempt — otherwise the countdown ends in an error, not a retry.
+        const willRetry = !emittedAny && isFirstAttempt;
+        this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
+        stageTimer = setTimeout(() => resolveStall('stall'), countdownMs);
+      }, warnMs);
+    };
+    armWatchdog();
+
+    try {
+      while (true) {
+        const nextPromise = iterator.next();
+        const chunk = await Promise.race([nextPromise, abortPromise, stallPromise]);
+        if (chunk === 'aborted') {
+          // The abort won the race; swallow the pending read's late rejection and
+          // release the underlying reader/socket (a provider that IGNORES the abort
+          // would otherwise leak it until GC — the exact case this race exists for).
+          nextPromise.catch(() => {});
+          iterator.return?.().catch(() => {});
           this.interrupted = true;
           interrupted = true;
           break;
-        case 'error':
-          throw part.error instanceof Error ? part.error : new Error(String(part.error));
+        }
+        if (chunk === 'stall') {
+          // No chunk for the full warn+countdown window. Release the dead reader
+          // (same teardown as the abort path), then retry-or-fail. Cancelling the
+          // reader can reject the terminal promises with nothing awaiting them —
+          // swallow so they don't surface as unhandled rejections.
+          nextPromise.catch(() => {});
+          iterator.return?.().catch(() => {});
+          void Promise.resolve(result.usage).catch(() => {});
+          void Promise.resolve(result.finishReason).catch(() => {});
+          if (!emittedAny && isFirstAttempt) return STALL_RETRY;
+          throw new StreamStallError(warnMs + countdownMs);
+        }
+        if (chunk.done) break;
+        // A real chunk arrived → clear any shown warning and re-arm the watchdog.
+        if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
+        armWatchdog();
+        const part = chunk.value;
+        switch (part.type) {
+          case 'text-delta': {
+            const t = deltaText(part);
+            if (!t) break;
+            emittedAny = true;
+            assistantText += t; outputChars += t.length;
+            reportPartial(assistantText);
+            // partId = the SDK's part id (fresh per streamText call). A tool-group
+            // segment always separates consecutive text STEPS in the reducer, so a
+            // repeated id across steps can't wrongly merge two bubbles.
+            this.emitEvent('assistant-text', { text: t, partId: part.id ?? 'text-0' });
+            break;
+          }
+          case 'reasoning-delta': {
+            const t = deltaText(part);
+            if (!t) break;
+            emittedAny = true;
+            outputChars += t.length;
+            // assistant-thinking WITH data.text → the reducer's reasoning path;
+            // payload-less would stay a heartbeat.
+            this.emitEvent('assistant-thinking', { text: t, partId: part.id ?? 'reasoning-0' });
+            break;
+          }
+          case 'tool-call':
+            // input is the PARSED object here (streamText parses the raw JSON-string
+            // args — verified ai@7 contract). Collected; executed by the loop.
+            emittedAny = true;
+            toolCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
+            break;
+          case 'abort':
+            // The SDK can surface an interrupt as a clean 'abort' part (instead of
+            // a thrown AbortError). Mark it so the loop emits user-interrupt.
+            this.interrupted = true;
+            interrupted = true;
+            break;
+          case 'error':
+            throw part.error instanceof Error ? part.error : new Error(String(part.error));
+        }
       }
+    } finally {
+      // Always release the watchdog timers — on done/throw/return alike.
+      clearTimeout(stageTimer);
     }
 
     if (interrupted || this.interrupted || abortSignal.aborted) {

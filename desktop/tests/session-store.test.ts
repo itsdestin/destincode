@@ -67,6 +67,31 @@ describe('SessionStore', () => {
     expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
   });
 
+  it('never persists a watchdog stall-warning heartbeat (text-less, partId-less assistant-thinking)', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('user-message', { text: 'hi' }, 'u1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { stallWarning: { retryInMs: 15000, willRetry: true } }, 'w1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', {}, 'w2') as any); // the clear heartbeat
+    const events = store.readEvents('s-1', HEADER.cwd);
+    // Only the user message survives — both watchdog heartbeats are display-only.
+    expect(events.map((e: any) => e.type)).toEqual(['user-message']);
+  });
+
+  // A watchdog heartbeat is display-only but — unlike session-error — is NOT a
+  // turn boundary, so it must leave the open streaming part buffered (the stream
+  // may resume the same partId), not flush it early.
+  it('a stall-warning heartbeat does NOT flush the open streaming part', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Hel', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { stallWarning: { retryInMs: 15000, willRetry: false } }, 'w1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'lo!', partId: 'p1' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    // The heartbeat did not split the part — both deltas coalesced into one.
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
+  });
+
   it('a new partId flushes the previous open part', async () => {
     await store.create(HEADER);
     await store.append(HEADER.cwd, ev('assistant-thinking', { text: 'thi', partId: 'r1' }, 'r1a') as any);
