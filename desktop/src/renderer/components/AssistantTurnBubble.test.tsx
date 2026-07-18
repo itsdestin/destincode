@@ -1,12 +1,30 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import React from 'react';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { ChatProvider } from '../state/chat-context';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import type { AssistantTurn } from '../state/chat-types';
 import type { ToolCallState, ToolGroupState } from '../../shared/types';
+
+// Mock MarkdownContent with a render-counting probe. AssistantTurnBubble renders
+// one <MarkdownContent> per text bubble, so counting its renders tells us whether
+// the memo comparator let a turn skip re-rendering. The real markdown pipeline
+// (react-markdown + highlight.js) is the expensive thing the memo exists to avoid
+// re-running on every streaming frame — counting its invocation is the most direct
+// observable of the perf invariant.
+vi.mock('./MarkdownContent', () => {
+  const renders: string[] = [];
+  const Mock = ({ content }: { content: string }) => {
+    renders.push(content);
+    return <div data-testid="md-probe">{content}</div>;
+  };
+  Mock.__renders = renders;
+  return { default: Mock };
+});
+import MarkdownContent from './MarkdownContent';
+const mdRenders = (MarkdownContent as any).__renders as string[];
 
 // Helpers for synthesizing minimal test fixtures. The reducer is untouched
 // in this task — these objects bypass it entirely and feed AssistantTurnBubble
@@ -126,5 +144,132 @@ describe('AssistantTurnBubble — Skill extraction', () => {
     expect(twoIdx).toBeGreaterThanOrEqual(0);
     expect(bashIdx).toBeLessThan(oneIdx);
     expect(oneIdx).toBeLessThan(twoIdx);
+  });
+});
+
+describe('AssistantTurnBubble — memo comparator (streaming perf)', () => {
+  beforeEach(() => {
+    cleanup();
+    mdRenders.length = 0;
+  });
+
+  // A turn with a text segment (renders MarkdownContent) plus one tool group.
+  function makeTextTurn(id: string, text: string, groupId: string): AssistantTurn {
+    return {
+      id,
+      segments: [
+        { type: 'text' as const, content: text, messageId: `${id}-msg` },
+        { type: 'tool-group' as const, groupId },
+      ],
+      timestamp: 0,
+      stopReason: null,
+      model: null,
+      usage: null,
+      anthropicRequestId: null,
+    };
+  }
+
+  it('does NOT re-render when an unrelated tool changes in the shared Maps', () => {
+    // This is the core streaming-perf invariant: the reducer hands every turn a
+    // fresh toolCalls/toolGroups Map reference whenever ANY tool updates. The
+    // memo comparator must see that THIS turn's own tools are unchanged and skip
+    // the re-render (and its markdown re-parse).
+    const turn = makeTextTurn('turn_a', 'hello world', 'g1');
+    const toolGroups = new Map<string, ToolGroupState>([
+      ['g1', { id: 'g1', toolIds: ['b1'] }],
+    ]);
+    const toolCalls = new Map<string, ToolCallState>([
+      ['b1', bashTool('b1', 'git status')],
+    ]);
+
+    const props = { turn, toolGroups, toolCalls, sessionId: 'test', showTimestamps: false };
+    const { rerender } = render(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} />
+      </ChatProvider>
+    );
+    const rendersAfterMount = mdRenders.length;
+    expect(rendersAfterMount).toBeGreaterThan(0);
+
+    // Simulate a reducer dispatch for a DIFFERENT turn's tool: brand-new Map
+    // references, but turn_a's own group/tool entries are referentially intact.
+    const toolGroups2 = new Map(toolGroups);
+    const toolCalls2 = new Map(toolCalls);
+    toolGroups2.set('g2', { id: 'g2', toolIds: ['b2'] });
+    toolCalls2.set('b2', bashTool('b2', 'npm test'));
+
+    rerender(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} toolGroups={toolGroups2} toolCalls={toolCalls2} />
+      </ChatProvider>
+    );
+
+    // Memo gate held → MarkdownContent did not re-run for the unchanged turn.
+    expect(mdRenders.length).toBe(rendersAfterMount);
+  });
+
+  it('DOES re-render when its own tool entry changes', () => {
+    // Guard against over-blocking: if this turn's OWN tool updates (e.g. its
+    // Bash result lands), the comparator must let the re-render through.
+    const turn = makeTextTurn('turn_b', 'hello world', 'g1');
+    const toolGroups = new Map<string, ToolGroupState>([
+      ['g1', { id: 'g1', toolIds: ['b1'] }],
+    ]);
+    const toolCalls = new Map<string, ToolCallState>([
+      ['b1', { toolUseId: 'b1', toolName: 'Bash', input: { command: 'git status' }, status: 'running' }],
+    ]);
+
+    const props = { turn, toolGroups, toolCalls, sessionId: 'test', showTimestamps: false };
+    const { rerender } = render(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} />
+      </ChatProvider>
+    );
+    const rendersAfterMount = mdRenders.length;
+
+    // b1 transitions running → complete (new ToolCallState object, new Map).
+    const toolCalls2 = new Map(toolCalls);
+    toolCalls2.set('b1', { toolUseId: 'b1', toolName: 'Bash', input: { command: 'git status' }, status: 'complete', response: 'ok' });
+
+    rerender(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} toolCalls={toolCalls2} />
+      </ChatProvider>
+    );
+
+    expect(mdRenders.length).toBeGreaterThan(rendersAfterMount);
+  });
+
+  it('DOES re-render when the turn object itself changes', () => {
+    // The comparator keys on `turn` by reference — a new turn object (e.g. the
+    // reducer appended a streaming text delta) must always re-render.
+    const turn = makeTextTurn('turn_c', 'hello', 'g1');
+    const toolGroups = new Map<string, ToolGroupState>([
+      ['g1', { id: 'g1', toolIds: ['b1'] }],
+    ]);
+    const toolCalls = new Map<string, ToolCallState>([
+      ['b1', bashTool('b1', 'git status')],
+    ]);
+
+    const props = { turn, toolGroups, toolCalls, sessionId: 'test', showTimestamps: false };
+    const { rerender } = render(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} />
+      </ChatProvider>
+    );
+    const rendersAfterMount = mdRenders.length;
+
+    // New turn object with appended text (what the reducer produces per delta).
+    const turn2 = { ...turn, segments: [
+      { type: 'text' as const, content: 'hello world', messageId: 'turn_c-msg' },
+      turn.segments[1],
+    ] };
+    rerender(
+      <ChatProvider>
+        <AssistantTurnBubble {...props} turn={turn2} />
+      </ChatProvider>
+    );
+
+    expect(mdRenders.length).toBeGreaterThan(rendersAfterMount);
   });
 });
