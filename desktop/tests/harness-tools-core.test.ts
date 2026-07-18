@@ -1,7 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as childProcess from 'child_process';
+
+// Spy on child_process.spawn so the Grep cwd regression test can assert the
+// exact options the tool passes. `importActual` keeps the REAL implementation —
+// the search genuinely runs; we only observe the call. (Mocking process.cwd()
+// does NOT work as a pin: Node's spawn reads the inherited cwd via the native
+// binding, not the JS process.cwd() we could stub — verified 2026-07-17.)
+const spawnSpy = vi.fn();
+vi.mock('child_process', async (importActual) => {
+  const actual = await importActual<typeof import('child_process')>();
+  return {
+    ...actual,
+    spawn: (...args: any[]) => {
+      spawnSpy(...args);
+      return (actual.spawn as any)(...args);
+    },
+  };
+});
 import { ReadTool, readSizeError, MAX_READ_BYTES } from '../src/main/harness/tools/read';
 import { WriteTool } from '../src/main/harness/tools/write';
 import { EditTool } from '../src/main/harness/tools/edit';
@@ -308,6 +326,26 @@ describe('Grep', () => {
     const r = await promise;
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/Canceled: the user interrupted this search/);
+  });
+
+  it('spawns rg with an explicit cwd of ctx.cwd (never inherits ambient cwd)', async () => {
+    // Regression pin for the `spawn ENOTDIR` bug: Grep used to omit `cwd` from
+    // spawn(), so rg inherited the Electron main process's ambient cwd — which in
+    // the packaged app was not a usable directory and failed EVERY search. The
+    // fix passes `cwd: ctx.cwd` explicitly (same pattern as BashTool). Assert the
+    // contract directly: the spawn call for THIS search must carry ctx.cwd.
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'findme here\n');
+    spawnSpy.mockClear();
+    const r = await GrepTool.execute({ pattern: 'findme', output_mode: 'content' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/findme/);
+    // Find the spawn invocation that ran ripgrep and inspect its options arg.
+    const rgCall = spawnSpy.mock.calls.find(
+      (c) => Array.isArray(c[1]) && c[1].includes('findme'),
+    );
+    expect(rgCall, 'expected a spawn call running ripgrep for the search').toBeTruthy();
+    const opts = rgCall![2] as { cwd?: string };
+    expect(opts?.cwd, 'rg must be spawned with an explicit cwd (ctx.cwd), not inherit ambient cwd').toBe(ctx.cwd);
   });
 });
 

@@ -26,7 +26,13 @@ export const GrepTool = defineTool({
     if (args.glob) rgArgs.push('--glob', args.glob);
     rgArgs.push('--', args.pattern, resolveP(args.path ?? '.', ctx.cwd));
     return new Promise((resolve) => {
-      const child = spawn(rgPath, rgArgs, { windowsHide: true });
+      // Fix: pass `cwd: ctx.cwd` explicitly. Grep was the only tool spawning a
+      // child with no `cwd`, so rg inherited the Electron main process's ambient
+      // cwd — which in the packaged app is not a usable directory for posix_spawn
+      // and failed every search with `spawn ENOTDIR`. ctx.cwd is the validated
+      // session cwd already used to resolve the search path above; the Bash tool
+      // passes it the same way (bash.ts) and works. Never inherit ambient cwd.
+      const child = spawn(rgPath, rgArgs, { cwd: ctx.cwd, windowsHide: true });
       let out = '';
       let err = '';
       child.stdout.on('data', (d) => {
@@ -37,6 +43,13 @@ export const GrepTool = defineTool({
       });
       const onAbort = () => child.kill('SIGKILL');
       ctx.signal.addEventListener('abort', onAbort, { once: true });
+      // Surface a spawn-level failure (rg missing, bad cwd) with the cwd actually
+      // used, instead of letting it escape to defineTool's catch as a bare
+      // `spawn <CODE>` — which hid this bug's cause for a whole session.
+      child.on('error', (e) => {
+        ctx.signal.removeEventListener('abort', onAbort);
+        resolve({ text: `Grep failed: could not start ripgrep (${e.message}; cwd=${ctx.cwd}).`, isError: true });
+      });
       child.on('close', (code) => {
         ctx.signal.removeEventListener('abort', onAbort);
         // An interrupt SIGKILLs rg → exit code null (not 2). Surface it as a
