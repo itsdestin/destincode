@@ -103,10 +103,12 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
   // overflow-hidden — an absolutely-positioned child gets CLIPPED at the menu
   // edges (cut-off icons, truncated list). Portaling to document.body lets the
   // dropdown float above the host menu instead of being squeezed inside it.
-  // Must match the `w-72` Tailwind class on the panel div (288px = 18rem) —
+  // Must match the `w-80` Tailwind class on the panel div (320px = 20rem) —
   // if one changes, change the other, or the clamping math here silently
-  // drifts from the panel's real rendered width.
-  const PANEL_WIDTH = 288;
+  // drifts from the panel's real rendered width. Deliberately wider than the
+  // host SessionStrip dropdown's own w-72 (288px) so the panel visibly
+  // overhangs it on both sides instead of sitting flush (Destin, 2026-07-17).
+  const PANEL_WIDTH = 320;
   const measure = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -204,7 +206,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
           // see it — without this attribute the host closes (and unmounts us)
           // on the mousedown, and our click never fires.
           data-folder-switcher-portal=""
-          className="layer-surface fixed w-72 overflow-hidden flex flex-col"
+          className="layer-surface fixed w-80 overflow-hidden flex flex-col"
           style={{ top: panelPos.top, left: panelPos.left, maxHeight: panelPos.maxHeight, zIndex: 9001, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
         >
           {/* Saved folders list — min-h-0 lets flexbox shrink the list first
