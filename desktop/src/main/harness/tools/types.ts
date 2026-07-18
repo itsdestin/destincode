@@ -18,6 +18,13 @@ export interface ToolContext {
   signal: AbortSignal;
   /** read-before-edit registry: canonical path → mtimeMs at last Read. RESETS on resume (spec §2.5). */
   readRegistry: Map<string, number>;
+  /** Scoped-persistence shell cwd: the directory the NEXT Bash call starts in.
+   *  Absent → Bash falls back to `cwd` (stateless, the pre-2026-07-18 behavior),
+   *  which is what test/one-off contexts get for free. */
+  shellCwd?: string;
+  /** Bash reports the post-command directory here when it resolved INSIDE `cwd`.
+   *  The session owns the state; the tool never mutates ctx directly. */
+  setShellCwd?(next: string): void;
   /** per-session todo list (TodoWrite state) */
   todos: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm: string }>;
   /** Injected runtime services (e.g. WebSearch's SearchService). Absent for tools

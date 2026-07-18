@@ -260,6 +260,59 @@ describe('Bash', () => {
     expect(r.text).toMatch(/timed out/i);
   });
 
+  // Scoped persistence (ROADMAP 2026-07-17). Before this, every call spawned
+  // fresh at the session root and `cd` silently evaporated — the failure mode
+  // that burned ~6 tool calls in the 2026-07-17 session.
+  describe('scoped cwd persistence', () => {
+    function trackingCtx(root: string): ToolContext {
+      const c = makeCtx(root);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      return c;
+    }
+
+    it('a cd carries to the next call and the sentinel never reaches the model', async () => {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      const c = trackingCtx(dir);
+      const first = await BashTool.execute({ command: 'cd sub && echo moved' }, c);
+      expect(first.text).toContain('moved');
+      expect(first.text).not.toContain('__YC_CWD__');
+      const second = await BashTool.execute({ command: 'pwd' }, c);
+      expect(fs.realpathSync(second.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
+    });
+
+    it('a cd outside the workspace is reverted WITH a notice (never silent)', async () => {
+      const c = trackingCtx(dir);
+      const r = await BashTool.execute({ command: `cd ${JSON.stringify(os.tmpdir())}` }, c);
+      expect(r.text).toMatch(/Shell cwd was reset to/);
+      const after = await BashTool.execute({ command: 'pwd' }, c);
+      expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(dir));
+    });
+
+    it('the probe preserves the command exit code', async () => {
+      const r = await BashTool.execute({ command: 'exit 3' }, trackingCtx(dir));
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('(exit code 3)');
+    });
+
+    it('falls back to the root when the tracked dir was deleted', async () => {
+      const gone = path.join(dir, 'gone');
+      fs.mkdirSync(gone);
+      const c = trackingCtx(dir);
+      await BashTool.execute({ command: 'cd gone' }, c);
+      fs.rmSync(gone, { recursive: true });
+      const r = await BashTool.execute({ command: 'pwd' }, c);
+      expect(r.isError).toBeFalsy();
+      expect(fs.realpathSync(r.text.trim())).toBe(fs.realpathSync(dir));
+    });
+
+    it('a context without setShellCwd still works (stateless fallback)', async () => {
+      const r = await BashTool.execute({ command: 'echo plain' }, makeCtx(dir));
+      expect(r.text).toBe('plain');
+    });
+  });
+
   it('an aborted signal kills the child', async () => {
     const ac = new AbortController();
     const actx = makeCtx(dir, ac.signal);
