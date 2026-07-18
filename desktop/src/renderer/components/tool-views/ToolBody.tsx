@@ -68,7 +68,9 @@ function CollapsibleBlock({ children, maxLines = 20, className = '' }: { childre
 function PathHeader({ fp, extra }: { fp: string; extra?: React.ReactNode }) {
   const dir = parentDir(fp);
   return (
-    <div className="flex items-center gap-1.5 text-[11px] font-mono">
+    // data-file-path carries the absolute path so the chat right-click menu can
+    // offer View in folder / Copy as path (the DOM otherwise only has display labels).
+    <div className="flex items-center gap-1.5 text-[11px] font-mono" data-file-path={fp || undefined}>
       {dir && <span className="text-fg-muted">{dir}/</span>}
       <span className="text-fg-2 font-medium">{basename(fp)}</span>
       {extra}
@@ -150,6 +152,10 @@ function ToolFilePreview({ fp, sessionId, chips }: { fp: string; sessionId?: str
         type="button"
         onClick={open}
         title={`Open ${name}`}
+        // data-file-path (absolute) lets the chat right-click menu recover the
+        // real path for View in folder / Copy as path — left-click still opens
+        // the in-app artifact drawer.
+        data-file-path={fp || undefined}
         className="group flex items-center gap-3 w-full p-2 rounded-lg bg-inset border border-edge hover:border-fg-muted text-left transition-colors"
       >
         <ArtifactThumbnail

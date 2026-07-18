@@ -223,6 +223,27 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     return () => window.removeEventListener('buddy:attach-file', listener);
   }, [addFiles]);
 
+  // External "insert into composer" entry point — the chat right-click menu's
+  // "Ask about this" action dispatches this window CustomEvent with a pre-built
+  // quote + follow-up scaffold. Mirrors buddy:attach-file so no prop threading
+  // is needed. We PREPEND the scaffold and drop the caret right after it, so any
+  // draft the user was already typing survives as the follow-up text.
+  useEffect(() => {
+    const listener = (e: Event) => {
+      const insert = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (!insert) return;
+      setText((prev) => insert + prev);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(insert.length, insert.length);
+      });
+    };
+    window.addEventListener('youcoded:compose-insert', listener);
+    return () => window.removeEventListener('youcoded:compose-insert', listener);
+  }, []);
+
   const removeAttachment = useCallback((path: string) => {
     setAttachments((prev) => prev.filter((a) => a.path !== path));
   }, []);

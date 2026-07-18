@@ -35,6 +35,17 @@ function FileGlyph({ ext }: { ext: string }) {
   );
 }
 
+// Best-effort absolute path for the right-click menu's View-in-folder / Open /
+// Copy-as-path actions. Claude often writes a project-relative path; join it with
+// the session cwd so shell.showItemInFolder/openPath get a real target. Already-
+// absolute paths (POSIX, Windows drive, or ~) pass through untouched.
+function resolveForMenu(p: string, cwd?: string): string {
+  const norm = p.replace(/\\/g, '/');
+  if (/^([a-zA-Z]:\/|\/|~)/.test(norm)) return p;
+  if (cwd) return cwd.replace(/[\\/]+$/, '') + '/' + norm.replace(/^\.\//, '');
+  return p;
+}
+
 export function FilepathToken({ path, sessionId }: Props) {
   // Optional: the buddy window / sandbox render this without ArtifactProvider.
   // When absent, the pill still renders (so prose isn't disrupted) but the
@@ -44,6 +55,8 @@ export function FilepathToken({ path, sessionId }: Props) {
   // Basename only inline — the full path lives in the title tooltip. Keeps prose
   // calm when Claude references deep paths mid-sentence.
   const name = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path;
+  // Absolute path for the chat right-click menu (View in folder / Copy as path).
+  const menuPath = resolveForMenu(path, artifactCtx?.state.sessionCwd?.[sessionId]);
 
   const onClick = async () => {
     // No provider (buddy window / sandbox) → nothing to open. Bail quietly.
@@ -132,6 +145,8 @@ export function FilepathToken({ path, sessionId }: Props) {
       className="group inline-flex items-center gap-1.5 align-middle px-2 py-0.5 rounded-md bg-well border border-edge hover:border-fg-muted transition-colors"
       onClick={onClick}
       title={path}
+      // Right-click menu recovers the path here (left-click still opens the drawer).
+      data-file-path={menuPath || undefined}
     >
       <FileGlyph ext={ext} />
       <span className="font-mono text-[0.85em] text-fg group-hover:underline underline-offset-2 decoration-fg-muted">

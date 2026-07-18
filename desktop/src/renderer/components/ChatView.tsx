@@ -341,19 +341,25 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     return () => window.removeEventListener('keydown', onKey, true);
   }, [visible]);
 
-  // Wheel scroll acceleration: rapid successive touchpad/mousewheel flicks
-  // compound — the 5th flick in a row scrolls farther than the 1st. A pause
-  // (~350ms) resets the multiplier so an intentional small scroll stays small.
-  // Mirrors the arrow-key acceleration pattern above but for wheel input.
+  // Wheel scroll: burst acceleration + momentum ("flick") glide.
   //
-  // Important: a single touchpad flick fires ~20-30 wheel events (initial
-  // input + OS momentum tail). We only bump the multiplier at the START of a
-  // new burst (gap > BURST_GAP since last bump) so one flick stays at 1x;
-  // only a SECOND deliberate flick within RESET_MS compounds.
+  // Burst acceleration: rapid successive flicks compound — the 5th flick in a
+  // row scrolls farther than the 1st. A pause (~350ms) resets the multiplier so
+  // an intentional small scroll stays small.
+  //
+  // Momentum glide: on macOS the OS appends a ~20-30-event momentum tail to a
+  // flick, so scrolling coasts for free. Linux/libinput emits NO such tail —
+  // the wheel events stop the instant the finger lifts, so scrolling died
+  // immediately (Destin's report). We fix that ourselves: sample the recent
+  // wheel velocity and, once events stop, keep scrolling under exponential
+  // friction until it decays away. A single mouse-wheel notch (one isolated
+  // event) never reaches flick velocity, so discrete mouse scrolling stays
+  // snappy — only a fast multi-event trackpad flick coasts.
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
+    // — Burst acceleration state (unchanged behavior) —
     let multiplier = 1;
     let lastWheelTime = 0;
     let lastBumpTime = 0;
@@ -362,9 +368,87 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     const STEP = 0.25;
     const MAX = 4;
 
+    // — Momentum glide state —
+    let velocity = 0; // px/ms, signed; the speed the glide coasts at
+    let momentumRaf: number | null = null;
+    let gliding = false; // true only while coasting on inertia (finger is OFF the pad)
+    let lastFrameTime = 0;
+    const samples: { d: number; t: number }[] = []; // recent applied deltas
+    const VELOCITY_WINDOW = 90; // ms window the velocity estimate averages over
+    const IDLE_GAP = 28; // ms with no wheel event ⇒ finger lifted, start coasting
+    const FRICTION = 0.0021; // per-ms exponential decay — controls deceleration rate
+    const MIN_VELOCITY = 0.03; // px/ms ⇒ glide has effectively stopped
+    const MIN_FLICK_VELOCITY = 0.35; // px/ms ⇒ fast enough to coast at all
+
+    const stopMomentum = () => {
+      if (momentumRaf !== null) {
+        cancelAnimationFrame(momentumRaf);
+        momentumRaf = null;
+      }
+      velocity = 0;
+      gliding = false;
+      samples.length = 0;
+    };
+
+    // Estimate current velocity as total recent scroll ÷ its time span. A lone
+    // event (one sample) can't establish a velocity, so it never coasts.
+    const estimateVelocity = (now: number): number => {
+      while (samples.length && now - samples[0].t > VELOCITY_WINDOW) samples.shift();
+      if (samples.length < 2) return 0;
+      const span = Math.max(now - samples[0].t, 16);
+      const total = samples.reduce((sum, s) => sum + s.d, 0);
+      return total / span;
+    };
+
+    const glide = (now: number) => {
+      const dt = Math.min(now - lastFrameTime, 32); // clamp tab-switch jumps
+      lastFrameTime = now;
+
+      // Finger still down (events still arriving): the direct scroll in onWheel
+      // is driving. Idle, so the hand-off to inertia is seamless.
+      if (now - lastWheelTime < IDLE_GAP) {
+        gliding = false; // an OS momentum tail (macOS) is still feeding us
+        momentumRaf = requestAnimationFrame(glide);
+        return;
+      }
+
+      // Past the idle gap ⇒ the finger is off and we're coasting on our own
+      // inertia. A touch/tap now should "catch" and freeze it (see onWheel).
+      gliding = true;
+      velocity *= Math.exp(-FRICTION * dt);
+      if (Math.abs(velocity) < MIN_VELOCITY) {
+        stopMomentum();
+        return;
+      }
+
+      const before = container.scrollTop;
+      container.scrollTop = before + velocity * dt;
+      // Hit the top/bottom and couldn't move ⇒ nothing left to coast into.
+      if (Math.abs(container.scrollTop - before) < 0.5) {
+        stopMomentum();
+        return;
+      }
+      momentumRaf = requestAnimationFrame(glide);
+    };
+
     const onWheel = (e: WheelEvent) => {
       // Let browser zoom (Ctrl+wheel) pass through untouched
       if (e.ctrlKey) return;
+
+      // "Catch the glide": while we're coasting on inertia, ANY new wheel input —
+      // including the sub-pixel jitter of just resting fingers on the pad — means
+      // the user touched the pad to stop it. Freeze in place and swallow this
+      // event (don't scroll by it), so a tap parks the view exactly where it is;
+      // the next real scroll then fine-tunes from there. Runs BEFORE the small-
+      // delta guard because a tap's delta is often < 1px. Only fires during our
+      // own inertia (gliding), never mid-flick or during a macOS momentum tail.
+      if (gliding) {
+        e.preventDefault();
+        stopMomentum();
+        lastWheelTime = performance.now();
+        return;
+      }
+
       if (Math.abs(e.deltaY) < 1) return;
 
       const now = performance.now();
@@ -383,13 +467,41 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       // else: mid-burst momentum events — leave multiplier alone
       lastWheelTime = now;
 
+      const applied = e.deltaY * multiplier;
+
+      // Feed the velocity estimator with the delta we actually apply, so the
+      // glide coasts at the speed the content was visibly moving.
+      samples.push({ d: applied, t: now });
+      velocity = estimateVelocity(now);
+
       e.preventDefault();
-      container.scrollBy({ top: e.deltaY * multiplier, behavior: 'auto' });
+      // Direct 1:1 scroll while the finger is down (zero latency); the glide
+      // loop takes over only once events stop.
+      container.scrollBy({ top: applied, behavior: 'auto' });
+
+      // Arm the glide loop once the gesture is fast enough to be a real flick.
+      if (momentumRaf === null && Math.abs(velocity) >= MIN_FLICK_VELOCITY) {
+        lastFrameTime = now;
+        momentumRaf = requestAnimationFrame(glide);
+      }
+    };
+
+    // Any deliberate interaction cancels an in-flight glide (standard "grab to
+    // stop" behavior): a click, a touch, or a key (incl. the arrow-key scroll).
+    const cancelOnInput = () => {
+      if (momentumRaf !== null) stopMomentum();
     };
 
     // Non-passive so preventDefault() works and our delta replaces native scroll
     container.addEventListener('wheel', onWheel, { passive: false });
-    return () => container.removeEventListener('wheel', onWheel);
+    window.addEventListener('pointerdown', cancelOnInput, true);
+    window.addEventListener('keydown', cancelOnInput, true);
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+      window.removeEventListener('pointerdown', cancelOnInput, true);
+      window.removeEventListener('keydown', cancelOnInput, true);
+      stopMomentum();
+    };
   }, []);
 
   const handlePromptSelect = useCallback(
