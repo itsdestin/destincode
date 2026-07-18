@@ -107,9 +107,10 @@ describe('sync-hub-socket state machine', () => {
     sock.destroy();
   });
 
-  // Behavior 4: Incoming signal frame → onEvent signal (stripped to the
-  // consumer shape — no device/at).
-  it('flattens an incoming live signal frame to a signal event', () => {
+  // Behavior 4: Incoming signal frame → onEvent signal. Task 2 recency: `at`
+  // (server timestamp) is now FORWARDED; the legacy `device` hostname label is
+  // still ignored (the consumer joins on the durable `deviceId`, not hostname).
+  it('flattens an incoming live signal frame to a signal event, forwarding at but ignoring the legacy device label', () => {
     const { sock, events } = makeSocket(() => 'tok');
     sock.setDesired(true);
     const inst = FakeSocket.instances[0];
@@ -117,7 +118,7 @@ describe('sync-hub-socket state machine', () => {
     inst.emit('message', JSON.stringify({
       type: 'signal', kind: 'space-updated', spaceKey: 'k', device: 'other', at: 123,
     }));
-    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'k' });
+    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'k', at: 123 });
     sock.destroy();
   });
 
@@ -136,8 +137,9 @@ describe('sync-hub-socket state machine', () => {
       ],
     }));
     expect(types(events)).toEqual(['connected', 'signal', 'signal']);
-    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'a' });
-    expect(events[2]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'b' });
+    // Task 2 recency: `at` is forwarded on replay entries too (device label ignored).
+    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'a', at: 1 });
+    expect(events[2]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'b', at: 2 });
     sock.destroy();
   });
 
@@ -158,12 +160,87 @@ describe('sync-hub-socket state machine', () => {
       ],
     }));
     expect(types(events)).toEqual(['connected', 'signal', 'signal']);
-    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'a' });
-    expect(events[2]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'b' });
+    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'a', at: 1 });
+    expect(events[2]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'b', at: 2 });
 
     // Live signal frames get the same guard — missing fields emit nothing.
     inst.emit('message', JSON.stringify({ type: 'signal', kind: 'space-updated' }));
     expect(types(events)).toEqual(['connected', 'signal', 'signal']);
+    sock.destroy();
+  });
+
+  // ---- Task 2: per-device recency (deviceId on connect, at+deviceId on
+  // signals, lastSyncByDevice hello map). Additive + backward-compatible. ----
+
+  it('appends &deviceId to the connect url when the deviceId opt is set, omits it when absent or empty', () => {
+    const mk = (deviceId?: string) => {
+      FakeSocket.instances = [];
+      const sock = createSyncHubSocket({
+        getToken: () => 'tok', deviceName: 'my-laptop', deviceId,
+        onEvent: () => {}, WebSocketCtor: FakeSocket as any,
+      });
+      sock.setDesired(true);
+      const url = FakeSocket.instances[0].url;
+      sock.destroy();
+      return url;
+    };
+    // Set → appended (and URL-encoded).
+    expect(mk('machine-123')).toContain('&deviceId=machine-123');
+    expect(mk('a b/c')).toContain(`&deviceId=${encodeURIComponent('a b/c')}`);
+    // Absent → omitted entirely (old app / no built-app machineId).
+    expect(mk(undefined)).not.toContain('deviceId=');
+    // Empty string → omitted (never send a blank id).
+    expect(mk('')).not.toContain('deviceId=');
+  });
+
+  it('forwards at + deviceId on a live signal frame', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    inst.emit('message', JSON.stringify({
+      type: 'signal', kind: 'space-updated', spaceKey: 'k', deviceId: 'machine-9', at: 1_720_000_000_000,
+    }));
+    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'k', deviceId: 'machine-9', at: 1_720_000_000_000 });
+    sock.destroy();
+  });
+
+  it('emits a sync-map event from a hello frame carrying lastSyncByDevice (seed), alongside replay signals', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    const map = { 'machine-1': 111, 'machine-2': 222 };
+    inst.emit('message', JSON.stringify({
+      type: 'hello',
+      replay: [{ kind: 'space-updated', spaceKey: 'a', at: 5 }],
+      lastSyncByDevice: map,
+    }));
+    // Both the seed map AND the replay signal come through.
+    expect(events).toContainEqual({ type: 'sync-map', map });
+    expect(events).toContainEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'a', at: 5 });
+    sock.destroy();
+  });
+
+  it('emits no sync-map when hello omits lastSyncByDevice (old worker, backward compat)', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    inst.emit('message', JSON.stringify({ type: 'hello', replay: [] }));
+    expect(types(events)).toEqual(['connected']); // connected only — no sync-map, no signal
+    sock.destroy();
+  });
+
+  it('still emits {kind,spaceKey} for a signal frame with no at/deviceId (old worker, backward compat)', () => {
+    const { sock, events } = makeSocket(() => 'tok');
+    sock.setDesired(true);
+    const inst = FakeSocket.instances[0];
+    inst.emit('open');
+    inst.emit('message', JSON.stringify({ type: 'signal', kind: 'space-updated', spaceKey: 'k' }));
+    // Undefined at/deviceId are omitted — the sync-trigger consumer at
+    // service.ts is undisturbed (it reads only kind/spaceKey).
+    expect(events[1]).toEqual({ type: 'signal', kind: 'space-updated', spaceKey: 'k' });
     sock.destroy();
   });
 

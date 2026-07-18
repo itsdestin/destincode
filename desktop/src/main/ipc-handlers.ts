@@ -50,7 +50,7 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
-  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled,
+  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled, getLastSyncByDevice,
 } from './sync-spaces/service';
 import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 // Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
@@ -1706,6 +1706,11 @@ export function registerIpcHandlers(
     let syncInProgress = false;
     try { syncInProgress = fs.statSync(path.join(os.homedir(), '.claude', 'toolkit-state', '.sync-lock')).isDirectory(); } catch {}
     const backupMeta = readJsonFile(path.join(os.homedir(), '.claude', 'backup-meta.json'));
+    // Per-device sync recency (machineId → epoch-ms), carried over the SyncHub.
+    // Rides the live push so the "Your devices" rows update in real-time without
+    // waiting for a full getSyncStatus() refetch. Forwarded verbatim to remote
+    // browsers via broadcastStatusData (no reshape). Empty when the hub is down.
+    const lastSyncByDevice = getLastSyncByDevice();
 
     // Read per-session context remaining % (written by statusline.sh)
     const contextMap: Record<string, number> = {};
@@ -1758,7 +1763,7 @@ export function registerIpcHandlers(
     // (The background bulk-conversations pull + its restore-progress chip were
     // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
+    return { usage, announcement, updateStatus, syncStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown

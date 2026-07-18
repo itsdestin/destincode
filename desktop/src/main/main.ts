@@ -1616,6 +1616,9 @@ app.whenReady().then(async () => {
         .filter((t) => t.base.length > 0);
     },
     (m) => log('INFO', 'SyncSpaces', m),
+    // Durable machineId → keys the hub's per-device sync-recency map (same id the
+    // device registry rows use). Null on machines without a built-app identity.
+    machineIdentity?.id ?? null,
   ).catch(e => log('ERROR', 'Main', 'SyncSpaces start failed', { error: String(e) }));
 
   // Device registry (spec §10a, Plan 2b): stamp this MACHINE's record (friendly

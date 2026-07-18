@@ -42,19 +42,29 @@ export interface LeaseHolder { deviceId: string; device: string; expiresAt: numb
 export interface LeaseResult { ok: boolean; op: string; sessionId: string; holder: LeaseHolder | null }
 
 // The single event shape the consumer (Task 5 service wiring) sees. Replay and
-// live signals collapse to the same 'signal' event — device/at are dropped
-// because the engine only needs "some space changed, go sync it". `lease-event`
+// live signals collapse to the same 'signal' event. The engine only needs "some
+// space changed, go sync it" (kind/spaceKey); the OPTIONAL `at` (server
+// timestamp) + `deviceId` (durable machineId) ride along so the service can also
+// build a per-device recency map — they're additive and never disturb the
+// sync-trigger consumer. `sync-map` is the durable recency seed shipped in the
+// hello frame (older workers omit it — then no sync-map is emitted). `lease-event`
 // carries UNSOLICITED server pushes (another device released/took a lease, or is
 // asking us to hand one over) — these are not tied to a request() reqId.
 export type SyncHubEvent =
   | { type: 'connected' }
   | { type: 'disconnected' }
-  | { type: 'signal'; kind: string; spaceKey: string }
+  | { type: 'signal'; kind: string; spaceKey: string; at?: number; deviceId?: string }
+  | { type: 'sync-map'; map: Record<string, number> }
   | { type: 'lease-event'; kind: 'released' | 'taken' | 'takeover-request'; sessionId: string; device?: string; from?: { deviceId: string; device: string } };
 
 export interface SyncHubSocketOpts {
   getToken: () => string | null;
   deviceName: string;
+  // Durable per-MACHINE id (the registry's `<id>.json` key). Threaded so a
+  // relayed signal maps to a "Your devices" row reliably. Optional: a dev-only /
+  // no-built-app machine has no durable id — we then connect WITHOUT deviceId and
+  // simply contribute no recency entry (graceful, same as having no registry row).
+  deviceId?: string;
   onEvent: (e: SyncHubEvent) => void;
   WebSocketCtor?: WebSocketCtor; // injectable for tests
 }
@@ -74,7 +84,11 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
   const Ctor: WebSocketCtor = opts.WebSocketCtor ?? (WebSocket as unknown as WebSocketCtor);
   // device= identifies this client to the room so the server can fan a signal
   // out to the account's OTHER devices (never echo it back to the sender).
-  const url = `${SYNC_HUB_URL}?device=${encodeURIComponent(opts.deviceName)}`;
+  // deviceId= (when present) is the durable machineId the DO records into its
+  // lastSyncByDevice map — omitted for machines without a durable id so the
+  // server (and an old worker) sees exactly the pre-recency wire shape.
+  const url = `${SYNC_HUB_URL}?device=${encodeURIComponent(opts.deviceName)}`
+    + (opts.deviceId ? `&deviceId=${encodeURIComponent(opts.deviceId)}` : '');
 
   let desired = false;
   let ws: SyncHubWebSocketLike | null = null;
@@ -131,21 +145,33 @@ export function createSyncHubSocket(opts: SyncHubSocketOpts): SyncHubSocket {
     sock.on('message', (data) => {
       try {
         const msg = JSON.parse(String(data));
-        if (msg && msg.type === 'hello' && Array.isArray(msg.replay)) {
+        if (msg && msg.type === 'hello') {
+          // Seed the per-device recency map FIRST (Task 2): the DO ships the
+          // durable lastSyncByDevice snapshot in hello so a reconnecting device
+          // starts with every peer's last-sync, not just what arrives live after.
+          // Old workers omit it — then no sync-map is emitted (backward compat).
+          if (msg.lastSyncByDevice && typeof msg.lastSyncByDevice === 'object') {
+            opts.onEvent({ type: 'sync-map', map: msg.lastSyncByDevice as Record<string, number> });
+          }
           // Flatten the replay ring into ordinary signal events — the consumer
           // treats replay and live signals identically (see header note 3).
-          for (const entry of msg.replay) {
-            // Per-entry guard: a null/malformed entry must not throw out of the
-            // loop into the outer catch and silently strand the REST of the
-            // replay batch (same per-emit isolation principle as the transcript
-            // watcher's readNewLines), nor emit {kind: undefined} downstream.
-            if (entry && entry.kind && entry.spaceKey) {
-              opts.onEvent({ type: 'signal', kind: entry.kind, spaceKey: entry.spaceKey });
+          if (Array.isArray(msg.replay)) {
+            for (const entry of msg.replay) {
+              // Per-entry guard: a null/malformed entry must not throw out of the
+              // loop into the outer catch and silently strand the REST of the
+              // replay batch (same per-emit isolation principle as the transcript
+              // watcher's readNewLines), nor emit {kind: undefined} downstream.
+              // at/deviceId forwarded when present (undefined otherwise) for the
+              // recency map — additive, never disturbs the sync-trigger consumer.
+              if (entry && entry.kind && entry.spaceKey) {
+                opts.onEvent({ type: 'signal', kind: entry.kind, spaceKey: entry.spaceKey, at: entry.at, deviceId: entry.deviceId });
+              }
             }
           }
         } else if (msg && msg.type === 'signal' && msg.kind && msg.spaceKey) {
-          // Same guard on live frames — never hand the consumer undefined fields.
-          opts.onEvent({ type: 'signal', kind: msg.kind, spaceKey: msg.spaceKey });
+          // Same guard on live frames — never hand the consumer undefined kind/
+          // spaceKey. at/deviceId ride along when present (the DO's recency wire).
+          opts.onEvent({ type: 'signal', kind: msg.kind, spaceKey: msg.spaceKey, at: msg.at, deviceId: msg.deviceId });
         } else if (msg && msg.type === 'lease-result' && typeof msg.reqId === 'string' && pending.has(msg.reqId)) {
           // Correlate the reply to its request() promise by reqId. An unknown
           // reqId (stale/duplicate) matches nothing and is dropped harmlessly.

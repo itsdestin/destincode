@@ -30,6 +30,21 @@ let logFn: (m: string) => void = console.log;
 let hubSocket: ReturnType<typeof createSyncHubSocket> | null = null;
 let hubStatus: 'off' | 'connecting' | 'connected' | 'disconnected' = 'off';
 
+// Durable per-MACHINE id (machineIdentity.id from main.ts), threaded into the hub
+// connection so the DO can key this device's sync recency. Null on machines with
+// no durable id (dev-only / no built app) — we then connect without a deviceId.
+let machineId: string | null = null;
+
+// Per-device sync recency (Task 3): machineId → epoch-ms of that device's most
+// recent successful sync. Seeded from the hub's hello snapshot (sync-map) and
+// advanced by each live signal that carries a deviceId + server timestamp. This
+// is the field surfaced on getSyncStatus()/status:data so the "Your devices" rows
+// can show real recency. Reset on teardown so a stale map never outlives the hub.
+let lastSyncByDevice: Record<string, number> = {};
+// Read by sync-state.ts's getSyncStatus() and ipc-handlers' buildStatusData()
+// (the status:data push) — the two paths SyncPanel reads recency from.
+export function getLastSyncByDevice(): Record<string, number> { return lastSyncByDevice; }
+
 // Auth store facade (marketplace token) wired from main.ts. Read lazily per
 // connect so a mid-session sign-in/out takes effect without an app restart.
 // Kept as a narrow facade so service.ts doesn't import the whole auth store.
@@ -135,8 +150,11 @@ function broadcast(e: SpaceSyncEvent): void {
  *  needs them); the engine only starts when the user enabled sync.
  *  getBackupTargets is async because the backend config read (getSyncConfig)
  *  is async — the daily backup timer awaits it fresh each cycle. */
-export async function startSyncSpaces(getBackupTargets: () => Promise<BackupTarget[]>, log: (m: string) => void): Promise<void> {
+export async function startSyncSpaces(getBackupTargets: () => Promise<BackupTarget[]>, log: (m: string) => void, machineIdArg: string | null = null): Promise<void> {
   logFn = log;
+  // Stash the durable machineId so startEngine (here AND on a later enable toggle)
+  // can hand it to the hub socket for per-device recency keying.
+  machineId = machineIdArg;
   roots = new ManagedRoots();
   roots.ensure();
   manager = new SpaceManager();
@@ -277,12 +295,29 @@ async function startEngine(log: (m: string) => void): Promise<void> {
   hubSocket = createSyncHubSocket({
     getToken: () => authStore?.getToken() ?? null,
     deviceName: os.hostname(),
+    // Durable machineId (undefined when this machine has none) — keys the DO's
+    // per-device recency map so a relayed signal maps to a "Your devices" row.
+    deviceId: machineId ?? undefined,
     onEvent: (ev) => {
-      if (ev.type === 'signal' && ev.kind === 'space-updated') {
-        // Another device pushed — pull that space now. syncSpace is single-flight
-        // + coalescing, so signal bursts and hello-replay dupes are free.
-        const space = spaceForKey(ev.spaceKey);
-        if (space && engine) void engine.syncSpace(space);
+      if (ev.type === 'signal') {
+        // Recency (Task 3): a signal carrying the durable deviceId + server
+        // timestamp records that peer's most recent sync. Independent of kind so
+        // any future signal type still advances recency. Math.max guards against
+        // out-of-order replay/live interleaving so recency never moves backwards.
+        if (ev.deviceId && ev.at) {
+          lastSyncByDevice[ev.deviceId] = Math.max(lastSyncByDevice[ev.deviceId] ?? 0, ev.at);
+        }
+        if (ev.kind === 'space-updated') {
+          // Another device pushed — pull that space now. syncSpace is single-flight
+          // + coalescing, so signal bursts and hello-replay dupes are free.
+          const space = spaceForKey(ev.spaceKey);
+          if (space && engine) void engine.syncSpace(space);
+        }
+      } else if (ev.type === 'sync-map') {
+        // Seed/replace from the hub's hello snapshot — the DO's durable map is
+        // authoritative (it already includes every recorded peer signal), so a
+        // reconnect starts fully populated rather than rebuilding from live only.
+        lastSyncByDevice = ev.map;
       } else if (ev.type === 'connected') {
         hubStatus = 'connected';
         broadcast({ type: 'hub-status', spaceId: 'hub', status: 'connected' });
@@ -310,6 +345,9 @@ function teardownHub(): void {
   hubSocket?.destroy();
   hubSocket = null;
   hubStatus = 'off';
+  // Drop the recency map with the socket — a stale map must not outlive the hub
+  // (sign-out / disable). The next connect's hello re-seeds it authoritatively.
+  lastSyncByDevice = {};
 }
 
 export async function stopSyncSpaces(): Promise<void> {
