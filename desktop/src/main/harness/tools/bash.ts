@@ -38,7 +38,11 @@ const tracksCwd = shell.label.startsWith('bash');
  *  exit code. Newline-separated (not `;`) so trailing `&`, `# comments`, and
  *  heredocs in the user's command don't turn into syntax errors. */
 function withCwdProbe(command: string): string {
-  return `${command}\n__yc_rc=$?\nprintf '\\n${CWD_SENTINEL}%s' "$PWD"\nexit $__yc_rc`;
+  // TRAILING newline is load-bearing: a background writer ('cmd &') can flush to
+  // the pipe AFTER the sentinel, and without a terminator that text concatenates
+  // onto the path — yielding a garbage cwd, a spurious reset notice, and output
+  // silently dropped from the result. Verified 2026-07-18.
+  return `${command}\n__yc_rc=$?\nprintf '\\n${CWD_SENTINEL}%s\\n' "$PWD"\nexit $__yc_rc`;
 }
 
 /** Split the sentinel back off the combined stdout+stderr. Returns the text the
@@ -76,7 +80,9 @@ export const BashTool = defineTool({
     (tracksCwd
       ? 'The working directory PERSISTS between calls: a `cd` carries to your next Bash call. ' +
         'Changing directory outside the workspace root is reverted (you get a reset notice). ' +
-        'Environment variables, aliases, and shell functions do NOT persist — each call is a fresh shell. '
+        'Environment variables, aliases, and shell functions do NOT persist — each call is a fresh shell. ' +
+        'Note that the other tools (Read/Edit/Write/Glob/Grep) resolve relative paths from the ' +
+        'workspace root, NOT from this shell directory — prefer absolute paths with them. '
       : 'Each call starts fresh in the workspace directory — `cd` does NOT carry to the next call, ' +
         'so use absolute paths or chain with `cd X && ...` in one command. ') +
     'Output is capped; long-running commands time out (default 2 minutes, max 10 via timeout).',
@@ -103,8 +109,13 @@ export const BashTool = defineTool({
         env: process.env,
       });
       let out = '';
+      // The 200KB cap below would drop the trailing sentinel on a chatty command
+      // ("cd sub && <huge output>"), silently losing the cd. Keep a small rolling
+      // tail that is never capped so the probe survives regardless of volume.
+      let tail = '';
       const cap = (s: string) => {
         if (out.length < 200_000) out += s;
+        if (probe) tail = (tail + s).slice(-4096);
       };
       child.stdout.on('data', (d) => cap(String(d)));
       child.stderr.on('data', (d) => cap(String(d)));
@@ -119,15 +130,17 @@ export const BashTool = defineTool({
         if (probe) {
           const parsed = extractCwd(out);
           body = parsed.text;
-          if (parsed.cwd && path.resolve(parsed.cwd) !== path.resolve(startCwd)) {
-            if (isInside(ctx.cwd, parsed.cwd)) {
-              ctx.setShellCwd?.(path.resolve(parsed.cwd));
+          // Sentinel past the 200KB cap → recover it from the uncapped tail.
+          const reported = parsed.cwd ?? extractCwd(tail).cwd;
+          if (reported && path.resolve(reported) !== path.resolve(startCwd)) {
+            if (isInside(ctx.cwd, reported)) {
+              ctx.setShellCwd?.(path.resolve(reported));
             } else {
               // Scope guard: don't let the session wander out of the workspace,
               // and TELL the model — a silent revert is the exact failure mode
               // the Claude Code issues (#35058 et al.) complain about.
               ctx.setShellCwd?.(ctx.cwd);
-              notice = `\nShell cwd was reset to ${ctx.cwd} (${parsed.cwd} is outside the workspace).`;
+              notice = `\nShell cwd was reset to ${ctx.cwd} (${reported} is outside the workspace).`;
             }
           }
         }

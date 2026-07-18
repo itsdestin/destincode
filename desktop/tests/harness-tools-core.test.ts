@@ -307,6 +307,34 @@ describe('Bash', () => {
       expect(fs.realpathSync(r.text.trim())).toBe(fs.realpathSync(dir));
     });
 
+    // Regression (2026-07-18): without a trailing newline after the sentinel, a
+    // background writer's output concatenated onto the path — garbage cwd, a
+    // spurious reset notice, and the late text silently dropped from the result.
+    it('output arriving AFTER the sentinel is preserved and does not corrupt the cwd', async () => {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      const c = trackingCtx(dir);
+      const r = await BashTool.execute(
+        { command: 'cd sub && { sleep 0.2; echo LATE-OUTPUT >&2; } &' },
+        c,
+      );
+      expect(r.text).toContain('LATE-OUTPUT'); // not swallowed
+      expect(r.text).not.toMatch(/Shell cwd was reset/); // no spurious notice
+      expect(String(c.shellCwd ?? dir)).not.toContain('LATE-OUTPUT'); // path never corrupted
+    });
+
+    // Regression (2026-07-18): the 200KB accumulator cap dropped the trailing
+    // sentinel on chatty commands, silently losing the cd.
+    it('a cd survives a command that blows past the output cap', async () => {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      const c = trackingCtx(dir);
+      await BashTool.execute(
+        { command: `cd sub && node -e "for(let i=0;i<3000;i++)console.log('X'.repeat(100))"` },
+        c,
+      );
+      const after = await BashTool.execute({ command: 'pwd' }, c);
+      expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
+    });
+
     it('a context without setShellCwd still works (stateless fallback)', async () => {
       const r = await BashTool.execute({ command: 'echo plain' }, makeCtx(dir));
       expect(r.text).toBe('plain');
