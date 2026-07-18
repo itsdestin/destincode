@@ -1805,3 +1805,17 @@ html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-
 .doc-html th { background: var(--inset); font-weight: 600; color: var(--fg); }
 .doc-html img { max-width: 100%; height: auto; }
 .doc-html blockquote { border-left: 2px solid var(--edge); padding-left: 0.75rem; margin: 0.75rem 0; color: var(--fg-dim); font-style: italic; }
+
+/* Fix: opening the artifact list panel (SessionDrawer) animates the content
+   pane narrower over 200ms, reflowing whatever's scrolled inside it. Chromium's
+   default scroll anchoring then "corrects" scrollTop to compensate — firing a
+   real scroll event with zero user input, which SessionDrawer's
+   engage-to-collapse listener reads as "user scrolled" and closes the list it
+   just opened. Only happens when scrolled away from the top (nothing to
+   anchor to at position 0), matching the reported repro exactly. Disabling
+   anchoring on the pane and everything inside it removes the spurious event
+   at the source instead of trying to filter it out after the fact. */
+.artifact-content-pane,
+.artifact-content-pane * {
+  overflow-anchor: none;
+}
