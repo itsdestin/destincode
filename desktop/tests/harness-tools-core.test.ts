@@ -282,6 +282,19 @@ describe('Bash', () => {
     // invalid, the `|| pwd` fallback takes over, stderr suppressed.)
     const PWD = 'pwd -W 2>/dev/null || pwd';
 
+    // Same 8.3 trap the tool itself hit: plain fs.realpathSync leaves a SHORT
+    // root (C:\Users\RUNNER~1\...) short while `pwd -W` reports the LONG form
+    // (C:\Users\runneradmin\...) for the very same directory, so comparing the
+    // two never matches on Windows. .native canonicalizes both. Compare paths
+    // through this, never through raw realpathSync.
+    const canon = (p: string) => {
+      try {
+        return fs.realpathSync.native(p);
+      } catch {
+        return fs.realpathSync(p);
+      }
+    };
+
     it('a cd carries to the next call and the sentinel never reaches the model', async () => {
       fs.mkdirSync(path.join(dir, 'sub'));
       const c = trackingCtx(dir);
@@ -295,7 +308,7 @@ describe('Bash', () => {
       // assertions below can't catch that alone — they expect the ROOT, which is
       // also what a fully broken persistence returns, so they passed vacuously.
       expect(first.text).not.toMatch(/Shell cwd was reset/);
-      expect(fs.realpathSync(second.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
+      expect(canon(second.text.trim())).toBe(canon(path.join(dir, 'sub')));
     });
 
     it('a cd outside the workspace is reverted WITH a notice (never silent)', async () => {
@@ -303,7 +316,7 @@ describe('Bash', () => {
       const r = await BashTool.execute({ command: `cd ${JSON.stringify(os.tmpdir())}` }, c);
       expect(r.text).toMatch(/Shell cwd was reset to/);
       const after = await BashTool.execute({ command: PWD }, c);
-      expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(dir));
+      expect(canon(after.text.trim())).toBe(canon(dir));
     });
 
     it('the probe preserves the command exit code', async () => {
@@ -320,7 +333,7 @@ describe('Bash', () => {
       fs.rmSync(gone, { recursive: true });
       const r = await BashTool.execute({ command: PWD }, c);
       expect(r.isError).toBeFalsy();
-      expect(fs.realpathSync(r.text.trim())).toBe(fs.realpathSync(dir));
+      expect(canon(r.text.trim())).toBe(canon(dir));
     });
 
     // Regression (2026-07-18): without a trailing newline after the sentinel, a
@@ -348,7 +361,7 @@ describe('Bash', () => {
         c,
       );
       const after = await BashTool.execute({ command: PWD }, c);
-      expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
+      expect(canon(after.text.trim())).toBe(canon(path.join(dir, 'sub')));
     });
 
     // Regression (2026-07-18): a dangling `&&` absorbs the probe's `__yc_rc=$?`
