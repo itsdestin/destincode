@@ -140,6 +140,14 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   useEffect(() => {
     if (!active) { setContent(null); return; }
     let cancelled = false;
+    // Fix: clear the PREVIOUS file's content before the read resolves. Without
+    // this, switching artifacts remounts the viewer (ViewerErrorBoundary is
+    // keyed by artifact.id) with stale content, so HtmlView's sandboxed iframe
+    // gets a srcDoc write for the old file and a second one milliseconds later
+    // for the new one — the aborted-then-restarted navigation leaves the frame
+    // permanently blank. ProjectView's FilesTab and ArtifactThumbnail already
+    // null-gate the same way; this drawer was the only one that didn't.
+    setContent(null);
     (window.claude as any).artifacts.get(projectRoot, active.id).then((res: any) => {
       if (cancelled) return;
       if (res && res.ok) setContent(res.content ?? null);
