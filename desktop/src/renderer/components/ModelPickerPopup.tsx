@@ -4,6 +4,7 @@ import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
+import { Button, FOCUS_RING } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -515,18 +516,26 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
-                <button
-                  onClick={() => setFastConfirmOpen(false)}
-                  className="px-3 py-1.5 text-xs rounded bg-inset text-fg-2 hover:bg-well transition-colors"
-                >
+                {/* Spec change 60: the filled-grey family (bg-inset/hover:bg-well)
+                    collapses into the outline `secondary` — it's a genuine peer of
+                    the confirm beside it, which ghost would under-weight. */}
+                <Button variant="secondary" onClick={() => setFastConfirmOpen(false)}>
                   Cancel
-                </button>
+                </Button>
+                {/* Spec change 66: KEEPS #FF9800 + text-black. This is a billing-
+                    consent warning colour (same family as the permission triad), not
+                    a theme surface, so it must NOT become `primary` — the accent
+                    would erase the "you are agreeing to charges" signal. Left
+                    hand-rolled because the primitive's variants would fight the
+                    custom fill; only radius (rounded → rounded-lg, the one control
+                    radius) and the shared focus ring are normalized. */}
                 <button
+                  type="button"
                   onClick={() => {
                     applyFast(true);
                     setFastConfirmOpen(false);
                   }}
-                  className="px-3 py-1.5 text-xs rounded bg-[#FF9800] text-black font-medium hover:brightness-110 transition-all"
+                  className={`px-3 py-1.5 text-xs rounded-lg bg-[#FF9800] text-black font-medium hover:bg-[#FF9800]/90 transition-colors ${FOCUS_RING}`}
                 >
                   Enable & Accept Charges
                 </button>

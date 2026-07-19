@@ -94,6 +94,7 @@ function ExternalLink({ size = 14 }: { size?: number }) {
 
 // Git-branch glyph shared with ProjectSwitcher — lives in ./icons.tsx.
 import { GitBranchIcon } from './icons';
+import { Button } from '../ui';
 
 export function ProjectHero({
   project,
@@ -205,13 +206,9 @@ export function ProjectHero({
                 <span className="text-[13px] font-semibold text-[#44A05C]">Syncs across your devices</span>
                 {sync.lastSynced && <span className="text-xs text-fg-muted">Last synced {sync.lastSynced}</span>}
                 {sync.spaceId && (
-                  <button
-                    type="button"
-                    onClick={() => onSyncNow(sync.spaceId!)}
-                    className="px-2.5 py-1 rounded-md bg-panel border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors"
-                  >
+                  <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
                     Sync now
-                  </button>
+                  </Button>
                 )}
               </>
             )}
@@ -220,13 +217,9 @@ export function ProjectHero({
                 <span className="text-[13px] font-semibold text-[#DD4444]">Sync isn't working</span>
                 {sync.errorMessage && <span className="text-xs text-fg-dim">{sync.errorMessage}</span>}
                 {sync.spaceId && (
-                  <button
-                    type="button"
-                    onClick={() => onSyncNow(sync.spaceId!)}
-                    className="px-2.5 py-1 rounded-md bg-panel border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors"
-                  >
+                  <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
                     Try again
-                  </button>
+                  </Button>
                 )}
               </>
             )}
@@ -242,13 +235,11 @@ export function ProjectHero({
             {sync.dot.color === 'gray' && !sync.spaceId && (
               <>
                 <span className="text-[13px] font-semibold text-fg-2">Only on this computer</span>
-                <button
-                  type="button"
-                  onClick={onTurnOnSync}
-                  className="px-3 py-1 rounded-md bg-accent text-on-accent text-xs hover:opacity-90 transition-opacity"
-                >
+                {/* py-1 keeps this button compact inside the sync status strip;
+                    everything else (accent fill, radius, hover) comes from Button. */}
+                <Button onClick={onTurnOnSync} className="py-1">
                   Turn on sync for this project
-                </button>
+                </Button>
               </>
             )}
           </div>
@@ -276,23 +267,29 @@ export function ProjectHero({
               className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none"
             />
           ) : (
-            <button type="button" onClick={() => setRenaming(true)} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors">
+            <Button variant="secondary" size="sm" onClick={() => setRenaming(true)}>
               Rename
-            </button>
+            </Button>
           )}
           {isElectron && (
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => void (window.claude as any).shell.openPath(project.path)}
-              className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors"
             >
               Open in File Explorer
-            </button>
+            </Button>
           )}
+          {/* WHY danger-outline (spec decision 67): "Remove from YouCoded" and
+              "Stop syncing" used to look neutral and only turn red on hover.
+              These are consequential enough that hover is the wrong moment to
+              find that out, so they read as destructive at rest. "Rename" above
+              stays neutral — being the only non-red one is what makes it read
+              as the safe action. */}
           {canRemove ? (
-            <button type="button" onClick={onRemove} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
+            <Button variant="danger-outline" size="sm" onClick={onRemove}>
               Remove from YouCoded
-            </button>
+            </Button>
           ) : syncedFolderName && sync?.stopped ? (
             // Already stopped (permanent) — no action to offer, just the state
             // (review #4: don't re-render a "Stop syncing" button for a project
@@ -305,17 +302,17 @@ export function ProjectHero({
                 <span className="text-[11px] text-fg-dim max-w-[22rem]">
                   Stop syncing “{shownName}”? The folder stays on all your devices, but changes will no longer sync between them. This can’t be undone from here.
                 </span>
-                <button type="button" onClick={() => void commitStop()} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
+                <Button variant="danger-outline" size="sm" onClick={() => void commitStop()}>
                   Stop syncing
-                </button>
-                <button type="button" onClick={() => setConfirmingStop(false)} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-fg transition-colors">
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setConfirmingStop(false)}>
                   Cancel
-                </button>
+                </Button>
               </span>
             ) : (
-              <button type="button" onClick={() => setConfirmingStop(true)} className="px-2.5 py-1 rounded-md border border-edge-dim hover:border-edge text-xs text-fg-2 hover:text-[#DD4444] transition-colors">
+              <Button variant="danger-outline" size="sm" onClick={() => setConfirmingStop(true)}>
                 Stop syncing
-              </button>
+              </Button>
             )
           ) : (
             <span className="text-[11px] text-fg-faint">Managed by sync</span>
@@ -326,24 +323,20 @@ export function ProjectHero({
       {/* Right: Open repo (only when the project has a web URL) + New Conversation. */}
       <div className="shrink-0 flex items-center gap-2">
         {repo?.webUrl && (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="lg"
             onClick={() => window.claude.shell.openExternal(repo.webUrl!)}
-            className="px-3 py-2 rounded-md bg-inset text-fg-2 hover:text-fg border border-edge-dim hover:border-edge text-[13px] inline-flex items-center gap-1.5 transition-colors"
             title={showRepoSlug ? `Open ${repo.owner}/${repo.name} on GitHub` : 'Open repository'}
           >
             <ExternalLink size={14} />
             Open repo
-          </button>
+          </Button>
         )}
         {/* The ONE accent use in this hero. */}
-        <button
-          type="button"
-          onClick={() => onNewConversation(project.path)}
-          className="px-4 py-2 rounded-md bg-accent text-on-accent text-[13px] hover:opacity-90 transition-opacity"
-        >
+        <Button size="lg" onClick={() => onNewConversation(project.path)}>
           New Conversation
-        </button>
+        </Button>
       </div>
     </div>
   );

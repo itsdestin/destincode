@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { EngineModelState } from '../../shared/engine-types';
+import { Button } from './ui';
 
 // Centered status strip that floats just ABOVE the input area for a NATIVE
 // (local-model) session. States (2026-07-14 memory-lifecycle UX):
@@ -152,13 +153,13 @@ export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, ev
         ) : (
           <div className="flex items-center justify-center gap-3">
             <span className="text-sm text-fg-muted">Model unloaded to save memory.</span>
-            <button
-              type="button"
-              onClick={() => onReload(modelInfo.modelId)}
-              className="text-xs font-medium px-3 py-1 rounded-full bg-accent text-on-accent hover:opacity-90 shrink-0"
-            >
+            {/* Spec change 65: this one NORMALIZES — rounded-full drops to the
+                one control radius. The pill exception is reserved for floating
+                overlay affordances (e.g. ChatView's "Jump to bottom"); this sits
+                inside a panel, so it's an ordinary primary action. */}
+            <Button size="sm" onClick={() => onReload(modelInfo.modelId)} className="shrink-0">
               Reload model
-            </button>
+            </Button>
           </div>
         )}
       </div>

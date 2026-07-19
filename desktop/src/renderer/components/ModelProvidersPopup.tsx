@@ -9,6 +9,7 @@ import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
 import SettingsRow from './SettingsRow';
+import { Button } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -235,13 +236,17 @@ function ClaudeCodeBlock({
           Every session runs through Claude Code unless you pick another provider below.
         </p>
 
+        {/* Outline peer action — the shared secondary recipe replaces the
+            hand-rolled border-edge-dim/text-fg-2 copy of it. */}
         {onOpenClaudePreferences && (
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}
-            className="mt-2.5 text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+            className="mt-2.5"
           >
             Claude Code preferences
-          </button>
+          </Button>
         )}
       </div>
     </section>
@@ -312,21 +317,18 @@ function OpenRouterBlock() {
               {openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
             </p>
           </div>
-          <button
-            onClick={() => { setTestNote(null); setConnectOpen(true); }}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
-          >
+          {/* Primary row action. hover:brightness-110 dropped — the primitive's
+              bg fade is the one hover idiom (it stays visible on near-black
+              accents, where brightness-110 does nothing). */}
+          <Button size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }} className="shrink-0">
             {connected ? 'Replace key' : 'Connect to OpenRouter'}
-          </button>
+          </Button>
         </div>
         {connected && (
           <div className="flex items-center gap-1.5 mt-2">
-            <button
-              onClick={() => void runTest()}
-              className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-            >
+            <Button variant="secondary" size="sm" onClick={() => void runTest()}>
               Test
-            </button>
+            </Button>
           </div>
         )}
         {testNote && (
@@ -446,19 +448,18 @@ function ConnectOpenRouterModal({
           )}
 
           <div className="flex gap-2 pt-1">
-            <button
-              onClick={onClose}
-              className="flex-1 text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-            >
+            {/* Popup footer pair — md is the footer size; only the flex-1 stretch
+                and the taller py-2 are genuine layout extras. */}
+            <Button variant="secondary" onClick={onClose} className="flex-1 py-2">
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => void save()}
               disabled={busy || keyDraft.trim().length === 0}
-              className="flex-1 text-xs font-medium py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+              className="flex-1 py-2"
             >
               {busy ? 'Connecting…' : 'Connect'}
-            </button>
+            </Button>
           </div>
         </div>
       </OverlayPanel>
@@ -619,25 +620,21 @@ function SearchProvidersBlock() {
                 {row.hasKey ? (
                   <div className="flex items-center gap-1.5 shrink-0">
                     <span className="text-[10px] font-medium text-green-600">Key saved</span>
-                    <button
-                      onClick={() => void remove(row.id)}
-                      disabled={busy}
-                      className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
+                    {/* danger-outline per spec change 68: "Remove" reads the same
+                        everywhere. This one was the neutral half of the
+                        ProvidersSection(red)-vs-here(neutral) contradiction; it
+                        deletes a stored API key, so it takes the red outline. */}
+                    <Button variant="danger-outline" size="sm" onClick={() => void remove(row.id)} disabled={busy}>
                       Remove
-                    </button>
+                    </Button>
                   </div>
                 ) : !isEditing ? (
                   // Disabled while ANY row's save/remove is in flight — otherwise
                   // opening this editor mid-save gets clobbered when the in-flight
                   // save resolves and clears editing/draft.
-                  <button
-                    onClick={() => openEditor(row.id)}
-                    disabled={busy}
-                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
+                  <Button size="sm" onClick={() => openEditor(row.id)} disabled={busy} className="shrink-0">
                     Add key
-                  </button>
+                  </Button>
                 ) : null}
               </div>
 
@@ -661,19 +658,12 @@ function SearchProvidersBlock() {
                       Get a free key
                     </button>
                     <div className="flex gap-2">
-                      <button
-                        onClick={() => { setEditing(null); setDraft(''); }}
-                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-                      >
+                      <Button variant="secondary" size="sm" onClick={() => { setEditing(null); setDraft(''); }}>
                         Cancel
-                      </button>
-                      <button
-                        onClick={() => void save(row.id)}
-                        disabled={busy || draft.trim().length === 0}
-                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
+                      </Button>
+                      <Button size="sm" onClick={() => void save(row.id)} disabled={busy || draft.trim().length === 0}>
                         {busy ? 'Checking…' : 'Save'}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 </div>

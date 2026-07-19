@@ -118,6 +118,7 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
 // Aliased: detail-tool-icons also exports a (different) FolderIcon used by the
 // Reveal button above.
 import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon } from '../icons';
+import { Button } from '../../ui';
 
 // Tiny per-type glyph for the folder-card filename list — one icon per
 // fileTypeGroup, so the list rows read like a miniature file listing.
@@ -363,13 +364,12 @@ export function FilesTab({
             browsing shows only a partial list and can be slow. Conversations and
             Artifacts work normally either way.
           </p>
-          <button
-            type="button"
-            className="px-3.5 py-1.5 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors"
-            onClick={() => setForceScan(true)}
-          >
+          {/* Was a pill (rounded-full). Spec decision 65 reserves pills for
+              floating overlay affordances — this is an inline action inside the
+              gate message, so it uses the standard button radius. */}
+          <Button variant="secondary" onClick={() => setForceScan(true)}>
             Browse anyway
-          </button>
+          </Button>
         </div>
       )}
       {!loading && !gated && flat && flatResults.length === 0 && (

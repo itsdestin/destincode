@@ -10,6 +10,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
 import ImportProjectModal from '../ImportProjectModal';
+import { Button } from '../ui';
 
 interface Props {
   onClose: () => void;
@@ -143,13 +144,15 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
                   placeholder="Project name…"
                   className="flex-1 bg-inset text-fg text-sm rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none"
                 />
-                <button
+                {/* py-1 keeps the button the same height as the name input beside it. */}
+                <Button
+                  size="lg"
+                  className="py-1"
                   onClick={() => void createNew()}
                   disabled={busy || !name.trim()}
-                  className="text-sm px-3 py-1 rounded bg-accent text-on-accent disabled:opacity-50"
                 >
                   {busy ? 'Creating…' : 'Create'}
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -166,7 +169,7 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
             {error && <div className="mt-2 text-xs text-red-500" role="alert">{error}</div>}
             {syncOffNote}
             <div className="mt-4 flex justify-end">
-              <button onClick={onClose} disabled={busy} className="text-sm px-3 py-1 rounded text-fg-dim hover:text-fg hover:bg-inset transition-colors">Cancel</button>
+              <Button variant="ghost" size="lg" className="py-1" onClick={onClose} disabled={busy}>Cancel</Button>
             </div>
           </>
         ) : (
@@ -196,8 +199,8 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
             {error && <div className="mt-2 text-xs text-red-500" role="alert">{error}</div>}
             {syncOffNote}
             <div className="mt-4 flex justify-between">
-              <button onClick={() => { setError(null); setStep({ kind: 'choose' }); }} disabled={busy} className="text-sm px-3 py-1 rounded text-fg-dim hover:text-fg hover:bg-inset transition-colors">Back</button>
-              <button onClick={onClose} disabled={busy} className="text-sm px-3 py-1 rounded text-fg-dim hover:text-fg hover:bg-inset transition-colors">Cancel</button>
+              <Button variant="ghost" size="lg" className="py-1" onClick={() => { setError(null); setStep({ kind: 'choose' }); }} disabled={busy}>Back</Button>
+              <Button variant="ghost" size="lg" className="py-1" onClick={onClose} disabled={busy}>Cancel</Button>
             </div>
           </>
         )}

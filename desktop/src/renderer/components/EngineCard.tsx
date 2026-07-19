@@ -4,6 +4,7 @@
 // Class idioms (text sizes, bg-well surface, accent buttons, border-edge-dim)
 // mirror ProvidersSection's own rows so the card reads as part of the section.
 import React, { useEffect, useState } from 'react';
+import { Button } from './ui';
 
 interface EngineStatusView {
   installed: boolean;
@@ -90,23 +91,27 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
           <p className="text-xs text-fg font-medium">Local engine (llama.cpp)</p>
           <p className="text-[10px] text-fg-muted">{stateLabel}</p>
         </div>
+        {/* Primary row action via the shared primitive — drops the hand-rolled
+            accent fill + hover:brightness-110 (invisible on near-black accents). */}
         {status.state === 'not-installed' && (
-          <button
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed shrink-0"
+          <Button
+            size="sm"
+            className="shrink-0"
             disabled={busy}
             onClick={() => run(() => window.claude.engine.install())}
           >
             {busy ? 'Installing…' : 'Install'}
-          </button>
+          </Button>
         )}
         {status.state === 'error' && (
-          <button
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed shrink-0"
+          <Button
+            size="sm"
+            className="shrink-0"
             disabled={busy}
             onClick={() => run(() => window.claude.engine.restart())}
           >
             Restart engine
-          </button>
+          </Button>
         )}
       </div>
       {busy && progress?.kind === 'download' && (
@@ -127,13 +132,15 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
           <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] text-fg-dim">Using: {status.backend ?? 'default'}</p>
             {isWindows && status.backend !== 'cuda' && (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => run(() => window.claude.models.setBackend('cuda'))}
                 disabled={busy}
-                className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 shrink-0"
+                className="shrink-0"
               >
                 Switch to CUDA (faster on NVIDIA)
-              </button>
+              </Button>
             )}
           </div>
 
