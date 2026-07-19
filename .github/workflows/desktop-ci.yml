@@ -20,7 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macOS added 2026-07-19 for the same reason Windows was: its only
+        # coverage was desktop-test-build.yml, so a macOS-only failure could
+        # not surface until a beta dispatch — which is exactly how the
+        # sync-spaces-engine 5s-ceiling timeouts were found (run 29701441150).
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
