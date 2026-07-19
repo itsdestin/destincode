@@ -289,6 +289,18 @@ describe('Bash', () => {
       expect(first.text).toContain('moved');
       expect(first.text).not.toContain('__YC_CWD__');
       const second = await BashTool.execute({ command: PWD }, c);
+      // TEMP DIAGNOSTIC (2026-07-19) — remove before merge. vitest swallows
+      // console.log here, so the payload rides on expect()'s message arg.
+      const diag = `DIAG ${JSON.stringify({
+        firstText: first.text,
+        shellCwd: c.shellCwd ?? null,
+        root: dir,
+        rootReal: fs.realpathSync(dir),
+        second: second.text.trim(),
+      })}`;
+      // A cd INTO a workspace subdir must never trip the scope guard. If this
+      // fires, `reported` is being judged outside ctx.cwd -> isInside() is the bug.
+      expect(first.text, diag).not.toMatch(/Shell cwd was reset/);
       expect(fs.realpathSync(second.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
     });
 
