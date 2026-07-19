@@ -540,15 +540,31 @@ export function registerIpcHandlers(
         // dead session.
         sessionIdMap.set(info.id, info.id);
         noteSessionStarted(info.id, info.cwd);
-        if (isSyncSpacesEnabled()) {
-          void leaseWiring?.client.acquire(info.id)
-            .then((res) => {
-              if (res && res.ok === false) {
-                log('WARN', 'Lease', 'native session running without its lease (held by another device)', { sessionId: info.id, holder: res.holder });
-              }
-            })
-            .catch(() => { /* never-block */ });
-        }
+        // NO LEASE FOR NATIVE SESSIONS (2026-07-18 — reverts the acquire added by
+        // PR #176; the sessionIdMap + noteSessionStarted lines above deliberately
+        // STAY, see below).
+        //
+        // #176 correctly noticed native sessions had no takeover protection and
+        // enrolled them in the lease system. But native conversations do not
+        // participate in the conversation store or space sync at all, so every
+        // step the lease implies is a no-op for them: the holder's flush mirrors a
+        // file that isn't there, and the requester materializes a record that does
+        // not exist. The net effect was WORSE than the gap it closed — a takeover
+        // destroyed the holder's live session and transferred nothing, while the
+        // requester resumed its own unchanged local copy.
+        //
+        // A lease is a way to serialize access to a SHARED resource. Until native
+        // transcripts sync there is no shared resource: two devices "resuming the
+        // same native session" are resuming two unrelated local files. So not
+        // taking the lease is the honest state, not a stopgap — leaseQuery answers
+        // held:false, the resume gate never offers a handoff, and the holder keeps
+        // running. This is exactly pre-#176 behavior.
+        //
+        // Re-enable this together with the parity work, NOT before — the lease only
+        // becomes meaningful at the same moment the transcript becomes shared.
+        // Spec: docs/active/specs/2026-07-18-native-sync-parity-design.md (§3.3 for
+        // why the two lines above stay: the store writes they enable are gated at
+        // the write sites instead, which is the enforceable version of the rule).
       } catch (e) {
         log('ERROR', 'IPC', 'native session start failed', { sessionId: info.id, error: String(e) });
       }
@@ -1892,6 +1908,9 @@ export function registerIpcHandlers(
     const holderTakeover = createHolderTakeover({
       sessionManager, sessionIdMap, leaseClient: leaseWiring.client,
       flushSessionToSpace, pushMoved,
+      // Idempotent + no-op for non-native ids, so the holder flow calls it
+      // unconditionally without needing to know the provider.
+      destroyNative: (id) => nativeHost.destroy(id),
     });
     // Fire-and-forget from a hub event — the handler never throws (each step is
     // try/caught inside createHolderTakeover), so void is safe.
@@ -2321,6 +2340,17 @@ export function registerIpcHandlers(
   // Stop watching when a session is destroyed
   sessionManager.on('session-exit', (sessionId: string) => {
     teardownSessionWatchers(sessionId);
+    // Native teardown backstop (2026-07-18). SESSION_DESTROY already awaits
+    // nativeHost.destroy before destroySession, but session-exit ALSO fires for
+    // paths that go straight to SessionManager (a crashed worker, a takeover, an
+    // internal destroy) — and for a native session those left the HarnessSession
+    // running with its transcript-event listener still appending. Idempotent and
+    // a no-op for non-native ids, so calling it here is free on the CC path.
+    // Fire-and-forget: this listener is sync, and destroy() never rejects for an
+    // unknown id — the .catch guards a future change.
+    void nativeHost.destroy(sessionId).catch((e) => {
+      log('ERROR', 'IPC', 'native teardown on session-exit failed', { sessionId, error: String(e) });
+    });
     // Clean up context + session stats cache files
     const claudeId = sessionIdMap.get(sessionId);
     if (claudeId) {
@@ -2350,6 +2380,27 @@ export function registerIpcHandlers(
   // store) or a desktop session ID — the desktop ID is resolved via
   // sessionIdMap. Unknown flag names are rejected server-side so a typo
   // surfaces as an error rather than silently writing dead data.
+  //
+  // Phantom-record gate, PART 2 (2026-07-18). The original gate below keys off
+  // `sessionIdMap.has(sessionId)`, which was a reliable "this is a CC id" proxy
+  // only while native sessions stayed out of that map. PR #176 started mapping
+  // native sessions (identity, for the lease), which silently opened the exact
+  // hole the gate was written to close — for NATIVE ids this time. setFlag /
+  // setTitle / setNote all SEED a record when none exists (conversation-store.ts),
+  // each with a hardcoded provider:'claude', so flagging or noting a native
+  // session wrote a mislabeled record with blank projectName / originalPath /
+  // transcriptRef and an EPOCH lastActive — synced to every device and never
+  // pruned (flagged records are deliberately kept). Confirmed on disk 2026-07-18.
+  //
+  // Native conversations do not participate in the store at all until the parity
+  // work lands (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md),
+  // so the correct answer today is to write nothing. Checked against BOTH live and
+  // persisted native ids: a past native session opened from the Resume Browser is
+  // not live, but must not seed a record either.
+  const canWriteStoreRecord = (sessionId: string, resolved: string): boolean => {
+    if (nativeHost.isNativeSessionId(resolved)) return false;
+    return sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId);
+  };
   ipcMain.handle(IPC.SESSION_SET_FLAG, async (_event, sessionId: string, flag: string, value: boolean) => {
     if (!SESSION_FLAG_NAMES.includes(flag as SessionFlagName)) {
       return { ok: false, error: `unknown flag: ${flag}` };
@@ -2373,7 +2424,7 @@ export function registerIpcHandlers(
       // flag re-applies once the SessionStart hook establishes the mapping and
       // the user (or a re-flag) drives it again — flags are store-only now,
       // so there's no legacy index still catching it in the meantime.
-      if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
+      if (canWriteStoreRecord(sessionId, resolved)) {
         noteFlagChanged(resolved, flag, !!value);
       }
       const payload = { flag, value: !!value };
@@ -2443,8 +2494,10 @@ export function registerIpcHandlers(
     const key = tagFlagKey(tagId);
     try {
       // Same phantom-record gate as SESSION_SET_FLAG: only write the store when
-      // `resolved` is a known CLAUDE id or a non-live session.
-      if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
+      // `resolved` is a known CLAUDE id or a non-live session, and never for a
+      // native session. (Tags are stored as `tag:<id>` flags, so this is the path
+      // that made "tag a native session" seed a phantom CC record.)
+      if (canWriteStoreRecord(sessionId, resolved)) {
         noteFlagChanged(resolved, key, !!value);
       }
       const payload = { flag: key, value: !!value };
@@ -2460,7 +2513,7 @@ export function registerIpcHandlers(
     const text = String(note ?? '');
     if (text.length > 8000) return { ok: false, error: 'note exceeds 8000 characters' };
     try {
-      if (sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId)) {
+      if (canWriteStoreRecord(sessionId, resolved)) {
         noteSessionNote(resolved, text);
       }
       const payload = { note: text };

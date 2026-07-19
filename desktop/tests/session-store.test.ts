@@ -215,4 +215,27 @@ describe('SessionStore', () => {
     const events = store.readEvents('s-1', HEADER.cwd);
     expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
   });
+
+  // has() backs the phantom-record gate (2026-07-18): ipc-handlers asks "is this
+  // id native?" before letting a flag/note seed a conversation-store record.
+  // It must answer for PERSISTED sessions, not just live ones — a past native
+  // session opened from the Resume Browser is not live but must still be
+  // recognized, which is the case isNative()/this.live cannot answer.
+  describe('has', () => {
+    it('finds a persisted session regardless of which project it lives under', async () => {
+      await store.create(HEADER);
+      expect(store.has('s-1')).toBe(true);
+    });
+
+    it('is false for an unknown id, and does not require the session to be live', async () => {
+      await store.create(HEADER);
+      expect(store.has('never-existed')).toBe(false);
+      // Nothing here is "live" — the store has no concept of liveness — so a
+      // true answer above proves the check is disk-backed, not registry-backed.
+    });
+
+    it('is false when no sessions directory exists at all', () => {
+      expect(store.has('s-1')).toBe(false); // no create() call in this test
+    });
+  });
 });

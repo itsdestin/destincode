@@ -31,6 +31,13 @@ function makeDeps(opts?: { liveDesktopIds?: string[]; flushRejects?: boolean }) 
       if (opts?.flushRejects) throw new Error('flush blew up');
     }),
     pushMoved: vi.fn((did: string, device?: string) => { order.push(`push:${did}:${device ?? ''}`); }),
+    // Native teardown. In production this is nativeHost.destroy — idempotent and a
+    // no-op for non-native ids. It MUST be in the fake bundle: every step in the
+    // handler is individually try/caught, so an absent dep throws into a
+    // best-effort catch and the suite goes green on a teardown that never ran
+    // (the same "the suite certifies the bug" trap that hid the missing native
+    // interrupt — 2026-07-18 review).
+    destroyNative: vi.fn(async (did: string) => { order.push(`destroyNative:${did}`); }),
   };
   return deps;
 }
@@ -50,7 +57,8 @@ describe('createHolderTakeover', () => {
       'flush:claude-abc',
       'release:claude-abc',
       'push:desktop-1:Laptop-B',       // desktopId reverse-mapped, from.device forwarded
-      'destroy:desktop-1',
+      'destroyNative:desktop-1',       // native teardown BEFORE destroySession...
+      'destroy:desktop-1',             // ...matching the sanctioned SESSION_DESTROY order
     ]);
     // The reverse-map picked the correct desktop id, not desktop-2.
     expect(deps.sessionManager.sendInput).toHaveBeenCalledWith('desktop-1', '\x1b');
@@ -103,6 +111,7 @@ describe('createHolderTakeover', () => {
       'flush:c1',
       'release:c1',
       'push:d1:X',     // from.device still forwarded despite the flush reject
+      'destroyNative:d1',
       'destroy:d1',
     ]);
   });
@@ -117,7 +126,46 @@ describe('createHolderTakeover', () => {
     await expect(handler('c1', { deviceId: 'x', device: 'X' })).resolves.toBeUndefined();
     // Step 8 still runs after the guarded push throw — no half-done handoff.
     expect(deps.sessionManager.destroySession).toHaveBeenCalledWith('d1');
-    expect(deps.order).toEqual(['interrupt:d1:"\\u001b"', 'flush:c1', 'release:c1', 'push:d1', 'destroy:d1']);
+    expect(deps.order).toEqual(['interrupt:d1:"\\u001b"', 'flush:c1', 'release:c1', 'push:d1', 'destroyNative:d1', 'destroy:d1']);
+  });
+
+  // 2026-07-18 (investigation Break 4). destroySession alone tears down the PTY
+  // half only. For a NATIVE session that left the in-process HarnessSession alive
+  // with its transcript-event listener still attached — an un-aborted stream, a
+  // leaked model ref-count, and a second writer on the transcript JSONL.
+  it('awaits the native teardown before destroySession, for every live holder', async () => {
+    const deps = makeDeps({ liveDesktopIds: ['d1', 'd2'] });
+    // A create+resume pair maps TWO desktop ids to one claude id — both must be
+    // torn down natively, not just the first.
+    deps.sessionIdMap.set('d1', 'c1');
+    deps.sessionIdMap.set('d2', 'c1');
+    // Make the native teardown genuinely async so an un-awaited call would let
+    // destroySession land first and reorder the log.
+    (deps.destroyNative as any) = vi.fn(async (did: string) => {
+      await new Promise((r) => setTimeout(r, 5));
+      deps.order.push(`destroyNative:${did}`);
+    });
+    const handler = createHolderTakeover(deps as any);
+    await handler('c1', { deviceId: 'x', device: 'X' });
+
+    expect(deps.destroyNative).toHaveBeenCalledWith('d1');
+    expect(deps.destroyNative).toHaveBeenCalledWith('d2');
+    for (const id of ['d1', 'd2']) {
+      const iNative = deps.order.indexOf(`destroyNative:${id}`);
+      const iDestroy = deps.order.indexOf(`destroy:${id}`);
+      expect(iNative).toBeGreaterThanOrEqual(0);
+      expect(iDestroy).toBeGreaterThan(iNative); // stop the appending source FIRST
+    }
+  });
+
+  it('still destroys the session when the native teardown rejects', async () => {
+    const deps = makeDeps({ liveDesktopIds: ['d1'] });
+    deps.sessionIdMap.set('d1', 'c1');
+    (deps.destroyNative as any) = vi.fn(async () => { throw new Error('harness teardown blew up'); });
+    const handler = createHolderTakeover(deps as any);
+    await expect(handler('c1', { deviceId: 'x', device: 'X' })).resolves.toBeUndefined();
+    // A failed native teardown must not strand a live SessionManager entry.
+    expect(deps.sessionManager.destroySession).toHaveBeenCalledWith('d1');
   });
 
   it('never throws even when the lease release rejects', async () => {

@@ -276,6 +276,14 @@ export class NativeSessionHost extends EventEmitter {
 
   /** Fresh session: write the header, build + wire a live HarnessSession. */
   async create(opts: CreateNativeSessionOpts): Promise<void> {
+    // Same single-writer guard as resume() — create() also ends in wire(), so an
+    // id that is somehow still live would gain a second appending listener here
+    // too. Cheap and idempotent; closes the class at BOTH wire() entry points
+    // rather than only the one we know a caller reached.
+    if (this.live.has(opts.sessionId)) {
+      log('WARN', 'NativeSessionHost', 'create found a live session under the same id — destroying the orphan first', { sessionId: opts.sessionId });
+      await this.destroy(opts.sessionId);
+    }
     const preset = resolvePreset(opts.presetId);
     const contextLength = await this.contextLengthFor(opts.binding);
     await this.store.create({
@@ -301,6 +309,20 @@ export class NativeSessionHost extends EventEmitter {
   /** Rebuild a live session from its stored header + events. Returns false when
    *  no native session file exists for this id (caller should fall through). */
   async resume(sessionId: string, cwd: string): Promise<boolean> {
+    // SINGLE-WRITER GUARD (2026-07-18): tear down any session already live under
+    // this id BEFORE wiring a new one. Without this, resuming an id that is still
+    // live leaves the old HarnessSession's transcript-event listener attached —
+    // it closes over the OLD `entry`, so wire()'s `this.live.set` overwriting the
+    // map entry does NOT stop it appending (see destroy()'s comment below). The
+    // result was two writers on one JSONL, unordered against each other, breaking
+    // the single-writer invariant at native-home.ts:5-7 that justifies the absence
+    // of a file lock. Callers could orphan a session from several paths (takeover,
+    // session-exit), so the guard lives HERE, at the one place a second writer can
+    // actually be created, rather than in each caller.
+    if (this.live.has(sessionId)) {
+      log('WARN', 'NativeSessionHost', 'resume found a live session under the same id — destroying the orphan first', { sessionId });
+      await this.destroy(sessionId);
+    }
     const header = this.store.readHeader(sessionId, cwd);
     if (!header) return false;
     // Read-side legacy mapping: a stored 'chat' header (or any unknown id)
@@ -329,6 +351,14 @@ export class NativeSessionHost extends EventEmitter {
 
   isNative(sessionId: string): boolean {
     return this.live.has(sessionId);
+  }
+
+  /** Is this id a native session AT ALL — live now, or persisted from any
+   *  earlier run? isNative() only answers for LIVE sessions, which is the wrong
+   *  question for the phantom-record gate: a past native session picked from the
+   *  Resume Browser is not live, but must still never seed a CC store record. */
+  isNativeSessionId(sessionId: string): boolean {
+    return this.live.has(sessionId) || this.store.has(sessionId);
   }
 
   /** Send a user turn. false when the session isn't live OR when the turn

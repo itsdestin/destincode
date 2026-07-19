@@ -27,6 +27,7 @@ export interface ConversationStore {
   setFlag(provider: string, id: string, flag: string, value: boolean): Promise<void>;
   setTitle(provider: string, id: string, title: string): Promise<void>;
   setNote(provider: string, id: string, note: string): Promise<void>;
+  remove(provider: string, id: string): Promise<boolean>;
   root(): string;
 }
 
@@ -370,6 +371,45 @@ export function createConversationStore(conversationsRoot: string): Conversation
         const base = existing ?? toRecord({ id, provider });
         return { ...base, title };
       });
+    },
+
+    /**
+     * Delete a record outright. Returns true if anything was removed.
+     *
+     * The ONLY destructive operation on this store, added 2026-07-18 for the
+     * native phantom-record cleanup — nothing else deletes records, and nothing
+     * else should without a comparably narrow justification. The deletion syncs
+     * (the transport stages the whole tree), which is the point: the junk must
+     * clear on every device, not just the one that noticed.
+     *
+     * WHY it also sweeps conflict copies and quarantine files: heal() seeds a
+     * canonical FROM a conflict copy when none exists ("Without one (only
+     * conflict copies exist): seed from the first copy"). Deleting the canonical
+     * alone would let the very next get()/list() resurrect the record from a
+     * surviving copy — the delete would look successful and silently undo itself.
+     */
+    async remove(provider, id) {
+      if (!isSafeSegment(provider) || !isSafeSegment(id)) return false;
+      let dir: string;
+      try { dir = providerDir(provider); } catch { return false; }
+      let names: string[];
+      try { names = fs.readdirSync(dir); } catch { return false; }
+      const baseName = `${id}.json`;
+      // Canonical + every conflict copy + every quarantine file for this id.
+      // Same name-matching rules heal() uses, so the two agree on what "belongs
+      // to this id" means.
+      const targets = names.filter((n) => {
+        if (n === baseName) return true;
+        const h = n.indexOf(HEALING_MARKER);
+        const original = h >= 0 ? n.slice(0, h) : n;
+        return isConflictCopyName(original) && extractConflictBase(original) === baseName;
+      });
+      let removed = false;
+      for (const n of targets) {
+        try { fs.unlinkSync(path.join(dir, n)); removed = true; }
+        catch { /* already gone / raced another remover — treat as removed by someone */ }
+      }
+      return removed;
     },
 
     async setNote(provider, id, note) {

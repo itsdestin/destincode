@@ -151,6 +151,17 @@ export class SessionStore {
     }
   }
 
+  /**
+   * Does a persisted native session file exist for this id, in any project?
+   * Deliberately a readdir-only check (listSessionFiles stats names; it does NOT
+   * read file contents like list() does) so callers on user-initiated paths —
+   * flagging/noting a session — can ask "is this id native?" without paying a
+   * 256KB head-read per session. Used by the phantom-record gate in ipc-handlers.
+   */
+  has(sessionId: string): boolean {
+    return this.home.listSessionFiles().some((f) => f.sessionId === sessionId);
+  }
+
   /** Line 1 of the session file, validated as a v1 header for this session. */
   readHeader(sessionId: string, cwd: string): NativeSessionHeader | null {
     const lines = this.home.readSessionLines(cwdToProjectSlug(cwd), sessionId);
