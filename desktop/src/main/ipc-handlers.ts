@@ -7,7 +7,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type TranscriptEvent, type HookEvent, type PastSession } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, NATIVE_META_UNSUPPORTED, type SessionFlagName, type TranscriptEvent, type HookEvent, type PastSession } from '../shared/types';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -2398,14 +2398,42 @@ export function registerIpcHandlers(
   // persisted native ids: a past native session opened from the Resume Browser is
   // not live, but must not seed a record either.
   const canWriteStoreRecord = (sessionId: string, resolved: string): boolean => {
+    // Kept as defence-in-depth for any FUTURE call site. The three handlers below
+    // now reject native ids outright before reaching here, so this branch is
+    // unreachable from them — see nativeMetaRefusal.
     if (nativeHost.isNativeSessionId(resolved)) return false;
     return sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId);
   };
+
+  // Stopgap (2026-07-19). The 2026-07-18 gate above correctly stopped native
+  // sessions seeding phantom provider:'claude' records — but the handlers still
+  // returned { ok: true } and still broadcast SESSION_META_CHANGED, so the
+  // renderer's optimistic update stuck and the user believed the flag/tag/note
+  // had saved until the next browse. Silent data loss. Until native records are
+  // a real thing (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md)
+  // the honest answer is an explicit refusal: no write, NO broadcast (a broadcast
+  // would make listeners refetch and "confirm" a change that never happened), and
+  // an ok:false the renderer reverts on. session:get-meta reports supported:false
+  // so the UI can disable the controls up front rather than fail on click.
+  const nativeMetaRefusal = (resolved: string) =>
+    (nativeHost.isNativeSessionId(resolved)
+      ? {
+          ok: false as const,
+          error: NATIVE_META_UNSUPPORTED,
+          unsupported: true as const,
+          // Separate from `error` because the renderer SHOWS this one — other
+          // hosts put machine strings in `error`.
+          unsupportedReason: NATIVE_META_UNSUPPORTED,
+        }
+      : null);
+
   ipcMain.handle(IPC.SESSION_SET_FLAG, async (_event, sessionId: string, flag: string, value: boolean) => {
     if (!SESSION_FLAG_NAMES.includes(flag as SessionFlagName)) {
       return { ok: false, error: `unknown flag: ${flag}` };
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
+    const refusal = nativeMetaRefusal(resolved);
+    if (refusal) return refusal;
     try {
       // Plan 2c: flags are STORE-ONLY now. The legacy conversation-index
       // dual-write (svc.setSessionFlag) was removed — the Conversation Store is
@@ -2492,6 +2520,8 @@ export function registerIpcHandlers(
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     const key = tagFlagKey(tagId);
+    const refusal = nativeMetaRefusal(resolved);
+    if (refusal) return refusal;
     try {
       // Same phantom-record gate as SESSION_SET_FLAG: only write the store when
       // `resolved` is a known CLAUDE id or a non-live session, and never for a
@@ -2512,6 +2542,8 @@ export function registerIpcHandlers(
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     const text = String(note ?? '');
     if (text.length > 8000) return { ok: false, error: 'note exceeds 8000 characters' };
+    const refusal = nativeMetaRefusal(resolved);
+    if (refusal) return refusal;
     try {
       if (canWriteStoreRecord(sessionId, resolved)) {
         noteSessionNote(resolved, text);
@@ -2527,17 +2559,25 @@ export function registerIpcHandlers(
   // live sessions, so Plan B's in-session StatusBar element reads meta here) ---
   ipcMain.handle(IPC.SESSION_GET_META, async (_e, sessionId: string) => {
     const store = getConversationStore();
-    if (!store) return { tags: [], note: '' };
     const resolved = sessionIdMap.get(sessionId) || sessionId;
+    // `supported` tells the renderer whether writes will actually persist, so the
+    // tags/note UI can render disabled instead of accepting edits that get refused.
+    // Deliberately keyed on native-ness ONLY, not on `store` being present: store
+    // is null transiently during startup, and flickering the controls off mid-boot
+    // would be worse than the brief window where an edit fails loudly.
+    if (nativeHost.isNativeSessionId(resolved)) {
+      return { tags: [], note: '', supported: false, unsupportedReason: NATIVE_META_UNSUPPORTED };
+    }
+    if (!store) return { tags: [], note: '', supported: true };
     try {
       const rec = await store.get('claude', resolved);
-      if (!rec) return { tags: [], note: '' };
+      if (!rec) return { tags: [], note: '', supported: true };
       const tags: string[] = [];
       for (const [k, v] of Object.entries(rec.flags)) {
         if (v.value && k.startsWith('tag:')) tags.push(k.slice(4));
       }
-      return { tags, note: rec.note || '' };
-    } catch { return { tags: [], note: '' }; }
+      return { tags, note: rec.note || '', supported: true };
+    } catch { return { tags: [], note: '', supported: true }; }
   });
 
   // --- Sync management ---

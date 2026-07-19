@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 import type { AuthStartResponse, AuthPollResponse, PostRatingInput } from '../renderer/state/marketplace-api-client';
 import type { MarketplaceUser } from './marketplace-auth-store';
 import type { ApiResult } from './marketplace-api-handlers';
-import type { AttentionSummary, AttentionReport, PerformanceConfigSnapshot } from '../shared/types';
+import type { AttentionSummary, AttentionReport, PerformanceConfigSnapshot, SessionMetaResult } from '../shared/types';
 
 // Mirrored type — must match ChangelogResult in src/main/changelog-service.ts.
 interface ChangelogIpcResult {
@@ -379,7 +379,7 @@ contextBridge.exposeInMainWorld('claude', {
     setNote: (sessionId: string, note: string) =>
       ipcRenderer.invoke(IPC.SESSION_SET_NOTE, sessionId, note),
     // Read a session's applied tag ids + note (used by the in-session Tag chip).
-    getMeta: (sessionId: string): Promise<{ tags: string[]; note: string }> =>
+    getMeta: (sessionId: string): Promise<SessionMetaResult> =>
       ipcRenderer.invoke(IPC.SESSION_GET_META, sessionId),
   },
   // Tag registry CRUD (custom user-defined tags shared across sessions).

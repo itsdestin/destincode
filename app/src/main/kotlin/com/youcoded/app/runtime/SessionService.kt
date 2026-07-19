@@ -1486,15 +1486,25 @@ class SessionService : Service() {
             "session:get-meta" -> {
                 // Read channel — return an EMPTY meta object (not an error) so the
                 // shared-UI in-session Tag chip degrades to "no tags/note" on touch.
+                // supported=false because the WRITE handlers below are stubs: the
+                // shared renderer reverts a refused write, so without this the chip
+                // would accept a tag, flash it, and snap back with no explanation.
+                // The reason string is Android's own — the desktop's "native
+                // sessions" wording would be a misleading message here.
                 val payload = org.json.JSONObject()
                     .put("tags", org.json.JSONArray())
                     .put("note", "")
+                    .put("supported", false)
+                    .put("unsupportedReason", "Tags and notes aren't available on mobile yet.")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
             "tags:create", "tags:update", "tags:delete",
             "session:set-tag", "session:set-note" -> {
+                // unsupported=true marks this as a CAPABILITY gap, not a transient
+                // failure, so the renderer disables the control instead of retrying.
                 val payload = org.json.JSONObject()
                     .put("ok", false)
+                    .put("unsupported", true)
                     .put("error", "not-implemented-on-mobile")
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
