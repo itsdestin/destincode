@@ -25,6 +25,10 @@ const h = vi.hoisted(() => {
       list: vi.fn(async (_provider: string): Promise<any[]> => []),
       setFlag: vi.fn(async () => {}),
       setTitle: vi.fn(async () => {}),
+      setNote: vi.fn(async () => {}),
+      // The store's only destructive op — used solely by the native
+      // phantom-record cleanup (2026-07-18).
+      remove: vi.fn(async (_provider: string, _id: string) => true),
       root: vi.fn(() => ''),
     },
     // Default reconciler NEVER resolves — that's how the non-blocking-start test
@@ -80,6 +84,7 @@ function fireSync(e: any): void {
 
 async function freshService(opts?: {
   conversationsRoot?: string; projectsDir?: string; topicsDir?: string; device?: string;
+  nativeHomeRoot?: string;
 }) {
   vi.resetModules();
   const svc = await import('../src/main/conversations/service');
@@ -102,6 +107,8 @@ describe('conversations service composition root', () => {
     h.store.list.mockReset().mockResolvedValue([]);
     h.store.setFlag.mockReset().mockResolvedValue(undefined as any);
     h.store.setTitle.mockReset().mockResolvedValue(undefined as any);
+    h.store.setNote.mockReset().mockResolvedValue(undefined as any);
+    h.store.remove.mockReset().mockResolvedValue(true as any);
     h.reconcile.mockReset().mockImplementation(() => new Promise<number>(() => {}));
     h.mirrorIn.mockReset().mockReturnValue({ copied: true } as any);
     h.materializeOut.mockReset().mockReturnValue({ copied: true } as any);
@@ -596,6 +603,75 @@ describe('conversations service composition root', () => {
     await new Promise((r) => setTimeout(r, 10));
     // World keeps turning: the prompt push still fired despite the upsert reject.
     expect(h.syncSpacesSyncNow).toHaveBeenCalledWith('personal');
+  });
+
+  // --- Native phantom-record cleanup (2026-07-18) -------------------------
+  //
+  // PR #176 started mapping native sessions in sessionIdMap, which defeated the
+  // phantom-record gate in ipc-handlers: flagging or noting a NATIVE session
+  // seeded a record under claude/ with a hardcoded provider and blank metadata,
+  // which synced everywhere and was never pruned. These pin the cleanup that
+  // clears the ones already written — and, just as importantly, that it does
+  // NOT touch anything else (it is the store's only destructive caller).
+  describe('pruneNativePhantomRecords', () => {
+    // A record with the phantom signature: blank refs/metadata, EPOCH lastActive.
+    const phantom = (id: string) => ({
+      schema: 1, id, provider: 'claude', projectName: '', originalPath: '', title: '',
+      lastActive: '1970-01-01T00:00:00.000Z', device: '', flags: { complete: { value: true, updatedAt: 'x' } },
+      transcriptRef: '', createdAt: 'x', note: '', noteUpdatedAt: 'x',
+    });
+    // Lay down ~/.youcoded/sessions/<slug>/<id>.jsonl so the id reads as native.
+    function seedNativeSession(homeRoot: string, id: string) {
+      const dir = path.join(homeRoot, '.youcoded', 'sessions', 'proj-slug');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${id}.jsonl`), '{"v":1}\n');
+    }
+
+    it('removes a phantom whose id is a real native session', async () => {
+      const homeRoot = path.join(tmpRoot, 'nh-hit');
+      seedNativeSession(homeRoot, 'native-1');
+      h.store.list.mockResolvedValue([phantom('native-1')]);
+      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
+      const pruned = await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot });
+      expect(pruned).toBe(1);
+      expect(h.store.remove).toHaveBeenCalledWith('claude', 'native-1');
+    });
+
+    it('leaves a phantom-shaped record alone when no native session file exists', async () => {
+      const homeRoot = path.join(tmpRoot, 'nh-miss');
+      fs.mkdirSync(homeRoot, { recursive: true });   // exists, but no sessions
+      h.store.list.mockResolvedValue([phantom('not-native')]);
+      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
+      // The shape alone must never be enough — confirmation that the id IS
+      // native is what separates junk from a record we simply can't explain.
+      expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
+      expect(h.store.remove).not.toHaveBeenCalled();
+    });
+
+    it('never removes a record carrying real data, even for a native id', async () => {
+      const homeRoot = path.join(tmpRoot, 'nh-real');
+      seedNativeSession(homeRoot, 'native-2');
+      h.store.list.mockResolvedValue([
+        // Each of these differs from the phantom signature by ONE field. All must survive.
+        { ...phantom('native-2'), transcriptRef: 'claude/transcripts/p/native-2.jsonl' },
+        { ...phantom('native-2'), projectName: 'youcoded-dev' },
+        { ...phantom('native-2'), originalPath: '/home/d/p' },
+        { ...phantom('native-2'), lastActive: '2026-07-18T00:00:00.000Z' },
+      ]);
+      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
+      expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
+      expect(h.store.remove).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent — a second pass finds nothing', async () => {
+      const homeRoot = path.join(tmpRoot, 'nh-idem');
+      seedNativeSession(homeRoot, 'native-3');
+      h.store.list.mockResolvedValue([phantom('native-3')]);
+      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
+      expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(1);
+      h.store.list.mockResolvedValue([]);   // the record is gone now
+      expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
+    });
   });
 
   // Guard: no managed roots + no explicit root → store stays off (no reconcile).

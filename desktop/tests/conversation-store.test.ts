@@ -231,6 +231,46 @@ describe('createConversationStore', () => {
     expect(noHealingLeftovers(path.join(tmp, 'claude'))).toBe(true);
   });
 
+  // Contract 5b: remove() — the store's ONLY destructive operation (added
+  // 2026-07-18 for the native phantom-record cleanup).
+  //
+  // The load-bearing part is that it sweeps CONFLICT COPIES too, not just the
+  // canonical. heal() seeds a canonical FROM a copy when none exists, so a
+  // remove that deleted only `<id>.json` would be silently undone by the very
+  // next get()/list() — the delete would report success and the record would
+  // reappear (and re-sync) moments later.
+  it('remove deletes the canonical AND its conflict copies, so heal cannot resurrect it', async () => {
+    stage(tmp, 'claude', 'sess-1.json', recJson({ id: 'sess-1' }));
+    stage(tmp, 'claude', 'sess-1 (from Laptop, 2026-07-03).json', recJson({ id: 'sess-1' }));
+    stage(tmp, 'claude', 'sess-1 (from Desktop, 2026-07-04).json', recJson({ id: 'sess-1' }));
+    // A DIFFERENT record and its copy must survive untouched.
+    stage(tmp, 'claude', 'sess-2.json', recJson({ id: 'sess-2' }));
+    stage(tmp, 'claude', 'sess-2 (from Laptop, 2026-07-03).json', recJson({ id: 'sess-2' }));
+
+    expect(await store.remove('claude', 'sess-1')).toBe(true);
+
+    // Gone from disk — canonical and both copies.
+    expect(fs.existsSync(path.join(tmp, 'claude', 'sess-1.json'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, 'claude', 'sess-1 (from Laptop, 2026-07-03).json'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, 'claude', 'sess-1 (from Desktop, 2026-07-04).json'))).toBe(false);
+    // THE POINT: a read runs heal first — it must not rebuild the record.
+    expect(await store.get('claude', 'sess-1')).toBeNull();
+    expect(fs.existsSync(path.join(tmp, 'claude', 'sess-1.json'))).toBe(false);
+
+    // The neighbour is intact and still heals normally.
+    expect(await store.get('claude', 'sess-2')).not.toBeNull();
+  });
+
+  it('remove reports false for an unknown id and refuses unsafe segments', async () => {
+    stage(tmp, 'claude', 'sess-1.json', recJson({ id: 'sess-1' }));
+    expect(await store.remove('claude', 'nope')).toBe(false);
+    // Path-escape attempts are refused, not resolved — same guard as get/list.
+    expect(await store.remove('claude', '../../etc/passwd')).toBe(false);
+    expect(await store.remove('..', 'sess-1')).toBe(false);
+    // The real record is untouched by any of the above.
+    expect(fs.existsSync(path.join(tmp, 'claude', 'sess-1.json'))).toBe(true);
+  });
+
   // Contract 6: the healer only touches RECORD conflict copies (.json), never a
   // non-record conflict copy, and never reaches into another provider's dir.
   it('heal ignores non-record conflict copies and never crosses providers', async () => {

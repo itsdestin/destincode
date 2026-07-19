@@ -7,7 +7,8 @@
 //   4-5. wait for CC to flush the interrupted turn, then push local->space
 //   6. release the lease so the requester can acquire
 //   7. tell the renderer + remote the conversation moved (BEFORE destroy)
-//   8. end the local session (fires session-exit -> Task 7 cleanup)
+//   8. tear down the native harness (no-op for CC), then end the local session
+//      (fires session-exit -> Task 7 cleanup)
 //
 // Extracted into an injected-deps factory (not inlined in ipc-handlers) so it's
 // unit-testable — the real handler needs sessionIdMap, which is local to
@@ -26,6 +27,14 @@ export interface HolderTakeoverDeps {
   leaseClient: { release(sessionId: string): Promise<void> };
   flushSessionToSpace: (claudeSessionId: string) => Promise<void>;
   pushMoved: (desktopId: string, device?: string) => void;  // dual-path push (renderer + remote)
+  // Native teardown, injected rather than imported so this module keeps its
+  // fake-collaborator test style. Idempotent + a no-op for non-native ids, so
+  // step 8 can call it unconditionally (same contract as nativeHost.destroy).
+  // WHY it must be here: destroySession alone only tears down the PTY half. For
+  // a native session the in-process HarnessSession survives with its
+  // transcript-event listener attached and keeps appending — a leaked model
+  // ref-count, an un-aborted stream, and a second writer on the transcript.
+  destroyNative: (desktopId: string) => Promise<void>;
 }
 
 // Returns the async handler wired to the lease client's onTakeoverRequest.
@@ -79,6 +88,12 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
       //    one bad push can't leave a sibling session alive (half-done handoff).
       for (const desktopId of liveDesktopIds) {
         try { deps.pushMoved(desktopId, from?.device); } catch { /* best-effort */ }
+        // Native teardown BEFORE destroySession, matching the sanctioned
+        // SESSION_DESTROY order (ipc-handlers): stop the appending source first,
+        // then drop the SessionManager record. Awaited so the append chain drains
+        // and the open streaming part flushes before we move on — an un-awaited
+        // destroy would race the release below and could still lose the tail.
+        try { await deps.destroyNative(desktopId); } catch { /* best-effort */ }
         try { deps.sessionManager.destroySession(desktopId); } catch { /* best-effort */ }
       }
     } catch { /* never surface out of a fire-and-forget hub-event handler */ }
@@ -117,6 +132,11 @@ export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' }
 // main.ts can build the flow and pass it through without a circular import.
 export type RequesterTakeoverType = ReturnType<typeof createRequesterTakeover>;
 
+// Exported so the coupling to the holder's costs is PINNABLE, not just
+// documented in prose at three separate sites (2026-07-18). See
+// tests/handoff-timing-contract.test.ts.
+export const REQUESTER_MAX_MS = 25_000;
+
 export function createRequesterTakeover(deps: RequesterTakeoverDeps) {
   const POLL_MS = 1_000;
   // Poll budget for a clean handoff. COUPLED to the holder's costs (see
@@ -126,7 +146,7 @@ export function createRequesterTakeover(deps: RequesterTakeoverDeps) {
   // sync that never actually waited — once the flush awaits its push, 10s trips
   // the force dialog on a HEALTHY holder. 25s = 6s quiesce + 15s push + slack, so
   // the force offer is reserved for a genuinely unresponsive holder.
-  const MAX_MS = 25_000;
+  const MAX_MS = REQUESTER_MAX_MS;
   return {
     async takeover(sessionId: string): Promise<RequesterOutcome> {
       try {

@@ -8,6 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createConversationStore, ConversationStore } from './conversation-store';
+import { log } from '../logger';
+import { NativeHome } from '../native-home';
+import type { ConversationRecord } from './store-core';
 import { mirrorIn, materializeOut } from './transcript-mirror';
 import { reconcile } from './reconciler';
 import { ccProjectSlug } from '../project-conversations';
@@ -24,7 +27,7 @@ const RECONCILE_INTERVAL_MS = 30 * 60_000; // slow tick; the startup scan is the
 // targeted materialize copies a peer's version over the local file, wait for the
 // local file to stop growing — two equal-size stats this far apart = CC done.
 const QUIESCE_PROBE_MS = 750;   // gap between size probes
-const QUIESCE_MAX_MS = 6_000;   // give up waiting; skip this round (reconciler/startup sweep catch up)
+export const QUIESCE_MAX_MS = 6_000;   // give up waiting; skip this round (reconciler/startup sweep catch up)
 // Handoff sync budget: how long flushSessionToSpace waits for the final turn's push
 // to actually land before giving up (and letting the push continue in the background).
 // COUPLED to the requester's takeover poll budget (MAX_MS in takeover.ts): that budget
@@ -51,6 +54,7 @@ export function getConversationStore(): ConversationStore | null { return store;
 
 export async function startConversationStore(opts?: {
   conversationsRoot?: string; projectsDir?: string; topicsDir?: string; device?: string;
+  nativeHomeRoot?: string;  // tests only — production reads ~/.youcoded
 }): Promise<void> {
   // Idempotent start (review fix 4): a second start without a stop would leak
   // the first onSyncSpacesEvent subscription (duplicate materialize sweeps
@@ -99,6 +103,13 @@ export async function startConversationStore(opts?: {
   // transcript is dangerous without single-writer guarantees).
   void materializeSweep();
 
+  // One-shot cleanup of the PR #176 phantom records (see the function's comment).
+  // Detached + never-throws, same as the two sweeps above — it must not delay
+  // startup, and finding nothing (the steady state after the first run) is cheap.
+  void pruneNativePhantomRecords({ nativeHomeRoot: opts?.nativeHomeRoot })
+    .then((n) => { if (n > 0) log('INFO', 'ConversationStore', 'phantom native record cleanup complete', { pruned: n }); })
+    .catch(() => { /* best-effort — never block startup */ });
+
   reconcileTimer = setInterval(() => { runReconcile(); }, RECONCILE_INTERVAL_MS);
   reconcileTimer.unref?.();
 }
@@ -114,6 +125,62 @@ export function stopConversationStore(): void {
 
 export function noteSessionStarted(claudeSessionId: string, cwd: string): void {
   sessions.set(claudeSessionId, { cwd });
+}
+
+/**
+ * One-shot cleanup for the phantom records PR #176 caused (2026-07-18).
+ *
+ * Flagging or noting a NATIVE session seeded a record under `claude/` with a
+ * hardcoded provider — blank projectName / originalPath / transcriptRef, EPOCH
+ * lastActive — which synced everywhere and was never pruned (flagged records are
+ * deliberately kept). The write path is gated at its source now (ipc-handlers'
+ * canWriteStoreRecord), but records already on disk need clearing, or they stay
+ * forever AND collide with the real `native/` record once the parity work lands:
+ * two Resume Browser rows for one conversation, one of them unopenable.
+ *
+ * DELIBERATELY CONSERVATIVE. Every condition must hold before anything is
+ * deleted — this is the store's only destructive caller, and a false positive
+ * would delete a real conversation record on every synced device:
+ *   1. transcriptRef is blank — a real CC record always points at a transcript, AND
+ *   2. projectName AND originalPath are blank, AND
+ *   3. lastActive is EPOCH — the record never saw a single turn, AND
+ *   4. a persisted ~/.youcoded/sessions file exists for the id, so the id is
+ *      confirmed native rather than merely shaped like a phantom.
+ * A phantom whose native session file was since deleted therefore survives. That
+ * is the intended trade: leaving one stale row beats deleting a real one.
+ *
+ * Idempotent (a second run finds nothing) and best-effort — a failure here must
+ * never block store startup.
+ */
+export async function pruneNativePhantomRecords(opts?: { nativeHomeRoot?: string }): Promise<number> {
+  const s = store;
+  if (!s) return 0;
+  let records: ConversationRecord[];
+  try { records = await s.list('claude'); } catch { return 0; }
+  // Cheap shape filter FIRST, so the sessions-dir listing below is only paid for
+  // when a candidate actually exists (the common case is zero candidates).
+  const candidates = records.filter(
+    (r) => !r.transcriptRef && !r.projectName && !r.originalPath && Date.parse(r.lastActive) === 0,
+  );
+  if (candidates.length === 0) return 0;
+  // Read-only listing (readdir + stat, no file contents) of every persisted
+  // native session id on this device.
+  let nativeIds: Set<string>;
+  try {
+    const home = new NativeHome(opts?.nativeHomeRoot);
+    nativeIds = new Set(home.listSessionFiles().map((f) => f.sessionId));
+  } catch { return 0; } // can't confirm nativeness → delete nothing
+  let pruned = 0;
+  for (const rec of candidates) {
+    if (!nativeIds.has(rec.id)) continue;
+    try {
+      if (await s.remove('claude', rec.id)) {
+        pruned++;
+        log('INFO', 'ConversationStore', 'pruned a phantom native record mislabeled as claude', { id: rec.id });
+      }
+    } catch { /* per-record isolation — one failure must not abort the pass */ }
+  }
+  return pruned;
 }
 
 // <root>/claude/transcripts/<projectKey>/<id>.jsonl — the durable space copy.

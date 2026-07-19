@@ -139,6 +139,53 @@ describe('NativeSessionHost', () => {
     await midHost.destroyAll();
   });
 
+  // SINGLE-WRITER GUARD (2026-07-18, investigation Break 4). resume() used to
+  // wire a fresh HarnessSession without touching an existing live one. wire()
+  // overwrites this.live's entry, but the ORPHAN's transcript-event listener
+  // closes over the OLD entry — so it kept appending to the same JSONL, giving
+  // two writers unordered against each other (native-home.ts:5-7 says session
+  // files are single-writer by design, which is why they carry no file lock).
+  //
+  // Asserts on APPEND CALLS, not on map state: the map entry is not what keeps
+  // the orphan alive, so a map-shaped assertion would pass on the broken code.
+  it('resume() on an id that is still live destroys the orphan — no second writer', async () => {
+    const store = new SessionStore(new NativeHome(root));
+    const appends: string[] = [];
+    const realAppend = store.append.bind(store);
+    vi.spyOn(store, 'append').mockImplementation(async (cwd, event) => {
+      appends.push(event.type);
+      return realAppend(cwd, event);
+    });
+    // delayedFactory trickles chunks, so the first turn is genuinely mid-stream
+    // when resume lands — the exact window where an orphan does its damage.
+    const orphanHost = new NativeSessionHost(store, delayedFactory, async () => null);
+    const gotDelta = new Promise<void>((res) => {
+      orphanHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
+    });
+    await orphanHost.create({ sessionId: 's-orphan', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const p = orphanHost.send('s-orphan', 'hi'); // don't await — resume mid-stream
+    await gotDelta;
+
+    // Resume the SAME id while it is live. This is what a takeover-orphaned
+    // session did on the next open.
+    const resumed = await orphanHost.resume('s-orphan', root);
+    expect(resumed).toBe(true);
+    await expect(p).resolves.toBe(true); // the interrupted send still settles cleanly
+
+    // Everything the old session could still have written must already be done:
+    // resume() awaits destroy(), which aborts the stream, drains the append chain
+    // and flushes the open part. Give the old stream's remaining chunk delays
+    // (15ms each) generous room to fire if the abort did NOT take.
+    const afterResume = appends.length;
+    await new Promise((r) => setTimeout(r, 120));
+    expect(appends.length).toBe(afterResume); // the orphan wrote nothing more
+
+    // And the file is a coherent single-writer transcript, not an interleave.
+    const events = store.readEvents('s-orphan', root);
+    expect(events.map((e) => e.type)).toEqual(['user-message', 'assistant-text']);
+    await orphanHost.destroyAll();
+  });
+
   it('a failed append does not wedge the chain — later events still persist', async () => {
     const store = new SessionStore(new NativeHome(root));
     const realAppend = store.append.bind(store);
