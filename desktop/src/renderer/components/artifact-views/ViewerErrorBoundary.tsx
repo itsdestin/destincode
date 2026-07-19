@@ -1,4 +1,5 @@
 import React from 'react';
+import { Button } from '../ui';
 
 // Error boundary around the artifact viewer render. Two failure modes land
 // here that <Suspense> can NOT catch:
@@ -31,12 +32,9 @@ export class ViewerErrorBoundary extends React.Component<Props, { error: Error |
         <div className="flex flex-col items-center justify-center h-full p-8 text-fg-muted text-sm text-center">
           <p className="mb-2">Couldn’t display this file.</p>
           <p className="mb-4 font-mono text-xs break-all">{this.props.path}</p>
-          <button
-            className="px-3 py-1.5 rounded bg-well border border-edge text-fg text-xs"
-            onClick={() => this.setState({ error: null })}
-          >
+          <Button variant="secondary" onClick={() => this.setState({ error: null })}>
             Try again
-          </button>
+          </Button>
         </div>
       );
     }

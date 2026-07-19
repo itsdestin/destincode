@@ -24,6 +24,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
+import { Button, CloseButton } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { useAccount } from '../../state/account-context';
 import { REPORT_REASON_MAX } from '../../state/marketplace-constants';
@@ -154,14 +155,7 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
             Report this review?
           </h2>
           {/* Fix: disabled during submitting phase to prevent closing a mid-flight request */}
-          <button
-            onClick={onClose}
-            disabled={inFlight}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors leading-none text-lg disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            &times;
-          </button>
+          <CloseButton onClick={onClose} disabled={inFlight} />
         </div>
 
         {/* Success state */}
@@ -220,16 +214,19 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
               >
                 Cancel
               </button>
-              <button
+              {/* danger-outline replaces the hand-rolled var(--destructive) border/text/hover
+                  trio — same intent (signal severity from the theme token, no hex), now
+                  spelled once in the primitive. */}
+              <Button
+                variant="danger-outline"
+                size="lg"
                 onClick={() => void handleSubmit()}
                 disabled={inFlight}
                 aria-disabled={inFlight}
-                // Use --destructive token via Tailwind's text-[var(...)] pattern so the
-                // submit button signals severity without hard-coding a hex color.
-                className="px-4 py-1.5 text-sm font-medium rounded-lg border border-[color:var(--destructive,theme(colors.red.500))] text-[color:var(--destructive,theme(colors.red.500))] hover:bg-[color:var(--destructive,theme(colors.red.500))]/10 transition-colors disabled:opacity-50"
+                className="py-1.5"
               >
                 {inFlight ? 'Submitting…' : 'Report review'}
-              </button>
+              </Button>
             </div>
           </div>
         )}

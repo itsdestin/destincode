@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { useSkills } from '../state/skill-context';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
+import { Button } from './ui';
 
 interface ShareSheetProps {
   skillId: string;
@@ -114,12 +115,9 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
           <div className="mb-4">
             <div className="flex items-center gap-2 bg-well border border-edge-dim rounded-lg px-3 py-2">
               <span className="flex-1 text-[11px] text-fg-muted truncate select-all">{shareLink}</span>
-              <button
-                onClick={handleCopy}
-                className="shrink-0 text-[11px] font-medium px-2 py-1 rounded-sm bg-accent text-on-accent hover:brightness-110 transition-colors"
-              >
+              <Button size="sm" onClick={handleCopy} className="shrink-0">
                 {copied ? 'Copied!' : 'Copy'}
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -140,13 +138,13 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
             </div>
           ) : (
             <>
-              <button
+              <Button
                 onClick={handlePublish}
                 disabled={publishing}
-                className="w-full text-xs font-medium py-2.5 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-50"
+                className="w-full py-2.5"
               >
                 {publishing ? 'Publishing...' : 'Publish to Marketplace'}
-              </button>
+              </Button>
               {publishError && (
                 <p className="text-xs text-red-400 text-center mt-2">{publishError}</p>
               )}

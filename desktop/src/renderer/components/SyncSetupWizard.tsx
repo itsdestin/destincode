@@ -10,6 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { Button, CloseButton } from './ui';
 import { isAndroid as checkIsAndroid } from '../platform';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -85,9 +86,7 @@ function WizardHeader({ title, onBack, onClose }: { title: string; onBack?: () =
         )}
         <h2 className="text-sm font-bold text-fg">{title}</h2>
       </div>
-      <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset">
-        {'\u2715'}
-      </button>
+      <CloseButton onClick={onClose} label="Close setup wizard" />
     </div>
   );
 }
@@ -508,24 +507,26 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           })()}
 
           {/* Start Backup button */}
-          <button
+          {/* Was a hardcoded bg-blue-600 family (spec change 55 — the last survivors of a
+              blue that ignored the user's theme). `primary` paints it in the theme accent.
+              The three-way saving/empty/ready className is gone: both the saving and the
+              empty-label states are just `disabled` now (spec decision 72), and the spinner
+              goes with the shared busy state later rather than being re-hardcoded here. */}
+          <Button
+            size="lg"
             onClick={handleStartBackup}
             disabled={!label.trim() || saving || (backendType === 'github' && repoMode === 'existing' && !repoUrl.trim())}
-            className={`w-full px-4 py-2.5 rounded-md text-[12px] font-medium transition-colors ${
-              saving
-                ? 'bg-blue-500/20 text-blue-300 cursor-wait'
-                : !label.trim()
-                  ? 'bg-accent/20 text-accent/40 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer'
-            }`}
+            className="w-full"
           >
-            {saving ? (
-              <span className="flex items-center justify-center gap-1.5">
-                <span className="w-3 h-3 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
-                Setting up...
-              </span>
-            ) : 'Start Backup'}
-          </button>
+            {/* Spinner uses currentColor so it tracks the variant's label color on
+                every theme — the old one hardcoded blue-300, which change 55 kills.
+                It stays because setting up a backup takes several seconds: a
+                disabled button with changed text and no motion reads as hung. */}
+            {saving && (
+              <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+            )}
+            {saving ? 'Setting up...' : 'Start Backup'}
+          </Button>
           </div>
         </div>
       </div>
@@ -547,12 +548,9 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
             Your first backup is syncing now. Backups happen automatically every 15 minutes.
             You can manage them anytime from the Sync panel.
           </div>
-          <button
-            onClick={onClose}
-            className="px-6 py-2 rounded-md text-[11px] font-medium bg-accent hover:bg-accent/80 text-on-accent cursor-pointer transition-colors"
-          >
+          <Button onClick={onClose} className="px-6 py-2">
             Done
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -661,22 +659,17 @@ function PrereqCheckStep({
             <div className="text-[11px] text-fg-dim">
               YouCoded needs a small helper tool to connect to Google Drive.
             </div>
-            <button
-              onClick={handleInstall}
-              disabled={installing}
-              className={`px-4 py-2 rounded-md text-[11px] font-medium transition-colors ${
-                installing
-                  ? 'bg-blue-500/20 text-blue-300 cursor-wait'
-                  : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer'
-              }`}
-            >
-              {installing ? (
-                <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
-                  Installing...
-                </span>
-              ) : 'Install Now'}
-            </button>
+            {/* Another hardcoded blue survivor (spec change 55) — now the theme accent.
+                The faded busy FILL collapses to plain `disabled` (spec decision 72),
+                but the spinner stays: this install advertises "about a minute" right
+                below it, and a minute of a motionless disabled button reads as hung.
+                currentColor so it tracks the label on every theme. */}
+            <Button size="lg" onClick={handleInstall} disabled={installing}>
+              {installing && (
+                <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+              )}
+              {installing ? 'Installing...' : 'Install Now'}
+            </Button>
             <div className="text-[10px] text-fg-faint">This usually takes about a minute.</div>
           </div>
         )}
@@ -753,12 +746,10 @@ function IcloudMissingHelp({ onRecheck }: { onRecheck: () => void }) {
         </div>
       )}
       {os !== 'linux' && (
-        <button
-          onClick={onRecheck}
-          className="px-4 py-1.5 rounded-md text-[11px] font-medium bg-inset hover:bg-inset/80 text-fg cursor-pointer transition-colors"
-        >
+        /* Filled-grey (bg-inset) becomes the outline `secondary` — spec decision 60. */
+        <Button variant="secondary" onClick={onRecheck}>
           Check Again
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -800,12 +791,10 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
         </div>
       )}
       <div className="text-[10px] text-fg-faint">After installing, come back and tap "Check Again".</div>
-      <button
-        onClick={onRecheck}
-        className="px-4 py-1.5 rounded-md text-[11px] font-medium bg-inset hover:bg-inset/80 text-fg cursor-pointer transition-colors"
-      >
+      {/* Filled-grey (bg-inset) becomes the outline `secondary` — spec decision 60. */}
+      <Button variant="secondary" onClick={onRecheck}>
         Check Again
-      </button>
+      </Button>
     </div>
   );
 }
@@ -908,12 +897,11 @@ function AuthStep({
                 </div>
               )}
             </div>
-            <button
-              onClick={handleAuth}
-              className="px-6 py-2.5 rounded-md text-[12px] font-medium bg-blue-600 hover:bg-blue-500 text-white cursor-pointer transition-colors"
-            >
+            {/* Last of the hardcoded bg-blue-600 buttons (spec change 55) — the sign-in
+                CTA now uses the theme accent like every other primary action. */}
+            <Button size="lg" onClick={handleAuth}>
               {buttonLabel}
-            </button>
+            </Button>
           </>
         ) : (
           <>
@@ -933,12 +921,10 @@ function AuthStep({
             <div className="text-[11px] text-fg-dim">
               Looks like the sign-in didn't complete. No worries — try again when you're ready.
             </div>
-            <button
-              onClick={handleAuth}
-              className="px-4 py-1.5 rounded-md text-[11px] font-medium bg-inset hover:bg-inset/80 text-fg cursor-pointer transition-colors"
-            >
+            {/* Filled-grey (bg-inset) becomes the outline `secondary` — spec decision 60. */}
+            <Button variant="secondary" onClick={handleAuth}>
               Try Again
-            </button>
+            </Button>
           </div>
         )}
       </div>

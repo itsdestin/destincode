@@ -1,5 +1,6 @@
 import type { ArtifactViewProps } from './types';
 import { getPlatform } from '../../platform';
+import { Button } from '../ui';
 
 export function BinaryFallback({ path, absolutePath }: ArtifactViewProps) {
   // shell.openPath is desktop-only — the remote shim stubs it as a no-op and
@@ -15,16 +16,15 @@ export function BinaryFallback({ path, absolutePath }: ArtifactViewProps) {
       <p className="mb-4">Cannot preview this file type.</p>
       <p className="mb-4 font-mono text-sm">{path}</p>
       {isElectron && (
-        <button
-          type="button"
-          // rounded-md + the same accent-primary language as the detail-overlay
-          // tool buttons, and the same title wording as the other "Open" actions.
-          className="px-4 py-2 rounded-md bg-accent text-on-accent text-[13px] hover:opacity-90 transition-opacity"
+        <Button
+          // `primary` (the default) + lg reproduces the old accent fill and
+          // px-4 py-2 sizing; the primitive owns radius, hover and focus ring.
+          size="lg"
           onClick={openExternally}
           title="Open with the default app"
         >
           Open in default app
-        </button>
+        </Button>
       )}
     </div>
   );

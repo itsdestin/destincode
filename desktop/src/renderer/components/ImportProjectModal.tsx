@@ -5,6 +5,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
+import { Button } from './ui';
 
 interface Props {
   sourcePath: string;
@@ -113,7 +114,7 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
               {doneWarnings.map((w, i) => <li key={i}>{w}</li>)}
             </ul>
             <div className="mt-4 flex justify-end">
-              <button onClick={() => onDone(donePath!)} className="text-sm px-3 py-1 rounded bg-accent text-on-accent">Done</button>
+              <Button size="lg" className="py-1" onClick={() => onDone(donePath!)}>Done</Button>
             </div>
           </>
         ) : (
@@ -137,10 +138,10 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
             {error && <div role="alert" className="mt-2 text-xs text-red-500">{error}</div>}
             {syncOffNote}
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={onClose} disabled={busy} className="text-sm px-3 py-1 rounded text-fg-dim hover:text-fg hover:bg-inset transition-colors">Cancel</button>
-              <button onClick={() => void confirm()} disabled={busy || !name.trim()} className="text-sm px-3 py-1 rounded bg-accent text-on-accent disabled:opacity-50">
+              <Button variant="ghost" size="lg" className="py-1" onClick={onClose} disabled={busy}>Cancel</Button>
+              <Button size="lg" className="py-1" onClick={() => void confirm()} disabled={busy || !name.trim()}>
                 {busy ? 'Moving…' : 'Move and sync'}
-              </button>
+              </Button>
             </div>
           </>
         )}

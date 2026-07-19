@@ -29,7 +29,8 @@ interface ProjectSwitcherProps {
 
 // Shared glyphs — see ./icons.tsx. (The check is the active-project indicator,
 // NOT a status glyph.)
-import { SearchIcon, CheckIcon, PlusIcon, CloseIcon } from './icons';
+import { SearchIcon, CheckIcon, PlusIcon } from './icons';
+import { CloseButton } from '../ui';
 
 export function ProjectSwitcher({
   projects,
@@ -234,15 +235,14 @@ export function ProjectSwitcher({
                     removing a folder that's managed by sync is a deferred
                     move-out flow, not a simple un-list. */}
                 {onDeleteProject && !findSpaceFor(p.path, syncStatus ?? null) && (
-                  <button
-                    type="button"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-well"
+                  <CloseButton
+                    // w-6 h-6 survives as a className override: this is a hover-revealed
+                    // affordance sized to the row, not a panel-header closer.
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md"
                     title={`Remove ${p.name} from YouCoded`}
-                    aria-label={`Remove ${p.name} from YouCoded`}
+                    label={`Remove ${p.name} from YouCoded`}
                     onClick={(e) => { e.stopPropagation(); onDeleteProject(p); }}
-                  >
-                    <CloseIcon size={14} />
-                  </button>
+                  />
                 )}
               </div>
             );

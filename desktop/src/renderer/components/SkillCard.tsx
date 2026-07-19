@@ -1,6 +1,7 @@
 import React from 'react';
 import type { SkillEntry } from '../../shared/types';
 import { useMarketplaceStats } from '../state/marketplace-stats-context';
+import { Button } from './ui';
 import StarRating from './marketplace/StarRating';
 import FavoriteStar from './marketplace/FavoriteStar';
 
@@ -172,12 +173,13 @@ function SkillCardImpl({
             Installing...
           </div>
         ) : onInstall ? (
-          <button
+          <Button
+            size="sm"
             onClick={(e) => { e.stopPropagation(); onInstall(skill); }}
-            className="w-full bg-accent text-on-accent text-[11px] font-medium py-1 mt-2 rounded-sm hover:brightness-110 transition-colors"
+            className="w-full mt-2"
           >
             Get
-          </button>
+          </Button>
         ) : null}
       </div>
     );

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useArtifactOptional } from '../state/ArtifactContext';
+import { Button } from './ui';
 import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
@@ -371,18 +372,26 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
         <div className="flex items-center gap-2">
           {/* "Allow once" IS the plain-allow decision, so it wears the same green
               as Yes. Previously this slot was Cancel, which dead-ended back on the
-              button row and still left the user owing an answer. */}
+              button row and still left the user owing an answer.
+
+              These permission buttons deliberately do NOT go through ui/Button
+              (spec §11, change 61). Their green/red/blue are STATUS colors, not
+              theme surfaces — desktop/CLAUDE.md keeps those hardcoded — and
+              Destin explicitly kept the red on "Always allow" even though red
+              means "No" one row down: muscle memory on the app's most-clicked
+              control beats colour-semantics tidiness. Only the radius normalizes
+              to the app's one control radius (was rounded-sm). */}
           <button
             disabled={responding}
             onClick={() => handleRespond({ decision: { behavior: 'allow' } })}
-            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50`}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50`}
           >
             Nevermind, allow once
           </button>
           <button
             disabled={responding}
             onClick={() => handleRespond(alwaysAllowDecision())}
-            className={`px-3 ${pad} text-xs font-medium rounded-sm bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50`}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50`}
           >
             Always allow
           </button>
@@ -392,12 +401,18 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
   }
 
   return (
+    // Same §11/change-61 carve-out as the confirm row above: status colors stay,
+    // radius normalizes. The `ring` here is NOT a focus ring — it tracks focusIdx,
+    // the Arrow Left/Right roving selection. Arrow keys also move real DOM focus
+    // (buttonsRef[next].focus()), so adding ui/Button's focus-visible ring would
+    // paint an accent ring on top of this one on the selected button. Left alone
+    // on purpose; don't "finish the migration" by adding FOCUS_RING here.
     <div className="flex items-center gap-2 px-3 py-2 border-t border-edge bg-inset/30">
       <button
         ref={el => { buttonsRef.current[0] = el; }}
         disabled={responding}
         onClick={() => handleRespond({ decision: { behavior: 'allow' } })}
-        className={`px-3 ${pad} text-xs font-medium rounded-sm bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50 ${focusIdx === 0 ? ring : ''}`}
+        className={`px-3 ${pad} text-xs font-medium rounded-lg bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50 ${focusIdx === 0 ? ring : ''}`}
       >
         Yes
       </button>
@@ -406,7 +421,7 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
           ref={el => { buttonsRef.current[1] = el; }}
           disabled={responding}
           onClick={onAlwaysAllow}
-          className={`px-3 ${pad} text-xs font-medium rounded-sm bg-blue-600/60 hover:bg-blue-600/80 text-blue-100 transition-colors disabled:opacity-50 ${focusIdx === 1 ? ring : ''}`}
+          className={`px-3 ${pad} text-xs font-medium rounded-lg bg-blue-600/60 hover:bg-blue-600/80 text-blue-100 transition-colors disabled:opacity-50 ${focusIdx === 1 ? ring : ''}`}
         >
           Always Allow
         </button>
@@ -415,7 +430,7 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
         ref={el => { buttonsRef.current[canAlwaysAllow ? 2 : 1] = el; }}
         disabled={responding}
         onClick={() => handleRespond({ decision: { behavior: 'deny' } })}
-        className={`px-3 ${pad} text-xs font-medium rounded-sm bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50 ${focusIdx === (canAlwaysAllow ? 2 : 1) ? ring : ''}`}
+        className={`px-3 ${pad} text-xs font-medium rounded-lg bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50 ${focusIdx === (canAlwaysAllow ? 2 : 1) ? ring : ''}`}
       >
         No
       </button>
@@ -659,23 +674,29 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
           </div>
         </div>
       ))}
-      {/* Submit + Deny buttons */}
+      {/* Submit + Deny buttons.
+
+          Unlike the permission triad above (which keeps its status colors), this
+          pair DOES go through ui/Button — Destin's call, spec §11.8 B. Two things
+          the migration deliberately drops:
+            - Submit hand-rolled its own disabled look (bg-inset/50 + bg-accent/70)
+              on top of a real `disabled` prop. The primitive's disabled:opacity-50
+              replaces that branch, and the enabled state goes to full accent.
+            - Dismiss had a grey→red hover as a bespoke "this rejects" signal.
+              Dismissing a question isn't destructive — nothing is lost, Claude
+              just doesn't get an answer — so it reads as `ghost`, and position
+              plus label already carry "this is the negative option". */}
       <div className="flex items-center gap-2 pt-1">
-        <button
+        <Button
           disabled={!allAnswered || responding}
           onClick={handleSubmit}
-          className={`px-3 ${pad} text-xs font-medium rounded-sm transition-colors disabled:opacity-40
-            ${allAnswered ? 'bg-accent/70 hover:bg-accent/90 text-on-accent' : 'bg-inset/50 text-fg-muted'}`}
+          className={pad}
         >
           Submit
-        </button>
-        <button
-          disabled={responding}
-          onClick={handleDeny}
-          className={`px-3 ${pad} text-xs font-medium rounded-sm bg-inset/40 hover:bg-red-600/40 text-fg-muted hover:text-red-200 transition-colors disabled:opacity-50`}
-        >
+        </Button>
+        <Button variant="ghost" disabled={responding} onClick={handleDeny} className={pad}>
           Dismiss
-        </button>
+        </Button>
       </div>
     </div>
   );

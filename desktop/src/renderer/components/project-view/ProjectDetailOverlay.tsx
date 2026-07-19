@@ -10,7 +10,7 @@
 import React from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
-import { CloseIcon } from './icons';
+import { CloseButton } from '../ui';
 
 interface ProjectDetailOverlayProps {
   title: React.ReactNode;
@@ -45,15 +45,7 @@ export function ProjectDetailOverlay({ title, onClose, tools, meta, children }: 
           <span className="text-[15px] font-semibold text-fg truncate min-w-0">{title}</span>
           <div className="flex items-center gap-1.5 shrink-0">
             {tools}
-            <button
-              type="button"
-              className="ml-1 text-fg-dim hover:text-fg w-7 h-7 inline-flex items-center justify-center shrink-0"
-              onClick={onClose}
-              title="Close"
-              aria-label="Close"
-            >
-              <CloseIcon size={17} />
-            </button>
+            <CloseButton className="ml-1 shrink-0" onClick={onClose} title="Close" />
           </div>
         </header>
 

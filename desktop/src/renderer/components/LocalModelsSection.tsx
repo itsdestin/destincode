@@ -384,13 +384,11 @@ function RepoCard({
             )}
           </div>
         </button>
+        {/* Inline row action -> sm, matching EngineCard's Install/Restart. */}
         {chosen && !dl && (
-          <button
-            onClick={() => void startDefault()}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
-          >
+          <Button size="sm" onClick={() => void startDefault()} className="shrink-0">
             Download
-          </button>
+          </Button>
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
@@ -572,20 +570,15 @@ function PartialRow({
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={() => void resume()}
-            disabled={busy}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60"
-          >
+          <Button variant="secondary" size="sm" onClick={() => void resume()} disabled={busy}>
             Resume
-          </button>
-          <button
-            onClick={() => void discard()}
-            disabled={busy}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-red-500/40 text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-60"
-          >
+          </Button>
+          {/* Discard deletes the partial file on disk -> danger-outline. The
+              hand-rolled red-500/40 border becomes the --destructive token, so
+              community packs can restyle it (identical #DD4444 today). */}
+          <Button variant="danger-outline" size="sm" onClick={() => void discard()} disabled={busy}>
             Discard
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -620,12 +613,9 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
           </p>
         </div>
         {!dl && (
-          <button
-            onClick={() => void startDownload()}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
-          >
+          <Button size="sm" onClick={() => void startDownload()} className="shrink-0">
             Download
-          </button>
+          </Button>
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
@@ -676,13 +666,15 @@ function OtherLocalApps() {
     <div className="rounded-lg border border-edge-dim bg-well px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-fg font-medium">Other local apps</p>
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => void detect()}
           disabled={detecting}
-          className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 shrink-0"
+          className="shrink-0"
         >
           {detecting ? 'Detecting…' : 'Detect'}
-        </button>
+        </Button>
       </div>
 
       {hits !== null && (
@@ -708,12 +700,9 @@ function OtherLocalApps() {
                       )}
                     </div>
                     {!isAdded && (
-                      <button
-                        onClick={() => void addEndpoint(hit)}
-                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all shrink-0"
-                      >
+                      <Button size="sm" onClick={() => void addEndpoint(hit)} className="shrink-0">
                         Add as endpoint
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </div>

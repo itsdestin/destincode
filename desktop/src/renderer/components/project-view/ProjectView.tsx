@@ -59,6 +59,7 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // its own copies of the same paths). GridIcon is the one glyph unique to this
 // file — the Artifacts segment icon.
 import { InfoIcon, ChatIcon, FolderIcon, DocIcon, SearchIcon } from './icons';
+import { Button } from '../ui';
 
 function GridIcon({ size = 15 }: { size?: number }) {
   return (
@@ -528,16 +529,16 @@ export function ProjectView(props: ProjectViewProps) {
       <header className="flex items-center gap-3 px-4 py-2.5 border-b border-edge shrink-0">
         <h2 className="text-base font-semibold text-fg shrink-0">Projects</h2>
         <div className="flex-1" />
-        <button
-          type="button"
-          className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-fg-muted hover:text-fg hover:bg-inset transition-colors shrink-0"
+        <Button
+          variant="ghost"
+          className="shrink-0"
           onClick={() => dispatch({ type: 'PROJECT_VIEW_CLOSED' })}
           title="Close Projects"
           aria-label="Close Projects"
         >
           <span className="text-[10px] tracking-wider uppercase">Esc</span>
           <span>Close</span>
-        </button>
+        </Button>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
@@ -697,15 +698,18 @@ export function ProjectView(props: ProjectViewProps) {
                       />
                     )}
                   </div>
+                  {/* Was a pill (rounded-full). Spec decision 65 keeps pills only
+                      for floating overlay affordances — this sits in a toolbar row,
+                      so it takes the app's standard button radius. */}
                   {tab === 'artifacts' && (
-                    <button
-                      type="button"
-                      className="px-3 py-1.5 rounded-full text-[12.5px] bg-inset text-fg-2 border border-edge hover:text-fg hover:border-edge-dim transition-colors shrink-0"
+                    <Button
+                      variant="secondary"
+                      className="shrink-0"
                       onClick={addExternal}
                       title="Add an external file to this project"
                     >
                       + Add file
-                    </button>
+                    </Button>
                   )}
                 </div>
               )}
@@ -811,20 +815,19 @@ export function ProjectView(props: ProjectViewProps) {
               Also delete <code className="font-mono text-xs bg-inset px-1 rounded">.youcoded/artifacts.json</code> (artifact history)
             </label>
             <div className="flex gap-2 justify-end">
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-md border border-edge hover:bg-inset text-sm transition-colors"
+              <Button
+                variant="secondary"
+                size="lg"
                 onClick={() => { setDeletingProject(null); setAlsoDeleteSidecar(false); }}
               >
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700 text-sm transition-colors"
-                onClick={confirmDelete}
-              >
+              </Button>
+              {/* Was a raw Tailwind bg-red-600. Spec decision 59: that stock red
+                  isn't the app's destructive colour and doesn't follow themes —
+                  the `danger` variant uses the theme's own destructive token. */}
+              <Button variant="danger" size="lg" onClick={confirmDelete}>
                 Remove
-              </button>
+              </Button>
             </div>
           </OverlayPanel>
         </>

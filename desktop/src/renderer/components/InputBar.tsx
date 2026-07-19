@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useIm
 import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
+import { Button } from './ui';
 import { AttachIcon, CompassIcon } from './Icons';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
@@ -526,12 +527,20 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                   </span>
                 </div>
               )}
-              <button
+              {/* In-chip remover, NOT a panel closer — CloseButton's 28px would be
+                  nearly as tall as the chip it sits on. Destin's call (spec §11.8 F):
+                  keep the 16px geometry, take the accessible name and focus ring.
+                  Still owed a `.coarse-hit` pass: 16px is well under the ~44dp touch
+                  guideline and this renderer is the Android UI too. */}
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${att.name ?? 'attachment'}`}
                 onClick={() => removeAttachment(att.path)}
-                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-inset text-fg-2 hover:bg-edge flex items-center justify-center text-[10px] leading-none opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-inset text-fg-2 hover:bg-edge text-[10px] leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
               >
                 ×
-              </button>
+              </Button>
             </div>
           ))}
         </div>
@@ -652,15 +661,26 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             className="input-bar-textarea scroll-fade relative block w-full bg-transparent text-sm text-transparent placeholder-fg-muted outline-none disabled:opacity-50 resize-none leading-snug p-0 m-0 align-middle break-words"
           />
           </div>
-          <button
+          {/* The app's most-used control. Geometry is unchanged — 28x28 is exactly
+              what size="icon" emits — and it keeps `bg-accent`, which matters:
+              community packs style the send button through `.bg-accent` (Halftone's
+              custom_css glow), so a variant without that class would silently drop
+              their glow. What changes: a real hover (hover:brightness-110 is
+              imperceptible on Light/Creme's near-black accent) and a focus ring.
+              disabled:opacity-30 is kept deliberately — it is dimmer than the
+              primitive's 50%, because an un-sendable composer should read as clearly
+              inert rather than merely faded. */}
+          <Button
             type="submit"
+            size="icon"
+            aria-label="Send message"
             disabled={disabled || (!minimal && !text.trim() && attachments.length === 0)}
-            className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-accent hover:brightness-110 disabled:opacity-30 transition-colors"
+            className="shrink-0 disabled:opacity-30"
           >
             <svg className="w-4 h-4 text-on-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" />
             </svg>
-          </button>
+          </Button>
         </form>
       </div>
     </div>

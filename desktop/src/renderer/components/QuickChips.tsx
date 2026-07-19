@@ -4,6 +4,7 @@ import { isAndroid } from '../platform';
 import { useSkills } from '../state/skill-context';
 import type { ChipConfig } from '../../shared/types';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Button, CloseButton } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 
@@ -274,14 +275,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
             never clips it. Matches PreferencesPopup/StatusBar pattern. */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-edge">
           <h2 className="text-sm font-bold text-fg">Edit Quick Chips</h2>
-          <button
-            onClick={onClose}
-            className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <CloseButton onClick={onClose} label="Close quick chips editor" />
         </div>
 
         <div ref={bodyRef} className="scroll-fade">
@@ -317,6 +311,12 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                       <button
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={() => { if (!suppressClick.current) remove(i); }}
+                        // Deliberately NOT a ui/Button. Unlike InputBar's attachment ✕
+                        // (which is a 16px badge and did migrate), this is a bare glyph
+                        // with no background, radius or padding — routing it through the
+                        // primitive would ADD chrome it has never had. It sits below
+                        // spec §11.1's "real button chrome" bar. `title` already gives it
+                        // an accessible name.
                         className="shrink-0 px-1 text-fg-muted hover:text-red-400"
                         title="Remove chip"
                       >
@@ -356,13 +356,13 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                     className="w-full px-2 py-1 text-[11px] bg-well border border-edge-dim rounded-md text-fg placeholder:text-fg-faint focus:outline-none focus:border-accent resize-none"
                   />
                   <div className="flex gap-2">
-                    <button
+                    <Button
+                      size="sm"
                       onClick={addCustom}
                       disabled={!customLabel.trim() || !customPrompt.trim()}
-                      className="px-2 py-1 text-[10px] bg-accent text-on-accent rounded-md disabled:opacity-40"
                     >
                       Add Custom
-                    </button>
+                    </Button>
                     <button onClick={() => setShowAddForm(false)} className="px-2 py-1 text-[10px] text-fg-muted hover:text-fg">Cancel</button>
                   </div>
                 </div>

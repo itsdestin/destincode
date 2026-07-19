@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Button } from './ui';
 import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
@@ -164,12 +165,9 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
                   ? `Couldn't load providers — ${listError}`
                   : `Couldn't refresh — ${listError}`}
               </p>
-              <button
-                onClick={() => void refresh()}
-                className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors shrink-0"
-              >
+              <Button variant="secondary" size="sm" onClick={() => void refresh()} className="shrink-0">
                 Retry
-              </button>
+              </Button>
             </div>
           )}
 
@@ -180,12 +178,9 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
           {adding ? (
             <AddProviderForm onDone={async () => { setAdding(false); await refresh(); }} onCancel={() => setAdding(false)} />
           ) : (
-            <button
-              onClick={() => setAdding(true)}
-              className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-            >
+            <Button variant="secondary" onClick={() => setAdding(true)} className="w-full py-2.5">
               Add provider
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -296,29 +291,22 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       {!isLocal && (
         <div className="flex items-center gap-1.5 mt-2 flex-wrap">
           {!keyOpen && (
-            <button
-              onClick={() => { setKeyOpen(true); setNote(null); }}
-              className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-            >
+            <Button variant="secondary" size="sm" onClick={() => { setKeyOpen(true); setNote(null); }}>
               {provider.hasKey ? 'Replace key' : 'Add key'}
-            </button>
+            </Button>
           )}
-          <button
-            onClick={() => void runTest()}
-            disabled={busy}
-            className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60"
-          >
+          <Button variant="secondary" size="sm" onClick={() => void runTest()} disabled={busy}>
             {busy ? 'Testing…' : 'Test'}
-          </button>
+          </Button>
           {/* Remove — non-builtIn rows only (local/openrouter are builtIn and
-              cannot be removed). Consequence-gated inline confirm. */}
+              cannot be removed). Consequence-gated inline confirm.
+              danger-outline per spec change 68: "Remove" reads the same everywhere,
+              because removing a provider deletes a key the user pasted in. Was a
+              hand-rolled border-red-500/40 + text-red-500. */}
           {!provider.builtIn && !confirmingRemove && (
-            <button
-              onClick={() => { setConfirmingRemove(true); setNote(null); }}
-              className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-red-500/40 text-red-500 hover:bg-red-500/10 transition-colors"
-            >
+            <Button variant="danger-outline" size="sm" onClick={() => { setConfirmingRemove(true); setNote(null); }}>
               Remove
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -336,19 +324,12 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
             aria-label={`${provider.label} API key`}
             className="flex-1 text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
           />
-          <button
-            onClick={() => void saveKey()}
-            disabled={busy || keyDraft.trim().length === 0}
-            className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-          >
+          <Button onClick={() => void saveKey()} disabled={busy || keyDraft.trim().length === 0} className="py-2">
             {busy ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            onClick={() => { setKeyOpen(false); setKeyDraft(''); }}
-            className="text-xs font-medium px-3 py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-          >
+          </Button>
+          <Button variant="secondary" onClick={() => { setKeyOpen(false); setKeyDraft(''); }} className="py-2">
             Cancel
-          </button>
+          </Button>
         </div>
       )}
 
@@ -359,19 +340,15 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
             Remove {provider.label}? Its API key is deleted from this computer.
           </p>
           <div className="flex gap-2">
-            <button
-              onClick={() => setConfirmingRemove(false)}
-              className="flex-1 text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-            >
+            <Button variant="secondary" onClick={() => setConfirmingRemove(false)} className="flex-1 py-2">
               Cancel
-            </button>
-            <button
-              onClick={() => void confirmRemove()}
-              disabled={busy}
-              className="flex-1 text-xs font-medium py-2 rounded-lg bg-red-500 text-white hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
+            </Button>
+            {/* Filled danger for the committing action (the confirm), outline for the
+                one that opens it — spec change 59. Was bg-red-500 + text-white; the
+                token pair carries an engine-derived label color instead. */}
+            <Button variant="danger" onClick={() => void confirmRemove()} disabled={busy} className="flex-1 py-2">
               {busy ? 'Removing…' : 'Remove'}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -495,19 +472,12 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
       {error && <p className="text-[10px] text-red-500">{error}</p>}
 
       <div className="flex gap-2 pt-1">
-        <button
-          onClick={onCancel}
-          className="flex-1 text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-        >
+        <Button variant="secondary" onClick={onCancel} className="flex-1 py-2">
           Cancel
-        </button>
-        <button
-          onClick={() => void submit()}
-          disabled={busy}
-          className="flex-1 text-xs font-medium py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-        >
+        </Button>
+        <Button onClick={() => void submit()} disabled={busy} className="flex-1 py-2">
           {busy ? 'Adding…' : 'Add provider'}
-        </button>
+        </Button>
       </div>
     </div>
   );

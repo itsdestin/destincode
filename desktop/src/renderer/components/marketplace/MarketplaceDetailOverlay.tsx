@@ -18,7 +18,7 @@ import RatingSubmitModal from "./RatingSubmitModal";
 import ReviewList from "./ReviewList";
 import LikeButton from "./LikeButton";
 import FileViewerOverlay, { type FileViewerTarget } from "./FileViewerOverlay";
-import { Button } from "../ui";
+import { Button, CloseButton } from "../ui";
 
 export type DetailTarget =
   | { kind: "skill"; id: string }
@@ -124,17 +124,12 @@ export default function MarketplaceDetailOverlay({
           >
             Esc · Close
           </button>
-          <button
-            type="button"
+          {/* panel-glass + the border survive as className overrides: this narrow-only
+              closer is deliberately a bordered container matching the marketplace top bar. */}
+          <CloseButton
             onClick={onClose}
-            className="sm:hidden panel-glass bg-inset p-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-dim hover:text-fg"
-            aria-label="Close"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+            className="sm:hidden panel-glass bg-inset rounded-md border border-edge-dim hover:border-edge"
+          />
         </header>
         <div className="flex-1 overflow-y-auto p-3 sm:p-6">{content}</div>
       </OverlayPanel>

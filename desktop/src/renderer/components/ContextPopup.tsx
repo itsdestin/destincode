@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Button, CloseButton } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 
@@ -124,13 +125,7 @@ export default function ContextPopup({
               <div className="flex items-center gap-1">
                 {/* (i) button — opens the explainer view explaining what context percentage means */}
                 <InfoIconButton onClick={() => setShowInfo(true)} />
-                <button
-                  onClick={onClose}
-                  aria-label="Close"
-                  className="text-fg-muted hover:text-fg leading-none w-6 h-6 flex items-center justify-center rounded-sm hover:bg-inset"
-                >
-                  ✕
-                </button>
+                <CloseButton onClick={onClose} label="Close context panel" />
               </div>
             </div>
 
@@ -168,17 +163,20 @@ export default function ContextPopup({
                     autoFocus
                   />
                   <div className="flex gap-2">
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="lg"
                       onClick={() => {
                         // Back resets draft so it doesn't leak if the user cancels then reopens.
                         setCustomizing(false);
                         setInstructions('');
                       }}
-                      className="flex-1 py-2 px-3 text-sm rounded-sm border border-edge bg-panel text-fg-2 hover:bg-inset transition-colors"
+                      className="flex-1"
                     >
                       Back
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      size="lg"
                       onClick={() => {
                         const trimmed = instructions.trim();
                         if (!trimmed || !sessionId) return;
@@ -186,24 +184,33 @@ export default function ContextPopup({
                         onClose();
                       }}
                       disabled={!sessionId || instructions.trim().length === 0}
-                      className="flex-1 py-2 px-3 text-sm font-medium rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="flex-1"
                     >
                       Compact with instructions
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
                 <>
                   {/* Split-button: main = /compact, chevron = open inline editor. */}
                   <div>
-                    <div className="flex w-full rounded-sm overflow-hidden border border-accent">
+                    {/* SPLIT BUTTON — a documented exception to "every button is a
+                        <Button>" (spec §11.8 C, Destin's call). The two halves share
+                        one clipped wrapper so the chevron reads as "options for THAT
+                        action"; giving either half its own rounded-lg corner would put
+                        a rounded edge inside the clip and break the seam. Kept
+                        hand-rolled, but adopting the app's radius and the real
+                        background-fade hover (was hover:opacity-90, which fades the
+                        label too — spec change 53). Don't "finish" this by splitting
+                        it into two Buttons; that was considered and rejected. */}
+                    <div className="flex w-full rounded-lg overflow-hidden border border-accent">
                       <button
                         onClick={() => {
                           onDispatch('/compact');
                           onClose();
                         }}
                         disabled={!sessionId}
-                        className="flex-1 py-2 px-3 text-sm font-medium bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex-1 py-2 px-3 text-sm font-medium bg-accent text-on-accent hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Compact conversation
                       </button>
@@ -211,7 +218,7 @@ export default function ContextPopup({
                         onClick={() => setCustomizing(true)}
                         disabled={!sessionId}
                         aria-label="Customize compact instructions"
-                        className="px-2 bg-accent text-on-accent border-l border-on-accent/30 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                        className="px-2 bg-accent text-on-accent border-l border-on-accent/30 hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
@@ -220,18 +227,25 @@ export default function ContextPopup({
                     </div>
                   </div>
 
-                  {/* Clear secondary action. */}
+                  {/* Clear secondary action.
+                      danger-outline per spec change 73: /clear throws the whole
+                      conversation away with no summary kept, but it used to look
+                      like a plain neutral button sitting right under the harmless
+                      Compact. The red outline is a deliberate escalation so the
+                      consequence is visible before the click, not after. */}
                   <div>
-                    <button
+                    <Button
+                      variant="danger-outline"
+                      size="lg"
                       onClick={() => {
                         onDispatch('/clear');
                         onClose();
                       }}
                       disabled={!sessionId}
-                      className="w-full py-2 px-3 text-sm rounded-sm border border-edge bg-panel text-fg-2 hover:bg-inset transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full"
                     >
                       Clear and start over
-                    </button>
+                    </Button>
                     <p className="text-[11px] text-fg-muted mt-1 leading-snug">
                       Erases the visible timeline and resets Claude's memory for this session. No summary is kept.
                     </p>

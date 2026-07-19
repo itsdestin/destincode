@@ -424,25 +424,24 @@ function SoundCategorySection({ category, label, description, dotColor }: {
           />
           {/* Custom sound controls */}
           <div className="flex items-center gap-2 mt-2">
-            <button
-              onClick={handlePickCustom}
-              className="px-2 py-1 rounded text-[10px] bg-inset text-fg-dim hover:bg-edge transition-colors flex items-center gap-1"
-            >
+            <Button variant="secondary" size="sm" onClick={handlePickCustom}>
               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="17 8 12 3 7 8" />
                 <line x1="12" y1="3" x2="12" y2="15" />
               </svg>
               {customName ? 'Change file' : 'Custom sound'}
-            </button>
+            </Button>
+            {/* ghost, not danger-outline: this only clears a sound preference. */}
             {customName && (
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={handleClearCustom}
-                className="px-2 py-1 rounded text-[10px] text-fg-muted hover:text-fg hover:bg-edge transition-colors"
                 title="Remove custom sound"
               >
                 Remove
-              </button>
+              </Button>
             )}
           </div>
         </>
@@ -1026,13 +1025,15 @@ function RemoteButton({
                             onKeyDown={(e) => e.key === 'Enter' && onSetPassword()}
                             className="flex-1 px-2 py-1 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
                           />
-                          <button
+                          {/* sm keeps this level with the text input it sits beside. */}
+                          <Button
+                            variant="secondary"
+                            size="sm"
                             onClick={onSetPassword}
                             disabled={!newPassword.trim() || passwordStatus === 'saving'}
-                            className="px-2 py-1 rounded-sm bg-inset hover:bg-edge text-xs disabled:opacity-50"
                           >
                             {passwordStatus === 'saved' ? '✓' : passwordStatus === 'saving' ? '...' : 'Set'}
-                          </button>
+                          </Button>
                         </div>
                       </div>
 
@@ -1058,17 +1059,22 @@ function RemoteButton({
                       </div>
                     </section>
 
-                    {/* Add Device — requires Tailscale running, otherwise tailscale.url is null */}
+                    {/* Add Device — requires Tailscale running, otherwise tailscale.url is null.
+                        Was a soft-blue tinted outline (bg-blue-500/10 + text-blue-400) that matched
+                        no variant. Destin's call (spec §11.8 A): plain `secondary`. Unlike the
+                        orange billing button, nothing here is a warning — the blue was decorative,
+                        not signal. */}
                     {tailscale?.installed && tailscale?.connected && tailscale?.url && config?.hasPassword && (
-                      <button
+                      <Button
                         onClick={() => onSetShowAddDevice(!showAddDevice)}
-                        className="w-full px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/25 text-xs text-blue-400 font-medium hover:bg-blue-500/20 transition-colors flex items-center justify-center gap-1.5"
+                        variant="secondary"
+                        className="w-full py-2"
                       >
                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
                         </svg>
                         Add Device
-                      </button>
+                      </Button>
                     )}
 
                     {/* Remote Clients section */}
@@ -1118,12 +1124,9 @@ function RemoteButton({
                           <QRCodeSVG value={tailscale.url} size={140} />
                         </div>
                         <p className="text-[10px] text-fg-muted mt-2 text-center font-mono">{tailscale.url}</p>
-                        <button
-                          onClick={onCopyLink}
-                          className="w-full mt-2 px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs"
-                        >
+                        <Button variant="secondary" onClick={onCopyLink} className="w-full mt-2">
                           {copied ? 'Copied!' : 'Copy Link'}
-                        </button>
+                        </Button>
                       </section>
                     )}
 
@@ -1161,13 +1164,13 @@ function RemoteButton({
                           <p className="text-xs text-fg-muted mb-2">
                             Tailscale is not installed. It creates a secure private network so you can access YouCoded from anywhere.
                           </p>
-                          <button
+                          <Button
+                            variant="secondary"
                             onClick={onRunSetup}
                             disabled={setupStatus === 'installing' || setupStatus === 'authenticating'}
-                            className="px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs disabled:opacity-50"
                           >
                             {setupStatus === 'installing' ? 'Installing...' : setupStatus === 'authenticating' ? 'Authenticating...' : 'Install Tailscale'}
-                          </button>
+                          </Button>
                         </div>
                       )}
                     </section>
@@ -1337,18 +1340,19 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                     These protections exist for a reason. Disabling them means a single bad model output could corrupt your repository, hijack your shell environment, or escalate access beyond this project. There is no undo.
                   </p>
                   <div className="flex gap-2 pt-2">
-                    <button
-                      onClick={() => setConfirmOpen(false)}
-                      className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-inset hover:bg-edge text-fg-muted transition-colors"
-                    >
+                    <Button variant="secondary" onClick={() => setConfirmOpen(false)} className="flex-1">
                       Cancel
-                    </button>
-                    <button
+                    </Button>
+                    {/* Change 59: was stock bg-red-600/70 + text-white — a second
+                        red beside the app's #DD4444, and white-on-pale on packs
+                        that soften --destructive. Filled danger commits. */}
+                    <Button
+                      variant="danger"
                       onClick={() => { updateOverride('approveAll', true); setConfirmOpen(false); }}
-                      className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-red-600/70 hover:bg-red-600/90 text-white transition-colors"
+                      className="flex-1"
                     >
                       I understand, enable anyway
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </OverlayPanel>
@@ -1808,13 +1812,14 @@ function ConnectToDesktopButton() {
                       Connected to {connectedDeviceName || 'Desktop'}
                     </span>
                   </div>
-                  <button
+                  <Button
+                    variant="secondary"
                     onClick={handleDisconnect}
                     disabled={connecting}
-                    className="w-full px-3 py-1.5 rounded-sm bg-inset hover:bg-edge text-xs text-fg-2 disabled:opacity-50"
+                    className="w-full"
                   >
                     {connecting ? 'Disconnecting...' : 'Disconnect — Return to Local'}
-                  </button>
+                  </Button>
                 </div>
               )}
 
@@ -2095,21 +2100,22 @@ function AndroidSettings({ open, onClose, onSendInput, onOpenThemeMarketplace, o
               </div>
               <p className="text-[11px] text-fg-dim mb-5">Okay to open donation link?</p>
               <div className="flex gap-2">
-                <button
-                  onClick={() => setShowDonateConfirm(false)}
-                  className="flex-1 text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-                >
+                {/* py-2.5 kept as a deliberate override: this two-button footer is
+                    the whole modal, so md's py-1.5 reads too slight here. */}
+                <Button variant="secondary" onClick={() => setShowDonateConfirm(false)} className="flex-1 py-2.5">
                   Cancel
-                </button>
-                <button
+                </Button>
+                {/* Change 52: hover:brightness-110 was invisible on Light/Creme's
+                    near-black accent and blew out the glow packs. */}
+                <Button
                   onClick={() => {
                     window.open('https://buymeacoffee.com/itsdestin', '_blank');
                     setShowDonateConfirm(false);
                   }}
-                  className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all"
+                  className="flex-1 py-2.5"
                 >
                   Open
-                </button>
+                </Button>
               </div>
             </div>
           </div>,
@@ -2426,21 +2432,22 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
               </div>
               <p className="text-[11px] text-fg-dim mb-5">Okay to open donation link?</p>
               <div className="flex gap-2">
-                <button
-                  onClick={() => setShowDonateConfirm(false)}
-                  className="flex-1 text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-                >
+                {/* py-2.5 kept as a deliberate override: this two-button footer is
+                    the whole modal, so md's py-1.5 reads too slight here. */}
+                <Button variant="secondary" onClick={() => setShowDonateConfirm(false)} className="flex-1 py-2.5">
                   Cancel
-                </button>
-                <button
+                </Button>
+                {/* Change 52: hover:brightness-110 was invisible on Light/Creme's
+                    near-black accent and blew out the glow packs. */}
+                <Button
                   onClick={() => {
                     window.open('https://buymeacoffee.com/itsdestin', '_blank');
                     setShowDonateConfirm(false);
                   }}
-                  className="flex-1 text-xs font-medium py-2.5 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all"
+                  className="flex-1 py-2.5"
                 >
                   Open
-                </button>
+                </Button>
               </div>
             </div>
           </div>,

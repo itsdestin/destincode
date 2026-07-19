@@ -9,6 +9,7 @@ import type { UpdateLaunchResult } from '../../shared/update-install-types';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import MarkdownContent from './MarkdownContent';
+import { Button, CloseButton } from './ui';
 
 // Error codes where a fresh download might succeed (transient or file-level).
 // The complement (dmg-corrupt, appimage-not-writable, unsupported-platform,
@@ -259,12 +260,13 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
           <h1 id="update-panel-title" className="text-base font-medium">
             {updateStatus.update_available ? 'Update available' : "What's new"}
           </h1>
-          <button onClick={onClose} aria-label="Close" className="text-fg-dim hover:text-fg">✕</button>
+          <CloseButton onClick={onClose} />
         </header>
         <div className="flex-1 overflow-y-auto px-5 py-4">{body}</div>
         {updateStatus.update_available && (
           <footer className="px-5 py-3 border-t border-edge-dim flex flex-col items-end">
-            <button
+            <Button
+              size="lg"
               onClick={handleUpdate}
               disabled={
                 installState.kind === 'downloading' ||
@@ -272,7 +274,6 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
                 // Disable "retry" for errors where a fresh download won't help.
                 (installState.kind === 'error' && !isRetriableErrorCode(installState.code))
               }
-              className="px-4 py-2 rounded-sm bg-accent text-on-accent font-medium hover:opacity-90 disabled:opacity-60"
             >
               {installState.kind === 'idle' && `Update Now: v${updateStatus.current} → v${updateStatus.latest}`}
               {installState.kind === 'downloading' && (
@@ -289,7 +290,7 @@ export default function UpdatePanel({ open, onClose, updateStatus }: Props) {
                   ? 'Download failed — Retry'
                   : 'Launch failed'
               )}
-            </button>
+            </Button>
             {installState.kind === 'error' && (
               <div className="text-xs text-fg-dim mt-2">
                 <button

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { SessionStatusColor } from './StatusDot';
+import { Button } from './ui';
 import { isAndroid, isRemoteMode } from '../platform';
 import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
@@ -1063,17 +1064,25 @@ export default function SessionStrip({
                   </button>
                 </div>
               )}
-              <button
+              {/* Skip-permissions sessions get the FILLED danger variant (spec §11,
+                  change 62 — Destin's call). Known and accepted consequence: this now
+                  looks identical to "Remove project". Filled red in this app means
+                  "stop and read this", not strictly "this destroys something"; the
+                  outline variant is the confirm-y tier. Don't downgrade this to
+                  danger-outline for consistency — that was considered and rejected.
+                  Was raw bg-[#DD4444]/[#E55555] + text-white; the token pair carries
+                  an engine-derived label color so a pale community red can't go
+                  white-on-pink. The non-dangerous branch also gains a real hover
+                  (it was hover:bg-accent over bg-accent — inert; change 75). */}
+              <Button
+                variant={dangerous ? 'danger' : 'primary'}
+                size="lg"
                 onClick={handleCreate}
                 disabled={nb.nativeCreateBlocked}
-                className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                  dangerous
-                    ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
-                    : 'bg-accent hover:bg-accent text-on-accent'
-                }`}
+                className="w-full py-1.5"
               >
                 {dangerous ? 'Create (Dangerous)' : 'Create Session'}
-              </button>
+              </Button>
             </div>
           ) : (
             <div className="flex rounded-b-lg overflow-hidden">

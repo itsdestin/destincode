@@ -5,6 +5,7 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
+import { Button } from "../ui";
 import MarketplaceCard from "../marketplace/MarketplaceCard";
 import WallpaperBackdrop from "../WallpaperBackdrop";
 import MarketplaceGrid from "../marketplace/MarketplaceGrid";
@@ -130,11 +131,16 @@ export default function LibraryScreen({
       <div className="flex items-center justify-between gap-2 p-3">
         <h1 className="text-xl font-semibold text-fg pl-2 truncate min-w-0">Your Library</h1>
         <div className="flex items-center gap-2 shrink-0">
+          {/* panel-glass and the tighter py-1 stay as className overrides (spec
+              decision 69) — glass re-tiers translucency on wallpaper themes, so a
+              naive migration would leave this chip opaque over the wallpaper. */}
           {onOpenMarketplace && (
-            <button
+            <Button
+              variant="secondary"
+              size="lg"
               type="button"
               onClick={onOpenMarketplace}
-              className="panel-glass bg-inset text-fg-2 hover:text-fg text-sm rounded-md border border-edge-dim hover:border-edge px-3 py-1 inline-flex items-center justify-center"
+              className="panel-glass py-1"
               aria-label="Open marketplace"
               title="Marketplace"
             >
@@ -147,7 +153,7 @@ export default function LibraryScreen({
                   <path d="M9 13h6" />
                 </svg>
               </span>
-            </button>
+            </Button>
           )}
           {/* Wide: Esc text. Narrow: bordered close-X — matches the marketplace top bar. */}
           <button

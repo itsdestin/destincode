@@ -9,6 +9,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
+import { Button } from '../ui';
 
 interface Props {
   open: boolean;
@@ -197,13 +198,13 @@ function DescribeScreen({ kind, setKind, description, setDescription, onContinue
         placeholder="What's happening? (Or what would you like to see?)"
         className="w-full h-32 p-2 text-xs bg-inset/50 border border-edge-dim rounded-lg resize-none focus:outline-none focus:border-accent"
       />
-      <button
+      <Button
         disabled={description.trim().length < 10 || busy}
         onClick={onContinue}
-        className="w-full mt-3 py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        className="w-full mt-3 py-2.5"
       >
         {busy ? 'Summarizing…' : 'Continue'}
-      </button>
+      </Button>
     </>
   );
 }
@@ -231,20 +232,23 @@ function ReviewScreen({ kind, summary, logTail, setLogTail, onEdit, onSubmit, on
         </details>
       )}
       <div className="flex flex-col gap-2">
-        <button
+        <Button
           disabled={busy}
           onClick={onSubmit}
-          className="w-full py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 disabled:opacity-40"
+          className="w-full py-2.5"
         >
           Submit as GitHub Issue
-        </button>
-        <button
+        </Button>
+        {/* secondary, not primary: "Let Claude try to fix it" burns a lot of Claude
+            usage (see the warning below it), so it stays the quieter of the two. */}
+        <Button
+          variant="secondary"
           disabled={busy}
           onClick={onLetClaudeTry}
-          className="w-full py-2.5 text-xs font-medium rounded-lg border border-edge-dim text-fg-2 hover:bg-inset disabled:opacity-40"
+          className="w-full py-2.5"
         >
           {ctaLabel}
-        </button>
+        </Button>
         <p className="text-[10px] text-amber-400/80 text-center">⚠ High Claude usage — not recommended for Pro plans</p>
         <button onClick={onEdit} className="text-[10px] text-fg-muted hover:text-fg underline">Edit description</button>
       </div>
@@ -270,12 +274,9 @@ function ResultScreen({ resultMessage, installLines, onDone }: any) {
           {installLines.map((l: string, i: number) => <div key={i}>{l}</div>)}
         </div>
       )}
-      <button
-        onClick={onDone}
-        className="w-full py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110"
-      >
+      <Button onClick={onDone} className="w-full py-2.5">
         Done
-      </button>
+      </Button>
     </>
   );
 }

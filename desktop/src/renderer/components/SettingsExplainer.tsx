@@ -12,6 +12,7 @@
 
 import React from 'react';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { CloseButton } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 
 export interface ExplainerBullet {
@@ -61,13 +62,7 @@ export default function SettingsExplainer({ title, intro, sections, onBack, onCl
           </svg>
         </button>
         <h2 className="text-sm font-bold text-fg">About {title}</h2>
-        <button
-          onClick={onClose}
-          className="text-fg-muted hover:text-fg-2 text-lg leading-none w-6 h-6 flex items-center justify-center"
-          aria-label="Close"
-        >
-          ✕
-        </button>
+        <CloseButton onClick={onClose} />
       </div>
 
       {/* Body — intro paragraph, then each section with its own heading.

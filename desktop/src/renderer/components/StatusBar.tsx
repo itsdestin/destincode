@@ -15,6 +15,7 @@ import ContextPopup from './ContextPopup';
 import OpenTasksChip from './OpenTasksChip';
 import { isAndroid } from '../platform';
 import { SessionTagsChip } from './tags/SessionTagsChip';
+import { CloseButton } from './ui';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -500,14 +501,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
             <h2 className="text-sm font-bold text-fg">Status Bar Widgets</h2>
-            <button
-              onClick={onClose}
-              className="text-fg-muted hover:text-fg-2 text-lg leading-none w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+            <CloseButton onClick={onClose} label="Close status bar widgets" />
           </div>
 
           {/* Widget list grouped by category — scrolls within the panel.

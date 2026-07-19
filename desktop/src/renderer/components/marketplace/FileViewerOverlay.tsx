@@ -9,6 +9,7 @@ import React, { useEffect, useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
 import MarkdownContent from "../MarkdownContent";
 import { useEscClose } from "../../hooks/use-esc-close";
+import { CloseButton } from "../ui";
 
 export type FileViewerTarget = {
   pluginId: string;
@@ -86,17 +87,13 @@ export default function FileViewerOverlay({ target, onClose }: Props) {
           >
             Esc · Close
           </button>
-          <button
-            type="button"
+          {/* The border survives as a className override: this narrow-only closer is
+              deliberately a bordered container matching the marketplace top bar. */}
+          <CloseButton
             onClick={onClose}
-            className="sm:hidden shrink-0 p-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-dim hover:text-fg"
-            aria-label="Close file viewer"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+            label="Close file viewer"
+            className="sm:hidden shrink-0 rounded-md border border-edge-dim hover:border-edge"
+          />
         </header>
         <div className="flex-1 overflow-y-auto p-3 sm:p-6">
           {state.status === "loading" && (

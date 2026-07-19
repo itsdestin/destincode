@@ -3,6 +3,7 @@ import { useTheme } from '../state/theme-context';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { PublishState } from '../../shared/theme-marketplace-types';
+import { Button } from './ui';
 
 interface ThemeShareSheetProps {
   themeSlug: string;
@@ -220,13 +221,13 @@ function renderPublishButton(args: {
   if (state.kind === 'published-drift') {
     return (
       <>
-        <button
+        <Button
           onClick={onPublish}
           disabled={publishing || previewLoading}
-          className="w-full py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-50"
+          className="w-full py-2.5"
         >
           {publishing ? 'Publishing update…' : 'Publish update'}
-        </button>
+        </Button>
         <p className="text-[10px] text-fg-faint text-center mt-1.5">
           Local changes not yet published
         </p>
@@ -237,14 +238,14 @@ function renderPublishButton(args: {
   if (state.kind === 'unknown') {
     return (
       <>
-        <button
+        <Button
           onClick={onPublish}
           disabled={publishing || previewLoading}
-          className="w-full py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-50"
+          className="w-full py-2.5"
           title={`Couldn't verify publish status — proceed at your own risk (${state.reason})`}
         >
           {publishing ? 'Publishing…' : previewLoading ? 'Generating preview…' : '⚠ Publish to Marketplace'}
-        </button>
+        </Button>
         <p className="text-[10px] text-fg-faint text-center mt-1.5">
           Could not verify status: {state.reason}
         </p>
@@ -254,12 +255,12 @@ function renderPublishButton(args: {
 
   // draft — the default happy path.
   return (
-    <button
+    <Button
       onClick={onPublish}
       disabled={publishing || previewLoading}
-      className="w-full py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-50"
+      className="w-full py-2.5"
     >
       {publishing ? 'Publishing…' : previewLoading ? 'Generating preview…' : 'Publish to Marketplace'}
-    </button>
+    </Button>
   );
 }
