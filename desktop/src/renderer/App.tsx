@@ -20,6 +20,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
+import { Button } from './components/ui';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
@@ -2838,13 +2839,22 @@ function AppInner() {
                     <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
                   )}
                   <div className="flex gap-2">
-                    <button
+                    {/* secondary, not ghost: this was the filled-grey family
+                        (bg-inset text-fg-dim hover:bg-edge) that decision 60 collapses
+                        into the outline, and it sits beside Create as a peer choice —
+                        the exact case decision 60 gives for rejecting ghost. */}
+                    <Button
+                      variant="secondary"
+                      size="lg"
                       onClick={() => setWelcomeFormOpen(false)}
-                      className="px-3 py-1.5 text-sm rounded-md bg-inset text-fg-dim hover:bg-edge transition-colors"
                     >
                       Cancel
-                    </button>
-                    <button
+                    </Button>
+                    {/* Third skip-permissions Create button — spec decision 62 cited only
+                        SessionStrip and ResumeBrowser plus App.tsx's toggle, and missed this
+                        one on the welcome form. Same call: FILLED danger, deliberately
+                        identical to "Remove project". See the note in SessionStrip. */}
+                    <Button
                       onClick={() => {
                         // Native runtime carries a provider/model binding; persist
                         // the choice so it sticks. The disabled guard already blocks
@@ -2866,20 +2876,27 @@ function AppInner() {
                         setWelcomeRuntime('claude');
                       }}
                       disabled={welcomeNb.nativeCreateBlocked}
-                      className={`flex-1 text-sm font-medium rounded-md py-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                        welcomeDangerous
-                          ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
-                          : 'bg-accent hover:bg-accent text-on-accent'
-                      }`}
+                      variant={welcomeDangerous ? 'danger' : 'primary'}
+                      size="lg"
+                      className="flex-1 py-1.5"
                     >
                       {welcomeDangerous ? 'Create (Dangerous)' : 'Create Session'}
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
                 /* Collapsed state: two side-by-side buttons */
                 <>
-                  <button
+                  {/* `panel-glass` and `text-base` are deliberate className
+                      overrides, NOT leftovers (spec §11.3 decision 69):
+                      panel-glass re-tiers translucency from bubble→panel on
+                      wallpaper themes (globals.css:843-856), and text-base is
+                      larger than any Button size. buttonClasses() merges both
+                      correctly — it drops the conflicting base tokens. */}
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    className="panel-glass w-full px-8 text-base"
                     onClick={() => {
                       setWelcomeCwd(sessionDefaults.projectFolder || '');
                       setWelcomeDangerous(sessionDefaults.skipPermissions || false);
@@ -2888,19 +2905,22 @@ function AppInner() {
                       // false→true edge — no manual touched reset needed here.
                       setWelcomeFormOpen(true);
                     }}
-                    className="panel-glass w-full px-8 py-2 text-base font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors"
                   >
                     New Session
-                  </button>
-                  <button
+                  </Button>
+                  {/* Same decision-69 rationale as above: panel-glass is preserved
+                      as a className override so wallpaper themes still re-tier it. */}
+                  <Button
+                    variant="secondary"
+                    size="lg"
+                    className="panel-glass w-full px-6"
                     onClick={() => setResumeRequested(true)}
-                    className="panel-glass w-full px-6 py-2 rounded-lg bg-inset hover:bg-edge text-fg-dim hover:text-fg transition-colors flex items-center justify-center gap-1.5"
                   >
                     <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     <span className="text-sm font-medium">Resume Session</span>
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -3061,13 +3081,14 @@ function AppInner() {
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-panel border border-edge text-sm text-fg shadow-lg flex items-center gap-3">
           <span>{typeof toast === 'string' ? toast : toast.message}</span>
           {typeof toast !== 'string' && (
-            <button
-              type="button"
-              className="shrink-0 rounded-md border border-edge px-2 py-0.5 text-xs font-medium text-fg hover:bg-inset"
+            <Button
+              variant="secondary"
+              size="sm"
+              className="shrink-0"
               onClick={toast.action.onClick}
             >
               {toast.action.label}
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -3091,20 +3112,21 @@ function AppInner() {
                 : `${takeoverPrompt.device} isn't responding — take over anyway?`}
             </p>
             <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-lg border border-edge text-sm text-fg-2 hover:bg-inset"
+              <Button
+                variant="secondary"
+                size="lg"
                 onClick={() => resolveTakeover(false)}
               >
                 Never mind
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-lg bg-accent text-on-accent text-sm hover:opacity-90"
+              </Button>
+              <Button
+                variant="primary"
+                size="lg"
+                className="px-3 py-1.5"
                 onClick={() => resolveTakeover(true)}
               >
                 Take over
-              </button>
+              </Button>
             </div>
           </OverlayPanel>
         </>

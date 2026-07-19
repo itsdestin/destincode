@@ -3,7 +3,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { ExplainerSection } from './SettingsExplainer';
-import { Button } from './ui';
+import { Button, CloseButton } from './ui';
 
 // Explainer copy lives here as a const because it pairs tightly with the
 // controls above it — both are about GPU choice. Sections render inline in
@@ -104,13 +104,7 @@ export default function PerformancePopup({
             visually fits with the rest of the settings UI. */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
           <h2 className="text-sm font-bold text-fg">Performance</h2>
-          <button
-            onClick={onClose}
-            className="text-fg-muted hover:text-fg-2 text-lg leading-none w-6 h-6 flex items-center justify-center"
-            aria-label="Close"
-          >
-            ✕
-          </button>
+          <CloseButton onClick={onClose} label="Close performance settings" />
         </div>
 
         {/* Scrollable body. Controls at top, explainer below. */}

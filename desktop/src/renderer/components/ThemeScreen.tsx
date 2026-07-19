@@ -7,7 +7,7 @@ import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './Sett
 import type { LoadedTheme } from '../themes/theme-types';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button } from './ui';
+import { Button, CloseButton } from './ui';
 
 // Plain-language explainer for the Appearance popup. Shown when the user taps
 // the (i) icon in the popup header — see ThemeScreen's `showInfo` state.
@@ -139,7 +139,9 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         <h2 className="text-sm font-bold text-fg">Themes</h2>
         <div className="flex items-center gap-1">
           <InfoIconButton onClick={() => setShowInfo(true)} />
-          <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-6 h-6 flex items-center justify-center">✕</button>
+          {/* w-6 h-6 kept: this sits in a tight header row beside InfoIconButton,
+              and CloseButton's default 28px would break their alignment. */}
+          <CloseButton onClick={onClose} label="Close themes" className="w-6 h-6" />
         </div>
       </div>
 
@@ -363,7 +365,9 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
           </button>
           <h2 className="text-sm font-bold text-fg truncate">Edit: {theme.name}</h2>
         </div>
-        <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-6 h-6 flex items-center justify-center shrink-0">✕</button>
+        {/* Same w-6 h-6 as the list header above, so the two views' close buttons
+            don't jump size when you switch between them. */}
+        <CloseButton onClick={onClose} label="Close theme editor" className="w-6 h-6 shrink-0" />
       </div>
 
       <div ref={editScrollRef} className="scroll-fade flex-1">

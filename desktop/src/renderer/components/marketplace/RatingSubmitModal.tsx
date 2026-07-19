@@ -24,7 +24,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
-import { Button } from '../ui';
+import { Button, CloseButton } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { useAccount } from '../../state/account-context';
 import { useMarketplaceStats } from '../../state/marketplace-stats-context';
@@ -244,13 +244,7 @@ export default function RatingSubmitModal({
           <h2 id="rate-modal-title" className="text-sm font-semibold text-fg">
             Rate this plugin
           </h2>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors leading-none text-lg"
-          >
-            &times;
-          </button>
+          <CloseButton onClick={onClose} />
         </div>
 
         {/* Body */}

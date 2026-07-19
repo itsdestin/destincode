@@ -32,7 +32,8 @@ function persistDismissed(): void {
 }
 
 // Info-circle + close glyphs — shared module (./icons.tsx).
-import { InfoIcon, CloseIcon } from './icons';
+import { InfoIcon } from './icons';
+import { CloseButton } from '../ui';
 
 export function ContextIntroBanner() {
   // Initialize from localStorage so a previously-dismissed banner never flashes
@@ -63,18 +64,17 @@ export function ContextIntroBanner() {
         </p>
       </div>
       {/* × dismiss — persists the flag AND hides immediately via local state. */}
-      <button
-        type="button"
-        className="absolute top-2 right-2 w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-well transition-colors"
+      {/* w-6 h-6 survives as a className override: this sits inside a compact banner
+          corner, where the standard 28px icon button would crowd the text. */}
+      <CloseButton
+        className="absolute top-2 right-2 w-6 h-6 rounded-md"
         title="Dismiss — won't show again"
-        aria-label="Dismiss context intro"
+        label="Dismiss context intro"
         onClick={() => {
           persistDismissed();
           setDismissed(true);
         }}
-      >
-        <CloseIcon size={14} />
-      </button>
+      />
     </div>
   );
 }

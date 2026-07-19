@@ -4,6 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Toggle } from './SettingsPanel';
+import { CloseButton } from './ui';
 import { formatVersionLine } from '../../shared/version-line';
 
 // Shared About popup for Desktop and Android settings. Previously this was an
@@ -108,15 +109,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
             <h3 id="about-popup-title" className="text-sm font-semibold text-fg">About</h3>
             <p className="text-[10px] text-fg-muted mt-0.5">{versionLine}</p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <CloseButton onClick={onClose} />
         </div>
 
         {/* Padding lives on an inner wrapper so scroll-fade has no padding;

@@ -19,7 +19,7 @@ import WallpaperBackdrop from "../WallpaperBackdrop";
 import InstallingFooterStrip from "./InstallingFooterStrip";
 import MarketplaceAuthChip from "./MarketplaceAuthChip";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button } from "../ui";
+import { Button, CloseButton } from "../ui";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useCurrentPlatform } from "../../state/platform";
 import { platformDisplayName, platformListDisplay } from "../../../shared/platform-display";
@@ -327,17 +327,13 @@ export default function MarketplaceScreen({
           {/* Narrow: bordered close-X button — touch users have no Esc key, so we
               give them an obvious close affordance with a button-shaped container
               matching the Library button next to it. */}
-          <button
-            type="button"
+          {/* panel-glass + the border survive as className overrides — the bordered
+              container is what makes this match the Library button next to it. */}
+          <CloseButton
             onClick={onExit}
-            className="sm:hidden panel-glass bg-inset p-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-dim hover:text-fg"
-            aria-label="Exit marketplace"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+            label="Exit marketplace"
+            className="sm:hidden panel-glass bg-inset rounded-md border border-edge-dim hover:border-edge"
+          />
         </div>
       </div>
 
@@ -641,17 +637,12 @@ function IntegrationDetailOverlay({
           >
             Esc · Close
           </button>
-          <button
-            type="button"
+          {/* panel-glass + the border survive as className overrides — deliberately a
+              bordered container matching the marketplace top bar. */}
+          <CloseButton
             onClick={onClose}
-            className="sm:hidden panel-glass bg-inset p-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-dim hover:text-fg"
-            aria-label="Close"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+            className="sm:hidden panel-glass bg-inset rounded-md border border-edge-dim hover:border-edge"
+          />
         </header>
         <div className="flex-1 overflow-y-auto p-3 sm:p-6">
           <article className="flex flex-col gap-4 max-w-3xl mx-auto">

@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button } from './ui';
+import { Button, CloseButton } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSyncState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
@@ -854,9 +854,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             <h2 className="text-sm font-bold text-fg">Backup &amp; Sync</h2>
             <div className="flex items-center gap-1">
               <InfoIconButton onClick={() => setShowInfo(true)} />
-              <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset">
-                {'\u2715'}
-              </button>
+              <CloseButton onClick={onClose} label="Close backup and sync" />
             </div>
           </div>
 
@@ -1446,7 +1444,6 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             title="Remove backup?"
             message={<>Remove <strong>{target.label}</strong>? This disconnects this backup destination. Your backed-up data in {BACKEND_LABELS[target.type]} won't be deleted &mdash; you can reconnect later.</>}
             confirmLabel="Remove"
-            confirmColor="red"
             onConfirm={() => { handleRemoveBackend(confirmRemoveId); setConfirmRemoveId(null); }}
             onCancel={() => setConfirmRemoveId(null)}
           />
@@ -1463,34 +1460,32 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
 // L3 destructive confirmation — uses OverlayPanel destructive variant for theme-driven danger border.
 
 function ConfirmDialog({
-  title, message, confirmLabel, confirmColor, onConfirm, onCancel,
+  title, message, confirmLabel, onConfirm, onCancel,
 }: {
   title: string;
   message: React.ReactNode;
   confirmLabel: string;
-  confirmColor: 'red' | 'blue';
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const borderColor = confirmColor === 'red' ? 'border-red-600/30' : 'border-blue-600/30';
-  const headerBg = confirmColor === 'red' ? 'bg-red-600/10' : 'bg-blue-600/10';
-  const headerText = confirmColor === 'red' ? 'text-[#DD4444]' : 'text-blue-400';
-  const btnBg = confirmColor === 'red'
-    ? 'bg-red-600/70 hover:bg-red-600/90 text-white'
-    : 'bg-blue-600 hover:bg-blue-500 text-white';
-
   return createPortal(
     // Overlay layer L3 — destructive confirmations use OverlayPanel destructive variant.
     <>
       <Scrim layer={3} onClick={onCancel} />
+      {/* The `confirmColor: 'red' | 'blue'` prop is gone. There was exactly one call
+          site and it passed "red", so the whole blue branch — border, header tint,
+          header text, and a `bg-blue-600 hover:bg-blue-500 text-white` confirm button
+          — was unreachable. It was also one of the last hardcoded-blue survivors spec
+          change 55 exists to kill, so it's deleted rather than migrated. This dialog
+          is now unconditionally destructive, which is what it always rendered as. */}
       <OverlayPanel
         layer={3}
-        destructive={confirmColor === 'red'}
+        destructive
         className="fixed overflow-hidden"
         style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(360px, 85vw)' }}
       >
-        <div className={`px-4 py-3 border-b ${borderColor} ${headerBg}`}>
-          <h3 className={`text-xs font-bold ${headerText}`}>{title}</h3>
+        <div className="px-4 py-3 border-b border-destructive/30 bg-destructive/10">
+          <h3 className="text-xs font-bold text-destructive">{title}</h3>
         </div>
         <div className="px-4 py-3 space-y-3">
           <p className="text-[11px] text-fg-dim leading-relaxed">{message}</p>
@@ -1501,12 +1496,9 @@ function ConfirmDialog({
             <Button variant="secondary" onClick={onCancel} className="flex-1">
               Cancel
             </Button>
-            <button
-              onClick={onConfirm}
-              className={`flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md transition-colors ${btnBg}`}
-            >
+            <Button variant="danger" onClick={onConfirm} className="flex-1">
               {confirmLabel}
-            </button>
+            </Button>
           </div>
         </div>
       </OverlayPanel>
@@ -1718,9 +1710,7 @@ function SubViewHeader({ title, onBack, onClose }: { title: string; onBack: () =
         </button>
         <h2 className="text-sm font-bold text-fg">{title}</h2>
       </div>
-      <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset">
-        {'\u2715'}
-      </button>
+      <CloseButton onClick={onClose} label="Close backup and sync" />
     </div>
   );
 }

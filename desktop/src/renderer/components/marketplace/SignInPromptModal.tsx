@@ -8,7 +8,7 @@
 
 import React from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button } from "../ui";
+import { Button, CloseButton } from "../ui";
 import { useAccount } from "../../state/account-context";
 import { useEscClose } from "../../hooks/use-esc-close";
 
@@ -47,13 +47,7 @@ export default function SignInPromptModal({ open, onClose, title, message }: Pro
           <h2 id="signin-prompt-title" className="text-sm font-semibold text-fg">
             {title}
           </h2>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors leading-none text-lg"
-          >
-            &times;
-          </button>
+          <CloseButton onClick={onClose} />
         </div>
 
         <div className="flex flex-col items-center gap-3 py-2">

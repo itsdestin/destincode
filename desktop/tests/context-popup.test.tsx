@@ -67,7 +67,9 @@ describe('ContextPopup — main view', () => {
 
   it('calls onClose when the X button is clicked', () => {
     const { onClose } = renderPopup();
-    fireEvent.click(screen.getByLabelText('Close'));
+    // Label is "Close context panel", not a bare "Close" — CloseButton takes a
+    // `label` prop so each popup's ✕ has a distinct accessible name (change 76).
+    fireEvent.click(screen.getByLabelText('Close context panel'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -113,6 +115,8 @@ describe('ContextPopup — info view', () => {
     const { onClose } = renderPopup();
     fireEvent.click(screen.getByLabelText('What is this?'));
     // Explainer renders its own Close button; main-view header is not mounted when showInfo is true.
+    // This one is SettingsExplainer's CloseButton, which passes no `label` and so
+    // keeps the default "Close" — distinct from the main view's "Close context panel".
     fireEvent.click(screen.getByLabelText('Close'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });

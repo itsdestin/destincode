@@ -277,22 +277,17 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
                   <div className="flex-1 font-mono text-2xl tracking-[0.25em] text-fg text-center bg-inset rounded-md py-3 select-all">
                     {code.userCode}
                   </div>
-                  <button
-                    onClick={copyCode}
-                    className="text-xs px-3 py-2 rounded bg-inset hover:bg-edge text-fg-2 shrink-0"
-                  >
+                  <Button variant="secondary" onClick={copyCode} className="shrink-0">
                     {copied ? 'Copied' : 'Copy'}
-                  </button>
+                  </Button>
                 </div>
 
                 {isElectron ? (
-                  // Desktop — open the OS browser directly.
-                  <button
-                    onClick={openVerificationUrl}
-                    className="w-full text-sm px-3 py-2 rounded bg-accent text-on-accent"
-                  >
+                  // Desktop — open the OS browser directly. lg: this is the one
+                  // thing to do on this screen, and it had no hover state at all.
+                  <Button size="lg" onClick={openVerificationUrl} className="w-full">
                     Open github.com/login/device
-                  </button>
+                  </Button>
                 ) : (
                   // Remote / touch — no shell access; render a copyable link the
                   // user opens themselves. <a target=_blank> works in a browser.
@@ -307,12 +302,14 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
                       >
                         {code.verificationUri}
                       </a>
-                      <button
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         onClick={() => navigator.clipboard?.writeText(code.verificationUri).catch(() => {})}
-                        className="text-xs px-2 py-1 rounded bg-inset hover:bg-edge text-fg-dim shrink-0"
+                        className="shrink-0"
                       >
                         Copy
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -324,12 +321,11 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
             )}
 
             <div className="flex justify-end pt-1">
-              <button
-                onClick={handleClose}
-                className="text-sm px-3 py-1 rounded text-fg-dim hover:text-fg hover:bg-inset transition-colors"
-              >
+              {/* Not redundant with the header ✕: this one aborts a live device
+                  flow, so it stays even though §11.4's rule kills text cancels. */}
+              <Button variant="ghost" onClick={handleClose}>
                 Never mind
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -351,18 +347,13 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
               {errorReason ? ERROR_COPY[errorReason] : ERROR_COPY.network}
             </p>
             <div className="flex justify-end gap-2">
-              <button
-                onClick={handleClose}
-                className="text-sm px-3 py-1 rounded text-fg-dim hover:text-fg hover:bg-inset transition-colors"
-              >
+              <Button variant="ghost" onClick={handleClose}>
                 Never mind
-              </button>
-              <button
-                onClick={() => void startCode()}
-                className="text-sm px-3 py-1 rounded bg-accent text-on-accent"
-              >
+              </Button>
+              {/* Had no hover state at all before. */}
+              <Button onClick={() => void startCode()}>
                 Try again
-              </button>
+              </Button>
             </div>
           </div>
         )}

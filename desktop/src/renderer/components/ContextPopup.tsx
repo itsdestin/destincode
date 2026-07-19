@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button } from './ui';
+import { Button, CloseButton } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 
@@ -125,13 +125,7 @@ export default function ContextPopup({
               <div className="flex items-center gap-1">
                 {/* (i) button — opens the explainer view explaining what context percentage means */}
                 <InfoIconButton onClick={() => setShowInfo(true)} />
-                <button
-                  onClick={onClose}
-                  aria-label="Close"
-                  className="text-fg-muted hover:text-fg leading-none w-6 h-6 flex items-center justify-center rounded-sm hover:bg-inset"
-                >
-                  ✕
-                </button>
+                <CloseButton onClick={onClose} label="Close context panel" />
               </div>
             </div>
 

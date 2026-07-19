@@ -24,7 +24,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
-import { Button } from '../ui';
+import { Button, CloseButton } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { useAccount } from '../../state/account-context';
 import { REPORT_REASON_MAX } from '../../state/marketplace-constants';
@@ -155,14 +155,7 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
             Report this review?
           </h2>
           {/* Fix: disabled during submitting phase to prevent closing a mid-flight request */}
-          <button
-            onClick={onClose}
-            disabled={inFlight}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors leading-none text-lg disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            &times;
-          </button>
+          <CloseButton onClick={onClose} disabled={inFlight} />
         </div>
 
         {/* Success state */}

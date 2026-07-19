@@ -19,6 +19,7 @@
 import React, { useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
+import { CloseButton } from '../ui';
 import type { ContextScope } from '../../../shared/project-context-types';
 
 // The five teaching topics. `overview` is the broad→specific stack; the other
@@ -102,15 +103,7 @@ function InfoIcon({ size = 16 }: IconProps) {
   );
 }
 
-function CloseIcon({ size = 17 }: IconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M18 6 6 18" />
-      <path d="M6 6l12 12" />
-    </svg>
-  );
-}
+// (local CloseIcon removed — the header ✕ is now the shared <CloseButton /> primitive.)
 
 // Per-tab nav metadata. The `icon` is a component (not a string), so the nav can
 // never reference an undefined icon.
@@ -401,15 +394,7 @@ export function HowContextWorksPopup({ initialTab, onClose }: HowContextWorksPop
         {/* Header */}
         <header className="flex items-center justify-between px-4 py-3 border-b border-edge shrink-0">
           <span className="text-[15px] font-semibold text-fg">How context works</span>
-          <button
-            type="button"
-            className="text-fg-dim hover:text-fg w-7 h-7 inline-flex items-center justify-center"
-            onClick={onClose}
-            title="Close"
-            aria-label="Close"
-          >
-            <CloseIcon size={17} />
-          </button>
+          <CloseButton onClick={onClose} title="Close" />
         </header>
 
         {/* Body: left nav + scrollable content */}

@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button } from './ui';
+import { Button, CloseButton } from './ui';
 import { isAndroid as checkIsAndroid } from '../platform';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -86,9 +86,7 @@ function WizardHeader({ title, onBack, onClose }: { title: string; onBack?: () =
         )}
         <h2 className="text-sm font-bold text-fg">{title}</h2>
       </div>
-      <button onClick={onClose} className="text-fg-muted hover:text-fg-2 text-lg leading-none w-8 h-8 flex items-center justify-center rounded-sm hover:bg-inset">
-        {'\u2715'}
-      </button>
+      <CloseButton onClick={onClose} label="Close setup wizard" />
     </div>
   );
 }

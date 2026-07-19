@@ -17,6 +17,7 @@ import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
+import { CloseButton } from './ui';
 
 type SortKey = 'recent' | 'name' | 'type';
 
@@ -340,11 +341,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             only what Claude made + pinned files. */}
         <span className="font-semibold text-sm">Files ({listedArtifacts.length})</span>
         {!active && (
-          <button
-            className="text-fg-muted hover:text-fg px-1 text-base leading-none"
+          <CloseButton
             onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })}
             title="Close drawer"
-          >×</button>
+            label="Close drawer"
+          />
         )}
       </div>
       {/* Search + sort */}
@@ -683,15 +684,14 @@ function ArtifactListItem({ artifact, isActive, isDeleted, onSelect, onRemove }:
         <div className="text-[10px] text-fg-muted ml-0.5">{statusWord} · {relTime}</div>
       </button>
       {onRemove && (
-        <button
-          type="button"
-          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-well"
+        <CloseButton
+          // w-6 h-6 survives as a className override: hover-revealed row affordance,
+          // sized to the row rather than the standard 28px panel-header closer.
+          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md"
           title={`Remove ${fileName} from this list (the file itself is not deleted)`}
-          aria-label={`Remove ${fileName} from this list`}
+          label={`Remove ${fileName} from this list`}
           onClick={(e) => { e.stopPropagation(); onRemove(); }}
-        >
-          <Ic name="close" size={12} />
-        </button>
+        />
       )}
     </div>
   );

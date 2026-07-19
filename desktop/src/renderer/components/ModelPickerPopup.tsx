@@ -4,7 +4,7 @@ import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, FOCUS_RING } from './ui';
+import { Button, CloseButton, FOCUS_RING } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -314,11 +314,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
         >
           <div className="flex items-center justify-between px-5 py-3 border-b border-edge">
             <h3 className="text-sm font-semibold text-fg">Model</h3>
-            <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+            <CloseButton onClick={onClose} label="Close model picker" />
           </div>
           <div className="px-5 pt-3">
             <input
@@ -386,11 +382,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
       >
         <div className="flex items-center justify-between px-5 py-3 border-b border-edge">
           <h3 className="text-sm font-semibold text-fg">Model &amp; Effort</h3>
-          <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <CloseButton onClick={onClose} label="Close model picker" />
         </div>
 
         {!loaded ? (

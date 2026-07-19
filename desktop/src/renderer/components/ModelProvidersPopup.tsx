@@ -9,7 +9,7 @@ import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
 import SettingsRow from './SettingsRow';
-import { Button } from './ui';
+import { Button, CloseButton } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -106,15 +106,7 @@ function ModelProvidersPopupInner({
       >
         <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
           <h3 id="model-providers-title" className="text-sm font-semibold text-fg">Model Providers</h3>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <CloseButton onClick={onClose} />
         </div>
 
         <div ref={scrollRef} className="scroll-fade">
@@ -405,15 +397,7 @@ function ConnectOpenRouterModal({
           <h3 id="connect-openrouter-title" className="text-sm font-semibold text-fg">
             {hasKey ? 'Replace OpenRouter key' : 'Connect OpenRouter'}
           </h3>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <CloseButton onClick={onClose} />
         </div>
 
         <div className="p-4 space-y-3">

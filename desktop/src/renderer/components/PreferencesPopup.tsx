@@ -4,7 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button } from './ui';
+import { Button, CloseButton } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -130,11 +130,7 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Prop
       >
         <div className="shrink-0 bg-panel border-b border-edge flex items-center justify-between px-5 py-3">
           <h3 className="text-sm font-semibold text-fg">Claude Code Preferences</h3>
-          <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <CloseButton onClick={onClose} label="Close preferences" />
         </div>
 
         {!loaded ? (

@@ -318,13 +318,14 @@ function SignedInBody({
                 </div>
                 {/* No confirm — unblocking is the recovery action, not the
                     destructive one (blocking is what's consequence-gated). */}
-                <button
+                <Button
+                  variant="secondary"
                   onClick={() => void onUnblock(b.id)}
                   disabled={unblockingId === b.id}
-                  className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="shrink-0"
                 >
                   {unblockingId === b.id ? 'Unblocking…' : 'Unblock'}
-                </button>
+                </Button>
               </div>
               {unblockErrors[b.id] && <p className="text-[10px] text-red-500">{unblockErrors[b.id]}</p>}
             </div>
@@ -334,16 +335,19 @@ function SignedInBody({
 
       <hr className="border-edge-dim" />
 
-      {/* The single edit affordance — pencil icon + label, per the rework spec. */}
-      <button
-        onClick={() => setMode('edit')}
-        className="w-full flex items-center justify-center gap-2 text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-      >
+      {/* The single edit affordance — pencil icon + label, per the rework spec.
+          The primitive already centers its children and owns the icon gap, so
+          only the full-bleed width survives as a layout extra (the py-2.5 row
+          shortens to md's py-1.5, same as the danger-zone Cancel — change 3). */}
+      <Button variant="secondary" onClick={() => setMode('edit')} className="w-full">
         <PencilIcon />
         Edit account
-      </button>
+      </Button>
 
-      <button
+      {/* Sign out is reversible (you can sign back in), so it stays secondary
+          rather than joining the danger family. */}
+      <Button
+        variant="secondary"
         onClick={async () => {
           setSigningOut(true);
           try {
@@ -353,22 +357,23 @@ function SignedInBody({
           }
         }}
         disabled={signingOut}
-        className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        className="w-full"
       >
         {signingOut ? 'Signing out…' : 'Sign out'}
-      </button>
+      </Button>
 
       {/* Download my data — GDPR-style export of everything the server stores.
           Desktop shows a save dialog (resolves to {path}); Android writes to
           Downloads. Single-fire guarded while the request is in flight. */}
       <section className="space-y-1.5">
-        <button
+        <Button
+          variant="secondary"
           onClick={() => void onExport()}
           disabled={exporting}
-          className="w-full text-xs font-medium py-2.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full"
         >
           {exporting ? 'Preparing export…' : 'Download my data'}
-        </button>
+        </Button>
         <p className="text-[10px] text-fg-muted leading-relaxed">
           Downloads a file containing everything YouCoded's server stores about your account.
         </p>
@@ -493,12 +498,9 @@ function EditAccountBody({
       {/* Edit-mode header: label + the way back to view mode. */}
       <div className="flex items-center justify-between">
         <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Edit account</h4>
-        <button
-          onClick={onDone}
-          className="text-xs font-medium px-3 py-1.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-        >
+        <Button variant="secondary" onClick={onDone}>
           Done
-        </button>
+        </Button>
       </div>
 
       {/* Display name */}
@@ -514,14 +516,13 @@ function EditAccountBody({
             onChange={(e) => { setNameDraft(e.target.value); setNameSaved(false); }}
             className="flex-1 text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
           />
-          <button
+          <Button
             onClick={() => void saveName()}
             aria-label="Save display name"
             disabled={nameSaving || nameDraft.trim().length === 0}
-            className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {nameSaving ? 'Saving…' : 'Save'}
-          </button>
+          </Button>
         </div>
         {nameError && <p className="text-[10px] text-red-500">{nameError}</p>}
         {nameSaved && !nameError && <p className="text-[10px] text-fg-muted">Saved</p>}
@@ -550,14 +551,13 @@ function EditAccountBody({
             />
           </div>
           {!handleConfirming && (
-            <button
+            <Button
               onClick={onSaveHandleClick}
               aria-label="Save handle"
               disabled={handleSaving || trimmedHandle.length === 0 || handleUnchanged}
-              className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {handleSaving ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
           )}
         </div>
 
@@ -570,20 +570,25 @@ function EditAccountBody({
               need your new handle.
             </p>
             <div className="flex gap-2">
-              <button
+              {/* This Cancel unarms the confirm step rather than closing the
+                  popup, so it survives the "no redundant text cancel" rule. */}
+              <Button
+                variant="secondary"
                 onClick={() => setHandleConfirming(false)}
                 aria-label="Cancel handle change"
-                className="flex-1 text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+                className="flex-1"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              {/* Stays primary, not danger: a handle change is consequential but
+                  not destructive — nothing attached to the account is deleted. */}
+              <Button
                 onClick={() => void commitHandle()}
                 disabled={handleSaving}
-                className="flex-1 text-xs font-medium py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex-1"
               >
                 {handleSaving ? 'Saving…' : 'Confirm change'}
-              </button>
+              </Button>
             </div>
           </div>
         )}
