@@ -23,6 +23,20 @@ let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-eng-')); });
 afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
+// These are fs.watch INTEGRATION tests — they wait on real filesystem events,
+// so their wall-clock scales with machine load and vitest's parallel pool
+// guarantees load. The 5000ms literal these replaced took the macOS leg of beta
+// run 29701441150 red TWICE on 2026-07-19, with a DIFFERENT victim test each
+// run ('debounces file changes…' then 'emits error events…') — the signature of
+// a too-tight budget, not a broken assertion. Windows and Linux passed both times.
+//
+// Note for whoever touches this next: PR #163 swapped this family's fixed
+// sleep()s for vi.waitFor bounded-retry polling, which was right — but
+// vi.waitFor carries its OWN fixed ceiling, so the budget moved rather than
+// disappeared. One named knob per file; do NOT reintroduce inline literals (an
+// inline third arg on it() silently overrides vi.setConfig — the #163 trap).
+const WAIT_MS = 60_000;
+
 describe('SpaceSyncEngine', () => {
   it('debounces file changes into one sync (pull then push)', async () => {
     const t = fakeTransport();
@@ -32,7 +46,7 @@ describe('SpaceSyncEngine', () => {
     await engine.addSpace(space);
     fs.writeFileSync(path.join(tmp, 'a.md'), '1');
     fs.writeFileSync(path.join(tmp, 'b.md'), '2');
-    await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: 5000 });
+    await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: WAIT_MS });
     expect(t.pulls.length).toBe(1);                 // pull-before-push ordering
     expect(events.some(e => e.type === 'synced')).toBe(true);
     await engine.stop();
@@ -72,7 +86,7 @@ describe('SpaceSyncEngine', () => {
     // The lock-dir ignore is scoped to `.json.lock` precisely so real lockfiles
     // (Cargo.lock, Gemfile.lock, poetry.lock) keep triggering an instant sync.
     fs.writeFileSync(path.join(tmp, 'Cargo.lock'), 'x');
-    await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: 5000 });
+    await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: WAIT_MS });
     await engine.stop();
   });
 
@@ -80,7 +94,7 @@ describe('SpaceSyncEngine', () => {
     const t = fakeTransport();
     const engine = new SpaceSyncEngine(t, { debounceMs: 5000, pollMs: 120, onEvent: () => {} });
     await engine.addSpace({ id: 'personal', kind: 'personal', root: tmp });
-    await vi.waitFor(() => expect(t.pulls.length).toBeGreaterThanOrEqual(1), { timeout: 5000 });
+    await vi.waitFor(() => expect(t.pulls.length).toBeGreaterThanOrEqual(1), { timeout: WAIT_MS });
     await engine.stop();
   });
 
@@ -102,13 +116,13 @@ describe('SpaceSyncEngine', () => {
     const space: SyncSpace = { id: 'project:x', kind: 'project', root: tmp };
     await engine.addSpace(space);
     const first = engine.syncSpace(space);                       // starts, blocks inside pull
-    await vi.waitFor(() => expect(t.pulls.length).toBe(1), { timeout: 5000 });
+    await vi.waitFor(() => expect(t.pulls.length).toBe(1), { timeout: WAIT_MS });
     void engine.syncSpace(space);                                // mid-sync: sets the rerun flag
     void engine.syncSpace(space);                                // mid-sync again: must NOT queue a second rerun
     releaseFirstPull();
     await first;
     // Exactly two syncs total: the original + one coalesced rerun.
-    await vi.waitFor(() => expect(t.pushes.length).toBe(2), { timeout: 5000 });
+    await vi.waitFor(() => expect(t.pushes.length).toBe(2), { timeout: WAIT_MS });
     await new Promise(r => setTimeout(r, 300));                  // settle: no third sync sneaks in
     expect(t.pushes.length).toBe(2);
     expect(t.pulls.length).toBe(2);
@@ -180,7 +194,7 @@ describe('SpaceSyncEngine', () => {
     const engine = new SpaceSyncEngine(t, { debounceMs: 100, pollMs: 0, onEvent: e => events.push(e) });
     await engine.addSpace({ id: 'project:x', kind: 'project', root: tmp });
     fs.writeFileSync(path.join(tmp, 'a.md'), '1');
-    await vi.waitFor(() => expect(events.some(e => e.type === 'error')).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(events.some(e => e.type === 'error')).toBe(true), { timeout: WAIT_MS });
     await engine.stop();
   });
 });
