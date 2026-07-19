@@ -311,6 +311,12 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                       <button
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={() => { if (!suppressClick.current) remove(i); }}
+                        // Deliberately NOT a ui/Button. Unlike InputBar's attachment ✕
+                        // (which is a 16px badge and did migrate), this is a bare glyph
+                        // with no background, radius or padding — routing it through the
+                        // primitive would ADD chrome it has never had. It sits below
+                        // spec §11.1's "real button chrome" bar. `title` already gives it
+                        // an accessible name.
                         className="shrink-0 px-1 text-fg-muted hover:text-red-400"
                         title="Remove chip"
                       >

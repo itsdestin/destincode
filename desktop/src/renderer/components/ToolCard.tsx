@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useArtifactOptional } from '../state/ArtifactContext';
+import { Button } from './ui';
 import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
@@ -675,33 +676,27 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
       ))}
       {/* Submit + Deny buttons.
 
-          NOT YET MIGRATED — spec §11's change 61 enumerated only the five
-          permission-prompt buttons (:375 :382 :396 :405 :414) and never covered
-          this AskUserQuestion pair, so there is no approved variant for them.
-          Radius normalized here so the row doesn't sit at a different corner
-          from the permission row directly above it; the variant call is still
-          open. Two things to decide before migrating:
-            - Submit hand-rolls its own disabled look (bg-inset/50 when
-              !allAnswered) on top of a real `disabled` prop — ui/Button's
-              disabled:opacity-50 would replace that branch entirely.
-            - Dismiss uses a grey→red hover as a bespoke "this rejects" signal,
-              which is neither ghost nor danger-outline. */}
+          Unlike the permission triad above (which keeps its status colors), this
+          pair DOES go through ui/Button — Destin's call, spec §11.8 B. Two things
+          the migration deliberately drops:
+            - Submit hand-rolled its own disabled look (bg-inset/50 + bg-accent/70)
+              on top of a real `disabled` prop. The primitive's disabled:opacity-50
+              replaces that branch, and the enabled state goes to full accent.
+            - Dismiss had a grey→red hover as a bespoke "this rejects" signal.
+              Dismissing a question isn't destructive — nothing is lost, Claude
+              just doesn't get an answer — so it reads as `ghost`, and position
+              plus label already carry "this is the negative option". */}
       <div className="flex items-center gap-2 pt-1">
-        <button
+        <Button
           disabled={!allAnswered || responding}
           onClick={handleSubmit}
-          className={`px-3 ${pad} text-xs font-medium rounded-lg transition-colors disabled:opacity-40
-            ${allAnswered ? 'bg-accent/70 hover:bg-accent/90 text-on-accent' : 'bg-inset/50 text-fg-muted'}`}
+          className={pad}
         >
           Submit
-        </button>
-        <button
-          disabled={responding}
-          onClick={handleDeny}
-          className={`px-3 ${pad} text-xs font-medium rounded-lg bg-inset/40 hover:bg-red-600/40 text-fg-muted hover:text-red-200 transition-colors disabled:opacity-50`}
-        >
+        </Button>
+        <Button variant="ghost" disabled={responding} onClick={handleDeny} className={pad}>
           Dismiss
-        </button>
+        </Button>
       </div>
     </div>
   );

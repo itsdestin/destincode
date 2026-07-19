@@ -194,14 +194,23 @@ export default function ContextPopup({
                 <>
                   {/* Split-button: main = /compact, chevron = open inline editor. */}
                   <div>
-                    <div className="flex w-full rounded-sm overflow-hidden border border-accent">
+                    {/* SPLIT BUTTON — a documented exception to "every button is a
+                        <Button>" (spec §11.8 C, Destin's call). The two halves share
+                        one clipped wrapper so the chevron reads as "options for THAT
+                        action"; giving either half its own rounded-lg corner would put
+                        a rounded edge inside the clip and break the seam. Kept
+                        hand-rolled, but adopting the app's radius and the real
+                        background-fade hover (was hover:opacity-90, which fades the
+                        label too — spec change 53). Don't "finish" this by splitting
+                        it into two Buttons; that was considered and rejected. */}
+                    <div className="flex w-full rounded-lg overflow-hidden border border-accent">
                       <button
                         onClick={() => {
                           onDispatch('/compact');
                           onClose();
                         }}
                         disabled={!sessionId}
-                        className="flex-1 py-2 px-3 text-sm font-medium bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex-1 py-2 px-3 text-sm font-medium bg-accent text-on-accent hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Compact conversation
                       </button>
@@ -209,7 +218,7 @@ export default function ContextPopup({
                         onClick={() => setCustomizing(true)}
                         disabled={!sessionId}
                         aria-label="Customize compact instructions"
-                        className="px-2 bg-accent text-on-accent border-l border-on-accent/30 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                        className="px-2 bg-accent text-on-accent border-l border-on-accent/30 hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
