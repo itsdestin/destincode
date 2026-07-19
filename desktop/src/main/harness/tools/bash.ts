@@ -67,6 +67,18 @@ export function extractCwd(out: string): { text: string; cwd: string | null } {
  *  workspace root doesn't read as "outside itself". */
 function isInside(root: string, candidate: string): boolean {
   const real = (p: string) => {
+    // .native FIRST: plain realpathSync does NOT expand Windows 8.3 short names.
+    // ctx.cwd arrives short (C:\Users\RUNNER~1\...) while `pwd -W` may report the
+    // SAME directory long (C:\Users\runneradmin\...), so startsWith() judged a
+    // plain `cd sub` "outside the workspace" and the scope guard reverted EVERY
+    // cd on Windows — persistence looked broken and each call emitted a bogus
+    // reset notice. .native canonicalizes both sides via GetFinalPathNameByHandle.
+    // Confirmed on windows-latest 2026-07-19 (short/long forms observed side by side).
+    try {
+      return fs.realpathSync.native(p);
+    } catch {
+      /* not on disk (yet) — fall back */
+    }
     try {
       return fs.realpathSync(p);
     } catch {
