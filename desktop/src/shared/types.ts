@@ -603,6 +603,31 @@ export interface SkillComponents {
 export type SessionFlagName = 'complete' | 'priority';
 export const SESSION_FLAG_NAMES: SessionFlagName[] = ['complete', 'priority'];
 
+/** Refusal message for flag/tag/note writes against a NATIVE session. Native
+ *  conversations have no Conversation Store record yet, so a write would either
+ *  be dropped silently or seed a mislabeled provider:'claude' phantom. Shared by
+ *  the ipcMain handlers, the remote WS handlers, and the renderer's disabled-state
+ *  tooltip so all three say the same thing. Retire with the native-sync-parity
+ *  work (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md). */
+export const NATIVE_META_UNSUPPORTED =
+  'Tags, notes, and flags are not yet supported for native sessions.';
+
+/** session:get-meta result. `supported: false` means writes will be REFUSED for
+ *  this session — render the controls disabled rather than accepting edits. */
+export interface SessionMetaResult {
+  tags: string[];
+  note: string;
+  /** OPTIONAL on purpose: any remote peer running an older build answers get-meta
+   *  without this field. Callers must treat a MISSING value as supported — only an
+   *  explicit `false` disables the UI. */
+  supported?: boolean;
+  /** Why writes are unsupported, supplied by whichever backend answered. Hosts
+   *  differ (a desktop native session vs. Android, where tags/notes simply aren't
+   *  built yet), and showing one host's reason on another would be a misleading
+   *  error message. Renderers display this and fall back to the generic constant. */
+  unsupportedReason?: string;
+}
+
 export interface PastSession {
   /** Claude Code's internal session ID (JSONL filename without extension) */
   sessionId: string;
@@ -794,7 +819,7 @@ export const IPC = {
   // Custom session tags (registry CRUD + application) and per-session notes.
   SESSION_SET_TAG: 'session:set-tag',   // (sessionId, tagId, value)
   SESSION_SET_NOTE: 'session:set-note', // (sessionId, note)
-  SESSION_GET_META: 'session:get-meta', // (sessionId) → { tags, note }
+  SESSION_GET_META: 'session:get-meta', // (sessionId) → { tags, note, supported }
   TAGS_LIST: 'tags:list',
   TAGS_CREATE: 'tags:create',           // (label, color)
   TAGS_UPDATE: 'tags:update',           // (id, { label?, color?, archived? })

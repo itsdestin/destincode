@@ -11,6 +11,7 @@ import type { RemoteConfig } from './remote-config';
 import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import type { NativeSessionHost } from './harness/native-session-host';
+import { NATIVE_META_UNSUPPORTED } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -108,6 +109,18 @@ export class RemoteServer {
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
   setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService }): void {
     this.nativeRuntime = rt;
+  }
+
+  /** True when this id belongs to a native session, which has no conversation-store
+   *  record to write meta into yet (see NATIVE_META_UNSUPPORTED). Remote clients pass
+   *  raw session ids — no sessionIdMap resolution is needed because native ids are
+   *  mapped to themselves (ipc-handlers sets sessionIdMap identity for native).
+   *  If the native runtime isn't wired yet there are no native sessions to protect,
+   *  so the answer is false and the write proceeds as before. */
+  private isNativeMetaTarget(sessionId: unknown): boolean {
+    const rt = this.nativeRuntime;
+    if (!rt) return false;
+    return rt.nativeHost.isNativeSessionId(String(sessionId ?? ''));
   }
 
   /** Injected by ipc-handlers after main.ts builds the lease client/requester,
@@ -768,6 +781,13 @@ export class RemoteServer {
         const { tagFlagKey } = await import('../shared/tags');
         const tagId = String(payload?.tagId ?? '');
         if (!tagId.startsWith('tag_')) { this.respond(client.ws, type, id, { ok: false, error: 'invalid tag id' }); break; }
+        // Same native refusal as the ipcMain handler. Without this the remote path
+        // still seeds the phantom provider:'claude' record the 2026-07-18 gate was
+        // written to prevent — a phone tagging a native session bypassed it entirely.
+        if (this.isNativeMetaTarget(payload?.sessionId)) {
+          this.respond(client.ws, type, id, { ok: false, error: NATIVE_META_UNSUPPORTED, unsupported: true, unsupportedReason: NATIVE_META_UNSUPPORTED });
+          break;
+        }
         noteFlagChanged(String(payload?.sessionId), tagFlagKey(tagId), !!payload?.value);
         this.respond(client.ws, type, id, { ok: true });
         break;
@@ -776,6 +796,10 @@ export class RemoteServer {
         const { noteSessionNote } = await import('./conversations/service');
         const text = String(payload?.note ?? '');
         if (text.length > 8000) { this.respond(client.ws, type, id, { ok: false, error: 'note too long' }); break; }
+        if (this.isNativeMetaTarget(payload?.sessionId)) {
+          this.respond(client.ws, type, id, { ok: false, error: NATIVE_META_UNSUPPORTED, unsupported: true, unsupportedReason: NATIVE_META_UNSUPPORTED });
+          break;
+        }
         noteSessionNote(String(payload?.sessionId), text);
         this.respond(client.ws, type, id, { ok: true });
         break;
@@ -783,7 +807,11 @@ export class RemoteServer {
       case 'session:get-meta': {
         const { getConversationStore } = await import('./conversations/service');
         const store = getConversationStore();
-        let out = { tags: [] as string[], note: '' };
+        let out = { tags: [] as string[], note: '', supported: true };
+        if (this.isNativeMetaTarget(payload?.sessionId)) {
+          this.respond(client.ws, type, id, { tags: [], note: '', supported: false, unsupportedReason: NATIVE_META_UNSUPPORTED });
+          break;
+        }
         if (store) {
           try {
             const rec = await store.get('claude', String(payload?.sessionId));
@@ -792,7 +820,7 @@ export class RemoteServer {
               for (const [k, v] of Object.entries(rec.flags)) {
                 if ((v as any).value && k.startsWith('tag:')) tags.push(k.slice(4));
               }
-              out = { tags, note: rec.note || '' };
+              out = { tags, note: rec.note || '', supported: true };
             }
           } catch { /* fall through to empty */ }
         }

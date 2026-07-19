@@ -5,6 +5,7 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { NoteEditor } from './tags/NoteEditor';
 import { Button } from './ui';
+import { NATIVE_META_UNSUPPORTED, type SessionMetaResult } from '../../shared/types';
 
 // Flag order must match ResumeBrowser's pill order so the UI is consistent.
 type FlagName = 'priority' | 'complete';
@@ -42,6 +43,18 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   // The session's tags/note as loaded on open — the baseline for the delta, so
   // Cancel changes nothing and Confirm only writes what the user toggled.
   const [original, setOriginal] = useState<{ tags: Set<string>; note: string }>({ tags: new Set(), note: '' });
+  // False for sessions whose meta the backend refuses to store (native). This
+  // prompt writes flags/tags/note and then IMMEDIATELY destroys the session, so
+  // there is never a read-back to reveal a refused write — the only honest option
+  // is to not offer the controls at all. See NATIVE_META_UNSUPPORTED.
+  const [metaSupported, setMetaSupported] = useState(true);
+  // Host-supplied wording — Android's reason differs from the desktop's.
+  const [metaReason, setMetaReason] = useState(NATIVE_META_UNSUPPORTED);
+  // Gate the meta section on the getMeta round-trip completing. Without this the
+  // NoteEditor mounts optimistically, and text typed before the response arrives
+  // is committed by its unmount-commit effect when the section then disappears —
+  // producing a note write that gets refused. Cheap: the IPC is sub-frame.
+  const [metaLoaded, setMetaLoaded] = useState(false);
 
   // On open, preload the session's current tags + note so already-applied tags
   // stay SELECTED. Reserved flags still default off — they're a "mark on close"
@@ -50,17 +63,23 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
     if (!open) return;
     setSel({ priority: false, complete: false });
     setDontShowAgain(false);
-    if (!sessionId) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); return; }
+    setMetaSupported(true);
+    setMetaLoaded(false);
+    if (!sessionId) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); setMetaLoaded(true); return; }
     let cancelled = false;
     Promise.resolve((window as any).claude.session.getMeta(sessionId))
-      .then((m: { tags: string[]; note: string }) => {
+      .then((m: SessionMetaResult) => {
         if (cancelled) return;
         const tags = new Set(m?.tags ?? []);
         setTagIds(new Set(tags));
         setNote(m?.note ?? '');
         setOriginal({ tags, note: m?.note ?? '' });
+        // Missing field = older backend; assume supported rather than hiding the UI.
+        setMetaSupported(m?.supported !== false);
+        setMetaReason(m?.unsupportedReason || NATIVE_META_UNSUPPORTED);
+        setMetaLoaded(true);
       })
-      .catch(() => { if (!cancelled) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); } });
+      .catch(() => { if (!cancelled) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); setMetaLoaded(true); } });
     return () => { cancelled = true; };
   }, [open, sessionId]);
 
@@ -111,41 +130,47 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
             )}
           </div>
           <div className="px-4 py-4 flex flex-col gap-3">
-            <label className="text-[10px] uppercase tracking-wider text-fg-muted">Tag before closing</label>
-            <div className="flex gap-1">
-              {FLAG_ORDER.map((flag) => {
-                const active = sel[flag];
-                return (
-                  <button
-                    key={flag}
-                    onClick={() => setSel((prev) => ({ ...prev, [flag]: !prev[flag] }))}
-                    className={`flex-1 px-1 py-1.5 rounded-sm text-[11px] transition-colors ${
-                      active
-                        ? 'bg-accent text-on-accent font-medium'
-                        : 'bg-inset text-fg-dim hover:bg-edge'
-                    }`}
-                    aria-pressed={active}
-                  >
-                    {FLAG_LABEL[flag]}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-[10px] text-fg-faint">
-              {sel.complete
-                ? 'Complete hides this from the resume menu by default.'
-                : 'Tap a flag to tag this session, or close with none.'}
-            </p>
-            <div className="flex flex-col gap-1.5 mt-2">
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted">Tags</label>
-              <TagPicker
-                appliedIds={tagIds}
-                onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
-                registry={registry}
-              />
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mt-1">Note</label>
-              <NoteEditor value={note} onSave={setNote} />
-            </div>
+            {!metaLoaded ? null : !metaSupported ? (
+              <p className="text-[11px] text-fg-muted leading-snug">{metaReason}</p>
+            ) : (
+              <>
+              <label className="text-[10px] uppercase tracking-wider text-fg-muted">Tag before closing</label>
+              <div className="flex gap-1">
+                {FLAG_ORDER.map((flag) => {
+                  const active = sel[flag];
+                  return (
+                    <button
+                      key={flag}
+                      onClick={() => setSel((prev) => ({ ...prev, [flag]: !prev[flag] }))}
+                      className={`flex-1 px-1 py-1.5 rounded-sm text-[11px] transition-colors ${
+                        active
+                          ? 'bg-accent text-on-accent font-medium'
+                          : 'bg-inset text-fg-dim hover:bg-edge'
+                      }`}
+                      aria-pressed={active}
+                    >
+                      {FLAG_LABEL[flag]}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-fg-faint">
+                {sel.complete
+                  ? 'Complete hides this from the resume menu by default.'
+                  : 'Tap a flag to tag this session, or close with none.'}
+              </p>
+              <div className="flex flex-col gap-1.5 mt-2">
+                <label className="text-[10px] uppercase tracking-wider text-fg-muted">Tags</label>
+                <TagPicker
+                  appliedIds={tagIds}
+                  onToggle={(id, next) => setTagIds((prev) => { const s = new Set(prev); if (next) s.add(id); else s.delete(id); return s; })}
+                  registry={registry}
+                />
+                <label className="text-[10px] uppercase tracking-wider text-fg-muted mt-1">Note</label>
+                <NoteEditor value={note} onSave={setNote} />
+              </div>
+              </>
+            )}
           </div>
           <div className="px-4 pb-4 flex items-center gap-2 justify-between">
             {/* Don't show again — persists suppress flag to localStorage so App.tsx

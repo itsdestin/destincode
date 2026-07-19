@@ -27,9 +27,11 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
     <>
       <button
         onClick={() => setOpen(true)}
-        disabled={!sessionId}
-        className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-edge-dim hover:bg-inset transition-colors max-w-[220px] disabled:opacity-50"
-        title="Tags & note for this session"
+        // Disabled for sessions the backend can't store meta for (native), so the
+        // popup never accepts an edit that would be refused. See NATIVE_META_UNSUPPORTED.
+        disabled={!sessionId || !meta.supported}
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-edge-dim enabled:hover:bg-inset transition-colors max-w-[220px] disabled:opacity-50 disabled:cursor-not-allowed"
+        title={meta.supported ? 'Tags & note for this session' : meta.unsupportedReason}
       >
         {hasContent ? (
           <span className="flex items-center gap-1 overflow-hidden">
