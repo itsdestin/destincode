@@ -12,6 +12,7 @@ import * as https from 'https';
 // submitIssue to embed the accurate YouCoded version in the issue body
 // instead of relying on navigator.userAgent from the renderer (Fix 2).
 import { app } from 'electron';
+import { getShell } from './harness/tools/bash';
 
 const GH_TOKEN_RE = /gh[opsu]_[A-Za-z0-9]{20,}/g;
 const ANTHROPIC_KEY_RE = /sk-ant-[A-Za-z0-9_-]{20,}/g;
@@ -331,6 +332,20 @@ export async function gatherDiagnostics(): Promise<string> {
     electronVersion: process.versions.electron || 'n/a',
     probes: {
       'git': git,
+      // Which shell the native harness resolved. A silent PowerShell fallback
+      // (no Git Bash found) degrades every local/OpenRouter session — no cwd
+      // persistence, bash-shaped commands fed to PowerShell — and was
+      // previously invisible in bug reports.
+      'harness shell': (() => {
+        try {
+          const s = getShell();
+          // ok:false for PowerShell — it IS a degraded state worth flagging in
+          // a report, not merely informational.
+          return { ok: s.label.startsWith('bash'), text: `${s.label} (${s.cmd})` };
+        } catch (err: any) {
+          return { ok: false, text: `detection failed: ${err?.message ?? String(err)}` };
+        }
+      })(),
       'claude': claude,
       'claude auth': claudeAuth,
       '~/.claude': claudeDir,

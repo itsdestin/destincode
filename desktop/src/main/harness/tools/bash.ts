@@ -3,6 +3,11 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+// `which` ships no type declarations and @types/which is not a dependency here.
+// Kept as a static import (not require) so the module-mocking layer can reach it
+// — that is what makes gitBashCandidates() unit-testable off-Windows.
+// @ts-ignore
+import * as which from 'which';
 import { z } from 'zod';
 import { defineTool } from './registry';
 
@@ -15,24 +20,99 @@ const MAX_TIMEOUT_MS = 600_000;
  *  evaporated, costing ~6 wasted tool calls in one observed session. */
 const CWD_SENTINEL = '__YC_CWD__';
 
+export interface ShellInfo { cmd: string; args: string[]; label: string }
+
+/** Every place Git Bash might live, best first. Two hardcoded Program Files
+ *  paths were the ENTIRE search before 2026-07-19, so a scoop/choco user-scope
+ *  install (%LOCALAPPDATA%\Programs\Git), a D:\Git install, or any non-default
+ *  location silently fell through to PowerShell — even though `git --version`
+ *  passed first-run's prerequisite check and git.exe was right there on PATH. */
+function gitBashCandidates(): string[] {
+  const out: string[] = [];
+  // Claude Code's own documented escape hatch for exactly this problem. Users
+  // who already set it for the CLI get correct detection here for free.
+  if (process.env.CLAUDE_CODE_GIT_BASH_PATH) out.push(process.env.CLAUDE_CODE_GIT_BASH_PATH);
+  // Derive from git.exe on PATH: <root>\cmd\git.exe -> <root>\bin\bash.exe.
+  // This is the branch that rescues every non-default install location.
+  const git = resolveOnPath('git');
+  if (git) {
+    // path.win32 explicitly, not `path`: this branch only runs on win32 (where
+    // they are the same), and naming it lets the test suite exercise Windows
+    // path shapes from a Linux/macOS runner — POSIX dirname() does not treat
+    // a backslash as a separator, so `path` here would be untestable off-Windows.
+    const root = path.win32.dirname(path.win32.dirname(git));
+    out.push(path.win32.join(root, 'bin', 'bash.exe'));
+    out.push(path.win32.join(root, 'usr', 'bin', 'bash.exe'));
+  }
+  out.push('C:/Program Files/Git/bin/bash.exe', 'C:/Program Files (x86)/Git/bin/bash.exe');
+  // Last resort: bash on PATH — but NEVER System32\bash.exe. That is the WSL
+  // launcher: it would run the command inside a Linux VM against a Windows cwd,
+  // so every path the model passed would be wrong. Worse than PowerShell.
+  const onPath = resolveOnPath('bash');
+  if (onPath && !/[\\/]system32[\\/]/i.test(onPath)) out.push(onPath);
+  return out;
+}
+
+/** `which`-based resolution, mirroring resolveCommand() in prerequisite-installer.
+ *  Returns null (not the bare name) so callers can tell "found" from "guessing". */
+function resolveOnPath(cmd: string): string | null {
+  try {
+    // Static import, not a runtime require(): require() escapes the module
+    // mocking layer, which made this branch impossible to unit-test.
+    return (which as any).sync(cmd, { nothrow: true }) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Windows shell preference (spec §2.3): Git Bash when present (models write
  *  bash), else PowerShell — and the tool DESCRIPTION states which is live. */
-export function detectShell(): { cmd: string; args: string[]; label: string } {
+export function detectShell(): ShellInfo {
   if (process.platform !== 'win32') return { cmd: '/bin/bash', args: ['-c'], label: 'bash' };
-  const gitBash = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files (x86)/Git/bin/bash.exe'].find((p) =>
-    fs.existsSync(p),
-  );
+  const gitBash = gitBashCandidates().find((p) => {
+    try {
+      return fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  });
   if (gitBash) return { cmd: gitBash, args: ['-c'], label: 'bash (Git Bash)' };
+  // Loud, because this degrades the tool: no cwd persistence, and the model is
+  // handed a shell its bash-shaped output does not fit. Silence here meant a
+  // PowerShell fallback never appeared in a bug report (dev-tools.ts surfaces
+  // it as the `harness shell` probe now).
+  console.warn(
+    '[harness/bash] Git Bash not found — falling back to PowerShell. ' +
+      '`cd` will NOT persist between calls. Install Git for Windows, or set ' +
+      'CLAUDE_CODE_GIT_BASH_PATH to your bash.exe.',
+  );
   return { cmd: 'powershell.exe', args: ['-NoProfile', '-Command'], label: 'PowerShell' };
 }
 
-const shell = detectShell();
+// LAZY + memoized, not module-load-time. First-run installs git via
+// `winget install Git.Git` AFTER the app has started (main.ts -> ipc-handlers ->
+// this module all import eagerly), so resolving at import pinned a brand-new
+// Windows user to PowerShell for their whole first session even though the
+// installer had just delivered bash.exe. Resolving on first USE — the earliest
+// of buildAiTools() reading .description or an actual execute() — lands after
+// first-run completes. Verified import chain: main.ts:8 -> ipc-handlers.ts:31.
+let cachedShell: ShellInfo | null = null;
+export function getShell(): ShellInfo {
+  if (!cachedShell) cachedShell = detectShell();
+  return cachedShell;
+}
+/** Test-only: drop the memo so a test can re-detect under a different platform. */
+export function resetShellCache(): void {
+  cachedShell = null;
+}
 
 /** Only the bash shells get cwd tracking. The PowerShell fallback would need a
  *  different sentinel AND an $LASTEXITCODE dance to preserve exit codes, and it
  *  only ever runs on Windows boxes without Git Bash — not worth the risk, so it
  *  stays stateless and the tool description says so. */
-const tracksCwd = shell.label.startsWith('bash');
+function tracksCwdFor(s: ShellInfo): boolean {
+  return s.label.startsWith('bash');
+}
 
 /** Wrap the command so the shell prints its final $PWD without clobbering the
  *  exit code. Newline-separated (not `;`) so trailing `&`, `# comments`, and
@@ -90,11 +170,14 @@ function isInside(root: string, candidate: string): boolean {
   return c === r || c.startsWith(r + path.sep);
 }
 
-export const BashTool = defineTool({
-  name: 'Bash',
-  description:
-    `Run a shell command (${shell.label} on this machine). ` +
-    (tracksCwd
+/** Built per-read so it reflects the LAZILY resolved shell (see getShell). A
+ *  module-level string would bake in whatever was detected at import — i.e.
+ *  "PowerShell" for a user whose git arrived during first-run. */
+export function bashDescription(): string {
+  const s = getShell();
+  return (
+    `Run a shell command (${s.label} on this machine). ` +
+    (tracksCwdFor(s)
       ? 'The working directory PERSISTS between calls: a `cd` carries to your next Bash call. ' +
         'Changing directory outside the workspace root is reverted (you get a reset notice). ' +
         'Environment variables, aliases, and shell functions do NOT persist — each call is a fresh shell. ' +
@@ -102,7 +185,15 @@ export const BashTool = defineTool({
         'workspace root, NOT from this shell directory — prefer absolute paths with them. '
       : 'Each call starts fresh in the workspace directory — `cd` does NOT carry to the next call, ' +
         'so use absolute paths or chain with `cd X && ...` in one command. ') +
-    'Output is capped; long-running commands time out (default 2 minutes, max 10 via timeout).',
+    'Output is capped; long-running commands time out (default 2 minutes, max 10 via timeout).'
+  );
+}
+
+export const BashTool = defineTool({
+  name: 'Bash',
+  // Placeholder: the real text comes from the getter installed below, which
+  // resolves the shell on first read (harness-session.ts buildAiTools()).
+  description: '',
   inputSchema: z.object({
     command: z.string(),
     timeout: z.number().int().optional().describe('Timeout in milliseconds'),
@@ -121,7 +212,8 @@ export const BashTool = defineTool({
     // line-continuation, or a dangling `&&`/`||`/`|` (which swallows the
     // `__yc_rc=$?` line, so a FAILED command would exit 0 — verified 2026-07-18).
     // Such commands are malformed anyway; skipping restores the plain behavior.
-    const probe = tracksCwd && !/(\\|&&|\|\||\|)\s*$/.test(args.command);
+    const shell = getShell();
+    const probe = tracksCwdFor(shell) && !/(\\|&&|\|\||\|)\s*$/.test(args.command);
     return new Promise((resolve) => {
       const child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command) : args.command], {
         cwd: startCwd,
@@ -186,4 +278,14 @@ export const BashTool = defineTool({
       child.on('close', (code) => finish(code === 0 ? '' : `(exit code ${code})\n`, code !== 0, code));
     });
   },
+});
+
+// Installed AFTER defineTool because that helper spreads its input ({...def}),
+// and a spread EVALUATES getters — declaring this inline would freeze the text
+// at import, defeating the lazy resolve. buildAiTools() reads .description once
+// per session (harness-session.ts), which is the moment we want detection.
+Object.defineProperty(BashTool, 'description', {
+  get: bashDescription,
+  enumerable: true,
+  configurable: true,
 });
