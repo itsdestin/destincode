@@ -99,12 +99,16 @@ beforeAll(() => {
   process.env.USERPROFILE = tmpHome;
 });
 
-afterAll(async () => {
+afterAll(() => {
   if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
   if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
-  // Let any in-flight background init settle before removing the tree.
-  await new Promise((r) => setTimeout(r, 50));
-  try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best effort */ }
+  // The fixture tree is deliberately NOT removed. registerIpcHandlers starts
+  // background init (ProviderRegistry.init → writes ~/.youcoded/providers.json)
+  // that nothing exposes a handle to await, so deleting the tree races those
+  // writes and they surface as unhandled ENOENT rejections — which vitest fails
+  // the run on even though every test passed. A timed flush only hid it on fast
+  // machines; it went red on the macOS runner. Leaving one small mkdtemp dir per
+  // run in the OS temp area is the deterministic trade.
 });
 
 beforeEach(() => {
