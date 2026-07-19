@@ -17,7 +17,7 @@ import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
-import { CloseButton } from './ui';
+import { CloseButton, TextInput } from './ui';
 
 type SortKey = 'recent' | 'name' | 'type';
 
@@ -358,11 +358,17 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       </div>
       {/* Search + sort */}
       <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-edge-dim shrink-0">
-        <input
+        {/* Shared TextInput (change 20). Retires the gray `focus:border-fg-muted`
+            focus and the `bg-canvas` field surface for the app-wide field look;
+            flex-1/min-w-0 stay because this input shares its row with the sort
+            <select>. */}
+        <TextInput
+          size="sm"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search files"
-          className="flex-1 min-w-0 bg-canvas border border-edge rounded text-[11px] text-fg px-2 py-1 outline-none focus:border-fg-muted"
+          aria-label="Search files"
+          className="flex-1 min-w-0"
         />
         <select
           value={sortBy}

@@ -7,6 +7,7 @@
 // overlay) — otherwise its own text (the match counter) would be walked and
 // matched by the search.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { TextInput } from './ui';
 
 function highlightsSupported(): boolean {
   return typeof CSS !== 'undefined' && 'highlights' in CSS && typeof (window as any).Highlight === 'function';
@@ -110,8 +111,16 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
 
   return (
     <div className={`absolute ${positionClassName} z-20 flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg`}>
-      <input
+      {/* Change 20: this was the gray-focus variant (bg-canvas + rounded-md +
+          focus:border-fg-muted) — all three retired by the shared FIELD surface.
+          Enter / Shift+Enter / Escape handling and the autofocus ref are unchanged.
+          The prev/next/close buttons beside it are navigation, not a submit, so
+          this stays a plain field rather than an InputGroup. */}
+      <TextInput
         ref={inputRef}
+        size="sm"
+        aria-label={placeholder}
+        className="w-[150px]"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={(e) => {
@@ -119,7 +128,6 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
           else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
         }}
         placeholder={placeholder}
-        className="bg-canvas text-fg text-xs px-2 py-1 rounded-md w-[150px] outline-none border border-edge focus:border-fg-muted"
       />
       <span className="text-[11px] text-fg-muted tabular-nums text-center px-1 min-w-[40px]">{shown}</span>
       {/* Lucide-style SVGs (stroke currentColor) — the app's icon convention;

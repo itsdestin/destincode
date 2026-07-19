@@ -24,7 +24,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
-import { Button, CloseButton } from '../ui';
+import { Button, CloseButton, Textarea } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { useAccount } from '../../state/account-context';
 import { REPORT_REASON_MAX } from '../../state/marketplace-constants';
@@ -180,15 +180,21 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
               >
                 Reason <span className="text-fg-faint">(optional)</span>
               </label>
-              <textarea
+              {/* Change 42: onto the shared FIELD surface. The hand-rolled
+                  disabled:opacity-60 is dropped in favour of the primitive's own
+                  disabled treatment (opacity-50 + not-allowed cursor), so the
+                  mid-submit dim matches every other disabled field in the app.
+                  Report button stays in the footer row below — not an InputGroup. */}
+              <Textarea
                 id="report-reason"
+                size="md"
+                className="w-full"
                 value={reason}
                 onChange={e => setReason(e.target.value.slice(0, REPORT_REASON_MAX))}
                 rows={3}
                 maxLength={REPORT_REASON_MAX}
                 placeholder={`Why are you reporting ${displayName}'s review?`}
                 disabled={inFlight}
-                className="w-full rounded-lg bg-inset border border-edge text-sm text-fg placeholder:text-fg-faint resize-none px-3 py-2 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
               />
               {/* Character counter — shows remaining when text is present */}
               {reason.length > 0 && (

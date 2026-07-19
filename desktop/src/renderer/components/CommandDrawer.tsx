@@ -199,7 +199,14 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
         </div>
 
         {/* Search bar — read-only mirror in search mode (InputBar drives the
-             filter), interactive in browse mode (compass button) */}
+             filter), interactive in browse mode (compass button).
+             Deliberately NOT migrated to <InputGroup> (change 77): this is a
+             mode-switching composite, not a field with a submit. In search mode
+             the <input> is swapped for a read-only <span> mirror and the wrapper
+             takes an onClick, neither of which InputGroup models; and the two
+             trailing icon buttons are navigation (Library, Marketplace), not
+             field actions. Left hand-rolled on purpose — revisit only with a
+             deliberate design decision, not as a sweep. */}
         <div className="px-4 pb-3">
           <div
             className="flex items-center gap-2 bg-well rounded-lg px-3 py-2 border border-edge-dim"

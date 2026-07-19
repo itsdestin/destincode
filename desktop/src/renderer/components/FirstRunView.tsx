@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import type { FirstRunState, PrerequisiteState } from '../../shared/first-run-types';
 import BrailleSpinner from './BrailleSpinner';
 import { describeStep } from './first-run/describe-step';
-import { Button } from './ui';
+import { Button, TextInput } from './ui';
 
 /* ------------------------------------------------------------------ */
 /*  StatusIcon                                                        */
@@ -115,12 +115,19 @@ function AuthScreen({
         </button>
       ) : (
         <div className="flex flex-col items-center gap-3 w-full">
-          <input
+          {/* Change 20: bg-well + rounded-md → the shared FIELD surface (password
+              fields route through TextInput too; type is preserved). NOT an
+              InputGroup — the Verify button sits below, with the key-handling
+              disclaimer between it and the field. aria-label added: the field had
+              only a placeholder for a name. */}
+          <TextInput
             type="password"
+            size="md"
+            aria-label="Anthropic API key"
+            className="w-full"
             placeholder="sk-ant-..."
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            className="w-full px-3 py-2 rounded-md bg-well border border-edge text-fg text-sm placeholder:text-fg-faint focus:outline-none focus:border-accent"
           />
           <p className="text-xs text-fg-muted text-center leading-relaxed">
             Your key is passed directly to Claude Code and stored in its secure config.

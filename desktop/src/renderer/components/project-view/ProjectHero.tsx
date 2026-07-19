@@ -94,7 +94,7 @@ function ExternalLink({ size = 14 }: { size?: number }) {
 
 // Git-branch glyph shared with ProjectSwitcher — lives in ./icons.tsx.
 import { GitBranchIcon } from './icons';
-import { Button } from '../ui';
+import { Button, TextInput } from '../ui';
 
 export function ProjectHero({
   project,
@@ -258,13 +258,17 @@ export function ProjectHero({
             hides for synced projects (move-out-of-sync is a deferred flow). */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {renaming ? (
-            <input
+            /* Shared TextInput (change 20). Stays a plain field, not an
+               InputGroup — this one commits on Enter/blur and has no submit
+               button to put inside. */
+            <TextInput
+              size="sm"
               value={nickname}
               autoFocus
+              aria-label="Project nickname"
               onChange={(e) => setNickname(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') void commitRename(); if (e.key === 'Escape') { setNickname(project.name); setRenaming(false); } }}
               onBlur={() => void commitRename()}
-              className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none"
             />
           ) : (
             <Button variant="secondary" size="sm" onClick={() => setRenaming(true)}>

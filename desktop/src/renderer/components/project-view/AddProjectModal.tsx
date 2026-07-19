@@ -10,7 +10,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
 import ImportProjectModal from '../ImportProjectModal';
-import { Button } from '../ui';
+import { Button, InputGroup } from '../ui';
 
 interface Props {
   onClose: () => void;
@@ -134,26 +134,27 @@ export default function AddProjectModal({ onClose, onAdded }: Props) {
             <div className="mt-3 rounded-lg border border-edge p-3">
               <div className="text-[13px] font-semibold text-fg">Start something new</div>
               <div className="mt-0.5 text-xs text-fg-dim">Creates an empty project in YouCoded that syncs across your devices.</div>
-              <div className="mt-2 flex items-center gap-2">
+              {/* Change 77: Create submits this field, so it moves INSIDE the
+                  field rather than sitting alongside it. Cancel stays in the
+                  modal footer — only the submit goes inside. */}
+              <InputGroup className="mt-2">
                 {/* No autoFocus (deliberate): the choose step presents two co-equal
                     choices — auto-focusing would bias toward create-new and pre-arm Enter. */}
-                <input
+                <InputGroup.Field
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') void createNew(); }}
                   placeholder="Project name…"
-                  className="flex-1 bg-inset text-fg text-sm rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none"
+                  aria-label="Project name"
                 />
-                {/* py-1 keeps the button the same height as the name input beside it. */}
                 <Button
-                  size="lg"
-                  className="py-1"
+                  size="sm"
                   onClick={() => void createNew()}
                   disabled={busy || !name.trim()}
                 >
                   {busy ? 'Creating…' : 'Create'}
                 </Button>
-              </div>
+              </InputGroup>
             </div>
 
             {/* Choice 2: existing folder → step 2 */}

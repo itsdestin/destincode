@@ -4,7 +4,7 @@
 // Class idioms (text sizes, bg-well surface, accent buttons, border-edge-dim)
 // mirror ProvidersSection's own rows so the card reads as part of the section.
 import React, { useEffect, useState } from 'react';
-import { Button } from './ui';
+import { Button, TextInput } from './ui';
 
 interface EngineStatusView {
   installed: boolean;
@@ -147,9 +147,14 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
           {/* Context-length knob. Commits on Enter or blur. */}
           <div className="flex items-center justify-between gap-2">
             <label htmlFor="engine-context-size" className="text-[11px] text-fg-dim">Context length (tokens)</label>
-            <input
+            {/* Change 20: the shared field surface. type="number" (plus min/step
+                and the busy-disabled state) passes straight through — TextInput is
+                deliberately not restricted to type="text". size="sm" matches the
+                px-2.5 py-1.5 this input already used. */}
+            <TextInput
               id="engine-context-size"
               type="number"
+              size="sm"
               min={1024}
               step={1024}
               value={ctxDraft ?? ''}
@@ -157,7 +162,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
               onChange={(e) => setCtxDraft(e.target.value === '' ? null : Number(e.target.value))}
               onBlur={() => void commitContext()}
               onKeyDown={(e) => { if (e.key === 'Enter') void commitContext(); }}
-              className="w-24 text-xs bg-inset border border-edge-dim rounded-lg px-2.5 py-1.5 text-fg focus:outline-none focus:border-accent disabled:opacity-60"
+              className="w-24"
             />
           </div>
 

@@ -9,7 +9,7 @@
 // plain-word status (never ●◐○ glyphs), consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button } from './ui';
+import { Button, InputGroup } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
@@ -196,26 +196,29 @@ function ModelBrowser({
       <p className="text-xs text-fg font-medium mb-2.5">Models</p>
 
       {/* Search — filters recommended/installed locally, searches Hugging Face. */}
-      <div className="relative mb-3">
-        <input
+      {/* Change 77: the clear-X was already an inside-the-field action, faked with
+          `absolute` positioning plus a hand-tuned pr-8 to keep the text off it.
+          InputGroup makes it a real inline child, so the reserved space can no
+          longer drift out of sync with the icon. */}
+      <InputGroup className="w-full mb-3">
+        <InputGroup.Field
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search models (e.g. qwen, llama)…"
           aria-label="Search models"
-          className="w-full text-xs bg-inset border border-edge-dim rounded-lg pl-3 pr-8 py-2 text-fg focus:outline-none focus:border-accent"
         />
         {query && (
           <button
             onClick={() => setQuery('')}
             aria-label="Clear search"
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-muted hover:text-fg"
+            className="shrink-0 px-1 text-fg-muted hover:text-fg"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         )}
-      </div>
+      </InputGroup>
 
       {curated === null || installed === null ? (
         <p className="text-[11px] text-fg-muted px-1">Loading…</p>

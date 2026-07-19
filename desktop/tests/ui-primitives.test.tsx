@@ -24,7 +24,8 @@ import { SegmentedTabs } from '../src/renderer/components/ui/SegmentedTabs';
 import { ProgressBar } from '../src/renderer/components/ui/ProgressBar';
 import { Toast } from '../src/renderer/components/ui/Toast';
 import { LoadingState, EmptyState, ErrorState, FieldError } from '../src/renderer/components/ui/states';
-import { FIELD } from '../src/renderer/components/ui/field';
+import { FIELD, FIELD_SURFACE } from '../src/renderer/components/ui/field';
+import { InputGroup } from '../src/renderer/components/ui/InputGroup';
 
 // jsdom does not implement scrollIntoView. Select uses it to bring the current
 // value into view when a long catalog opens; every real browser and the Android
@@ -328,6 +329,93 @@ describe('field surface', () => {
   it('Textarea can opt back into resizing', () => {
     const { container } = render(<Textarea resizable />);
     expect(container.querySelector('textarea')!.className).not.toContain('resize-none');
+  });
+});
+
+describe('InputGroup (change 77 — the action goes inside the field)', () => {
+  it('moves the focus state to the wrapper', () => {
+    // The whole reason this is a primitive and not a className: the input inside
+    // is borderless, so `focus:border-accent` on it would paint nothing. If this
+    // assertion ever fails, focusing one of these fields shows NO focus state.
+    const { container } = render(
+      <InputGroup>
+        <InputGroup.Field />
+      </InputGroup>,
+    );
+    const wrapper = container.firstElementChild!;
+    expect(wrapper.className).toContain('focus-within:border-accent');
+    expect(wrapper.className).toContain('border-edge-dim');
+  });
+
+  it('gives the wrapper the surface and the input none of it', () => {
+    const { container } = render(
+      <InputGroup>
+        <InputGroup.Field />
+      </InputGroup>,
+    );
+    const wrapper = container.firstElementChild!;
+    const input = container.querySelector('input')!;
+
+    expect(wrapper.className).toContain('bg-inset');
+    // The input must stay bare or you get a border inside a border.
+    expect(input.className).toContain('bg-transparent');
+    expect(input.className).toContain('border-0');
+    expect(input.className).not.toContain('bg-inset');
+  });
+
+  it('passes its size down to the field without prop drilling', () => {
+    const { container } = render(
+      <InputGroup size="sm">
+        <InputGroup.Field />
+      </InputGroup>,
+    );
+    // sm padding, from FIELD_SIZE — same scale as every other field.
+    expect(container.querySelector('input')!.className).toContain('px-2.5');
+  });
+
+  it('lets a field override the inherited size', () => {
+    const { container } = render(
+      <InputGroup size="sm">
+        <InputGroup.Field size="md" />
+      </InputGroup>,
+    );
+    expect(container.querySelector('input')!.className).toContain('px-3');
+  });
+
+  it('keeps the native input type', () => {
+    const { container } = render(
+      <InputGroup>
+        <InputGroup.Field type="password" />
+      </InputGroup>,
+    );
+    expect(container.querySelector('input')!).toHaveAttribute('type', 'password');
+  });
+
+  it('lets a caller override a field size deterministically', () => {
+    // fieldClasses goes through mergeClasses for the same reason buttonClasses
+    // does — Tailwind resolves competing utilities by CSS source order, so plain
+    // concatenation left the winner up to emission order. If this regresses, a
+    // caller passing text-sm/px-4 gets a coin flip, not an override.
+    const { container } = render(<TextInput size="md" className="text-sm px-4" />);
+    const cls = container.querySelector('input')!.className;
+    expect(cls).toContain('text-sm');
+    expect(cls).toContain('px-4');
+    expect(cls).not.toContain('text-xs');
+    expect(cls).not.toContain('px-3');
+  });
+
+  it('keeps non-conflicting base classes when overriding', () => {
+    const { container } = render(<TextInput className="text-sm" />);
+    const cls = container.querySelector('input')!.className;
+    // Colors and the focus rule are a different group — they must survive.
+    expect(cls).toContain('bg-inset');
+    expect(cls).toContain('focus:border-accent');
+  });
+
+  it('shares one surface definition with the plain field', () => {
+    // FIELD_SURFACE is split out of FIELD precisely so a bordered field and a
+    // grouped one can't drift apart. Pin that they still agree.
+    expect(FIELD).toContain(FIELD_SURFACE);
   });
 });
 

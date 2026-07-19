@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button } from './ui';
+import { Button, InputGroup, Select, TextInput, Toggle } from './ui';
 import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
@@ -103,6 +103,11 @@ const ADD_TYPE_OPTIONS: { value: ProviderType; label: string; needsBaseUrl?: boo
   { value: 'google', label: 'Google' },
   { value: 'openai-compatible', label: 'Custom endpoint (OpenAI-compatible)', needsBaseUrl: true },
 ];
+
+// The same list in the shape <Select> wants. Built once at module scope (not per
+// render) so the dropdown's open-effect isn't handed a brand-new options array
+// on every keystroke in the form beside it.
+const ADD_TYPE_SELECT_OPTIONS = ADD_TYPE_OPTIONS.map((o) => ({ value: o.value as string, label: o.label }));
 
 // `embedded`: rendered inside the Model Providers popup's "OpenRouter/API"
 // section, which supplies its own heading + a dedicated OpenRouter connect flow
@@ -273,16 +278,17 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
 
         {/* Enable/disable toggle — hidden for the dormant local engine (nothing
             to enable in Plan A). */}
+        {/* Change 19: the hand-rolled 32x18 switch becomes the shared Toggle (one
+            36x20 geometry app-wide). It also gains a real accessible name — the
+            old button announced only aria-pressed with no label at all. */}
         {!isLocal && (
-          <button
-            onClick={() => void toggleEnabled()}
+          <Toggle
+            checked={provider.enabled}
+            onChange={() => void toggleEnabled()}
             disabled={busy}
-            aria-pressed={provider.enabled}
-            className={`w-8 h-4.5 rounded-full relative transition-colors shrink-0 disabled:opacity-60 ${provider.enabled ? 'bg-accent' : 'bg-inset'}`}
+            aria-label={`Enable ${provider.label}`}
             title={provider.enabled ? 'Enabled' : 'Disabled'}
-          >
-            <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${provider.enabled ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-          </button>
+          />
         )}
       </div>
 
@@ -314,19 +320,23 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       {/* Key input — revealed on Add/Replace key. */}
       {keyOpen && (
         <div className="mt-2 flex items-center gap-2">
-          <input
-            type="password"
-            autoFocus
-            value={keyDraft}
-            onChange={(e) => setKeyDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void saveKey(); }}
-            placeholder="Paste API key"
-            aria-label={`${provider.label} API key`}
-            className="flex-1 text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
-          />
-          <Button onClick={() => void saveKey()} disabled={busy || keyDraft.trim().length === 0} className="py-2">
-            {busy ? 'Saving…' : 'Save'}
-          </Button>
+          {/* Change 77: Save moves INSIDE the field. Cancel deliberately stays
+              OUTSIDE — a field carries one action; two buttons inside it stop the
+              thing reading as a field at all. */}
+          <InputGroup className="flex-1">
+            <InputGroup.Field
+              type="password"
+              autoFocus
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void saveKey(); }}
+              placeholder="Paste API key"
+              aria-label={`${provider.label} API key`}
+            />
+            <Button size="sm" onClick={() => void saveKey()} disabled={busy || keyDraft.trim().length === 0}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+          </InputGroup>
           <Button variant="secondary" onClick={() => { setKeyOpen(false); setKeyDraft(''); }} className="py-2">
             Cancel
           </Button>
@@ -415,30 +425,29 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
     <div className="space-y-2 rounded-lg bg-inset border border-edge-dim p-3">
       <h4 className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">Add provider</h4>
 
-      {/* Type */}
+      {/* Type — change 21: the native <select> is gone. A native option list is
+          drawn by the OS, so a themed app dropped an OS-blue menu out of it;
+          <Select> renders the list itself. The old <label htmlFor> can't point at
+          a <button> trigger, so the name moves onto the control as aria-label. */}
       <div className="space-y-1">
-        <label htmlFor="add-provider-type" className="text-[10px] text-fg-muted">Type</label>
-        <select
-          id="add-provider-type"
+        <p className="text-[10px] text-fg-muted">Type</p>
+        <Select
+          options={ADD_TYPE_SELECT_OPTIONS}
           value={type}
-          onChange={(e) => setType(e.target.value as ProviderType)}
-          className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
-        >
-          {ADD_TYPE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+          onChange={(v) => setType(v as ProviderType)}
+          aria-label="Provider type"
+        />
       </div>
 
       {/* Label */}
       <div className="space-y-1">
         <label htmlFor="add-provider-label" className="text-[10px] text-fg-muted">Name</label>
-        <input
+        <TextInput
           id="add-provider-label"
           value={label}
           onChange={(e) => setLabel(e.target.value)}
           placeholder="e.g. My OpenAI"
-          className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
+          className="w-full"
         />
       </div>
 
@@ -446,12 +455,12 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
       {needsBaseUrl && (
         <div className="space-y-1">
           <label htmlFor="add-provider-baseurl" className="text-[10px] text-fg-muted">Base URL</label>
-          <input
+          <TextInput
             id="add-provider-baseurl"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="http://localhost:11434/v1"
-            className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
+            className="w-full"
           />
         </div>
       )}
@@ -459,13 +468,13 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
       {/* Optional key */}
       <div className="space-y-1">
         <label htmlFor="add-provider-key" className="text-[10px] text-fg-muted">API key (optional)</label>
-        <input
+        <TextInput
           id="add-provider-key"
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="Paste API key"
-          className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
+          className="w-full"
         />
       </div>
 

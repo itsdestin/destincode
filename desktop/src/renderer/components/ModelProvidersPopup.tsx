@@ -9,7 +9,7 @@ import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
 import SettingsRow from './SettingsRow';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, InputGroup, TextInput } from './ui';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -416,7 +416,10 @@ function ConnectOpenRouterModal({
             <li>Paste the key below and press Connect.</li>
           </ol>
 
-          <input
+          {/* Change 20 only. NOT an InputGroup: Connect/Cancel sit in the modal
+              footer BELOW the field, which is explicitly the shape change 77 does
+              not convert. */}
+          <TextInput
             type="password"
             autoFocus
             value={keyDraft}
@@ -424,7 +427,7 @@ function ConnectOpenRouterModal({
             onKeyDown={(e) => { if (e.key === 'Enter') void save(); }}
             placeholder="Paste your OpenRouter API key"
             aria-label="OpenRouter API key"
-            className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
+            className="w-full"
           />
 
           {note && (
@@ -624,16 +627,23 @@ function SearchProvidersBlock() {
 
               {isEditing && !row.hasKey && (
                 <div className="mt-2 space-y-2">
-                  <input
-                    type="password"
-                    autoFocus
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void save(row.id); }}
-                    placeholder={`Paste your ${row.label} API key`}
-                    aria-label={`${row.label} API key`}
-                    className="w-full text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
-                  />
+                  {/* Change 77: Save moves INSIDE the field. Cancel stays outside
+                      (one action per field), and so does the "Get a free key"
+                      link, which is a navigation aid rather than a field action. */}
+                  <InputGroup className="w-full">
+                    <InputGroup.Field
+                      type="password"
+                      autoFocus
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void save(row.id); }}
+                      placeholder={`Paste your ${row.label} API key`}
+                      aria-label={`${row.label} API key`}
+                    />
+                    <Button size="sm" onClick={() => void save(row.id)} disabled={busy || draft.trim().length === 0}>
+                      {busy ? 'Checking…' : 'Save'}
+                    </Button>
+                  </InputGroup>
                   <div className="flex items-center justify-between gap-2">
                     <button
                       onClick={() => void (window as any).claude.shell.openExternal(meta.url)}
@@ -641,14 +651,9 @@ function SearchProvidersBlock() {
                     >
                       Get a free key
                     </button>
-                    <div className="flex gap-2">
-                      <Button variant="secondary" size="sm" onClick={() => { setEditing(null); setDraft(''); }}>
-                        Cancel
-                      </Button>
-                      <Button size="sm" onClick={() => void save(row.id)} disabled={busy || draft.trim().length === 0}>
-                        {busy ? 'Checking…' : 'Save'}
-                      </Button>
-                    </div>
+                    <Button variant="secondary" size="sm" onClick={() => { setEditing(null); setDraft(''); }}>
+                      Cancel
+                    </Button>
                   </div>
                 </div>
               )}

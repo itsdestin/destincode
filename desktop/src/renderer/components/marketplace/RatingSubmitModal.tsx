@@ -24,7 +24,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
-import { Button, CloseButton } from '../ui';
+import { Button, CloseButton, Textarea } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { useAccount } from '../../state/account-context';
 import { useMarketplaceStats } from '../../state/marketplace-stats-context';
@@ -285,14 +285,21 @@ export default function RatingSubmitModal({
               >
                 Review <span className="text-fg-faint">(optional)</span>
               </label>
-              <textarea
+              {/* Change 42: onto the shared FIELD surface — this was the
+                  `focus:ring-1` recipe, which the primitive replaces with a focus
+                  border. resize-none is the primitive's default, so it's dropped
+                  here rather than repeated. The Submit button stays in the footer
+                  row BELOW the field (not an InputGroup — change 77 is only for
+                  actions that belong inside the field). */}
+              <Textarea
                 id="review-text"
+                size="md"
+                className="w-full"
                 value={reviewText}
                 onChange={e => setReviewText(e.target.value.slice(0, MAX_REVIEW_CHARS))}
                 rows={3}
                 maxLength={MAX_REVIEW_CHARS}
                 placeholder="Share your experience with this plugin…"
-                className="w-full rounded-lg bg-inset border border-edge text-sm text-fg placeholder:text-fg-faint resize-none px-3 py-2 focus:outline-none focus:ring-1 focus:ring-accent"
               />
               {/* Character counter — shows remaining only when text is present */}
               {reviewText.length > 0 && (

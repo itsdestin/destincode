@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
+import { Select, TextInput } from './ui';
 
 // The two built-in native harness presets (personality profiles, not capability
 // tiers). A native session is stamped with one at create time; it drives the
@@ -250,40 +251,45 @@ export function RuntimeBindingFields({
             <>
               <div>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Provider</label>
-                <select
+                {/* Change 21: no native <select> — its option list is drawn by the
+                    OS, so a themed app dropped an OS-blue menu out of it. The
+                    <label> above is not associated (it never had an htmlFor), so
+                    the name is carried by aria-label. */}
+                <Select
+                  options={nb.readyProviders.map((p) => ({ value: p.id, label: p.label }))}
                   value={nb.selectedProviderId}
-                  onChange={(e) => {
-                    const pid = e.target.value;
+                  onChange={(pid) => {
                     const firstModel = nb.modelCatalog.find((m) => m.providerId === pid)?.id ?? '';
                     nb.setBinding({ providerId: pid, modelId: firstModel });
                   }}
-                  className="w-full bg-inset text-fg text-xs rounded-sm px-2 py-1 border border-edge"
-                >
-                  {nb.readyProviders.map((p) => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
+                  size="sm"
+                  aria-label="Provider"
+                />
               </div>
               <div>
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
                 {nb.needsFreeformModel ? (
-                  <input
+                  <TextInput
                     type="text"
+                    size="sm"
                     value={nb.selectedModelId}
                     placeholder="e.g. llama3.1"
+                    aria-label="Model"
                     onChange={(e) => nb.setBinding({ providerId: nb.selectedProviderId, modelId: e.target.value })}
-                    className="w-full bg-inset text-fg text-xs rounded-sm px-2 py-1 border border-edge"
+                    className="w-full"
                   />
                 ) : (
-                  <select
+                  // Change 21. The whole provider catalog is passed through
+                  // UNCAPPED — for an OpenRouter-style provider that is dozens of
+                  // entries, and Select's own menu already scrolls and scrolls the
+                  // current value into view on open.
+                  <Select
+                    options={nb.providerModels.map((m) => ({ value: m.id, label: m.label }))}
                     value={nb.selectedModelId}
-                    onChange={(e) => nb.setBinding({ providerId: nb.selectedProviderId, modelId: e.target.value })}
-                    className="w-full bg-inset text-fg text-xs rounded-sm px-2 py-1 border border-edge"
-                  >
-                    {nb.providerModels.map((m) => (
-                      <option key={m.id} value={m.id}>{m.label}</option>
-                    ))}
-                  </select>
+                    onChange={(modelId) => nb.setBinding({ providerId: nb.selectedProviderId, modelId })}
+                    size="sm"
+                    aria-label="Model"
+                  />
                 )}
               </div>
 

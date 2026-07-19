@@ -4,6 +4,7 @@ import type { TagRecord } from '../../../shared/tags';
 import { TAG_COLORS, DEFAULT_TAG_COLOR, TagColor } from '../../../shared/tags';
 import { TagRegistryApi } from '../../hooks/useTagRegistry';
 import { TagChip } from './TagChip';
+import { Button, InputGroup, TextInput } from '../ui';
 
 export function TagPicker({ appliedIds, onToggle, registry }: {
   appliedIds: Set<string>;
@@ -29,20 +30,26 @@ export function TagPicker({ appliedIds, onToggle, registry }: {
 
   return (
     <div className="flex flex-col gap-1.5">
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter' && canCreate) { e.preventDefault(); handleCreate(); } }}
-        placeholder="Search or create a tag…"
-        className="w-full rounded-sm bg-inset text-fg text-[11px] px-2 py-1 border border-edge-dim focus:border-accent outline-none"
-      />
-      <div className="max-h-48 overflow-y-auto flex flex-col gap-0.5">
+      {/* Change 77: the Create action moves from a list row into the field itself.
+          Enter still creates (same onKeyDown), and the button stays conditional on
+          canCreate. The row used to echo the typed name (+ Create “x”); inside the
+          field that echo is redundant visually, so it survives as the aria-label —
+          screen-reader users still hear which tag they're about to create. */}
+      <InputGroup size="sm">
+        <InputGroup.Field
+          aria-label="Search or create a tag"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && canCreate) { e.preventDefault(); handleCreate(); } }}
+          placeholder="Search or create a tag…"
+        />
         {canCreate && (
-          <button onClick={handleCreate}
-            className="text-left px-2 py-1 text-[11px] rounded-sm hover:bg-inset text-accent">
-            + Create “{query.trim()}”
-          </button>
+          <Button size="sm" onClick={handleCreate} aria-label={`Create tag ${query.trim()}`}>
+            Create
+          </Button>
         )}
+      </InputGroup>
+      <div className="max-h-48 overflow-y-auto flex flex-col gap-0.5">
         {visible.map((t) => (
           <TagRow key={t.id} tag={t} applied={appliedIds.has(t.id)}
             editing={editing === t.id}
@@ -81,9 +88,11 @@ function TagRow({ tag, applied, editing, onToggle, onEdit, registry }: {
       </div>
       {editing && (
         <div className="ml-5 mr-1 mb-1 flex flex-col gap-1.5 p-2 rounded-sm bg-inset border border-edge-dim">
-          <input value={label} onChange={(e) => setLabel(e.target.value)}
-            onBlur={() => { if (label.trim() && label !== tag.label) registry.update(tag.id, { label: label.trim() }); }}
-            className="rounded-sm bg-canvas text-fg text-[11px] px-1.5 py-1 border border-edge-dim outline-none" />
+          {/* Change 20: bg-canvas + rounded-sm + no focus state → the shared FIELD
+              surface. aria-label added — this rename box previously had no
+              accessible name at all. */}
+          <TextInput size="sm" aria-label="Tag label" value={label} onChange={(e) => setLabel(e.target.value)}
+            onBlur={() => { if (label.trim() && label !== tag.label) registry.update(tag.id, { label: label.trim() }); }} />
           <div className="flex flex-wrap gap-1">
             {TAG_COLORS.map((c) => (
               <button key={c} onClick={() => registry.update(tag.id, { color: c as TagColor })}

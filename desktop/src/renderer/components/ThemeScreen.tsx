@@ -7,7 +7,7 @@ import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './Sett
 import type { LoadedTheme } from '../themes/theme-types';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, Select, Toggle } from './ui';
 
 // Plain-language explainer for the Appearance popup. Shown when the user taps
 // the (i) icon in the popup header — see ThemeScreen's `showInfo` state.
@@ -48,6 +48,10 @@ const APPEARANCE_EXPLAINER: { intro: string; sections: ExplainerSection[] } = {
 };
 
 const PARTICLE_OPTIONS = ['none', 'rain', 'dust', 'ember', 'snow', 'custom'] as const;
+
+// Shape PARTICLE_OPTIONS for the shared <Select> (change 21). Labels stay the
+// raw preset names so the visible text is unchanged from the old <option> list.
+const PARTICLE_SELECT_OPTIONS = PARTICLE_OPTIONS.map((p) => ({ value: p, label: p }));
 
 function roundnessToShape(value: number) {
   const sm  = Math.round(value * 8);
@@ -252,12 +256,14 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
             <p className="text-xs text-fg-2">Reduce Visual Effects</p>
             <p className="text-[10px] text-fg-faint">Disables particles, blur, and animations</p>
           </div>
-          <button
-            onClick={() => setReducedEffects(!reducedEffects)}
-            className={`w-9 h-5 rounded-full transition-colors relative ${reducedEffects ? 'bg-accent' : 'bg-edge'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${reducedEffects ? 'left-[18px]' : 'left-0.5'}`} />
-          </button>
+          {/* Was a hand-rolled 36x20 switch (change 15): same geometry, but the
+              shared Toggle also carries role="switch" + aria-checked, which this
+              one never had — a screen reader read it as an unlabelled button. */}
+          <Toggle
+            checked={reducedEffects}
+            onChange={(next) => setReducedEffects(next)}
+            aria-label="Reduce Visual Effects"
+          />
         </div>
 
         {/* Message timestamps toggle */}
@@ -266,12 +272,12 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
             <p className="text-xs text-fg-2">Message Timestamps</p>
             <p className="text-[10px] text-fg-faint">Show time sent in each chat bubble</p>
           </div>
-          <button
-            onClick={() => setShowTimestamps(!showTimestamps)}
-            className={`w-9 h-5 rounded-full transition-colors relative ${showTimestamps ? 'bg-accent' : 'bg-edge'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${showTimestamps ? 'left-[18px]' : 'left-0.5'}`} />
-          </button>
+          {/* Same migration as the toggle above (change 15). */}
+          <Toggle
+            checked={showTimestamps}
+            onChange={(next) => setShowTimestamps(next)}
+            aria-label="Message Timestamps"
+          />
         </div>
         </div>
       </div>
@@ -411,13 +417,21 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-fg-2">Particles</span>
-              <select
-                value={theme.effects?.particles ?? 'none'}
-                onChange={e => updateParticles(e.target.value)}
-                className="bg-inset text-fg-2 text-[10px] rounded-sm border border-edge-dim px-2 py-0.5"
-              >
-                {PARTICLE_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
-              </select>
+              {/* Was a native <select> (change 21). A native select's option list is
+                  drawn by the OS, so the open menu showed the OS blue-highlight
+                  styling inside a themed app — styling the closed trigger alone
+                  couldn't fix that. <Select> renders the list itself.
+                  The width wrapper keeps the row's right-hand control from
+                  stretching: the Select trigger is w-full by design. */}
+              <div className="w-32 shrink-0">
+                <Select
+                  size="sm"
+                  options={PARTICLE_SELECT_OPTIONS}
+                  value={theme.effects?.particles ?? 'none'}
+                  onChange={updateParticles}
+                  aria-label="Particles"
+                />
+              </div>
             </div>
           </div>
         )}

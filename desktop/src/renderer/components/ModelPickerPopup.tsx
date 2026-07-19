@@ -4,7 +4,7 @@ import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, FOCUS_RING } from './ui';
+import { Button, CloseButton, TextInput, Toggle, FOCUS_RING } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -317,11 +317,14 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
             <CloseButton onClick={onClose} label="Close model picker" />
           </div>
           <div className="px-5 pt-3">
-            <input
+            {/* Change 20: the shared field surface. No submit button belongs
+                inside it — the list below filters as you type. */}
+            <TextInput
               value={nativeSearch}
               onChange={(e) => setNativeSearch(e.target.value)}
               placeholder="Search models…"
-              className="w-full bg-inset text-fg text-sm rounded px-3 py-1.5 border border-edge outline-none focus:border-accent"
+              aria-label="Search models"
+              className="w-full"
             />
           </div>
           <div className="p-5 pt-3 overflow-y-auto space-y-4">
@@ -451,14 +454,15 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                   </div>
                   <div className="text-xs text-fg-muted">Same model, faster output streaming</div>
                 </div>
-                <button
-                  onClick={handleFastToggle}
-                  className={`shrink-0 w-8 h-4 rounded-full transition-colors relative ${fast ? 'bg-green-600' : 'bg-inset border border-edge-dim'}`}
-                  role="switch"
-                  aria-checked={fast}
-                >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${fast ? 'left-4' : 'left-0.5'}`} />
-                </button>
+                {/* Was a fifth hand-rolled toggle geometry (32x16) with a
+                    hardcoded green-600 on-state. One geometry now, and the
+                    on-state is the theme's accent (changes 15/16). It already
+                    had role="switch" but no accessible name. */}
+                <Toggle
+                  checked={fast}
+                  onChange={handleFastToggle}
+                  aria-label="Fast mode"
+                />
               </div>
             </section>
           </div>

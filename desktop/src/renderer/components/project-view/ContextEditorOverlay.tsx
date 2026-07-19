@@ -21,6 +21,7 @@ import {
 // Plain-text load-timing label — shared with ContextTab (context-labels.ts).
 import { timingLabel } from './context-labels';
 import { getPlatform } from '../../platform';
+import { Textarea } from '../ui';
 
 interface ContextEditorOverlayProps {
   project: { path: string };
@@ -252,11 +253,17 @@ export function ContextEditorOverlay({ project, file, onClose }: ContextEditorOv
             <p className="text-sm text-red-500 max-w-md text-center">{loadError}</p>
           </div>
         ) : editing ? (
-          <textarea
+          /* Shared Textarea (change 20). Retires the `focus:ring-1` focus ring
+             for the app-wide border-colour focus; resize-none is the
+             primitive's default so it no longer needs stating. Layout
+             (flex-1/min-h-0) and the monospace treatment stay — this edits a
+             raw context file. */
+          <Textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             spellCheck={false}
-            className="flex-1 min-h-0 w-full resize-none font-mono text-xs leading-relaxed bg-inset border border-edge rounded p-3 text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+            aria-label={`Edit ${file.label}`}
+            className="flex-1 min-h-0 w-full font-mono leading-relaxed"
           />
         ) : (
           <div className="flex-1 min-h-0 overflow-auto">

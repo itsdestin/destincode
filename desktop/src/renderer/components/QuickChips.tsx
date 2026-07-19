@@ -4,7 +4,7 @@ import { isAndroid } from '../platform';
 import { useSkills } from '../state/skill-context';
 import type { ChipConfig } from '../../shared/types';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, TextInput, Textarea } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 
@@ -342,18 +342,26 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
               <div className="bg-inset border border-edge-dim rounded-lg p-2.5 space-y-2">
                 {/* Custom chip form */}
                 <div className="space-y-1.5">
-                  <input
+                  {/* Shared field surface (change 20). The .slice() caps stay on the
+                      handlers — they are the real length limit, not decoration. */}
+                  <TextInput
+                    size="sm"
                     value={customLabel}
                     onChange={(e) => setCustomLabel(e.target.value.slice(0, 20))}
                     placeholder="Label (max 20 chars)"
-                    className="w-full px-2 py-1 text-[11px] bg-well border border-edge-dim rounded-md text-fg placeholder:text-fg-faint focus:outline-none focus:border-accent"
+                    aria-label="Chip label"
+                    className="w-full"
                   />
-                  <textarea
+                  {/* Textarea primitive (change 42); resize-none is its default, so
+                      the old explicit class is no longer needed. */}
+                  <Textarea
+                    size="sm"
                     value={customPrompt}
                     onChange={(e) => setCustomPrompt(e.target.value.slice(0, 500))}
                     placeholder="Prompt text"
                     rows={2}
-                    className="w-full px-2 py-1 text-[11px] bg-well border border-edge-dim rounded-md text-fg placeholder:text-fg-faint focus:outline-none focus:border-accent resize-none"
+                    aria-label="Chip prompt"
+                    className="w-full"
                   />
                   <div className="flex gap-2">
                     <Button
