@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, TextInput, Toggle } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSyncState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
@@ -997,17 +997,21 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                           {offError && <div className="text-[11px] mt-0.5 leading-relaxed text-red-500">{offError}</div>}
                         </div>
                       </div>
-                      {/* Enable toggle — reuses the 36×20 green switch markup. */}
-                      <button
-                        role="switch"
-                        aria-checked={toggleOn}
+                      {/* Enable toggle — migrated to the shared Toggle (spec changes
+                          15/16). The geometry is unchanged (this row's 36x20 IS the
+                          primitive's), but the on-state moves off hardcoded green-600
+                          onto the theme accent, and the disabled dimming now comes from
+                          the primitive instead of the local opacity-50/cursor-wait pair.
+                          onChange gets the NEXT value, so we pass it straight through
+                          — same flip direction the old !enabled click had, because
+                          `checked` is toggleOn (= enabling || enabled). */}
+                      <Toggle
+                        checked={toggleOn}
+                        onChange={(next) => void handleSpacesEnable(next)}
                         disabled={enabling}
-                        onClick={() => void handleSpacesEnable(!enabled)}
-                        className={`relative w-9 h-5 rounded-full transition-colors shrink-0 mt-0.5 ${toggleOn ? 'bg-green-600' : 'bg-inset'} ${enabling ? 'opacity-50 cursor-wait' : 'cursor-pointer'}`}
+                        className="mt-0.5"
                         title={enabled ? 'Cross-device sync on — click to turn off' : 'Cross-device sync off — click to turn on'}
-                      >
-                        <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all" style={{ left: toggleOn ? '18px' : '2px' }} />
-                      </button>
+                      />
                     </div>
                     {/* Action tucked under the reason — same box, no divider. */}
                     {cta && <div className="mt-2 flex items-center gap-2 pl-[18px]">{cta}</div>}
@@ -1146,15 +1150,16 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                       <p className="text-[11px] text-fg-muted mt-1 leading-relaxed">{sub}</p>
                     </div>
                     {/* Master toggle: pause-all / resume-all / reveal picker (handleAdditionalToggle). */}
-                    <button
-                      role="switch"
-                      aria-checked={masterOn}
-                      onClick={() => void handleAdditionalToggle()}
-                      className={`relative w-9 h-5 rounded-full transition-colors shrink-0 mt-0.5 cursor-pointer ${masterOn ? 'bg-green-600' : 'bg-inset'}`}
+                    {/* Shared Toggle (spec changes 15/16) — same 36x20 geometry, but the
+                        on-state is the theme accent instead of hardcoded green-600.
+                        handleAdditionalToggle derives the direction itself from the
+                        backend list, so the `next` value it's handed is ignored. */}
+                    <Toggle
+                      checked={masterOn}
+                      onChange={() => void handleAdditionalToggle()}
+                      className="mt-0.5"
                       title={masterOn ? 'Additional backups on — click to pause all' : 'Additional backups off — click to turn on'}
-                    >
-                      <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all" style={{ left: masterOn ? '18px' : '2px' }} />
-                    </button>
+                    />
                   </div>
 
                   {/* Backend rows — shown whenever any exist (kept visible even when paused,
@@ -1590,7 +1595,13 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0 flex items-center gap-1.5">
                 {editingId === d.id ? (
-                  <input
+                  /* Shared FIELD surface (spec change 20) — `sm` because this is an
+                     inline edit inside a compact list row. min-w-0 stays: it lets the
+                     input shrink inside the flex row instead of forcing overflow.
+                     aria-label added — the input replaces the name button on click,
+                     so there was nothing naming it for a screen reader. */
+                  <TextInput
+                    size="sm"
                     value={draft}
                     autoFocus
                     onChange={(e) => setDraft(e.target.value)}
@@ -1599,7 +1610,8 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
                       if (e.key === 'Escape') setEditingId(null); // cancel — no rename
                     }}
                     onBlur={() => commitRename(d.id)}
-                    className="bg-inset text-fg text-xs rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none min-w-0"
+                    aria-label={`Rename ${d.name}`}
+                    className="min-w-0"
                   />
                 ) : (
                   // Click the name to edit — it's just a nickname, so no confirm gate.
@@ -1749,11 +1761,16 @@ function EditBackendForm({
         <div className="px-4 py-4 space-y-4">
         <div>
           <label className="block text-[10px] text-fg-muted mb-1">Name</label>
-          <input
-            type="text"
+          {/* Shared FIELD surface (spec change 20). The visible label above isn't
+              wired up with htmlFor, so aria-label gives it the same name. Left as a
+              plain field rather than an InputGroup: its Save button sits at the very
+              bottom of the form, below the read-only config rows — a footer action,
+              not a field action (spec §11.9 excludes that shape). */}
+          <TextInput
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            className="w-full px-2 py-1.5 rounded-md bg-inset border border-edge-dim text-xs text-fg focus:border-accent focus:outline-none"
+            aria-label="Name"
+            className="w-full"
           />
         </div>
 

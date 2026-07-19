@@ -19,8 +19,11 @@ export type { CloseButtonProps } from './CloseButton';
 export { Toggle } from './Toggle';
 export type { ToggleProps, ToggleTone } from './Toggle';
 
-export { FIELD, FIELD_SIZE, fieldClasses } from './field';
+export { FIELD, FIELD_SURFACE, FIELD_TEXT, FIELD_SIZE, fieldClasses } from './field';
 export type { FieldSize } from './field';
+
+export { InputGroup } from './InputGroup';
+export type { InputGroupProps, InputGroupFieldProps } from './InputGroup';
 
 export { TextInput } from './TextInput';
 export type { TextInputProps } from './TextInput';

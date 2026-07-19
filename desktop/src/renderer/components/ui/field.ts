@@ -17,9 +17,21 @@
  * Spec: docs/active/specs/2026-07-16-ui-consistency-design-spec.md §1.3
  */
 
+import { mergeClasses } from './Button';
+
+/**
+ * The surface itself — background, border, radius. Split out because InputGroup
+ * (change 77) puts these on a WRAPPER while the input inside goes bare; without
+ * the split the two would drift apart the first time either is edited.
+ */
+export const FIELD_SURFACE = 'bg-inset border border-edge-dim rounded-lg';
+
+/** The text treatment — shared by a bare input and a bordered one alike. */
+export const FIELD_TEXT = 'text-fg placeholder:text-fg-faint';
+
 /** Focus is a border color change, never a ring — the ring belongs to buttons. */
 export const FIELD =
-  'bg-inset border border-edge-dim rounded-lg text-fg placeholder:text-fg-faint ' +
+  `${FIELD_SURFACE} ${FIELD_TEXT} ` +
   'focus:outline-none focus:border-accent ' +
   // Disabled fields already exist (EngineCard's context-length input, InputBar's
   // composer, ReportReviewButton) and would otherwise lose their affordance.
@@ -33,5 +45,11 @@ export const FIELD_SIZE: Record<FieldSize, string> = {
 };
 
 export function fieldClasses(size: FieldSize = 'md', className = ''): string {
-  return [FIELD, FIELD_SIZE[size], className].filter(Boolean).join(' ').trim();
+  // Goes through mergeClasses for the same reason buttonClasses does: Tailwind
+  // resolves two competing utilities by CSS SOURCE order, not by the order they
+  // appear in the class attribute. Plain concatenation meant a caller passing
+  // `text-sm` or `px-4` got whichever one Tailwind happened to emit later —
+  // which is how tranche 0's pills silently rendered as rounded rectangles
+  // (§10.3). Fields had the same latent bug until this call was added.
+  return mergeClasses([FIELD, FIELD_SIZE[size]].join(' '), className).trim();
 }

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useGameState } from '../../state/game-context';
 import { GameConnection } from '../../state/game-types';
+import { TextInput } from '../ui';
 
 interface Props {
   connection: GameConnection;
@@ -65,14 +66,20 @@ export default function GameChat({ connection }: Props) {
 
       {/* Input */}
       <div className="px-3 py-2 border-t border-edge shrink-0">
-        <input
+        {/* Change 20: bg-well + the gray focus (`focus:border-fg-dim`) → the shared
+            FIELD surface. Enter-to-send and the 200-char cap are unchanged. NOT an
+            InputGroup: this composer has no visible submit button to move inside —
+            Enter is the only way to send. */}
+        <TextInput
           type="text"
+          size="md"
+          aria-label="Game chat message"
+          className="w-full"
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Say something..."
           maxLength={200}
-          className="w-full bg-well border border-edge rounded-lg px-3 py-1.5 text-xs text-fg placeholder-fg-muted outline-none focus:border-fg-dim transition-colors"
         />
       </div>
     </div>

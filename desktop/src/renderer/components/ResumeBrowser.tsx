@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button } from './ui';
+import { Button, Toggle } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
@@ -511,15 +511,22 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                 Skip Permissions
                 <SkipPermissionsInfoTooltip />
               </label>
-              <button
-                onClick={() => setResumeDangerous(!resumeDangerous)}
-                className={`w-8 h-4.5 rounded-full relative transition-colors ${resumeDangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
-              >
-                <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${resumeDangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-              </button>
+              {/* Shared Toggle (change 15). Its "danger" tone replaces the raw
+                  #DD4444 hex this used to hard-code, so themes can restyle it.
+                  aria-label added because the adjacent <label> was never
+                  associated with the control — screen readers announced nothing. */}
+              <Toggle
+                checked={resumeDangerous}
+                onChange={setResumeDangerous}
+                tone="danger"
+                aria-label="Skip Permissions"
+              />
             </div>
+            {/* Warning text was a raw text-[#DD4444] hex. Change 17 moves it onto
+                the same token as the toggle beside it, so a community theme
+                restyling its red doesn't leave the two out of sync. */}
             {resumeDangerous && (
-              <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+              <p className="text-[10px] text-destructive">Claude will execute tools without asking for approval.</p>
             )}
           </>
         ) : (
@@ -530,12 +537,12 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         {detachAvailable && (
           <div className="flex items-center justify-between">
             <label className="text-[10px] uppercase tracking-wider text-fg-muted">Launch in New Window</label>
-            <button
-              onClick={() => setResumeLaunchInNewWindow(!resumeLaunchInNewWindow)}
-              className={`w-8 h-4.5 rounded-full relative transition-colors ${resumeLaunchInNewWindow ? 'bg-accent' : 'bg-inset'}`}
-            >
-              <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${resumeLaunchInNewWindow ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-            </button>
+            {/* Shared Toggle (change 15) — same accent on-state as before. */}
+            <Toggle
+              checked={resumeLaunchInNewWindow}
+              onChange={setResumeLaunchInNewWindow}
+              aria-label="Launch in New Window"
+            />
           </div>
         )}
 
@@ -712,13 +719,14 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   in SessionStrip, but accent-colored to signal "on" rather than "danger". */}
               <div className="flex items-center gap-2">
                 <label className="text-[10px] uppercase tracking-wider text-fg-muted">Show Complete</label>
-                <button
-                  onClick={() => setShowComplete(!showComplete)}
-                  className={`w-8 h-4.5 rounded-full relative transition-colors ${showComplete ? 'bg-accent' : 'bg-inset'}`}
-                  aria-pressed={showComplete}
-                >
-                  <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${showComplete ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-                </button>
+                {/* Shared Toggle (change 15). role="switch" + aria-checked comes
+                    from the primitive, which is strictly better than the
+                    aria-pressed this used to carry. */}
+                <Toggle
+                  checked={showComplete}
+                  onChange={setShowComplete}
+                  aria-label="Show Complete"
+                />
               </div>
             </div>
             <div className="flex items-center gap-2 bg-inset rounded-lg px-3 py-2 border border-edge-dim">

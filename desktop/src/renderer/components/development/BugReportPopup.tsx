@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
-import { Button } from '../ui';
+import { Button, Textarea } from '../ui';
 
 interface Props {
   open: boolean;
@@ -192,11 +192,17 @@ function DescribeScreen({ kind, setKind, description, setDescription, onContinue
           </button>
         ))}
       </div>
-      <textarea
+      {/* Change 42: this was already the target recipe (border-edge-dim, rounded-lg,
+          focus:border-accent), so migrating it is mostly a de-duplication —
+          bg-inset/50 becomes the shared bg-inset and the padding picks up the one
+          field scale. Continue stays BELOW the field, so no InputGroup here. */}
+      <Textarea
+        size="md"
+        className="w-full h-32"
+        aria-label="Describe the bug or feature"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="What's happening? (Or what would you like to see?)"
-        className="w-full h-32 p-2 text-xs bg-inset/50 border border-edge-dim rounded-lg resize-none focus:outline-none focus:border-accent"
       />
       <Button
         disabled={description.trim().length < 10 || busy}
@@ -224,10 +230,16 @@ function ReviewScreen({ kind, summary, logTail, setLogTail, onEdit, onSubmit, on
               ))}
             </div>
           )}
-          <textarea
+          {/* Change 42: same migration as the describe screen. `sm` (11px) is the
+              nearest field size to the old text-[10px] — the scale has no 10px
+              field step, and arbitrary text-[Npx] is retired (see globals.css).
+              font-mono is kept: this is a log tail and column alignment matters. */}
+          <Textarea
+            size="sm"
+            className="w-full h-32 mt-2 font-mono"
+            aria-label="Logs to include"
             value={logTail}
             onChange={(e) => setLogTail(e.target.value)}
-            className="w-full h-32 mt-2 p-2 text-[10px] font-mono bg-inset/50 border border-edge-dim rounded-lg resize-none focus:outline-none focus:border-accent"
           />
         </details>
       )}

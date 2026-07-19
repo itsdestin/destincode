@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button } from './ui';
+import { Button, TextInput } from './ui';
 
 interface Props {
   sourcePath: string;
@@ -127,12 +127,18 @@ export default function ImportProjectModal({ sourcePath, defaultName, onClose, o
             <div className="mt-1 text-xs text-fg-dim">
               The folder itself moves — anything pointing at the old location (shortcuts, open terminals, editors) will need the new path.
             </div>
-            <label className="block mt-3 text-[10px] uppercase tracking-wide text-fg-muted">Project name</label>
-            <input
+            {/* htmlFor/id pair added: the label was floating unassociated, so
+                screen readers announced this field with no name. */}
+            <label htmlFor="import-project-name" className="block mt-3 text-[10px] uppercase tracking-wide text-fg-muted">Project name</label>
+            {/* Shared TextInput (change 20). Stays a plain field, NOT an
+                InputGroup: the "Move and sync" button lives in the modal footer
+                below, not inline beside the field. */}
+            <TextInput
+              id="import-project-name"
               value={name}
               onChange={e => setName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') void confirm(); }}
-              className="mt-1 w-full bg-inset text-fg text-sm rounded px-2 py-1 border border-edge-dim focus:border-accent outline-none"
+              className="mt-1 w-full"
               autoFocus
             />
             {error && <div role="alert" className="mt-2 text-xs text-red-500">{error}</div>}

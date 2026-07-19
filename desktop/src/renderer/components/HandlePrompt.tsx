@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
-import { Button } from './ui';
+import { Button, InputGroup } from './ui';
 
 // Persisted "don't nag me again" flag. Set on skip (and on ESC, which is the
 // same as skip), never set when the user actually claims a handle.
@@ -112,27 +112,30 @@ function HandlePromptPopup({
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="flex-1 flex items-center bg-inset border border-edge-dim rounded-lg px-3 py-2 focus-within:border-accent">
-              <span className="text-xs text-fg-muted select-none">@</span>
-              <input
-                id="handle-prompt-input"
-                aria-label="Handle"
-                autoFocus
-                value={draft}
-                onChange={(e) => { setDraft(e.target.value); setError(null); }}
-                onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim().length > 0 && !saving) void save(); }}
-                className="flex-1 text-xs bg-transparent text-fg focus:outline-none ml-0.5"
-              />
-            </div>
+          {/* Change 77: same migration as Settings → Account's handle field, which
+              this duplicates. Save moves inside the field, so the `py-2` that
+              existed only to height-match the input beside it is gone. "Skip for
+              now" is a cancel, not a submit, so per the sub-rule it stays outside
+              (it already sits below as its own full-width button). */}
+          <InputGroup size="md">
+            <span className="pl-3 text-xs text-fg-muted select-none">@</span>
+            <InputGroup.Field
+              id="handle-prompt-input"
+              aria-label="Handle"
+              className="pl-0"
+              autoFocus
+              value={draft}
+              onChange={(e) => { setDraft(e.target.value); setError(null); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim().length > 0 && !saving) void save(); }}
+            />
             <Button
+              size="sm"
               onClick={() => void save()}
               disabled={saving || draft.trim().length === 0}
-              className="py-2"
             >
               {saving ? 'Saving…' : 'Save'}
             </Button>
-          </div>
+          </InputGroup>
           {/* Plain words for status, never glyphs. */}
           {error && <p className="text-[10px] text-red-500">{error}</p>}
 

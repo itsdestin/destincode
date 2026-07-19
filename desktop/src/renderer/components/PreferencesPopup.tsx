@@ -4,7 +4,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useTheme } from '../state/theme-context';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, Toggle, TextInput, Textarea } from './ui';
 
 // Native replacement for Claude Code's /config TUI. Reads/writes fields in
 // ~/.claude/settings.json via the settings:* IPC bridge.
@@ -190,12 +190,15 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Prop
               <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 Output Style
               </label>
-              <input
-                type="text"
+              {/* Shared FIELD surface (change 20) — was its own rounded/px-3 py-1.5
+                  recipe. The uppercase <label> above has no htmlFor, so the field
+                  carries its own accessible name. */}
+              <TextInput
                 value={prefs.outputStyle}
                 onChange={(e) => save('outputStyle', e.target.value)}
                 placeholder="e.g. concise, explanatory"
-                className="w-full bg-inset border border-edge-dim rounded px-3 py-1.5 text-sm text-fg placeholder:text-fg-faint focus:outline-none focus:border-accent"
+                aria-label="Output Style"
+                className="w-full"
               />
               <p className="text-[11px] text-fg-muted mt-1.5">Preset name that tunes Claude's response style. Leave blank for default.</p>
             </section>
@@ -227,12 +230,15 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Prop
               <label className="block text-xs font-medium text-fg-muted tracking-wider uppercase mb-2">
                 System Prompt
               </label>
-              <textarea
+              {/* Same FIELD surface as the input above (change 20). resize-none was
+                  already the behavior here and is the Textarea default. */}
+              <Textarea
                 value={prefs.systemPrompt}
                 onChange={(e) => save('systemPrompt', e.target.value)}
                 placeholder="Instructions appended to every session..."
                 rows={4}
-                className="w-full bg-inset border border-edge-dim rounded px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:outline-none focus:border-accent resize-none"
+                aria-label="System Prompt"
+                className="w-full"
               />
               <p className="text-[11px] text-fg-muted mt-1.5">Applied globally. Leave blank to use Claude Code defaults.</p>
             </section>
@@ -270,14 +276,10 @@ function ToggleRow({ label, desc, checked, onChange }: { label: string; desc: st
         <div className="text-sm text-fg">{label}</div>
         <div className="text-xs text-fg-muted">{desc}</div>
       </div>
-      <button
-        onClick={() => onChange(!checked)}
-        className={`shrink-0 w-8 h-4 rounded-full transition-colors relative ${checked ? 'bg-green-600' : 'bg-inset border border-edge-dim'}`}
-        role="switch"
-        aria-checked={checked}
-      >
-        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${checked ? 'left-4' : 'left-0.5'}`} />
-      </button>
+      {/* Was a hand-rolled 32x16 track with a green-600 on-state; one geometry and
+          the app accent now (changes 15/16). role="switch"/aria-checked come from
+          the primitive; aria-label gives it the name the row text couldn't. */}
+      <Toggle checked={checked} onChange={onChange} aria-label={label} />
     </div>
   );
 }

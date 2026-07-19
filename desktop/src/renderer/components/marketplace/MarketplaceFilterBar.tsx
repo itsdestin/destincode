@@ -11,7 +11,7 @@
 
 import React, { useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button } from "../ui";
+import { Button, InputGroup, TextInput } from "../ui";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useNarrowViewport } from "../../hooks/use-narrow-viewport";
 
@@ -63,29 +63,37 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
     const count = activeFilterCount(value);
     return (
       <>
-        {/* Single rounded pill: leading magnifier icon, borderless input, trailing
-            filter button — same in-row pattern as InputBar's send button. The
-            outer wrapper carries the border + focus ring; the input itself is
-            transparent so focus styling reads as one element. */}
+        {/* Leading magnifier icon, borderless input, trailing filter button. This
+            box was the PRECEDENT for the InputGroup primitive (change 77), so it
+            now uses it rather than hand-rolling the shape. The one deliberate
+            change: focus was `focus-within:ring-2 focus-within:ring-accent` and is
+            now the wrapper's `focus-within:border-accent` — fields focus by border,
+            never a ring (the ring belongs to buttons). */}
         <div className="layer-surface sticky top-0 z-20 p-2">
-          <div className="flex items-center bg-inset border border-edge rounded-md focus-within:ring-2 focus-within:ring-accent">
-            <span className="pl-2.5 pr-1 text-fg-muted shrink-0" aria-hidden>
+          <InputGroup size="md">
+            <span className="pl-2.5 text-fg-muted shrink-0" aria-hidden>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="7" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
             </span>
-            <input
+            {/* pl-0 so the text sits next to the magnifier rather than a second
+                indent — the wrapper's own gap-1 supplies the separation. */}
+            <InputGroup.Field
               type="search"
+              aria-label="Search the marketplace"
               placeholder="Search…"
+              className="pl-0"
               value={value.query}
               onChange={(e) => onChange({ ...value, query: e.target.value })}
-              className="flex-1 min-w-0 bg-transparent border-0 outline-none px-2 py-1.5 text-sm text-fg placeholder:text-fg-muted"
             />
+            {/* Left hand-rolled on purpose: icon-only with an absolutely positioned
+                count badge, which <Button> doesn't model. mr-1 dropped — the
+                InputGroup wrapper already insets its action with pr-1. */}
             <button
               type="button"
               onClick={() => setSheetOpen(true)}
-              className="shrink-0 relative p-2 mr-1 rounded-md text-fg-2 hover:text-fg hover:bg-edge-dim"
+              className="shrink-0 relative p-2 rounded-md text-fg-2 hover:text-fg hover:bg-edge-dim"
               aria-label={count > 0 ? `Filters (${count} active)` : 'Filters'}
               title={count > 0 ? `Filters (${count} active)` : 'Filters'}
             >
@@ -100,7 +108,7 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
                 </span>
               )}
             </button>
-          </div>
+          </InputGroup>
         </div>
         {sheetOpen && (
           <FilterSheet
@@ -137,12 +145,17 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
         <Chip active={value.meta.has("picks")} onClick={() => toggleMulti("meta", "picks")}>Featured picks</Chip>
       </ChipGroup>
       <div className="w-full sm:w-auto sm:ml-auto">
-        <input
+        {/* The wide layout's search box — unified with the compact one above onto
+            the shared FIELD surface. Same deliberate swap: focus ring → focus
+            border. Only the width utilities survive as a layout extra. */}
+        <TextInput
           type="search"
+          size="md"
+          aria-label="Search the marketplace"
           placeholder="Search…"
           value={value.query}
           onChange={(e) => onChange({ ...value, query: e.target.value })}
-          className="bg-inset border border-edge rounded-md px-3 py-1.5 text-sm text-fg placeholder:text-fg-muted focus:outline-none focus:ring-2 focus:ring-accent w-full sm:w-48"
+          className="w-full sm:w-48"
         />
       </div>
     </div>

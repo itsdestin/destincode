@@ -6,7 +6,7 @@ import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
 import SettingsRow from './SettingsRow';
-import { Button } from './ui';
+import { Button, InputGroup } from './ui';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Auth-token state and mutations
@@ -508,22 +508,26 @@ function EditAccountBody({
         <label htmlFor="account-display-name" className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">
           Display name
         </label>
-        <div className="flex items-center gap-2">
-          <input
+        {/* Change 77: Save moved INSIDE the field. Besides matching the spec, this
+            removes the height mismatch the button migration introduced — a button
+            sitting alongside a field no longer has to match its height, because
+            it's now a child of the field's own bordered wrapper. */}
+        <InputGroup size="md">
+          <InputGroup.Field
             id="account-display-name"
             aria-label="Display name"
             value={nameDraft}
             onChange={(e) => { setNameDraft(e.target.value); setNameSaved(false); }}
-            className="flex-1 text-xs bg-inset border border-edge-dim rounded-lg px-3 py-2 text-fg focus:outline-none focus:border-accent"
           />
           <Button
+            size="sm"
             onClick={() => void saveName()}
             aria-label="Save display name"
             disabled={nameSaving || nameDraft.trim().length === 0}
           >
             {nameSaving ? 'Saving…' : 'Save'}
           </Button>
-        </div>
+        </InputGroup>
         {nameError && <p className="text-[10px] text-red-500">{nameError}</p>}
         {nameSaved && !nameError && <p className="text-[10px] text-fg-muted">Saved</p>}
       </section>
@@ -533,25 +537,29 @@ function EditAccountBody({
         <label htmlFor="account-handle" className="text-[10px] font-medium text-fg-muted uppercase tracking-wider">
           Handle
         </label>
-        <div className="flex items-center gap-2">
-          <div className="flex-1 flex items-center bg-inset border border-edge-dim rounded-lg px-3 py-2 focus-within:border-accent">
-            <span className="text-xs text-fg-muted select-none">@</span>
-            <input
-              id="account-handle"
-              aria-label="Handle"
-              value={handleDraft}
-              onChange={(e) => {
-                setHandleDraft(e.target.value);
-                setHandleSaved(false);
-                // Editing the draft invalidates an armed confirm — the warning
-                // refers to committing a specific value.
-                setHandleConfirming(false);
-              }}
-              className="flex-1 text-xs bg-transparent text-fg focus:outline-none ml-0.5"
-            />
-          </div>
+        {/* Change 77: this was already a hand-rolled InputGroup (bordered wrapper +
+            borderless input) with Save alongside; now it's the real primitive with
+            Save inside, so the button no longer has to height-match the field.
+            The leading "@" carries the wrapper's left padding and the field drops
+            its own, keeping the tight "@handle" spacing the hand-rolled version had. */}
+        <InputGroup size="md">
+          <span className="pl-3 text-xs text-fg-muted select-none">@</span>
+          <InputGroup.Field
+            id="account-handle"
+            aria-label="Handle"
+            className="pl-0"
+            value={handleDraft}
+            onChange={(e) => {
+              setHandleDraft(e.target.value);
+              setHandleSaved(false);
+              // Editing the draft invalidates an armed confirm — the warning
+              // refers to committing a specific value.
+              setHandleConfirming(false);
+            }}
+          />
           {!handleConfirming && (
             <Button
+              size="sm"
               onClick={onSaveHandleClick}
               aria-label="Save handle"
               disabled={handleSaving || trimmedHandle.length === 0 || handleUnchanged}
@@ -559,7 +567,7 @@ function EditAccountBody({
               {handleSaving ? 'Saving…' : 'Save'}
             </Button>
           )}
-        </div>
+        </InputGroup>
 
         {/* Handle-change consequences + explicit confirm (existing handle only). */}
         {handleConfirming && (
@@ -625,6 +633,12 @@ function EditAccountBody({
             <label htmlFor="account-delete-confirm" className="block text-[10px] text-fg-muted">
               Type <span className="font-semibold text-fg">delete</span> to confirm
             </label>
+            {/* Deliberately NOT migrated to <TextInput>: this field already IS the
+                FIELD recipe except for its red focus border, which is a danger-zone
+                signal. FIELD focuses to accent, and a `focus:border-red-500`
+                className can't reliably win over `focus:border-accent` (Tailwind
+                resolves same-plugin utilities by its own source order, not ours —
+                see the CONFLICT_GROUPS note in ui/Button.tsx). Left hand-rolled. */}
             <input
               id="account-delete-confirm"
               aria-label="Type delete to confirm"

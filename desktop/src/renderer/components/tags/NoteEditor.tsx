@@ -1,5 +1,6 @@
 // src/renderer/components/tags/NoteEditor.tsx
 import React, { useEffect, useRef, useState } from 'react';
+import { Textarea } from '../ui';
 
 export const NOTE_MAX = 8000;
 
@@ -26,14 +27,22 @@ export function NoteEditor({ value, onSave, placeholder = 'Add a note…' }: {
   const commit = () => { if (draft !== value) onSave(draft); };
   return (
     <div className="flex flex-col gap-1">
-      <textarea
+      {/* Change 42: onto the shared FIELD surface. `resizable` is passed on purpose —
+          this note box genuinely IS drag-resizable today (it was `resize-y`), and
+          the explicit resize-y className keeps it vertical-only; the primitive's
+          `resizable` escape hatch otherwise falls back to the browser default of
+          resizing in both axes, which would let it overflow its container. */}
+      <Textarea
+        size="sm"
+        resizable
+        className="w-full resize-y"
+        aria-label={placeholder}
         value={draft}
         maxLength={NOTE_MAX}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         placeholder={placeholder}
         rows={3}
-        className="w-full resize-y rounded-sm bg-inset text-fg text-[11px] px-2 py-1.5 border border-edge-dim focus:border-accent outline-none"
       />
       {remaining < 500 && (
         <span className="text-[9px] self-end text-fg-faint">{remaining} left</span>

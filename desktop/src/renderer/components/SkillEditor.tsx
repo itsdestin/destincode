@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { SkillEntry } from '../../shared/types';
 import { useSkills } from '../state/skill-context';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button } from './ui';
+import { Button, Select, TextInput } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 
 interface SkillEditorProps {
@@ -99,11 +99,12 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
         {/* Name */}
         <label className="block mb-3">
           <span className="text-[10px] font-medium text-fg-muted tracking-wider">NAME</span>
-          <input
-            type="text"
+          {/* Shared field surface (change 20) — the hand-rolled recipe here used
+              bg-well + placeholder-fg-muted; FIELD is bg-inset + fg-faint. */}
+          <TextInput
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="mt-1 w-full bg-well border border-edge-dim rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-accent transition-colors"
+            className="mt-1 w-full"
             placeholder="Skill name"
           />
         </label>
@@ -111,30 +112,32 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
         {/* Description */}
         <label className="block mb-3">
           <span className="text-[10px] font-medium text-fg-muted tracking-wider">DESCRIPTION</span>
-          <input
-            type="text"
+          {/* Same migration as NAME above (change 20). Stays a single-line input —
+              it was never a textarea. */}
+          <TextInput
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="mt-1 w-full bg-well border border-edge-dim rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-accent transition-colors"
+            className="mt-1 w-full"
             placeholder="Short description"
           />
         </label>
 
         {/* Category */}
-        <label className="block mb-5">
+        {/* Was a native <select> (change 21): its option list is OS-drawn, so the
+            open menu ignored the theme entirely. <Select> renders the list itself.
+            The wrapper is a <div>, not a <label> — a <label> can't name a
+            <button>, which is what the Select trigger is, so the accessible name
+            moves to aria-label instead. */}
+        <div className="block mb-5">
           <span className="text-[10px] font-medium text-fg-muted tracking-wider">CATEGORY</span>
-          <select
+          <Select
+            options={categories}
             value={category}
-            onChange={(e) => setCategory(e.target.value as SkillEntry['category'])}
-            className="mt-1 w-full bg-well border border-edge-dim rounded-lg px-3 py-2 text-sm text-fg outline-none focus:border-accent transition-colors"
-          >
-            {categories.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={(v) => setCategory(v as SkillEntry['category'])}
+            aria-label="Category"
+            className="mt-1"
+          />
+        </div>
 
         {/* Buttons */}
         <div className="flex gap-2">

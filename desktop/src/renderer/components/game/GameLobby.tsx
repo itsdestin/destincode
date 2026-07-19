@@ -4,7 +4,7 @@ import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
 import { mergeFriends, statusLabel } from './friends-data';
-import { Button } from '../ui';
+import { Button, InputGroup } from '../ui';
 import type { FriendRow, RequestsPayload } from '../../state/marketplace-api-client';
 
 // Local mirror of the renderer/main ApiResult shape (useIpc.ts declares it but
@@ -453,29 +453,32 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Add a friend by handle */}
       <div className="px-3 py-3 border-b border-edge flex flex-col gap-2">
         <div className="text-[10px] uppercase tracking-wider text-fg-muted">Add a friend</div>
-        <div className="flex gap-2">
-          <input
+        {/* Change 77: "Send request" moves INSIDE the field. It was left
+            `variant="secondary" size="lg"` purely so it would height-match the
+            input sitting beside it — inside the field there is nothing to
+            height-match, so it goes back to the primary it always semantically
+            was (this is the submit for the field it lives in).
+            Change 20 also applies to the field itself: bg-well and the gray
+            focus (`focus:border-fg-dim`) are both retired by the shared surface. */}
+        <InputGroup size="md">
+          <InputGroup.Field
             type="text"
+            aria-label="Friend's handle"
             value={addHandle}
             // Handles are lowercase — normalize as the user types so the exact-match
             // lookup on the Worker doesn't 404 on a stray capital.
             onChange={(e) => setAddHandle(e.target.value.toLowerCase())}
             onKeyDown={(e) => { if (e.key === 'Enter') void submitAddFriend(); }}
             placeholder="friend's handle"
-            className="flex-1 bg-well border border-edge rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-fg-dim transition-colors"
           />
-          {/* Filled-grey (`bg-inset`) was an unofficial second secondary style; it
-              collapses into the primitive's outlined `secondary`. `lg` matches the
-              height of the handle input next to it. */}
           <Button
-            variant="secondary"
-            size="lg"
+            size="sm"
             onClick={() => void submitAddFriend()}
             disabled={!addHandle.trim() || addPending}
           >
             Send request
           </Button>
-        </div>
+        </InputGroup>
         {addFeedback && (
           <p className={`text-xs ${addFeedback.ok ? 'text-green-400' : 'text-red-400'}`}>{addFeedback.text}</p>
         )}

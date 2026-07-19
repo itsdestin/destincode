@@ -20,7 +20,7 @@ const WELCOME_MODEL_LABELS: Record<string, string> = {
 };
 import ErrorBoundary from './components/ErrorBoundary';
 import { Scrim, OverlayPanel } from './components/overlays/Overlay';
-import { Button } from './components/ui';
+import { Button, Toggle } from './components/ui';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
@@ -2828,15 +2828,23 @@ function AppInner() {
                   )}
                   <div className="flex items-center justify-between">
                     <label className="text-[10px] uppercase tracking-wider text-fg-muted">Skip Permissions</label>
-                    <button
-                      onClick={() => setWelcomeDangerous(!welcomeDangerous)}
-                      className={`w-8 h-4.5 rounded-full relative transition-colors ${welcomeDangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
-                    >
-                      <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${welcomeDangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-                    </button>
+                    {/* Was a hand-rolled 32x18 track with a raw #DD4444 on-state; now
+                        the shared Toggle on the danger tone, so theme packs can restyle
+                        it (changes 15/17). The <label> beside it isn't bound to this
+                        control, so it carries its own aria-label. */}
+                    <Toggle
+                      checked={welcomeDangerous}
+                      onChange={setWelcomeDangerous}
+                      tone="danger"
+                      aria-label="Skip Permissions"
+                    />
                   </div>
+                  {/* Warning text was a raw text-[#DD4444] hex — the THIRD copy of
+                      this same string (ResumeBrowser and SessionStrip have the
+                      others). Change 17 puts it on the destructive token so it
+                      tracks the toggle above it under a community theme. */}
                   {welcomeDangerous && (
-                    <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+                    <p className="text-[10px] text-destructive">Claude will execute tools without asking for approval.</p>
                   )}
                   <div className="flex gap-2">
                     {/* secondary, not ghost: this was the filled-grey family

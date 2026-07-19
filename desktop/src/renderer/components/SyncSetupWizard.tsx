@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, TextInput, Toggle } from './ui';
 import { isAndroid as checkIsAndroid } from '../platform';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -351,12 +351,17 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           {/* Name */}
           <div>
             <label className="block text-[10px] text-fg-muted mb-1">Give this backup a name</label>
-            <input
-              type="text"
+            {/* Migrated to the shared TextInput (spec change 20): the hand-rolled
+                bg-inset/rounded-md/focus recipe is now the one FIELD surface, so
+                every text box in the app focuses and rounds the same way. The
+                visible label above isn't wired to this input with htmlFor, so
+                aria-label gives screen readers the same name sighted users see. */}
+            <TextInput
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder={`My ${BACKEND_LABELS[backendType]}`}
-              className="w-full px-2 py-1.5 rounded-md bg-inset border border-edge-dim text-xs text-fg placeholder-fg-faint focus:border-accent focus:outline-none"
+              aria-label="Give this backup a name"
+              className="w-full"
               autoFocus
             />
             <div className="text-[10px] text-fg-faint mt-0.5">This is just for you — to tell your backups apart.</div>
@@ -366,12 +371,14 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           {backendType === 'drive' && (
             <div>
               <label className="block text-[10px] text-fg-muted mb-1">Folder in Google Drive</label>
-              <input
-                type="text"
+              {/* Shared FIELD surface (spec change 20). aria-label mirrors the
+                  visible label, which isn't linked via htmlFor. */}
+              <TextInput
                 value={driveFolder}
                 onChange={(e) => setDriveFolder(e.target.value)}
                 placeholder="Claude"
-                className="w-full px-2 py-1.5 rounded-md bg-inset border border-edge-dim text-xs text-fg placeholder-fg-faint focus:border-accent focus:outline-none"
+                aria-label="Folder in Google Drive"
+                className="w-full"
               />
               <div className="text-[10px] text-fg-faint mt-0.5">
                 We'll create a folder called "{driveFolder || 'Claude'}" in your Drive if it doesn't exist.
@@ -395,12 +402,15 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                   <div className="text-xs text-fg font-medium">Create a new private repository</div>
                   {repoMode === 'create' && (
                     <div className="mt-1.5">
-                      <input
-                        type="text"
+                      {/* Shared FIELD surface (spec change 20). This input sits inside
+                          the radio's <label>, so without an explicit aria-label a screen
+                          reader would announce the radio's whole sentence as its name. */}
+                      <TextInput
                         value={repoName}
                         onChange={(e) => setRepoName(e.target.value)}
                         placeholder="claude-sync"
-                        className="w-full px-2 py-1.5 rounded-md bg-inset border border-edge-dim text-xs text-fg placeholder-fg-faint focus:border-accent focus:outline-none"
+                        aria-label="New repository name"
+                        className="w-full"
                       />
                       {ghUsername && (
                         <div className="text-[10px] text-fg-faint mt-0.5">
@@ -425,12 +435,14 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
                   <div className="text-xs text-fg font-medium">Use an existing repository</div>
                   {repoMode === 'existing' && (
                     <div className="mt-1.5">
-                      <input
-                        type="text"
+                      {/* Shared FIELD surface (spec change 20). Same nested-label
+                          reason as above for the explicit aria-label. */}
+                      <TextInput
                         value={repoUrl}
                         onChange={(e) => setRepoUrl(e.target.value)}
                         placeholder="https://github.com/you/repo"
-                        className="w-full px-2 py-1.5 rounded-md bg-inset border border-edge-dim text-xs text-fg placeholder-fg-faint focus:border-accent focus:outline-none"
+                        aria-label="Existing repository URL"
+                        className="w-full"
                       />
                       <div className="text-[10px] text-fg-faint mt-0.5">Paste the full URL of your private repository.</div>
                     </div>
@@ -451,13 +463,17 @@ export default function SyncSetupWizard({ initialType, existingBackends, onCompl
           {/* Auto-sync toggle */}
           <div className="pt-1">
             <label className="flex items-center gap-2 cursor-pointer">
-              <button
-                onClick={() => setSyncEnabled(!syncEnabled)}
-                className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${syncEnabled ? 'bg-green-600' : 'bg-inset'}`}
-              >
-                <div className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-all"
-                  style={{ left: syncEnabled ? '18px' : '2px' }} />
-              </button>
+              {/* Migrated to the shared Toggle (spec changes 15/16). Was a hand-rolled
+                  32x16 switch with a hardcoded green-600 on-state and no aria at all;
+                  the primitive is the one 36x20 geometry, paints the on-state in the
+                  user's theme accent, and carries role="switch" + aria-checked. The
+                  aria-label repeats the sentence beside it — the wrapping <label>
+                  can't name a <button>, so without it the switch is unnamed. */}
+              <Toggle
+                checked={syncEnabled}
+                onChange={setSyncEnabled}
+                aria-label="Back up automatically after changes"
+              />
               <span className="text-xs text-fg">Back up automatically after changes</span>
             </label>
             <div className="text-[10px] text-fg-faint mt-0.5 ml-10">

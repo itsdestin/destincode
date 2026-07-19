@@ -25,7 +25,9 @@ import AccountSection from './AccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
 import SettingsRow from './SettingsRow';
 import { formatVersionLine } from '../../shared/version-line';
-import { Button } from './ui';
+// UiToggle is aliased because this file still exports its own `Toggle` (the
+// compat wrapper below) that AboutPopup imports by that name.
+import { Button, Toggle as UiToggle, TextInput, InputGroup } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -280,22 +282,27 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
 }
 
 // ─── Toggle component (shared) ──────────────────────────────────────────────
-// Exported so AboutPopup's analytics opt-out toggle can reuse the same pill
-// styling — matches the skip-permissions / approve-all toggles in this file.
+// Was a hand-rolled 32x16 track (green-600 on / red-600 for danger) with its own
+// knob math; now a thin wrapper over the shared <Toggle> primitive so there is
+// one 36x20 geometry app-wide (changes 15-17). Kept as a named export — and with
+// its original `enabled`/`onToggle`/`color` signature — because AboutPopup's
+// analytics opt-out imports `Toggle` from this file.
+//
+// color="red" maps to tone="danger" (the theme's destructive token, replacing the
+// raw red-600); the default maps to the app accent, replacing green-600.
 
-export function Toggle({ enabled, onToggle, color = 'green' }: { enabled: boolean; onToggle: () => void; color?: 'green' | 'red' }) {
-  const bg = enabled
-    ? color === 'red' ? 'bg-red-600' : 'bg-green-600'
-    : 'bg-inset';
+export function Toggle({ enabled, onToggle, color = 'green', label }: { enabled: boolean; onToggle: () => void; color?: 'green' | 'red'; label?: string }) {
   return (
-    <button
-      onClick={onToggle}
-      className={`w-8 h-4 rounded-full transition-colors relative ${bg}`}
-    >
-      <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
-        enabled ? 'left-4' : 'left-0.5'
-      }`} />
-    </button>
+    <UiToggle
+      checked={enabled}
+      // The primitive hands back the next state; every call site here is a plain
+      // flip, so we discard it and keep the existing zero-arg handlers intact.
+      onChange={() => onToggle()}
+      tone={color === 'red' ? 'danger' : 'default'}
+      // None of these switches had an accessible name before (a <button> inside a
+      // <label> does not inherit one); call sites pass the visible row text.
+      aria-label={label}
+    />
   );
 }
 
@@ -411,7 +418,7 @@ function SoundCategorySection({ category, label, description, dotColor }: {
           {dotColor && <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />}
           <span className="text-xs text-fg font-medium">{label}</span>
         </div>
-        <Toggle enabled={enabled} onToggle={handleToggle} />
+        <Toggle enabled={enabled} onToggle={handleToggle} label={label} />
       </div>
       <p className="text-[10px] text-fg-muted mb-2">{description}</p>
       {enabled && (
@@ -767,7 +774,7 @@ function BuddyButton() {
             <div className="px-4 py-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-fg font-medium">Show buddy floater</span>
-                <Toggle enabled={enabled} onToggle={toggle} />
+                <Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />
               </div>
               <p className="text-[10px] text-fg-muted mt-2">A small always-on-top mascot that stays visible even when the app is minimized.</p>
               {enabled && dismissed && (
@@ -1006,7 +1013,7 @@ function RemoteButton({
 
                       <label className="flex items-center justify-between py-2 cursor-pointer">
                         <span className="text-xs text-fg-2">Enabled</span>
-                        <Toggle enabled={!!config?.enabled} onToggle={onToggleEnabled} />
+                        <Toggle enabled={!!config?.enabled} onToggle={onToggleEnabled} label="Remote access server enabled" />
                       </label>
 
                       <div className="py-2">
@@ -1016,16 +1023,19 @@ function RemoteButton({
                             <span className="text-[10px] text-green-400">Set</span>
                           )}
                         </div>
-                        <div className="flex gap-1">
-                          <input
+                        {/* The Set button moves INSIDE the field (change 77): this is a
+                            field with a single submit action, which is exactly the
+                            InputGroup shape. The field also loses its bg-well surface,
+                            rounded-sm radius, and gray focus:border-fg-muted. */}
+                        <InputGroup size="sm">
+                          <InputGroup.Field
                             type="password"
                             placeholder={config?.hasPassword ? 'Change password...' : 'Set password...'}
                             value={newPassword}
                             onChange={(e) => onSetNewPassword(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && onSetPassword()}
-                            className="flex-1 px-2 py-1 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                            aria-label="Remote access password"
                           />
-                          {/* sm keeps this level with the text input it sits beside. */}
                           <Button
                             variant="secondary"
                             size="sm"
@@ -1034,7 +1044,7 @@ function RemoteButton({
                           >
                             {passwordStatus === 'saved' ? '✓' : passwordStatus === 'saving' ? '...' : 'Set'}
                           </Button>
-                        </div>
+                        </InputGroup>
                       </div>
 
                       <div className="py-2">
@@ -1156,7 +1166,7 @@ function RemoteButton({
 
                           <label className="flex items-center justify-between py-2 cursor-pointer">
                             <span className="text-xs text-fg-2">Skip password on Tailscale</span>
-                            <Toggle enabled={!!config?.trustTailscale} onToggle={onToggleTailscaleTrust} />
+                            <Toggle enabled={!!config?.trustTailscale} onToggle={onToggleTailscaleTrust} label="Skip password on Tailscale" />
                           </label>
                         </>
                       ) : (
@@ -1254,6 +1264,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
           enabled={defaults.skipPermissions}
           onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
           color="red"
+          label="Skip Permissions"
         />
       </div>
       {defaults.skipPermissions && (
@@ -1284,7 +1295,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                   <p className="text-[10px] text-fg-dim font-medium">Auto-approve all</p>
                   <p className="text-[9px] text-fg-faint">Silently approve all protected requests</p>
                 </div>
-                <Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" />
+                <Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />
               </div>
 
               {/* Separator */}
@@ -1301,7 +1312,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                     <p className="text-[10px] text-fg-dim font-medium">{label}</p>
                     <p className="text-[9px] text-fg-faint">{description}</p>
                   </div>
-                  <Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} />
+                  <Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />
                 </div>
               ))}
             </div>
@@ -1489,9 +1500,14 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                       <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Close-session prompt</h3>
                       <p className="text-[10px] text-fg-faint mt-0.5">Show tag options when closing a session</p>
                     </div>
-                    <button
-                      onClick={() => {
-                        const next = !closePromptDisabled;
+                    {/* Was a hand-rolled 32x18 track with an inline var(--accent)
+                        background; one geometry now (change 16). The state is stored
+                        INVERTED (closePromptDisabled), so `checked` is the negation —
+                        the switch reads as "show the prompt". */}
+                    <UiToggle
+                      checked={!closePromptDisabled}
+                      onChange={(show) => {
+                        const next = !show;
                         setClosePromptDisabled(next);
                         if (next) {
                           localStorage.setItem(CLOSE_PROMPT_SUPPRESS_KEY, '1');
@@ -1499,11 +1515,8 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                           localStorage.removeItem(CLOSE_PROMPT_SUPPRESS_KEY);
                         }
                       }}
-                      className="w-8 h-4.5 rounded-full relative transition-colors shrink-0"
-                      style={{ backgroundColor: closePromptDisabled ? 'var(--inset)' : 'var(--accent)' }}
-                    >
-                      <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${closePromptDisabled ? 'left-0.5' : 'left-[calc(100%-16px)]'}`} />
-                    </button>
+                      aria-label="Close-session prompt"
+                    />
                   </div>
                 </section>
                 </div>
@@ -1882,44 +1895,54 @@ function ConnectToDesktopButton() {
                     </div>
                   ) : (
                     <div className="space-y-3 bg-inset/50 rounded-lg p-3">
+                      {/* All four fields were the same bg-well / rounded-sm /
+                          focus:border-fg-muted recipe; they're the shared FIELD surface
+                          now (change 20). The Cancel + Save row below stays outside as a
+                          form footer — it sits under the whole form, not beside one
+                          field, so it is NOT an InputGroup. */}
                       <div>
                         <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Device Name</label>
-                        <input
-                          type="text"
+                        <TextInput
+                          size="sm"
                           value={formName}
                           onChange={e => setFormName(e.target.value)}
                           placeholder="My Desktop"
-                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                          aria-label="Device Name"
+                          className="w-full"
                         />
                       </div>
                       <div>
                         <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Host / IP</label>
-                        <input
-                          type="text"
+                        <TextInput
+                          size="sm"
                           value={formHost}
                           onChange={e => setFormHost(e.target.value)}
                           placeholder="100.x.x.x"
-                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                          aria-label="Host / IP"
+                          className="w-full"
                         />
                       </div>
                       <div>
                         <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Port</label>
-                        <input
-                          type="text"
+                        <TextInput
+                          size="sm"
                           value={formPort}
                           onChange={e => setFormPort(e.target.value)}
                           placeholder="9900"
-                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                          aria-label="Port"
+                          className="w-full"
                         />
                       </div>
                       <div>
                         <label className="text-[10px] text-fg-muted uppercase tracking-wider block mb-1">Password</label>
-                        <input
+                        <TextInput
+                          size="sm"
                           type="password"
                           value={formPassword}
                           onChange={e => setFormPassword(e.target.value)}
                           placeholder="Remote access password"
-                          className="w-full px-2 py-1.5 rounded-sm bg-well border border-edge-dim text-xs text-fg focus:outline-none focus:border-fg-muted"
+                          aria-label="Remote access password"
+                          className="w-full"
                         />
                       </div>
                       <div className="flex gap-2">

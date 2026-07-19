@@ -6,6 +6,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles/globals.css';
 import App from './App';
+import { Button, TextInput } from './components/ui';
 
 // Apply theme before React mounts to prevent FOUC (flash of unstyled content)
 const storedTheme = localStorage.getItem('youcoded-theme') || 'midnight';
@@ -68,20 +69,29 @@ function LoginScreen({ onLogin }: { onLogin: (password: string) => Promise<void>
     <div className="flex items-center justify-center h-full bg-panel text-fg">
       <form onSubmit={handleSubmit} className="flex flex-col gap-3 w-72">
         <h1 className="text-xl font-bold text-center mb-2">YouCoded Remote</h1>
-        <input
+        {/* Was a hand-rolled field with gray focus (`focus:border-fg-muted`) — the
+            exact paradigm change 20 retires. Fields focus by accent border now. */}
+        <TextInput
           type="password"
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="px-3 py-2 rounded-sm bg-inset border border-edge text-sm focus:outline-none focus:border-fg-muted"
           autoFocus
           disabled={loading}
         />
-        <button type="submit" disabled={loading} className="px-3 py-2 rounded-sm bg-blue-600 hover:bg-blue-500 text-sm font-medium disabled:opacity-50">
+        {/* Was `bg-blue-600 hover:bg-blue-500` — a hardcoded blue that ignored the
+            theme entirely. The button sweep missed this file because the remote
+            login screen lives in index.tsx, not components/. The button stays
+            BELOW the field rather than inside it (change 77): this is a stacked
+            submit form, not a field with an inline action. */}
+        <Button type="submit" disabled={loading} size="lg" className="justify-center">
           {loading ? 'Connecting...' : 'Connect'}
-        </button>
+        </Button>
+        {/* Error text was `text-red-400`. Same pixel today (the app remaps
+            red-400 to #DD4444), but the token is what community packs can
+            restyle. */}
         {error && (
-          <p className="text-red-400 text-xs text-center">{error}</p>
+          <p className="text-destructive text-xs text-center">{error}</p>
         )}
       </form>
     </div>

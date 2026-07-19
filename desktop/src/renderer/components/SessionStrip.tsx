@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { SessionStatusColor } from './StatusDot';
-import { Button } from './ui';
+import { Button, Toggle } from './ui';
 import { isAndroid, isRemoteMode } from '../platform';
 import { MODELS, type ModelAlias } from './StatusBar';
 import FolderSwitcher from './FolderSwitcher';
@@ -1042,26 +1042,33 @@ export default function SessionStrip({
                   Skip Permissions
                   <SkipPermissionsInfoTooltip />
                 </label>
-                <button
-                  onClick={() => setDangerous(!dangerous)}
-                  className={`w-8 h-4.5 rounded-full relative transition-colors ${dangerous ? 'bg-[#DD4444]' : 'bg-inset'}`}
-                >
-                  <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${dangerous ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-                </button>
+                {/* Shared Toggle (change 15). The "danger" tone replaces the raw
+                    #DD4444 hex, so community themes can restyle it. aria-label
+                    added — the neighbouring <label> was never wired to the
+                    control, so it announced as an unnamed button. */}
+                <Toggle
+                  checked={dangerous}
+                  onChange={setDangerous}
+                  tone="danger"
+                  aria-label="Skip Permissions"
+                />
               </div>
+              {/* Warning text was a raw text-[#DD4444] hex. Change 17 moves it onto
+                  the same token as the toggle beside it, so a community theme
+                  restyling its red doesn't leave the two out of sync. */}
               {dangerous && (
-                <p className="text-[10px] text-[#DD4444]">Claude will execute tools without asking for approval.</p>
+                <p className="text-[10px] text-destructive">Claude will execute tools without asking for approval.</p>
               )}
               {/* Launch in new window — hidden on platforms without multi-window support */}
               {detachAvailable && (
                 <div className="flex items-center justify-between">
                   <label className="text-[10px] uppercase tracking-wider text-fg-muted">Launch in New Window</label>
-                  <button
-                    onClick={() => setLaunchInNewWindow(!launchInNewWindow)}
-                    className={`w-8 h-4.5 rounded-full relative transition-colors ${launchInNewWindow ? 'bg-accent' : 'bg-inset'}`}
-                  >
-                    <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${launchInNewWindow ? 'left-[calc(100%-16px)]' : 'left-0.5'}`} />
-                  </button>
+                  {/* Shared Toggle (change 15) — same accent on-state as before. */}
+                  <Toggle
+                    checked={launchInNewWindow}
+                    onChange={setLaunchInNewWindow}
+                    aria-label="Launch in New Window"
+                  />
                 </div>
               )}
               {/* Skip-permissions sessions get the FILLED danger variant (spec §11,

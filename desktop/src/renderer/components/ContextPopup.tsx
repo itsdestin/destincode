@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, Textarea } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 
@@ -153,13 +153,19 @@ export default function ContextPopup({
                   <label htmlFor="compact-instructions" className="block text-xs font-medium text-fg-muted tracking-wider uppercase">
                     Keep these priorities (optional)
                   </label>
-                  <textarea
+                  {/* Change 42: this was the `border-edge rounded-sm focus:ring-1`
+                      recipe — the losing one of the two. It becomes FIELD:
+                      border-edge-dim, rounded-lg, and focus by border rather than
+                      ring. resize-none is the primitive's default. The Back /
+                      Compact buttons stay in the row BELOW, so no InputGroup. */}
+                  <Textarea
                     id="compact-instructions"
+                    size="md"
+                    className="w-full"
                     value={instructions}
                     onChange={(e) => setInstructions(e.target.value)}
                     placeholder="e.g. keep code decisions and architecture; drop debugging output"
                     rows={3}
-                    className="w-full px-2 py-1.5 text-xs bg-inset border border-edge rounded-sm text-fg focus:outline-none focus:ring-1 focus:ring-accent resize-none"
                     autoFocus
                   />
                   <div className="flex gap-2">

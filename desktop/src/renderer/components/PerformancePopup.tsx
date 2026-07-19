@@ -3,7 +3,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { ExplainerSection } from './SettingsExplainer';
-import { Button, CloseButton } from './ui';
+import { Button, CloseButton, Toggle } from './ui';
 
 // Explainer copy lives here as a const because it pairs tightly with the
 // controls above it — both are about GPU choice. Sections render inline in
@@ -112,18 +112,23 @@ export default function PerformancePopup({
           <div className="px-4 py-4 space-y-4">
             <p className="text-xs text-fg-2">GPU choice affects performance.</p>
 
-            {/* Toggle row — switch role for accessibility, matches the
-                project's binary-settings pattern (e.g. PreferencesPopup). */}
-            <button
-              type="button"
-              role="switch"
-              aria-checked={saved}
-              onClick={handleToggle}
-              className="w-full text-left flex items-start gap-3 p-3 rounded-lg hover:bg-inset transition-colors"
+            {/* Toggle row. This was a whole-row <button role="switch"> whose
+                indicator was a hand-rolled 16x16 SQUARE — it announced itself as a
+                switch but looked like a checkbox. It's the shared <Toggle> now
+                (change 15), on the right like every other settings row.
+
+                The row stays clickable (bigger touch target — this renderer is also
+                the Android UI), but a <button> can't legally contain another one, so
+                the wrapper is a div. The guard below drops clicks that originated on
+                the Toggle itself, which would otherwise fire handleToggle twice and
+                cancel out. */}
+            <div
+              onClick={(e) => {
+                if ((e.target as HTMLElement).closest('[role="switch"]')) return;
+                handleToggle();
+              }}
+              className="w-full text-left flex items-start gap-3 p-3 rounded-lg hover:bg-inset transition-colors cursor-pointer"
             >
-              <span className={`mt-0.5 inline-block w-4 h-4 rounded border ${
-                saved ? 'bg-accent border-accent' : 'border-edge'
-              }`} />
               <span className="flex-1">
                 <span className="block text-sm text-fg">Prefer power saving</span>
                 <span className="block text-xs text-fg-muted mt-0.5">
@@ -131,7 +136,13 @@ export default function PerformancePopup({
                   but UI animations may stutter.
                 </span>
               </span>
-            </button>
+              <Toggle
+                checked={saved}
+                onChange={handleToggle}
+                aria-label="Prefer power saving"
+                className="mt-0.5"
+              />
+            </div>
 
             {needsRestart && (
               <div className="px-3 py-2 rounded-lg bg-inset flex items-center justify-between gap-3">
