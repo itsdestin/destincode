@@ -272,22 +272,51 @@ describe('Bash', () => {
       return c;
     }
 
+    // Must mirror withCwdProbe()'s `pwd -W 2>/dev/null || pwd` — a bare `pwd`
+    // makes these assertions fail on WINDOWS ONLY. Git Bash mounts %TEMP% at
+    // /tmp, so inside a mkdtemp sandbox bare `pwd` prints /tmp/native-tools-xxx;
+    // fs.realpathSync() then resolves that leading slash against the runner's
+    // CURRENT DRIVE (D: on GitHub's windows-latest) -> ENOENT 'D:\tmp'. `pwd -W`
+    // is the MSYS builtin that emits a real Win32 path instead. Broke the
+    // 2026-07-19 beta build; the tool itself was never wrong. (POSIX: -W is
+    // invalid, the `|| pwd` fallback takes over, stderr suppressed.)
+    const PWD = 'pwd -W 2>/dev/null || pwd';
+
+    // Same 8.3 trap the tool itself hit: plain fs.realpathSync leaves a SHORT
+    // root (C:\Users\RUNNER~1\...) short while `pwd -W` reports the LONG form
+    // (C:\Users\runneradmin\...) for the very same directory, so comparing the
+    // two never matches on Windows. .native canonicalizes both. Compare paths
+    // through this, never through raw realpathSync.
+    const canon = (p: string) => {
+      try {
+        return fs.realpathSync.native(p);
+      } catch {
+        return fs.realpathSync(p);
+      }
+    };
+
     it('a cd carries to the next call and the sentinel never reaches the model', async () => {
       fs.mkdirSync(path.join(dir, 'sub'));
       const c = trackingCtx(dir);
       const first = await BashTool.execute({ command: 'cd sub && echo moved' }, c);
       expect(first.text).toContain('moved');
       expect(first.text).not.toContain('__YC_CWD__');
-      const second = await BashTool.execute({ command: 'pwd' }, c);
-      expect(fs.realpathSync(second.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
+      const second = await BashTool.execute({ command: PWD }, c);
+      // A cd INTO a workspace subdir must never trip the scope guard. Windows-only
+      // regression (2026-07-19): isInside() compared an 8.3 SHORT root against a
+      // LONG candidate, so this fired on every cd and reverted it. The two
+      // assertions below can't catch that alone — they expect the ROOT, which is
+      // also what a fully broken persistence returns, so they passed vacuously.
+      expect(first.text).not.toMatch(/Shell cwd was reset/);
+      expect(canon(second.text.trim())).toBe(canon(path.join(dir, 'sub')));
     });
 
     it('a cd outside the workspace is reverted WITH a notice (never silent)', async () => {
       const c = trackingCtx(dir);
       const r = await BashTool.execute({ command: `cd ${JSON.stringify(os.tmpdir())}` }, c);
       expect(r.text).toMatch(/Shell cwd was reset to/);
-      const after = await BashTool.execute({ command: 'pwd' }, c);
-      expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(dir));
+      const after = await BashTool.execute({ command: PWD }, c);
+      expect(canon(after.text.trim())).toBe(canon(dir));
     });
 
     it('the probe preserves the command exit code', async () => {
@@ -302,9 +331,9 @@ describe('Bash', () => {
       const c = trackingCtx(dir);
       await BashTool.execute({ command: 'cd gone' }, c);
       fs.rmSync(gone, { recursive: true });
-      const r = await BashTool.execute({ command: 'pwd' }, c);
+      const r = await BashTool.execute({ command: PWD }, c);
       expect(r.isError).toBeFalsy();
-      expect(fs.realpathSync(r.text.trim())).toBe(fs.realpathSync(dir));
+      expect(canon(r.text.trim())).toBe(canon(dir));
     });
 
     // Regression (2026-07-18): without a trailing newline after the sentinel, a
@@ -331,8 +360,8 @@ describe('Bash', () => {
         { command: `cd sub && node -e "for(let i=0;i<3000;i++)console.log('X'.repeat(100))"` },
         c,
       );
-      const after = await BashTool.execute({ command: 'pwd' }, c);
-      expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
+      const after = await BashTool.execute({ command: PWD }, c);
+      expect(canon(after.text.trim())).toBe(canon(path.join(dir, 'sub')));
     });
 
     // Regression (2026-07-18): a dangling `&&` absorbs the probe's `__yc_rc=$?`

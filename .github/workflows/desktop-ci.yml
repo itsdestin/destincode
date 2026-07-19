@@ -11,7 +11,17 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Windows runs the TESTS only (not the packaging build) because a whole
+    # class of bug is invisible on Linux: Git Bash path semantics, MSYS mounts,
+    # drive-relative resolution, CRLF. This job was ubuntu-only, so PR #174's
+    # scoped-cwd-persistence tests never ran on Windows and merged green while
+    # broken there — first seen 2026-07-19, at BETA-BUILD time, because
+    # desktop-test-build.yml was the only workflow with a Windows runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: desktop
@@ -38,7 +48,11 @@ jobs:
       # bsdtar-missing failure. Mirror desktop-release.yml's setup step:
       #   libarchive-tools -> provides bsdtar, required by the pacman target
       #   rpm              -> required by the rpm target
+      # Packaging is Linux-only here: the deb/rpm/pacman targets are what CI
+      # regressed on before, and the Windows NSIS build is already covered by
+      # desktop-test-build.yml / desktop-release.yml. Windows stops after tests.
       - name: Install Linux build deps
+        if: runner.os == 'Linux'
         # apt-get update prefix: the cached package index on ubuntu-latest
         # frequently points to .deb versions that have already rolled off
         # the mirror, so a bare `install` fails with HTTP 404 / exit 100.
@@ -47,4 +61,5 @@ jobs:
         working-directory: .
 
       - name: Build
+        if: runner.os == 'Linux'
         run: npm run build
