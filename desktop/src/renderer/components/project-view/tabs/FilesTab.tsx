@@ -428,12 +428,16 @@ export function FilesTab({
                         the joint AND there's no seam gap at fractional zoom levels.
                         (border-b-0 + overlap covered the line; border-b-0 without
                         overlap left a subpixel gap — both were reported.) */}
-                    <div className="relative -mb-px ml-4 h-3 w-14 rounded-t-md bg-inset border border-edge group-hover:border-accent/60 transition-colors" />
+                    <div className="relative -mb-px ml-4 h-3 w-14 rounded-t-md bg-panel border border-edge group-hover:border-accent/60 transition-colors" />
                     {/* Folder body — preview AND the name/count footer, all inside one
                         bordered, rounded container so they read as the same folder.
                         All four corners rounded — the old rounded-tl-none square
-                        corner under the tab read as a glitch, not a folder. */}
-                    <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-edge bg-inset overflow-hidden group-hover:border-accent/60 transition-colors">
+                        corner under the tab read as a glitch, not a folder. bg-panel
+                        (not bg-inset) so the folder body matches the file card's
+                        .layer-surface background — the two card kinds previously
+                        used different tokens and read as mismatched (user feedback
+                        2026-07-19). */}
+                    <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-edge bg-panel overflow-hidden group-hover:border-accent/60 transition-colors">
                       <div className="flex-1 min-h-0 overflow-hidden">
                         {previewFiles.length > 0 ? (
                           <div className="flex flex-col gap-1.5 p-2.5">
@@ -455,9 +459,9 @@ export function FilesTab({
                       </div>
                       {/* Footer inside the folder: name (with accent folder glyph) + count.
                           bg-panel + the doc-caption typography (12px mono fg-2 name,
-                          10.5px fg-muted second line) so it matches the doc cards'
-                          lighter caption strip — the folder BODY stays inset, but the
-                          name strip reads identical across both card kinds. */}
+                          10.5px fg-muted second line) — same token as the folder
+                          body above, so the whole card and the doc cards share one
+                          background color. */}
                       <div className="shrink-0 border-t border-edge-dim px-2.5 py-1.5 bg-panel">
                         <div className="text-[12px] font-mono text-fg-2 flex items-center gap-1.5">
                           <span className="text-accent shrink-0"><FolderCardIcon size={13} strokeWidth={1.5} /></span>
