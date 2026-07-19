@@ -63,6 +63,15 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     setShowDiff(false);
   }, [content, artifact.id]);
 
+  // Fix: leave edit mode when the user switches to a DIFFERENT file. Edit mode
+  // used to survive the switch (only the draft reset), so file B opened in the
+  // editor holding whatever draft state file A left behind. Now that the host
+  // nulls content before re-reading, a save clicked during that gap would write
+  // an empty draft over the file — exiting edit mode closes that window.
+  useEffect(() => {
+    setEditing(false);
+  }, [artifact.id]);
+
   // ── Conflict detection: watch for concurrent agent edits while in edit mode ──
   useEffect(() => {
     if (!editing) return;
