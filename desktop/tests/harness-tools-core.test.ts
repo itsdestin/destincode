@@ -272,13 +272,23 @@ describe('Bash', () => {
       return c;
     }
 
+    // Must mirror withCwdProbe()'s `pwd -W 2>/dev/null || pwd` — a bare `pwd`
+    // makes these assertions fail on WINDOWS ONLY. Git Bash mounts %TEMP% at
+    // /tmp, so inside a mkdtemp sandbox bare `pwd` prints /tmp/native-tools-xxx;
+    // fs.realpathSync() then resolves that leading slash against the runner's
+    // CURRENT DRIVE (D: on GitHub's windows-latest) -> ENOENT 'D:\tmp'. `pwd -W`
+    // is the MSYS builtin that emits a real Win32 path instead. Broke the
+    // 2026-07-19 beta build; the tool itself was never wrong. (POSIX: -W is
+    // invalid, the `|| pwd` fallback takes over, stderr suppressed.)
+    const PWD = 'pwd -W 2>/dev/null || pwd';
+
     it('a cd carries to the next call and the sentinel never reaches the model', async () => {
       fs.mkdirSync(path.join(dir, 'sub'));
       const c = trackingCtx(dir);
       const first = await BashTool.execute({ command: 'cd sub && echo moved' }, c);
       expect(first.text).toContain('moved');
       expect(first.text).not.toContain('__YC_CWD__');
-      const second = await BashTool.execute({ command: 'pwd' }, c);
+      const second = await BashTool.execute({ command: PWD }, c);
       expect(fs.realpathSync(second.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
     });
 
@@ -286,7 +296,7 @@ describe('Bash', () => {
       const c = trackingCtx(dir);
       const r = await BashTool.execute({ command: `cd ${JSON.stringify(os.tmpdir())}` }, c);
       expect(r.text).toMatch(/Shell cwd was reset to/);
-      const after = await BashTool.execute({ command: 'pwd' }, c);
+      const after = await BashTool.execute({ command: PWD }, c);
       expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(dir));
     });
 
@@ -302,7 +312,7 @@ describe('Bash', () => {
       const c = trackingCtx(dir);
       await BashTool.execute({ command: 'cd gone' }, c);
       fs.rmSync(gone, { recursive: true });
-      const r = await BashTool.execute({ command: 'pwd' }, c);
+      const r = await BashTool.execute({ command: PWD }, c);
       expect(r.isError).toBeFalsy();
       expect(fs.realpathSync(r.text.trim())).toBe(fs.realpathSync(dir));
     });
@@ -331,7 +341,7 @@ describe('Bash', () => {
         { command: `cd sub && node -e "for(let i=0;i<3000;i++)console.log('X'.repeat(100))"` },
         c,
       );
-      const after = await BashTool.execute({ command: 'pwd' }, c);
+      const after = await BashTool.execute({ command: PWD }, c);
       expect(fs.realpathSync(after.text.trim())).toBe(fs.realpathSync(path.join(dir, 'sub')));
     });
 
