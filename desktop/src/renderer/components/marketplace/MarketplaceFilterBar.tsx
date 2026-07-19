@@ -11,6 +11,7 @@
 
 import React, { useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
+import { Button } from "../ui";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useNarrowViewport } from "../../hooks/use-narrow-viewport";
 
@@ -211,13 +212,14 @@ function FilterSheet({
           </SheetGroup>
         </div>
         <footer className="sticky bottom-0 z-10 px-4 py-3 border-t border-edge-dim bg-panel">
-          <button
+          <Button
+            size="lg"
             type="button"
             onClick={onClose}
-            className="w-full px-4 py-2 rounded-md bg-accent text-on-accent font-medium hover:opacity-90"
+            className="w-full"
           >
             Apply
-          </button>
+          </Button>
         </footer>
       </OverlayPanel>
     </>

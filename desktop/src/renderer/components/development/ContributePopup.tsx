@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
+import { Button } from '../ui';
 
 interface Props {
   open: boolean;
@@ -83,12 +84,9 @@ export function ContributePopup({ open, onClose }: Props) {
               Open it as a project folder, ask Claude to make changes, and push PRs to the relevant
               <strong> sub-repo</strong> — never to <code>youcoded-dev</code> itself.
             </p>
-            <button
-              onClick={onInstall}
-              className="w-full py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110"
-            >
+            <Button onClick={onInstall} className="w-full py-2.5">
               Install Workspace
-            </button>
+            </Button>
           </>
         )}
         {installing && (
@@ -99,7 +97,10 @@ export function ContributePopup({ open, onClose }: Props) {
         {error && (
           <>
             <div className="text-xs text-fg mb-3">{error}</div>
-            <button onClick={onClose} className="w-full py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent">Done</button>
+            {/* Spec change 75: this button had no hover state at all (bg-accent with
+                no hover rule), so it looked inert. The primitive gives it the standard
+                hover fade — a real behavior change, not just a restyle. */}
+            <Button onClick={onClose} className="w-full py-2.5">Done</Button>
           </>
         )}
         {done && (
@@ -108,8 +109,8 @@ export function ContributePopup({ open, onClose }: Props) {
               Workspace installed at <code className="text-[11px]">{done.path}</code>. Added to your project folders.
             </div>
             <div className="flex gap-2">
-              <button onClick={onClose} className="flex-1 py-2.5 text-xs font-medium rounded-lg border border-edge-dim text-fg-2 hover:bg-inset">Done</button>
-              <button onClick={onOpenInNewSession} className="flex-1 py-2.5 text-xs font-medium rounded-lg bg-accent text-on-accent">Open in New Session</button>
+              <Button variant="secondary" onClick={onClose} className="flex-1 py-2.5">Done</Button>
+              <Button onClick={onOpenInNewSession} className="flex-1 py-2.5">Open in New Session</Button>
             </div>
           </>
         )}

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Button } from './ui';
 
 interface Props {
   /** Label shown in the fallback UI so users know which panel failed */
@@ -29,12 +30,15 @@ export default class ErrorBoundary extends React.Component<Props, State> {
           <span className="text-fg-faint max-w-md text-center break-words">
             {this.state.error.message}
           </span>
-          <button
+          {/* Filled-grey (bg-inset/hover:bg-edge) becomes the outline `secondary`
+              per spec decision 60. py-1 keeps the original compact height. */}
+          <Button
+            variant="secondary"
             onClick={() => this.setState({ error: null })}
-            className="mt-2 px-3 py-1 rounded-sm bg-inset hover:bg-edge text-fg-2 transition-colors"
+            className="mt-2 py-1"
           >
             Retry
-          </button>
+          </Button>
         </div>
       );
     }

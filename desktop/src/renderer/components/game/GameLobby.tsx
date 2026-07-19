@@ -4,6 +4,7 @@ import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
 import { mergeFriends, statusLabel } from './friends-data';
+import { Button } from '../ui';
 import type { FriendRow, RequestsPayload } from '../../state/marketplace-api-client';
 
 // Local mirror of the renderer/main ApiResult shape (useIpc.ts declares it but
@@ -149,22 +150,31 @@ function FriendRowMenu({ onUnfriend, onBlock, pending }: { onUnfriend: () => voi
                 from each other. You can unblock later in Settings → Account.
               </p>
               <div className="flex gap-2">
-                {/* py-1.5 keeps these ≥32px tall for touch (see the ⋯ trigger note). */}
-                <button
+                {/* The raw `bg-red-600`/`text-white` was a stock Tailwind red that didn't
+                    match the app's own destructive colour and ignored themes. The shared
+                    `danger` variant uses the theme's destructive token and derives a
+                    readable label colour per theme.
+                    The `md` size already supplies py-1.5, which keeps these ≥32px tall
+                    for touch (see the ⋯ trigger note). */}
+                <Button
                   type="button"
+                  variant="danger"
+                  size="md"
                   onClick={() => { onBlock(); close(); }}
                   disabled={pending}
-                  className="flex-1 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-medium rounded py-1.5 transition-colors"
+                  className="flex-1"
                 >
                   Block
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
+                  variant="secondary"
+                  size="md"
                   onClick={() => setConfirmingBlock(false)}
-                  className="flex-1 bg-inset hover:bg-edge text-fg-2 rounded py-1.5 transition-colors"
+                  className="flex-1"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
           ) : (
@@ -364,22 +374,31 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
             <span> wants to play!</span>
           </p>
           <div className="flex gap-2">
-            <button
+            {/* WHY green → `primary`: accepting a game invite is not a safety decision.
+                The green was borrowed from the permission prompt, where green/red really
+                does mean allow/deny. Here it just meant "the main action", which is what
+                `primary` is for — and it also removes the last hardcoded `text-white`
+                from the games screens, so this button now follows the user's theme. */}
+            <Button
+              variant="primary"
+              size="md"
               onClick={() => {
                 connection.respondToChallenge(state.challengeFrom!.id, true);
                 connection.joinGame(state.challengeCode!);
                 dispatch({ type: 'CLEAR_CHALLENGE' });
               }}
-              className="flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-medium rounded-lg py-1.5 transition-colors"
+              className="flex-1"
             >
               Accept
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
               onClick={() => { connection.respondToChallenge(state.challengeFrom!.id, false); dispatch({ type: 'CLEAR_CHALLENGE' }); }}
-              className="flex-1 bg-inset hover:bg-edge text-fg-2 text-xs font-medium rounded-lg py-1.5 transition-colors"
+              className="flex-1"
             >
               Decline
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -445,13 +464,17 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
             placeholder="friend's handle"
             className="flex-1 bg-well border border-edge rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-muted outline-none focus:border-fg-dim transition-colors"
           />
-          <button
+          {/* Filled-grey (`bg-inset`) was an unofficial second secondary style; it
+              collapses into the primitive's outlined `secondary`. `lg` matches the
+              height of the handle input next to it. */}
+          <Button
+            variant="secondary"
+            size="lg"
             onClick={() => void submitAddFriend()}
             disabled={!addHandle.trim() || addPending}
-            className="bg-inset hover:bg-edge disabled:opacity-40 disabled:cursor-not-allowed text-fg text-sm font-medium rounded-lg px-3 py-2 transition-colors"
           >
             Send request
-          </button>
+          </Button>
         </div>
         {addFeedback && (
           <p className={`text-xs ${addFeedback.ok ? 'text-green-400' : 'text-red-400'}`}>{addFeedback.text}</p>
@@ -612,13 +635,17 @@ function SignInScreen() {
       <p className="text-xs text-fg-muted text-center max-w-xs">
         Games use your GitHub name as your player tag.
       </p>
-      <button
+      {/* The old classes had `hover:bg-accent` on top of a `bg-accent` base, so
+          hovering changed nothing. The shared `primary` fades the fill on hover,
+          so this button now visibly responds to the cursor. */}
+      <Button
+        variant="primary"
+        size="lg"
         onClick={() => { void startSignIn(); }}
         disabled={signInPending}
-        className="bg-accent hover:bg-accent text-on-accent text-sm font-medium rounded-lg px-4 py-2 transition-colors disabled:opacity-50"
       >
         {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
-      </button>
+      </Button>
       {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
       {signInError && !signInPending && (
         <p className="text-xs text-red-400 text-center max-w-xs">Sign-in failed: {signInError}. Try again.</p>

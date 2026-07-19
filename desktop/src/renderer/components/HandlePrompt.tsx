@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
+import { Button } from './ui';
 
 // Persisted "don't nag me again" flag. Set on skip (and on ESC, which is the
 // same as skip), never set when the user actually claims a handle.
@@ -124,23 +125,20 @@ function HandlePromptPopup({
                 className="flex-1 text-xs bg-transparent text-fg focus:outline-none ml-0.5"
               />
             </div>
-            <button
+            <Button
               onClick={() => void save()}
               disabled={saving || draft.trim().length === 0}
-              className="text-xs font-medium px-3 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+              className="py-2"
             >
               {saving ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
           </div>
           {/* Plain words for status, never glyphs. */}
           {error && <p className="text-[10px] text-red-500">{error}</p>}
 
-          <button
-            onClick={skip}
-            className="w-full text-xs font-medium py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
-          >
+          <Button variant="secondary" onClick={skip} className="w-full py-2">
             Skip for now
-          </button>
+          </Button>
         </div>
       </OverlayPanel>
     </>,

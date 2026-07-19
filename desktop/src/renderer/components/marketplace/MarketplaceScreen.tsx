@@ -19,6 +19,7 @@ import WallpaperBackdrop from "../WallpaperBackdrop";
 import InstallingFooterStrip from "./InstallingFooterStrip";
 import MarketplaceAuthChip from "./MarketplaceAuthChip";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
+import { Button } from "../ui";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useCurrentPlatform } from "../../state/platform";
 import { platformDisplayName, platformListDisplay } from "../../../shared/platform-display";
@@ -291,11 +292,16 @@ export default function MarketplaceScreen({
           <h1 className="text-xl font-semibold text-fg truncate">Marketplace</h1>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* panel-glass and the tighter py-1 stay as className overrides (spec
+              decision 69): glass re-tiers translucency on wallpaper themes, and
+              dropping it in a naive migration would make this chip opaque. */}
           {onOpenLibrary && (
-            <button
+            <Button
+              variant="secondary"
+              size="lg"
               type="button"
               onClick={onOpenLibrary}
-              className="panel-glass bg-inset text-fg-2 hover:text-fg text-sm rounded-md border border-edge-dim hover:border-edge px-3 py-1 sm:px-3 sm:py-1 inline-flex items-center justify-center"
+              className="panel-glass py-1"
               aria-label="Open Your Library"
               title="Your Library"
             >
@@ -307,7 +313,7 @@ export default function MarketplaceScreen({
                   <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
                 </svg>
               </span>
-            </button>
+            </Button>
           )}
           {/* Wide: text "Esc · Back to chat" hint, no border (Esc key does the work). */}
           <button
@@ -852,20 +858,23 @@ function SetupHintBanner({
         <code className="flex-1 min-w-0 truncate px-2 py-1.5 rounded bg-inset text-fg text-sm font-mono border border-edge-dim">
           {command}
         </code>
-        <button
+        <Button
+          variant="secondary"
+          size="lg"
           type="button"
           onClick={copy}
-          className="shrink-0 text-sm px-3 py-1.5 rounded-md border border-edge-dim hover:border-edge text-fg-2 hover:text-fg"
+          className="shrink-0"
         >
           {copied ? 'Copied' : 'Copy'}
-        </button>
-        <button
+        </Button>
+        <Button
+          size="lg"
           type="button"
           onClick={onOpenSetupSession}
-          className="shrink-0 text-sm px-3 py-1.5 rounded-md bg-accent text-on-accent hover:opacity-90"
+          className="shrink-0"
         >
           Open new setup session
-        </button>
+        </Button>
         <button
           type="button"
           onClick={onDismiss}

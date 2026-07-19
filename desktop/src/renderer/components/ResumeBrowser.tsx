@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Button } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
@@ -554,16 +555,16 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         {(() => {
           const dangerous = s.provider !== 'native' && resumeDangerous;
           return (
-            <button
+            /* Filled danger for skip-permissions — same call as SessionStrip's
+               Create button (spec §11, change 62). See the longer note there. */
+            <Button
+              variant={dangerous ? 'danger' : 'primary'}
+              size="lg"
               onClick={() => handleConfirmResume(s)}
-              className={`w-full text-sm font-medium rounded-md py-1.5 transition-colors ${
-                dangerous
-                  ? 'bg-[#DD4444] hover:bg-[#E55555] text-white'
-                  : 'bg-accent hover:bg-accent text-on-accent'
-              }`}
+              className="w-full py-1.5"
             >
               {dangerous ? 'Resume (Dangerous)' : 'Resume Session'}
-            </button>
+            </Button>
           );
         })()}
       </div>

@@ -1,6 +1,7 @@
 import React from 'react';
 import type { AttentionState } from '../state/chat-types';
 import BrailleSpinner from './BrailleSpinner';
+import { Button } from './ui';
 
 // Banner shown in place of ThinkingIndicator when the classifier (or a
 // process-exit event) concludes chat view is out of sync with what the user
@@ -95,13 +96,13 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
         {showOpenSettings && (
           // ml-auto pushes the CTA to the right edge of the bubble, past the
           // message text. Plain-words label (no glyph) per standing preference.
-          <button
-            type="button"
+          <Button
+            size="sm"
             onClick={onOpenProviderSettings}
-            className="ml-auto shrink-0 text-xs font-medium rounded-md px-2.5 py-1 bg-accent text-on-accent hover:opacity-90 transition-opacity"
+            className="ml-auto shrink-0"
           >
             Open Settings
-          </button>
+          </Button>
         )}
       </div>
       {showRequestId && (

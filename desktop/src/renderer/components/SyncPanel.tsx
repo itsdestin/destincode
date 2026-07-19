@@ -10,6 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Button } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSyncState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
@@ -962,19 +963,21 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               // CTA row — tucked directly under the sub (aligned past the dot, no divider).
               const cta =
                 hk === 'waiting-github' ? (
-                  <button onClick={() => setShowConnectGithub(true)} className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent text-on-accent hover:brightness-110">
+                  <Button size="sm" onClick={() => setShowConnectGithub(true)}>
                     Connect GitHub…
-                  </button>
+                  </Button>
                 ) : hk === 'error' ? (
                   <>
                     {/* Try again reuses syncNow() with the existing .catch error routing. */}
-                    <button onClick={runSpacesSyncNow} className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent text-on-accent hover:brightness-110">
+                    <Button size="sm" onClick={runSpacesSyncNow}>
                       Try again
-                    </button>
+                    </Button>
+                    {/* secondary (outline) so it reads as a peer of the primary "Try again"
+                        rather than competing with it for the same weight. */}
                     {githubUnauthed && (
-                      <button onClick={() => setShowConnectGithub(true)} className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-edge-dim text-fg-2 hover:bg-inset">
+                      <Button variant="secondary" size="sm" onClick={() => setShowConnectGithub(true)}>
                         Connect GitHub…
-                      </button>
+                      </Button>
                     )}
                   </>
                 ) : null;
@@ -1266,12 +1269,17 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                       up now row; keeps handleForceSync's syncing state + label behavior). */}
                   {list.length > 0 && (
                     <div className="mt-2 space-y-2">
-                      <button
+                      {/* Dashed border is a documented exception (spec decision 64): the dash
+                          is what marks this as an "add" affordance rather than a real action,
+                          so it rides on top of `secondary` as a className override. The label
+                          also lifts from fg-muted to the variant's fg-2. */}
+                      <Button
+                        variant="secondary"
                         onClick={() => setView('add-type')}
-                        className="w-full border border-dashed border-edge-dim rounded-lg py-2.5 text-center text-[11px] text-fg-muted hover:text-fg-2 hover:border-edge hover:bg-inset/30 transition-colors"
+                        className="w-full border-dashed py-2.5"
                       >
                         ＋ Add a backup
-                      </button>
+                      </Button>
                       {anyActive && (
                         <button
                           onClick={handleForceSync}
@@ -1316,20 +1324,14 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                       )}
                       <div className="flex gap-2 mt-2">
                         {w.fixAction && (
-                          <button
-                            onClick={() => handleFixAction(w)}
-                            className="text-[11px] px-2 py-0.5 rounded bg-accent text-on-accent hover:brightness-110"
-                          >
+                          <Button size="sm" onClick={() => handleFixAction(w)}>
                             {w.fixAction.label}
-                          </button>
+                          </Button>
                         )}
                         {w.dismissible && (
-                          <button
-                            onClick={() => handleDismiss(w.code)}
-                            className="text-[11px] px-2 py-0.5 rounded border border-edge-dim text-fg-muted hover:bg-inset"
-                          >
+                          <Button variant="secondary" size="sm" onClick={() => handleDismiss(w.code)}>
                             Dismiss
-                          </button>
+                          </Button>
                         )}
                       </div>
                     </div>
@@ -1493,12 +1495,12 @@ function ConfirmDialog({
         <div className="px-4 py-3 space-y-3">
           <p className="text-[11px] text-fg-dim leading-relaxed">{message}</p>
           <div className="flex gap-2 pt-1">
-            <button
-              onClick={onCancel}
-              className="flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md bg-inset hover:bg-edge text-fg-muted transition-colors"
-            >
+            {/* Was a filled-grey button (bg-inset/hover:bg-edge). Spec decision 60 folds
+                that whole family into `secondary` (outline) — it sits beside a real
+                confirm button as a peer, which the lighter `ghost` would under-weight. */}
+            <Button variant="secondary" onClick={onCancel} className="flex-1">
               Cancel
-            </button>
+            </Button>
             <button
               onClick={onConfirm}
               className={`flex-1 px-3 py-1.5 text-[11px] font-medium rounded-md transition-colors ${btnBg}`}
@@ -1649,25 +1651,30 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
                   Remove {d.name}? It stops being listed here. If this device syncs again, it comes back.
                 </p>
                 <div className="flex gap-2">
-                  <button
+                  <Button
+                    variant="secondary"
                     type="button"
                     onClick={() => setConfirmingId(null)}
                     aria-label={`Keep ${d.name}`}
-                    className="flex-1 text-xs font-medium py-1.5 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+                    className="flex-1"
                   >
                     Cancel
-                  </button>
+                  </Button>
                   {/* autoFocus: the trigger just unmounted, so without this the focus
-                      falls to <body> and a keyboard user re-tabs from the top. */}
-                  <button
+                      falls to <body> and a keyboard user re-tabs from the top.
+                      danger-outline replaces the hand-rolled border-red-500/50 pair, so the
+                      red comes from the theme's --destructive token rather than stock red
+                      (spec decision 68 — "Remove" reads the same everywhere). */}
+                  <Button
+                    variant="danger-outline"
                     type="button"
                     autoFocus
                     onClick={() => void confirmRemove(d.id)}
                     aria-label={`Confirm removing ${d.name}`}
-                    className="flex-1 text-xs font-medium py-1.5 rounded-lg border border-red-500/50 text-red-500 hover:bg-red-500/10 transition-colors"
+                    className="flex-1"
                   >
                     Remove
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
@@ -1773,15 +1780,16 @@ function EditBackendForm({
           To change these settings, remove this backup and add a new one.
         </div>
 
-        <button
+        {/* The old faded "cursor-wait" saving fill is gone — the primitive's plain
+            disabled state covers it for now, and a dedicated `busy` state lands later
+            with the spinner work (spec decision 72). The label still says "Saving...". */}
+        <Button
           onClick={handleSave}
           disabled={!label.trim() || saving}
-          className={`px-4 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
-            saving ? 'bg-accent/20 text-accent/60 cursor-wait' : 'bg-accent hover:bg-accent/80 text-on-accent cursor-pointer'
-          }`}
+          className="px-6"
         >
           {saving ? 'Saving...' : 'Save'}
-        </button>
+        </Button>
         </div>
       </div>
     </div>

@@ -4,6 +4,7 @@ import { isAndroid } from '../platform';
 import { useSkills } from '../state/skill-context';
 import type { ChipConfig } from '../../shared/types';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Button } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 
@@ -356,13 +357,13 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                     className="w-full px-2 py-1 text-[11px] bg-well border border-edge-dim rounded-md text-fg placeholder:text-fg-faint focus:outline-none focus:border-accent resize-none"
                   />
                   <div className="flex gap-2">
-                    <button
+                    <Button
+                      size="sm"
                       onClick={addCustom}
                       disabled={!customLabel.trim() || !customPrompt.trim()}
-                      className="px-2 py-1 text-[10px] bg-accent text-on-accent rounded-md disabled:opacity-40"
                     >
                       Add Custom
-                    </button>
+                    </Button>
                     <button onClick={() => setShowAddForm(false)} className="px-2 py-1 text-[10px] text-fg-muted hover:text-fg">Cancel</button>
                   </div>
                 </div>

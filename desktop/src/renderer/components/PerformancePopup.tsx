@@ -3,6 +3,7 @@ import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { ExplainerSection } from './SettingsExplainer';
+import { Button } from './ui';
 
 // Explainer copy lives here as a const because it pairs tightly with the
 // controls above it — both are about GPU choice. Sections render inline in
@@ -141,14 +142,13 @@ export default function PerformancePopup({
             {needsRestart && (
               <div className="px-3 py-2 rounded-lg bg-inset flex items-center justify-between gap-3">
                 <span className="text-xs text-fg-2">⟳ Restart YouCoded to apply.</span>
-                <button
+                <Button
                   type="button"
                   onClick={handleRestart}
                   disabled={restarting}
-                  className="text-xs px-3 py-1 rounded bg-accent text-on-accent disabled:opacity-60"
                 >
                   {restarting ? 'Restarting…' : 'Restart now'}
-                </button>
+                </Button>
               </div>
             )}
 

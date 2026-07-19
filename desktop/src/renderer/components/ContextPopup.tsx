@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Button } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 
@@ -168,17 +169,20 @@ export default function ContextPopup({
                     autoFocus
                   />
                   <div className="flex gap-2">
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="lg"
                       onClick={() => {
                         // Back resets draft so it doesn't leak if the user cancels then reopens.
                         setCustomizing(false);
                         setInstructions('');
                       }}
-                      className="flex-1 py-2 px-3 text-sm rounded-sm border border-edge bg-panel text-fg-2 hover:bg-inset transition-colors"
+                      className="flex-1"
                     >
                       Back
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      size="lg"
                       onClick={() => {
                         const trimmed = instructions.trim();
                         if (!trimmed || !sessionId) return;
@@ -186,10 +190,10 @@ export default function ContextPopup({
                         onClose();
                       }}
                       disabled={!sessionId || instructions.trim().length === 0}
-                      className="flex-1 py-2 px-3 text-sm font-medium rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="flex-1"
                     >
                       Compact with instructions
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
@@ -220,18 +224,25 @@ export default function ContextPopup({
                     </div>
                   </div>
 
-                  {/* Clear secondary action. */}
+                  {/* Clear secondary action.
+                      danger-outline per spec change 73: /clear throws the whole
+                      conversation away with no summary kept, but it used to look
+                      like a plain neutral button sitting right under the harmless
+                      Compact. The red outline is a deliberate escalation so the
+                      consequence is visible before the click, not after. */}
                   <div>
-                    <button
+                    <Button
+                      variant="danger-outline"
+                      size="lg"
                       onClick={() => {
                         onDispatch('/clear');
                         onClose();
                       }}
                       disabled={!sessionId}
-                      className="w-full py-2 px-3 text-sm rounded-sm border border-edge bg-panel text-fg-2 hover:bg-inset transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full"
                     >
                       Clear and start over
-                    </button>
+                    </Button>
                     <p className="text-[11px] text-fg-muted mt-1 leading-snug">
                       Erases the visible timeline and resets Claude's memory for this session. No summary is kept.
                     </p>

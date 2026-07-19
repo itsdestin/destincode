@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { GameConnection } from '../../state/game-types';
+import { Button } from '../ui';
 
 const COLS = 7;
 const ROWS = 6;
@@ -52,12 +53,16 @@ export default function ConnectFourBoard({ connection }: Props) {
             <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
             <span className="text-xs text-red-300 flex-1">Opponent disconnected — waiting for reconnection...</span>
           </div>
-          <button
+          {/* Low-emphasis escape hatch inside a warning banner — `ghost` keeps it
+              quiet. Radius, hover and focus ring now come from the shared button. */}
+          <Button
+            variant="ghost"
+            size="md"
             onClick={() => { connection.leaveGame(); dispatch({ type: 'RETURN_TO_LOBBY' }); }}
-            className="mt-2 w-full text-xs text-fg-dim hover:text-fg bg-inset rounded-lg py-1.5 transition-colors"
+            className="w-full mt-2"
           >
             Leave Game
-          </button>
+          </Button>
         </div>
       )}
 

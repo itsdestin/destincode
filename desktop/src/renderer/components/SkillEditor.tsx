@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import type { SkillEntry } from '../../shared/types';
 import { useSkills } from '../state/skill-context';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Button } from './ui';
 import { useEscClose } from '../hooks/use-esc-close';
 
 interface SkillEditorProps {
@@ -137,27 +138,31 @@ export default function SkillEditor({ skillId, onClose }: SkillEditorProps) {
 
         {/* Buttons */}
         <div className="flex gap-2">
-          <button
+          {/* Reset was the odd one out with text-fg-muted; secondary makes it a
+              visual peer of Cancel, which is what it is (spec decision 60). */}
+          <Button
+            variant="secondary"
             onClick={handleReset}
             disabled={saving}
-            className="text-xs font-medium px-3 py-2 rounded-lg border border-edge-dim text-fg-muted hover:text-fg hover:bg-inset transition-colors disabled:opacity-50"
+            className="py-2"
           >
             Reset to Default
-          </button>
+          </Button>
           <div className="flex-1" />
-          <button
+          <Button
+            variant="secondary"
             onClick={onClose}
-            className="text-xs font-medium px-3 py-2 rounded-lg border border-edge-dim text-fg-2 hover:bg-inset transition-colors"
+            className="py-2"
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            size="lg"
             onClick={handleSave}
             disabled={saving}
-            className="text-xs font-medium px-4 py-2 rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Save'}
-          </button>
+          </Button>
         </div>
       </OverlayPanel>
     </>

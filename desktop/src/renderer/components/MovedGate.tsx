@@ -1,5 +1,6 @@
 import React from 'react';
 import { AppIcon, ThemeMascot } from './Icons';
+import { Button } from './ui';
 
 // Plan 2b "Moved Gate" (2026-07-14). When another device takes over a session's
 // lease, the holder side cleanly interrupts → flushes → releases → destroys the
@@ -43,19 +44,19 @@ export default function MovedGate({ device, onExit, onResume, canResume = true }
         device, or close it out.
       </p>
       <div className="flex gap-3">
-        <button
-          onClick={onExit}
-          className="px-4 py-1.5 text-sm font-medium rounded-md transition-colors bg-inset hover:bg-edge text-fg"
-        >
+        {/* The filled-grey "bg-inset hover:bg-edge" treatment collapses into the
+            primitive's `secondary` outline (spec decision 60) — the two buttons
+            are genuine peers here, so ghost would under-weight Exit. */}
+        <Button variant="secondary" size="lg" onClick={onExit} className="py-1.5">
           Exit Session
-        </button>
+        </Button>
         {canResume && (
-          <button
-            onClick={onResume}
-            className="px-4 py-1.5 text-sm font-medium rounded-md transition-colors bg-accent hover:bg-accent text-on-accent"
-          >
+          // Behavior change (spec change 75): this button's old `hover:bg-accent`
+          // sat on top of a `bg-accent` base, so hovering it did nothing visible.
+          // `primary` gives it a real hover fade for the first time.
+          <Button size="lg" onClick={onResume} className="py-1.5">
             Resume on this device
-          </button>
+          </Button>
         )}
       </div>
     </div>

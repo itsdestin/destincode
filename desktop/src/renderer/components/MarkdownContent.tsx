@@ -6,6 +6,7 @@ import type { Plugin } from 'unified';
 import type { Root, Element, Text, RootContent } from 'hast';
 import { visitParents } from 'unist-util-visit-parents';
 import { detectFilepaths } from '../hooks/useInlineFilepathDetector';
+import { Button } from './ui';
 import { FilepathToken } from './FilepathToken';
 
 // Stable plugin arrays — avoids re-creating on every render when sessionId
@@ -81,12 +82,19 @@ function CopyButton({ text }: { text: string }) {
   };
 
   return (
-    <button
+    <Button
+      // ghost, not secondary (spec §11 decision 74): this floats over a code
+      // block, and a bordered button would draw a visible box on top of the code.
+      variant="ghost"
+      size="sm"
       onClick={handleCopy}
-      className="absolute top-2 right-2 px-2 py-1 text-xs rounded-sm bg-inset text-fg-2 hover:bg-edge transition-colors opacity-0 group-hover:opacity-100"
+      // Floating overlay control in the code block's corner, so opacity-0 at rest
+      // is correct and stays (spec decision 74). focus-visible:opacity-100 is new:
+      // at opacity-0 the button was invisible to keyboard users who tabbed to it.
+      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
     >
       {copied ? 'Copied!' : 'Copy'}
-    </button>
+    </Button>
   );
 }
 

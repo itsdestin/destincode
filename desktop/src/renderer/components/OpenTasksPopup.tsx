@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
 import type { TaskState } from '../state/task-state';
+import { Button } from './ui';
 
 // L2 popup opened by OpenTasksChip in the StatusBar. Groups tasks by status:
 // In Progress → Pending → Completed (collapsible). A separate "Marked Inactive"
@@ -65,21 +66,29 @@ function Row({ t, group, onMarkInactive, onUnhide }: {
         {showDesc && <div className="text-[11px] text-fg-muted mt-0.5 leading-tight">{t.description}</div>}
       </div>
       {group === 'inactive' ? (
-        <button
-          className="text-[10px] text-fg-muted hover:text-fg bg-inset hover:bg-well px-2 py-0.5 rounded border border-edge-dim"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => onUnhide(t.id)}
           aria-label={`Unhide task #${t.id}`}
         >
           Unhide
-        </button>
+        </Button>
       ) : (
-        <button
-          className="text-[10px] text-fg-muted hover:text-fg bg-inset hover:bg-well px-2 py-0.5 rounded border border-edge-dim opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+        // The 40% resting opacity is deliberate (spec decision 74): it's the
+        // standing hint that rows are dismissible, so it is NOT dropped to 0.
+        // Careful: 40% sits BELOW BUTTON_BASE's `disabled:opacity-50`, so if a
+        // `disabled` prop is ever added here a disabled button would render
+        // BRIGHTER than an enabled one — revisit this resting value first.
+        <Button
+          variant="ghost"
+          size="sm"
+          className="opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
           onClick={() => onMarkInactive(t.id)}
           aria-label={`Mark task #${t.id} inactive`}
         >
           Mark Inactive
-        </button>
+        </Button>
       )}
     </div>
   );

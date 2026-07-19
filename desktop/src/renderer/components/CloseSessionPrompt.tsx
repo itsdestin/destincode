@@ -4,6 +4,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { NoteEditor } from './tags/NoteEditor';
+import { Button } from './ui';
 
 // Flag order must match ResumeBrowser's pill order so the UI is consistent.
 type FlagName = 'priority' | 'complete';
@@ -168,13 +169,10 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               Don't show again
             </button>
             <div className="flex gap-2">
-              <button
-                onClick={onCancel}
-                className="text-[11px] text-fg-dim hover:text-fg px-3 py-1.5 rounded-md hover:bg-inset transition-colors"
-              >
+              <Button variant="ghost" onClick={onCancel}>
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 onClick={() => {
                   // Persist suppress preference before confirming so the caller
                   // can immediately skip the prompt on the next close.
@@ -183,10 +181,9 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                   }
                   onConfirm(buildResult());
                 }}
-                className="text-[11px] font-medium bg-accent text-on-accent px-3 py-1.5 rounded-md hover:opacity-90 transition-opacity"
               >
                 Close session
-              </button>
+              </Button>
             </div>
           </div>
         </OverlayPanel>

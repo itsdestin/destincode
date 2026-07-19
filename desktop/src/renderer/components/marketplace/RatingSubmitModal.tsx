@@ -24,6 +24,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Scrim, OverlayPanel } from '../overlays/Overlay';
+import { Button } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { useAccount } from '../../state/account-context';
 import { useMarketplaceStats } from '../../state/marketplace-stats-context';
@@ -259,12 +260,13 @@ export default function RatingSubmitModal({
             <p className="text-sm text-fg-muted text-center">
               Sign in with GitHub to rate this plugin.
             </p>
-            <button
+            <Button
+              size="lg"
               onClick={() => void startSignIn()}
-              className="px-4 py-1.5 text-sm font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors"
+              className="py-1.5"
             >
               Sign in with GitHub
-            </button>
+            </Button>
             {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
             {signInError && (
               <p className="text-xs text-red-400 text-center">Sign-in failed: {signInError}. Try again.</p>
@@ -331,13 +333,13 @@ export default function RatingSubmitModal({
                 <p className="text-xs text-fg-muted">
                   You need to install this plugin before you can rate it.
                 </p>
-                <button
+                <Button
                   onClick={() => void handleInstallAndRate()}
                   disabled={installing}
-                  className="self-start px-3 py-1.5 text-xs font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-50"
+                  className="self-start"
                 >
                   {installing ? 'Installing…' : 'Install and rate'}
-                </button>
+                </Button>
               </div>
             )}
 
@@ -350,14 +352,15 @@ export default function RatingSubmitModal({
                 >
                   Cancel
                 </button>
-                <button
+                <Button
+                  size="lg"
                   onClick={() => void handleSubmit()}
                   disabled={submitDisabled}
                   aria-disabled={submitDisabled}
-                  className="px-4 py-1.5 text-sm font-medium rounded-lg bg-accent text-on-accent hover:brightness-110 transition-colors disabled:opacity-50"
+                  className="py-1.5"
                 >
                   {inFlight ? 'Submitting…' : 'Submit rating'}
-                </button>
+                </Button>
               </div>
             )}
           </div>

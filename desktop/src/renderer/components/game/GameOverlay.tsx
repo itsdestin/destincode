@@ -2,6 +2,7 @@ import React from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { GameConnection } from '../../state/game-types';
 import { OverlayPanel } from '../overlays/Overlay';
+import { Button } from '../ui';
 
 interface Props {
   connection: GameConnection;
@@ -47,19 +48,29 @@ export default function GameOverlay({ connection }: Props) {
         </div>
 
         <div className="flex flex-col gap-2 w-40">
-          <button
+          {/* Rematch is the main action here, so it's the shared `primary` button.
+              The old hand-rolled classes had `hover:bg-accent` on top of a
+              `bg-accent` base — i.e. the hover did nothing. The primitive fades
+              the fill on hover, so this button now actually responds to the cursor. */}
+          <Button
+            variant="primary"
+            size="lg"
             onClick={() => { if (!state.rematchRequested) connection.requestRematch(); }}
             disabled={state.rematchRequested}
-            className="w-full bg-accent hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed text-on-accent text-sm font-medium rounded-lg py-2 transition-colors"
+            className="w-full"
           >
             {state.rematchRequested ? 'Rematch Requested' : 'Rematch'}
-          </button>
-          <button
+          </Button>
+          {/* Filled-grey (`bg-inset`) was a second, unofficial secondary style —
+              it collapses into the primitive's outlined `secondary`. */}
+          <Button
+            variant="secondary"
+            size="lg"
             onClick={() => { connection.leaveGame(); dispatch({ type: 'RETURN_TO_LOBBY' }); }}
-            className="w-full bg-inset hover:bg-edge text-fg-2 text-sm font-medium rounded-lg py-2 transition-colors"
+            className="w-full"
           >
             Back to Lobby
-          </button>
+          </Button>
         </div>
       </OverlayPanel>
     </div>

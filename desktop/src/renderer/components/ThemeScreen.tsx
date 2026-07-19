@@ -7,6 +7,7 @@ import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './Sett
 import type { LoadedTheme } from '../themes/theme-types';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
+import { Button } from './ui';
 
 // Plain-language explainer for the Appearance popup. Shown when the user taps
 // the (i) icon in the popup header — see ThemeScreen's `showInfo` state.
@@ -209,28 +210,35 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         {/* Build with Claude — surfaced directly below the grid so users see
             the "make a new one" affordance before the ancillary toggles.
             Follow-up will relocate to the popup header and launch in a new
-            session instead of piping into the current one. */}
-        <button
+            session instead of piping into the current one.
+
+            Now a filled `primary` (spec change 63). It used to be an accent-tinted
+            OUTLINE (border-accent/30 + bg-accent/10 + text-accent) — a 5th button
+            style that the shared Button doesn't have and that we don't want to add.
+            Filling it keeps Build visually stronger than Browse (secondary) below,
+            which is the hierarchy the tinted outline was there to create. */}
+        <Button
           onClick={() => {
             onSendInput?.('/theme-builder ');
             onClose();
           }}
-          className="w-full py-2 rounded-lg border border-accent/30 bg-accent/10 text-accent text-xs font-medium hover:bg-accent/20 transition-colors"
+          className="w-full py-2"
         >
           ✦ Build New Theme with Claude
-        </button>
+        </Button>
 
         {/* Browse marketplace — paired with Build as the two acquisition paths */}
         {onOpenMarketplace && (
-          <button
+          <Button
+            variant="secondary"
             onClick={() => {
               onOpenMarketplace();
               onClose();
             }}
-            className="w-full py-2 rounded-lg border border-edge-dim bg-panel text-fg-2 text-xs font-medium hover:bg-inset transition-colors"
+            className="w-full py-2"
           >
             Browse Theme Marketplace
-          </button>
+          </Button>
         )}
 
         {/* Reduce Visual Effects — always on the main screen (accessibility/perf toggle).
@@ -508,15 +516,17 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
 
         {/* Publish — user themes only */}
         {isUserTheme && onPublishTheme && (
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => {
               onPublishTheme(theme.slug);
               onClose();
             }}
-            className="w-full py-1.5 rounded-lg border border-edge-dim text-fg-2 text-[10px] font-medium hover:bg-inset transition-colors"
+            className="w-full"
           >
             Publish to Marketplace
-          </button>
+          </Button>
         )}
         </div>
       </div>
