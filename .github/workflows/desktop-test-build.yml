@@ -68,6 +68,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # macos-latest runners are arm64, so `npm ci` installs only the darwin-arm64
+      # variant of any package that ships its binaries as per-platform
+      # optionalDependencies. electron-builder cuts BOTH the x64 and arm64 dmgs from
+      # this single node_modules tree (npmRebuild is false), so without this step the
+      # x64 dmg ships arm64 binaries: ripgrep throws "Could not find
+      # @vscode/ripgrep-darwin-x64" and kills the main process at launch, and
+      # @napi-rs/canvas (a pdfjs-dist dep) breaks PDF rendering. --force bypasses the
+      # os/cpu guard that would otherwise skip a foreign-arch package. Versions are
+      # read from the installed tree so a dependency bump can't silently desync them.
+      - name: Add darwin-x64 binaries for the x64 dmg
+        if: matrix.name == 'macos'
+        shell: bash
+        run: |
+          RG=$(node -p "require('@vscode/ripgrep/package.json').version")
+          CANVAS=$(node -p "require('@napi-rs/canvas/package.json').version")
+          npm i --no-save --force \
+            "@vscode/ripgrep-darwin-x64@$RG" \
+            "@napi-rs/canvas-darwin-x64@$CANVAS"
+
       - name: Run tests
         run: npm test
 
