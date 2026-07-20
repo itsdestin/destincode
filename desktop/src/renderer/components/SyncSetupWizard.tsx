@@ -774,26 +774,87 @@ function IcloudMissingHelp({ onRecheck }: { onRecheck: () => void }) {
 function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
   const claude = (window as any).claude;
   const os: DesktopOS = checkIsAndroid() ? 'other' : detectDesktopOS();
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+
+  // The app installs gh itself (user-local, no sudo/Homebrew) — the manual
+  // per-OS instructions below are the FALLBACK, shown only once an automated
+  // attempt has actually failed. Leading with a terminal command is what this
+  // whole flow exists to avoid: a stock macOS has no gh and no brew, so the
+  // old instructions-first version dead-ended non-developers (2026-07-20).
+  const handleInstallGh = async () => {
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      // Reuses the Connect-GitHub modal's install path (`github:install-gh`)
+      // rather than a sync-specific one — same binary, same installer, and it
+      // already rides all four IPC parity surfaces.
+      const result = await claude.github.installGh();
+      if (result.ok) {
+        await onRecheck();
+      } else if (result.restartRequired) {
+        // Windows: gh is on disk but this process's PATH predates it. Restart
+        // is the deterministic fix (same contract as installClaude).
+        setInstallError(
+          result.error ||
+            "GitHub CLI was installed, but this app can't see it yet. Quit and reopen YouCoded, then tap Check Again.",
+        );
+      } else {
+        setInstallError(result.error || 'Installation failed');
+      }
+    } catch (e: any) {
+      setInstallError(e?.message || 'Installation failed');
+    }
+    setInstalling(false);
+  };
+
+  // Android has no desktop prerequisite installer to call — keep it on the
+  // manual path rather than offering a button that cannot work.
+  const canAutoInstall = !checkIsAndroid();
+
   return (
     <div className="pt-2 space-y-2">
       <div className="text-[11px] text-fg-dim">
         YouCoded needs GitHub's command-line tool (gh) to connect your account.
       </div>
-      {os === 'mac' && (
+
+      {canAutoInstall && !installError && (
+        <div className="space-y-2">
+          {/* Spinner matches the rclone install button: this advertises "about a
+              minute" right below it, and a motionless disabled button reads as hung. */}
+          <Button size="lg" onClick={handleInstallGh} disabled={installing}>
+            {installing && (
+              <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+            )}
+            {installing ? 'Installing...' : 'Install Now'}
+          </Button>
+          <div className="text-[10px] text-fg-muted">This usually takes about a minute.</div>
+        </div>
+      )}
+
+      {installError && (
+        <div className="text-[10px] text-destructive">
+          Couldn't install it automatically: {installError}
+        </div>
+      )}
+
+      {/* Manual instructions: only after an automated attempt failed (or on a
+          platform where we can't run one). */}
+      {(installError || !canAutoInstall) && os === 'mac' && (
         <div className="text-[10px] text-fg-muted space-y-1">
           <div>On macOS, the easiest way is Homebrew. In Terminal, run:</div>
           <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">brew install gh</div>
           <div>No Homebrew? Download the installer from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>.</div>
         </div>
       )}
-      {os === 'windows' && (
+      {(installError || !canAutoInstall) && os === 'windows' && (
         <div className="text-[10px] text-fg-muted space-y-1">
           <div>On Windows, download the installer from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>.</div>
           <div>Or, if you use winget, open PowerShell and run:</div>
           <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">winget install GitHub.cli</div>
         </div>
       )}
-      {os === 'linux' && (
+      {(installError || !canAutoInstall) && os === 'linux' && (
         <div className="text-[10px] text-fg-muted space-y-1">
           <div>On Linux, install with your package manager:</div>
           <div className="font-mono text-fg-dim bg-inset/50 px-2 py-1 rounded">sudo apt install gh  # Debian/Ubuntu</div>
@@ -801,12 +862,14 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
           <div>Full instructions: <button className="text-accent underline" onClick={() => claude.openExternal('https://github.com/cli/cli/blob/trunk/docs/install_linux.md')}>install guide</button>.</div>
         </div>
       )}
-      {os === 'other' && (
+      {(installError || !canAutoInstall) && os === 'other' && (
         <div className="text-[10px] text-fg-muted">
           Install from <button className="text-accent underline" onClick={() => claude.openExternal('https://cli.github.com')}>cli.github.com</button>, then come back and tap "Check Again".
         </div>
       )}
-      <div className="text-[10px] text-fg-muted">After installing, come back and tap "Check Again".</div>
+      {(installError || !canAutoInstall) && (
+        <div className="text-[10px] text-fg-muted">After installing, come back and tap "Check Again".</div>
+      )}
       {/* Filled-grey (bg-inset) becomes the outline `secondary` — spec decision 60. */}
       <Button variant="secondary" onClick={onRecheck}>
         Check Again

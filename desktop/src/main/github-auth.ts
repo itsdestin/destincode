@@ -400,6 +400,13 @@ export async function installGh(
   execFn: ExecFn = defaultExec,
   detectWingetFn: () => Promise<{ installed: boolean; error?: string }> = detectWinget,
   platform: NodeJS.Platform = process.platform,
+  // Injected like every other I/O dependency in this module (see PURE-CORE /
+  // IO-SHELL in the header): the real default downloads + extracts a release
+  // archive, so tests MUST be able to substitute it or they'd hit the network.
+  installUserLocalFn: () => Promise<{ success: boolean; error?: string }> = async () => {
+    const { installGhUserLocal } = await import('./prerequisite-installer');
+    return installGhUserLocal();
+  },
 ): Promise<InstallGhResult> {
   if (platform === 'win32') {
     const winget = await detectWingetFn();
@@ -437,9 +444,20 @@ export async function installGh(
     return { ok: true };
   }
 
-  // No auto-install on macOS/Linux in v1 — surface the one-liner instead.
-  if (platform === 'darwin') {
-    return { ok: false, manual: 'brew install gh' };
+  // macOS/Linux: install gh into a user-local bin dir (no sudo, no Homebrew).
+  // This branch used to punt with a `manual:` one-liner, which dead-ended every
+  // non-Windows user of the sync wizard — a stock macOS has neither `gh` nor
+  // `brew`, so "brew install gh" was advice they couldn't act on (hit for real
+  // 2026-07-20 setting sync up on a fresh macOS install). The `manual:` strings
+  // survive as the FALLBACK when the automated install fails.
+  if (platform === 'darwin' || platform === 'linux') {
+    const result = await installUserLocalFn();
+    if (result.success) return { ok: true };
+    return {
+      ok: false,
+      error: result.error,
+      manual: platform === 'darwin' ? 'brew install gh' : 'See https://github.com/cli/cli#installation',
+    };
   }
   return { ok: false, manual: 'See https://github.com/cli/cli#installation' };
 }

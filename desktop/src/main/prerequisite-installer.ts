@@ -92,6 +92,13 @@ export interface DetectionResult {
 // ---------------------------------------------------------------------------
 
 const NODE_VERSION = 'v20.19.0';
+// Pinned, NOT "latest": the download URL interpolates the version into the
+// asset filename (gh_<ver>_macOS_arm64.zip), so there is no /latest/ URL that
+// yields a predictable name, and resolving it at runtime would make the
+// installer depend on the GitHub API being reachable and unauthenticated.
+// Bump deliberately; the only constraint is that the release still publishes
+// the macOS .zip / Linux .tar.gz assets this installer expects.
+const GH_VERSION = '2.96.0';
 const PATH_MARKER = '# Added by YouCoded first-run installer';
 
 /** Root dir for YouCoded-managed user-local tools (macOS: ~/Library/..., Linux: ~/.youcoded). */
@@ -105,6 +112,16 @@ function youcodedDataDir(): string {
 /** Where we extract Node's tarball (macOS + Linux). */
 export function userLocalNodeDir(): string {
   return path.join(youcodedDataDir(), 'node');
+}
+
+/**
+ * Bin dir for single-binary tools we install user-locally (currently just `gh`).
+ * Deliberately NOT `userLocalNodeBinDir()` — that dir is owned by the Node
+ * tarball extraction, which uses `--strip-components=1` into `userLocalNodeDir()`
+ * and would clobber anything else living there on a Node reinstall.
+ */
+export function userLocalToolsBinDir(): string {
+  return path.join(youcodedDataDir(), 'bin');
 }
 
 /** Node's bin dir (contains node, npm, npx — and later, claude from `npm i -g`). */
@@ -672,6 +689,101 @@ export async function installGit(): Promise<{ success: boolean; error?: string }
   } catch (err) {
     const msg = String(err);
     log('ERROR', 'prereq', 'Git install failed', { error: msg });
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Install the GitHub CLI into a user-local bin dir (macOS + Linux only).
+ *
+ * `github-auth.ts` owns the gh install ENTRY POINT (`installGh`) and the
+ * Windows/winget branch; this function exists only to fill the macOS/Linux
+ * branch it used to punt on ("No auto-install on macOS/Linux in v1 — surface
+ * the one-liner instead"), which dead-ended every non-Windows user in the sync
+ * wizard. The download/extract/PATH machinery lives here because this module
+ * already owns `youcodedDataDir()`, `downloadFile()` and shell-profile PATH
+ * persistence. Call it via `github-auth.installGh()`, not directly.
+ *
+ * Deliberately does NOT use Homebrew (unlike `installRclone` in
+ * sync-setup-handlers.ts, which shells out to `brew` and therefore fails on any
+ * Mac without it) — a stock macOS has no `brew`, and telling a non-developer to
+ * install a package manager first is the exact dead end this removes.
+ *
+ * Archive shapes differ by platform and are NOT interchangeable (verified
+ * against the cli/cli releases API 2026-07-20): macOS publishes `.zip`, Linux
+ * publishes `.tar.gz`. Both unpack to `gh_<ver>_<plat>_<arch>/bin/gh`.
+ */
+export async function installGhUserLocal(): Promise<{ success: boolean; error?: string }> {
+  try {
+    log('INFO', 'prereq', 'Installing GitHub CLI...');
+
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      // gh's release assets use Go's arch tokens: amd64 (not x64) and arm64.
+      const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+      // gh names the macOS asset "macOS" (capitalised) and the Linux one "linux".
+      const platToken = process.platform === 'darwin' ? 'macOS' : 'linux';
+      const ext = process.platform === 'darwin' ? 'zip' : 'tar.gz';
+      const stem = `gh_${GH_VERSION}_${platToken}_${arch}`;
+      const archivePath = path.join(os.tmpdir(), `${stem}.${ext}`);
+
+      await downloadFile(
+        `https://github.com/cli/cli/releases/download/v${GH_VERSION}/${stem}.${ext}`,
+        archivePath,
+      );
+
+      // Extract to a scratch dir first, then copy out only the binary. Keeps
+      // the tools bin dir flat and avoids leaving the archive's LICENSE/man
+      // tree behind.
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-gh-'));
+      try {
+        if (ext === 'zip') {
+          // `unzip` ships with macOS; -o overwrites a partial from a retry.
+          await runCommand('unzip', ['-q', '-o', archivePath, '-d', scratch], { timeout: 300000 });
+        } else {
+          await runCommand('tar', ['-xzf', archivePath, '-C', scratch], { timeout: 300000 });
+        }
+
+        const extractedBin = path.join(scratch, stem, 'bin', 'gh');
+        if (!fs.existsSync(extractedBin)) {
+          // Fail loudly with the real path rather than letting the post-install
+          // detect() report a generic "not found" that hides the cause.
+          return {
+            success: false,
+            error: `GitHub CLI archive did not contain the expected binary at ${stem}/bin/gh`,
+          };
+        }
+
+        const binDir = userLocalToolsBinDir();
+        fs.mkdirSync(binDir, { recursive: true });
+        const dest = path.join(binDir, 'gh');
+        fs.copyFileSync(extractedBin, dest);
+        fs.chmodSync(dest, 0o755);
+      } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+        fs.unlink(archivePath, () => {});
+      }
+
+      // Visible to this process AND to future shells / PTY sessions.
+      prependToProcessPath(userLocalToolsBinDir());
+      persistPathToShellProfiles(userLocalToolsBinDir());
+    } else {
+      return { success: false, error: `Unsupported platform for GitHub CLI install: ${process.platform}` };
+    }
+
+    refreshPath();
+    // Verify by running the binary we just placed, not by PATH lookup: PATH
+    // propagation into an already-running Electron process is exactly the
+    // failure installClaude() documents, and here we know the absolute path.
+    try {
+      const { stdout } = await runCommand(path.join(userLocalToolsBinDir(), 'gh'), ['--version']);
+      log('INFO', 'prereq', `GitHub CLI installed: ${stdout.trim().split('\n')[0]}`);
+    } catch (err) {
+      return { success: false, error: `GitHub CLI installed but would not run: ${String(err)}` };
+    }
+    return { success: true };
+  } catch (err) {
+    const msg = String(err);
+    log('ERROR', 'prereq', 'GitHub CLI install failed', { error: msg });
     return { success: false, error: msg };
   }
 }
