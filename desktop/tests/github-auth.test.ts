@@ -367,17 +367,59 @@ describe('installGh', () => {
     expect(r.error).toBe('winget is missing');
   });
 
-  test('macOS: returns a manual brew command, no auto-install', async () => {
+  // Behavior CHANGED 2026-07-20: macOS/Linux used to punt with a `manual:`
+  // one-liner and never attempt an install. A stock macOS has neither gh nor
+  // brew, so that advice was unactionable and dead-ended sync setup. These now
+  // pin: attempt the user-local install first, fall back to `manual:` only when
+  // it fails. The installer is injected so this never touches the network.
+  test('macOS: runs the user-local install and reports success', async () => {
     const exec = makeExec({});
-    const r = await installGh(exec, async () => ({ installed: true }), 'darwin');
+    const r = await installGh(exec, async () => ({ installed: true }), 'darwin', async () => ({
+      success: true,
+    }));
+    expect(r.ok).toBe(true);
+  });
+
+  test('macOS: falls back to the manual brew command when the install fails', async () => {
+    const exec = makeExec({});
+    const r = await installGh(exec, async () => ({ installed: true }), 'darwin', async () => ({
+      success: false,
+      error: 'download failed',
+    }));
     expect(r.ok).toBe(false);
+    expect(r.error).toBe('download failed');
     expect(r.manual).toContain('brew install gh');
   });
 
-  test('Linux: returns a manual docs pointer', async () => {
+  test('Linux: runs the user-local install and reports success', async () => {
     const exec = makeExec({});
-    const r = await installGh(exec, async () => ({ installed: true }), 'linux');
+    const r = await installGh(exec, async () => ({ installed: true }), 'linux', async () => ({
+      success: true,
+    }));
+    expect(r.ok).toBe(true);
+  });
+
+  test('Linux: falls back to the manual docs pointer when the install fails', async () => {
+    const exec = makeExec({});
+    const r = await installGh(exec, async () => ({ installed: true }), 'linux', async () => ({
+      success: false,
+      error: 'tar failed',
+    }));
     expect(r.ok).toBe(false);
     expect(r.manual).toContain('github.com/cli/cli');
+  });
+
+  // Guards the network-safety property itself: if someone drops the injected
+  // default back to a direct call, this test starts doing real I/O and the
+  // reviewer has no signal. Asserting the injected fn is actually consulted
+  // keeps the seam honest.
+  test('the injected installer is what gets called on non-Windows', async () => {
+    const exec = makeExec({});
+    let called = 0;
+    await installGh(exec, async () => ({ installed: true }), 'darwin', async () => {
+      called += 1;
+      return { success: true };
+    });
+    expect(called).toBe(1);
   });
 });
