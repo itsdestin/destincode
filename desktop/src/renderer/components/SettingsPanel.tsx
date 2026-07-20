@@ -695,6 +695,16 @@ function BuddyIcon() {
   );
 }
 
+// Fix: the buddy floater is desktop-Electron only, and every buddy method on
+// remote-shim is an error-THROWING stub — `?.` guards existence, not throwing,
+// so getStatus() below threw straight out of the mount effect (synchronously,
+// before .catch could ever attach) and took the app down via RootErrorBoundary.
+// Rather than sprinkle try/catch over four call sites, don't render a
+// desktop-only control on clients that can't use it. window.claude.window is
+// the Electron-only surface the shim deliberately omits; getPlatform() is not
+// usable because the shim sets __PLATFORM__ to the host's 'desktop' on auth:ok.
+const isDesktopShell = () => !!(window as any).claude?.window;
+
 function BuddyButton() {
   const [enabled, setEnabled] = useState<boolean>(() =>
     localStorage.getItem('youcoded-buddy-enabled') === '1',
@@ -708,6 +718,7 @@ function BuddyButton() {
   const popupRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!isDesktopShell()) return;
     let alive = true;
     window.claude.buddy?.getStatus?.()
       .then((s: { dismissed: boolean }) => { if (alive) setDismissed(!!s?.dismissed); })
@@ -744,6 +755,10 @@ function BuddyButton() {
     : dismissed
     ? 'Hidden until restart'
     : 'On — floating on your desktop';
+
+  // Desktop-only control: hidden on remote/Android, where every buddy method
+  // throws. Placed after all hooks so hook order stays unconditional.
+  if (!isDesktopShell()) return null;
 
   return (
     <>

@@ -3225,6 +3225,15 @@ export default function App() {
   // buddy. Optional chaining guards against preload not being ready.
   useEffect(() => {
     if (buddyMode) return;
+    // Fix: buddy.show() is an error-throwing stub in remote-shim (browser and
+    // Android). Optional chaining does NOT help — the stub exists, it throws —
+    // so a remote client with this flag set in localStorage threw out of this
+    // effect and RootErrorBoundary replaced the whole app with "YouCoded failed
+    // to start". Gate on window.claude.window, the Electron-only window-controls
+    // surface the shim deliberately omits; getPlatform() is NOT usable here
+    // because the shim sets __PLATFORM__ to the host's 'desktop' on auth:ok, so
+    // a remote browser does not report as 'browser'.
+    if (!(window as any).claude?.window) return;
     if (localStorage.getItem('youcoded-buddy-enabled') === '1') {
       window.claude.buddy?.show?.();
     }
