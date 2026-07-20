@@ -65,7 +65,7 @@ export default function SignInPromptModal({ open, onClose, title, message }: Pro
             {signInPending ? "Waiting for browser…" : "Sign in with GitHub"}
           </Button>
           {signInPending && (
-            <p className="text-xs text-fg-faint text-center">
+            <p className="text-xs text-fg-muted text-center">
               Complete sign-in in your browser. This window will close automatically.
             </p>
           )}

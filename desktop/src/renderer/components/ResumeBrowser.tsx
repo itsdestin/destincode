@@ -665,12 +665,12 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           {(s.flags?.priority || s.flags?.complete || (s.tags && s.tags.length > 0) || s.note) && (
             <div className="flex items-center gap-1 mt-0.5 flex-wrap">
               {s.flags?.priority && <span className="text-[9px] text-accent" title="Priority">Priority</span>}
-              {s.flags?.complete && <span className="text-[9px] text-fg-faint" title="Complete">Complete</span>}
+              {s.flags?.complete && <span className="text-[9px] text-fg-muted" title="Complete">Complete</span>}
               {(s.tags ?? []).map((id) => {
                 const t = registry.byId.get(id);
                 return t ? <TagChip key={id} tag={t} /> : null;
               })}
-              {s.note && <span className="text-[9px] text-fg-faint" title={s.note}>📝 note</span>}
+              {s.note && <span className="text-[9px] text-fg-muted" title={s.note}>📝 note</span>}
             </div>
           )}
           {/* Second line: in flat (chronological) mode each row carries its
@@ -685,14 +685,14 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               {s.notSyncedYet ? 'Not synced to this device yet' : 'Project folder not on this device'}
             </div>
           ) : (
-            <div className="text-[10px] text-fg-faint truncate">
+            <div className="text-[10px] text-fg-muted truncate">
               {showPath
                 ? `${s.projectPath.replace(/\\/g, '/').split('/').pop()} · ${formatSize(s.size)}`
                 : formatSize(s.size)}
             </div>
           )}
         </div>
-        <span className="text-[10px] text-fg-faint shrink-0">
+        <span className="text-[10px] text-fg-muted shrink-0">
           {formatRelativeTime(s.lastModified)}
         </span>
       </button>
@@ -810,7 +810,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                         >
                           <span className={`w-3 h-3 shrink-0 rounded-sm border ${checked ? 'bg-accent border-accent' : 'border-edge'}`} />
                           <span className="flex-1 truncate" title={p.path}>{p.label}</span>
-                          <span className="text-[10px] text-fg-faint shrink-0">{p.count}</span>
+                          <span className="text-[10px] text-fg-muted shrink-0">{p.count}</span>
                         </button>
                       );
                     })}
@@ -842,7 +842,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                   style={{ position: 'fixed', top: tagsDropdownPos.top, left: tagsDropdownPos.left, zIndex: 60 }}
                 >
                   {registry.tags.filter((t) => !t.archived).length === 0 && (
-                    <div className="px-2.5 py-1.5 text-xs text-fg-faint">No tags yet.</div>
+                    <div className="px-2.5 py-1.5 text-xs text-fg-muted">No tags yet.</div>
                   )}
                   {registry.tags.filter((t) => !t.archived).map((t) => {
                     const checked = selectedTagIds.has(t.id);

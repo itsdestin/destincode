@@ -914,7 +914,7 @@ export default function SessionStrip({
                             DANGER
                           </span>
                         )}
-                        <span className="text-[10px] text-fg-faint whitespace-nowrap">
+                        <span className="text-[10px] text-fg-muted whitespace-nowrap">
                           {s.cwd.replace(/\\/g, '/').split('/').pop()}
                         </span>
                       </span>
@@ -976,7 +976,7 @@ export default function SessionStrip({
                         >
                           <SessionDot color={color} isActive={false} />
                           <SessionName name={s.name} />
-                          <span className="ml-auto shrink-0 text-[10px] text-fg-faint whitespace-nowrap flex items-center gap-1">
+                          <span className="ml-auto shrink-0 text-[10px] text-fg-muted whitespace-nowrap flex items-center gap-1">
                             <span>→</span>
                             <span>{g.label}</span>
                           </span>

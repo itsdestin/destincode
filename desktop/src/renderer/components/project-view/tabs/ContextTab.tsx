@@ -142,7 +142,7 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
                       ) : null}
                     </span>
                     {f.size ? (
-                      <span className="text-[11px] text-fg-faint font-mono shrink-0">{f.size}</span>
+                      <span className="text-[11px] text-fg-muted font-mono shrink-0">{f.size}</span>
                     ) : null}
                   </button>
                 ))}

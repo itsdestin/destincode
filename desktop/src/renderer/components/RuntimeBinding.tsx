@@ -246,7 +246,7 @@ export function RuntimeBindingFields({
       {runtime === 'native' && (
         <div className="flex flex-col gap-2">
           {nb.readyProviders.length === 0 ? (
-            <p className="text-[10px] text-fg-faint">Add a provider key in Settings → Model Providers first.</p>
+            <p className="text-[10px] text-fg-muted">Add a provider key in Settings → Model Providers first.</p>
           ) : (
             <>
               <div>

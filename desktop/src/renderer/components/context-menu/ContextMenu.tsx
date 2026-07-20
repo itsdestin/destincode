@@ -157,7 +157,7 @@ export function ContextMenu({
               <MenuIcon name={entry.icon} />
             </span>
             <span className="flex-1 truncate">{entry.label}</span>
-            {entry.kbd && <span className="text-fg-faint text-[10px] tracking-wide">{entry.kbd}</span>}
+            {entry.kbd && <span className="text-fg-muted text-[10px] tracking-wide">{entry.kbd}</span>}
           </button>
         );
       })}

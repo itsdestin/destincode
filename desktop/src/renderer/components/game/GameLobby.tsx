@@ -525,7 +525,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Sent (outgoing) requests — dim, collapsed-feeling */}
       {outgoing.length > 0 && (
         <div className="px-3 py-2 border-b border-edge">
-          <div className="text-[10px] uppercase tracking-wider text-fg-faint mb-2">Sent requests</div>
+          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">Sent requests</div>
           <ul className="flex flex-col gap-1">
             {outgoing.map((req) => (
               <li key={req.id} className="flex flex-col gap-1">
@@ -552,7 +552,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
       {/* Empty state — no friends and no requests in either direction */}
       {isEmpty && (
         <div className="px-3 py-6">
-          <p className="text-xs text-fg-faint text-center leading-relaxed">
+          <p className="text-xs text-fg-muted text-center leading-relaxed">
             No friends yet. Ask a friend for their handle and add them above.
           </p>
         </div>

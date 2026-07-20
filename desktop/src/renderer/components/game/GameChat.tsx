@@ -50,7 +50,7 @@ export default function GameChat({ connection }: Props) {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-1.5 flex flex-col gap-1">
         {state.chatMessages.length === 0 ? (
-          <p className="text-xs text-fg-faint italic">No messages yet</p>
+          <p className="text-xs text-fg-muted italic">No messages yet</p>
         ) : (
           state.chatMessages.map((msg, i) => (
             <div key={i} className="flex gap-1.5 text-xs">

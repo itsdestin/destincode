@@ -128,7 +128,7 @@ export default function ModelLoadingBar({ modelState, modelInfo, loadedBytes, ev
                   ) : size != null ? (
                     <span className="text-fg-dim text-xs">· {gbNum(size)} GB · {elapsed}s</span>
                   ) : (
-                    <span className="text-fg-faint text-xs tabular-nums">· {elapsed}s</span>
+                    <span className="text-fg-muted text-xs tabular-nums">· {elapsed}s</span>
                   )}
                 </>
               )}

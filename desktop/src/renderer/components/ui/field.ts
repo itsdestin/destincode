@@ -27,7 +27,7 @@ import { mergeClasses } from './Button';
 export const FIELD_SURFACE = 'bg-inset border border-edge-dim rounded-lg';
 
 /** The text treatment — shared by a bare input and a bordered one alike. */
-export const FIELD_TEXT = 'text-fg placeholder:text-fg-faint';
+export const FIELD_TEXT = 'text-fg placeholder:text-fg-muted';
 
 /** Focus is a border color change, never a ring — the ring belongs to buttons. */
 export const FIELD =

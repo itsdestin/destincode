@@ -298,7 +298,7 @@ export function ProjectHero({
             // Already stopped (permanent) — no action to offer, just the state
             // (review #4: don't re-render a "Stop syncing" button for a project
             // that's already a tombstone).
-            <span className="text-[11px] text-fg-faint">Sync stopped</span>
+            <span className="text-[11px] text-fg-muted">Sync stopped</span>
           ) : syncedFolderName ? (
             // Stop syncing (spec §10) — consequence-gated destructive action.
             confirmingStop ? (
@@ -319,7 +319,7 @@ export function ProjectHero({
               </Button>
             )
           ) : (
-            <span className="text-[11px] text-fg-faint">Managed by sync</span>
+            <span className="text-[11px] text-fg-muted">Managed by sync</span>
           )}
         </div>
       </div>

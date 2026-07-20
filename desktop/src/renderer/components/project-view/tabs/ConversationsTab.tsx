@@ -55,7 +55,7 @@ export function ConversationsTab({ conversations, onOpenPreview }: Conversations
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline gap-2 justify-between">
                     <span className="text-[13.5px] font-medium text-fg truncate">{title}</span>
-                    <span className="text-[11px] text-fg-faint shrink-0">
+                    <span className="text-[11px] text-fg-muted shrink-0">
                       {formatRelativeTime(c.lastModified)}
                     </span>
                   </span>

@@ -186,7 +186,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
 
       {/* Full path hint below trigger */}
       {value && (
-        <div className="mt-0.5 px-1 text-[10px] text-fg-faint truncate" title={value}>
+        <div className="mt-0.5 px-1 text-[10px] text-fg-muted truncate" title={value}>
           {value}
         </div>
       )}
@@ -243,7 +243,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
                         Project View via "Manage projects…". Don't re-add. */}
                     <div className="flex-1 min-w-0">
                       <div className="text-xs truncate">{shown}</div>
-                      <div className="text-[10px] text-fg-faint truncate" title={f.path}>
+                      <div className="text-[10px] text-fg-muted truncate" title={f.path}>
                         {f.path}
                       </div>
                     </div>

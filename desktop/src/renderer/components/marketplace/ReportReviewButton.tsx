@@ -178,7 +178,7 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
                 htmlFor="report-reason"
                 className="block text-xs font-medium text-fg-muted mb-1"
               >
-                Reason <span className="text-fg-faint">(optional)</span>
+                Reason <span className="text-fg-muted">(optional)</span>
               </label>
               {/* Change 42: onto the shared FIELD surface. The hand-rolled
                   disabled:opacity-60 is dropped in favour of the primitive's own
@@ -198,7 +198,7 @@ function ReportDialog({ reviewerLogin, onClose, onSubmit }: ReportDialogProps) {
               />
               {/* Character counter — shows remaining when text is present */}
               {reason.length > 0 && (
-                <p className="text-right text-[10px] text-fg-faint mt-0.5">
+                <p className="text-right text-[10px] text-fg-muted mt-0.5">
                   {reason.length}/{REPORT_REASON_MAX}
                 </p>
               )}

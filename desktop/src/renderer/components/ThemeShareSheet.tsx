@@ -146,7 +146,7 @@ export default function ThemeShareSheet({ themeSlug, onClose }: ThemeShareSheetP
           {previewPath && ' A preview image will be included in the submission.'}
         </p>
 
-        <p className="text-[10px] text-fg-faint mb-4">
+        <p className="text-[10px] text-fg-muted mb-4">
           Requires the <span className="font-mono">gh</span> CLI to be installed and authenticated.
         </p>
 
@@ -228,7 +228,7 @@ function renderPublishButton(args: {
         >
           {publishing ? 'Publishing update…' : 'Publish update'}
         </Button>
-        <p className="text-[10px] text-fg-faint text-center mt-1.5">
+        <p className="text-[10px] text-fg-muted text-center mt-1.5">
           Local changes not yet published
         </p>
       </>
@@ -246,7 +246,7 @@ function renderPublishButton(args: {
         >
           {publishing ? 'Publishing…' : previewLoading ? 'Generating preview…' : '⚠ Publish to Marketplace'}
         </Button>
-        <p className="text-[10px] text-fg-faint text-center mt-1.5">
+        <p className="text-[10px] text-fg-muted text-center mt-1.5">
           Could not verify status: {state.reason}
         </p>
       </>

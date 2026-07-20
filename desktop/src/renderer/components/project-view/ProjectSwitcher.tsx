@@ -131,7 +131,7 @@ export function ProjectSwitcher({
             onKeyDown={handleKeyDown}
             className="flex-1 bg-transparent outline-none text-[15px] text-fg placeholder:text-fg-muted"
           />
-          <span className="text-[10px] text-fg-faint border border-edge-dim rounded px-1.5 py-0.5">
+          <span className="text-[10px] text-fg-muted border border-edge-dim rounded px-1.5 py-0.5">
             esc
           </span>
         </div>
@@ -202,7 +202,7 @@ export function ProjectSwitcher({
                     const files = p.fileCount ?? p.stats.artifactCount;
                     const filesLabel = p.fileCountTruncated ? `${files.toLocaleString()}+` : String(files);
                     return (
-                      <span className="text-[11px] text-fg-faint shrink-0 whitespace-nowrap">
+                      <span className="text-[11px] text-fg-muted shrink-0 whitespace-nowrap">
                         {filesLabel} file{files === 1 ? '' : 's'}
                         {typeof p.conversationCount === 'number' && (
                           <> · {p.conversationCount} chat{p.conversationCount === 1 ? '' : 's'}</>

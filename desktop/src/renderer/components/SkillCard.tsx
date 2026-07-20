@@ -147,7 +147,7 @@ function SkillCardImpl({
           </div>
         )}
         <div className="flex justify-between items-center mt-1">
-          <span className="text-[9px] text-fg-faint">
+          <span className="text-[9px] text-fg-muted">
             {skill.author ? `${skill.author}` : ''}
             {liveInstalls != null ? ` · ${liveInstalls >= 1000 ? `${(liveInstalls / 1000).toFixed(1)}k` : liveInstalls} ↓` : ''}
           </span>

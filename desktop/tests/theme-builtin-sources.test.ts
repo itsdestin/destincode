@@ -69,15 +69,51 @@ describe('built-in theme sources agree', () => {
 });
 
 describe('creme legibility fix stays fixed', () => {
-  // The exact values that shipped broken. Guards against a revert restoring
-  // sub-threshold text colors (fg-muted needs >= 3:1, fg-faint >= 1.8:1 vs canvas).
+  // The exact values that shipped broken — a straight revert must stay caught.
   it('does not reintroduce the failing fg-muted / fg-faint', () => {
     const creme = loadBuiltins().find((t) => t.slug === 'creme')!;
     expect(creme.tokens['fg-muted']).not.toBe('#9E9283');
     expect(creme.tokens['fg-faint']).not.toBe('#BEB3A4');
-    expect(creme.tokens['fg-muted']).toBe('#8A7E6E');
-    expect(creme.tokens['fg-faint']).toBe('#B0A595');
   });
+});
+
+/**
+ * Every built-in must satisfy the shared contrast rules.
+ *
+ * This replaced a pair of exact-hex pins (creme's fg-muted === '#8A7E6E',
+ * fg-faint === '#B0A595'). Those were a PROXY for the real invariant, which the
+ * old test stated in its own comment: "fg-muted needs >= 3:1, fg-faint >= 1.8:1".
+ * Pinning the hex meant any legitimate repalette failed the test while an
+ * illegitimate one that happened to keep those two values passed — and it did
+ * fail, on the 2026-07-19 contrast solve. Asserting the property instead is both
+ * stricter (every text tier against every surface, not two tokens against canvas)
+ * and stable across future palette work.
+ *
+ * Rules come from scripts/vendor/contrast-rules.js, vendored from the
+ * theme-builder skill. Do not edit that copy by hand — see its header.
+ */
+describe('built-in themes satisfy the contrast rules', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const rules = require('../scripts/vendor/contrast-rules.js');
+
+  for (const theme of loadBuiltins()) {
+    describe(theme.slug, () => {
+      // Built-ins are opaque (no wallpaper), so flat tokens ARE what gets
+      // painted. Community themes composite over their wallpaper — that case is
+      // covered by wecoded-themes/scripts/audit-contrast.mjs.
+      const result = rules.evaluate(theme.tokens, {});
+
+      it('has no HARD failures', () => {
+        const fails = result.results.HARD.filter((r: { status: string }) => r.status === 'FAIL');
+        expect(fails.map((f: { rule: string; actual: string }) => `${f.rule} (${f.actual})`)).toEqual([]);
+      });
+
+      it('has no SURFACE failures', () => {
+        const fails = result.results.SURFACE.filter((r: { status: string }) => r.status === 'FAIL');
+        expect(fails.map((f: { rule: string; actual: string }) => `${f.rule} (${f.actual})`)).toEqual([]);
+      });
+    });
+  }
 });
 
 describe('built-ins declare their own link colors', () => {

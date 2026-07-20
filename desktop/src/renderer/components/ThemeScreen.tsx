@@ -154,7 +154,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         {/* Theme grid — pencil on each card opens the per-theme edit view.
             Cycle membership moved to the status bar widget editor. */}
         <div>
-          <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Your Themes</p>
+          <p className="text-[9px] text-fg-muted uppercase tracking-wider mb-2">Your Themes</p>
           <div className="grid grid-cols-2 gap-2">
             {gridThemes.map(t => {
               const isActive = t.slug === activeSlug;
@@ -254,7 +254,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs text-fg-2">Reduce Visual Effects</p>
-            <p className="text-[10px] text-fg-faint">Disables particles, blur, and animations</p>
+            <p className="text-[10px] text-fg-muted">Disables particles, blur, and animations</p>
           </div>
           {/* Was a hand-rolled 36x20 switch (change 15): same geometry, but the
               shared Toggle also carries role="switch" + aria-checked, which this
@@ -270,7 +270,7 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs text-fg-2">Message Timestamps</p>
-            <p className="text-[10px] text-fg-faint">Show time sent in each chat bubble</p>
+            <p className="text-[10px] text-fg-muted">Show time sent in each chat bubble</p>
           </div>
           {/* Same migration as the toggle above (change 15). */}
           <Toggle
@@ -380,7 +380,7 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
         <div className="p-3 space-y-4">
         {/* Locked banner for non-user themes so it's clear why most controls are absent */}
         {!isUserTheme && (
-          <p className="text-[10px] text-fg-faint bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 leading-relaxed">
+          <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 leading-relaxed">
             {isCommunityTheme
               ? 'Marketplace themes are kept in sync with their author\u2019s updates. Glass + terminal transparency sliders are customizable per-theme. Use "Build New Theme with Claude" to fork an editable copy.'
               : 'Built-in themes are locked. Only glass + terminal transparency sliders are customizable. Use "Build New Theme with Claude" to make an editable copy.'}
@@ -442,9 +442,9 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
             are greyed when Reduce Visual Effects is on (the engine forces blur:0). */}
         {(hasWallpaper || hasGradient) && (
           <div>
-            <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Glass</p>
+            <p className="text-[9px] text-fg-muted uppercase tracking-wider mb-2">Glass</p>
             {reducedEffects && (
-              <p className="text-[10px] text-fg-faint bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
+              <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
                 Reduce Visual Effects is active — blur is disabled. Opacity still applies.
               </p>
             )}
@@ -490,14 +490,14 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
             those values) or when there's no wallpaper to blur. */}
         {canTuneTerminalOpacity && (
           <div>
-            <p className="text-[9px] text-fg-faint uppercase tracking-wider mb-2">Terminal</p>
+            <p className="text-[9px] text-fg-muted uppercase tracking-wider mb-2">Terminal</p>
             {canTuneTerminalFilter && reducedEffects && (
-              <p className="text-[10px] text-fg-faint bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
+              <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
                 Reduce Visual Effects is active — wallpaper blur is disabled. Opacity + brightness still apply.
               </p>
             )}
             {hasBakedTerminalBg && (
-              <p className="text-[10px] text-fg-faint bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
+              <p className="text-[10px] text-fg-muted bg-inset border border-edge-dim rounded-md px-2.5 py-1.5 mb-2 leading-relaxed">
                 This theme ships a pre-blurred terminal wallpaper — blur + brightness are baked in. Only opacity is adjustable here.
               </p>
             )}

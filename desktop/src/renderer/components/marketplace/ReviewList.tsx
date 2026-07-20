@@ -69,7 +69,7 @@ function ReviewRow({ r, pluginId }: { r: RatingEntry; pluginId: string }) {
         {/* StarRating with hideCount=true — individual review rows don't need "(1)" */}
         {/* count=1: each row represents one review; hideCount suppresses the "(1)" suffix */}
         <StarRating value={r.stars} count={1} size="sm" hideCount />
-        <span className="ml-auto text-[10px] text-fg-faint shrink-0">{formatDate(r.created_at)}</span>
+        <span className="ml-auto text-[10px] text-fg-muted shrink-0">{formatDate(r.created_at)}</span>
         {/* Report button — far right of the row, subtle until hovered */}
         <ReportReviewButton
           ratingUserId={r.user_id}
@@ -145,7 +145,7 @@ export default function ReviewList({ pluginId, refreshKey = 0 }: ReviewListProps
       </h4>
 
       {state.status === 'loading' && (
-        <p className="text-xs text-fg-faint">Loading reviews…</p>
+        <p className="text-xs text-fg-muted">Loading reviews…</p>
       )}
 
       {state.status === 'empty' && (
