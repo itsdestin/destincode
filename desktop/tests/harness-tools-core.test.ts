@@ -25,7 +25,7 @@ import { WriteTool } from '../src/main/harness/tools/write';
 import { EditTool } from '../src/main/harness/tools/edit';
 import { BashTool } from '../src/main/harness/tools/bash';
 import { GlobTool } from '../src/main/harness/tools/glob';
-import { GrepTool } from '../src/main/harness/tools/grep';
+import { GrepTool, resolveRgPath } from '../src/main/harness/tools/grep';
 import { TodoWriteTool } from '../src/main/harness/tools/todo-write';
 import type { ToolContext } from '../src/main/harness/tools/types';
 
@@ -260,6 +260,20 @@ describe('Bash', () => {
     expect(r.text).toMatch(/timed out/i);
   });
 
+  it('a synchronous spawn throw resolves an error result (never escapes to defineTool)', async () => {
+    // Same sync-throw trap as Grep: spawn() throws before the 'error' handler can
+    // attach when startCwd has a non-directory prefix. ctx.cwd = a FILE forces it
+    // (bash.ts only guards shellCwd, falling back to ctx.cwd, so a file ctx.cwd
+    // reaches spawn). Without the try/catch this escaped as `Bash failed: spawn
+    // ENOTDIR`; pin that it now resolves a structured error naming the cwd.
+    const fileCwd = path.join(dir, 'not-a-dir.txt');
+    fs.writeFileSync(fileCwd, 'x');
+    const r = await BashTool.execute({ command: 'echo hi' }, makeCtx(fileCwd));
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/Failed to start shell/);
+    expect(r.text).toContain(fileCwd);
+  });
+
   // Scoped persistence (ROADMAP 2026-07-17). Before this, every call spawned
   // fresh at the session root and `cd` silently evaporated — the failure mode
   // that burned ~6 tool calls in the 2026-07-17 session.
@@ -464,6 +478,67 @@ describe('Grep', () => {
     expect(rgCall, 'expected a spawn call running ripgrep for the search').toBeTruthy();
     const opts = rgCall![2] as { cwd?: string };
     expect(opts?.cwd, 'rg must be spawned with an explicit cwd (ctx.cwd), not inherit ambient cwd').toBe(ctx.cwd);
+  });
+
+  it('resolveRgPath rewrites an inside-asar rgPath to the unpacked binary', () => {
+    // THE actual `spawn ENOTDIR` root cause (2026-07-20): in the packaged app,
+    // @vscode/ripgrep resolves rgPath INSIDE app.asar (a FILE), and spawn() of a
+    // command whose path prefix is a file throws ENOTDIR synchronously. The binary
+    // IS unpacked to app.asar.unpacked/ — the tool just has to point there. Pin
+    // the rewrite against BOTH separators and the no-op cases.
+    //
+    // Build a real on-disk fixture so the existsSync guard passes: mirror the
+    // packaged layout under a tmp dir (.../app.asar.unpacked/.../bin/rg).
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rgpath-'));
+    const asarPath = path.join(root, 'app.asar', 'node_modules', '@vscode', 'ripgrep-linux-x64', 'bin', 'rg');
+    const unpackedPath = path.join(root, 'app.asar.unpacked', 'node_modules', '@vscode', 'ripgrep-linux-x64', 'bin', 'rg');
+    fs.mkdirSync(path.dirname(unpackedPath), { recursive: true });
+    fs.writeFileSync(unpackedPath, '#!/bin/sh\n');
+    try {
+      expect(resolveRgPath(asarPath)).toBe(unpackedPath);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+    // Already-unpacked input is returned unchanged (no app.asar.unpacked.unpacked):
+    // the (?!\.unpacked) lookahead must not match. With no unpacked file on disk
+    // the guard falls through to returning the input, so this doubles as the pin.
+    const rootW = fs.mkdtempSync(path.join(os.tmpdir(), 'rgpath-w-'));
+    try {
+      const already = path.join(rootW, 'app.asar.unpacked', 'node_modules', '@vscode', 'ripgrep-linux-x64', 'bin', 'rg');
+      expect(resolveRgPath(already)).toBe(already);
+    } finally {
+      fs.rmSync(rootW, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveRgPath falls back to the bundled path when no unpacked copy exists', () => {
+    // Dev checkout: no asar at all → returned unchanged.
+    const devPath = '/home/dev/youcoded/desktop/node_modules/@vscode/ripgrep-linux-x64/bin/rg';
+    expect(resolveRgPath(devPath)).toBe(devPath);
+    // Packaged-style path but the unpacked binary is ABSENT → keep the bundled
+    // path (spawn will error, but with the real path surfaced, not a silent
+    // rewrite). Uses a tmp dir so it can't collide with a real install.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rgpath-m-'));
+    try {
+      const missing = path.join(root, 'app.asar', 'node_modules', '@vscode', 'ripgrep-linux-x64', 'bin', 'rg');
+      expect(resolveRgPath(missing)).toBe(missing);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a synchronous spawn throw resolves an error result (never escapes to defineTool)', async () => {
+    // spawn() throws SYNCHRONOUSLY when the command path or cwd has a non-directory
+    // prefix. cwd = a FILE is the easiest way to force it cross-platform. The
+    // 'error' handler (attached after spawn) cannot catch a sync throw, so without
+    // the try/catch this escaped as a context-free `Grep failed: spawn ENOTDIR`.
+    // Pin: the tool resolves a structured error that NAMES the failing cwd.
+    const fileCwd = path.join(dir, 'not-a-dir.txt');
+    fs.writeFileSync(fileCwd, 'x');
+    const r = await GrepTool.execute({ pattern: 'findme', output_mode: 'content' }, makeCtx(fileCwd));
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/could not start ripgrep/);
+    expect(r.text).toContain(fileCwd); // the offending path is surfaced, not hidden
   });
 });
 

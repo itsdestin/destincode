@@ -215,11 +215,22 @@ export const BashTool = defineTool({
     const shell = getShell();
     const probe = tracksCwdFor(shell) && !/(\\|&&|\|\||\|)\s*$/.test(args.command);
     return new Promise((resolve) => {
-      const child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command) : args.command], {
-        cwd: startCwd,
-        windowsHide: true,
-        env: process.env,
-      });
+      // spawn() throws SYNCHRONOUSLY when the shell path or startCwd has a
+      // non-directory prefix (e.g. a stale/deleted tracked cwd that raced past
+      // the existsSync check above). That throw fires before the 'error' handler
+      // at the bottom of this executor can attach, so catch it here — otherwise
+      // it escapes to defineTool as a bare `Bash failed: spawn <CODE>`.
+      let child;
+      try {
+        child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command) : args.command], {
+          cwd: startCwd,
+          windowsHide: true,
+          env: process.env,
+        });
+      } catch (e: any) {
+        resolve({ text: `Failed to start shell: ${e?.message ?? e} (shell=${shell.cmd}; cwd=${startCwd})`, isError: true });
+        return;
+      }
       let out = '';
       // The 200KB cap below would drop the trailing sentinel on a chatty command
       // ("cd sub && <huge output>"), silently losing the cd. Keep a small rolling

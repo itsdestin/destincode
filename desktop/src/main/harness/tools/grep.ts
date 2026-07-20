@@ -1,9 +1,30 @@
 // Bundled ripgrep (@vscode/ripgrep) — deterministic cross-platform search.
 import { spawn } from 'child_process';
-import { rgPath } from '@vscode/ripgrep';
+import { rgPath as bundledRgPath } from '@vscode/ripgrep';
+import * as fs from 'fs';
 import { z } from 'zod';
 import { defineTool } from './registry';
 import { resolveP } from './guards';
+
+/** Resolve the ripgrep binary the tool will actually spawn.
+ *
+ * WHY (the real `spawn ENOTDIR` root cause, 2026-07-20): in the packaged app,
+ * `@vscode/ripgrep` resolves `rgPath` via `createRequire(...).resolve()` to a
+ * path INSIDE `app.asar` — e.g.
+ *   /opt/YouCoded/resources/app.asar/node_modules/@vscode/ripgrep-linux-x64/bin/rg
+ * `app.asar` is a FILE, not a directory, so that path's prefix component is not
+ * a directory. `spawn()` therefore throws `spawn ENOTDIR` SYNCHRONOUSLY (before
+ * any 'error' handler can attach), which is why every Grep failed in the
+ * packaged app even after the earlier `cwd:` fix. electron-builder DOES unpack
+ * the binary to `app.asar.unpacked/` (it auto-unpacks executables), but nothing
+ * rewrote rgPath to point there. Mirror the pty-worker fix (session-manager.ts):
+ * prefer the unpacked sibling when it exists, else fall back to the bundled
+ * path (correct in dev, where there is no asar). Pure + exported for tests. */
+export function resolveRgPath(raw: string = bundledRgPath): string {
+  const unpacked = raw.replace(/app\.asar(?!\.unpacked)([/\\])/, `app.asar.unpacked$1`);
+  if (unpacked !== raw && fs.existsSync(unpacked)) return unpacked;
+  return raw;
+}
 
 export const GrepTool = defineTool({
   name: 'Grep',
@@ -26,13 +47,24 @@ export const GrepTool = defineTool({
     if (args.glob) rgArgs.push('--glob', args.glob);
     rgArgs.push('--', args.pattern, resolveP(args.path ?? '.', ctx.cwd));
     return new Promise((resolve) => {
-      // Fix: pass `cwd: ctx.cwd` explicitly. Grep was the only tool spawning a
-      // child with no `cwd`, so rg inherited the Electron main process's ambient
-      // cwd — which in the packaged app is not a usable directory for posix_spawn
-      // and failed every search with `spawn ENOTDIR`. ctx.cwd is the validated
-      // session cwd already used to resolve the search path above; the Bash tool
-      // passes it the same way (bash.ts) and works. Never inherit ambient cwd.
-      const child = spawn(rgPath, rgArgs, { cwd: ctx.cwd, windowsHide: true });
+      // Two spawn defenses, both learned from `spawn ENOTDIR` (2026-07-20):
+      //  1. `cwd: ctx.cwd` explicitly — never inherit the Electron main process's
+      //     ambient cwd (the original PR #172 fix; still correct).
+      //  2. `resolveRgPath()` — rewrite an inside-asar rgPath to the unpacked
+      //     binary (the ACTUAL root cause; see resolveRgPath above).
+      const rgBin = resolveRgPath();
+      // spawn() throws SYNCHRONOUSLY when the command path or cwd has a
+      // non-directory prefix (e.g. an inside-asar binary path). That throw happens
+      // before the 'error' handler below can attach, so it must be caught here —
+      // otherwise it escapes to defineTool as a context-free `Grep failed: spawn
+      // <CODE>` that hides which path/cwd was at fault.
+      let child;
+      try {
+        child = spawn(rgBin, rgArgs, { cwd: ctx.cwd, windowsHide: true });
+      } catch (e: any) {
+        resolve({ text: `Grep failed: could not start ripgrep (${e?.message ?? e}; rg=${rgBin}; cwd=${ctx.cwd}).`, isError: true });
+        return;
+      }
       let out = '';
       let err = '';
       child.stdout.on('data', (d) => {
