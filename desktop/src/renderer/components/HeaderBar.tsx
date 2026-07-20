@@ -7,6 +7,7 @@ import { isAndroid, isRemoteMode } from '../platform';
 import { useArtifact } from '../state/ArtifactContext';
 import OverflowMenu from './OverflowMenu';
 import NarrowViewToggle from './NarrowViewToggle';
+import { useArtifactCount } from '../hooks/useArtifactCount';
 import { useNarrowViewport } from '../hooks/use-narrow-viewport';
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
@@ -224,35 +225,10 @@ function ProjectsButton() {
  *  zero — that changed; this comment used to say so and was stale.) */
 function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionId: string | null; projectRoot?: string }) {
   const { state, dispatch } = useArtifact();
-  const sessionArtifacts = activeSessionId ? (state.sessionArtifacts[activeSessionId] ?? []) : [];
   // Open/closed is per-session — reflect (and toggle) the ACTIVE session's flag.
   const drawerOpen = activeSessionId ? (state.drawerOpenBySession[activeSessionId] ?? false) : false;
-
-  // Count only still-present artifacts. Two ways a file stops being present:
-  //  1. status === 'deleted' — an explicit Delete tool version (rare; CC has no
-  //     Delete tool, so this mostly never happens).
-  //  2. "orphan" — the file was removed via `bash rm` (which produces NO
-  //     artifact event), so the record stays status:'active' but the file is
-  //     gone from disk. The drawer detects these with checkExistence; we mirror
-  //     that here so the badge reflects what's actually on disk, not the full
-  //     session activity log. Re-checks when the list changes or the drawer
-  //     toggles (same triggers the drawer uses).
-  const [missingIds, setMissingIds] = useState<Set<string>>(() => new Set());
-  const liveIds = sessionArtifacts.filter((a) => a.status !== 'deleted').map((a) => a.id);
-  const idsKey = liveIds.join(',');
-  useEffect(() => {
-    if (!projectRoot || liveIds.length === 0) { setMissingIds(new Set()); return; }
-    let cancelled = false;
-    (window.claude as any).artifacts.checkExistence(projectRoot, liveIds)
-      .then((res: any) => { if (!cancelled && res?.ok) setMissingIds(new Set(res.missingIds ?? [])); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectRoot, idsKey, drawerOpen]);
-
-  const artifactCount = sessionArtifacts.filter(
-    (a) => a.status !== 'deleted' && !missingIds.has(a.id)
-  ).length;
+  // Count logic shared with the narrow overflow menu's "Session artifacts" row.
+  const artifactCount = useArtifactCount(activeSessionId, projectRoot);
 
   // Fix: always show the button so users can open the drawer even before any
   // artifacts exist. The count badge is conditional — hidden when count is 0.
@@ -270,11 +246,11 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
         className={`px-2 py-1 rounded-[var(--radius-toggle)] transition-colors flex items-center gap-1 ${
           drawerOpen ? 'bg-accent text-on-accent' : 'text-fg-dim hover:text-fg-2'
         }`}
-        // "Files", not "Artifacts": the drawer is a session activity log (it
-        // includes files the user merely VIEWED via pills), so the claude.ai-
-        // style "Artifacts" word would be wrong here — that term is reserved for
-        // the Project View tab that shows only what Claude made + pinned files.
-        title="Files in this chat"
+        // "Session artifacts" (Destin, 2026-07-20) — the "Session" qualifier
+        // now carries what the bare word "Files" used to: this is ONE session's
+        // activity log (including files merely VIEWED via pills), as distinct
+        // from Project View's project-wide Artifacts tab.
+        title="Session artifacts"
       >
         {/* Document icon — SVG matches the style of the settings gear above */}
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -600,6 +576,8 @@ export default function HeaderBar({
              Rendered as a single shrink-0 child so the cluster-width
              measurement at :368 still reads an intrinsic width. */
           <OverflowMenu
+            activeSessionId={activeSessionId}
+            projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}
             onToggleSettings={onToggleSettings}
             settingsBadge={settingsBadge}
             settingsDangerBadge={settingsDangerBadge}
@@ -634,7 +612,10 @@ export default function HeaderBar({
             REMOTE
           </span>
         )}
-        {toggleOnLeft && showToggle && toggleElement}
+        {/* Narrow puts the toggle on the RIGHT regardless of platform
+            (Destin, 2026-07-20): the left cluster is the ||| menu's home and
+            the right cluster is now just the view toggle. */}
+        {!narrow && toggleOnLeft && showToggle && toggleElement}
       </div>
 
       {/* Center — session strip.
@@ -667,15 +648,19 @@ export default function HeaderBar({
         className={`${clusterFlexClass}flex items-center justify-end gap-1 sm:gap-2`}
         style={clusterStyle}
       >
-        {!toggleOnLeft && showToggle && toggleElement}
+        {(narrow || !toggleOnLeft) && showToggle && toggleElement}
         {/* Files-drawer trigger — always visible; only the count badge is
             conditional (the original hide-at-zero plan was dropped — see the
             ArtifactDrawerButton docblock). Grouped with the game-panel toggle
             since both are panel toggles sharing identical pill styling. */}
-        <ArtifactDrawerButton
-          activeSessionId={activeSessionId}
-          projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}
-        />
+        {/* Session artifacts is a ||| menu row on narrow, so the button would
+            be a duplicate entry point. */}
+        {!narrow && (
+          <ArtifactDrawerButton
+            activeSessionId={activeSessionId}
+            projectRoot={sessions.find((s) => s.id === activeSessionId)?.cwd}
+          />
+        )}
         <div className="bg-inset rounded-md p-0.5 hidden sm:block">
           <button
             onClick={onToggleGamePanel}

@@ -20,10 +20,13 @@ import { createPortal } from 'react-dom';
 import { useArtifact } from '../state/ArtifactContext';
 import { GamepadIcon } from './Icons';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
+import { useArtifactCount } from '../hooks/useArtifactCount';
 
 const MENU_WIDTH = 208; // w-52
 
 interface Props {
+  activeSessionId: string | null;
+  projectRoot?: string;
   onToggleSettings: () => void;
   settingsBadge?: boolean;
   settingsDangerBadge?: boolean;
@@ -34,10 +37,15 @@ interface Props {
 }
 
 export default function OverflowMenu({
+  activeSessionId, projectRoot,
   onToggleSettings, settingsBadge, settingsDangerBadge,
   onToggleGamePanel, gamePanelOpen, gameConnected, challengePending,
 }: Props) {
-  const { dispatch } = useArtifact();
+  const { state, dispatch } = useArtifact();
+  // Session artifacts joined this menu on narrow (Destin, 2026-07-20) — the
+  // header's right cluster is now the chat/terminal toggle's home.
+  const drawerOpen = activeSessionId ? (state.drawerOpenBySession[activeSessionId] ?? false) : false;
+  const artifactCount = useArtifactCount(activeSessionId, projectRoot);
   // Positioning + outside/Escape dismissal live in the shared hook, which the
   // project-view hero menu also uses.
   const { open, toggle, anchorRef, menuRef, pos, choose } = useAnchoredMenu<HTMLButtonElement>(MENU_WIDTH);
@@ -76,6 +84,22 @@ export default function OverflowMenu({
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
             d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+        </svg>
+      ),
+    },
+    {
+      key: 'artifacts',
+      label: artifactCount > 0 ? `Session artifacts (${artifactCount})` : 'Session artifacts',
+      onClick: choose(() => {
+        if (!activeSessionId) return;
+        dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
+      }),
+      active: drawerOpen,
+      dot: null,
+      icon: (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
       ),
     },

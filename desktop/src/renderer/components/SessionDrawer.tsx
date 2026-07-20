@@ -343,11 +343,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const listInner = (
     <>
       <div className="flex items-center justify-between px-3 py-2 border-b border-edge shrink-0">
-        {/* "Files", not "Artifacts": this drawer is a session activity log
-            (created/edited/viewed all appear), so the claude.ai-style
-            "Artifacts" word is reserved for the Project View tab that shows
-            only what Claude made + pinned files. */}
-        <span className="font-semibold text-sm">Files ({listedArtifacts.length})</span>
+        {/* "Session artifacts" (Destin, 2026-07-20). This supersedes the older
+            rule that reserved the word "Artifacts" for the Project View tab —
+            the "Session" qualifier is what now carries the distinction: this
+            drawer is one session's activity log (created/edited/viewed all
+            appear), Project View's Artifacts tab is the project-wide set of
+            what Claude made plus pinned files. */}
+        <span className="font-semibold text-sm">Session artifacts ({listedArtifacts.length})</span>
         {!active && (
           <CloseButton
             onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })}

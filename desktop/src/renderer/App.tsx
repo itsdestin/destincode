@@ -85,6 +85,7 @@ import { RootErrorBoundary } from './components/RootErrorBoundary';
 import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
+import RemoteUnsupportedNotice from './components/RemoteUnsupportedNotice';
 import { ContextMenuHost } from './components/context-menu/ContextMenuHost';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
@@ -2504,6 +2505,10 @@ function AppInner() {
       {/* Mount-only: listens for chat:export-snapshot from main, serializes
           ChatState, and sends the snapshot back for remote-browser hydration. */}
       <RemoteSnapshotExporter />
+      {/* Mount-only: announces channels the remote WS server doesn't bridge
+          yet, so a remote browser gets "X isn't available via remote access
+          yet" instead of a silently empty panel. No-op on desktop. */}
+      <RemoteUnsupportedNotice />
       {/* Mount-only: app-wide right-click menu for chat content + the composer
           (copy/paste, Ask about this, file-pill actions). Opens only over
           surfaces it owns; leaves the terminal and other chrome untouched. */}

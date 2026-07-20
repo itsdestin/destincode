@@ -13,12 +13,14 @@ import OverflowMenu from './OverflowMenu';
 import { ArtifactContext } from '../state/ArtifactContext';
 
 function renderMenu(props: Partial<React.ComponentProps<typeof OverflowMenu>> = {}, dispatch = vi.fn()) {
-  const value = { state: {} as any, dispatch };
+  // sessionArtifacts / drawerOpenBySession are read by the artifacts row.
+  const value = { state: { sessionArtifacts: {}, drawerOpenBySession: {} } as any, dispatch };
   return {
     dispatch,
     ...render(
       <ArtifactContext.Provider value={value as any}>
         <OverflowMenu
+          activeSessionId="s1"
           onToggleSettings={vi.fn()}
           onToggleGamePanel={vi.fn()}
           gamePanelOpen={false}
@@ -41,7 +43,7 @@ describe('OverflowMenu', () => {
     expect(screen.getByRole('menu')).toBeTruthy();
   });
 
-  it('exposes all three collapsed destinations', () => {
+  it('exposes all four collapsed destinations', () => {
     renderMenu();
     openMenu();
     const labels = screen.getAllByRole('menuitem').map((b) => b.textContent ?? '');
@@ -49,6 +51,23 @@ describe('OverflowMenu', () => {
     expect(labels.some((l) => l.includes('Projects'))).toBe(true);
     // The reachability regression this file guards.
     expect(labels.some((l) => l.includes('Connect 4'))).toBe(true);
+    // Joined the menu when the toggle took over the right cluster.
+    expect(labels.some((l) => l.includes('Session artifacts'))).toBe(true);
+  });
+
+  it('toggles the session-artifacts drawer for the active session', () => {
+    const dispatch = vi.fn();
+    renderMenu({ activeSessionId: 's1' }, dispatch);
+    openMenu();
+    fireEvent.click(screen.getByText(/Session artifacts/).closest('button')!);
+    expect(dispatch).toHaveBeenCalledWith({ type: 'DRAWER_OPENED', sessionId: 's1' });
+  });
+
+  it('says "Session artifacts", never the old "Files" wording', () => {
+    renderMenu();
+    openMenu();
+    const labels = screen.getAllByRole('menuitem').map((b) => b.textContent ?? '');
+    expect(labels.some((l) => /\bFiles\b/.test(l))).toBe(false);
   });
 
   it('reaches the game panel — the toggle that had no other caller on narrow', () => {
