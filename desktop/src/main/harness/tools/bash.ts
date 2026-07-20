@@ -285,7 +285,10 @@ export const BashTool = defineTool({
       ctx.signal.addEventListener('abort', onAbort, { once: true });
       // If the signal already fired before we attached (once:true won't replay), kill now.
       if (ctx.signal.aborted) onAbort();
-      child.on('error', (err) => finish(`Failed to start shell: ${err.message}\n`, true));
+      // Async spawn failure (the path Windows takes for a bad cwd): name the
+      // shell + cwd actually used, not just Node's bare `spawn <cmd> <CODE>` —
+      // same diagnosability contract as the sync catch above.
+      child.on('error', (err) => finish(`Failed to start shell: ${err.message} (shell=${shell.cmd}; cwd=${startCwd})\n`, true));
       child.on('close', (code) => finish(code === 0 ? '' : `(exit code ${code})\n`, code !== 0, code));
     });
   },

@@ -260,18 +260,19 @@ describe('Bash', () => {
     expect(r.text).toMatch(/timed out/i);
   });
 
-  it('a synchronous spawn throw resolves an error result (never escapes to defineTool)', async () => {
-    // Same sync-throw trap as Grep: spawn() throws before the 'error' handler can
-    // attach when startCwd has a non-directory prefix. ctx.cwd = a FILE forces it
-    // (bash.ts only guards shellCwd, falling back to ctx.cwd, so a file ctx.cwd
-    // reaches spawn). Without the try/catch this escaped as `Bash failed: spawn
-    // ENOTDIR`; pin that it now resolves a structured error naming the cwd.
+  it('a spawn-level failure resolves a structured error that names the cwd', async () => {
+    // A bad startCwd makes spawn fail. The PATH differs by platform: on POSIX a
+    // file-cwd throws SYNCHRONOUSLY (before the 'error' handler can attach — the
+    // trap the try/catch guards); on Windows the shell spawn fails ASYNCHRONOUSLY
+    // via 'error' (ENOENT). Either way the result must be a structured error that
+    // NAMES the offending cwd — never a context-free `Bash failed: spawn <CODE>`.
+    // (ctx.cwd = a FILE reaches spawn because bash.ts only guards shellCwd.)
     const fileCwd = path.join(dir, 'not-a-dir.txt');
     fs.writeFileSync(fileCwd, 'x');
     const r = await BashTool.execute({ command: 'echo hi' }, makeCtx(fileCwd));
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/Failed to start shell/);
-    expect(r.text).toContain(fileCwd);
+    expect(r.text).toContain(fileCwd); // named on BOTH the sync and async paths
   });
 
   // Scoped persistence (ROADMAP 2026-07-17). Before this, every call spawned
