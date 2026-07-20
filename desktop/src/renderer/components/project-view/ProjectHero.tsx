@@ -80,21 +80,27 @@ function ChevronDown({ size = 18 }: { size?: number }) {
   );
 }
 
-// lucide-style external-link glyph (matches prototype IC.ext).
-function ExternalLink({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15 3h6v6" />
-      <path d="M10 14 21 3" />
-      <path d="M18 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" />
-    </svg>
-  );
-}
+// (The external-link glyph that used to live here went with the "Open repo"
+//  button — that action is a cog-menu row now, and menu rows are text-only.)
 
 // Git-branch glyph shared with ProjectSwitcher — lives in ./icons.tsx.
-import { GitBranchIcon } from './icons';
+import { createPortal } from 'react-dom';
+import { GitBranchIcon, CogIcon } from './icons';
 import { Button, TextInput } from '../ui';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
+
+const MENU_WIDTH = 240;
+
+/** One row in the hero's cog menu. `danger` items render red at rest — these
+ *  are consequential enough that hover is the wrong moment to find out
+ *  (carried over from the old danger-outline buttons, spec decision 67). */
+interface MenuItem {
+  key: string;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}
 
 export function ProjectHero({
   project,
@@ -156,8 +162,44 @@ export function ProjectHero({
     onRenamed(); // optimistic refresh; a Personal `synced` event also refreshes
   };
 
+  // NARROW ONLY. Below 640px the management actions collapse behind a cog:
+  // a row of six buttons plus a shrink-0 button column left the project name a
+  // couple of characters wide on a phone. Desktop has the room, so it keeps
+  // every action visible — collapsing there would cost a click for no gain.
+  const narrow = useNarrowViewport();
+  const menu = useAnchoredMenu<HTMLButtonElement>(MENU_WIDTH, 'right');
+
+  const syncAction: MenuItem | null =
+    sync?.dot.color === 'green' && sync.spaceId
+      ? { key: 'sync-now', label: 'Sync now', onClick: () => onSyncNow(sync.spaceId!) }
+    : sync?.dot.color === 'red' && sync.spaceId
+      ? { key: 'sync-retry', label: 'Try syncing again', onClick: () => onSyncNow(sync.spaceId!) }
+    : sync?.dot.color === 'gray' && !sync.spaceId
+      ? { key: 'sync-on', label: 'Turn on sync for this project', onClick: onTurnOnSync }
+    : null;
+
+  const destructiveAction: MenuItem | null =
+    canRemove
+      ? { key: 'remove', label: 'Remove from YouCoded', onClick: onRemove, danger: true }
+    : syncedFolderName && !sync?.stopped
+      // Arms the inline confirm below the sync strip rather than acting
+      // immediately — the consequence copy is too long for a menu row.
+      ? { key: 'stop-sync', label: 'Stop syncing', onClick: () => setConfirmingStop(true), danger: true }
+    : null;
+
+  const menuItems: MenuItem[] = [
+    { key: 'rename', label: 'Rename', onClick: () => setRenaming(true) },
+    ...(isElectron ? [{ key: 'reveal', label: 'Open in File Explorer', onClick: () => void (window.claude as any).shell.openPath(project.path) }] : []),
+    ...(repo?.webUrl ? [{ key: 'repo', label: showRepoSlug ? `Open ${repo.owner}/${repo.name} on GitHub` : 'Open repository', onClick: () => window.claude.shell.openExternal(repo.webUrl!) }] : []),
+    ...(syncAction ? [syncAction] : []),
+    ...(destructiveAction ? [destructiveAction] : []),
+  ];
+
   return (
-    <div className="layer-surface p-5 flex items-start justify-between gap-4">
+    // Stacks below 640px. Before the cog collapse the right column was shrink-0
+    // with two size="lg" buttons (~268px together), which on a 390px phone left
+    // the entire left column — name, path, sync strip, stats — about 34px wide.
+    <div className="layer-surface p-3 sm:p-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
       {/* Left: eyebrow + name switcher + path/repo + stat row */}
       <div className="min-w-0">
         <div className="text-[10px] font-medium tracking-wider text-fg-muted uppercase mb-1.5">
@@ -167,19 +209,36 @@ export function ProjectHero({
         {/* Name as the switcher trigger. WHY: must NOT truncate — the user
             explicitly called this out. whitespace-normal + break-words let long
             project names wrap instead of clipping. */}
-        <button
-          type="button"
-          onClick={onOpenSwitcher}
-          className="group flex items-start gap-2 text-left rounded-md -ml-1 px-1 py-0.5 hover:bg-inset transition-colors"
-          title="Switch project"
-        >
-          <span className="text-2xl font-semibold text-fg leading-tight whitespace-normal break-words">
-            {shownName}
-          </span>
-          <span className="text-fg-muted group-hover:text-fg shrink-0 mt-1.5">
-            <ChevronDown size={18} />
-          </span>
-        </button>
+        {/* Renaming swaps the heading itself for the field. WHY here and not on
+            an actions row (where it used to live): the rename target IS the
+            name, so editing it anywhere else made you look in two places at
+            once — and with the actions row gone there is nowhere else to put it. */}
+        {renaming ? (
+          <TextInput
+            size="sm"
+            value={nickname}
+            autoFocus
+            aria-label="Project nickname"
+            className="text-2xl font-semibold w-full"
+            onChange={(e) => setNickname(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void commitRename(); if (e.key === 'Escape') { setNickname(shownName); setRenaming(false); } }}
+            onBlur={() => void commitRename()}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={onOpenSwitcher}
+            className="group flex items-start gap-2 text-left rounded-md -ml-1 px-1 py-0.5 hover:bg-inset transition-colors"
+            title="Switch project"
+          >
+            <span className="text-2xl font-semibold text-fg leading-tight whitespace-normal break-words">
+              {shownName}
+            </span>
+            <span className="text-fg-muted group-hover:text-fg shrink-0 mt-1.5">
+              <ChevronDown size={18} />
+            </span>
+          </button>
+        )}
 
         {/* Path + optional owner/name repo slug. */}
         <div className="flex items-center gap-2 mt-1.5 min-w-0">
@@ -201,11 +260,14 @@ export function ProjectHero({
             that matters for the state. Hidden when syncSpaces is unavailable. */}
         {sync && (
           <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-inset px-3 py-2">
+            {/* On narrow the matching ACTION for each state moved into the cog
+                menu, leaving this strip a one-line readout. Desktop keeps the
+                button inline where it has always been. */}
             {sync.dot.color === 'green' && (
               <>
                 <span className="text-[13px] font-semibold text-[#44A05C]">Syncs across your devices</span>
                 {sync.lastSynced && <span className="text-xs text-fg-muted">Last synced {sync.lastSynced}</span>}
-                {sync.spaceId && (
+                {!narrow && sync.spaceId && (
                   <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
                     Sync now
                   </Button>
@@ -216,7 +278,7 @@ export function ProjectHero({
               <>
                 <span className="text-[13px] font-semibold text-[#DD4444]">Sync isn't working</span>
                 {sync.errorMessage && <span className="text-xs text-fg-dim">{sync.errorMessage}</span>}
-                {sync.spaceId && (
+                {!narrow && sync.spaceId && (
                   <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
                     Try again
                   </Button>
@@ -237,11 +299,30 @@ export function ProjectHero({
                 <span className="text-[13px] font-semibold text-fg-2">Only on this computer</span>
                 {/* py-1 keeps this button compact inside the sync status strip;
                     everything else (accent fill, radius, hover) comes from Button. */}
-                <Button onClick={onTurnOnSync} className="py-1">
-                  Turn on sync for this project
-                </Button>
+                {!narrow && (
+                  <Button onClick={onTurnOnSync} className="py-1">
+                    Turn on sync for this project
+                  </Button>
+                )}
               </>
             )}
+          </div>
+        )}
+
+        {/* Stop-syncing confirm. Armed from the cog menu; the consequence copy
+            is far too long for a menu row, so it lands here where the sync
+            state it's about is already on screen. */}
+        {confirmingStop && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-[#DD4444]/40 px-3 py-2">
+            <span className="text-[11px] text-fg-dim max-w-[22rem]">
+              Stop syncing “{shownName}”? The folder stays on all your devices, but changes will no longer sync between them. This can’t be undone from here.
+            </span>
+            <Button variant="danger-outline" size="sm" onClick={() => void commitStop()}>
+              Stop syncing
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setConfirmingStop(false)}>
+              Cancel
+            </Button>
           </div>
         )}
 
@@ -254,94 +335,121 @@ export function ProjectHero({
           <span>active <b className="text-fg-2 font-semibold">{stats.activeLabel}</b></span>
         </div>
 
-        {/* Management actions (spec §4). Rename = picker nickname only. Remove
-            hides for synced projects (move-out-of-sync is a deferred flow). */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {renaming ? (
-            /* Shared TextInput (change 20). Stays a plain field, not an
-               InputGroup — this one commits on Enter/blur and has no submit
-               button to put inside. */
-            <TextInput
-              size="sm"
-              value={nickname}
-              autoFocus
-              aria-label="Project nickname"
-              onChange={(e) => setNickname(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void commitRename(); if (e.key === 'Escape') { setNickname(project.name); setRenaming(false); } }}
-              onBlur={() => void commitRename()}
-            />
-          ) : (
-            <Button variant="secondary" size="sm" onClick={() => setRenaming(true)}>
-              Rename
-            </Button>
-          )}
-          {isElectron && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void (window.claude as any).shell.openPath(project.path)}
-            >
-              Open in File Explorer
-            </Button>
-          )}
-          {/* WHY danger-outline (spec decision 67): "Remove from YouCoded" and
-              "Stop syncing" used to look neutral and only turn red on hover.
-              These are consequential enough that hover is the wrong moment to
-              find that out, so they read as destructive at rest. "Rename" above
-              stays neutral — being the only non-red one is what makes it read
-              as the safe action. */}
-          {canRemove ? (
-            <Button variant="danger-outline" size="sm" onClick={onRemove}>
-              Remove from YouCoded
-            </Button>
-          ) : syncedFolderName && sync?.stopped ? (
-            // Already stopped (permanent) — no action to offer, just the state
-            // (review #4: don't re-render a "Stop syncing" button for a project
-            // that's already a tombstone).
-            <span className="text-[11px] text-fg-muted">Sync stopped</span>
-          ) : syncedFolderName ? (
-            // Stop syncing (spec §10) — consequence-gated destructive action.
-            confirmingStop ? (
-              <span className="inline-flex items-center gap-2 flex-wrap">
-                <span className="text-[11px] text-fg-dim max-w-[22rem]">
-                  Stop syncing “{shownName}”? The folder stays on all your devices, but changes will no longer sync between them. This can’t be undone from here.
-                </span>
-                <Button variant="danger-outline" size="sm" onClick={() => void commitStop()}>
+        {/* Management actions (spec §4) — DESKTOP ONLY. Narrow reaches these
+            through the cog menu instead; see the `narrow` note above.
+            Rename = picker nickname only; the field itself renders up at the
+            heading (one rename UI at both widths). Remove hides for synced
+            projects (move-out-of-sync is a deferred flow). */}
+        {!narrow && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {!renaming && (
+              <Button variant="secondary" size="sm" onClick={() => setRenaming(true)}>
+                Rename
+              </Button>
+            )}
+            {isElectron && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void (window.claude as any).shell.openPath(project.path)}
+              >
+                Open in File Explorer
+              </Button>
+            )}
+            {/* WHY danger-outline (spec decision 67): "Remove from YouCoded" and
+                "Stop syncing" used to look neutral and only turn red on hover.
+                These are consequential enough that hover is the wrong moment to
+                find that out, so they read as destructive at rest. "Rename"
+                above stays neutral — being the only non-red one is what makes
+                it read as the safe action. */}
+            {canRemove ? (
+              <Button variant="danger-outline" size="sm" onClick={onRemove}>
+                Remove from YouCoded
+              </Button>
+            ) : syncedFolderName && sync?.stopped ? (
+              // Already stopped (permanent) — no action to offer, just the state
+              // (review #4: don't re-render a "Stop syncing" button for a
+              // project that's already a tombstone).
+              <span className="text-[11px] text-fg-muted">Sync stopped</span>
+            ) : syncedFolderName ? (
+              !confirmingStop && (
+                <Button variant="danger-outline" size="sm" onClick={() => setConfirmingStop(true)}>
                   Stop syncing
                 </Button>
-                <Button variant="secondary" size="sm" onClick={() => setConfirmingStop(false)}>
-                  Cancel
-                </Button>
-              </span>
+              )
             ) : (
-              <Button variant="danger-outline" size="sm" onClick={() => setConfirmingStop(true)}>
-                Stop syncing
-              </Button>
-            )
-          ) : (
-            <span className="text-[11px] text-fg-muted">Managed by sync</span>
-          )}
-        </div>
+              <span className="text-[11px] text-fg-muted">Managed by sync</span>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Right: Open repo (only when the project has a web URL) + New Conversation. */}
-      <div className="shrink-0 flex items-center gap-2">
-        {repo?.webUrl && (
+      {/* Right: cog menu + New Conversation. Everything else that used to sit
+          here or on the actions row below is now behind the cog. */}
+      <div className="w-full sm:w-auto sm:shrink-0 flex items-center gap-2">
+        {/* Desktop keeps Open repo as a visible button; narrow folds it into
+            the cog menu with the rest of the management actions. */}
+        {!narrow && repo?.webUrl && (
           <Button
             variant="secondary"
             size="lg"
             onClick={() => window.claude.shell.openExternal(repo.webUrl!)}
             title={showRepoSlug ? `Open ${repo.owner}/${repo.name} on GitHub` : 'Open repository'}
           >
-            <ExternalLink size={14} />
             Open repo
           </Button>
         )}
         {/* The ONE accent use in this hero. */}
-        <Button size="lg" onClick={() => onNewConversation(project.path)}>
+        <Button size="lg" className="flex-1 sm:flex-none" onClick={() => onNewConversation(project.path)}>
           New Conversation
         </Button>
+        {narrow && (
+          <button
+            ref={menu.anchorRef}
+            type="button"
+            onClick={menu.toggle}
+            className={`coarse-hit shrink-0 p-2 rounded-md border border-edge transition-colors ${
+              menu.open ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
+            }`}
+            title="Project settings"
+            aria-label="Project settings"
+            aria-haspopup="menu"
+            aria-expanded={menu.open}
+          >
+            <CogIcon size={16} />
+          </button>
+        )}
       </div>
+
+      {narrow && menu.open && menu.pos && createPortal(
+        <div
+          ref={menu.menuRef}
+          role="menu"
+          // z-[9000]: ProjectView is a fixed inset-0 z-[8000] overlay, so the
+          // menu has to clear it. Same ceiling SessionStrip's dropdown uses.
+          className="glass-overlay overlay-no-drag fixed bg-panel border border-edge rounded-lg shadow-lg z-[9000] overflow-hidden py-1"
+          style={{ top: menu.pos.top, left: menu.pos.left, width: MENU_WIDTH }}
+        >
+          {menuItems.map((item, i) => (
+            <React.Fragment key={item.key}>
+              {/* Hairline above the destructive item so it can't be hit by
+                  muscle memory aimed at the row above it. */}
+              {item.danger && i > 0 && <div className="my-1 border-t border-edge-dim" />}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={menu.choose(item.onClick)}
+                className={`coarse-roomy w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-inset ${
+                  item.danger ? 'text-[#DD4444]' : 'text-fg-2 hover:text-fg'
+                }`}
+              >
+                {item.label}
+              </button>
+            </React.Fragment>
+          ))}
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

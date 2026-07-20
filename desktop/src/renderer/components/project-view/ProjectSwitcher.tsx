@@ -202,7 +202,11 @@ export function ProjectSwitcher({
                     const files = p.fileCount ?? p.stats.artifactCount;
                     const filesLabel = p.fileCountTruncated ? `${files.toLocaleString()}+` : String(files);
                     return (
-                      <span className="text-[11px] text-fg-muted shrink-0 whitespace-nowrap">
+                      // Hidden below 640px: this shrink-0 counts hint (~120px)
+                      // squeezed the name+path column to ~140px in a 359px
+                      // palette, truncating both to a few characters. The name
+                      // is what identifies the project; the counts decorate.
+                      <span className="hidden sm:inline text-[11px] text-fg-muted shrink-0 whitespace-nowrap">
                         {filesLabel} file{files === 1 ? '' : 's'}
                         {typeof p.conversationCount === 'number' && (
                           <> · {p.conversationCount} chat{p.conversationCount === 1 ? '' : 's'}</>
@@ -238,7 +242,12 @@ export function ProjectSwitcher({
                   <CloseButton
                     // w-6 h-6 survives as a className override: this is a hover-revealed
                     // affordance sized to the row, not a panel-header closer.
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity w-6 h-6 rounded-md"
+                    // touch-reveal + coarse-hit: group-hover never resolves on a
+                    // touch device, so "Remove project" had no touch path at
+                    // all on Android / remote phones. Stays visible and gets a
+                    // 44px hit box when the pointer is coarse. pr-9 on the row
+                    // already reserves the space, so nothing shifts.
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100 touch-reveal coarse-hit transition-opacity w-6 h-6 rounded-md"
                     title={`Remove ${p.name} from YouCoded`}
                     label={`Remove ${p.name} from YouCoded`}
                     onClick={(e) => { e.stopPropagation(); onDeleteProject(p); }}

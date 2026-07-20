@@ -930,6 +930,26 @@ body[data-mode="buddy-chat"] #theme-bg {
     padding-top: 0.5rem;
     padding-bottom: 0.5rem;
   }
+
+  /* Hover-reveal controls have NO touch path — `opacity-0 group-hover:...`
+     simply never resolves on a touch device, and this exact bundle is what
+     Android and remote phones run. Anything tagged .touch-reveal stays
+     visible when the pointer is coarse (e.g. "Remove project" on the
+     ProjectSwitcher rows, which was otherwise unreachable). */
+  .touch-reveal {
+    opacity: 1 !important;
+  }
+}
+
+/* Scroll strip without a visible scrollbar — for horizontal overflow rows
+   (segmented controls, tab strips) where the bar itself would be chrome
+   noise on a 4px-tall row. The row is still swipeable/wheel-scrollable. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1784,8 +1804,77 @@ html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-
   .framed-shell.drawer-open > .chat-pane {
     display: none;
   }
+
+  /* The artifact and game panes had NO left/right frame border here. The edge
+     strips above are flex spacers that hold the panes clear of the chrome-glass
+     frame behind them; with those hidden and width:100%, .drawer-pane (z-index
+     11, above chrome-glass at z 10) ran edge to edge and painted straight over
+     both borders.
+     Own margins rather than un-hiding the spacers, because the two shells
+     disagree: ChatView's framed-shell has leading and trailing .frame-edge
+     elements, TerminalRightSlot's clone has none. Margins frame the pane
+     identically in both; restoring the spacers would have fixed chat view and
+     left terminal view exactly as broken. */
   .framed-shell > .drawer-pane {
+    flex: 1;
+    width: auto;
+    margin-left: var(--frame-edge);
+    margin-right: var(--frame-edge);
+  }
+
+  /* Same problem on the plain chat screen: with the edge spacers hidden the
+     chat pane spans the full width and its content sits UNDER chrome-glass's
+     10px border instead of beside it (chrome-glass is z 10, chat-pane isn't
+     promoted, so the chrome wins and clips the content edges). Inset it to
+     match. Not applied to the terminal spacer variant — the terminal is a
+     separate full-width layer with its own --terminal-side-inset. */
+  .framed-shell > .chat-pane:not(.terminal-panel-spacer) {
+    margin-left: var(--frame-edge);
+    margin-right: var(--frame-edge);
+  }
+
+  /* The pane collapsing to 100% was only half the fix. Its child <aside>
+     (SessionDrawer) kept a hard w-[--right-pane-width] of 480px, so inside a
+     390px pane with overflow:hidden the right ~90px — including the drawer's
+     own toolbar — was clipped off-screen and unreachable. Follow the pane. */
+  .framed-shell > .drawer-pane .drawer-aside {
     width: 100%;
+  }
+
+  /* Stack navigation inside the drawer: the file list and the file content
+     stop sharing the row. Whichever one is active gets the full width. */
+  .drawer-body[data-list-open='true'] > .drawer-list {
+    width: 100%;
+    border-right: none;
+  }
+  .drawer-body[data-list-open='true'] > .drawer-list > .drawer-list-inner {
+    width: 100%;
+  }
+  .drawer-body[data-list-open='true'] > .drawer-content {
+    display: none;
+  }
+
+  /* The resize handle is a 6px cursor:col-resize strip with a hover tint —
+     meaningless and undraggable on touch, and there's no width to drag when
+     the drawer is full-bleed anyway. */
+  .drawer-aside > .cursor-col-resize {
+    display: none;
+  }
+
+  /* No chat cutout at all while a right pane is open here, because the chat
+     pane it exists to frame is display:none. chrome-glass paints the full
+     rectangle instead; .drawer-pane covers the middle with its own opaque
+     background (z 11), and its border-radius lets the chrome show through at
+     the corners — the same way the drawer is framed on desktop.
+
+     This replaces a --chat-right-offset: 0px override that was wrong twice
+     over: it cut the hole all the way to the window's right edge, erasing the
+     right border while the polygon's hard-coded left edge kept the left one,
+     which is the asymmetry Destin spotted. (The offset it replaced was worse
+     still — 2*frame-edge + 480px exceeded 100% below 480px and drove the
+     polygon's x coordinates negative.) */
+  .chrome-glass--drawer-open {
+    clip-path: none;
   }
 }
 

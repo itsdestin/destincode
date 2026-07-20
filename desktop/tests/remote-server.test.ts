@@ -226,3 +226,100 @@ describe('RemoteServer runtime start/stop', () => {
     expect(listenBehavior.calls).toBe(0);
   });
 });
+
+// The message switch had no default case, so any channel the server doesn't
+// implement was silently dropped. The shim (remote-shim.ts invoke()) registers
+// a pending promise with a 30s timer, so an unimplemented channel presented as
+// a 30-second hang and then a rejection naming nothing — which is why remote
+// Project View and the game lobby looked "broken" rather than unimplemented.
+describe('RemoteServer unhandled channels', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client and collect
+   *  everything the server writes back. */
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('answers an unknown channel instead of dropping it', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'definitely:not-a-real-channel', id: 'req-1', payload: {} });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].type).toBe('definitely:not-a-real-channel:response');
+    expect(sent[0].id).toBe('req-1');
+    expect(sent[0].payload.ok).toBe(false);
+    expect(sent[0].payload.unsupported).toBe(true);
+  });
+
+  it('names the channel in the error so the gap is diagnosable', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'social:list-friends', id: 'req-2', payload: {} });
+    expect(sent[0].payload.error).toContain('social:list-friends');
+  });
+
+  it('stays silent for fire-and-forget messages that carry no id', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'some:notification', payload: {} });
+    expect(sent).toHaveLength(0);
+  });
+});
+
+// The game lobby renders its sign-in screen off account:signed-in. With no
+// handler the call hung, so signedIn stayed at its useState(false) default and
+// a remote browser showed "signed out" while the host app was signed in.
+describe('RemoteServer account bridge', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('reports the host signed-in state', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    server.setAccountStore({ getToken: () => 'tok', getUser: () => ({ login: 'destin' }) });
+    const sent = await sendAndCollect(server, { type: 'account:signed-in', id: 'a1', payload: {} });
+    expect(sent[0].payload).toBe(true);
+  });
+
+  it('returns the cached profile', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    server.setAccountStore({ getToken: () => 'tok', getUser: () => ({ login: 'destin' }) });
+    const sent = await sendAndCollect(server, { type: 'account:user', id: 'a2', payload: {} });
+    expect(sent[0].payload.login).toBe('destin');
+  });
+
+  // Must not hang or throw when main.ts hasn't injected the store yet.
+  it('reports signed-out when no store is injected', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'account:signed-in', id: 'a3', payload: {} });
+    expect(sent[0].payload).toBe(false);
+  });
+});

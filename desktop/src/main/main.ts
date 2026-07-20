@@ -1367,6 +1367,10 @@ app.whenReady().then(async () => {
   // never crosses the contextBridge into the renderer.
   const marketplaceAuthStore = createAuthStore(app.getPath('userData'));
   registerMarketplaceApiHandlers(marketplaceAuthStore);
+  // Remote clients read the signed-in state through the WS server, which has no
+  // ipcMain access — without this the game lobby showed "signed out" in a remote
+  // browser while the host app was signed in.
+  remoteServer.setAccountStore(marketplaceAuthStore);
   // Accounts Phase 2 — social graph (friends/requests/blocks) IPC. Shares the
   // same token-bound auth store; handlers live in a sibling module to keep the
   // account file focused on auth + marketplace writes. windowRegistry +

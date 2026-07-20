@@ -74,7 +74,7 @@ import { InfoIcon } from '../icons';
 export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) {
   if (groups === null) {
     return (
-      <div className="flex flex-col h-full overflow-auto px-4 pt-1 pb-4 min-w-0">
+      <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
         <ContextIntroBanner />
         <p className="text-sm text-fg-muted">Loading…</p>
       </div>
@@ -83,7 +83,7 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
 
   if (groups.length === 0) {
     return (
-      <div className="flex flex-col h-full overflow-auto px-4 pt-1 pb-4 min-w-0">
+      <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
         <ContextIntroBanner />
         <p className="text-sm text-fg-muted">No context files found for this project.</p>
       </div>
@@ -91,18 +91,22 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
   }
 
   return (
-    <div className="flex flex-col h-full overflow-auto px-4 pt-1 pb-4 min-w-0">
+    <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
       <ContextIntroBanner />
       {groups.map((group) => {
         const meta = GROUP_META[group.scope];
         return (
           <div key={group.scope} className="mb-5 shrink-0">
             {/* Group header: micro-label (.lbl style) + hint + (i) info button. */}
-            <div className="flex items-center gap-2 mb-2 px-1">
+            {/* flex-wrap + min-w-0: label, a full-sentence description, and the
+                (i) button on one non-wrapping row compressed the description
+                into overlapping text at ~326px. ml-auto on the button still
+                right-aligns it on the first line. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-2 px-1">
               <span className="text-[10px] font-medium tracking-wider uppercase text-fg-muted">
                 {meta.label}
               </span>
-              <span className="text-[11.5px] text-fg-muted">{meta.desc}</span>
+              <span className="text-[11.5px] text-fg-muted min-w-0">{meta.desc}</span>
               <button
                 type="button"
                 className="ml-auto shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-fg-muted hover:text-fg hover:bg-inset transition-colors"

@@ -546,10 +546,17 @@ export function ProjectView(props: ProjectViewProps) {
             project rail anymore; switching projects goes through the palette
             (ProjectSwitcher) opened from the hero name, and project removal
             lives on the palette rows. */}
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Narrow scrolls as ONE page: the hero scrolls away and the tab
+            content keeps going, so a phone isn't stuck reading files through a
+            ~200px slot under a hero that never moves. sm+ keeps the fixed-chrome
+            layout (hero pinned, body scrolls independently) — there's vertical
+            room for it there, and it's the design the view was built around. */}
+        <main className="flex-1 flex flex-col max-sm:overflow-y-auto sm:overflow-hidden min-w-0">
           {/* Chrome: hero + seg-row, centered to a comfortable reading width to
               match the prototype (the tab body below shares the same max-width). */}
-          <div className="w-full max-w-[1100px] mx-auto px-4 pt-4 shrink-0 flex flex-col gap-4">
+          {/* px-2 on narrow: stacked gutters (this px-4 plus the hero's own p-5)
+              ate 18% of a 390px viewport before any content rendered. */}
+          <div className="w-full max-w-[1100px] mx-auto px-2 sm:px-4 pt-4 shrink-0 flex flex-col gap-3 sm:gap-4">
             {activeProject ? (
               <ProjectHero
                 project={activeProject}
@@ -587,11 +594,22 @@ export function ProjectView(props: ProjectViewProps) {
 
             {/* Seg-row: unified segmented control (left) + the active tab's
                 search/filter controls (right), on one row — matches the design. */}
-            <div className="flex items-center justify-between gap-3 flex-wrap">
+            {/* Sticky on narrow so the tab switcher survives scrolling down
+                through a long file list — without it, page-scroll would carry
+                the tabs off-screen and you'd have to scroll back up to switch. */}
+            <div className="flex items-center justify-between gap-3 flex-wrap max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:bg-canvas max-sm:py-2">
               {/* Unified segmented control: one rounded-full pill holding all three
                   segments (icon + label + count). Accent used ONCE — the active seg. */}
+              {/* All four segments at full width, no scrolling: below 640px the
+                  INACTIVE segments drop to icon-only and the active one keeps
+                  its label + count. Labelled, the four total ~500px
+                  ("Conversations" alone is ~168px), which overflowed a phone
+                  and put Context out of reach entirely. Three ~35px icons plus
+                  one labelled segment fits inside ~374px with room to spare.
+                  overflow-x-auto stays as a backstop for a very long label at a
+                  very small width; it should not normally engage. */}
               <div
-                className="flex items-center gap-1 p-1 layer-surface !rounded-full"
+                className="flex items-center gap-1 p-1 layer-surface !rounded-full max-sm:w-full max-w-full overflow-x-auto no-scrollbar"
                 style={{ boxShadow: 'none' }}
               >
                 {SEGMENTS.map((s) => {
@@ -601,16 +619,26 @@ export function ProjectView(props: ProjectViewProps) {
                     <button
                       key={s.id}
                       type="button"
-                      className={`px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center gap-2 transition-colors ${
+                      // Active segment absorbs the leftover width on narrow so
+                      // the pill spans the screen exactly; inactive ones stay
+                      // at their icon width. title= carries the label for the
+                      // icon-only state (aria-label does the same for AT).
+                      className={`shrink-0 ${active ? 'max-sm:flex-1 max-sm:min-w-0' : ''} px-2.5 sm:px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center justify-center gap-1.5 sm:gap-2 transition-colors ${
                         active
                           ? 'bg-accent text-on-accent'
                           : 'text-fg-2 hover:text-fg hover:bg-inset'
                       }`}
                       onClick={() => setTab(s.id)}
+                      title={s.label}
+                      aria-label={s.label}
+                      aria-current={active ? 'page' : undefined}
                     >
-                      {s.icon}
-                      {s.label}
-                      <span className={`text-[11px] ${active ? 'opacity-80' : 'text-fg-muted'}`}>
+                      <span className="shrink-0 inline-flex">{s.icon}</span>
+                      {/* Label + count collapse to nothing on an inactive
+                          segment below 640px — that's what buys the room for
+                          all four to fit without scrolling. */}
+                      <span className={`truncate ${active ? '' : 'max-sm:hidden'}`}>{s.label}</span>
+                      <span className={`text-[11px] shrink-0 ${active ? 'opacity-80' : 'text-fg-muted max-sm:hidden'}`}>
                         {s.count}
                       </span>
                       {/* (i) hover explainer for the Artifacts vs All files split —
@@ -638,10 +666,14 @@ export function ProjectView(props: ProjectViewProps) {
                   (type, sort, Show deleted) live behind it in FileFilterPopover.
                   Only "+ Add file" (an action, not a filter) stays visible.
                   Conversations/Context have no toolbar in v1. */}
+              {/* Narrow: search + Add file take their own full-width row under
+                  the segments (the parent's flex-wrap does the rest). A hard
+                  260px pill plus "+ Add file" was ~363px in a 358px content
+                  box, so this row alone overflowed the viewport. */}
               {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
-                <div className="flex items-center gap-2">
-                  <div className="relative" ref={filterWrapRef}>
-                    <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-[260px] focus-within:border-edge-dim">
+                <div className="w-full sm:w-auto flex items-center gap-2">
+                  <div className="relative flex-1 sm:flex-none" ref={filterWrapRef}>
+                    <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full sm:w-[260px] focus-within:border-edge-dim">
                       <span className="text-fg-muted shrink-0"><SearchIcon size={15} /></span>
                       <input
                         type="text"
@@ -717,7 +749,10 @@ export function ProjectView(props: ProjectViewProps) {
           </div>
 
           {/* Tab routing — shares the centered max-width with the chrome above. */}
-          <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto">
+          {/* max-sm:flex-none + overflow-visible: in the narrow page-scroll
+              model this must take its NATURAL height and let the page scroll,
+              not clamp itself to the viewport and scroll internally. */}
+          <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
             {activeProject && tab === 'artifacts' && (
               <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
             )}

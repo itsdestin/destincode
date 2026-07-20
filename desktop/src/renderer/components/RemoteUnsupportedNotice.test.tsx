@@ -1,0 +1,73 @@
+// @vitest-environment jsdom
+import React from 'react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, act, cleanup, fireEvent } from '@testing-library/react';
+import RemoteUnsupportedNotice from './RemoteUnsupportedNotice';
+import {
+  REMOTE_UNSUPPORTED_EVENT, remoteFeatureName, remoteUnsupportedMessage,
+} from '../remote-unsupported';
+
+function announce(channel: string) {
+  act(() => {
+    window.dispatchEvent(new CustomEvent(REMOTE_UNSUPPORTED_EVENT, {
+      detail: { channel, feature: remoteFeatureName(channel), message: remoteUnsupportedMessage(channel) },
+    }));
+  });
+}
+
+describe('remoteFeatureName', () => {
+  it('maps a namespace to plain language', () => {
+    expect(remoteFeatureName('social:list-friends')).toBe('Friends and challenges');
+    expect(remoteFeatureName('artifacts:get')).toBe('Project files');
+  });
+
+  // 'theme-marketplace:' also starts with... nothing shared with 'theme:', but
+  // 'theme:' IS a prefix of neither — the ordering hazard is real the other way:
+  // a naive map could match 'theme:' first for 'theme-marketplace:list' if the
+  // separator were dropped. Pin the intended winner.
+  it('prefers the longer namespace when two could match', () => {
+    expect(remoteFeatureName('theme-marketplace:list')).toBe('Theme browsing');
+    expect(remoteFeatureName('theme:list')).toBe('Theme editing');
+  });
+
+  it('falls back to the raw channel so the message is still specific', () => {
+    expect(remoteFeatureName('wibble:frob')).toBe('wibble:frob');
+  });
+
+  it('phrases the message the way Destin asked for', () => {
+    expect(remoteUnsupportedMessage('social:list-friends'))
+      .toBe("Friends and challenges isn't available via remote access yet.");
+  });
+});
+
+describe('RemoteUnsupportedNotice', () => {
+  beforeEach(() => { cleanup(); vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('renders nothing until something is unsupported', () => {
+    const { container } = render(<RemoteUnsupportedNotice />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('shows the feature message when the shim reports one', () => {
+    render(<RemoteUnsupportedNotice />);
+    announce('social:list-friends');
+    expect(screen.getByRole('status').textContent)
+      .toContain("Friends and challenges isn't available via remote access yet.");
+  });
+
+  it('auto-dismisses', () => {
+    render(<RemoteUnsupportedNotice />);
+    announce('artifacts:get');
+    expect(screen.queryByRole('status')).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(6100); });
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('can be dismissed by hand', () => {
+    render(<RemoteUnsupportedNotice />);
+    announce('artifacts:get');
+    fireEvent.click(screen.getByLabelText('Dismiss'));
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});

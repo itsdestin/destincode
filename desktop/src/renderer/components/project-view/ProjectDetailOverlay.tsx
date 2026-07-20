@@ -41,11 +41,20 @@ export function ProjectDetailOverlay({ title, onClose, tools, meta, children }: 
         aria-modal
       >
         {/* Header: title (left) + tools + close (right). */}
-        <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-edge shrink-0">
-          <span className="text-[15px] font-semibold text-fg truncate min-w-0">{title}</span>
-          <div className="flex items-center gap-1.5 shrink-0">
+        {/* Wraps below 640px. For an artifact the tools slot renders Edit ·
+            Open · Reveal · Copy path · Exclude (~340px of shrink-0 content) in
+            a panel that is only ~374px wide at inset-2 — the title collapsed
+            to nothing AND the buttons still pushed the × off-panel, so the
+            overlay could not be closed. CloseButton is deliberately outside
+            the wrapping group so it stays reachable on the first line. */}
+        <header className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 sm:px-4 sm:py-3 border-b border-edge shrink-0">
+          <span className="text-[15px] font-semibold text-fg truncate min-w-0 flex-1">{title}</span>
+          {/* order flips the close button: narrow keeps it on the title line
+              (tools wrap underneath); sm+ restores the original title · tools ·
+              close reading order. */}
+          <CloseButton className="order-1 sm:order-3 ml-1 shrink-0" onClick={onClose} title="Close" />
+          <div className="order-2 flex flex-wrap items-center justify-end gap-1.5">
             {tools}
-            <CloseButton className="ml-1 shrink-0" onClick={onClose} title="Close" />
           </div>
         </header>
 

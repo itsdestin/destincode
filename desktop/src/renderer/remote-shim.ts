@@ -5,6 +5,7 @@
 
 // ── Marketplace types re-declared locally ─────────────────────────────────────
 // WHY: remote-shim.ts lives in renderer/ and cannot import from main/ (Node.js
+import { REMOTE_UNSUPPORTED_EVENT, remoteFeatureName, remoteUnsupportedMessage } from './remote-unsupported';
 // boundary). These interfaces mirror marketplace-auth-store.ts and
 // marketplace-api-handlers.ts exactly — keep in sync if those change.
 interface MarketplaceUser {
@@ -130,6 +131,31 @@ function invoke(type: string, payload?: any, opts?: { timeoutMs?: number }): Pro
   });
 }
 
+// ── "Not available over remote access" reporting ──────────────────────────────
+// Many window.claude channels aren't bridged to the remote WebSocket server
+// yet. They now answer immediately instead of hanging for 30s, but the answer
+// lands in call sites that mostly don't check it, so the user just sees an
+// empty panel. Announce it in plain language instead.
+//
+// Names/event live in ./remote-unsupported so the UI can import them without
+// dragging this whole module into the desktop bundle (see that file).
+
+// Announce each FEATURE at most once per page load. Deduping by feature rather
+// than by channel matters because some of these are called on a loop —
+// useAttentionClassifier polls terminal:get-screen-text every second — and a
+// toast per poll would be unusable.
+const announced = new Set<string>();
+
+function noteUnsupported(channel: string): void {
+  const feature = remoteFeatureName(channel);
+  if (announced.has(feature)) return;
+  announced.add(feature);
+  console.warn(`[remote-shim] not available over remote access: ${channel}`);
+  window.dispatchEvent(new CustomEvent(REMOTE_UNSUPPORTED_EVENT, {
+    detail: { channel, feature, message: remoteUnsupportedMessage(channel) },
+  }));
+}
+
 function fire(type: string, payload: any): void {
   send({ type, payload });
 }
@@ -179,6 +205,13 @@ function handleMessage(data: string): void {
     const entry = pending.get(id)!;
     clearTimeout(entry.timeout);
     pending.delete(id);
+    // The host answered "I don't implement this channel" (remote-server's
+    // default case). Surface it — otherwise the call resolves with ok:false and
+    // the caller, which mostly doesn't check, renders an empty panel with no
+    // explanation. We still resolve normally so nothing crashes.
+    if (payload && typeof payload === 'object' && payload.unsupported === true) {
+      noteUnsupported(String(type).replace(/:response$/, ''));
+    }
     entry.resolve(payload);
     return;
   }

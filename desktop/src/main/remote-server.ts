@@ -1,4 +1,5 @@
 import http from 'http';
+import { listProjectsIndex } from './artifacts/projects-index';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -112,6 +113,15 @@ export class RemoteServer {
     // be constructed before the main window exists (e.g. during first-run setup).
     this.requestSnapshot = opts?.requestSnapshot ?? (() => Promise.resolve({ sessions: [] }));
   }
+
+  /** Injected by main.ts. Read-only access to the marketplace auth session so
+   *  remote clients can see whether the host is signed in — the game lobby
+   *  renders its sign-in screen off account:signed-in, so without this a remote
+   *  browser showed "signed out" while the host app was signed in. */
+  setAccountStore(store: { getToken(): string | null; getUser(): any }): void {
+    this.accountStore = store;
+  }
+  private accountStore?: { getToken(): string | null; getUser(): any };
 
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
@@ -1872,6 +1882,57 @@ export class RemoteServer {
       case 'session:terminal-ready': {
         // Remote clients don't need the buffering gate that ipc-handlers uses,
         // because we replay the PTY buffer on connect instead.
+        break;
+      }
+
+      // --- Project View ---
+      case 'artifacts:list-projects-index': {
+        // Shared with the Electron IPC handler (artifacts/projects-index.ts) so
+        // both transports return the same thing. Without this case the request
+        // fell through to nothing and remote Project View was permanently empty.
+        try {
+          this.respond(client.ws, type, id, await listProjectsIndex(payload));
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: String(err?.message ?? err) });
+        }
+        break;
+      }
+
+      // --- Account (drives the game lobby's signed-in state) ---
+      case 'account:signed-in': {
+        // No store injected → report signed-out rather than hanging. Mirrors
+        // marketplace-api-handlers' `!!store.getToken()`.
+        this.respond(client.ws, type, id, !!this.accountStore?.getToken());
+        break;
+      }
+      case 'account:user': {
+        // Cached profile only. The Electron handler additionally heals an empty
+        // cache by calling /auth/me; that path needs the API client, which lives
+        // in marketplace-api-handlers. Returning the cache (or null) keeps this
+        // read-only and is enough for the lobby to see a signed-in user.
+        this.respond(client.ws, type, id, this.accountStore?.getUser() ?? null);
+        break;
+      }
+
+      default: {
+        // WHY this exists: the switch had no default, so any channel the remote
+        // server doesn't implement was silently dropped. The shim registers a
+        // pending promise with a 30s timer (remote-shim.ts invoke()), so an
+        // unimplemented channel presented as a 30-SECOND HANG followed by a
+        // rejection with no indication of which side failed — which is how
+        // Project View and the game lobby looked merely "broken" rather than
+        // unimplemented. Respond immediately and name the channel instead.
+        //
+        // Fire-and-forget message types legitimately have no id; only answer
+        // when the client is actually awaiting something.
+        if (id) {
+          console.warn(`[RemoteServer] unhandled channel: ${type}`);
+          this.respond(client.ws, type, id, {
+            ok: false,
+            error: `This feature isn't available over remote access yet (${type}).`,
+            unsupported: true,
+          });
+        }
         break;
       }
     }

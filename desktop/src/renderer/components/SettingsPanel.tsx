@@ -229,7 +229,13 @@ export default function SettingsPanel({ open, onClose, onSendInput, hasActiveSes
           hides the scrollbar-thumb during the slide (both ramp back in via
           CSS transitions on transitionend). */}
       <div
-        className={`fixed top-0 left-0 h-full w-80 z-50 transform transition-transform duration-300 ease-out overlay-no-drag ${
+        // max-sm:w-full — below 640px this becomes a full-screen page rather
+        // than a 320px drawer. The flat w-80 was most of the "settings look
+        // odd on mobile" problem: its own child popups already clamp to
+        // min(380px, 88vw), so on a phone they rendered WIDER than the drawer
+        // that launched them and straddled it, visually detached from the row
+        // that was tapped. Full-width makes the drawer the widest surface again.
+        className={`fixed top-0 left-0 h-full w-80 max-sm:w-full z-50 transform transition-transform duration-300 ease-out overlay-no-drag ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
         style={{ WebkitAppRegion: 'no-drag', willChange: 'transform' } as React.CSSProperties}
