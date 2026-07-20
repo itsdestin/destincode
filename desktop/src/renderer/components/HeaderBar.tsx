@@ -6,6 +6,7 @@ import { isAndroid, isRemoteMode } from '../platform';
 // Artifact drawer trigger — reads session artifact count for the badge.
 import { useArtifact } from '../state/ArtifactContext';
 import OverflowMenu from './OverflowMenu';
+import NarrowViewToggle from './NarrowViewToggle';
 import { useNarrowViewport } from '../hooks/use-narrow-viewport';
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
@@ -515,7 +516,7 @@ export default function HeaderBar({
 
   // Extracted so it can be rendered into either cluster depending on platform.
   // Task 6 will tweak the inner span classNames; don't edit those here.
-  const toggleElement = (
+  const wideToggleElement = (
     <div ref={containerRef} className="relative flex bg-inset rounded-md p-0.5 gap-0.5">
       {/* Sliding background pill — left/width come from CSS variables
           set once by measureEndpoints(). Plain CSS transition tweens
@@ -573,6 +574,11 @@ export default function HeaderBar({
       </button>
     </div>
   );
+
+  // Narrow swaps the two-segment pill for a single target-view icon button.
+  const toggleElement = narrow
+    ? <NarrowViewToggle viewMode={viewMode} onToggleView={onToggleView} />
+    : wideToggleElement;
 
   return (
     <div ref={headerRef} className="header-bar flex items-center h-10 px-2 sm:px-3 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
