@@ -75,6 +75,9 @@ export class RemoteServer {
   // `${encoding}:${urlPath}` → compressed bytes. Safe to hold indefinitely
   // because Vite content-hashes the URLs it serves; see compressStatic().
   private compressedAssets = new Map<string, Buffer>();
+  // Channels already warned about, so an unbridged channel that a client polls
+  // logs once instead of every second. See the `default:` case in handleMessage.
+  private warnedChannels = new Set<string>();
   private ptyBuffers = new Map<string, string>(); // sessionId → rolling PTY output
   private hookBuffers = new Map<string, any[]>(); // sessionId → rolling hook events
   // statusInterval removed — status data now fed by ipc-handlers.ts via broadcastStatusData()
@@ -1985,7 +1988,20 @@ export class RemoteServer {
         // Fire-and-forget message types legitimately have no id; only answer
         // when the client is actually awaiting something.
         if (id) {
-          console.warn(`[RemoteServer] unhandled channel: ${type}`);
+          // Warn ONCE per channel. useAttentionClassifier polls the unbridged
+          // `terminal:get-screen-text` every second, so an unconditional warn
+          // wrote a line per second for the life of the connection — drowning
+          // the log and, because stdout writes can throw, multiplying the odds
+          // of hitting the EPIPE crash guarded in main.ts.
+          //
+          // Deduped by channel (not by client) deliberately: the point is to
+          // tell a developer which channels are missing, and that set does not
+          // change when another phone connects. Mirrors the shim's
+          // feature-level dedup in remote-unsupported.ts.
+          if (!this.warnedChannels.has(type)) {
+            this.warnedChannels.add(type);
+            console.warn(`[RemoteServer] unhandled channel: ${type}`);
+          }
           this.respond(client.ws, type, id, {
             ok: false,
             error: `This feature isn't available over remote access yet (${type}).`,

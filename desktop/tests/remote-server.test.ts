@@ -276,6 +276,49 @@ describe('RemoteServer unhandled channels', () => {
     const sent = await sendAndCollect(server, { type: 'some:notification', payload: {} });
     expect(sent).toHaveLength(0);
   });
+
+  // Regression: useAttentionClassifier polls the unbridged
+  // `terminal:get-screen-text` once a second, so an unconditional warn logged a
+  // line per second for the life of the connection. That drowned the log and,
+  // because a write to a closed stdout throws EPIPE, helped crash the main
+  // process outright on 2026-07-20.
+  it('warns once per unhandled channel, not once per request', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      for (let i = 0; i < 5; i++) {
+        await sendAndCollect(server, { type: 'terminal:get-screen-text', id: `poll-${i}`, payload: {} });
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // A DIFFERENT channel still warns — dedup must not silence new gaps.
+      await sendAndCollect(server, { type: 'social:list-friends', id: 'other', payload: {} });
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Dedup must not change the protocol: every poll still gets its own answer,
+  // or the shim's pending promise leaks and we are back to 30-second hangs.
+  it('still responds to every request even when it stops warning', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        const sent = await sendAndCollect(server, { type: 'terminal:get-screen-text', id: `poll-${i}`, payload: {} });
+        expect(sent).toHaveLength(1);
+        expect(sent[0].id).toBe(`poll-${i}`);
+        expect(sent[0].payload.unsupported).toBe(true);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 // The game lobby renders its sign-in screen off account:signed-in. With no
