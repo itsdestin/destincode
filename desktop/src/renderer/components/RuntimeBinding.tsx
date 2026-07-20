@@ -263,6 +263,9 @@ export function RuntimeBindingFields({
                     nb.setBinding({ providerId: pid, modelId: firstModel });
                   }}
                   size="sm"
+                  // These two Selects render inside the SessionStrip new-session
+                  // form (z-9000 host), so their menus must escape above it.
+                  escapeHost
                   aria-label="Provider"
                 />
               </div>
@@ -288,6 +291,7 @@ export function RuntimeBindingFields({
                     value={nb.selectedModelId}
                     onChange={(modelId) => nb.setBinding({ providerId: nb.selectedProviderId, modelId })}
                     size="sm"
+                    escapeHost
                     aria-label="Model"
                   />
                 )}

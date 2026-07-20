@@ -11,6 +11,8 @@ import { createPortal } from 'react-dom';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { syncDotFor, findSpaceFor, type SyncStatusData } from './sync-dot-state';
+import { fieldClasses } from './ui';
+import { POPOVER_Z } from './overlays/Overlay';
 
 interface SavedFolder {
   path: string;
@@ -169,11 +171,17 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
 
   return (
     <div ref={wrapperRef} className="relative">
-      {/* Trigger button — shows current selection */}
+      {/* Trigger button — shows current selection.
+          Restyled onto the shared compact field (ui/field sm) so it
+          matches the Provider/Model Selects beside it in the new-session form —
+          was a hand-rolled surface (text-xs / border-edge / rounded-md) that
+          predated the ui/ system and drifted a hair taller than the Selects.
+          layout/justify/truncate classes are passed through fieldClasses and
+          win over the base via mergeClasses, same as Select's trigger. */}
       <button
         ref={triggerRef}
         onClick={() => setOpen(!open)}
-        className="w-full text-left px-2.5 py-1.5 bg-inset border border-edge rounded-md text-xs text-fg-2 hover:border-edge transition-colors truncate flex items-center gap-1.5"
+        className={fieldClasses('sm', 'w-full text-left truncate flex items-center gap-1.5 justify-between')}
       >
         <svg className="w-3 h-3 shrink-0 text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -195,7 +203,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
           border, shadow, and glassmorphism (blur/opacity from --panels-* vars).
           PORTALED to document.body with fixed positioning so the host menu's
           overflow-hidden can't clip it (see the WHY on `measure` above).
-          zIndex 9001: the SessionStrip menu that hosts this picker is the
+          POPOVER_Z: the SessionStrip menu that hosts this picker is the
           documented z-[9000] exception (PITFALLS → Overlays) — a popover
           spawned FROM that menu must render above its own host. */}
       {open && panelPos && createPortal(
@@ -207,7 +215,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
           // on the mousedown, and our click never fires.
           data-folder-switcher-portal=""
           className="layer-surface fixed w-80 overflow-hidden flex flex-col"
-          style={{ top: panelPos.top, left: panelPos.left, maxHeight: panelPos.maxHeight, zIndex: 9001, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
+          style={{ top: panelPos.top, left: panelPos.left, maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
         >
           {/* Saved folders list — min-h-0 lets flexbox shrink the list first
               when the viewport-clamped panel height is tight. */}

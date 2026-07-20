@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { OverlayPanel } from '../overlays/Overlay';
+import { OverlayPanel, POPOVER_Z } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { fieldClasses, type FieldSize } from './field';
 
@@ -33,6 +33,14 @@ export type SelectProps = {
   className?: string;
   /** Tailwind class for the menu width. Defaults to matching the trigger. */
   menuClassName?: string;
+  /**
+   * Render the menu at POPOVER_Z instead of the default L4 (z-100). Needed ONLY
+   * when this Select lives inside a host in the z-9000 exception band (the
+   * SessionStrip new-session form) — at L4 the portaled menu lands behind that
+   * host and is invisible/unclickable. Leave unset everywhere else; the normal
+   * layer scale is correct for the settings panels.
+   */
+  escapeHost?: boolean;
 };
 
 export function Select({
@@ -44,6 +52,7 @@ export function Select({
   disabled,
   className = '',
   menuClassName = '',
+  escapeHost = false,
   'aria-label': ariaLabel,
 }: SelectProps) {
   const [open, setOpen] = useState(false);
@@ -102,6 +111,12 @@ export function Select({
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (triggerRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      // Don't swallow a mousedown that lands inside ANOTHER Select's portaled
+      // menu. The menus portal to document.body, so this capture listener can't
+      // see them via menuRef — without the marker check, opening Select B while
+      // Select A is open (or vice versa) has A eat the event and close, and B's
+      // option click never fires.
+      if (t instanceof Element && t.closest('[data-select-portal]')) return;
       setOpen(false);
     };
     window.addEventListener('mousedown', onDown, true);
@@ -209,16 +224,22 @@ export function Select({
         rect &&
         createPortal(
           // L4 so a menu opened from inside an L2 popup (z-61) isn't trapped
-          // behind the panel that owns it.
+          // behind the panel that owns it. When escapeHost is set, POPOVER_Z
+          // overrides L4 via the style spread (a popover spawned from a z-9000
+          // host must clear it — see Overlay.tsx).
           <OverlayPanel
             ref={menuRef}
             layer={4}
+            // Marker so OTHER Selects' outside-click handlers (and host menus'
+            // contains() checks) can see this portaled menu on document.body.
+            data-select-portal=""
             className={`fixed ${menuClassName}`}
             style={{
               left: rect.left,
               top: rect.top,
               minWidth: rect.width,
               borderRadius: 'var(--radius-lg)',
+              ...(escapeHost ? { zIndex: POPOVER_Z } : {}),
             }}
           >
             {/* The scroll lives on this inner div, NOT on the OverlayPanel.

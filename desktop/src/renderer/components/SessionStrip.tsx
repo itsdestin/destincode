@@ -263,7 +263,12 @@ export default function SessionStrip({
       // counted as "outside", closed the menu, and unmounted the picker BEFORE
       // its click could fire — "Manage projects…" and row selection did nothing.
       const inFolderPortal = target instanceof Element && !!target.closest('[data-folder-switcher-portal]');
-      if (!inTrigger && !inDropdown && !inFolderPortal) {
+      // Same trap for the Provider/Model Select menus (RuntimeBinding): those
+      // portal to document.body too (data-select-portal), so a click on an
+      // option would otherwise close this menu and unmount the Select before
+      // its onChange fires — the exact bug above, one component over.
+      const inSelectPortal = target instanceof Element && !!target.closest('[data-select-portal]');
+      if (!inTrigger && !inDropdown && !inFolderPortal && !inSelectPortal) {
         setMenuOpen(false);
         setShowNewForm(false);
       }
