@@ -152,6 +152,54 @@ function codeMenu(pre: HTMLElement, target: HTMLElement): MenuEntry[] {
   ];
 }
 
+// Best-effort: match the selection against the artifact's rendered <pre> text to
+// report source line numbers. Only attempted for 'raw' viewers (CodeView, and
+// MarkdownView on non-.md files) where the <pre> is a verbatim copy of the file —
+// rendered markdown prose doesn't map 1:1 back to source lines, so it always
+// falls through to a quote. Line matching is first-occurrence indexOf, so a
+// selection that also appears earlier in the file can report the wrong line —
+// an acceptable miss for a prompt scaffold the user reviews before sending.
+//
+// textContent, NOT innerText: innerText is layout-dependent (forces a reflow, and
+// its line handling follows *rendered* boxes) — on a `whitespace-pre-wrap` <pre>
+// that risks counting soft-wrap breaks as source newlines. textContent walks the
+// highlight.js spans and yields the file's exact characters. It's also the only
+// one jsdom implements, so this stays unit-testable.
+function describeArtifactSelection(sel: string, container: HTMLElement): string {
+  const source = container.getAttribute('data-artifact-source');
+  const pre = source === 'raw' ? container.querySelector('pre') : null;
+  const full = pre?.textContent ?? '';
+  const idx = pre ? full.indexOf(sel) : -1;
+  if (idx !== -1) {
+    const startLine = (full.slice(0, idx).match(/\n/g) || []).length + 1;
+    const endLine = startLine + (sel.match(/\n/g) || []).length;
+    return startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
+  }
+  return `"${sel}"`;
+}
+
+function artifactMenu(container: HTMLElement): MenuEntry[] {
+  // data-doc-path, not data-artifact-path: the latter is reserved by the deferred
+  // image sub-menu roadmap item for an ABSOLUTE path on <img> elements. This one
+  // is the project-relative artifact path, which is what reads well in a prompt.
+  const path = container.getAttribute('data-doc-path') || '';
+  const sel = selectionText().trim();
+  const entries: MenuEntry[] = [];
+  if (sel && path) {
+    const ref = describeArtifactSelection(sel, container);
+    entries.push({
+      type: 'item',
+      id: 'ask',
+      label: 'Ask about this',
+      icon: 'ask',
+      primary: true,
+      run: () => askAboutThis(`The user is referencing ${ref} from "${path}". Respond to the following prompt accordingly:\n\n`),
+    });
+  }
+  entries.push(...textBasics(container));
+  return entries;
+}
+
 function textMenu(target: HTMLElement): MenuEntry[] {
   const bubble = closestBubble(target);
   const quote = (selectionText().trim() || bubble?.textContent?.trim()) ?? '';
@@ -171,11 +219,19 @@ function textMenu(target: HTMLElement): MenuEntry[] {
 }
 
 export function buildContextMenu(target: HTMLElement): MenuEntry[] | null {
-  // The editable composer (Cut/Copy/Paste/Select all) lives outside .chat-scroll.
-  const composer = target.closest('.input-bar-textarea');
-  if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
-    return finalize(editableMenu(composer));
+  // Editable text surfaces (Cut/Copy/Paste/Select all) live outside .chat-scroll:
+  // the composer, and the artifact viewer's edit-mode textarea. Electron ships no
+  // default context menu, so without this branch right-click in the artifact
+  // editor does nothing at all — no cut/copy/paste of any kind.
+  const editable = target.closest('.input-bar-textarea, .artifact-edit-textarea');
+  if (editable instanceof HTMLTextAreaElement || editable instanceof HTMLInputElement) {
+    return finalize(editableMenu(editable));
   }
+
+  // Artifact viewer (SessionDrawer / ProjectView file tab) lives outside
+  // .chat-scroll, so it's checked before that gate.
+  const artifactViewer = target.closest('[data-artifact-viewer]');
+  if (artifactViewer instanceof HTMLElement) return finalize(artifactMenu(artifactViewer));
 
   // Everything else is scoped to chat content — never hijack the terminal, the
   // settings panels, or other chrome.

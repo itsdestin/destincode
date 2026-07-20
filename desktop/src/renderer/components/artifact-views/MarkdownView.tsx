@@ -22,7 +22,10 @@ export function MarkdownView({
         <textarea
           value={draft}
           onChange={(e) => onDraftChange?.(e.target.value)}
-          className="flex-1 w-full p-3 bg-inset text-fg font-mono text-sm resize-none focus:outline-none"
+          // artifact-edit-textarea marks this for the right-click menu's editable
+          // branch (build-menu.ts) — without it right-click here does nothing,
+          // since Electron provides no default context menu.
+          className="artifact-edit-textarea flex-1 w-full p-3 bg-inset text-fg font-mono text-sm resize-none focus:outline-none"
           // Mobile soft-keyboard optimization: inputMode hints to the keyboard type,
           // enterKeyHint gives Android a sensible Enter button label
           inputMode="text"
@@ -35,7 +38,15 @@ export function MarkdownView({
   const isMarkdown = path.endsWith('.md') || path.endsWith('.markdown');
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-auto p-4">
+      <div
+        className="flex-1 overflow-auto p-4"
+        data-artifact-viewer
+        data-doc-path={path}
+        // Rendered markdown prose doesn't map back to source line numbers (see
+        // describeArtifactSelection in build-menu.ts), so only plain-text files
+        // get the 'raw' treatment that enables line-number citing.
+        data-artifact-source={isMarkdown ? 'rendered' : 'raw'}
+      >
         {isMarkdown
           ? <MarkdownContent content={content} />
           : <pre className="font-mono text-sm whitespace-pre-wrap">{content}</pre>}
