@@ -15,6 +15,16 @@ export type OverlayLayer = 1 | 2 | 3 | 4;
 const SCRIM_Z: Record<OverlayLayer, number> = { 1: 40, 2: 60, 3: 70, 4: 100 };
 const CONTENT_Z: Record<OverlayLayer, number> = { 1: 50, 2: 61, 3: 71, 4: 100 };
 
+// Popover escape-hatch tier: a floating menu/panel SPAWNED FROM a host that
+// lives in the z-9000 exception band (SessionStrip dropdown, ProjectHero,
+// OverflowMenu — see docs/shared-ui-architecture.md → Overlay Layer System).
+// Those hosts render above every L1–L4 overlay, so a popover portaled out of
+// them at the top of the normal scale (L4 = z-100) still lands BEHIND its own
+// host. This is the single source of truth for the 9001 value FolderSwitcher
+// already hand-rolled; keep it 1 above the 9000 host tier so a spawned popover
+// always clears its host without re-magic-numbering at each call site.
+export const POPOVER_Z = 9001;
+
 type ScrimProps = {
   layer: OverlayLayer;
   onClick?: (e: React.MouseEvent) => void;

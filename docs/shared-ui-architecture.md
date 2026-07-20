@@ -62,7 +62,9 @@ All popups, modals, drawers, and floating menus share a single set of theme-driv
 | L3 | Critical | 70 | 71 | Destructive confirmations (no instances yet) |
 | L4 | System | 100 | 100 | Toasts, always-visible indicators |
 
-**Exception:** `SessionStrip` dropdown lives at `z-[9000]`. It's load-bearing — `.header-bar`'s `backdrop-filter` creates a stacking context that would trap lower z-index values. Don't "fix" it.
+**Exception:** `SessionStrip` dropdown lives at `z-[9000]`. It's load-bearing — `.header-bar`'s `backdrop-filter` creates a stacking context that would trap lower z-index values. Don't "fix" it. `ProjectHero` and `OverflowMenu` also use `z-[9000]`; `ProjectView` sits one tier below at `z-[8000]`.
+
+**Popover escape tier:** a floating menu/panel *spawned from* one of those z-9000 hosts must render above its host, or it lands behind it and is unclickable. Use the named `POPOVER_Z` constant (`= 9001`) from `components/overlays/Overlay.tsx` — never a hand-rolled `9001`. `FolderSwitcher`'s panel uses it directly; `Select` opts in via its `escapeHost` prop (used by the RuntimeBinding provider/model dropdowns inside the SessionStrip new-session form). Because these popovers portal to `document.body`, host menus' `contains()` outside-click checks can't see them — they're marked (`data-folder-switcher-portal` / `data-select-portal`) so the host (and sibling Selects) don't close on a mousedown that actually landed inside the popover.
 
 ### Primitives
 
