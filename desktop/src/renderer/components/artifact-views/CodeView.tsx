@@ -9,7 +9,12 @@ export function CodeView({ path, content }: ArtifactViewProps) {
   // Reuses the chat markdown highlighter by wrapping in a fenced code block.
   const wrapped = '```' + lang + '\n' + content + '\n```';
   return (
-    <div className="overflow-auto p-4 h-full">
+    <div
+      className="overflow-auto p-4 h-full"
+      data-artifact-viewer
+      data-doc-path={path}
+      data-artifact-source="raw"
+    >
       <MarkdownContent content={wrapped} />
     </div>
   );
