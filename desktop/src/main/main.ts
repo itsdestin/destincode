@@ -1,5 +1,24 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, webContents } from 'electron';
 import path from 'path';
+// A write to a closed stdout/stderr throws EPIPE, and with no listener that is
+// an uncaught exception that kills the whole main process — the app dies with
+// "A JavaScript error occurred in the main process" over a LOG LINE.
+//
+// This is not hypothetical: it crashed a dev instance on 2026-07-20 when the
+// launching shell's pipe closed while RemoteServer was warning about unbridged
+// remote channels. Any detached launch, piped log, or parent exiting first
+// reproduces it in production.
+//
+// Registered at import time, before anything can log. Swallowing is correct
+// here: if the pipe is gone there is nowhere to report, and the file logger in
+// ./logger is the durable path anyway.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (err: NodeJS.ErrnoException) => {
+    if (err?.code === 'EPIPE') return;
+    // Anything else is unexpected — surface via the file log, never by
+    // re-writing to the stream that just failed.
+  });
+}
 import os from 'os';
 import fs from 'fs';
 import { SessionManager } from './session-manager';
