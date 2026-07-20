@@ -74,7 +74,7 @@ import { InfoIcon } from '../icons';
 export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) {
   if (groups === null) {
     return (
-      <div className="flex flex-col h-full overflow-auto px-4 pt-1 pb-4 min-w-0">
+      <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
         <ContextIntroBanner />
         <p className="text-sm text-fg-muted">Loading…</p>
       </div>
@@ -83,7 +83,7 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
 
   if (groups.length === 0) {
     return (
-      <div className="flex flex-col h-full overflow-auto px-4 pt-1 pb-4 min-w-0">
+      <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
         <ContextIntroBanner />
         <p className="text-sm text-fg-muted">No context files found for this project.</p>
       </div>
@@ -91,7 +91,7 @@ export function ContextTab({ groups, onEditFile, onOpenInfo }: ContextTabProps) 
   }
 
   return (
-    <div className="flex flex-col h-full overflow-auto px-4 pt-1 pb-4 min-w-0">
+    <div className="flex flex-col h-full overflow-auto px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
       <ContextIntroBanner />
       {groups.map((group) => {
         const meta = GROUP_META[group.scope];

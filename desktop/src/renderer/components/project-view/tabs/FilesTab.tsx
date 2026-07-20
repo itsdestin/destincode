@@ -320,7 +320,7 @@ export function FilesTab({
   const emptyHere = !flat && dirView.folders.length === 0 && dirView.files.length === 0;
 
   return (
-    <div className="relative flex flex-col h-full overflow-hidden px-4 pt-4 pb-4 gap-3 min-w-0">
+    <div className="relative flex flex-col h-full overflow-hidden px-2 sm:px-4 pt-4 pb-4 gap-3 min-w-0 max-sm:h-auto max-sm:overflow-visible">
       {/* Breadcrumb — folder-browse mode only (search/type-filter flatten the tree). */}
       {!flat && (
         <div className="flex items-center gap-1 text-[12px] shrink-0 flex-wrap min-w-0">
@@ -400,7 +400,7 @@ export function FilesTab({
           ONE column at 390px, but that makes each card a ~342x176 slab — much
           wider than tall, nothing like the intended card proportion. Two ~165px
           columns read correctly on a phone. */}
-      <div className="flex-1 overflow-auto grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
+      <div className="flex-1 overflow-auto max-sm:overflow-visible grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
         {flat
           ? flatResults.map(renderFileCard)
           : (

@@ -30,13 +30,13 @@ export function ConversationsTab({ conversations, onOpenPreview }: Conversations
   const rows = conversations ?? [];
 
   return (
-    <div className="flex flex-col h-full overflow-hidden px-4 pt-1 pb-4 min-w-0">
+    <div className="flex flex-col h-full overflow-hidden px-2 sm:px-4 pt-1 pb-4 min-w-0 max-sm:h-auto max-sm:overflow-visible">
       {loading ? (
         <p className="text-sm text-fg-muted">Loading…</p>
       ) : rows.length === 0 ? (
         <p className="text-sm text-fg-muted">No conversations in this project yet.</p>
       ) : (
-        <div className="flex-1 overflow-auto flex flex-col gap-2 content-start">
+        <div className="flex-1 overflow-auto max-sm:overflow-visible flex flex-col gap-2 content-start">
           {rows.map((c) => {
             const title = c.name?.trim() ? c.name : 'Untitled';
             return (

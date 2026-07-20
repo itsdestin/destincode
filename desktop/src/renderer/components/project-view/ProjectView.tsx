@@ -546,7 +546,12 @@ export function ProjectView(props: ProjectViewProps) {
             project rail anymore; switching projects goes through the palette
             (ProjectSwitcher) opened from the hero name, and project removal
             lives on the palette rows. */}
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Narrow scrolls as ONE page: the hero scrolls away and the tab
+            content keeps going, so a phone isn't stuck reading files through a
+            ~200px slot under a hero that never moves. sm+ keeps the fixed-chrome
+            layout (hero pinned, body scrolls independently) — there's vertical
+            room for it there, and it's the design the view was built around. */}
+        <main className="flex-1 flex flex-col max-sm:overflow-y-auto sm:overflow-hidden min-w-0">
           {/* Chrome: hero + seg-row, centered to a comfortable reading width to
               match the prototype (the tab body below shares the same max-width). */}
           {/* px-2 on narrow: stacked gutters (this px-4 plus the hero's own p-5)
@@ -589,7 +594,10 @@ export function ProjectView(props: ProjectViewProps) {
 
             {/* Seg-row: unified segmented control (left) + the active tab's
                 search/filter controls (right), on one row — matches the design. */}
-            <div className="flex items-center justify-between gap-3 flex-wrap">
+            {/* Sticky on narrow so the tab switcher survives scrolling down
+                through a long file list — without it, page-scroll would carry
+                the tabs off-screen and you'd have to scroll back up to switch. */}
+            <div className="flex items-center justify-between gap-3 flex-wrap max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:bg-canvas max-sm:py-2">
               {/* Unified segmented control: one rounded-full pill holding all three
                   segments (icon + label + count). Accent used ONCE — the active seg. */}
               {/* max-w-full + overflow-x-auto: the four segments total ~500px
@@ -730,7 +738,10 @@ export function ProjectView(props: ProjectViewProps) {
           </div>
 
           {/* Tab routing — shares the centered max-width with the chrome above. */}
-          <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto">
+          {/* max-sm:flex-none + overflow-visible: in the narrow page-scroll
+              model this must take its NATURAL height and let the page scroll,
+              not clamp itself to the viewport and scroll internally. */}
+          <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
             {activeProject && tab === 'artifacts' && (
               <FilesTab project={activeProject} search={artifactSearch} typeFilter={typeFilter} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} />
             )}

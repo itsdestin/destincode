@@ -16,13 +16,12 @@
 // dropdown — the header has a backdrop-filter stacking context and
 // overflow-hidden ancestors, so an in-tree absolute dropdown gets clipped.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useArtifact } from '../state/ArtifactContext';
 import { GamepadIcon } from './Icons';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 
 const MENU_WIDTH = 208; // w-52
-const EDGE_MARGIN = 8;
 
 interface Props {
   onToggleSettings: () => void;
@@ -39,10 +38,9 @@ export default function OverflowMenu({
   onToggleGamePanel, gamePanelOpen, gameConnected, challengePending,
 }: Props) {
   const { dispatch } = useArtifact();
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  // Positioning + outside/Escape dismissal live in the shared hook, which the
+  // project-view hero menu also uses.
+  const { open, toggle, anchorRef, menuRef, pos, choose } = useAnchoredMenu<HTMLButtonElement>(MENU_WIDTH);
 
   // Any badge on a collapsed item has to surface on the ||| button itself,
   // otherwise collapsing the header silently swallows the notification that
@@ -53,39 +51,12 @@ export default function OverflowMenu({
     : settingsBadge ? 'bg-blue-500'
     : null;
 
-  useLayoutEffect(() => {
-    if (!open) return;
-    const r = btnRef.current?.getBoundingClientRect();
-    if (!r) return;
-    // Clamp so the menu can't hang off the right edge on a 320px phone.
-    const left = Math.min(r.left, window.innerWidth - MENU_WIDTH - EDGE_MARGIN);
-    setPos({ top: r.bottom + 4, left: Math.max(EDGE_MARGIN, left) });
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      const t = e.target as Node;
-      if (menuRef.current?.contains(t) || btnRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    // Capture phase: the dropdown sits above content that stops propagation.
-    document.addEventListener('pointerdown', onDown, true);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown, true);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
-  const run = (fn: () => void) => () => { setOpen(false); fn(); };
 
   const rows = [
     {
       key: 'settings',
       label: 'Settings',
-      onClick: run(onToggleSettings),
+      onClick: choose(onToggleSettings),
       active: false,
       dot: settingsDangerBadge ? 'bg-red-500' : settingsBadge ? 'bg-blue-500' : null,
       icon: (
@@ -98,7 +69,7 @@ export default function OverflowMenu({
     {
       key: 'projects',
       label: 'Projects',
-      onClick: run(() => dispatch({ type: 'PROJECT_VIEW_OPENED' })),
+      onClick: choose(() => dispatch({ type: 'PROJECT_VIEW_OPENED' })),
       active: false,
       dot: null,
       icon: (
@@ -111,7 +82,7 @@ export default function OverflowMenu({
     {
       key: 'games',
       label: challengePending ? 'Connect 4 — challenge!' : 'Connect 4',
-      onClick: run(onToggleGamePanel),
+      onClick: choose(onToggleGamePanel),
       active: gamePanelOpen,
       dot: challengePending ? 'bg-orange-400' : gameConnected ? 'bg-green-400' : null,
       icon: <GamepadIcon className="w-4 h-4" />,
@@ -121,9 +92,9 @@ export default function OverflowMenu({
   return (
     <>
       <button
-        ref={btnRef}
+        ref={anchorRef}
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={toggle}
         // coarse-hit gives this a 44x44 touch target without changing its
         // visual box (globals.css). p-2 matches the Android cog sizing.
         className={`coarse-hit relative p-2 rounded-sm hover:bg-inset transition-colors shrink-0 ${open ? 'text-fg bg-inset' : 'text-fg-muted'}`}

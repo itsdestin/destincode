@@ -1,0 +1,136 @@
+// @vitest-environment jsdom
+//
+// Pins the hero's action collapse. The management actions (rename, reveal,
+// open repo, the sync action, and the destructive one) moved off the card and
+// behind a cog menu; only "New Conversation" stays visible. These tests exist
+// so a later change can't quietly strand one of them with no entry point —
+// which is exactly how Connect 4 became unreachable on narrow viewports.
+import React from 'react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
+import { ProjectHero } from './ProjectHero';
+
+vi.mock('../../platform', () => ({ getPlatform: () => 'electron' }));
+
+const baseProject = { path: '/home/d/proj', name: 'proj' } as any;
+const baseStats = {
+  artifacts: 1, files: 2, conversations: 3, contextFiles: 4, activeLabel: 'today',
+};
+
+function renderHero(over: Record<string, any> = {}) {
+  const props = {
+    project: baseProject,
+    displayName: null,
+    stats: baseStats,
+    repo: null,
+    onOpenSwitcher: vi.fn(),
+    onNewConversation: vi.fn(),
+    sync: null,
+    onTurnOnSync: vi.fn(),
+    onSyncNow: vi.fn(),
+    onRenamed: vi.fn(),
+    canRemove: true,
+    onRemove: vi.fn(),
+    ...over,
+  };
+  return { props, ...render(<ProjectHero {...(props as any)} />) };
+}
+
+const openCog = () => fireEvent.click(screen.getByLabelText('Project settings'));
+const menuLabels = () =>
+  within(screen.getByRole('menu')).getAllByRole('menuitem').map(b => b.textContent ?? '');
+
+beforeEach(() => {
+  cleanup();
+  (window as any).claude = {
+    shell: { openPath: vi.fn(), openExternal: vi.fn() },
+    folders: { rename: vi.fn().mockResolvedValue(undefined) },
+    syncSpaces: {},
+  };
+});
+
+describe('ProjectHero action collapse', () => {
+  it('keeps New Conversation on the card and nothing else', () => {
+    renderHero();
+    expect(screen.getByText('New Conversation')).toBeTruthy();
+    // The old always-visible management buttons are gone from the card body.
+    expect(screen.queryByText('Rename')).toBeNull();
+    expect(screen.queryByText('Open in File Explorer')).toBeNull();
+    expect(screen.queryByText('Remove from YouCoded')).toBeNull();
+  });
+
+  it('collapses rename, reveal and remove into the cog menu', () => {
+    renderHero();
+    openCog();
+    const labels = menuLabels();
+    expect(labels).toContain('Rename');
+    expect(labels).toContain('Open in File Explorer');
+    expect(labels).toContain('Remove from YouCoded');
+  });
+
+  it('offers Open repo only when the project has a web URL', () => {
+    renderHero();
+    openCog();
+    expect(menuLabels().some(l => /GitHub|repository/.test(l))).toBe(false);
+    cleanup();
+
+    renderHero({ repo: { webUrl: 'https://github.com/a/b', owner: 'a', name: 'b' } });
+    openCog();
+    expect(menuLabels().some(l => l.includes('a/b'))).toBe(true);
+  });
+
+  // One sync ACTION per sync state — the strip itself is status-only now, so if
+  // the menu doesn't carry the action there is no way to trigger it at all.
+  it.each([
+    ['green', 'sp', 'Sync now'],
+    ['red', 'sp', 'Try syncing again'],
+    ['gray', null, 'Turn on sync for this project'],
+  ])('offers the %s-state sync action', (color, spaceId, label) => {
+    renderHero({
+      canRemove: false,
+      sync: { dot: { color }, spaceId, lastSynced: null, errorMessage: null, stopped: false },
+    });
+    openCog();
+    expect(menuLabels()).toContain(label);
+  });
+
+  it('routes the sync action to onSyncNow with the space id', () => {
+    const onSyncNow = vi.fn();
+    renderHero({
+      onSyncNow, canRemove: false,
+      sync: { dot: { color: 'green' }, spaceId: 'project:x', lastSynced: null, errorMessage: null, stopped: false },
+    });
+    openCog();
+    fireEvent.click(screen.getByText('Sync now'));
+    expect(onSyncNow).toHaveBeenCalledWith('project:x');
+  });
+
+  it('swaps the name heading for a field when renaming', () => {
+    renderHero();
+    expect(screen.queryByLabelText('Project nickname')).toBeNull();
+    openCog();
+    fireEvent.click(screen.getByText('Rename'));
+    expect(screen.getByLabelText('Project nickname')).toBeTruthy();
+  });
+
+  // Stop-syncing arms an inline confirm rather than acting from the menu row —
+  // the consequence copy is too long to live in a menu.
+  it('arms the stop-syncing confirm instead of stopping immediately', () => {
+    renderHero({
+      canRemove: false,
+      sync: { dot: { color: 'green' }, spaceId: 'project:proj', lastSynced: null, errorMessage: null, stopped: false },
+    });
+    openCog();
+    fireEvent.click(screen.getByText('Stop syncing'));
+    expect(screen.getByText(/no longer sync between them/)).toBeTruthy();
+    expect(screen.getByText('Cancel')).toBeTruthy();
+  });
+
+  it('closes the menu after choosing an item', () => {
+    renderHero();
+    openCog();
+    expect(screen.getByRole('menu')).toBeTruthy();
+    fireEvent.click(screen.getByText('Rename'));
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+});
