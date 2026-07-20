@@ -5,6 +5,8 @@ import type { SessionStatusColor } from './StatusDot';
 import { isAndroid, isRemoteMode } from '../platform';
 // Artifact drawer trigger — reads session artifact count for the badge.
 import { useArtifact } from '../state/ArtifactContext';
+import OverflowMenu from './OverflowMenu';
+import { useNarrowViewport } from '../hooks/use-narrow-viewport';
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
 
@@ -321,6 +323,12 @@ export default function HeaderBar({
   const headerRef = useRef<HTMLDivElement>(null);
   const [showToggleLabels, setShowToggleLabels] = useState(true);
 
+  // Below 640px the settings cog, projects button, and gamepad collapse into a
+  // single ||| menu (see OverflowMenu). Viewport-based, not header-width-based:
+  // these three are app-level destinations, so the decision should follow the
+  // device, not how much room the session strip happens to have left.
+  const narrow = useNarrowViewport();
+
   // Native harness sessions have no PTY — the chat/terminal toggle would show
   // an empty terminal pane. Hide it for them.
   const activeSessionProvider = sessions.find(s => s.id === activeSessionId)?.provider;
@@ -581,6 +589,20 @@ export default function HeaderBar({
         className={`${clusterFlexClass}flex items-center gap-1 sm:gap-2`}
         style={clusterStyle}
       >
+        {narrow ? (
+          /* Narrow: cog + projects + gamepad all live behind the ||| menu.
+             Rendered as a single shrink-0 child so the cluster-width
+             measurement at :368 still reads an intrinsic width. */
+          <OverflowMenu
+            onToggleSettings={onToggleSettings}
+            settingsBadge={settingsBadge}
+            settingsDangerBadge={settingsDangerBadge}
+            onToggleGamePanel={onToggleGamePanel}
+            gamePanelOpen={gamePanelOpen}
+            gameConnected={gameConnected}
+            challengePending={challengePending}
+          />
+        ) : (
         <button
           onClick={onToggleSettings}
           className={`relative ${isAndroid() ? 'p-2' : 'p-1'} rounded-sm hover:bg-inset transition-colors shrink-0 ${settingsOpen ? 'text-fg' : 'text-fg-muted'}`}
@@ -598,8 +620,9 @@ export default function HeaderBar({
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500" />
           ) : null}
         </button>
-        {/* Projects button — always visible; opens the persistent project browser. */}
-        <ProjectsButton />
+        )}
+        {/* Projects button — wide layouts only; narrow reaches it via ||| . */}
+        {!narrow && <ProjectsButton />}
         {isRemoteMode() && (
           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-blue-500/15 text-blue-400 border border-blue-500/25 shrink-0">
             REMOTE

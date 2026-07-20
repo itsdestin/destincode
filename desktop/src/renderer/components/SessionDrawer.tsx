@@ -485,7 +485,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // same var as the parent .drawer-pane so the two can't drift (youcoded#105).
   const asideClass = expanded
     ? 'relative flex-1 min-w-0 h-full flex flex-col bg-inset'
-    : 'relative w-[var(--right-pane-width,480px)] h-full flex flex-col bg-inset shrink-0';
+    // drawer-aside: hook for the <=700px override in globals.css. Without it
+    // this stayed a hard 480px child inside a `.drawer-pane` that the media
+    // query had already collapsed to 100% — on a 390px phone the right ~90px
+    // of the drawer, including its toolbar, was clipped away by the pane's
+    // overflow:hidden and simply unreachable.
+    : 'drawer-aside relative w-[var(--right-pane-width,480px)] h-full flex flex-col bg-inset shrink-0';
 
   // No selection → the whole drawer is the list (nothing to view yet).
   if (!active) {
@@ -568,19 +573,24 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
       </div>
 
-      {/* body: push list + content */}
-      <div className="flex-1 flex min-h-0">
+      {/* body: push list + content.
+          data-list-open drives the <=700px rules in globals.css, where the
+          list and the content view stop sharing the row and become stack
+          navigation instead — a 210px list beside the content left only
+          ~150px for the file itself on a phone, so the half you were actually
+          looking at was the one that got crushed. */}
+      <div className="drawer-body flex-1 flex min-h-0" data-list-open={showList ? 'true' : undefined}>
         <div
-          className={`shrink-0 overflow-hidden bg-well transition-[width] duration-200 flex flex-col ${
+          className={`drawer-list shrink-0 overflow-hidden bg-well transition-[width] duration-200 flex flex-col ${
             showList ? 'w-[210px] border-r border-edge' : 'w-0'
           }`}
         >
           {/* keep the list mounted (width-collapsed) so toggling is instant */}
-          <div className="w-[210px] flex flex-col h-full">{listInner}</div>
+          <div className="drawer-list-inner w-[210px] flex flex-col h-full">{listInner}</div>
         </div>
         {/* Positioning parent for the find bar. contentRef is the INNER div so
             the find bar (a sibling) isn't itself walked by the search. */}
-        <div className="flex-1 min-w-0 overflow-hidden relative">
+        <div className="drawer-content flex-1 min-w-0 overflow-hidden relative">
           {findOpen && (
             <ContentFindBar
               containerRef={contentRef}

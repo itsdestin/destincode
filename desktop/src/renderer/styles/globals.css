@@ -1787,6 +1787,43 @@ html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-
   .framed-shell > .drawer-pane {
     width: 100%;
   }
+
+  /* The pane collapsing to 100% was only half the fix. Its child <aside>
+     (SessionDrawer) kept a hard w-[--right-pane-width] of 480px, so inside a
+     390px pane with overflow:hidden the right ~90px — including the drawer's
+     own toolbar — was clipped off-screen and unreachable. Follow the pane. */
+  .framed-shell > .drawer-pane .drawer-aside {
+    width: 100%;
+  }
+
+  /* Stack navigation inside the drawer: the file list and the file content
+     stop sharing the row. Whichever one is active gets the full width. */
+  .drawer-body[data-list-open='true'] > .drawer-list {
+    width: 100%;
+    border-right: none;
+  }
+  .drawer-body[data-list-open='true'] > .drawer-list > .drawer-list-inner {
+    width: 100%;
+  }
+  .drawer-body[data-list-open='true'] > .drawer-content {
+    display: none;
+  }
+
+  /* The resize handle is a 6px cursor:col-resize strip with a hover tint —
+     meaningless and undraggable on touch, and there's no width to drag when
+     the drawer is full-bleed anyway. */
+  .drawer-aside > .cursor-col-resize {
+    display: none;
+  }
+
+  /* The chat cutout's right edge normally shifts left by the pane width so
+     the chrome frames the chat area. With the chat pane hidden and the drawer
+     full-bleed there is no chat area to inset toward — and below 480px the
+     offset exceeded 100%, driving the clip-path polygon's x coordinates
+     negative and mangling the chrome geometry. */
+  .chrome-glass--drawer-open {
+    --chat-right-offset: 0px;
+  }
 }
 
 
