@@ -1822,6 +1822,17 @@ html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-
     margin-right: var(--frame-edge);
   }
 
+  /* Same problem on the plain chat screen: with the edge spacers hidden the
+     chat pane spans the full width and its content sits UNDER chrome-glass's
+     10px border instead of beside it (chrome-glass is z 10, chat-pane isn't
+     promoted, so the chrome wins and clips the content edges). Inset it to
+     match. Not applied to the terminal spacer variant — the terminal is a
+     separate full-width layer with its own --terminal-side-inset. */
+  .framed-shell > .chat-pane:not(.terminal-panel-spacer) {
+    margin-left: var(--frame-edge);
+    margin-right: var(--frame-edge);
+  }
+
   /* The pane collapsing to 100% was only half the fix. Its child <aside>
      (SessionDrawer) kept a hard w-[--right-pane-width] of 480px, so inside a
      390px pane with overflow:hidden the right ~90px — including the drawer's
