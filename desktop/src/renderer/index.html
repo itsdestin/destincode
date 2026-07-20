@@ -18,9 +18,37 @@
        keyboard. resizes-visual is what the hook was always written against. -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual" />
   <title>YouCoded</title>
+  <!-- Inline boot skeleton. Everything here must stay inline: the point is to
+       paint SOMETHING before the entry chunk (~2 MB) has parsed. A linked
+       stylesheet would be one more blocking round-trip and defeat it.
+
+       Remote clients feel this most — over remote access the app is not mounted
+       until the WebSocket has connected AND authenticated (index.tsx Root), so
+       the pre-React window is seconds, not milliseconds, and it used to be a
+       blank WHITE page that reads as a hung browser tab.
+
+       #030712 is gray-950 — the same color App.tsx's own loading gate paints,
+       so this hands off to the app without a flash. -->
+  <style>
+    html { background: #030712; color-scheme: dark; }
+    body { margin: 0; }
+    #boot { position: fixed; inset: 0; display: flex; align-items: center;
+            justify-content: center; }
+    #boot > div { width: 28px; height: 28px; border-radius: 50%;
+                  border: 2px solid rgba(255, 255, 255, 0.15);
+                  border-top-color: rgba(255, 255, 255, 0.7);
+                  animation: boot-spin 0.7s linear infinite; }
+    /* Respect reduced-motion: show a static ring rather than a spinner. */
+    @media (prefers-reduced-motion: reduce) { #boot > div { animation: none; } }
+    @keyframes boot-spin { to { transform: rotate(360deg); } }
+  </style>
 </head>
 <body>
-  <div id="root"></div>
+  <!-- Lives inside #root so React's first commit clears it — createRoot()
+       replaces the container's existing children, so no teardown code needed. -->
+  <div id="root">
+    <div id="boot" role="status" aria-label="Loading YouCoded"><div></div></div>
+  </div>
   <script type="module" src="./index.tsx"></script>
 </body>
 </html>

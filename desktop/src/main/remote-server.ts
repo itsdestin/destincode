@@ -1,5 +1,7 @@
 import http from 'http';
+import zlib from 'zlib';
 import { listProjectsIndex } from './artifacts/projects-index';
+import { staticAssetPolicy } from './remote-static-policy';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -70,6 +72,9 @@ export class RemoteServer {
   private clients = new Set<AuthenticatedClient>();
   private tokens = new Map<string, boolean>(); // token → valid
   private tokensPath: string;
+  // `${encoding}:${urlPath}` → compressed bytes. Safe to hold indefinitely
+  // because Vite content-hashes the URLs it serves; see compressStatic().
+  private compressedAssets = new Map<string, Buffer>();
   private ptyBuffers = new Map<string, string>(); // sessionId → rolling PTY output
   private hookBuffers = new Map<string, any[]>(); // sessionId → rolling hook events
   // statusInterval removed — status data now fed by ipc-handlers.ts via broadcastStatusData()
@@ -437,28 +442,82 @@ export class RemoteServer {
             res.writeHead(404);
             res.end('Not found');
           } else {
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(html);
+            this.sendStatic(req, res, '/index.html', '.html', html);
           }
         });
         return;
       }
 
-      const ext = path.extname(filePath).toLowerCase();
-      const mimeTypes: Record<string, string> = {
-        '.html': 'text/html',
-        '.js': 'application/javascript',
-        '.css': 'text/css',
-        '.json': 'application/json',
-        '.png': 'image/png',
-        '.svg': 'image/svg+xml',
-        '.ico': 'image/x-icon',
-        '.woff': 'font/woff',
-        '.woff2': 'font/woff2',
-      };
-      res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
-      res.end(data);
+      this.sendStatic(req, res, url, path.extname(filePath).toLowerCase(), data);
     });
+  }
+
+  /**
+   * Writes a static asset with negotiated compression and cache headers.
+   *
+   * Before this, remote clients re-downloaded the ~2.14 MB uncompressed critical
+   * path (2,016 kB entry chunk + 128 kB CSS) on every page load, with no caching
+   * headers at all — the dominant cost of a first connect over a phone link.
+   */
+  private sendStatic(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    urlPath: string,
+    ext: string,
+    data: Buffer,
+  ): void {
+    const policy = staticAssetPolicy(urlPath, ext, req.headers['accept-encoding'] as string, data.length);
+
+    const headers: Record<string, string> = {
+      'Content-Type': policy.contentType,
+      'Cache-Control': policy.cacheControl,
+      // Caches key on the encoding we picked, or a gzip response can be replayed
+      // to a client that never asked for one.
+      Vary: 'Accept-Encoding',
+    };
+
+    if (!policy.encoding) {
+      res.writeHead(200, headers);
+      res.end(data);
+      return;
+    }
+
+    const body = this.compressStatic(urlPath, policy.encoding, data);
+    headers['Content-Encoding'] = policy.encoding;
+    res.writeHead(200, headers);
+    res.end(body);
+  }
+
+  /**
+   * Compresses once per (asset, encoding) and reuses the result.
+   *
+   * Assets under assets/ are content-hashed, so a given URL's bytes never
+   * change and the cached output can never go stale. This is what makes brotli
+   * affordable — compressing a 2 MB chunk per request would cost far more than
+   * the transfer it saves.
+   */
+  private compressStatic(urlPath: string, encoding: 'br' | 'gzip', data: Buffer): Buffer {
+    const key = `${encoding}:${urlPath}`;
+    const cached = this.compressedAssets.get(key);
+    if (cached) return cached;
+
+    const compressed = encoding === 'br'
+      // Quality 5 rather than the default 11: near-gzip CPU cost for
+      // meaningfully better ratios. At 11 the first request for the entry chunk
+      // would stall for seconds.
+      // Measured on the real 1,969 kB entry chunk (2026-07-20): q5 = 38 ms,
+      // q11 = 4,719 ms. Do NOT raise this — the default (11) would stall the
+      // first request by ~5 s, costing more than the transfer it saves.
+      ? zlib.brotliCompressSync(data, {
+          params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 },
+        })
+      : zlib.gzipSync(data);
+
+    // Bound the cache. A production build emits a handful of assets, but this
+    // is fed by request URLs, so it must not be allowed to grow without limit.
+    if (this.compressedAssets.size >= 64) this.compressedAssets.clear();
+    this.compressedAssets.set(key, compressed);
+    return compressed;
   }
 
   // --- Dev mode: proxy HTTP requests to Vite dev server ---
