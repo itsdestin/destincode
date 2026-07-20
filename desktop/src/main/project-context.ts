@@ -36,7 +36,30 @@ async function findInstructionFiles(dirs: string[]): Promise<Record<string, stri
   return out;
 }
 
-// Parse a rule .md frontmatter for a globs:/glob: field (first value only).
+// Parse a rule .md frontmatter's `paths:` YAML list (per .claude/rules/README.md
+// convention — inline `["a","b"]` or block `- "a"`). A missing `paths:` key, or
+// a list containing only the catch-all "**", means the rule is eager (loaded
+// every time, per the README's "omitting it makes the rule EAGER" note and
+// live-app-safety.md's explicit paths: ["**"]).
+export function parseRulePaths(frontmatter: string): string[] {
+  const inline = /^\s*paths\s*:\s*\[(.*)\]\s*$/im.exec(frontmatter);
+  if (inline) {
+    return inline[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+  }
+  // WHY: anchor to line start (m flag) so a key like `myPaths:` does not
+  // shadow the real `paths:` key.
+  const blockStart = /^\s*paths\s*:\s*$/im.exec(frontmatter);
+  if (!blockStart) return [];
+  const afterKey = frontmatter.slice(blockStart.index + blockStart[0].length);
+  const out: string[] = [];
+  for (const line of afterKey.split('\n').slice(1)) {
+    const item = /^\s*-\s*(.+)\s*$/.exec(line);
+    if (!item) break; // next top-level key (e.g. last_verified:) ends the list
+    out.push(item[1].trim().replace(/^['"]|['"]$/g, ''));
+  }
+  return out;
+}
+
 async function readRules(rulesDir: string): Promise<RuleEntry[]> {
   let files: string[];
   try { files = (await fs.promises.readdir(rulesDir)).filter(f => f.endsWith('.md')); }
@@ -48,11 +71,10 @@ async function readRules(rulesDir: string): Promise<RuleEntry[]> {
     try {
       const head = (await fs.promises.readFile(absolutePath, 'utf8')).slice(0, 2000);
       const fm = /^---\s*([\s\S]*?)\s*---/.exec(head)?.[1] ?? '';
-      // WHY: anchor to line start (m flag) so a key like `myglobs:` does not
-      // shadow the real `globs:`/`glob:` key.
-      const g = /^\s*(?:globs?|glob)\s*:\s*(.+)/im.exec(fm)?.[1]?.trim();
-      if (g) glob = g.replace(/^['"\[]+|['"\]]+$/g, '').split(',')[0].trim();
-    } catch { /* unreadable rule — list it with no glob */ }
+      const paths = parseRulePaths(fm);
+      const isEager = paths.length === 0 || (paths.length === 1 && paths[0] === '**');
+      if (!isEager) glob = paths.length === 1 ? paths[0] : `${paths[0]} +${paths.length - 1} more`;
+    } catch { /* unreadable rule — list it with no glob (renders as eager) */ }
     out.push({ file, glob, absolutePath });
   }
   return out;

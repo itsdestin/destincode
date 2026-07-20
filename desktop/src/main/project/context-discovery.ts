@@ -57,9 +57,11 @@ export function discoverContext(input: DiscoveryInput): ContextGroup[] {
     memory.push(mk('memory', isIndex ? 'memory-index' : 'memory-note', f, p, isIndex ? 'index' : 'on-recall', 'project'));
   }
 
+  // Global first, then This project, then Memory — broad-to-specific, matching
+  // the "How context works" popup's own stacking order (HowContextWorksPopup.tsx).
   return [
-    { scope: 'project', files: project },
     { scope: 'global', files: global },
+    { scope: 'project', files: project },
     { scope: 'memory', files: memory },
   ];
 }

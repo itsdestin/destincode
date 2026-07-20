@@ -16,8 +16,8 @@ describe('discoverContext', () => {
   const groups = discoverContext(input);
   const byScope = (s: string) => groups.find(g => g.scope === s)!.files;
 
-  it('returns three groups in order project, global, memory', () => {
-    expect(groups.map(g => g.scope)).toEqual(['project', 'global', 'memory']);
+  it('returns three groups in order global, project, memory', () => {
+    expect(groups.map(g => g.scope)).toEqual(['global', 'project', 'memory']);
   });
   it('marks project CLAUDE.md always', () => {
     const f = byScope('project').find(x => x.kind === 'claude-md')!;
