@@ -51,22 +51,84 @@ const SLEEP_IDLE_SECONDS = 300;
 const STRIKE_LIMIT = 3;
 const STRIKE_WINDOW_MS = 5 * 60_000;
 
-/** Resolve the PID of the process listening on a localhost port. Linux-only:
- *  prefers `ss -ltnp`, falls back to scanning /proc/net/tcp + process fd socket
- *  inodes. Returns null on any other platform or when no listener is found —
- *  callers treat null as "unknown", never "safe". */
+/** Resolve the PID of the process listening on a localhost port, cross-platform:
+ *  Linux `ss` (+ /proc fallback), macOS `lsof`, Windows `netstat`. Returns null
+ *  when the tool is missing/unparseable or no listener is found — callers treat
+ *  null as "unknown", never "safe", so a non-answer never blocks startup. */
 function defaultPidOnPort(port: number): number | null {
-  if (process.platform !== 'linux') return null;
-  try {
-    const out = execFileSync('ss', ['-ltnp'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
-    const line = out.split('\n').find((l) => l.includes(`:${port} `) || l.endsWith(`:${port}`));
-    const m = line && /pid=(\d+)/.exec(line);
-    if (m) return parseInt(m[1], 10);
-  } catch { /* ss missing/failed — fall through to the /proc scan */ }
-  return pidOnPortViaProc(port);
+  switch (process.platform) {
+    case 'linux': {
+      try {
+        const out = execFileSync('ss', ['-ltnp'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+        const pid = parseSsListenerPid(out, port);
+        if (pid != null) return pid;
+      } catch { /* ss missing/failed — fall through to the /proc scan */ }
+      return pidOnPortViaProc(port);
+    }
+    case 'darwin': {
+      // -nP: no DNS/port-name lookups (fast); -sTCP:LISTEN: listeners only; -F p: PID-only output.
+      const out = runTool('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-F', 'p']);
+      return out ? parseLsofPid(out) : null;
+    }
+    case 'win32': {
+      const out = runTool('netstat', ['-ano', '-p', 'tcp']);
+      return out ? parseNetstatListenerPid(out, port) : null;
+    }
+    default:
+      return null;
+  }
 }
 
-/** /proc-only port→PID: find the socket inode for the LISTEN port in
+function runTool(file: string, args: string[]): string | null {
+  try {
+    return execFileSync(file, args, { encoding: 'utf8', timeout: 4000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null; // tool missing, non-zero exit, or timeout — all non-fatal (unknown).
+  }
+}
+
+// ---- pure parsers (unit-tested; no shell in tests) ----
+
+/** Linux `ss -ltnp` → PID of the process listening on `port`. Port match is exact
+ *  (`:9920` must not match a `:992` query) and anchored to the LOCAL address column
+ *  so a foreign/peer address can't false-match. */
+export function parseSsListenerPid(stdout: string, port: number): number | null {
+  for (const line of stdout.split('\n')) {
+    if (!line.includes('LISTEN')) continue;
+    const cols = line.trim().split(/\s+/);
+    // ss -ltnp columns: State Recv-Q Send-Q Local:Port Peer:Port Process
+    const local = cols[3] ?? '';
+    const m = local.match(/:(\d+)$/);
+    if (m && parseInt(m[1], 10) === port) {
+      const p = /pid=(\d+)/.exec(line);
+      if (p) return parseInt(p[1], 10);
+    }
+  }
+  return null;
+}
+
+/** macOS `lsof -F p` output → PID. With `-F p`, PID lines are `p<pid>`. */
+export function parseLsofPid(stdout: string): number | null {
+  const line = stdout.split('\n').find((l) => /^p\d+$/.test(l.trim()));
+  return line ? parseInt(line.trim().slice(1), 10) : null;
+}
+
+/** Windows `netstat -ano -p tcp` → PID of the LISTENING socket on `port`.
+ *  Row shape: `  TCP    127.0.0.1:9920    0.0.0.0:0    LISTENING    12345`. */
+export function parseNetstatListenerPid(stdout: string, port: number): number | null {
+  for (const line of stdout.split('\n')) {
+    if (!/LISTENING/i.test(line)) continue;
+    const cols = line.trim().split(/\s+/);
+    // cols: [TCP, local, foreign, state, pid]
+    if (cols.length >= 5 && cols[1]?.endsWith(`:${port}`)) {
+      const pid = parseInt(cols[cols.length - 1], 10);
+      if (Number.isFinite(pid)) return pid;
+    }
+  }
+  return null;
+}
+
+/** Linux /proc-only port→PID: find the socket inode for the LISTEN port in
  *  /proc/net/tcp(6), then the process whose fd links to that inode. */
 function pidOnPortViaProc(port: number): number | null {
   const hex = ':' + port.toString(16).toUpperCase().padStart(4, '0');
@@ -100,10 +162,28 @@ function listenInodeForPort(hexPort: string): string | null {
   return null;
 }
 
-/** Resolve a PID's executable path via /proc/<pid>/exe; null when unreadable
- *  (raced exit, perms) — callers treat null as "unknown", never "safe". */
+/** Resolve a PID's executable path / image name, cross-platform — used by the
+ *  stale-engine reaper to confirm the squatter is actually llama-server before
+ *  killing it. Returns null when undeterminable — callers treat null as
+ *  "unknown", never "safe", so an unconfirmable process is never killed. */
 function defaultExeForPid(pid: number): string | null {
-  try { return fs.readlinkSync(`/proc/${pid}/exe`); } catch { return null; }
+  switch (process.platform) {
+    case 'linux':
+      try { return fs.readlinkSync(`/proc/${pid}/exe`); } catch { return null; }
+    case 'darwin': {
+      const out = runTool('ps', ['-p', String(pid), '-o', 'comm=']);
+      const name = out?.split('\n')[0]?.trim();
+      return name || null;
+    }
+    case 'win32': {
+      // Image name only (llama-server.exe) — enough to confirm it's our engine.
+      const out = runTool('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH']);
+      const m = out && /^"([^"]+)"/.exec(out.trim());
+      return m ? m[1] : null;
+    }
+    default:
+      return null;
+  }
 }
 
 export class EngineSupervisor extends EventEmitter {
@@ -198,8 +278,8 @@ export class EngineSupervisor extends EventEmitter {
     // (the old quit path lost the SIGTERM race) and keep the port bound. Our child then
     // can't bind, and — before the identity guard above — we'd have adopted the orphan.
     // If the listener is a llama-server that is NOT our live child, kill it so this
-    // spawn gets the port. Linux-only; elsewhere the port conflict surfaces as the
-    // child's startup exit (unchanged behavior).
+    // spawn gets the port. Where the port→PID tool is unavailable the reaper is a
+    // no-op and the conflict simply surfaces as the child's startup exit (unchanged).
     this.reapStaleEngineOnPort();
 
     const child = spawn(
@@ -261,7 +341,7 @@ export class EngineSupervisor extends EventEmitter {
         // dies while the ORPHAN answers /health. Without this guard we would adopt
         // the orphan — and later count ITS death as OUR crash (the false "engine
         // crashed repeatedly" strike-out). Only accept when the listener is our child
-        // (or identity can't be determined, e.g. non-Linux — fall through as before).
+        // (or identity can't be determined on this platform — fall through as before).
         if (res.ok && this.isOurChildOnPort(child)) {
           this.state = 'running';
           this.touch();
@@ -295,12 +375,11 @@ export class EngineSupervisor extends EventEmitter {
   }
 
   /** Is the process listening on our port the child we just spawned? Returns
-   *  true when identity can't be determined (non-Linux, or ss/proc unavailable)
-   *  so we don't regress platforms without the mapping — the guard only ever
-   *  REJECTS a confidently-foreign listener; it never blocks an unknown one.
-   *  This is what stops us adopting an orphaned engine on our fixed port. */
+   *  true when identity can't be determined (the platform's port→PID tool is
+   *  missing/unparseable) so we never regress a platform we can't inspect — the
+   *  guard only ever REJECTS a confidently-foreign listener; it never blocks an
+   *  unknown one. This is what stops us adopting an orphaned engine on our port. */
   private isOurChildOnPort(child: ChildProcess): boolean {
-    if (process.platform !== 'linux') return true; // no port→PID mapping — assume ours
     if (child.pid == null) return true;            // not assigned yet — can't disprove
     const pid = (this.opts.pidOnPort ?? defaultPidOnPort)(this.opts.port);
     if (pid == null) return true;                  // unknown — don't block on a non-answer
@@ -308,11 +387,10 @@ export class EngineSupervisor extends EventEmitter {
   }
 
   /** Kill a llama-server squatting on our port that is NOT our live child (a stale
-   *  orphan from a previous run). Best-effort + Linux-only; never throws, and never
-   *  touches our own child or a non-llama process. Runs before spawn so this instance
-   *  can actually bind the fixed port instead of adopting the orphan. */
+   *  orphan from a previous run). Best-effort; never throws, and never touches our
+   *  own child or a process we can't confirm is llama-server. Runs before spawn so
+   *  this instance can actually bind the fixed port instead of adopting the orphan. */
   private reapStaleEngineOnPort(): void {
-    if (process.platform !== 'linux') return;
     const pid = (this.opts.pidOnPort ?? defaultPidOnPort)(this.opts.port);
     if (pid == null) return;                       // nothing (identifiably) on the port
     if (this.child && this.child.pid === pid) return; // our own live child — leave it

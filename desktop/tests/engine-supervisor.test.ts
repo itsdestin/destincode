@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
-import { EngineSupervisor } from '../src/main/engine/engine-supervisor';
+import {
+  EngineSupervisor,
+  parseSsListenerPid,
+  parseLsofPid,
+  parseNetstatListenerPid,
+} from '../src/main/engine/engine-supervisor';
 
 const mockSpawn = vi.fn();
 vi.mock('child_process', async (orig) => ({
@@ -412,5 +417,43 @@ describe('EngineSupervisor', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---- cross-platform port→PID parsers (pure; no shell) ----
+// These pin the output shapes of the per-platform tools the orphan-guard and
+// stale-engine reaper rely on, so a parsing regression can't silently re-open
+// the "adopt a foreign engine" hole on macOS/Windows.
+describe('port→PID parsers', () => {
+  it('parseSsListenerPid: Linux ss -ltnp output → PID', () => {
+    const out = [
+      'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process',
+      'LISTEN 0      511    127.0.0.1:9920      0.0.0.0:*     users:(("llama-server",pid=111523,fd=20))',
+      'LISTEN 0      511    127.0.0.1:9900      0.0.0.0:*     users:(("node",pid=777,fd=25))',
+    ].join('\n');
+    expect(parseSsListenerPid(out, 9920)).toBe(111523);
+    expect(parseSsListenerPid(out, 9900)).toBe(777);
+    expect(parseSsListenerPid(out, 1234)).toBeNull(); // not listening
+    // Exact-match: a query for a PREFIX port must not match a longer listening port.
+    expect(parseSsListenerPid(out, 992)).toBeNull();  // ':992' ≠ ':9920'
+    expect(parseSsListenerPid(out, 99)).toBeNull();   // ':99'  ≠ ':9900'/':9920'
+  });
+
+  it('parseLsofPid: macOS lsof -F p output → PID', () => {
+    expect(parseLsofPid('p4821\nf3\n')).toBe(4821);
+    expect(parseLsofPid('')).toBeNull();
+    expect(parseLsofPid('COMMAND  PID USER\n')).toBeNull();
+  });
+
+  it('parseNetstatListenerPid: Windows netstat -ano → PID of LISTENING socket', () => {
+    const out = [
+      '  Proto  Local Address          Foreign Address        State           PID',
+      '  TCP    127.0.0.1:9920         0.0.0.0:0              LISTENING       22234',
+      '  TCP    127.0.0.1:9920         127.0.0.1:55000        ESTABLISHED     999', // not LISTENING — ignored
+      '  TCP    0.0.0.0:9900           0.0.0.0:0              LISTENING       5555',
+    ].join('\n');
+    expect(parseNetstatListenerPid(out, 9920)).toBe(22234);
+    expect(parseNetstatListenerPid(out, 9900)).toBe(5555);
+    expect(parseNetstatListenerPid(out, 4321)).toBeNull();
   });
 });
