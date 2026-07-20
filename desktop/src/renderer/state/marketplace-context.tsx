@@ -187,13 +187,20 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
       // Also filter integrationOnly entries — those plugins (e.g. imessage,
       // google-services) are surfaced through the Integrations tile instead
       // and would double-list if shown in the plugins grid too.
+      // `|| []` is not enough: a non-array OBJECT is truthy and sails through,
+      // then dies at the next `for (const … of …)`. That is exactly how an
+      // unbridged remote channel resolving {ok:false,unsupported:true} crashed
+      // the marketplace screen on a phone. Guard on shape, not truthiness —
+      // these five all feed iteration or .filter() below.
+      const arr = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+
       setSkillEntries(
-        (marketplaceSkills || []).filter((e: any) => !e.deprecated && !e.integrationOnly),
+        arr<any>(marketplaceSkills).filter((e: any) => !e.deprecated && !e.integrationOnly),
       );
-      setThemeEntries(themes || []);
-      setInstalledSkills(installed || []);
-      setFavoritesState(favs || []);
-      setThemeFavoritesState(themeFavs || []);
+      setThemeEntries(arr(themes));
+      setInstalledSkills(arr(installed));
+      setFavoritesState(arr(favs));
+      setThemeFavoritesState(arr(themeFavs));
       setPackages((pkgs as Record<string, PackageInfo>) || {});
       setFeatured((feat && typeof feat === 'object') ? feat : { hero: [], rails: [] });
     } catch (err: any) {
