@@ -174,14 +174,24 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
 
   // Unfocus textarea after idle so global shortcuts (e.g. Shift to open
   // session switcher, Shift+Space to cycle model) work without conflicting.
-  // Skip on Android: blurring the textarea dismisses the soft keyboard, so
-  // the user would have to re-tap the field after every brief pause. Those
-  // global shortcuts are desktop-only (Shift-hold, Shift+Space, Shift+Tab)
-  // and have no Android equivalent, so keeping focus here costs nothing.
+  // Skip wherever a soft keyboard is in play: blurring the textarea dismisses
+  // it, so the user has to re-tap the field after every brief pause. Those
+  // global shortcuts are physical-keyboard-only (Shift-hold, Shift+Space,
+  // Shift+Tab) and have no touch equivalent, so keeping focus costs nothing.
+  //
+  // Fix: this used to test isAndroid() alone, which missed a phone browser on
+  // remote access — the host sends platform:'desktop' in auth:ok, so the shim
+  // sets __PLATFORM__='desktop' and the device reports as neither 'android'
+  // nor 'browser'. Feature-detect a coarse pointer instead of trusting the
+  // platform string: it's the actual question being asked, and it correctly
+  // keeps idle-blur ON for a desktop browser connecting remotely (real
+  // keyboard, shortcuts useful, no soft keyboard to dismiss).
   const idleBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const el = inputRef.current;
-    if (!el || isAndroid()) return;
+    const hasSoftKeyboard = isAndroid()
+      || window.matchMedia?.('(pointer: coarse)')?.matches === true;
+    if (!el || hasSoftKeyboard) return;
     const resetTimer = () => {
       if (idleBlurTimer.current) clearTimeout(idleBlurTimer.current);
       idleBlurTimer.current = setTimeout(() => {

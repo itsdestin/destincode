@@ -14,6 +14,13 @@ export default defineConfig({
   server: {
     port: viteDevPort,
     strictPort: true,
+    // Bind IPv4 loopback explicitly. Vite's default ('localhost') binds IPv6
+    // [::1] only on some stacks, leaving 127.0.0.1 unreachable. RemoteServer's
+    // dev proxy targets this server by address, so pinning the family here
+    // makes that hop deterministic instead of depending on the runtime's
+    // happy-eyeballs behavior. Hardening, not a bug fix — the dev-mode 502 was
+    // caused by the proxy's hardcoded port (see remote-server.ts), not by this.
+    host: '127.0.0.1',
   },
   base: './',
   build: {

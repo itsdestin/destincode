@@ -28,8 +28,11 @@ export function RemoteSnapshotExporter() {
         const snapshot = serializeChatState(chatStateRef.current);
         api.sendChatSnapshotResponse({ requestId, snapshot });
       } catch (err) {
+        // Fix: flag the fallback as degraded so the connecting client can tell
+        // a serialization failure apart from a host with no sessions, instead
+        // of applying the empty payload over its live state.
         console.error('[RemoteSnapshotExporter] serialize failed:', err);
-        api.sendChatSnapshotResponse({ requestId, snapshot: { sessions: [] } });
+        api.sendChatSnapshotResponse({ requestId, snapshot: { sessions: [], degraded: true } });
       }
     });
 

@@ -2,12 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <!-- interactive-widget=overlays-content tells the UA: when the soft keyboard
-       appears, do NOT resize the page. Overlay it and report geometry via
-       window.visualViewport. The useVisualViewport hook reads that and drives
-       --vvp-offset so the input bar rises with the keyboard in a single,
-       smooth, OS-synchronized animation. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=overlays-content" />
+  <!-- interactive-widget=resizes-visual: when the soft keyboard appears, shrink
+       the VISUAL viewport and leave the layout viewport alone. useVisualViewport
+       reads that as (innerHeight - visualViewport.height) and drives --vvp-offset,
+       so the input bar rises with the keyboard in one smooth, OS-synced animation.
+
+       Fix: this used to say overlays-content, which the old comment described as
+       "overlay it and report geometry via visualViewport". That is not what the
+       spec says — under overlays-content NEITHER viewport resizes, and the only
+       source of keyboard geometry is the VirtualKeyboard API. That API requires a
+       secure context, so over plain-HTTP remote access (a phone on the LAN IP) it
+       is undefined and NOTHING reported the keyboard: measured on Chrome/Android
+       with the keyboard open, innerHeight 732 vs visualViewport.height 733, and
+       navigator.virtualKeyboard absent. The input bar stayed pinned under the
+       keyboard. resizes-visual is what the hook was always written against. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual" />
   <title>YouCoded</title>
 </head>
 <body>

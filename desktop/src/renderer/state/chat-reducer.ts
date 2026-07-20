@@ -11,9 +11,16 @@ import {
 } from './chat-types';
 import { SubagentSegment, ToolCallState } from '../../shared/types';
 
+// Fix: message ids are used as React keys. A hydrated remote client restarts
+// this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
+// messages reused existing keys and React mis-reconciled — messages rendering
+// in the wrong place, not updating, or the list jumping after connect. The
+// per-boot epoch makes ids unique across the hydrate boundary without pulling
+// in a uuid/nanoid dependency, and keeps them greppable/ordered in logs.
+const ID_EPOCH = Math.random().toString(36).slice(2, 8);
 let messageCounter = 0;
 function nextMessageId(): string {
-  return `msg-${++messageCounter}`;
+  return `msg-${ID_EPOCH}-${++messageCounter}`;
 }
 
 let groupCounter = 0;
@@ -272,6 +279,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
 
     case 'HYDRATE_CHAT_STATE': {
+      // Fix: an empty snapshot is what the host sends when its renderer times
+      // out (chat-snapshot.ts TIMEOUT_MS) or serialization throws — NOT a
+      // signal that there are no sessions. Applying it blanked a reconnecting
+      // client's entire chat with no error surfaced. Never replace real state
+      // with nothing.
+      if (action.sessions.sessions.length === 0) {
+        console.warn('[chat-reducer] ignoring empty chat:hydrate snapshot');
+        return state;
+      }
       try {
         // Replace the entire ChatState with a deserialized snapshot from the
         // desktop renderer. Fired once per remote-access connect so browser

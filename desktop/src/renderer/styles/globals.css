@@ -1266,6 +1266,16 @@ body[data-mode="buddy-chat"] #theme-bg {
 :root {
   --frame-edge: 10px;
   --frame-corner: 12px;
+  /* Bottom chrome height INCLUDING the soft keyboard. The chrome-glass cutout
+     polygon is anchored to the bottom of the layout viewport, which does not
+     shrink when the keyboard opens (interactive-widget=resizes-visual) — so a
+     cutout using --bottom-chrome-height alone stayed at the window bottom while
+     .bottom-float translated up by --vvp-offset, visually detaching the input
+     and status bars from the frame. Use this anywhere the cutout geometry must
+     follow the lifted chrome. Do NOT fold --vvp-offset into
+     --bottom-chrome-height itself: .chat-scroll and .jump-to-bottom already add
+     it explicitly and would double-count. */
+  --bottom-chrome-total: calc(var(--bottom-chrome-height, 5rem) + var(--vvp-offset, 0px));
   /* Width of the framed-shell's right pane (artifact drawer OR game pane).
      The artifact drawer uses the 480px default; App overrides it to a narrower
      value when the game pane is the active right pane. Referenced by both
@@ -1359,25 +1369,25 @@ body[data-mode="buddy-chat"] #theme-bg {
     /* left side, top end (below TL corner radius) */
     var(--frame-edge) calc(var(--top-chrome-height, 3rem) + var(--frame-corner)),
     /* left side, bottom end (above BL corner radius) */
-    var(--frame-edge) calc(100% - var(--bottom-chrome-height, 5rem) - var(--frame-corner)),
+    var(--frame-edge) calc(100% - var(--bottom-chrome-total) - var(--frame-corner)),
 
     /* BL corner arc, intermediates at 157.5°, 135°, 112.5° */
-    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(157.5deg))) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(157.5deg) - 1)),
-    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(135deg))) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(135deg) - 1)),
-    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(112.5deg))) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(112.5deg) - 1)),
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(157.5deg))) calc(100% - var(--bottom-chrome-total) + var(--frame-corner) * (sin(157.5deg) - 1)),
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(135deg))) calc(100% - var(--bottom-chrome-total) + var(--frame-corner) * (sin(135deg) - 1)),
+    calc(var(--frame-edge) + var(--frame-corner) * (1 + cos(112.5deg))) calc(100% - var(--bottom-chrome-total) + var(--frame-corner) * (sin(112.5deg) - 1)),
 
     /* bottom side, left end (to the right of BL corner radius) */
-    calc(var(--frame-edge) + var(--frame-corner)) calc(100% - var(--bottom-chrome-height, 5rem)),
+    calc(var(--frame-edge) + var(--frame-corner)) calc(100% - var(--bottom-chrome-total)),
     /* bottom side, right end (to the left of BR corner radius) */
-    calc(100% - var(--chat-right-offset) - var(--frame-corner)) calc(100% - var(--bottom-chrome-height, 5rem)),
+    calc(100% - var(--chat-right-offset) - var(--frame-corner)) calc(100% - var(--bottom-chrome-total)),
 
     /* BR corner arc, intermediates at 67.5°, 45°, 22.5° */
-    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(67.5deg) - 1)) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(67.5deg) - 1)),
-    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(45deg) - 1)) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(45deg) - 1)),
-    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(22.5deg) - 1)) calc(100% - var(--bottom-chrome-height, 5rem) + var(--frame-corner) * (sin(22.5deg) - 1)),
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(67.5deg) - 1)) calc(100% - var(--bottom-chrome-total) + var(--frame-corner) * (sin(67.5deg) - 1)),
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(45deg) - 1)) calc(100% - var(--bottom-chrome-total) + var(--frame-corner) * (sin(45deg) - 1)),
+    calc(100% - var(--chat-right-offset) + var(--frame-corner) * (cos(22.5deg) - 1)) calc(100% - var(--bottom-chrome-total) + var(--frame-corner) * (sin(22.5deg) - 1)),
 
     /* right side, bottom end (above BR corner radius) */
-    calc(100% - var(--chat-right-offset)) calc(100% - var(--bottom-chrome-height, 5rem) - var(--frame-corner)),
+    calc(100% - var(--chat-right-offset)) calc(100% - var(--bottom-chrome-total) - var(--frame-corner)),
     /* right side, top end (below TR corner radius) */
     calc(100% - var(--chat-right-offset)) calc(var(--top-chrome-height, 3rem) + var(--frame-corner)),
 

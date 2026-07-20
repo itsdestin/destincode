@@ -10,6 +10,7 @@ import type { HookRelay } from './hook-relay';
 import type { RemoteConfig } from './remote-config';
 import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
+import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
 import { NATIVE_META_UNSUPPORTED } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
@@ -167,7 +168,12 @@ export class RemoteServer {
 
     // Determine static file directory (production) or Vite dev server URL (development)
     const staticDir = path.join(__dirname, '..', 'renderer');
-    const viteDevUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+    // Fix: this fallback hardcoded port 5173 and ignored YOUCODED_PORT_OFFSET,
+    // so a dev instance (Vite on 5223) proxied to a port with nothing on it and
+    // every remote request returned a bare HTTP 502. main.ts:188 already derived
+    // its dev URL from VITE_DEV_PORT; remote-server was the one place that
+    // didn't. Never reintroduce a literal port here — import it from ports.ts.
+    const viteDevUrl = process.env.VITE_DEV_SERVER_URL || `http://127.0.0.1:${VITE_DEV_PORT}`;
     // In dev mode, dist/renderer/index.html doesn't exist — proxy to Vite
     const hasStaticBuild = fs.existsSync(path.join(staticDir, 'index.html'));
 

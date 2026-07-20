@@ -27,8 +27,11 @@ export function requestChatSnapshot(webContents: WebContents): Promise<Serialize
       if (settled) return;
       settled = true;
       ipcMain.off(RESPONSE_CHANNEL, onResponse);
-      console.warn('[chat-snapshot] export timed out, returning empty snapshot');
-      resolve({ sessions: [] });
+      // Fix: mark the fallback as degraded. An empty snapshot is otherwise
+      // indistinguishable from a host that genuinely has no sessions, and the
+      // client used to apply it as gospel — blanking a live chat on reconnect.
+      console.warn(`[chat-snapshot] export timed out after ${TIMEOUT_MS}ms, returning empty snapshot`);
+      resolve({ sessions: [], degraded: true });
     }, TIMEOUT_MS);
     try {
       webContents.send(EXPORT_CHANNEL, requestId);
@@ -38,7 +41,7 @@ export function requestChatSnapshot(webContents: WebContents): Promise<Serialize
         settled = true;
         ipcMain.off(RESPONSE_CHANNEL, onResponse);
         clearTimeout(timer);
-        resolve({ sessions: [] });
+        resolve({ sessions: [], degraded: true });
       }
     }
   });

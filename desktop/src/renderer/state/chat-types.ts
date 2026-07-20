@@ -534,6 +534,12 @@ export interface SerializedSessionChatState {
 
 export interface SerializedChatState {
   sessions: Array<[string, SerializedSessionChatState]>;
+  // Set when the host could not produce a real snapshot (renderer export timed
+  // out, or serialization threw) and fell back to an empty payload. Lets the
+  // client tell "the host has no sessions" apart from "the host failed" —
+  // without it, both look like a valid empty snapshot. Optional so a payload
+  // from a pre-field host still deserializes.
+  degraded?: true;
 }
 
 export function serializeChatState(state: ChatState): SerializedChatState {
