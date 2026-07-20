@@ -600,13 +600,16 @@ export function ProjectView(props: ProjectViewProps) {
             <div className="flex items-center justify-between gap-3 flex-wrap max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:bg-canvas max-sm:py-2">
               {/* Unified segmented control: one rounded-full pill holding all three
                   segments (icon + label + count). Accent used ONCE — the active seg. */}
-              {/* max-w-full + overflow-x-auto: the four segments total ~500px
-                  ("Conversations" alone is ~168px). The parent's flex-wrap only
-                  wraps the pill-vs-search pair, not the segments inside the
-                  pill, so on a phone they used to push off-screen with no way
-                  to reach Context at all. Scroll strip instead of squashing. */}
+              {/* All four segments at full width, no scrolling: below 640px the
+                  INACTIVE segments drop to icon-only and the active one keeps
+                  its label + count. Labelled, the four total ~500px
+                  ("Conversations" alone is ~168px), which overflowed a phone
+                  and put Context out of reach entirely. Three ~35px icons plus
+                  one labelled segment fits inside ~374px with room to spare.
+                  overflow-x-auto stays as a backstop for a very long label at a
+                  very small width; it should not normally engage. */}
               <div
-                className="flex items-center gap-1 p-1 layer-surface !rounded-full max-w-full overflow-x-auto no-scrollbar"
+                className="flex items-center gap-1 p-1 layer-surface !rounded-full max-sm:w-full max-w-full overflow-x-auto no-scrollbar"
                 style={{ boxShadow: 'none' }}
               >
                 {SEGMENTS.map((s) => {
@@ -616,18 +619,26 @@ export function ProjectView(props: ProjectViewProps) {
                     <button
                       key={s.id}
                       type="button"
-                      // shrink-0 so the segments scroll rather than compress
-                      // below legibility inside the scroll strip.
-                      className={`shrink-0 px-2.5 sm:px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center gap-1.5 sm:gap-2 transition-colors ${
+                      // Active segment absorbs the leftover width on narrow so
+                      // the pill spans the screen exactly; inactive ones stay
+                      // at their icon width. title= carries the label for the
+                      // icon-only state (aria-label does the same for AT).
+                      className={`shrink-0 ${active ? 'max-sm:flex-1 max-sm:min-w-0' : ''} px-2.5 sm:px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center justify-center gap-1.5 sm:gap-2 transition-colors ${
                         active
                           ? 'bg-accent text-on-accent'
                           : 'text-fg-2 hover:text-fg hover:bg-inset'
                       }`}
                       onClick={() => setTab(s.id)}
+                      title={s.label}
+                      aria-label={s.label}
+                      aria-current={active ? 'page' : undefined}
                     >
-                      {s.icon}
-                      {s.label}
-                      <span className={`text-[11px] ${active ? 'opacity-80' : 'text-fg-muted'}`}>
+                      <span className="shrink-0 inline-flex">{s.icon}</span>
+                      {/* Label + count collapse to nothing on an inactive
+                          segment below 640px — that's what buys the room for
+                          all four to fit without scrolling. */}
+                      <span className={`truncate ${active ? '' : 'max-sm:hidden'}`}>{s.label}</span>
+                      <span className={`text-[11px] shrink-0 ${active ? 'opacity-80' : 'text-fg-muted max-sm:hidden'}`}>
                         {s.count}
                       </span>
                       {/* (i) hover explainer for the Artifacts vs All files split —

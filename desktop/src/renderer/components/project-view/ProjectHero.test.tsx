@@ -12,6 +12,18 @@ import { ProjectHero } from './ProjectHero';
 
 vi.mock('../../platform', () => ({ getPlatform: () => 'electron' }));
 
+// The collapse is narrow-ONLY, so every test has to state which width it's
+// describing. jsdom has no matchMedia at all, so useNarrowViewport would throw
+// on the optional-call fallback path without this.
+function setViewport(narrow: boolean) {
+  (window as any).matchMedia = (query: string) => ({
+    matches: narrow,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  });
+}
+
 const baseProject = { path: '/home/d/proj', name: 'proj' } as any;
 const baseStats = {
   artifacts: 1, files: 2, conversations: 3, contextFiles: 4, activeLabel: 'today',
@@ -42,6 +54,7 @@ const menuLabels = () =>
 
 beforeEach(() => {
   cleanup();
+  setViewport(true); // narrow by default; the desktop block opts out
   (window as any).claude = {
     shell: { openPath: vi.fn(), openExternal: vi.fn() },
     folders: { rename: vi.fn().mockResolvedValue(undefined) },
@@ -49,7 +62,35 @@ beforeEach(() => {
   };
 });
 
-describe('ProjectHero action collapse', () => {
+// The collapse is a narrow-viewport accommodation, NOT a redesign. Desktop has
+// the room for every action and must keep them one click away.
+describe('ProjectHero on desktop', () => {
+  beforeEach(() => setViewport(false));
+
+  it('shows the management actions inline, with no cog', () => {
+    renderHero();
+    expect(screen.queryByLabelText('Project settings')).toBeNull();
+    expect(screen.getByText('Rename')).toBeTruthy();
+    expect(screen.getByText('Open in File Explorer')).toBeTruthy();
+    expect(screen.getByText('Remove from YouCoded')).toBeTruthy();
+    expect(screen.getByText('New Conversation')).toBeTruthy();
+  });
+
+  it('keeps Open repo as a visible button', () => {
+    renderHero({ repo: { webUrl: 'https://github.com/a/b', owner: 'a', name: 'b' } });
+    expect(screen.getByText('Open repo')).toBeTruthy();
+  });
+
+  it('keeps the sync action inline in the status strip', () => {
+    renderHero({
+      canRemove: false,
+      sync: { dot: { color: 'green' }, spaceId: 'project:x', lastSynced: null, errorMessage: null, stopped: false },
+    });
+    expect(screen.getByText('Sync now')).toBeTruthy();
+  });
+});
+
+describe('ProjectHero action collapse (narrow)', () => {
   it('keeps New Conversation on the card and nothing else', () => {
     renderHero();
     expect(screen.getByText('New Conversation')).toBeTruthy();

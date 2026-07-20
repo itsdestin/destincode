@@ -88,6 +88,7 @@ import { createPortal } from 'react-dom';
 import { GitBranchIcon, CogIcon } from './icons';
 import { Button, TextInput } from '../ui';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
 
 const MENU_WIDTH = 240;
 
@@ -161,12 +162,11 @@ export function ProjectHero({
     onRenamed(); // optimistic refresh; a Personal `synced` event also refreshes
   };
 
-  // Cog menu. Everything that manages the project lives here — rename, reveal,
-  // open repo, the sync action for the current state, and the destructive one.
-  // Only "New Conversation" stays on the card as a visible button: it's the one
-  // action you take repeatedly, the rest are occasional. This also fixed the
-  // hero's narrow-viewport collapse, where a row of six management buttons plus
-  // a shrink-0 button column left the project name a couple of characters wide.
+  // NARROW ONLY. Below 640px the management actions collapse behind a cog:
+  // a row of six buttons plus a shrink-0 button column left the project name a
+  // couple of characters wide on a phone. Desktop has the room, so it keeps
+  // every action visible — collapsing there would cost a click for no gain.
+  const narrow = useNarrowViewport();
   const menu = useAnchoredMenu<HTMLButtonElement>(MENU_WIDTH, 'right');
 
   const syncAction: MenuItem | null =
@@ -260,19 +260,29 @@ export function ProjectHero({
             that matters for the state. Hidden when syncSpaces is unavailable. */}
         {sync && (
           <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-inset px-3 py-2">
-            {/* Status only — the matching ACTION for each state ("Sync now",
-                "Try syncing again", "Turn on sync") moved into the cog menu, so
-                this strip stays a one-line readout at any width. */}
+            {/* On narrow the matching ACTION for each state moved into the cog
+                menu, leaving this strip a one-line readout. Desktop keeps the
+                button inline where it has always been. */}
             {sync.dot.color === 'green' && (
               <>
                 <span className="text-[13px] font-semibold text-[#44A05C]">Syncs across your devices</span>
                 {sync.lastSynced && <span className="text-xs text-fg-muted">Last synced {sync.lastSynced}</span>}
+                {!narrow && sync.spaceId && (
+                  <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
+                    Sync now
+                  </Button>
+                )}
               </>
             )}
             {sync.dot.color === 'red' && (
               <>
                 <span className="text-[13px] font-semibold text-[#DD4444]">Sync isn't working</span>
                 {sync.errorMessage && <span className="text-xs text-fg-dim">{sync.errorMessage}</span>}
+                {!narrow && sync.spaceId && (
+                  <Button variant="secondary" size="sm" onClick={() => onSyncNow(sync.spaceId!)}>
+                    Try again
+                  </Button>
+                )}
               </>
             )}
             {sync.dot.color === 'gray' && sync.spaceId && sync.stopped && (
@@ -285,7 +295,16 @@ export function ProjectHero({
               <span className="text-[13px] text-fg-dim">Sync is turned off — this project will sync once you turn it on in Settings</span>
             )}
             {sync.dot.color === 'gray' && !sync.spaceId && (
-              <span className="text-[13px] font-semibold text-fg-2">Only on this computer</span>
+              <>
+                <span className="text-[13px] font-semibold text-fg-2">Only on this computer</span>
+                {/* py-1 keeps this button compact inside the sync status strip;
+                    everything else (accent fill, radius, hover) comes from Button. */}
+                {!narrow && (
+                  <Button onClick={onTurnOnSync} className="py-1">
+                    Turn on sync for this project
+                  </Button>
+                )}
+              </>
             )}
           </div>
         )}
@@ -316,33 +335,93 @@ export function ProjectHero({
           <span>active <b className="text-fg-2 font-semibold">{stats.activeLabel}</b></span>
         </div>
 
+        {/* Management actions (spec §4) — DESKTOP ONLY. Narrow reaches these
+            through the cog menu instead; see the `narrow` note above.
+            Rename = picker nickname only; the field itself renders up at the
+            heading (one rename UI at both widths). Remove hides for synced
+            projects (move-out-of-sync is a deferred flow). */}
+        {!narrow && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {!renaming && (
+              <Button variant="secondary" size="sm" onClick={() => setRenaming(true)}>
+                Rename
+              </Button>
+            )}
+            {isElectron && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void (window.claude as any).shell.openPath(project.path)}
+              >
+                Open in File Explorer
+              </Button>
+            )}
+            {/* WHY danger-outline (spec decision 67): "Remove from YouCoded" and
+                "Stop syncing" used to look neutral and only turn red on hover.
+                These are consequential enough that hover is the wrong moment to
+                find that out, so they read as destructive at rest. "Rename"
+                above stays neutral — being the only non-red one is what makes
+                it read as the safe action. */}
+            {canRemove ? (
+              <Button variant="danger-outline" size="sm" onClick={onRemove}>
+                Remove from YouCoded
+              </Button>
+            ) : syncedFolderName && sync?.stopped ? (
+              // Already stopped (permanent) — no action to offer, just the state
+              // (review #4: don't re-render a "Stop syncing" button for a
+              // project that's already a tombstone).
+              <span className="text-[11px] text-fg-muted">Sync stopped</span>
+            ) : syncedFolderName ? (
+              !confirmingStop && (
+                <Button variant="danger-outline" size="sm" onClick={() => setConfirmingStop(true)}>
+                  Stop syncing
+                </Button>
+              )
+            ) : (
+              <span className="text-[11px] text-fg-muted">Managed by sync</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Right: cog menu + New Conversation. Everything else that used to sit
           here or on the actions row below is now behind the cog. */}
       <div className="w-full sm:w-auto sm:shrink-0 flex items-center gap-2">
-        {/* The ONE accent use in this hero. order-2 so on narrow the primary
-            action reads first (left) with the cog trailing it. */}
+        {/* Desktop keeps Open repo as a visible button; narrow folds it into
+            the cog menu with the rest of the management actions. */}
+        {!narrow && repo?.webUrl && (
+          <Button
+            variant="secondary"
+            size="lg"
+            onClick={() => window.claude.shell.openExternal(repo.webUrl!)}
+            title={showRepoSlug ? `Open ${repo.owner}/${repo.name} on GitHub` : 'Open repository'}
+          >
+            Open repo
+          </Button>
+        )}
+        {/* The ONE accent use in this hero. */}
         <Button size="lg" className="flex-1 sm:flex-none" onClick={() => onNewConversation(project.path)}>
           New Conversation
         </Button>
-        <button
-          ref={menu.anchorRef}
-          type="button"
-          onClick={menu.toggle}
-          className={`coarse-hit shrink-0 p-2 rounded-md border border-edge transition-colors ${
-            menu.open ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
-          }`}
-          title="Project settings"
-          aria-label="Project settings"
-          aria-haspopup="menu"
-          aria-expanded={menu.open}
-        >
-          <CogIcon size={16} />
-        </button>
+        {narrow && (
+          <button
+            ref={menu.anchorRef}
+            type="button"
+            onClick={menu.toggle}
+            className={`coarse-hit shrink-0 p-2 rounded-md border border-edge transition-colors ${
+              menu.open ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
+            }`}
+            title="Project settings"
+            aria-label="Project settings"
+            aria-haspopup="menu"
+            aria-expanded={menu.open}
+          >
+            <CogIcon size={16} />
+          </button>
+        )}
       </div>
 
-      {menu.open && menu.pos && createPortal(
+      {narrow && menu.open && menu.pos && createPortal(
         <div
           ref={menu.menuRef}
           role="menu"
