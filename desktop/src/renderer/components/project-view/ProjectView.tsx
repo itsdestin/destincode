@@ -549,7 +549,9 @@ export function ProjectView(props: ProjectViewProps) {
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* Chrome: hero + seg-row, centered to a comfortable reading width to
               match the prototype (the tab body below shares the same max-width). */}
-          <div className="w-full max-w-[1100px] mx-auto px-4 pt-4 shrink-0 flex flex-col gap-4">
+          {/* px-2 on narrow: stacked gutters (this px-4 plus the hero's own p-5)
+              ate 18% of a 390px viewport before any content rendered. */}
+          <div className="w-full max-w-[1100px] mx-auto px-2 sm:px-4 pt-4 shrink-0 flex flex-col gap-3 sm:gap-4">
             {activeProject ? (
               <ProjectHero
                 project={activeProject}
@@ -590,8 +592,13 @@ export function ProjectView(props: ProjectViewProps) {
             <div className="flex items-center justify-between gap-3 flex-wrap">
               {/* Unified segmented control: one rounded-full pill holding all three
                   segments (icon + label + count). Accent used ONCE — the active seg. */}
+              {/* max-w-full + overflow-x-auto: the four segments total ~500px
+                  ("Conversations" alone is ~168px). The parent's flex-wrap only
+                  wraps the pill-vs-search pair, not the segments inside the
+                  pill, so on a phone they used to push off-screen with no way
+                  to reach Context at all. Scroll strip instead of squashing. */}
               <div
-                className="flex items-center gap-1 p-1 layer-surface !rounded-full"
+                className="flex items-center gap-1 p-1 layer-surface !rounded-full max-w-full overflow-x-auto no-scrollbar"
                 style={{ boxShadow: 'none' }}
               >
                 {SEGMENTS.map((s) => {
@@ -601,7 +608,9 @@ export function ProjectView(props: ProjectViewProps) {
                     <button
                       key={s.id}
                       type="button"
-                      className={`px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center gap-2 transition-colors ${
+                      // shrink-0 so the segments scroll rather than compress
+                      // below legibility inside the scroll strip.
+                      className={`shrink-0 px-2.5 sm:px-3.5 py-1.5 rounded-full text-[13px] font-medium inline-flex items-center gap-1.5 sm:gap-2 transition-colors ${
                         active
                           ? 'bg-accent text-on-accent'
                           : 'text-fg-2 hover:text-fg hover:bg-inset'
@@ -638,10 +647,14 @@ export function ProjectView(props: ProjectViewProps) {
                   (type, sort, Show deleted) live behind it in FileFilterPopover.
                   Only "+ Add file" (an action, not a filter) stays visible.
                   Conversations/Context have no toolbar in v1. */}
+              {/* Narrow: search + Add file take their own full-width row under
+                  the segments (the parent's flex-wrap does the rest). A hard
+                  260px pill plus "+ Add file" was ~363px in a 358px content
+                  box, so this row alone overflowed the viewport. */}
               {(tab === 'artifacts' || tab === 'allfiles') && activeProject && (
-                <div className="flex items-center gap-2">
-                  <div className="relative" ref={filterWrapRef}>
-                    <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-[260px] focus-within:border-edge-dim">
+                <div className="w-full sm:w-auto flex items-center gap-2">
+                  <div className="relative flex-1 sm:flex-none" ref={filterWrapRef}>
+                    <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full sm:w-[260px] focus-within:border-edge-dim">
                       <span className="text-fg-muted shrink-0"><SearchIcon size={15} /></span>
                       <input
                         type="text"

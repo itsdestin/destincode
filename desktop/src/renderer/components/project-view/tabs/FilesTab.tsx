@@ -396,7 +396,11 @@ export function FilesTab({
           and first-row cards don't clip; -m-2 cancels that padding's position so the
           cards still line up with the breadcrumb above (the 8px sits in the parent's
           px-4/pt-4 gutter, well inside its clip). */}
-      <div className="flex-1 overflow-auto grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
+      {/* grid-cols-2 on narrow: auto-fill/minmax(180px) correctly falls back to
+          ONE column at 390px, but that makes each card a ~342x176 slab — much
+          wider than tall, nothing like the intended card proportion. Two ~165px
+          columns read correctly on a phone. */}
+      <div className="flex-1 overflow-auto grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
         {flat
           ? flatResults.map(renderFileCard)
           : (

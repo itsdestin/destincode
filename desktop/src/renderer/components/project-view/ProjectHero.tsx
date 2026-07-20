@@ -157,7 +157,12 @@ export function ProjectHero({
   };
 
   return (
-    <div className="layer-surface p-5 flex items-start justify-between gap-4">
+    // Stacks below 640px. The right column is shrink-0 and holds two size="lg"
+    // buttons (~268px together); on a 390px phone that left the entire left
+    // column — name, path, sync strip, stats, every management button — about
+    // 34px wide, i.e. one or two characters each, and the card overflowed the
+    // viewport anyway. Side-by-side only once there's room for it.
+    <div className="layer-surface p-3 sm:p-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
       {/* Left: eyebrow + name switcher + path/repo + stat row */}
       <div className="min-w-0">
         <div className="text-[10px] font-medium tracking-wider text-fg-muted uppercase mb-1.5">
@@ -325,7 +330,8 @@ export function ProjectHero({
       </div>
 
       {/* Right: Open repo (only when the project has a web URL) + New Conversation. */}
-      <div className="shrink-0 flex items-center gap-2">
+      {/* Narrow: own full-width row under the name, allowed to wrap. */}
+      <div className="w-full sm:w-auto sm:shrink-0 flex flex-wrap items-center gap-2">
         {repo?.webUrl && (
           <Button
             variant="secondary"

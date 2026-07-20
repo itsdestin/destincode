@@ -930,6 +930,26 @@ body[data-mode="buddy-chat"] #theme-bg {
     padding-top: 0.5rem;
     padding-bottom: 0.5rem;
   }
+
+  /* Hover-reveal controls have NO touch path — `opacity-0 group-hover:...`
+     simply never resolves on a touch device, and this exact bundle is what
+     Android and remote phones run. Anything tagged .touch-reveal stays
+     visible when the pointer is coarse (e.g. "Remove project" on the
+     ProjectSwitcher rows, which was otherwise unreachable). */
+  .touch-reveal {
+    opacity: 1 !important;
+  }
+}
+
+/* Scroll strip without a visible scrollbar — for horizontal overflow rows
+   (segmented controls, tab strips) where the bar itself would be chrome
+   noise on a 4px-tall row. The row is still swipeable/wheel-scrollable. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

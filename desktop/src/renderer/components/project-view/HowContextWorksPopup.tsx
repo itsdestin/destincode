@@ -398,9 +398,12 @@ export function HowContextWorksPopup({ initialTab, onClose }: HowContextWorksPop
         </header>
 
         {/* Body: left nav + scrollable content */}
-        <div className="flex-1 flex min-h-0">
+        {/* Stacks below 640px: a shrink-0 190px nav beside content in a 367px
+            panel left ~176px for the column, ~136px after its own padding.
+            Narrow turns the nav into a horizontal scroll strip on top. */}
+        <div className="flex-1 flex flex-col sm:flex-row min-h-0">
           {/* Left nav column */}
-          <aside className="w-[190px] shrink-0 border-r border-edge-dim p-2 flex flex-col gap-1 overflow-y-auto">
+          <aside className="w-full sm:w-[190px] shrink-0 border-b sm:border-b-0 sm:border-r border-edge-dim p-2 flex flex-row sm:flex-col gap-1 overflow-x-auto sm:overflow-x-visible overflow-y-auto no-scrollbar sm:[scrollbar-width:auto]">
             {INFO_TABS.map((t) => {
               const active = t.id === activeTab;
               const { Icon } = t;
@@ -408,7 +411,9 @@ export function HowContextWorksPopup({ initialTab, onClose }: HowContextWorksPop
                 <button
                   key={t.id}
                   type="button"
-                  className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] transition-colors ${
+                  // shrink-0 + whitespace-nowrap so the tabs scroll horizontally
+                  // as a strip on narrow instead of squashing.
+                  className={`w-auto sm:w-full shrink-0 whitespace-nowrap text-left flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] transition-colors ${
                     active
                       ? 'bg-inset text-fg font-medium'
                       : 'text-fg-2 hover:bg-inset hover:text-fg'
@@ -425,7 +430,7 @@ export function HowContextWorksPopup({ initialTab, onClose }: HowContextWorksPop
           </aside>
 
           {/* Scrollable content column */}
-          <div className="flex-1 overflow-y-auto px-5 py-5 min-w-0">
+          <div className="flex-1 overflow-y-auto px-3 py-4 sm:px-5 sm:py-5 min-w-0">
             {renderPage(activeTab)}
           </div>
         </div>
