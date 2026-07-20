@@ -71,6 +71,38 @@ const MODEL_DISPLAY: Record<ModelAlias | 'unknown', { label: string; color: stri
   unknown:     { label: 'Model Unknown', color: '#DD4444', bg: 'rgba(221,68,68,0.15)', border: 'rgba(221,68,68,0.3)' },
 };
 
+/**
+ * What the model chip should render. A display-only union — see the `model`
+ * prop comment for why native models are NOT folded into ModelAlias.
+ *  - 'alias'   Claude Code session on a recognized model
+ *  - 'native'  native-runtime session; label is a prettified SessionInfo.model
+ *  - 'unknown' Claude Code session whose model couldn't be confirmed (error)
+ */
+export type ModelChip =
+  | { kind: 'alias'; alias: ModelAlias }
+  | { kind: 'native'; label: string; modelId: string }
+  | { kind: 'unknown' };
+
+/**
+ * Native chip color. `--tag-blue` is the one slot in the tag palette that
+ * collides with nothing else in this bar: gray/indigo/teal/fuchsia are the four
+ * CC aliases (teal is Haiku), red is both Unknown chips, and --accent/amber/
+ * salmon are permission modes. Themeable per the tag system rather than a fifth
+ * hardcoded hex; the fill/border formula is TagChip.tsx's, so native model chips
+ * and session tags read as one family.
+ */
+/** MODEL_DISPLAY row for the two Claude Code chip states. */
+function ccChipDisplay(model: Exclude<ModelChip, { kind: 'native' }>) {
+  return MODEL_DISPLAY[model.kind === 'unknown' ? 'unknown' : model.alias];
+}
+
+const NATIVE_CHIP = 'var(--tag-blue)';
+const nativeChipStyle = {
+  color: NATIVE_CHIP,
+  backgroundColor: `color-mix(in srgb, ${NATIVE_CHIP} 16%, transparent)`,
+  borderColor: `color-mix(in srgb, ${NATIVE_CHIP} 35%, transparent)`,
+};
+
 // Amber (#F2B33D) for AUTO matches CC's own banner color and visually sits
 // between 'auto-accept' (theme accent, mostly safe) and 'bypass' (salmon, no
 // safety checks) — increasing autonomy = warmer color.
@@ -159,11 +191,19 @@ interface Props {
   statusData: StatusData;
   onRunSync?: () => void;
   onOpenSync?: () => void;
-  // 'unknown' renders a distinct error-styled chip — App.tsx passes it whenever
-  // it can't confidently determine the session's real model/mode (unrecognized
-  // model id, missing/invalid data on resume or reconnect) instead of silently
-  // guessing a default, which would misrepresent what's actually running.
-  model?: ModelAlias | 'unknown';
+  // Display-only view of the session's model. 'unknown' renders a distinct
+  // error-styled chip — App.tsx passes it whenever it can't confidently
+  // determine a CLAUDE CODE session's real model (unrecognized model id,
+  // missing/invalid data on resume or reconnect) instead of silently guessing a
+  // default, which would misrepresent what's actually running.
+  //
+  // Native-runtime sessions never reach 'unknown': their bound model id is
+  // authoritative on SessionInfo.model, so App passes {kind:'native'} with a
+  // label. Keeping this a display-only union (rather than widening ModelAlias)
+  // is deliberate — ModelAlias also drives cycleModel, the `auto` permission
+  // gate, and the persisted model preference, none of which a third-party
+  // model id may leak into.
+  model?: ModelChip;
   onCycleModel?: () => void;
   // CC sessions pass a PermissionMode; native sessions pass a NativePermissionMode.
   // The chip renders identically for both — only the value + cycle handler differ.
@@ -679,28 +719,45 @@ export default function StatusBar({
     <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-[10px] text-fg-muted">
       {/* Combined model + effort pill — clicking opens the full picker (same as /effort).
          Shift+Space still cycles models via the keyboard shortcut in App.tsx. */}
-      {model && (
+      {model && (model.kind === 'native' ? (
+        // Native runtime: the bound model id IS the truth, so this chip never
+        // shows an error state. The full id goes in the title because the label
+        // is a best-effort prettification (and CSS-truncated when long).
+        <button
+          onClick={onOpenModelPicker}
+          className="flex items-center px-1.5 py-0.5 rounded-sm border cursor-pointer hover:brightness-125 transition-colors max-w-[14rem] truncate"
+          style={nativeChipStyle}
+          title={`${model.modelId} — click to change model`}
+        >
+          {/* No effort segment: /effort and MAX_EFFORT_MODELS are Claude Code
+              concepts the native harness doesn't implement.
+              min-w-0 is load-bearing: a flex child defaults to min-width:auto
+              and won't shrink below its content, so `truncate` alone would let
+              a long GGUF name blow past the button's max-w instead of eliding. */}
+          <span className="truncate min-w-0">{model.label}</span>
+        </button>
+      ) : (
         <button
           onClick={onOpenModelPicker}
           className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm border cursor-pointer hover:brightness-125 transition-colors"
           style={{
-            backgroundColor: MODEL_DISPLAY[model].bg,
-            color: MODEL_DISPLAY[model].color,
-            borderColor: MODEL_DISPLAY[model].border,
+            backgroundColor: ccChipDisplay(model).bg,
+            color: ccChipDisplay(model).color,
+            borderColor: ccChipDisplay(model).border,
           }}
-          title={model === 'unknown'
+          title={model.kind === 'unknown'
             ? "YouCoded couldn't confirm which model this session is using — click to set one explicitly"
             : 'Click to change model and effort (Shift+Space cycles model)'}
         >
-          <span>{MODEL_DISPLAY[model].label}</span>
-          {model !== 'unknown' && (
+          <span>{ccChipDisplay(model).label}</span>
+          {model.kind !== 'unknown' && (
             <>
               <span className="opacity-40">|</span>
               <span className="capitalize">{effort || 'auto'} Effort</span>
             </>
           )}
         </button>
-      )}
+      ))}
 
       {/* Fast mode chip — only rendered when on. Click opens the ModelPickerPopup. */}
       {fast && (

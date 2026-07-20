@@ -9,6 +9,7 @@ import HeaderBar from './components/HeaderBar';
 import InputBar, { type InputBarHandle } from './components/InputBar';
 import StatusBar from './components/StatusBar';
 import { MODELS, type ModelAlias } from './components/StatusBar';
+import { modelChipFor, supportsAliasCycling } from './components/model-chip';
 import FolderSwitcher from './components/FolderSwitcher';
 
 // Labels for the welcome-screen model picker (mirrors SessionStrip)
@@ -1776,6 +1777,10 @@ function AppInner() {
   const cycleModelRef = useRef<(() => void) | null>(null);
   const cycleModel = useCallback(() => {
     if (!sessionId) return;
+    // Native sessions can't cycle CC aliases — see supportsAliasCycling for the
+    // failure this prevents (a chip relabeled to a model the session isn't
+    // running, plus a stray write to the global model preference).
+    if (!supportsAliasCycling(sessions.find((s) => s.id === sessionId))) return;
     // currentModel may be 'unknown' — indexOf then legitimately returns -1,
     // which wraps to index 0 below, so cycling from an unknown state starts fresh.
     const idx = MODELS.indexOf(currentModel as ModelAlias);
@@ -1793,7 +1798,7 @@ function AppInner() {
     // verification is just a safety net. If verification later shows a
     // mismatch, the failure handler overwrites with the actual model.
     (window.claude as any).model?.setPreference(next);
-  }, [currentModel, sessionId, guardedPtySend]);
+  }, [currentModel, sessionId, guardedPtySend, sessions]);
   cycleModelRef.current = cycleModel;
 
   useEffect(() => {
@@ -2341,6 +2346,9 @@ function AppInner() {
   // Native sessions: permission modes are a harness policy (Phase 2), not a
   // PTY shift+tab cycle — hide the badge + cycle affordance for them.
   const isNativeSession = currentSession?.provider === 'native';
+  // What the StatusBar model chip renders — see model-chip.ts for why native
+  // sessions bypass the Claude Code alias matcher entirely.
+  const modelChip = modelChipFor(currentSession, currentModel);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -2731,7 +2739,7 @@ function AppInner() {
                     if (!guardedPtySend(sessionId, '/sync\r')) return;
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
-                  model={currentModel}
+                  model={modelChip}
                   onCycleModel={cycleModel}
                   permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
                   onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
