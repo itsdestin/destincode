@@ -3296,8 +3296,11 @@ export function registerIpcHandlers(
     return { ok: true, missingIds: results.filter((x): x is string => x !== null) };
   });
 
-  // Return cleanup function for use during app shutdown
-  return function cleanup() {
+  // Return cleanup function for use during app shutdown. It returns the engine-stop
+  // promise so main's quit handler can AWAIT the llama-server teardown before
+  // app.quit() — the old fire-and-forget `void` let quit win the race and orphaned
+  // the engine, which kept the port bound for the next instance to wrongly adopt.
+  return function cleanup(): Promise<void> {
     stopThemeWatcher();
     clearInterval(statusInterval);
     clearInterval(usageRefreshInterval);
@@ -3307,7 +3310,8 @@ export function registerIpcHandlers(
     // is synchronous and callers don't await it, so this mirrors the async
     // stopSyncSpaces() teardown pattern in main.ts window-all-closed.
     void nativeHost.destroyAll().catch(() => {});
-    void engineManager.stopAll().catch(() => {}); // never leave an orphaned llama-server on quit
+    // Awaited by the caller: never leave an orphaned llama-server on quit.
+    const engineStopped = engineManager.stopAll().catch(() => {});
     for (const [id, watcher] of topicWatchers) {
       if (typeof (watcher as fs.FSWatcher).close === 'function') {
         (watcher as fs.FSWatcher).close();
@@ -3318,5 +3322,6 @@ export function registerIpcHandlers(
     topicWatchers.clear();
     lastTopics.clear();
     sessionIdMap.clear();
+    return engineStopped;
   };
 }

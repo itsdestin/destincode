@@ -9,7 +9,7 @@
 // passes through here — each call bumps lastActivity and holds an inFlight
 // count until its response BODY is fully read (streams count as active for
 // their whole duration; a 10-minute generation must not be killed mid-stream).
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execFileSync } from 'child_process';
 import * as fs from 'fs';
 import { EventEmitter } from 'events';
 import type { EngineModel, EngineModelState, EngineRunState } from '../../shared/engine-types';
@@ -29,6 +29,11 @@ export interface EngineSupervisorOpts {
   sleepIdleSeconds?: number; // per-model auto-sleep; default 300 (5 min)
   modelPollMs?: number;      // /models state poll cadence when idle; default 1500
   modelPollLoadingMs?: number; // faster cadence while a model is loading; default 400
+  /** Test seam: resolve the PID listening on `port` (Linux). Default: ss + /proc scan. */
+  pidOnPort?: (port: number) => number | null;
+  /** Test seam: resolve a PID's executable path (for the stale-engine reaper).
+   *  Default: readlink /proc/<pid>/exe. */
+  exeForPid?: (pid: number) => string | null;
 }
 
 // Keep at most 2 models resident: the router's LRU default (4) can overcommit
@@ -45,6 +50,61 @@ const SLEEP_IDLE_SECONDS = 300;
 // stop retrying until the user acts (EngineCard's Restart button).
 const STRIKE_LIMIT = 3;
 const STRIKE_WINDOW_MS = 5 * 60_000;
+
+/** Resolve the PID of the process listening on a localhost port. Linux-only:
+ *  prefers `ss -ltnp`, falls back to scanning /proc/net/tcp + process fd socket
+ *  inodes. Returns null on any other platform or when no listener is found —
+ *  callers treat null as "unknown", never "safe". */
+function defaultPidOnPort(port: number): number | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    const out = execFileSync('ss', ['-ltnp'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+    const line = out.split('\n').find((l) => l.includes(`:${port} `) || l.endsWith(`:${port}`));
+    const m = line && /pid=(\d+)/.exec(line);
+    if (m) return parseInt(m[1], 10);
+  } catch { /* ss missing/failed — fall through to the /proc scan */ }
+  return pidOnPortViaProc(port);
+}
+
+/** /proc-only port→PID: find the socket inode for the LISTEN port in
+ *  /proc/net/tcp(6), then the process whose fd links to that inode. */
+function pidOnPortViaProc(port: number): number | null {
+  const hex = ':' + port.toString(16).toUpperCase().padStart(4, '0');
+  const inode = listenInodeForPort(hex);
+  if (!inode) return null;
+  let pids: string[];
+  try { pids = fs.readdirSync('/proc'); } catch { return null; }
+  for (const pid of pids) {
+    if (!/^\d+$/.test(pid)) continue;
+    let fds: string[];
+    try { fds = fs.readdirSync(`/proc/${pid}/fd`); } catch { continue; } // perms / raced exit
+    for (const fd of fds) {
+      try {
+        if (fs.readlinkSync(`/proc/${pid}/fd/${fd}`) === `socket:[${inode}]`) return parseInt(pid, 10);
+      } catch { /* raced fd close */ }
+    }
+  }
+  return null;
+}
+
+function listenInodeForPort(hexPort: string): string | null {
+  for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let lines: string[];
+    try { lines = fs.readFileSync(f, 'utf8').split('\n'); } catch { continue; }
+    for (const line of lines.slice(1)) {
+      const cols = line.trim().split(/\s+/);
+      // cols[1]=local_address (hexIP:hexPort), cols[3]=state ('0A' = LISTEN), cols[9]=inode
+      if (cols.length > 9 && cols[1]?.endsWith(hexPort) && cols[3] === '0A') return cols[9];
+    }
+  }
+  return null;
+}
+
+/** Resolve a PID's executable path via /proc/<pid>/exe; null when unreadable
+ *  (raced exit, perms) — callers treat null as "unknown", never "safe". */
+function defaultExeForPid(pid: number): string | null {
+  try { return fs.readlinkSync(`/proc/${pid}/exe`); } catch { return null; }
+}
 
 export class EngineSupervisor extends EventEmitter {
   private child: ChildProcess | null = null;
@@ -133,6 +193,15 @@ export class EngineSupervisor extends EventEmitter {
       );
     }
 
+    // Reap a stale orphan squatting on our fixed port BEFORE we spawn (2026-07-20).
+    // Without a single-instance lock, a previous run's llama-server can outlive the app
+    // (the old quit path lost the SIGTERM race) and keep the port bound. Our child then
+    // can't bind, and — before the identity guard above — we'd have adopted the orphan.
+    // If the listener is a llama-server that is NOT our live child, kill it so this
+    // spawn gets the port. Linux-only; elsewhere the port conflict surfaces as the
+    // child's startup exit (unchanged behavior).
+    this.reapStaleEngineOnPort();
+
     const child = spawn(
       this.opts.binaryPath,
       [
@@ -186,7 +255,14 @@ export class EngineSupervisor extends EventEmitter {
     while (Date.now() < deadline && !exitedDuringStartup) {
       try {
         const res = await fetchImpl(`${this.rootUrl()}/health`, { method: 'GET' });
-        if (res.ok) {
+        // Identity guard (2026-07-20): /health answering "ok" is NOT proof that the
+        // server we just spawned is the one listening. An orphaned llama-server from
+        // a previous run keeps our fixed port bound, so our child fails to bind and
+        // dies while the ORPHAN answers /health. Without this guard we would adopt
+        // the orphan — and later count ITS death as OUR crash (the false "engine
+        // crashed repeatedly" strike-out). Only accept when the listener is our child
+        // (or identity can't be determined, e.g. non-Linux — fall through as before).
+        if (res.ok && this.isOurChildOnPort(child)) {
           this.state = 'running';
           this.touch();
           child.off('exit', startupExitListener);
@@ -216,6 +292,33 @@ export class EngineSupervisor extends EventEmitter {
       );
     }
     throw new Error(`The local engine did not start within ${Math.round(readyDeadlineMs / 1000)} seconds.`);
+  }
+
+  /** Is the process listening on our port the child we just spawned? Returns
+   *  true when identity can't be determined (non-Linux, or ss/proc unavailable)
+   *  so we don't regress platforms without the mapping — the guard only ever
+   *  REJECTS a confidently-foreign listener; it never blocks an unknown one.
+   *  This is what stops us adopting an orphaned engine on our fixed port. */
+  private isOurChildOnPort(child: ChildProcess): boolean {
+    if (process.platform !== 'linux') return true; // no port→PID mapping — assume ours
+    if (child.pid == null) return true;            // not assigned yet — can't disprove
+    const pid = (this.opts.pidOnPort ?? defaultPidOnPort)(this.opts.port);
+    if (pid == null) return true;                  // unknown — don't block on a non-answer
+    return pid === child.pid;
+  }
+
+  /** Kill a llama-server squatting on our port that is NOT our live child (a stale
+   *  orphan from a previous run). Best-effort + Linux-only; never throws, and never
+   *  touches our own child or a non-llama process. Runs before spawn so this instance
+   *  can actually bind the fixed port instead of adopting the orphan. */
+  private reapStaleEngineOnPort(): void {
+    if (process.platform !== 'linux') return;
+    const pid = (this.opts.pidOnPort ?? defaultPidOnPort)(this.opts.port);
+    if (pid == null) return;                       // nothing (identifiably) on the port
+    if (this.child && this.child.pid === pid) return; // our own live child — leave it
+    const exe = (this.opts.exeForPid ?? defaultExeForPid)(pid);
+    if (exe == null || !exe.includes('llama-server')) return; // not confirmably our engine — never kill it
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone / not ours to kill */ }
   }
 
   private onExit(code: number | null): void {
@@ -255,16 +358,33 @@ export class EngineSupervisor extends EventEmitter {
     }
     this.intentionalShutdown = true;
     const child = this.child;
-    child.kill();
-    await new Promise<void>((resolve) => {
-      let done = false;
-      const finish = () => { if (!done) { done = true; clearTimeout(timer); resolve(); } };
-      child.once('exit', finish);
-      const timer = setTimeout(finish, 2_000); // best-effort — don't hang app quit
-    });
+    // Escalating kill (2026-07-20): a single SIGTERM is why engines leaked past app
+    // quit — llama-server can ignore/stall on TERM (mid-write, stuck in a CUDA/Vulkan
+    // call), the 2s timer fired, app.quit() won the race, and the orphaned server kept
+    // our port bound for the NEXT instance to wrongly adopt. TERM → wait → KILL the
+    // survivor, then wait for the exit that KILL guarantees. Still bounded so a
+    // wedged child can't hang quit: total worst case ~3s.
+    child.kill('SIGTERM');
+    const exited = await this.waitForExit(child, 1_500);
+    if (!exited) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      await this.waitForExit(child, 1_500);
+    }
     this.child = null;
     this.state = 'stopped';
     this.emit('status-changed');
+  }
+
+  /** Resolve true if `child` exits within `ms`, false on timeout (timer unref'd so
+   *  it can't hold the process open). */
+  private waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (exited: boolean) => { if (!done) { done = true; clearTimeout(timer); resolve(exited); } };
+      child.once('exit', () => finish(true));
+      const timer = setTimeout(() => finish(false), ms);
+      timer.unref?.();
+    });
   }
 
   // ---- idle accounting -------------------------------------------------

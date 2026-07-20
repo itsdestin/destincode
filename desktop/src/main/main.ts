@@ -112,7 +112,7 @@ let mainWindow: BrowserWindow | null = null;
 // Assigned once during setup; `createAppWindow` uses it to hide the buddy
 // when the last main window closes (spec §7.6).
 let buddyManagerRef: BuddyWindowManager | null = null;
-let cleanupIpcHandlers: (() => void) | null = null;
+let cleanupIpcHandlers: (() => Promise<void>) | null = null;
 // Plan 2b Task 8: the conversation-lease client + this install's device identity.
 // Constructed inside createWindow (before registerIpcHandlers) but referenced
 // again in the app-ready sync block, so they live at module scope. The holder
@@ -1714,7 +1714,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (cleanupIpcHandlers) cleanupIpcHandlers();
+  // Capture the engine-stop promise: cleanup() starts llama-server teardown and we
+  // must let it finish before app.quit(), else the engine outlives the app and keeps
+  // the fixed port bound for the next instance to wrongly adopt (2026-07-20 fix).
+  const engineStopped = cleanupIpcHandlers ? cleanupIpcHandlers() : Promise.resolve();
   destroySocialHandlers(); // tear down the presence WebSocket + its timers
   sessionManager.destroyAll();
   hookRelay.stop();
@@ -1731,5 +1734,10 @@ app.on('window-all-closed', () => {
   try { leaseClient?.destroy(); } catch {}
   // Stop sync service — clears timer, releases locks, removes .app-sync-active marker
   try { setSyncService(null); } catch {}
-  app.quit();
+  // Wait for the engine to actually die, but never let a wedged teardown hang quit:
+  // race the teardown against a 4s cap (supervisor's own SIGTERM→SIGKILL bound is ~3s).
+  void Promise.race([
+    engineStopped,
+    new Promise<void>((r) => setTimeout(r, 4_000)),
+  ]).finally(() => app.quit());
 });
