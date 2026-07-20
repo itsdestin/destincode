@@ -675,6 +675,25 @@ export default function SessionStrip({
     return Math.ceil(textWidth + 28);
   }, []);
 
+  // Fix: the active pill's label used to snap open instead of rolling out like
+  // the hover reveal does. Two independent causes — maxWidth was `undefined`
+  // when active (no numeric pair for the browser to interpolate), and the
+  // transition was hard-disabled for every pack-expanded pill, which
+  // packSessions guarantees the active pill always is (pack-sessions.ts:53).
+  // So the pill you just clicked was precisely the one with animation off.
+  // That 'none' still earns its keep for suppressing repack churn, so instead
+  // of dropping it we arm a short window on an active-id change and let the
+  // window win — packing changes outside that window stay instant.
+  const [activeSwap, setActiveSwap] = useState(false);
+  const prevActiveRef = useRef(activeSessionId);
+  useEffect(() => {
+    if (prevActiveRef.current === activeSessionId) return;
+    prevActiveRef.current = activeSessionId;
+    setActiveSwap(true);
+    const t = setTimeout(() => setActiveSwap(false), 260);
+    return () => clearTimeout(t);
+  }, [activeSessionId]);
+
   const repack = useCallback(() => {
     const bar = pillBarRef.current;
     if (!bar) return;
@@ -777,19 +796,34 @@ export default function SessionStrip({
                 title={s.name}
               >
                 <SessionDot color={color} isActive={isActive} />
+                {/* Grid wrapper exists purely to make the reveal animatable:
+                    grid-template-columns 0fr→1fr interpolates to the label's
+                    INTRINSIC width, which max-width cannot do without imposing
+                    a hard cap. That matters because the active pill is meant to
+                    have no cap — it flex-shrinks so ellipsis kicks in only when
+                    the strip itself is too narrow. */}
                 <span
-                  className={`text-xs font-medium text-fg-2 whitespace-nowrap overflow-hidden text-ellipsis ${isActive ? 'min-w-0' : ''}`}
                   style={{
-                    // Active pill flex-shrinks so ellipsis kicks in when the
-                    // strip is narrower than the full name (no hard cap).
-                    maxWidth: showName
-                      ? (isActive ? undefined : 120)
-                      : 0,
+                    display: 'grid',
+                    // min-width:0 must sit on the WRAPPER now that it is the
+                    // flex child — without it the active pill can't shrink and
+                    // its label never ellipsizes on a narrow strip.
+                    minWidth: 0,
+                    gridTemplateColumns: showName ? '1fr' : '0fr',
                     opacity: showName ? 1 : 0,
-                    transition: pack.expanded.has(s.id) ? 'none' : 'max-width 200ms ease, opacity 150ms ease',
+                    transition: (pack.expanded.has(s.id) && !activeSwap)
+                      ? 'none'
+                      : 'grid-template-columns 200ms ease, opacity 150ms ease',
                   }}
                 >
-                  {s.name}
+                  <span
+                    className="text-xs font-medium text-fg-2 whitespace-nowrap overflow-hidden text-ellipsis min-w-0"
+                    // Non-active pills keep the 120px hover-reveal cap; the
+                    // active pill stays uncapped (see wrapper comment).
+                    style={{ maxWidth: isActive ? undefined : 120 }}
+                  >
+                    {s.name}
+                  </span>
                 </span>
                 {/* Native-runtime badge — marks a YouCoded harness session and
                     which preset it runs as. Only when the name is showing so it

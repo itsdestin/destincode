@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
 import UserMessage from './UserMessage';
@@ -19,6 +19,14 @@ import { SessionDrawer } from './SessionDrawer';
 import { useActiveProject } from '../hooks/useActiveProject';
 import { assistantName } from '../utils/assistant-name';
 import { ContentFindBar } from './ContentFindBar';
+
+// Session-switch motion timings. Must stay in step with the `bubble-switch-*`
+// keyframes and the `.session-entering` delay in globals.css.
+const SWITCH_EXIT_MS = 120;
+const SWITCH_STAGGER_MS = 30;
+const SWITCH_STAGGER_CAP = 8;
+// Longest possible finish: exit hand-off + capped stagger + pop-in duration.
+const SWITCH_ENTER_MS = SWITCH_EXIT_MS + SWITCH_STAGGER_CAP * SWITCH_STAGGER_MS + 260;
 
 interface Props {
   sessionId: string;
@@ -85,7 +93,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
 export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
-  const { showTimestamps } = useTheme();
+  const { showTimestamps, reducedEffects } = useTheme();
   // Artifact drawer state — read from ArtifactContext so ChatView reacts to
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState, dispatch: artifactDispatch } = useArtifact();
@@ -132,6 +140,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   // Ctrl+F find-over-chat-history. Searches the message timeline (contentRef)
   // via the same CSS-Highlight ContentFindBar the artifact viewer uses.
@@ -199,6 +208,46 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     const raf = requestAnimationFrame(scrollToBottom);
     return () => cancelAnimationFrame(raf);
   }, [visible, scrollToBottom]);
+
+  // ── Session-switch motion ────────────────────────────────────────────────
+  // Bubbles pop away on the way out and pop back in on the way in. Every
+  // session's pane stays MOUNTED and stacked in the same box (see the
+  // visibility/opacity note on the root div below), so animating both panes at
+  // once would read as a crossfade. Instead the outgoing pane is held visible
+  // for SWITCH_EXIT_MS while its bubbles shrink away, and the incoming pane's
+  // bubbles carry an equal animation-delay with `both` fill — they sit at
+  // opacity 0 until the exit has finished, so the two never dissolve through
+  // each other. `visible` is the only edge available here: a ChatView's
+  // sessionId never changes, so this also fires on the Ctrl+` chat/terminal
+  // toggle, which wants the same entrance.
+  const [switchPhase, setSwitchPhase] = useState<'idle' | 'entering' | 'leaving'>('idle');
+  const prevVisibleRef = useRef(visible);
+  useLayoutEffect(() => {
+    const was = prevVisibleRef.current;
+    prevVisibleRef.current = visible;
+    if (was === visible) return;
+    if (reducedEffects) { setSwitchPhase('idle'); return; }
+    // Only entries the IntersectionObserver has marked .in-view get a stagger
+    // index, so off-screen bubbles are never animated at all — that keeps the
+    // cost flat on a long transcript instead of scaling with its length.
+    // The index is capped so a tall window can't grow a long trailing ripple.
+    const root = rootRef.current;
+    if (root) {
+      let i = 0;
+      root.querySelectorAll<HTMLElement>('.timeline-entry.in-view').forEach((el) => {
+        el.style.setProperty('--switch-i', String(Math.min(i++, SWITCH_STAGGER_CAP)));
+      });
+    }
+    setSwitchPhase(visible ? 'entering' : 'leaving');
+    const t = setTimeout(
+      () => setSwitchPhase('idle'),
+      visible ? SWITCH_ENTER_MS : SWITCH_EXIT_MS,
+    );
+    return () => clearTimeout(t);
+  }, [visible, reducedEffects]);
+
+  // The outgoing pane must stay painted until its exit animation finishes.
+  const paneShown = visible || switchPhase === 'leaving';
 
   // Fix: input bar height can differ between sessions (drafts, multi-line),
   // so --bottom-chrome-height changes right after tab switch. App's ResizeObserver
@@ -540,8 +589,14 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       // reports). Using visibility+opacity+pointer-events keeps the layout box
       // stable across toggles — no reflow, no flash, and focus/IME survive.
       // `inert` removes hidden subtree from tab order + a11y tree.
+      ref={rootRef}
+      // `inert`/`aria-hidden`/`pointerEvents` follow `visible`, NOT `paneShown`:
+      // the outgoing pane lingers a few frames to finish its exit animation and
+      // must be non-interactive and out of the a11y tree for all of them.
       inert={!visible}
       aria-hidden={visible ? undefined : true}
+      className={switchPhase === 'entering' ? 'session-entering'
+        : switchPhase === 'leaving' ? 'session-leaving' : undefined}
       style={{
         position: 'absolute',
         top: 0,
@@ -550,8 +605,8 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
         bottom: 0,
         display: 'flex',
         flexDirection: 'column',
-        visibility: visible ? 'visible' : 'hidden',
-        opacity: visible ? 1 : 0,
+        visibility: paneShown ? 'visible' : 'hidden',
+        opacity: paneShown ? 1 : 0,
         pointerEvents: visible ? 'auto' : 'none',
       }}
     >

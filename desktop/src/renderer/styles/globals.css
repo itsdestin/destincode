@@ -1174,6 +1174,57 @@ body[data-mode="buddy-chat"] #theme-bg {
   to   { opacity: 1; transform: none; }
 }
 
+/* Session switch — chat bubble exit + entrance.
+   Both keyframes end on `transform: none` (not scale(1)/translateY(0)) so
+   fill-mode: both doesn't leave a persistent compositing layer on every
+   timeline entry — same constraint as row-fade-in above. Bubbles carry no
+   backdrop-filter of their own (the glass cascade targets .in-view .bg-inset),
+   so transform DURING the animation is safe.
+
+   Applied by ChatView's switchPhase, and ONLY to .in-view entries — the class
+   the bubble IntersectionObserver already maintains for the glass optimization.
+   Off-screen bubbles are never animated, so the cost is flat regardless of how
+   long the transcript is. --switch-i is the per-entry stagger index, assigned
+   in ChatView and capped there. */
+@keyframes bubble-switch-out {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: scale(0.96) translateY(-4px); }
+}
+
+@keyframes bubble-switch-in {
+  from { opacity: 0; transform: scale(0.9) translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.session-leaving .timeline-entry.in-view {
+  animation: bubble-switch-out 120ms ease-in both;
+}
+
+/* The 120ms delay hands off from the outgoing pane's exit. Panes are stacked
+   and both are painted during that window, so `both` fill is load-bearing:
+   it holds the incoming bubbles at opacity 0 until the outgoing ones have
+   gone, which is what keeps this a sequential swap rather than a crossfade. */
+.session-entering .timeline-entry.in-view {
+  animation: bubble-switch-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: calc(120ms + var(--switch-i, 0) * 30ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-leaving .timeline-entry.in-view,
+  .session-entering .timeline-entry.in-view { animation: none; }
+}
+
+/* The app's own reducedEffects setting, mirrored onto <html> by
+   theme-engine.ts::applyThemeToDom. ChatView already skips the switch phase in
+   JS when it's on; this covers the session strip, whose pill reveal is an
+   INLINE transition and so needs !important to be reachable from a stylesheet. */
+@media (prefers-reduced-motion: reduce) {
+  .session-strip * { transition: none !important; }
+}
+[data-reduced-effects] .session-strip * { transition: none !important; }
+[data-reduced-effects] .session-leaving .timeline-entry.in-view,
+[data-reduced-effects] .session-entering .timeline-entry.in-view { animation: none; }
+
 @keyframes challenge-pulse {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
