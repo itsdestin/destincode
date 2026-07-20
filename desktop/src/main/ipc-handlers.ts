@@ -1309,6 +1309,7 @@ export function registerIpcHandlers(
     });
 
     ipcMain.handle(IPC.REMOTE_SET_CONFIG, async (_event, updates: { enabled?: boolean; trustTailscale?: boolean; keepAwakeHours?: number }) => {
+      const wasEnabled = remoteConfig.enabled;
       if (typeof updates.enabled === 'boolean') remoteConfig.enabled = updates.enabled;
       if (typeof updates.trustTailscale === 'boolean') remoteConfig.trustTailscale = updates.trustTailscale;
       if (typeof updates.keepAwakeHours === 'number') {
@@ -1316,6 +1317,35 @@ export function registerIpcHandlers(
         applyKeepAwake(updates.keepAwakeHours);
       }
       remoteConfig.save();
+
+      // Fix: flipping this toggle used to persist `enabled` and stop there.
+      // remoteServer.start() ran exactly once, at boot (main.ts), when the flag
+      // was still false — so turning remote access on did nothing until the app
+      // was restarted, with no indication that a restart was required. The user
+      // saw the toggle on and the browser saw ERR_CONNECTION_REFUSED.
+      const toggled = typeof updates.enabled === 'boolean' && updates.enabled !== wasEnabled;
+      if (toggled && remoteServer) {
+        if (remoteConfig.enabled) {
+          try {
+            await remoteServer.start();
+          } catch (err: any) {
+            // Roll the flag back so the persisted state, the UI and reality all
+            // agree — otherwise the toggle reads "on" against a dead server.
+            remoteConfig.enabled = false;
+            remoteConfig.save();
+            // Surface the real OS error (EADDRINUSE etc.) rather than guessing
+            // at a cause — see docs/error-message-standards.md.
+            const detail = err?.message ? String(err.message) : String(err);
+            console.error('[remote] start failed:', detail);
+            return {
+              ...remoteConfig.toSafeObject(),
+              error: `Remote access could not start on port ${remoteConfig.port}: ${detail}`,
+            };
+          }
+        } else {
+          remoteServer.stop();
+        }
+      }
       return remoteConfig.toSafeObject();
     });
 
