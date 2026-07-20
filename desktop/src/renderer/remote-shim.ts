@@ -206,11 +206,29 @@ function handleMessage(data: string): void {
     clearTimeout(entry.timeout);
     pending.delete(id);
     // The host answered "I don't implement this channel" (remote-server's
-    // default case). Surface it — otherwise the call resolves with ok:false and
-    // the caller, which mostly doesn't check, renders an empty panel with no
-    // explanation. We still resolve normally so nothing crashes.
+    // default case). Surface it — otherwise the caller, which mostly doesn't
+    // check, renders an empty panel with no explanation.
+    //
+    // REJECT, don't resolve. The original version resolved "so nothing
+    // crashes", which was exactly backwards: callers expect the channel's real
+    // return SHAPE, so handing them {ok:false,unsupported:true} substitutes an
+    // object where an array belongs. marketplace-context does
+    //   theme.marketplace.list().catch(() => [])   → object survives the ||
+    // and the next `for (const theme of themeEntries)` threw "undefined is not
+    // a function" on a phone, taking out the whole screen.
+    //
+    // Rejecting restores the contract every caller was already written
+    // against: before the default case existed these channels were dropped and
+    // invoke() rejected on its 30s timeout, which is why `.catch(() => [])` is
+    // everywhere. Now they reject in milliseconds instead of 30 seconds — the
+    // fast-fail we wanted, without changing the type callers receive.
+    //
+    // noteUnsupported still fires first, so the explanatory toast is unaffected.
     if (payload && typeof payload === 'object' && payload.unsupported === true) {
-      noteUnsupported(String(type).replace(/:response$/, ''));
+      const channel = String(type).replace(/:response$/, '');
+      noteUnsupported(channel);
+      entry.reject(new Error(`remote-unsupported: ${channel}`));
+      return;
     }
     entry.resolve(payload);
     return;

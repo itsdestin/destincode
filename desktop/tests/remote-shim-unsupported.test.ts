@@ -76,7 +76,13 @@ describe('remote-shim unsupported-channel reporting', () => {
       id: msg.id,
       payload: { ok: false, error: `nope (${msg.type})`, unsupported: true },
     });
-    return { result: await p, channel: msg.type };
+    // The call REJECTS for unsupported channels, so capture rather than await
+    // bare — see the "rejects" test below for why rejecting is the fix.
+    const settled = await p.then(
+      (result: any) => ({ result, error: null as Error | null }),
+      (error: Error) => ({ result: undefined, error }),
+    );
+    return { ...settled, channel: msg.type };
   }
 
   it('announces an unsupported channel in plain language', async () => {
@@ -86,10 +92,38 @@ describe('remote-shim unsupported-channel reporting', () => {
     expect(events[0].message).toBe("Friends and challenges isn't available via remote access yet.");
   });
 
-  it('still resolves the call so the caller does not crash', async () => {
-    const { result } = await callUnsupported(() => (window as any).claude.social.listFriends());
-    expect(result.ok).toBe(false);
-    expect(result.unsupported).toBe(true);
+  // This test previously asserted the OPPOSITE — that the call resolves "so the
+  // caller does not crash". That was the bug, not the safeguard: resolving hands
+  // the caller {ok:false,unsupported:true} where it expects the channel's real
+  // shape. marketplace-context does
+  //   theme.marketplace.list().catch(() => [])
+  // so the object survived `themes || []`, and the next
+  // `for (const theme of themeEntries)` threw "undefined is not a function",
+  // blanking the whole screen on a phone. Rejecting is what makes every
+  // existing `.catch(() => [])` do its job.
+  it('rejects so callers fall back through their existing .catch()', async () => {
+    const { result, error } = await callUnsupported(() =>
+      (window as any).claude.social.listFriends(),
+    );
+    expect(result).toBeUndefined();
+    expect(error).toBeInstanceOf(Error);
+    expect(error!.message).toContain('social:list-friends');
+  });
+
+  // The regression in its real shape: the marketplace call site must end up
+  // with an ARRAY, because the very next thing it does is iterate.
+  it('lets a .catch(() => []) call site recover an iterable', async () => {
+    const p = (window as any).claude.theme.marketplace.list().catch(() => []);
+    const msg = JSON.parse(ws.sent[ws.sent.length - 1]);
+    ws.receive({
+      type: `${msg.type}:response`,
+      id: msg.id,
+      payload: { ok: false, error: 'nope', unsupported: true },
+    });
+    const themes = await p;
+    expect(Array.isArray(themes)).toBe(true);
+    // The operation that actually threw on the phone.
+    expect(() => { for (const _t of themes) { /* iterate */ } }).not.toThrow();
   });
 
   // The load-bearing one: useAttentionClassifier polls a channel every second.
