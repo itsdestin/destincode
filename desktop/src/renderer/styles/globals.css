@@ -1804,8 +1804,22 @@ html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-
   .framed-shell.drawer-open > .chat-pane {
     display: none;
   }
+
+  /* The artifact and game panes had NO left/right frame border here. The edge
+     strips above are flex spacers that hold the panes clear of the chrome-glass
+     frame behind them; with those hidden and width:100%, .drawer-pane (z-index
+     11, above chrome-glass at z 10) ran edge to edge and painted straight over
+     both borders.
+     Own margins rather than un-hiding the spacers, because the two shells
+     disagree: ChatView's framed-shell has leading and trailing .frame-edge
+     elements, TerminalRightSlot's clone has none. Margins frame the pane
+     identically in both; restoring the spacers would have fixed chat view and
+     left terminal view exactly as broken. */
   .framed-shell > .drawer-pane {
-    width: 100%;
+    flex: 1;
+    width: auto;
+    margin-left: var(--frame-edge);
+    margin-right: var(--frame-edge);
   }
 
   /* The pane collapsing to 100% was only half the fix. Its child <aside>
@@ -1836,13 +1850,20 @@ html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-
     display: none;
   }
 
-  /* The chat cutout's right edge normally shifts left by the pane width so
-     the chrome frames the chat area. With the chat pane hidden and the drawer
-     full-bleed there is no chat area to inset toward — and below 480px the
-     offset exceeded 100%, driving the clip-path polygon's x coordinates
-     negative and mangling the chrome geometry. */
+  /* No chat cutout at all while a right pane is open here, because the chat
+     pane it exists to frame is display:none. chrome-glass paints the full
+     rectangle instead; .drawer-pane covers the middle with its own opaque
+     background (z 11), and its border-radius lets the chrome show through at
+     the corners — the same way the drawer is framed on desktop.
+
+     This replaces a --chat-right-offset: 0px override that was wrong twice
+     over: it cut the hole all the way to the window's right edge, erasing the
+     right border while the polygon's hard-coded left edge kept the left one,
+     which is the asymmetry Destin spotted. (The offset it replaced was worse
+     still — 2*frame-edge + 480px exceeded 100% below 480px and drove the
+     polygon's x coordinates negative.) */
   .chrome-glass--drawer-open {
-    --chat-right-offset: 0px;
+    clip-path: none;
   }
 }
 
