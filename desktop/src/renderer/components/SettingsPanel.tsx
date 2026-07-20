@@ -823,6 +823,8 @@ interface RemoteButtonProps {
   onSetNewPassword: (v: string) => void;
   onSetPassword: () => void;
   onToggleEnabled: () => void;
+  /** Why the server refused to start, shown under the Enabled toggle. */
+  enableError: string;
   onToggleTailscaleTrust: () => void;
   onSetKeepAwake: (hours: number) => void;
   onRunSetup: () => void;
@@ -839,7 +841,7 @@ interface RemoteButtonProps {
 function RemoteButton({
   config, tailscale, clients, loading, hasActiveSession,
   newPassword, passwordStatus, copied, showSetupQR, showAddDevice,
-  onSetNewPassword, onSetPassword, onToggleEnabled, onToggleTailscaleTrust,
+  onSetNewPassword, onSetPassword, onToggleEnabled, enableError, onToggleTailscaleTrust,
   onSetKeepAwake, onRunSetup, onConfirmSetup, onCancelSetup, setupStatus, setupError, onDisconnectClient, onCopyLink,
   onSetShowSetupQR, onSetShowAddDevice,
 }: RemoteButtonProps) {
@@ -1030,6 +1032,12 @@ function RemoteButton({
                         <span className="text-xs text-fg-2">Enabled</span>
                         <Toggle enabled={!!config?.enabled} onToggle={onToggleEnabled} label="Remote access server enabled" />
                       </label>
+                      {/* The server is started from the toggle now, so it can fail
+                          (port already bound, permission denied). Show the real
+                          reason here — the toggle has already snapped back off. */}
+                      {enableError && (
+                        <p className="text-[11px] text-red-400 pb-2">{enableError}</p>
+                      )}
 
                       <div className="py-2">
                         <div className="flex items-center justify-between mb-1">
@@ -2218,6 +2226,8 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
   const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
   const [setupStatus, setSetupStatus] = useState<'idle' | 'confirm' | 'installing' | 'authenticating' | 'done' | 'error'>('idle');
   const [setupError, setSetupError] = useState('');
+  // Populated when IPC.REMOTE_SET_CONFIG reports the server failed to bind.
+  const [enableError, setEnableError] = useState('');
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
@@ -2267,7 +2277,11 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
 
   const handleToggleEnabled = useCallback(async () => {
     if (!config) return;
+    setEnableError('');
     const updated = await (window as any).claude.remote.setConfig({ enabled: !config.enabled });
+    // Main rolls `enabled` back to false when the server can't bind and returns
+    // the OS error; spreading `updated` therefore also un-sticks the toggle.
+    if (updated?.error) setEnableError(String(updated.error));
     setConfig(prev => prev ? { ...prev, ...updated } : prev);
   }, [config]);
 
@@ -2386,6 +2400,7 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
           onSetNewPassword={setNewPassword}
           onSetPassword={handleSetPassword}
           onToggleEnabled={handleToggleEnabled}
+          enableError={enableError}
           onToggleTailscaleTrust={handleToggleTailscaleTrust}
           onSetKeepAwake={handleSetKeepAwake}
           onRunSetup={handleRunSetup}

@@ -58,6 +58,14 @@ export interface ClientInfo {
 export class RemoteServer {
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
+  // Tracks whether start() has completed. start() used to be called exactly
+  // once at app boot, so re-entrancy never came up; it is now also called from
+  // the Settings toggle (IPC.REMOTE_SET_CONFIG), and a second start() would
+  // double-subscribe the SessionManager/HookRelay listeners and listen() twice.
+  private running = false;
+  // Held so stop() can clear it. Previously this interval was created by start()
+  // and never cancelled, so it survived stop() and a restart stacked another.
+  private uploadCleanupTimer: ReturnType<typeof setInterval> | null = null;
   private clients = new Set<AuthenticatedClient>();
   private tokens = new Map<string, boolean>(); // token → valid
   private tokensPath: string;
@@ -154,11 +162,22 @@ export class RemoteServer {
     } catch { /* best effort */ }
   }
 
+  /** True once start() has bound the port; false after stop() or a failed start. */
+  isRunning(): boolean {
+    return this.running;
+  }
+
   async start(): Promise<void> {
     if (!this.config.enabled) {
       console.log('[RemoteServer] Disabled in config, not starting');
       return;
     }
+    if (this.running) return;
+
+    // Re-read persisted tokens: stop() clears the in-memory map, and loadTokens()
+    // only ran in the constructor. Without this, toggling remote access off and
+    // back on forced every already-paired device to re-enter the password.
+    this.loadTokens();
 
     // Subscribe to events for buffering and broadcasting
     this.sessionManager.on('pty-output', this.onPtyOutput);
@@ -219,7 +238,7 @@ export class RemoteServer {
 
     // Cleanup uploaded files older than 1 hour
     const uploadDir = path.join(os.tmpdir(), 'claude-desktop-uploads');
-    setInterval(async () => {
+    this.uploadCleanupTimer = setInterval(async () => {
       try {
         const files = await fs.promises.readdir(uploadDir);
         const now = Date.now();
@@ -236,8 +255,29 @@ export class RemoteServer {
 
     // Topic names are tracked by ipc-handlers.ts and forwarded via setLastTopic() + broadcast()
 
-    return new Promise<void>((resolve) => {
-      this.httpServer!.listen(this.config.port, () => {
+    // listen() errors (EADDRINUSE, EACCES) used to have no handler at all: the
+    // promise simply never settled and the 'error' event went unhandled. That
+    // was survivable when start() ran once during boot inside a try/catch that
+    // only logged, but the Settings toggle now awaits this — an unsettled
+    // promise would hang the toggle forever with no feedback. Reject with the
+    // real OS error so the caller can surface it verbatim rather than guess.
+    return new Promise<void>((resolve, reject) => {
+      const server = this.httpServer!;
+      let settled = false;
+      const onError = (err: NodeJS.ErrnoException) => {
+        if (settled) return;
+        settled = true;
+        // Roll back the half-built state (event subscriptions, timer, sockets)
+        // so a retry starts clean instead of double-subscribing.
+        this.stop();
+        reject(err);
+      };
+      server.once('error', onError);
+      server.listen(this.config.port, () => {
+        if (settled) return;
+        settled = true;
+        server.removeListener('error', onError);
+        this.running = true;
         console.log(`[RemoteServer] Listening on port ${this.config.port}`);
         resolve();
       });
@@ -257,6 +297,11 @@ export class RemoteServer {
   }
 
   stop(): void {
+    this.running = false;
+    if (this.uploadCleanupTimer) {
+      clearInterval(this.uploadCleanupTimer);
+      this.uploadCleanupTimer = null;
+    }
     this.lastTopics.clear();
     this.sessionManager.off('pty-output', this.onPtyOutput);
     this.hookRelay.off('hook-event', this.onHookEvent);
