@@ -44,6 +44,22 @@ User timeline entries carry a `pending?: boolean` flag. `USER_PROMPT` always app
 
 Replaces the prior content-match-against-last-10-entries approach, which silently dropped legitimate rapid-fire duplicates (e.g. "yes" sent twice within five turns). Pending/confirmed correctly distinguishes "transcript confirms a send already shown" from "two distinct sends that happen to have identical text."
 
+### Tool cards dedup STRUCTURALLY, never by uuid
+
+`TRANSCRIPT_TOOL_USE` deliberately has **no `seenUuids` guard**, unlike `TRANSCRIPT_USER_MESSAGE` / `TRANSCRIPT_ASSISTANT_TEXT`. CC rewrites a JSONL line as the assistant message grows, and a rewrite can carry **new** `tool_use` blocks under the already-seen line uuid — so the watcher re-emits tool-use on repeats by design (`transcript-watcher.ts` `readNewLines`). A uuid guard here would silently swallow those tools; missing cards are far worse than doubled ones.
+<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "group placement must be IDEMPOTENT"} -->
+
+Instead every write on this path is idempotent by `toolUseId`:
+
+- the `toolCalls` Map — `Map.set` overwrites;
+- **group placement** — the handler scans `toolGroups` for the id first and no-ops if already placed, so neither the append nor the new-group branch can double it. A re-emit must also leave `currentGroupId` untouched, or it would retarget where subsequent new tools land;
+- `injectPlanSegment` (ExitPlanMode) — dedups by `toolUseId`, updating in place so a later, fuller emit still refreshes content.
+
+`PERMISSION_REQUEST` matches only `running` tools, so a re-delivery for a tool already flipped to `awaiting-approval` would fall through to the synthetic-placeholder branch; it bails first if any tool already carries that `requestId`.
+<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "never synthesize a SECOND placeholder"} -->
+
+Guard: `chat-reducer.test.ts` → "chatReducer tool card duplication". Historically this surfaced as **duplicate AskUserQuestion prompts appearing once answered** — `AssistantTurnBubble` hides `awaiting-approval` tools from groups (they render as a bottom bubble instead), so a doubled group entry stayed invisible until the answer cleared that status.
+
 ## Per-turn metadata
 
 `AssistantTurn` carries four fields populated from the JSONL transcript:
@@ -64,7 +80,7 @@ All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TU
 - **`readNewLines` must isolate each emit in try/catch.** `session.offset` advances before the emit loop, so a throwing listener aborting the loop strands every subsequent chunk in the batch (next `readNewLines` reads from the advanced offset forward). A root cause of "rare Claude message not appearing." Keep the per-emit try/catch — do NOT collapse to a batch-level wrapper.
 - **`readNewLines` is SERIALIZED per session (`reading` flag + coalesced rerun)** (2026-07-10, both watchers). The read is async (stat → open → read) and triggered concurrently by fs.watch bursts, the global poll, and manual calls. Un-serialized, two overlapping reads consumed the same byte range (duplicate user bubbles, tool cards flapping back to `running`) and — because the read POSITION was re-evaluated after the first read advanced the offset while `bytesRead` was ignored — a short/empty second read decoded its zero-filled buffer into the partial-line carry, wedging NUL bytes in and dropping the next message at `JSON.parse`. The other root cause of "rare missing Claude message." Pinned in `transcript-watcher.test.ts → read integrity`.
 - **The incomplete-line carry is BYTES (`partialBytes: Buffer`), not a decoded string.** A string carry decodes each half of a multi-byte UTF-8 char to U+FFFD independently — emoji/CJK split across a read boundary garbled permanently. Stitch bytes before decoding. Don't "simplify" back to `partialLine: string`.
-- **`getHistory` replay dedups by uuid with the SAME semantics as the live path** (skip repeated `assistant-text`, first write wins; tool-use/result/turn-complete still emit). The reducer appends duplicates — there is no renderer-side dedup. If replay semantics change, change the live path in the same commit.
+- **`getHistory` replay dedups by uuid with the SAME semantics as the live path** (skip repeated `assistant-text`, first write wins; tool-use/result/turn-complete still emit). The reducer absorbs the re-emitted tool events structurally, not by uuid — see "Deduplication" below. If replay semantics change, change the live path in the same commit.
 - **`usePromptDetector` reads `getVisibleScreenText` (screen + margin), NOT the full scrollback; the classifier's IPC eval passes a 120-row tail.** Serializing the whole 1000+-row buffer per rAF flush was the top renderer CPU cost while streaming. The tail walk-back in `terminal-registry.getScreenText` never starts mid-wrapped-line — keep it. Load-bearing side effect: menus that scrolled into scrollback can no longer shadow a live Ink menu.
 - **SubagentWatcher polls are slow (5s) safety nets by design — the fast paths are event-driven.** `TranscriptWatcher` calls `kickScan()` when a parent Agent tool_use lands (instant discovery of the subagents dir/new files) and `settleByParent()` when the parent's tool-result lands (final read, then the per-file stat poll stops; fs.watch stays attached). Don't speed the polls up "for responsiveness" (regresses idle-CPU accumulation) and don't remove the kick/settle calls.
 - **`<local-command-stdout>`/`<local-command-stderr>` are STRIPPED ENTIRELY in `stripSystemTags` — DO NOT switch back to unwrapping.** CC writes these as dimmed status echoes. After every `/compact` it writes a follow-up user-type line `<local-command-stdout>[2mCompacted (ctrl+o to see full summary)[22m</local-command-stdout>`. Unwrapping let CC's echo reach `TRANSCRIPT_USER_MESSAGE`'s "no pending match" path, which BOTH appended a fake "Compacted…" user bubble AND set `isThinking:true` with no turn to ever clear it (chat permanently stuck thinking after compaction). Both TS and Kotlin parsers strip these entirely; `transcript-watcher.test.ts` pins the JSONL fixture line. Route any new slash-command output through a NEW event type — don't reintroduce the user-message path.

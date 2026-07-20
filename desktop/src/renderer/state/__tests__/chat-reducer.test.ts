@@ -212,3 +212,87 @@ describe('chatReducer transcript replay dedup', () => {
     expect(state.get('sess-1')!.timeline.find((e) => e.kind === 'user')).toMatchObject({ pending: false });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Tool cards must not duplicate on re-emit. Unlike user/assistant text, the
+// watcher deliberately RE-EMITS tool-use for a repeated uuid (a rewritten CC
+// JSONL line may carry new tool_use blocks), so the reducer must absorb the
+// repeat structurally rather than by uuid — a uuid guard here would silently
+// swallow tools that arrive in a rewrite. See transcript-watcher.ts
+// readNewLines (~line 679).
+// ─────────────────────────────────────────────────────────────────────────
+describe('chatReducer tool card duplication', () => {
+  function initState(sessionId = 'sess-1'): ChatState {
+    return new Map([[sessionId, createSessionChatState()]]);
+  }
+
+  function cardCount(state: ChatState, toolUseId: string, sessionId = 'sess-1'): number {
+    // Count every rendered slot, not Map entries — AssistantTurnBubble maps
+    // group.toolIds → cards, so a doubled id is a doubled card on screen.
+    const groups = [...state.get(sessionId)!.toolGroups.values()];
+    return groups.flatMap((g) => g.toolIds).filter((id) => id === toolUseId).length;
+  }
+
+  const askAction = {
+    type: 'TRANSCRIPT_TOOL_USE' as const,
+    sessionId: 'sess-1',
+    uuid: 'line-uuid-1',
+    toolUseId: 'toolu_ask_1',
+    toolName: 'AskUserQuestion',
+    toolInput: { questions: [{ question: 'Which?', header: 'Pick', options: [] }] },
+  };
+
+  it('renders one card when the same tool_use is re-emitted (rewritten JSONL line)', () => {
+    let state = initState();
+    state = chatReducer(state, askAction);
+    state = chatReducer(state, askAction);
+    state = chatReducer(state, askAction);
+    expect(cardCount(state, 'toolu_ask_1')).toBe(1);
+  });
+
+  it('renders one card when a tool_use is re-emitted after the turn ended', () => {
+    // The stale-currentGroupId path: endTurn() clears currentGroupId, so a
+    // later re-emit used to mint a SECOND group + segment for the same tool.
+    let state = initState();
+    state = chatReducer(state, askAction);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'turn-1',
+    } as any);
+    state = chatReducer(state, askAction);
+    expect(cardCount(state, 'toolu_ask_1')).toBe(1);
+    expect(state.get('sess-1')!.toolGroups.size).toBe(1);
+  });
+
+  it('still renders a genuinely NEW tool that arrives in a rewritten line', () => {
+    // Guards against "fixing" this with a uuid guard: two different tools can
+    // share one line uuid when CC rewrites a growing assistant message.
+    let state = initState();
+    state = chatReducer(state, askAction);
+    state = chatReducer(state, {
+      ...askAction, toolUseId: 'toolu_bash_2', toolName: 'Bash',
+      toolInput: { command: 'ls' },
+    });
+    expect(cardCount(state, 'toolu_ask_1')).toBe(1);
+    expect(cardCount(state, 'toolu_bash_2')).toBe(1);
+  });
+
+  it('does not synthesize a second placeholder for a re-delivered requestId', () => {
+    // PERMISSION_REQUEST matches only 'running' tools, so a re-delivery after
+    // the tool flipped to awaiting-approval used to fall through and mint a
+    // duplicate perm-* card.
+    let state = initState();
+    state = chatReducer(state, askAction);
+    const perm = {
+      type: 'PERMISSION_REQUEST' as const,
+      sessionId: 'sess-1',
+      requestId: 'req-1',
+      toolName: 'AskUserQuestion',
+      input: askAction.toolInput,
+    };
+    state = chatReducer(state, perm as any);
+    state = chatReducer(state, perm as any);
+    expect(cardCount(state, 'toolu_ask_1')).toBe(1);
+    const synthetic = [...state.get('sess-1')!.toolCalls.keys()].filter((k) => k.startsWith('perm-'));
+    expect(synthetic).toHaveLength(0);
+  });
+});

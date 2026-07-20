@@ -761,7 +761,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         );
       }
 
-      if (currentGroupId && toolGroups.has(currentGroupId)) {
+      // Fix: group placement must be IDEMPOTENT. The watcher deliberately
+      // re-emits tool-use on repeated uuids (CC rewrites the same JSONL line as
+      // the assistant message grows, and a rewrite may carry NEW tool_use
+      // blocks), relying on "the reducer dedupes by toolUseId" — true of the
+      // toolCalls Map above, but the group append below used to add the id a
+      // second time, rendering a duplicate ToolCard. Symptom was most visible
+      // on AskUserQuestion: AssistantTurnBubble hides awaiting-approval tools
+      // from groups, so both copies only became visible once answered.
+      // See transcript-watcher.ts readNewLines (~line 679) for the emit contract.
+      let existingGroupId: string | null = null;
+      for (const [gid, group] of toolGroups) {
+        if (group.toolIds.includes(action.toolUseId)) { existingGroupId = gid; break; }
+      }
+
+      if (existingGroupId) {
+        // Already placed by an earlier emit of this same tool — leave both the
+        // group and currentGroupId untouched, so a re-emit can't retarget where
+        // subsequent NEW tools land. (injectPlanSegment above is already
+        // idempotent by toolUseId, so ExitPlanMode needs no equivalent guard.)
+      } else if (currentGroupId && toolGroups.has(currentGroupId)) {
         // Add to existing group (no new segment needed)
         const group = toolGroups.get(currentGroupId)!;
         toolGroups.set(currentGroupId, {
@@ -942,6 +961,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
 
       if (!found) {
+        // Fix: never synthesize a SECOND placeholder for a requestId we already
+        // hold. The match loop above only considers 'running' tools, so a
+        // re-delivered PERMISSION_REQUEST for a tool already flipped to
+        // 'awaiting-approval' fell through to here and minted a duplicate card
+        // (the synthetic merge in TRANSCRIPT_TOOL_USE reclaims only one of
+        // them, orphaning the rest).
+        for (const tool of toolCalls.values()) {
+          if (tool.requestId === action.requestId) return state;
+        }
+
         // Permission hook arrived before transcript watcher — create synthetic tool entry
         const syntheticId = `perm-${action.requestId}`;
         toolCalls.set(syntheticId, {
