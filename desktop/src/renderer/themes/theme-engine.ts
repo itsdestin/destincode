@@ -102,17 +102,19 @@ const LEGACY_EFFECT_IDS = ['effect-vignette', 'effect-noise', 'effect-scanlines'
 
 /** Builds a single consolidated overlay div with combined backgrounds for all effects.
  *  Reduces compositor layers from 3 to 1 compared to the previous per-effect divs. */
-function applyEffects(effects: ThemeEffects | undefined): void {
-  // Remove any legacy per-effect divs from previous theme applications
-  for (const id of LEGACY_EFFECT_IDS) document.getElementById(id)?.remove();
-
-  if (!effects) {
-    document.getElementById(EFFECTS_OVERLAY_ID)?.remove();
-    return;
-  }
-
+/**
+ * The pure half of applyEffects: which background layers an effects block
+ * produces, and at what size. Exported so the layer STRINGS can be pinned by a
+ * test — applyEffects itself only exists to poke the DOM, and the scanline
+ * alpha silently drifted out of sync with the theme-builder preview precisely
+ * because nothing could assert on it.
+ */
+export function buildEffectLayers(
+  effects: ThemeEffects | undefined,
+): { backgrounds: string[]; sizes: string[] } {
   const backgrounds: string[] = [];
   const sizes: string[] = [];
+  if (!effects) return { backgrounds, sizes };
 
   // Vignette — opacity baked into radial gradient endpoint
   const vignetteVal = effects.vignette ?? 0;
@@ -121,9 +123,25 @@ function applyEffects(effects: ThemeEffects | undefined): void {
     sizes.push('100% 100%');
   }
 
-  // Scanlines — opacity baked into gradient colors (0.08 base * line alpha)
+  // Scanlines — line alpha is (theme base opacity x 0.15 line alpha).
+  //
+  // Fix: read --scanline-opacity instead of baking the product as the literal
+  // 0.012. `scan-lines` is a bare boolean in ThemeEffects — unlike vignette and
+  // noise, which are numeric intensities interpolated around it — so a theme had
+  // no way to say how strong its scanlines should be. The theme-builder Kit
+  // ships an intensity slider that writes `:root { --scanline-opacity: N }` into
+  // custom_css; because this rule contained no var() at all, that slider visibly
+  // worked in the Kit preview and did nothing in the shipped theme.
+  //
+  // The 0.08 fallback reproduces the previous literal exactly (0.08 * 0.15 =
+  // 0.012), so every existing theme renders unchanged. Custom properties resolve
+  // at computed-value time, so it does not matter that custom_css is injected
+  // before this runs, nor that this ends up in an inline style.
   if (effects['scan-lines']) {
-    backgrounds.push('repeating-linear-gradient(0deg, transparent, transparent 1px, rgba(0,0,0,0.012) 1px, rgba(0,0,0,0.012) 2px)');
+    const lineAlpha = 'calc(var(--scanline-opacity, 0.08) * 0.15)';
+    backgrounds.push(
+      `repeating-linear-gradient(0deg, transparent, transparent 1px, rgb(0 0 0 / ${lineAlpha}) 1px, rgb(0 0 0 / ${lineAlpha}) 2px)`,
+    );
     sizes.push('100% 100%');
   }
 
@@ -134,6 +152,15 @@ function applyEffects(effects: ThemeEffects | undefined): void {
     backgrounds.push(`url("${noiseSvg}")`);
     sizes.push('200px 200px');
   }
+
+  return { backgrounds, sizes };
+}
+
+function applyEffects(effects: ThemeEffects | undefined): void {
+  // Remove any legacy per-effect divs from previous theme applications
+  for (const id of LEGACY_EFFECT_IDS) document.getElementById(id)?.remove();
+
+  const { backgrounds, sizes } = buildEffectLayers(effects);
 
   if (backgrounds.length === 0) {
     document.getElementById(EFFECTS_OVERLAY_ID)?.remove();
