@@ -220,3 +220,69 @@ describe('RemoteConfig', () => {
     });
   });
 });
+
+// Dev-profile config isolation. Before this, every profile shared the built
+// app's ~/.claude/youcoded-remote.json, so save() had to be a hard no-op —
+// which meant remote access could never be enabled from a dev instance and
+// remote features were untestable outside a production install.
+describe('RemoteConfig dev-profile isolation', () => {
+  const ORIGINAL_PROFILE = process.env.YOUCODED_PROFILE;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    vi.mocked(os.homedir).mockReturnValue('/mock/home');
+  });
+
+  afterEach(() => {
+    // PROFILE is captured at module load, so the env var must be restored or
+    // it leaks into every later dynamic import in this file.
+    if (ORIGINAL_PROFILE === undefined) delete process.env.YOUCODED_PROFILE;
+    else process.env.YOUCODED_PROFILE = ORIGINAL_PROFILE;
+  });
+
+  it('reads a per-profile file instead of the built app config', async () => {
+    process.env.YOUCODED_PROFILE = 'dev';
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const { RemoteConfig } = await import('../src/main/remote-config');
+    new RemoteConfig();
+
+    const readPath = vi.mocked(fs.existsSync).mock.calls[0][0];
+    expect(readPath).toBe(path.join('/mock/home', '.claude', 'youcoded-remote.dev.json'));
+    expect(readPath).not.toBe(path.join('/mock/home', '.claude', 'youcoded-remote.json'));
+  });
+
+  it('persists in a dev profile, and only to the dev file', async () => {
+    process.env.YOUCODED_PROFILE = 'dev';
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const { RemoteConfig } = await import('../src/main/remote-config');
+    const config = new RemoteConfig();
+    config.enabled = true;
+    config.save();
+
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+    const [writePath, body] = vi.mocked(fs.writeFileSync).mock.calls[0];
+    expect(writePath).toBe(path.join('/mock/home', '.claude', 'youcoded-remote.dev.json'));
+    expect(JSON.parse(body as string).enabled).toBe(true);
+  });
+
+  it('still uses the unsuffixed file when no profile is set (built app)', async () => {
+    delete process.env.YOUCODED_PROFILE;
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const { RemoteConfig } = await import('../src/main/remote-config');
+    new RemoteConfig();
+
+    expect(vi.mocked(fs.existsSync).mock.calls[0][0])
+      .toBe(path.join('/mock/home', '.claude', 'youcoded-remote.json'));
+  });
+
+  it('does not re-apply the port offset to a saved dev port', async () => {
+    // The dev file already stores dev's own port; re-adding PORT_OFFSET on
+    // load would drift it by 50 on every save/load cycle.
+    process.env.YOUCODED_PROFILE = 'dev';
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ enabled: true, port: 9950 }));
+    const { RemoteConfig } = await import('../src/main/remote-config');
+    expect(new RemoteConfig().port).toBe(9950);
+  });
+});

@@ -4,19 +4,30 @@ import os from 'os';
 import bcrypt from 'bcryptjs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { REMOTE_SERVER_DEFAULT_PORT, PORT_OFFSET } from '../shared/ports';
+import { REMOTE_SERVER_DEFAULT_PORT } from '../shared/ports';
 
 const execFileAsync = promisify(execFile);
 
-const CONFIG_PATH = () => path.join(os.homedir(), '.claude', 'youcoded-remote.json');
 const BCRYPT_ROUNDS = 10;
-// Any non-empty YOUCODED_PROFILE marks this as a dev instance — shift the
-// remote port by PORT_OFFSET so we don't fight the built app on 9900, and
-// never overwrite the saved (built-app) port on save. Treating every non-empty
-// value as dev (not just the literal 'dev') means concurrent dev instances
-// with distinct profiles (e.g. 'dev2') also get the offset; otherwise they'd
-// silently bind to the built app's port and crash with EADDRINUSE.
-const IS_DEV_PROFILE = !!process.env.YOUCODED_PROFILE;
+const PROFILE = process.env.YOUCODED_PROFILE ?? '';
+
+// Fix: dev instances get their OWN remote config file. Previously every profile
+// read and wrote ~/.claude/youcoded-remote.json — the built app's file — so
+// save() had to be a hard no-op to avoid clobbering the real app's port and
+// password hash. The side effect was that remote access could never be enabled
+// from a dev instance at all, making remote features untestable outside a
+// production install. A per-profile file removes the sharing, so dev can
+// configure and persist its own remote server safely.
+const CONFIG_PATH = () => path.join(
+  os.homedir(),
+  '.claude',
+  PROFILE ? `youcoded-remote.${PROFILE}.json` : 'youcoded-remote.json',
+);
+// Any non-empty YOUCODED_PROFILE marks this as a dev instance. Treating every
+// non-empty value as dev (not just the literal 'dev') means concurrent dev
+// instances with distinct profiles (e.g. 'dev2') each get their own config
+// file and their own port, rather than fighting over the built app's 9900.
+// The port offset itself is applied upstream in shared/ports.ts.
 
 interface ConfigData {
   enabled: boolean;
@@ -52,8 +63,11 @@ export class RemoteConfig {
       try {
         const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         this.enabled = data.enabled ?? defaults.enabled;
-        // Shift saved port by PORT_OFFSET in dev so we don't collide with built app.
-        this.port = (data.port ?? defaults.port) + (IS_DEV_PROFILE ? PORT_OFFSET : 0);
+        // No dev shift here: the config file is per-profile now, so a dev file
+        // already stores dev's own port (REMOTE_SERVER_DEFAULT_PORT is itself
+        // offset-derived — 9950 under YOUCODED_PORT_OFFSET=50). Re-adding the
+        // offset on load would drift the port by 50 on every save/load cycle.
+        this.port = data.port ?? defaults.port;
         this.passwordHash = data.passwordHash ?? defaults.passwordHash;
         // Note: a `passwordPlain` field used to exist on disk (never read, only
         // written). save() no longer serializes it, so it'll disappear on the
@@ -98,12 +112,9 @@ export class RemoteConfig {
   }
 
   save(): void {
-    // Dev profile shares the config file with the built app — never persist
-    // dev-side edits (would clobber built-app port, password hash, etc.).
-    if (IS_DEV_PROFILE) {
-      console.warn('[RemoteConfig] skipping save in dev profile (shared config file)');
-      return;
-    }
+    // The dev-profile no-op that used to live here is gone: CONFIG_PATH() is
+    // per-profile, so a dev save can no longer reach the built app's file.
+    // Persisting is what makes remote access configurable in dev at all.
     const configPath = CONFIG_PATH();
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     // Security: restrict file permissions to owner-only (contains password hash)
