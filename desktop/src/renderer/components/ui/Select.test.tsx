@@ -45,6 +45,38 @@ describe('Select popover tier (z-index)', () => {
   });
 });
 
+describe('Select menu geometry', () => {
+  it('matches the field width and centers the menu under the field', () => {
+    // Pins Destin's ask: menu is exactly the trigger's width, centered under it
+    // (equal widths → centers align), clamped to the viewport. jsdom reports
+    // all rects as 0, so we stub the trigger's bounding rect to a known box.
+    const { getByRole } = render(
+      <Select options={OPTIONS} value="a" onChange={() => {}} aria-label="Geom" />,
+    );
+    const trigger = getByRole('button', { name: 'Geom' });
+    trigger.getBoundingClientRect = () =>
+      ({ left: 100, top: 50, bottom: 80, right: 300, width: 200, height: 30, x: 100, y: 50, toJSON: () => ({}) }) as DOMRect;
+    fireEvent.click(trigger);
+    const menu = getByRole('listbox', { name: 'Geom' }).closest('[data-select-portal]') as HTMLElement;
+    // width = trigger width (200); centered left = 100 + 100 - 100 = 100.
+    expect(menu.style.width).toBe('200px');
+    expect(menu.style.left).toBe('100px');
+  });
+
+  it('clamps the menu to the viewport when the trigger sits near the left edge', () => {
+    const { getByRole } = render(
+      <Select options={OPTIONS} value="a" onChange={() => {}} aria-label="Edge" />,
+    );
+    const trigger = getByRole('button', { name: 'Edge' });
+    trigger.getBoundingClientRect = () =>
+      ({ left: 2, top: 50, bottom: 80, right: 202, width: 200, height: 30, x: 2, y: 50, toJSON: () => ({}) }) as DOMRect;
+    fireEvent.click(trigger);
+    const menu = getByRole('listbox', { name: 'Edge' }).closest('[data-select-portal]') as HTMLElement;
+    // centered left would be negative → clamped to the 8px margin.
+    expect(menu.style.left).toBe('8px');
+  });
+});
+
 describe('Select portal marker', () => {
   it('marks the portaled menu with data-select-portal so hosts/other Selects can see it', () => {
     // The marker is what SessionStrip's outside-click exemption and the

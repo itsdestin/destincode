@@ -67,11 +67,22 @@ export function Select({
 
   const selected = options.find((o) => o.value === value);
 
+  // The menu is exactly the trigger's width and centered under it — for equal
+  // widths that means aligning their horizontal centers (left = center -
+  // width/2), clamped to the viewport with FolderSwitcher's 8px margin so a
+  // trigger near the screen edge never pushes the menu off-screen.
   const measure = () => {
     const el = triggerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setRect({ left: r.left, top: r.bottom + 4, width: r.width });
+    const margin = 8;
+    const width = r.width;
+    const centered = r.left + r.width / 2 - width / 2;
+    const left = Math.min(
+      Math.max(centered, margin),
+      Math.max(margin, window.innerWidth - width - margin),
+    );
+    setRect({ left, top: r.bottom + 4, width });
   };
 
   useLayoutEffect(() => {
@@ -234,10 +245,12 @@ export function Select({
             // contains() checks) can see this portaled menu on document.body.
             data-select-portal=""
             className={`fixed ${menuClassName}`}
+            // width (not minWidth) locks the menu to exactly the field's width,
+            // centered under it (see measure) — Destin: match the field, centered.
             style={{
               left: rect.left,
               top: rect.top,
-              minWidth: rect.width,
+              width: rect.width,
               borderRadius: 'var(--radius-lg)',
               ...(escapeHost ? { zIndex: POPOVER_Z } : {}),
             }}
