@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTokenCSS, buildShapeCSS, buildBackgroundStyle, buildLayoutAttrs, buildPatternStyle, computeOverlayTokens } from '../src/renderer/themes/theme-engine';
+import { buildTokenCSS, buildShapeCSS, buildBackgroundStyle, buildLayoutAttrs, buildPatternStyle, computeOverlayTokens, buildEffectLayers } from '../src/renderer/themes/theme-engine';
 
 const TOKENS = {
   canvas: '#0D0F1A', panel: '#141726', inset: '#1F2440', well: '#0D0F1A',
@@ -175,5 +175,55 @@ describe('computeOverlayTokens — --link / --link-hover', () => {
     // Rule 15: nothing a component consumes may fall back to :root.
     expect(derive(TOKENS)['--link']).toBeTruthy();
     expect(derive(TOKENS)['--link-hover']).toBeTruthy();
+  });
+});
+
+describe('buildEffectLayers', () => {
+  // A theme's scanline strength has to reach the shipped theme. `scan-lines` is
+  // a bare boolean, so the only channel is a CSS custom property set from
+  // custom_css — which is exactly what the theme-builder Kit's intensity slider
+  // writes. When this rule baked its alpha as the literal 0.012, the slider
+  // worked in the Kit preview and silently did nothing in the real app. A
+  // literal here would regress that invisibly, so pin the var.
+  it('drives scanline alpha from --scanline-opacity, not a literal', () => {
+    const { backgrounds } = buildEffectLayers({ 'scan-lines': true });
+    expect(backgrounds).toHaveLength(1);
+    expect(backgrounds[0]).toContain('var(--scanline-opacity');
+    expect(backgrounds[0]).not.toMatch(/rgba?\(0,\s*0,\s*0,\s*0\.012\)/);
+  });
+
+  it('falls back to the historical 0.08 base, so existing themes are unchanged', () => {
+    // 0.08 * 0.15 == 0.012, the literal this replaced.
+    const { backgrounds } = buildEffectLayers({ 'scan-lines': true });
+    expect(backgrounds[0]).toContain('calc(var(--scanline-opacity, 0.08) * 0.15)');
+  });
+
+  it('emits nothing when no effect is enabled', () => {
+    expect(buildEffectLayers(undefined)).toEqual({ backgrounds: [], sizes: [] });
+    expect(buildEffectLayers({}).backgrounds).toHaveLength(0);
+    expect(buildEffectLayers({ 'scan-lines': false }).backgrounds).toHaveLength(0);
+    expect(buildEffectLayers({ vignette: 0, noise: 0 }).backgrounds).toHaveLength(0);
+  });
+
+  it('interpolates vignette and noise intensities', () => {
+    const { backgrounds, sizes } = buildEffectLayers({ vignette: 0.3, noise: 0.05 });
+    expect(backgrounds[0]).toContain('rgba(0,0,0,0.3)');
+    expect(backgrounds[1]).toContain("opacity='0.05'");
+    expect(sizes).toEqual(['100% 100%', '200px 200px']);
+  });
+
+  it('keeps backgrounds and sizes index-aligned across every combination', () => {
+    // They are joined into two parallel CSS lists; a length mismatch would
+    // silently shift every layer's background-size onto the wrong layer.
+    const combos = [
+      { vignette: 0.2 },
+      { 'scan-lines': true },
+      { noise: 0.1 },
+      { vignette: 0.2, 'scan-lines': true, noise: 0.1 },
+    ];
+    for (const c of combos) {
+      const { backgrounds, sizes } = buildEffectLayers(c);
+      expect(sizes).toHaveLength(backgrounds.length);
+    }
   });
 });
