@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
-import { EngineSupervisor } from '../src/main/engine/engine-supervisor';
+import {
+  EngineSupervisor,
+  parseSsListenerPid,
+  parseLsofPid,
+  parseNetstatListenerPid,
+} from '../src/main/engine/engine-supervisor';
 
 const mockSpawn = vi.fn();
 vi.mock('child_process', async (orig) => ({
@@ -311,5 +316,144 @@ describe('EngineSupervisor', () => {
     await ensureP;
     expect(mockSpawn).toHaveBeenCalledTimes(2); // spawned a fresh server, didn't reuse the dying one
     expect(sup.status()).toBe('running');
+  });
+
+  // ---- engine-lifecycle fix (2026-07-20): no adopting orphans, real quit kill ----
+
+  it('does NOT adopt a foreign process answering /health on our port (orphan guard)', async () => {
+    const child = makeFakeChild();
+    (child as any).pid = 4242;
+    mockSpawn.mockReturnValue(child);
+    // /health answers ok immediately, but the port is held by a DIFFERENT pid (9999) —
+    // an orphaned engine. The supervisor must NOT mark running against it; our child
+    // (which couldn't bind) exits, so we surface the startup failure instead.
+    sup = makeSupervisor(healthAfter(0), {
+      pidOnPort: () => 9999, // foreign listener
+      readyDeadlineMs: 500, readyPollMs: 10,
+    });
+    const p = sup.ensureRunning();
+    setImmediate(() => child.emit('exit', 1)); // bind-failed child dies
+    await expect(p).rejects.toThrow();          // never resolves a URL to the orphan
+    expect(sup.status()).toBe('stopped');
+  });
+
+  it('DOES mark running when the /health listener IS our spawned child', async () => {
+    const child = makeFakeChild();
+    (child as any).pid = 4242;
+    mockSpawn.mockReturnValue(child);
+    sup = makeSupervisor(healthAfter(0), { pidOnPort: () => 4242 }); // our own child
+    const base = await sup.ensureRunning();
+    expect(base).toBe('http://127.0.0.1:9999/v1');
+    expect(sup.status()).toBe('running');
+  });
+
+  it('reaps a stale llama-server squatting on the port BEFORE spawning', async () => {
+    const child = makeFakeChild();
+    (child as any).pid = 4242;
+    mockSpawn.mockReturnValue(child);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      // Port is held by orphan pid 9999 (a llama-server). After the reaper SIGKILLs it,
+      // our spawned child (4242) takes the port — pidOnPort reflects the handoff.
+      let portHolder: number | null = 9999;
+      killSpy.mockImplementation(((pid: number, sig: string) => {
+        if (pid === 9999 && sig === 'SIGKILL') portHolder = 4242;
+        return true;
+      }) as any);
+      sup = makeSupervisor(healthAfter(0), {
+        pidOnPort: () => portHolder,
+        exeForPid: (pid: number) => (pid === 9999 ? '/x/engine/llama-b9992/llama-server' : null),
+      });
+      const base = await sup.ensureRunning();
+      expect(killSpy).toHaveBeenCalledWith(9999, 'SIGKILL'); // orphan reaped before spawn
+      expect(base).toBe('http://127.0.0.1:9999/v1');          // then our child is adopted
+      expect(sup.status()).toBe('running');
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('never kills a NON-llama process holding the port (reaper is conservative)', async () => {
+    const child = makeFakeChild();
+    (child as any).pid = 4242;
+    mockSpawn.mockReturnValue(child);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      // Port held by pid 9999, but it's some other app (not llama-server) — must NOT kill.
+      sup = makeSupervisor(vi.fn(async () => { throw new Error('ECONNREFUSED'); }), {
+        pidOnPort: () => 9999,
+        exeForPid: () => '/usr/bin/nginx',
+        readyDeadlineMs: 100, readyPollMs: 10,
+      });
+      await expect(sup.ensureRunning()).rejects.toThrow();
+      expect(killSpy).not.toHaveBeenCalled();
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('stop() escalates SIGTERM → SIGKILL when the child ignores TERM', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = makeFakeChild();
+      // Child ignores SIGTERM entirely (never exits on it) — simulates a wedged server.
+      const killCalls: string[] = [];
+      (child as any).kill = vi.fn((sig: string) => {
+        killCalls.push(sig);
+        if (sig === 'SIGKILL') setImmediate(() => child.emit('exit', 137));
+        return true;
+      });
+      mockSpawn.mockReturnValue(child);
+      sup = makeSupervisor(healthAfter(0));
+      await sup.ensureRunning();
+      expect(sup.status()).toBe('running');
+
+      const stopP = sup.stop();
+      await vi.advanceTimersByTimeAsync(1_600); // past the TERM grace window
+      await vi.advanceTimersByTimeAsync(100);   // let the KILL exit land
+      await stopP;
+      expect(killCalls).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(sup.status()).toBe('stopped');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---- cross-platform port→PID parsers (pure; no shell) ----
+// These pin the output shapes of the per-platform tools the orphan-guard and
+// stale-engine reaper rely on, so a parsing regression can't silently re-open
+// the "adopt a foreign engine" hole on macOS/Windows.
+describe('port→PID parsers', () => {
+  it('parseSsListenerPid: Linux ss -ltnp output → PID', () => {
+    const out = [
+      'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process',
+      'LISTEN 0      511    127.0.0.1:9920      0.0.0.0:*     users:(("llama-server",pid=111523,fd=20))',
+      'LISTEN 0      511    127.0.0.1:9900      0.0.0.0:*     users:(("node",pid=777,fd=25))',
+    ].join('\n');
+    expect(parseSsListenerPid(out, 9920)).toBe(111523);
+    expect(parseSsListenerPid(out, 9900)).toBe(777);
+    expect(parseSsListenerPid(out, 1234)).toBeNull(); // not listening
+    // Exact-match: a query for a PREFIX port must not match a longer listening port.
+    expect(parseSsListenerPid(out, 992)).toBeNull();  // ':992' ≠ ':9920'
+    expect(parseSsListenerPid(out, 99)).toBeNull();   // ':99'  ≠ ':9900'/':9920'
+  });
+
+  it('parseLsofPid: macOS lsof -F p output → PID', () => {
+    expect(parseLsofPid('p4821\nf3\n')).toBe(4821);
+    expect(parseLsofPid('')).toBeNull();
+    expect(parseLsofPid('COMMAND  PID USER\n')).toBeNull();
+  });
+
+  it('parseNetstatListenerPid: Windows netstat -ano → PID of LISTENING socket', () => {
+    const out = [
+      '  Proto  Local Address          Foreign Address        State           PID',
+      '  TCP    127.0.0.1:9920         0.0.0.0:0              LISTENING       22234',
+      '  TCP    127.0.0.1:9920         127.0.0.1:55000        ESTABLISHED     999', // not LISTENING — ignored
+      '  TCP    0.0.0.0:9900           0.0.0.0:0              LISTENING       5555',
+    ].join('\n');
+    expect(parseNetstatListenerPid(out, 9920)).toBe(22234);
+    expect(parseNetstatListenerPid(out, 9900)).toBe(5555);
+    expect(parseNetstatListenerPid(out, 4321)).toBeNull();
   });
 });
