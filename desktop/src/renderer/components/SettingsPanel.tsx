@@ -973,12 +973,12 @@ function RemoteButton({
                         ) : setupStatus === 'installing' ? (
                           <div className="text-center py-1">
                             <p className="text-xs text-fg-2 animate-pulse">Installing Tailscale...</p>
-                            <p className="text-[10px] text-fg-faint mt-1">This may take a few minutes</p>
+                            <p className="text-[10px] text-fg-muted mt-1">This may take a few minutes</p>
                           </div>
                         ) : setupStatus === 'authenticating' ? (
                           <div className="text-center py-1">
                             <p className="text-xs text-fg-2 animate-pulse">Authenticating...</p>
-                            <p className="text-[10px] text-fg-faint mt-1">Check your browser to sign in to Tailscale</p>
+                            <p className="text-[10px] text-fg-muted mt-1">Check your browser to sign in to Tailscale</p>
                           </div>
                         ) : setupStatus === 'done' ? (
                           <p className="text-xs text-green-400 text-center py-1">Tailscale installed and connected!</p>
@@ -1097,7 +1097,7 @@ function RemoteButton({
                             <div key={client.id} className="flex items-center justify-between py-1.5 px-2 rounded-sm bg-inset/50">
                               <div>
                                 <span className="text-xs text-fg-2 font-mono">{client.ip}</span>
-                                <span className="text-[10px] text-fg-faint ml-2">{timeAgo(client.connectedAt)}</span>
+                                <span className="text-[10px] text-fg-muted ml-2">{timeAgo(client.connectedAt)}</span>
                               </div>
                               <button
                                 onClick={() => onDisconnectClient(client.id)}
@@ -1258,7 +1258,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Skip Permissions</h3>
-          <p className="text-[10px] text-fg-faint mt-0.5">New sessions will skip tool approval</p>
+          <p className="text-[10px] text-fg-muted mt-0.5">New sessions will skip tool approval</p>
         </div>
         <Toggle
           enabled={defaults.skipPermissions}
@@ -1284,7 +1284,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
             >
               <path d="M9 5l7 7-7 7" />
             </svg>
-            <span className="text-[10px] text-fg-faint group-hover:text-fg-muted transition-colors">Advanced</span>
+            <span className="text-[10px] text-fg-muted group-hover:text-fg-2 transition-colors">Advanced</span>
           </button>
 
           {advancedOpen && (
@@ -1293,7 +1293,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[10px] text-fg-dim font-medium">Auto-approve all</p>
-                  <p className="text-[9px] text-fg-faint">Silently approve all protected requests</p>
+                  <p className="text-[9px] text-fg-muted">Silently approve all protected requests</p>
                 </div>
                 <Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />
               </div>
@@ -1301,7 +1301,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
               {/* Separator */}
               <div className="flex items-center gap-2">
                 <div className="flex-1 border-t border-edge-dim" />
-                <span className="text-[9px] text-fg-faint">or approve by category</span>
+                <span className="text-[9px] text-fg-muted">or approve by category</span>
                 <div className="flex-1 border-t border-edge-dim" />
               </div>
 
@@ -1310,7 +1310,7 @@ function SkipPermissionsSection({ defaults, onDefaultsChange }: {
                 <div key={key} className={`flex items-center justify-between ${overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div>
                     <p className="text-[10px] text-fg-dim font-medium">{label}</p>
-                    <p className="text-[9px] text-fg-faint">{description}</p>
+                    <p className="text-[9px] text-fg-muted">{description}</p>
                   </div>
                   <Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />
                 </div>
@@ -1484,7 +1484,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                   {defaults.projectFolder && (
                     <button
                       onClick={() => onDefaultsChange({ projectFolder: '' })}
-                      className="text-[10px] text-fg-faint hover:text-fg-muted mt-1"
+                      className="text-[10px] text-fg-muted hover:text-fg-2 mt-1"
                     >
                       Reset to home directory
                     </button>
@@ -1498,7 +1498,7 @@ function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-[10px] font-medium text-fg-muted tracking-wider uppercase">Close-session prompt</h3>
-                      <p className="text-[10px] text-fg-faint mt-0.5">Show tag options when closing a session</p>
+                      <p className="text-[10px] text-fg-muted mt-0.5">Show tag options when closing a session</p>
                     </div>
                     {/* Was a hand-rolled 32x18 track with an inline var(--accent)
                         background; one geometry now (change 16). The state is stored
@@ -1960,7 +1960,7 @@ function ConnectToDesktopButton() {
                 </section>
               )}
 
-              <p className="text-[10px] text-fg-faint">
+              <p className="text-[10px] text-fg-muted">
                 Connect to the YouCoded desktop app on your computer. Set up remote access in the desktop app's settings first.
               </p>
               </div>

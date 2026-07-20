@@ -154,7 +154,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
                   );
                 })}
               </div>
-              <p className="text-[10px] text-fg-faint">
+              <p className="text-[10px] text-fg-muted">
                 {sel.complete
                   ? 'Complete hides this from the resume menu by default.'
                   : 'Tap a flag to tag this session, or close with none.'}

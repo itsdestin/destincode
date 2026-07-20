@@ -395,7 +395,7 @@ function DiffView({
           return (
             <React.Fragment key={idx}>
               {showSeparator && (
-                <div className="flex items-center text-fg-faint text-[10px] border-y border-edge-dim bg-inset/40 select-none">
+                <div className="flex items-center text-fg-muted text-[10px] border-y border-edge-dim bg-inset/40 select-none">
                   <span className="px-2 py-0.5">⋯</span>
                 </div>
               )}

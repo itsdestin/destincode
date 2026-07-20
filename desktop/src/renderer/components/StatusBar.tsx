@@ -588,7 +588,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                               )}
                             </span>
                             <span className="text-[11px] text-fg">{w.label}</span>
-                            {w.locked && <span className="text-[9px] text-fg-faint">always on</span>}
+                            {w.locked && <span className="text-[9px] text-fg-muted">always on</span>}
                           </button>
 
                           {/* Pencil — Theme widget only. Opens the cycle editor
@@ -631,7 +631,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                         {isExpanded && (
                           <div className="ml-7 mr-2 mb-1.5 px-2.5 py-2 rounded-md bg-inset border border-edge-dim text-[10px] space-y-1.5">
                             <p className="text-fg-dim leading-relaxed">{w.description}</p>
-                            <p className="text-fg-faint leading-relaxed">
+                            <p className="text-fg-muted leading-relaxed">
                               <span className="font-medium text-fg-muted">Best for:</span> {w.bestFor}
                             </p>
                           </div>
@@ -817,7 +817,7 @@ export default function StatusBar({
           <span className={utilizationColor(usage.five_hour.utilization)}>
             {usage.five_hour.utilization}%
           </span>
-          <span className="text-fg-faint hidden sm:inline">{format5hReset(usage.five_hour.resets_at)}</span>
+          <span className="text-fg-muted hidden sm:inline">{format5hReset(usage.five_hour.resets_at)}</span>
         </button>
       )}
       {show('usage-7d') && usage?.seven_day != null && (
@@ -830,7 +830,7 @@ export default function StatusBar({
           <span className={utilizationColor(usage.seven_day.utilization)}>
             {usage.seven_day.utilization}%
           </span>
-          <span className="text-fg-faint hidden sm:inline">{format7dReset(usage.seven_day.resets_at)}</span>
+          <span className="text-fg-muted hidden sm:inline">{format7dReset(usage.seven_day.resets_at)}</span>
         </button>
       )}
 
@@ -869,7 +869,7 @@ export default function StatusBar({
         >
           <span>{ss?.duration != null ? formatDuration(ss.duration) : '--'}</span>
           {ss?.duration != null && ss?.apiDuration != null && (
-            <span className="text-fg-faint hidden sm:inline">({formatDuration(ss.apiDuration)} API)</span>
+            <span className="text-fg-muted hidden sm:inline">({formatDuration(ss.apiDuration)} API)</span>
           )}
         </span>
       )}
@@ -880,7 +880,7 @@ export default function StatusBar({
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.inputTokens != null ? `Input tokens: ${ss.inputTokens.toLocaleString()}` : 'Input tokens'}
         >
-          <span className="text-fg-faint">In:</span>
+          <span className="text-fg-muted">In:</span>
           <span className="text-fg-2">{ss?.inputTokens != null ? formatTokens(ss.inputTokens) : '--'}</span>
         </span>
       )}
@@ -891,7 +891,7 @@ export default function StatusBar({
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.outputTokens != null ? `Output tokens: ${ss.outputTokens.toLocaleString()}` : 'Output tokens'}
         >
-          <span className="text-fg-faint">Out:</span>
+          <span className="text-fg-muted">Out:</span>
           <span className="text-fg-2">{ss?.outputTokens != null ? formatTokens(ss.outputTokens) : '--'}</span>
         </span>
       )}
@@ -902,7 +902,7 @@ export default function StatusBar({
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.cacheReadTokens != null ? `Cache read: ${ss.cacheReadTokens.toLocaleString()} | Cache created: ${(ss.cacheCreationTokens ?? 0).toLocaleString()}` : 'Cache efficiency'}
         >
-          <span className="text-fg-faint">Cached:</span>
+          <span className="text-fg-muted">Cached:</span>
           <span className="text-[#4CAF50]">{ss?.cacheReadTokens != null ? formatTokens(ss.cacheReadTokens) : '--'}</span>
         </span>
       )}
@@ -913,11 +913,11 @@ export default function StatusBar({
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.cacheReadTokens != null ? `${ss.cacheReadTokens.toLocaleString()} reads / ${((ss.cacheReadTokens ?? 0) + (ss.cacheCreationTokens ?? 0)).toLocaleString()} total cached tokens` : 'Cache hit rate'}
         >
-          <span className="text-fg-faint">Hit:</span>
+          <span className="text-fg-muted">Hit:</span>
           {(() => {
             if (ss?.cacheReadTokens == null) return <span className="text-fg-2">--</span>;
             const total = (ss.cacheReadTokens ?? 0) + (ss.cacheCreationTokens ?? 0);
-            if (total === 0) return <span className="text-fg-faint">N/A</span>;
+            if (total === 0) return <span className="text-fg-muted">N/A</span>;
             const pct = Math.round((ss.cacheReadTokens / total) * 100);
             const color = pct >= 80 ? 'text-[#4CAF50]' : pct >= 50 ? 'text-[#FF9800]' : 'text-[#DD4444]';
             return <span className={color}>{pct}%</span>;
@@ -931,7 +931,7 @@ export default function StatusBar({
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.duration != null && ss?.apiDuration != null ? `Claude thinking: ${formatDuration(ss.apiDuration)} of ${formatDuration(ss.duration)} total` : 'Active ratio'}
         >
-          <span className="text-fg-faint">Active:</span>
+          <span className="text-fg-muted">Active:</span>
           <span className="text-fg-2">
             {ss?.duration != null && ss?.apiDuration != null && ss.duration > 0
               ? `${Math.round((ss.apiDuration / ss.duration) * 100)}%`
@@ -946,7 +946,7 @@ export default function StatusBar({
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output speed'}
         >
-          <span className="text-fg-faint">Speed:</span>
+          <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">
             {ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
               ? `${Math.round(ss.outputTokens / ss.apiDuration)} tok/s`
@@ -965,10 +965,10 @@ export default function StatusBar({
             <>
               <span className="text-[#4CAF50]">+{ss?.linesAdded ?? 0}</span>
               <span className="text-[#DD4444]">-{ss?.linesRemoved ?? 0}</span>
-              <span className="text-fg-faint hidden sm:inline">lines</span>
+              <span className="text-fg-muted hidden sm:inline">lines</span>
             </>
           ) : (
-            <span className="text-fg-faint">No changes</span>
+            <span className="text-fg-muted">No changes</span>
           )}
         </span>
       )}

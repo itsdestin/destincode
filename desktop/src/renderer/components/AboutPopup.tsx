@@ -72,7 +72,7 @@ function AnalyticsOptInToggle() {
     <div className="flex items-center justify-between mt-2">
       <div>
         <span className="text-xs text-fg font-medium">Share anonymous usage stats</span>
-        <p className="text-[10px] text-fg-faint mt-0.5">Sends a daily ping with the fields listed above.</p>
+        <p className="text-[10px] text-fg-muted mt-0.5">Sends a daily ping with the fields listed above.</p>
       </div>
       <Toggle enabled={optIn} onToggle={flip} />
     </div>
@@ -231,7 +231,7 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
               {libs.map(({ lib, license, source }) => (
                 <div key={lib}>
                   <span className="text-[10px] text-fg-2 font-medium">{lib}</span>
-                  <span className="text-[10px] text-fg-faint ml-1">· {license} · {source}</span>
+                  <span className="text-[10px] text-fg-muted ml-1">· {license} · {source}</span>
                 </div>
               ))}
             </div>

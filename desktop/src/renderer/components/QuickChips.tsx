@@ -307,7 +307,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                         <DragGrip />
                       </span>
                       <span className="font-medium text-fg truncate flex-1">{chip.label}</span>
-                      <span className="text-fg-faint truncate max-w-[100px]">{chip.prompt}</span>
+                      <span className="text-fg-muted truncate max-w-[100px]">{chip.prompt}</span>
                       <button
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={() => { if (!suppressClick.current) remove(i); }}
@@ -379,7 +379,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                 {availableSkills.length > 0 && (
                   <>
                     <div className="border-t border-edge-dim" />
-                    <p className="text-[10px] text-fg-faint font-medium">Or pick from installed skills:</p>
+                    <p className="text-[10px] text-fg-muted font-medium">Or pick from installed skills:</p>
                     <div ref={skillPickerRef} className="scroll-fade max-h-32 space-y-0.5">
                       {availableSkills.map(skill => (
                         <button
@@ -397,7 +397,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
             )}
 
             {chips.length >= 10 && (
-              <p className="text-[10px] text-fg-faint text-center">Maximum 10 chips reached</p>
+              <p className="text-[10px] text-fg-muted text-center">Maximum 10 chips reached</p>
             )}
           </div>
         </div>

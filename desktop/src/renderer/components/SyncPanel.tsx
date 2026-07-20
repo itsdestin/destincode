@@ -1191,7 +1191,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                             {/* Name + detail */}
                             <div className="flex-1 min-w-0">
                               <div className="text-xs text-fg font-medium truncate">{b.label}</div>
-                              <div className="text-[10px] text-fg-faint truncate">
+                              <div className="text-[10px] text-fg-muted truncate">
                                 {b.lastError ? b.lastError :
                                  b.lastPushEpoch ? `Backed up ${timeAgo(b.lastPushEpoch)}` :
                                  !b.syncEnabled ? 'Auto-backup paused' :
@@ -1317,7 +1317,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                       {/* Collapsible stderr for UNKNOWN-code warnings where raw output helps diagnose */}
                       {w.code === 'UNKNOWN' && w.stderr && (
                         <details className="mt-1">
-                          <summary className="text-[10px] text-fg-faint cursor-pointer">
+                          <summary className="text-[10px] text-fg-muted cursor-pointer">
                             Show error details
                           </summary>
                           <pre className="mt-1 p-2 bg-inset rounded text-[10px] whitespace-pre-wrap font-mono">
@@ -1382,7 +1382,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               {showLog && (
                 <div className="mt-2">
                   {logLines.length === 0 ? (
-                    <div className="text-[11px] text-fg-faint px-2 py-3">No sync log entries yet.</div>
+                    <div className="text-[11px] text-fg-muted px-2 py-3">No sync log entries yet.</div>
                   ) : (
                     <div ref={logScrollRef} className="scroll-fade max-h-48 rounded-lg bg-inset/40 border border-edge-dim">
                       <pre className="text-[10px] text-fg-dim font-mono px-2 py-2 whitespace-pre-wrap break-all leading-relaxed">
@@ -1394,7 +1394,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                               : 'text-fg-dim';
                             return (
                               <div key={i} className="py-0.5">
-                                <span className="text-fg-faint">{entry.ts?.slice(11) || ''} </span>
+                                <span className="text-fg-muted">{entry.ts?.slice(11) || ''} </span>
                                 <span className={levelColor}>[{entry.level}]</span>{' '}
                                 <span className="text-fg-dim">{entry.msg}</span>
                               </div>
@@ -1422,7 +1422,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             {!status && !loading && (
               <div className="text-center py-6">
                 <div className="text-fg-muted text-sm mb-1">No Sync Data</div>
-                <div className="text-fg-faint text-[11px]">Sync hasn't run yet. Configure a backup destination to get started.</div>
+                <div className="text-fg-muted text-[11px]">Sync hasn't run yet. Configure a backup destination to get started.</div>
               </div>
             )}
             </div>
@@ -1783,7 +1783,7 @@ function EditBackendForm({
             </div>
           </div>
         ))}
-        <div className="text-[10px] text-fg-faint">
+        <div className="text-[10px] text-fg-muted">
           To change these settings, remove this backup and add a new one.
         </div>
 

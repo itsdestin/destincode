@@ -283,7 +283,7 @@ export default function RatingSubmitModal({
                 htmlFor="review-text"
                 className="block text-xs font-medium text-fg-muted mb-1"
               >
-                Review <span className="text-fg-faint">(optional)</span>
+                Review <span className="text-fg-muted">(optional)</span>
               </label>
               {/* Change 42: onto the shared FIELD surface — this was the
                   `focus:ring-1` recipe, which the primitive replaces with a focus
@@ -303,7 +303,7 @@ export default function RatingSubmitModal({
               />
               {/* Character counter — shows remaining only when text is present */}
               {reviewText.length > 0 && (
-                <p className="text-right text-[10px] text-fg-faint mt-0.5">
+                <p className="text-right text-[10px] text-fg-muted mt-0.5">
                   {reviewText.length}/{MAX_REVIEW_CHARS}
                 </p>
               )}

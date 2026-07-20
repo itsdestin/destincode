@@ -60,7 +60,7 @@ export default function SystemMarker({ marker }: Props) {
         // summaries. Pre-wrap preserves CC's numbered-list formatting;
         // break-words so long paths/URLs wrap rather than overflow.
         <div className="mt-2 mx-auto max-w-3xl rounded-md border border-edge-dim bg-inset/60 px-4 py-3">
-          <div className="text-[10px] uppercase tracking-wider text-fg-faint mb-2">
+          <div className="text-[10px] uppercase tracking-wider text-fg-muted mb-2">
             Compaction summary
           </div>
           <pre className="text-xs text-fg-2 whitespace-pre-wrap break-words font-sans leading-relaxed max-h-96 overflow-y-auto">

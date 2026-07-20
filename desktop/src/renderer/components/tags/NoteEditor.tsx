@@ -45,7 +45,7 @@ export function NoteEditor({ value, onSave, placeholder = 'Add a note…' }: {
         rows={3}
       />
       {remaining < 500 && (
-        <span className="text-[9px] self-end text-fg-faint">{remaining} left</span>
+        <span className="text-[9px] self-end text-fg-muted">{remaining} left</span>
       )}
     </div>
   );
