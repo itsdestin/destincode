@@ -108,25 +108,47 @@ const CONFLICT_GROUPS: readonly RegExp[] = [
   /^rounded(-|$)/,
   // Font SIZE only — must not swallow text-on-accent / text-fg-2 (colors).
   /^text-(4xs|3xs|2xs|xs|sm|base|lg|xl)$/,
-  /^p[xytrbl]?-/,
+  // Fix: split padding into per-axis groups. The old single /^p[xytrbl]?-/
+  // group treated px- and py- as interchangeable, so a caller passing
+  // className="px-8" (wider horizontal padding) silently DROPPED the size's
+  // py-2 — buttons rendered at text height with no vertical padding. Hit the
+  // welcome-screen CTAs (App.tsx "New Session"/"Resume Session") and
+  // SyncPanel's Save button. Regression pinned by Button.test.tsx.
+  /^px-/,
+  /^py-/,
+  /^pt-/,
+  /^pr-/,
+  /^pb-/,
+  /^pl-/,
   /^w-/,
   /^h-/,
   /^gap-/,
   /^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/,
 ];
 
+/** Returns the conflict groups a single class token belongs to. The p-N
+ *  shorthand sets padding on all four sides, so it belongs to every padding
+ *  group — overriding it must beat base px-/py-/pt-/etc., and vice versa. */
+function groupsFor(token: string): RegExp[] {
+  if (/^p-\d/.test(token)) return CONFLICT_GROUPS.filter((re) => re.source.startsWith('^p'));
+  const g = CONFLICT_GROUPS.find((re) => re.test(token));
+  return g ? [g] : [];
+}
+
 /** Drops base tokens whose group the caller has overridden, then appends theirs. */
 export function mergeClasses(base: string, override: string): string {
   const overrides = override.split(/\s+/).filter(Boolean);
   if (overrides.length === 0) return base;
 
+  const overrideGroups = new Set(overrides.flatMap(groupsFor));
+
   const kept = base
     .split(/\s+/)
     .filter(Boolean)
     .filter((token) => {
-      const group = CONFLICT_GROUPS.find((re) => re.test(token));
-      if (!group) return true;
-      return !overrides.some((o) => group.test(o));
+      const groups = groupsFor(token);
+      if (groups.length === 0) return true;
+      return !groups.some((g) => overrideGroups.has(g));
     });
 
   return [...kept, ...overrides].join(' ');

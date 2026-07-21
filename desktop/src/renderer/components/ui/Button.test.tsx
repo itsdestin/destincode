@@ -1,0 +1,76 @@
+import { describe, it, expect } from 'vitest';
+import { mergeClasses, buttonClasses } from './Button';
+
+// WHY: mergeClasses is a hand-rolled stand-in for tailwind-merge (see the long
+// comment above CONFLICT_GROUPS in Button.tsx). A 2026-07-20 bug had its single
+// padding group treating px- and py- as interchangeable, so the welcome CTAs
+// (`<Button size="lg" className="px-8 ...">`) silently rendered with NO vertical
+// padding — buttons collapsed to text height in the beta build even though the
+// size token said py-2. These tests pin the per-axis independence that fix
+// restored, plus the p-N shorthand's cross-axis behavior.
+//
+// Assertions compare whole tokens (split + toContain), never substrings —
+// "py-2" is a substring of "py-2.5" and substring checks false-positive on it.
+
+function tokens(s: string): string[] {
+  return s.split(/\s+/).filter(Boolean);
+}
+
+describe('mergeClasses padding conflict groups', () => {
+  it('keeps base py- when the override only sets px- (the welcome-CTA regression)', () => {
+    // lg base is "text-sm px-4 py-2". Overriding px must not drop py.
+    const t = tokens(mergeClasses('text-sm px-4 py-2', 'px-8 text-base'));
+    expect(t).toContain('py-2');
+    expect(t).toContain('px-8');
+    expect(t).not.toContain('px-4');
+    expect(t).toContain('text-base');
+    expect(t).not.toContain('text-sm');
+  });
+
+  it('keeps base px- when the override only sets py-', () => {
+    const t = tokens(mergeClasses('text-sm px-4 py-2', 'py-2.5'));
+    expect(t).toContain('px-4');
+    expect(t).toContain('py-2.5');
+    expect(t).not.toContain('py-2');
+  });
+
+  it('lets a p-N shorthand override beat both base px- and py-', () => {
+    const t = tokens(mergeClasses('text-sm px-4 py-2', 'p-4'));
+    expect(t).toContain('p-4');
+    expect(t).not.toContain('px-4');
+    expect(t).not.toContain('py-2');
+  });
+
+  it('lets axis overrides beat a base p-N shorthand', () => {
+    const t = tokens(mergeClasses('p-2 text-sm', 'py-3'));
+    expect(t).toContain('py-3');
+    expect(t).not.toContain('p-2');
+    expect(t).toContain('text-sm');
+  });
+
+  it('still treats same-axis overrides as conflicts (py- replaces py-)', () => {
+    const t = tokens(mergeClasses('px-4 py-2', 'py-3'));
+    expect(t).toContain('py-3');
+    expect(t).not.toContain('py-2');
+    expect(t).toContain('px-4');
+  });
+});
+
+describe('buttonClasses end-to-end', () => {
+  it('size=lg with a wider px- override keeps vertical padding', () => {
+    // Mirrors App.tsx welcome "New Session": panel-glass w-full px-8 text-base
+    const t = tokens(buttonClasses('primary', 'lg', 'panel-glass w-full px-8 text-base'));
+    expect(t).toContain('py-2');
+    expect(t).toContain('px-8');
+    expect(t).toContain('text-base');
+    expect(t).toContain('bg-accent');
+    expect(t).toContain('panel-glass');
+  });
+
+  it('size=lg with an explicit py- override uses the override', () => {
+    const t = tokens(buttonClasses('secondary', 'lg', 'panel-glass w-full px-6 py-3'));
+    expect(t).toContain('py-3');
+    expect(t).not.toContain('py-2');
+    expect(t).toContain('px-6');
+  });
+});
