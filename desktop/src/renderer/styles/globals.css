@@ -1483,20 +1483,45 @@ html[data-platform="electron"] {
    Floating themes have no side chrome, so they keep the default 0. */
 html[data-platform="electron"] body:not([data-chrome-style="floating"]):not([data-input-style="floating"]) {
   --terminal-side-inset: var(--frame-edge);
+  /* BOTTOM inset (theme-driven like --terminal-side-inset, NOT view-gated):
+     lifts the xterm grid above the bottom frame strip on framed themes so the
+     last row isn't painted under chrome-glass's donut edge. Set in BOTH views
+     so the terminal is one stable height across chat/terminal toggles — a
+     view-gated inset would resize the PTY per toggle and ConPTY would re-emit
+     its buffer. In chat view the terminal is visibility:hidden anyway, so the
+     extra 10px is invisible. Consumed by TerminalView's container `bottom`.
+     NOTE: a plain .app-content margin-bottom does NOT work here — TerminalView
+     + TerminalRightSlot are position:absolute; inset:0, anchored to .app-
+     content's PADDING box, so a margin never moves them (the strip stayed
+     hidden under xterm — the original 9d886d95 fix targeted the wrong
+     mechanism). Floating themes have no bottom strip → 0. */
+  --terminal-bottom-inset: var(--frame-edge);
 }
 html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
   --bottom-chrome-height: var(--frame-edge);
-}
-html[data-platform="electron"][data-view-mode="terminal"] body:not([data-chrome-style="floating"]):not([data-input-style="floating"]) .app-content {
-  margin-bottom: var(--frame-edge);
+  /* ALSO override --bottom-chrome-total here. The base rule only sets
+     --bottom-chrome-height, expecting the base --bottom-chrome-total (defined
+     at :root scope as calc(--bottom-chrome-height + --vvp-offset)) to pick the
+     new height up. It does NOT: the inline `--bottom-chrome-height: 0px` that
+     useChromeMeasurements writes on <html> in terminal view (the bottom bar
+     collapses to height 0) is the value --bottom-chrome-total's var()
+     substitution resolves against, so the donut's bottom edge computed to
+     calc(0px + 0px) and the bottom frame strip never painted — the left/right
+     edges dead-ended at the window bottom (verified via CDP 2026-07-21:
+     --bottom-chrome-height computed 10px while --bottom-chrome-total computed
+     calc(0px + 0px) on the same element). Setting both vars at the SAME
+     specificity on the SAME element makes the substitution resolve 10px. */
+  --bottom-chrome-total: calc(var(--frame-edge) + var(--vvp-offset, 0px));
 }
 
 /* ─── Terminal-view right-slot overlay (Bug #2) ──────────────────────────
    TerminalRightSlot renders a framed-shell clone over the terminal so the
    artifact drawer / game pane are visible in terminal view (their real home
-   in ChatView's framed-shell is hidden there). It sits inside .app-content, so
-   it inherits the same --frame-edge bottom inset as the terminal and stays
-   aligned with the frame. The container + empty chat-pane spacer are
+   in ChatView's framed-shell is hidden there). It sits inside .app-content and
+   spans it via inset:0; its opaque .drawer-pane paints above chrome-glass
+   (z 11 vs 10), so the chrome-glass bottom strip reads around the drawer's
+   own bottom edge — the drawer doesn't need the xterm grid's bottom inset.
+   The container + empty chat-pane spacer are
    click-through so the terminal underneath stays interactive; only the
    .drawer-pane takes pointer events. No z-index on the shell: the drawer-pane
    keeps its base z-index:11 so it paints above chrome-glass (z 10) and the
