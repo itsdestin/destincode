@@ -1043,7 +1043,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const toolCalls = new Map(session.toolCalls);
       for (const [id, tool] of toolCalls) {
         if (tool.status === 'awaiting-approval' && tool.requestId === action.requestId) {
-          toolCalls.set(id, { ...tool, status: 'running', requestId: undefined });
+          // Fix: native budget gates (max_steps / doom_loop) are synthetic asks
+          // with NO real tool execution behind them — no TRANSCRIPT_TOOL_RESULT
+          // ever arrives to close the card. Leaving it 'running' orphans it: a
+          // same-turn re-trip of the gate matches it via PERMISSION_REQUEST's
+          // tier-3 "first running tool of any name" fallback and reuses the stale
+          // card, and endTurn() force-fails it 'Turn ended' on a normal finish.
+          // Close it 'complete' on any response instead (PERMISSION_RESPONDED
+          // can't tell Yes from No — it carries only the requestId). Keyed on
+          // toolName, not the perm- id prefix, which would wrongly close real
+          // tools whose hook merely beat the transcript.
+          const isBudgetGate = tool.toolName === 'max_steps' || tool.toolName === 'doom_loop';
+          toolCalls.set(id, { ...tool, status: isBudgetGate ? 'complete' : 'running', requestId: undefined });
           break;
         }
       }

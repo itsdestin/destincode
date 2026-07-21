@@ -327,6 +327,91 @@ describe('PERMISSION_REQUEST tool matching', () => {
 });
 
 // ---------------------------------------------------------------------------
+// PERMISSION_RESPONDED → synthetic budget gates (max_steps / doom_loop)
+// Regression: a budget gate is a synthetic ask with no real tool execution, so
+// no TRANSCRIPT_TOOL_RESULT ever closes its card. If the card stays 'running'
+// after the response, a same-turn re-trip of the gate reuses it via the tier-3
+// "first running tool of any name" fallback, and endTurn() force-fails it
+// 'Turn ended' on a normal finish. The card must close 'complete' on response.
+// ---------------------------------------------------------------------------
+describe('PERMISSION_RESPONDED budget gates', () => {
+  let state: ChatState;
+
+  const budgetAsk = (requestId: string, toolName: 'max_steps' | 'doom_loop', input: Record<string, unknown>): ChatAction => ({
+    type: 'PERMISSION_REQUEST',
+    sessionId: SESSION,
+    toolName,
+    input,
+    requestId,
+  });
+  const responded = (requestId: string): ChatAction => ({
+    type: 'PERMISSION_RESPONDED',
+    sessionId: SESSION,
+    requestId,
+  });
+
+  beforeEach(() => {
+    state = initState();
+  });
+
+  it('closes a max_steps card complete (not running) on response', () => {
+    state = dispatch(state, budgetAsk('req-1', 'max_steps', { steps: 50 }));
+    state = dispatch(state, responded('req-1'));
+
+    const card = state.get(SESSION)!.toolCalls.get('perm-req-1')!;
+    expect(card.status).toBe('complete');
+    expect(card.requestId).toBeUndefined();
+  });
+
+  it('a same-turn re-trip synthesizes a FRESH card instead of reusing the orphan', () => {
+    state = dispatch(state, budgetAsk('req-1', 'max_steps', { steps: 50 }));
+    state = dispatch(state, responded('req-1'));
+    // Second trip in the same turn — different requestId, larger step count.
+    state = dispatch(state, budgetAsk('req-2', 'max_steps', { steps: 100 }));
+
+    const session = state.get(SESSION)!;
+    // The first card stays closed; a brand-new synthetic card is awaiting approval.
+    expect(session.toolCalls.get('perm-req-1')!.status).toBe('complete');
+    const fresh = session.toolCalls.get('perm-req-2')!;
+    expect(fresh.status).toBe('awaiting-approval');
+    expect(fresh.requestId).toBe('req-2');
+    expect(fresh.input).toEqual({ steps: 100 });
+  });
+
+  it('turn completion does NOT force-fail an answered budget-gate card', () => {
+    state = dispatch(state, budgetAsk('req-1', 'max_steps', { steps: 50 }));
+    state = dispatch(state, responded('req-1'));
+    state = dispatch(state, { type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: SESSION } as ChatAction);
+
+    const card = state.get(SESSION)!.toolCalls.get('perm-req-1')!;
+    expect(card.status).toBe('complete');
+    expect(card.error).toBeUndefined();
+  });
+
+  it('a real tool still returns to running on response (budget-gate carve-out is scoped)', () => {
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: SESSION,
+      uuid: 'uuid-tool-a',
+      toolUseId: 'tool-a',
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      timestamp: 1000,
+    } as ChatAction);
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'ls' },
+      requestId: 'req-9',
+    });
+    state = dispatch(state, responded('req-9'));
+
+    expect(state.get(SESSION)!.toolCalls.get('tool-a')!.status).toBe('running');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // hookEventToAction — native denyListed passthrough (Task 13)
 // ---------------------------------------------------------------------------
 describe('hookEventToAction PermissionRequest', () => {
