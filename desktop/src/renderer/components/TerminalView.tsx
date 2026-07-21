@@ -540,7 +540,12 @@ export default function TerminalView({ sessionId, visible }: Props) {
           // framed, 0 on floating), the same in both views → no toggle reflow.
           left: 'var(--terminal-side-inset, 0px)',
           right: 'var(--terminal-side-inset, 0px)',
-          bottom: 0,
+          // Bottom inset lifts the xterm grid above the bottom frame strip on
+          // framed themes (--terminal-bottom-inset = --frame-edge, set on
+          // terminal view in globals.css; 0 on floating/chat). Read directly
+          // here like the top/side insets — NOT via .app-content margin, which
+          // can't move this absolutely-positioned container (see globals.css).
+          bottom: 'var(--terminal-bottom-inset, 0px)',
           opacity: xtermOpacityStyle,
           // xterm renders cell rows to a canvas; if container height isn't a
           // whole multiple of cell height (typical — fonts round irregularly),

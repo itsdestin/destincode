@@ -2593,10 +2593,11 @@ function AppInner() {
             </div>
             <div
               // app-content: the chat/terminal content region. In framed
-              // terminal view it gets a --frame-edge bottom margin so xterm
-              // sits above the bottom frame strip (see globals.css). The
-              // terminal-panel overlay (below) is a child so it inherits the
-              // same inset and stays aligned with the frame.
+              // terminal view the bottom frame strip comes from chrome-glass's
+              // donut (--bottom-chrome-height) + the xterm grid lifted by
+              // --terminal-bottom-inset on TerminalView's container (NOT an
+              // .app-content margin — absolute children anchor to the padding
+              // box, so a margin here can't move them; see globals.css).
               className="app-content flex-1 overflow-hidden relative"
             >
               {/* Tier 2 of android-terminal-data-parity: xterm.js is the sole
