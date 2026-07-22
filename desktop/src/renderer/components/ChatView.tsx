@@ -10,7 +10,6 @@ import SystemMarker from './SystemMarker';
 import CompactingCard from './CompactingCard';
 import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
-import StopButton from './StopButton';
 import AttentionBanner from './AttentionBanner';
 import ModelLoadingBar from './ModelLoadingBar';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
@@ -744,28 +743,15 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               // spinner until it begins processing. (2026-07-14)
               const modelNotResident = state.modelState != null && state.modelState !== 'loaded';
               if (thinkingArea && state.attentionState === 'ok') {
-                // Stop button joins the same flex row as the indicator (whichever
-                // form it takes) — a cold-load "Loading…" turn is still
-                // interruptible, so it gets the button too, not just the
-                // animated ThinkingIndicator case. `visible` is always true
-                // here — it's already gated by this branch's `if` — the prop
-                // exists so StopButton stays a pure function of its inputs for
-                // testing without mounting ChatView's provider tree.
                 return modelNotResident
                   ? (
                     <div className="flex items-center gap-2 px-4 py-1.5 in-view">
                       <div className="flex items-center gap-2 bg-inset rounded-2xl rounded-bl-sm px-4 py-2.5">
                         <span className="text-sm text-fg-dim italic">Loading…</span>
                       </div>
-                      <StopButton sessionId={sessionId} provider={provider} visible />
                     </div>
                   )
-                  : (
-                    <div className="flex items-center gap-2 in-view">
-                      <ThinkingIndicator stallWarning={state.stallWarning} />
-                      <StopButton sessionId={sessionId} provider={provider} visible />
-                    </div>
-                  );
+                  : <ThinkingIndicator stallWarning={state.stallWarning} />;
               }
               if (state.attentionState !== 'ok' && (thinkingArea || terminalAttention)) {
                 return (

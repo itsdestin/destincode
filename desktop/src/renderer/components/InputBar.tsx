@@ -1,11 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
-import { useChatDispatch } from '../state/chat-context';
+import { useChatDispatch, useChatState } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
 import { Button } from './ui';
 import { AttachIcon, CompassIcon } from './Icons';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
+import StopButton from './StopButton';
 // Central slash-command router. All /-prefixed messages flow through here
 // so interception is consistent between typed input and drawer selection.
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
@@ -99,6 +100,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // browsers than setting scrollTop on a hidden-overflow element).
   const mirrorContentRef = useRef<HTMLDivElement>(null);
   const dispatch = useChatDispatch();
+  // Task 10 (Destin placement ruling): the stop control lives in the composer
+  // row now, not beside ChatView's ThinkingIndicator. Cached per-session
+  // selector — the react-renderer rule requires useChatState over a raw map
+  // read on the render path. Same visibility gate Task 6 used in ChatView.
+  const chatState = useChatState(sessionId);
+  const showStop = chatState.isThinking && chatState.attentionState === 'ok';
 
   // Per-session draft store — keeps input text and attachments separate
   // across sessions so switching away and back preserves your draft.
@@ -734,6 +741,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             className="input-bar-textarea scroll-fade relative block w-full bg-transparent text-sm text-transparent placeholder-fg-muted outline-none disabled:opacity-50 resize-none leading-snug p-0 m-0 align-middle break-words"
           />
           </div>
+          {/* Task 10: stop control moved here from ChatView (beside the
+              ThinkingIndicator) per Destin's placement ruling — immediately
+              left of send, same size="icon" scale, shrink-0 so it doesn't
+              squeeze the textarea. `visible` mirrors the exact gate Task 6
+              used: isThinking && attentionState === 'ok'. */}
+          <StopButton sessionId={sessionId} provider={provider} visible={showStop} />
           {/* The app's most-used control. Geometry is unchanged — 28x28 is exactly
               what size="icon" emits — and it keeps `bg-accent`, which matters:
               community packs style the send button through `.bg-accent` (Halftone's
