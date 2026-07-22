@@ -102,6 +102,22 @@ describe('CM6 artifact context menu (real component)', () => {
     expect(entries.some((e: any) => e.id === 'paste')).toBe(false);
   });
 
+  it('mounts the editor even when content arrives AFTER the first render (the fetch-transient blank-panel bug)', () => {
+    // Hosts set content=null before every read resolves; the first render must
+    // still mount the editor host so the [path]-keyed effect can attach — an
+    // early return here left the panel permanently blank (found in review).
+    const utils = render(
+      <CodeEditorView path="src/late.ts" absolutePath="/proj/src/late.ts" content={null} isEditable={false} />
+    );
+    utils.rerender(
+      <CodeEditorView path="src/late.ts" absolutePath="/proj/src/late.ts" content={'const late = true;'} isEditable />
+    );
+    const container = utils.container.querySelector('[data-artifact-viewer]') as HTMLElement;
+    const view = editorViewWithin(container);
+    expect(view).toBeTruthy();
+    expect(view!.state.doc.toString()).toBe('const late = true;');
+  });
+
   it('EDITING CM6 gets the cut/copy/paste menu via its contenteditable', () => {
     const utils = render(
       <CodeEditorView

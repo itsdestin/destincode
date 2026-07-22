@@ -138,20 +138,29 @@ export function CodeEditorView({ path, content, editing = false, draft = '', onD
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTheme]);
 
-  if (content === null && !editing) {
-    return <div className="text-fg-muted p-4">This file is no longer on disk.</div>;
-  }
-
+  // The editor host must render UNCONDITIONALLY: the hosts set content=null
+  // for the fetch transient before every read resolves, and the mount effect
+  // above only runs on [path] — an early return here would leave hostRef null
+  // during that window and no EditorView would EVER be created for the file
+  // (first-review bug: panel flashed, then blank). The orphan notice overlays
+  // instead of replacing the tree.
   return (
-    <div
-      ref={hostRef}
-      className="h-full overflow-hidden"
-      // Contract with build-menu.ts: data-artifact-viewer routes right-clicks
-      // to the artifact menu; source 'cm6' selects the EditorView line-number
-      // path (registry lookup), NEVER the <pre> textContent path.
-      data-artifact-viewer
-      data-doc-path={path}
-      data-artifact-source="cm6"
-    />
+    <div className="relative h-full">
+      {content === null && !editing && (
+        <div className="absolute inset-0 z-10 flex items-start justify-start text-fg-muted p-4 bg-inset">
+          This file is no longer on disk.
+        </div>
+      )}
+      <div
+        ref={hostRef}
+        className="h-full overflow-hidden"
+        // Contract with build-menu.ts: data-artifact-viewer routes right-clicks
+        // to the artifact menu; source 'cm6' selects the EditorView line-number
+        // path (registry lookup), NEVER the <pre> textContent path.
+        data-artifact-viewer
+        data-doc-path={path}
+        data-artifact-source="cm6"
+      />
+    </div>
   );
 }
