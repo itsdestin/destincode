@@ -591,14 +591,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <IconBtn name="close" title="Close" onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))} />
       </div>
 
-      {/* metadata strip */}
-      <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-b border-edge-dim bg-well shrink-0">
-        {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
-        <span>{statusWord}</span>
-        <span className="text-fg-faint">·</span>
-        <span>{formatRelativeTime(active.lastModified)}</span>
-        {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
-      </div>
 
       {/* body: push list + content.
           data-list-open drives the <=700px rules in globals.css, where the
@@ -617,7 +609,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         </div>
         {/* Positioning parent for the find bar. contentRef is the INNER div so
             the find bar (a sibling) isn't itself walked by the search. */}
-        <div className="drawer-content flex-1 min-w-0 overflow-hidden relative">
+        <div className="drawer-content flex-1 min-w-0 overflow-hidden relative flex flex-col">
           {findOpen && (
             <ContentFindBar
               containerRef={contentRef}
@@ -625,7 +617,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               onClose={() => setFindOpen(false)}
             />
           )}
-          <div ref={contentRef} className="h-full overflow-hidden artifact-content-pane">
+          <div ref={contentRef} className="flex-1 min-h-0 overflow-hidden artifact-content-pane">
             <ActiveArtifactView
               ref={editRef}
               artifact={active}
@@ -639,6 +631,16 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               controlsInHeader
               onEditStateChange={setEditState}
             />
+          </div>
+          {/* metadata strip — bottom of the DOC column (not a full-width row up
+              top), so it shares the document's width and expands/shrinks with
+              the artifact list (Destin, 2026-07-22). */}
+          <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-t border-edge-dim bg-well shrink-0">
+            {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
+            <span>{statusWord}</span>
+            <span className="text-fg-faint">·</span>
+            <span>{formatRelativeTime(active.lastModified)}</span>
+            {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
           </div>
         </div>
       </div>
