@@ -107,9 +107,13 @@ export class SyncService extends EventEmitter {
   // Hourly daily-snapshot poll (see SNAPSHOT_POLL_INTERVAL_MS). Cleared in stop().
   private snapshotTimer: NodeJS.Timeout | null = null;
 
-  constructor() {
+  // `home` is a TEST-ONLY override. Production passes nothing and keeps the
+  // os.homedir() behavior; tests pass a tmp dir so they never touch the real
+  // ~/.claude (which a running YouCoded owns — see sync-state.ts's
+  // setClaudeDirForTests for the full story).
+  constructor(home: string = os.homedir()) {
     super();
-    this.claudeDir = path.join(os.homedir(), '.claude');
+    this.claudeDir = path.join(home, '.claude');
     this.configPath = path.join(this.claudeDir, 'toolkit-state', 'config.json');
     this.localConfigPath = path.join(this.claudeDir, 'toolkit-state', 'config.local.json');
     this.syncMarkerPath = path.join(this.claudeDir, 'toolkit-state', '.sync-marker');
