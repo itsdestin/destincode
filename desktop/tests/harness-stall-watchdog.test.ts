@@ -5,9 +5,11 @@
 // finish, and no error — so without a watchdog the turn hangs forever with the
 // spinner up. The watchdog warns after `stallWarningMs`, then after a further
 // `stallCountdownMs` of silence auto-retries ONCE (when nothing had streamed) or
-// surfaces a session-error. These use tiny watchdog timings (test hook) + REAL
-// timers so there's no fake-timer/microtask juggling against live stream reads.
-import { describe, it, expect } from 'vitest';
+// surfaces a session-error. These use shortened watchdog timings (test hook) +
+// REAL timers so there's no fake-timer/microtask juggling against live stream
+// reads. "Shortened", NOT tiny — see STALL_MS for why that distinction cost a
+// Windows CI run.
+import { describe, it, expect, vi } from 'vitest';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { HarnessSession, type HarnessSessionOpts } from '../src/main/harness/harness-session';
 import type { HarnessManifest } from '../src/shared/harness-manifest';
@@ -64,6 +66,14 @@ const STALL_MS = 250;
 // stay far below the window, or a scheduling hiccup between chunks fires the
 // watchdog and fails a never-warns assertion. 4ms spacing vs a 400ms window.
 const STREAMING_WINDOW_MS = 400;
+
+// Raising the watchdog budgets moved the risk rather than removing it: the
+// both-attempts-stall case now spends warn+countdown twice = ~1.0s of REAL time
+// against vitest's default 5000ms testTimeout, i.e. ~5x headroom on a file that
+// previously had ~300x. That is the same too-tight-budget bet this PR exists to
+// kill, just one level up. Bound the test explicitly so only the watchdog
+// constants above govern the outcome.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const HARNESS: HarnessManifest = {
   schema: 1, id: 'agent', name: 'Agent', systemPrompt: 'sys', tools: [],

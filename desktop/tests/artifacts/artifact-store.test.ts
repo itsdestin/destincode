@@ -1,10 +1,17 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord } from '../../src/main/artifacts/artifact-store';
 import type { ProjectSidecar } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
+
+// The 60-iteration concurrency loop below does real fs work (mkdtemp, fsync,
+// rename, rm x60) and takes ~1.3s locally — under vitest's default 5000ms
+// testTimeout, but only ~4x headroom, and fs work is exactly what inflates
+// under a loaded parallel pool. Bounding the file explicitly keeps this PR from
+// trading one load-dependent budget for another.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 describe('readSidecar', () => {
   let projectRoot: string;
