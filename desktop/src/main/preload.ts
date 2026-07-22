@@ -1111,8 +1111,9 @@ contextBridge.exposeInMainWorld('claude', {
   // (e.g. YOUCODED_NATIVE=0 bash scripts/run-dev.sh) if a regression needs a fast revert.
   native: {
     supported: process.env.YOUCODED_NATIVE !== '0',
-    // Fire-and-forget: match ipcMain.on handlers that destructure { sessionId, text } / { sessionId }.
-    send: (sessionId: string, text: string) => ipcRenderer.send(IPC.NATIVE_SEND, { sessionId, text }),
+    // M1: invoke — matches the handle signature, returns {status,reason}
+    send: (sessionId: string, text: string) => ipcRenderer.invoke(IPC.NATIVE_SEND, { sessionId, text }),
+    // Fire-and-forget: match ipcMain.on handler that destructures { sessionId }.
     interrupt: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_INTERRUPT, { sessionId }),
     // Request-response: match the positional ipcMain.handle signatures.
     setBinding: (sessionId: string, binding: unknown) => ipcRenderer.invoke(IPC.NATIVE_SET_BINDING, sessionId, binding),

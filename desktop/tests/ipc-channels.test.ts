@@ -711,6 +711,11 @@ describe('native:*/provider:* channel parity', () => {
     const src = read('src', 'main', 'remote-server.ts');
     expect(src, "native:get-permission-mode missing from remote-server.ts").toContain(`'native:get-permission-mode'`);
   });
+  it('native:send is answered by remote-server (request/response, not fire-and-forget)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    const caseBlock = src.slice(src.indexOf(`case 'native:send'`));
+    expect(caseBlock.slice(0, 400)).toContain('this.respond(');
+  });
 });
 
 // Regression net for the search:* IPC channels (Phase 2 Plan B — keyed Tavily/

@@ -766,6 +766,15 @@ export class RemoteServer {
         this.respond(client.ws, type, id, mode);
         break;
       }
+      case 'native:send': {
+        // M1: mirrors the desktop invoke — return the result, never throw, so desktop
+        // and remote agree on failure shape (see native-runtime rule on transport parity).
+        const result = this.nativeRuntime
+          ? this.nativeRuntime.nativeHost.send(payload.sessionId, payload.text)
+          : { status: 'failed', reason: 'not-live' };
+        this.respond(client.ws, type, id, result);
+        break;
+      }
       case 'native:sessions-list': {
         this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
         break;
@@ -1930,12 +1939,7 @@ export class RemoteServer {
         this.sessionManager.sendInput(payload.sessionId, payload.text);
         break;
       }
-      // Native runtime I/O — fire-and-forget (no response), mirrors NATIVE_SEND
-      // / NATIVE_INTERRUPT. The host serializes sends and no-ops unknown ids.
-      case 'native:send': {
-        if (this.nativeRuntime) void this.nativeRuntime.nativeHost.send(payload.sessionId, payload.text);
-        break;
-      }
+      // Native runtime interrupt — fire-and-forget (no response). The host no-ops unknown ids.
       case 'native:interrupt': {
         this.nativeRuntime?.nativeHost.interrupt(payload.sessionId);
         break;
