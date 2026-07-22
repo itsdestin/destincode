@@ -41,6 +41,12 @@ export const ARTIFACT_IPC = {
   // accidental pill-click tracks and dead orphan rows). Claude editing the
   // file again re-creates a fresh record.
   REMOVE_RECORD: 'artifacts:remove-record',
+  // Subscribe/unsubscribe this renderer to external-change events for a project
+  // root (filesystem watcher in main, refcounted per webContents — see
+  // artifacts/project-watcher.ts). Events arrive on the CHANGED channel with
+  // by external, meaning changed on disk by something other than this app.
+  WATCH_PROJECT: 'artifacts:watch-project',
+  UNWATCH_PROJECT: 'artifacts:unwatch-project',
 } as const;
 
 export type ArtifactIpcChannel = typeof ARTIFACT_IPC[keyof typeof ARTIFACT_IPC];

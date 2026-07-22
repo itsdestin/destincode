@@ -1,0 +1,36 @@
+{
+  "$schema": 1,
+  "comment": "Pins the TS (editable-path-policy.ts) and Kotlin (EditablePathPolicy.kt) implementations to identical verdicts. Paths are CANONICAL (forward slashes, resolved). tier: free | needs-confirm | denied. protectedRead: whether artifacts:get refuses to serve the content (sensitive set minus dotenv).",
+  "cases": [
+    { "path": "/home/u/proj/src/app.ts", "tier": "free", "protectedRead": false },
+    { "path": "/home/u/proj/CLAUDE.md", "tier": "free", "protectedRead": false },
+    { "path": "/home/u/proj/CLAUDE.local.md", "tier": "free", "protectedRead": false },
+    { "path": "/home/u/proj/.gitignore", "tier": "free", "protectedRead": false },
+    { "path": "/home/u/proj/.environment", "tier": "free", "protectedRead": false },
+    { "path": "/home/u/proj/docs/notes.md", "tier": "free", "protectedRead": false },
+    { "path": "c:/users/u/proj/readme.md", "tier": "free", "protectedRead": false },
+
+    { "path": "/home/u/proj/.git/hooks/pre-commit", "tier": "denied", "protectedRead": false },
+    { "path": "/home/u/proj/.git/config", "tier": "denied", "protectedRead": false },
+    { "path": "/home/u/proj/sub/.git/config", "tier": "denied", "protectedRead": false },
+    { "path": "/home/u/proj/.git", "tier": "denied", "protectedRead": false },
+    { "path": "/home/u/proj/.youcoded/artifacts.json", "tier": "denied", "protectedRead": false },
+    { "path": "/home/u/.ssh/id_rsa", "tier": "denied", "protectedRead": true },
+    { "path": "/home/u/proj/.ssh/config", "tier": "denied", "protectedRead": true },
+    { "path": "/home/u/.gnupg/pubring.kbx", "tier": "denied", "protectedRead": true },
+    { "path": "/home/u/.aws/credentials", "tier": "denied", "protectedRead": true },
+    { "path": "/home/u/.netrc", "tier": "denied", "protectedRead": true },
+    { "path": "/home/u/_netrc", "tier": "denied", "protectedRead": true },
+    { "path": "/home/u/proj/.credentials.json", "tier": "denied", "protectedRead": true },
+    { "path": "/home/u/.config/gh/hosts.yml", "tier": "denied", "protectedRead": true },
+
+    { "path": "/home/u/proj/.claude/settings.json", "tier": "needs-confirm", "protectedRead": false },
+    { "path": "/home/u/proj/.claude/hooks/guard.sh", "tier": "needs-confirm", "protectedRead": false },
+    { "path": "/home/u/proj/.claude/rules/style.md", "tier": "needs-confirm", "protectedRead": false },
+    { "path": "/home/u/.claude/CLAUDE.md", "tier": "needs-confirm", "protectedRead": false },
+    { "path": "/home/u/proj/.env", "tier": "needs-confirm", "protectedRead": false },
+    { "path": "/home/u/proj/.env.local", "tier": "needs-confirm", "protectedRead": false },
+    { "path": "/home/u/proj/.env.production", "tier": "needs-confirm", "protectedRead": false },
+    { "path": "/home/u/proj/.envrc", "tier": "needs-confirm", "protectedRead": false }
+  ]
+}

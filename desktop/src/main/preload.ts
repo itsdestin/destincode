@@ -1229,9 +1229,11 @@ contextBridge.exposeInMainWorld('claude', {
     // to bytes (renderer can't fetch a file:// URL from the http/app origin).
     readBinary: (absolutePath: string) =>
       ipcRenderer.invoke('artifacts:read-binary', absolutePath),
+    // opts: { baseMtimeMs?, confirmed? } — concurrency token + confirm-tier ack
     save: (projectRoot: string, projectId: string, projectName: string,
-           artifactId: string, content: string, sessionId: string) =>
-      ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId),
+           artifactId: string, content: string, sessionId: string,
+           opts?: { baseMtimeMs?: number; confirmed?: boolean }) =>
+      ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId, opts),
     // Fix: data-flow gap — renderer Tracker calls this on Write/Edit/MultiEdit
     // transcript events so the central index is populated automatically.
     appendVersion: (projectRoot: string, sessionId: string, args: any) =>
@@ -1253,6 +1255,12 @@ contextBridge.exposeInMainWorld('claude', {
     // Remove a tracking RECORD from the sidecar (never the file on disk).
     removeRecord: (projectRoot: string, artifactId: string) =>
       ipcRenderer.invoke('artifacts:remove-record', projectRoot, artifactId),
+    // Subscribe/unsubscribe this renderer to external file-change events for a
+    // project root — events arrive via onChanged with by:'external'.
+    watchProject: (projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:watch-project', projectRoot),
+    unwatchProject: (projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:unwatch-project', projectRoot),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);

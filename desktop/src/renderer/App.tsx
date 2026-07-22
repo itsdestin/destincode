@@ -1,6 +1,7 @@
 // Registers window.__terminalRegistry so main-process executeJavaScript
 // can call getScreenText for the attention classifier's ~1s buffer reads.
 // Must run before any TerminalView mounts (which call registerTerminal).
+import { guardDirtyEditor } from './components/artifact-views/dirty-editor-guard';
 import './bootstrap/terminal-bridge';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import TerminalView from './components/TerminalView';
@@ -11,6 +12,7 @@ import StatusBar from './components/StatusBar';
 import { MODELS, type ModelAlias } from './components/StatusBar';
 import { modelChipFor, supportsAliasCycling } from './components/model-chip';
 import FolderSwitcher from './components/FolderSwitcher';
+import { isTypingTarget } from './utils/is-typing-target';
 
 // Labels for the welcome-screen model picker (mirrors SessionStrip)
 const WELCOME_MODEL_LABELS: Record<string, string> = {
@@ -1804,10 +1806,10 @@ function AppInner() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Skip when a text input is focused — Shift+Space is a normal typing
-      // combo (capitalized word then space) and would fire accidentally.
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      // Skip when a text input (or the CodeMirror editor) is focused —
+      // Shift+Space is a normal typing combo and would fire accidentally
+      // (spec §12.6).
+      if (isTypingTarget(e.target as Element)) return;
       if (e.shiftKey && e.key === ' ') {
         e.preventDefault();
         cycleModelRef.current?.();
@@ -2420,6 +2422,10 @@ function AppInner() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Shift+Tab inside a text editor means OUTDENT — this capture-phase
+      // handler would otherwise steal it and cycle the session's permission
+      // mode from inside the CodeMirror editor (spec §12.6).
+      if (isTypingTarget(e.target as Element)) return;
       if (e.shiftKey && e.key === 'Tab') {
         e.preventDefault();
         cyclePermissionRef.current?.();
@@ -2548,9 +2554,15 @@ function AppInner() {
                 sessions={sessions}
                 activeSessionId={sessionId}
                 onSelectSession={(id: string) => {
-                  setSessionId(id);
-                  // Notify Android/remote bridge so the native terminal view switches too
-                  (window as any).claude?.session?.switch?.(id);
+                  // Switching sessions REMOUNTS the artifact drawer, which
+                  // would silently discard a dirty editor draft — route the
+                  // user-initiated switch through the D3 guard. Programmatic
+                  // switches (session died/closed) stay unguarded on purpose.
+                  guardDirtyEditor(() => {
+                    setSessionId(id);
+                    // Notify Android/remote bridge so the native terminal view switches too
+                    (window as any).claude?.session?.switch?.(id);
+                  });
                 }}
                 onCreateSession={createSession}
                 onCloseSession={(id) => {

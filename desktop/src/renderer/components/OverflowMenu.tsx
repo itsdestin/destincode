@@ -16,6 +16,7 @@
 // dropdown — the header has a backdrop-filter stacking context and
 // overflow-hidden ancestors, so an in-tree absolute dropdown gets clipped.
 
+import { guardDirtyEditor } from './artifact-views/dirty-editor-guard';
 import { createPortal } from 'react-dom';
 import { useArtifact } from '../state/ArtifactContext';
 import { GamepadIcon } from './Icons';
@@ -92,7 +93,9 @@ export default function OverflowMenu({
       label: artifactCount > 0 ? `Session artifacts (${artifactCount})` : 'Session artifacts',
       onClick: choose(() => {
         if (!activeSessionId) return;
-        dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
+        // Same D3 guard as the HeaderBar toggle — closing can discard a draft.
+        guardDirtyEditor(() =>
+          dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId }));
       }),
       active: drawerOpen,
       dot: null,

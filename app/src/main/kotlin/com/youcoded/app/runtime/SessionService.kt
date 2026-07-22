@@ -3345,12 +3345,61 @@ class SessionService : Service() {
                 }
                 val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
                                else java.io.File(artifact.absolutePath!!)
-                val content  = try { fullPath.readText(Charsets.UTF_8) } catch (_: java.io.IOException) { null }
+                // Resolve symlinks BEFORE any policy decision (D5 2026-07-22):
+                // canonicalize() is string work and readBytes follows links, so a
+                // link inside the root could dodge the sensitive-path deny.
+                val resolved = try { fullPath.canonicalFile } catch (_: java.io.IOException) { fullPath.absoluteFile }
+                // Internal sidecar paths were never traversal-checked — enforce
+                // in-root on the RESOLVED path (matches desktop write-authorization).
+                if (artifact.kind == "internal") {
+                    val rootReal = try { java.io.File(projectRoot).canonicalFile.path } catch (_: java.io.IOException) { null }
+                    if (rootReal == null || !(resolved.path == rootReal || resolved.path.startsWith(rootReal + java.io.File.separator))) {
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                            org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
+                        return@handleBridgeMessage
+                    }
+                }
+                // Sensitive read deny — the set read-binary refuses MINUS dotenv
+                // (.env stays viewable: it is confirm-tier EDITABLE, see D5).
+                if (EditablePathPolicy.protectedReadPath(canonicalize(resolved.path, null))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "protected-path")) }
+                    return@handleBridgeMessage
+                }
+                if (!resolved.exists()) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject()
+                        .put("ok", true).put("artifact", artifact.toJson())
+                        .put("content", org.json.JSONObject.NULL).put("orphan", true)) }
+                    return@handleBridgeMessage
+                }
+                // Size gate BEFORE reading (spec §2.3) — a multi-MB read blocks the
+                // bridge and the WebView renderer. mtimeMs doubles as the optimistic-
+                // concurrency token round-tripped into artifacts:save.
+                if (resolved.length() > EditablePathPolicy.EDIT_MAX_BYTES) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject()
+                        .put("ok", true).put("artifact", artifact.toJson())
+                        .put("content", org.json.JSONObject.NULL).put("orphan", false)
+                        .put("tooLarge", true).put("sizeBytes", resolved.length())
+                        .put("mtimeMs", resolved.lastModified().toDouble())) }
+                    return@handleBridgeMessage
+                }
+                val bytes = try { resolved.readBytes() } catch (_: java.io.IOException) { null }
+                if (bytes == null) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject()
+                        .put("ok", true).put("artifact", artifact.toJson())
+                        .put("content", org.json.JSONObject.NULL).put("orphan", true)) }
+                    return@handleBridgeMessage
+                }
+                // NUL-sniff: binary bytes as UTF-8 turn into U+FFFD soup — return
+                // binary:true + null content so the renderer routes to its fallback.
+                val binary = EditablePathPolicy.looksBinary(bytes)
                 val payload  = org.json.JSONObject()
                     .put("ok", true)
                     .put("artifact", artifact.toJson())
-                    .put("content",  if (content != null) content else org.json.JSONObject.NULL)
-                    .put("orphan",   content == null)
+                    .put("content",  if (binary) org.json.JSONObject.NULL else String(bytes, Charsets.UTF_8))
+                    .put("orphan",   false)
+                    .put("binary",   binary)
+                    .put("mtimeMs",  resolved.lastModified().toDouble())
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
 
@@ -3364,8 +3413,28 @@ class SessionService : Service() {
                         org.json.JSONObject().put("ok", false).put("error", "no path")) }
                     return@handleBridgeMessage
                 }
+                // Sensitive-path deny (2026-07-22): port of the desktop
+                // read-binary-access guard, which this handler never had — .ssh,
+                // credential stores, and dotenv were readable by absolute path.
+                // The desktop roots-allowlist half is NOT ported: it needs the
+                // saved-folders store, and the Android bridge is only reachable
+                // from the local WebView (no remote server), so the deny-list is
+                // the load-bearing part here.
+                val resolvedBin = try { java.io.File(absolutePath).canonicalFile } catch (_: java.io.IOException) { java.io.File(absolutePath).absoluteFile }
+                if (EditablePathPolicy.isSensitivePath(canonicalize(resolvedBin.path, null))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "not-allowed")) }
+                    return@handleBridgeMessage
+                }
+                // 50MB gate, matching desktop READ_BINARY_MAX_BYTES — base64
+                // inflates 33% and it all transits the bridge.
+                if (resolvedBin.exists() && resolvedBin.length() > 50L * 1024 * 1024) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "too-large")) }
+                    return@handleBridgeMessage
+                }
                 val payload = try {
-                    val bytes = java.io.File(absolutePath).readBytes()
+                    val bytes = resolvedBin.readBytes()
                     val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                     org.json.JSONObject().put("ok", true).put("base64", b64)
                 } catch (e: java.io.IOException) {
@@ -3403,12 +3472,52 @@ class SessionService : Service() {
                 }
                 val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
                                else java.io.File(artifact.absolutePath!!)
+                // D5 boundary (2026-07-22), mirroring desktop write-authorization:
+                // this branch historically wrote absolutePath!! with NO checks —
+                // the sidecar-escalation hole (spec §12.1). Resolve symlinks first,
+                // enforce in-root for internal artifacts on the RESOLVED path, then
+                // apply the tier policy and the optimistic-concurrency token.
+                val resolvedSave = try { fullPath.canonicalFile } catch (_: java.io.IOException) { fullPath.absoluteFile }
+                if (artifact.kind == "internal") {
+                    val rootReal = try { java.io.File(projectRoot).canonicalFile.path } catch (_: java.io.IOException) { null }
+                    if (rootReal == null || !(resolvedSave.path == rootReal || resolvedSave.path.startsWith(rootReal + java.io.File.separator))) {
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                            org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
+                        return@handleBridgeMessage
+                    }
+                }
+                val canonSave = canonicalize(resolvedSave.path, null)
+                when (EditablePathPolicy.editTier(canonSave)) {
+                    EditablePathPolicy.EditTier.DENIED -> {
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                            org.json.JSONObject().put("ok", false).put("error", "protected-path").put("path", canonSave)) }
+                        return@handleBridgeMessage
+                    }
+                    EditablePathPolicy.EditTier.NEEDS_CONFIRM -> {
+                        if (!msg.payload.optBoolean("confirmed", false)) {
+                            msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                                org.json.JSONObject().put("ok", false).put("error", "needs-confirm").put("path", canonSave)) }
+                            return@handleBridgeMessage
+                        }
+                    }
+                    EditablePathPolicy.EditTier.FREE -> { /* no friction */ }
+                }
+                // Concurrency token: GET returns lastModified().toDouble(), the
+                // renderer round-trips it verbatim, so Double equality is exact.
+                // A missing file falls through — the save recreates it (delete-
+                // then-save keeps the user's draft, matching desktop).
+                if (msg.payload.has("baseMtimeMs") && resolvedSave.exists()
+                    && resolvedSave.lastModified().toDouble() != msg.payload.getDouble("baseMtimeMs")) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "conflict")) }
+                    return@handleBridgeMessage
+                }
                 // Atomic write: temp file + rename, matching desktop behaviour
-                val tmpPath = java.io.File(fullPath.path + ".tmp")
+                val tmpPath = java.io.File(resolvedSave.path + ".tmp")
                 tmpPath.writeText(newContent, Charsets.UTF_8)
                 java.nio.file.Files.move(
                     tmpPath.toPath(),
-                    fullPath.toPath(),
+                    resolvedSave.toPath(),
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                 )
                 appendVersion(
@@ -3433,7 +3542,10 @@ class SessionService : Service() {
                         .put("kind",        "edit")
                         .put("by",          "user"))
                 })
-                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject().put("ok", true)) }
+                // Fresh concurrency token so the editor can keep saving without a
+                // refetch round-trip (parity with desktop).
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject()
+                    .put("ok", true).put("mtimeMs", resolvedSave.lastModified().toDouble())) }
             }
 
             // Fix: data-flow gap — renderer Tracker calls this when it sees a
@@ -3539,6 +3651,15 @@ class SessionService : Service() {
             // mobile artifact work as rename). The Session Drawer remove button
             // no-ops gracefully on the error response.
             "artifacts:remove-record" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
+            // External-change watcher (desktop-only: the filesystem watcher lives in
+            // Electron main — see desktop project-watcher.ts). Stub cases keep the
+            // type strings in parity; the renderer hook tolerates ok:false by
+            // degrading to "no live refresh".
+            "artifacts:watch-project", "artifacts:unwatch-project" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }

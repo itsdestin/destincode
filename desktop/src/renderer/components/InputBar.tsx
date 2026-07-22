@@ -6,6 +6,7 @@ import { Button } from './ui';
 import { AttachIcon, CompassIcon } from './Icons';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
+import { isTypingTarget } from '../utils/is-typing-target';
 // Central slash-command router. All /-prefixed messages flow through here
 // so interception is consistent between typed input and drawer selection.
 import { dispatchSlashCommand, type ViewMode } from '../state/slash-command-dispatcher';
@@ -152,8 +153,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     const handler = (e: KeyboardEvent) => {
       if (disabled) return;
       if (e.defaultPrevented) return;
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      // isTypingTarget: covers INPUT/TEXTAREA and the CodeMirror editor (a
+      // contenteditable DIV) — without it, every printable key typed in the
+      // code editor yanks focus into the composer mid-word (spec §12.6).
+      if (isTypingTarget(e.target as Element)) return;
       // Focus textarea for paste shortcuts so Ctrl+V lands in the input
       // even after the idle blur timer has unfocused it
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {

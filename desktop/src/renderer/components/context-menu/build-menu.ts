@@ -1,5 +1,6 @@
 import { isAndroid, isRemoteMode } from '../../platform';
 import { copyText, readText } from './clipboard';
+import { editorViewFor } from '../artifact-views/cm/editor-registry';
 import type { MenuIconName } from './menu-icons';
 
 // Builds the chat right-click menu for a given DOM target. Pure inspection of
@@ -114,6 +115,42 @@ function editableMenu(el: HTMLTextAreaElement | HTMLInputElement): MenuEntry[] {
   ];
 }
 
+// Cut/Copy/Paste for the CodeMirror edit surface. execCommand does not work
+// reliably against CM6's contenteditable (it bypasses CM6's transaction
+// model), so the ops go through the EditorView API instead — same UX contract
+// as editableMenu above.
+function cmEditableMenu(contentEl: HTMLElement): MenuEntry[] {
+  const view = editorViewFor(contentEl);
+  if (!view) return [];
+  const range = view.state.selection.main;
+  const hasSelection = !range.empty;
+  const selText = hasSelection ? view.state.sliceDoc(range.from, range.to) : '';
+  const empty = view.state.doc.length === 0;
+  return [
+    { type: 'item', id: 'cut', label: 'Cut', icon: 'cut', kbd: mod('X'), disabled: !hasSelection, run: () => {
+      void copyText(selText);
+      view.dispatch({ changes: { from: range.from, to: range.to, insert: '' } });
+      view.focus();
+    } },
+    { type: 'item', id: 'copy', label: 'Copy', icon: 'copy', kbd: mod('C'), disabled: !hasSelection, run: () => void copyText(selText) },
+    { type: 'item', id: 'paste', label: 'Paste', icon: 'paste', kbd: mod('V'), run: async () => {
+      const t = await readText();
+      if (t) {
+        view.dispatch({
+          changes: { from: range.from, to: range.to, insert: t },
+          selection: { anchor: range.from + t.length },
+        });
+      }
+      view.focus();
+    } },
+    { type: 'sep' },
+    { type: 'item', id: 'select-all', label: 'Select all', icon: 'select-all', kbd: mod('A'), disabled: empty, run: () => {
+      view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+      view.focus();
+    } },
+  ];
+}
+
 function filePillMenu(el: HTMLElement): MenuEntry[] {
   const abs = el.getAttribute('data-file-path') || '';
   const name = baseName(abs);
@@ -167,6 +204,21 @@ function codeMenu(pre: HTMLElement, target: HTMLElement): MenuEntry[] {
 // one jsdom implements, so this stays unit-testable.
 function describeArtifactSelection(sel: string, container: HTMLElement): string {
   const source = container.getAttribute('data-artifact-source');
+  // CodeMirror viewers NEVER use the textContent path below: CM6 virtualizes,
+  // so only viewport lines exist in the DOM and an indexOf count reports a
+  // plausible WRONG line (a selection at line 800 cites "line 41") straight
+  // into a prompt scaffold (spec §5.3). state.doc.lineAt() is
+  // virtualization-immune; the live view comes from the editor registry.
+  if (source === 'cm6') {
+    const view = editorViewFor(container);
+    const range = view?.state.selection.main;
+    if (view && range && !range.empty) {
+      const startLine = view.state.doc.lineAt(range.from).number;
+      const endLine = view.state.doc.lineAt(range.to).number;
+      return startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
+    }
+    return `"${sel}"`;
+  }
   const pre = source === 'raw' ? container.querySelector('pre') : null;
   const full = pre?.textContent ?? '';
   const idx = pre ? full.indexOf(sel) : -1;
@@ -226,6 +278,14 @@ export function buildContextMenu(target: HTMLElement): MenuEntry[] | null {
   const editable = target.closest('.input-bar-textarea, .artifact-edit-textarea');
   if (editable instanceof HTMLTextAreaElement || editable instanceof HTMLInputElement) {
     return finalize(editableMenu(editable));
+  }
+  // CodeMirror in EDIT mode: the editable surface is a contenteditable div,
+  // not a textarea. The [contenteditable=true] filter matters — read-only CM6
+  // also renders .cm-content, and that must fall through to the artifact menu
+  // below so "Ask about this" keeps working.
+  const cmEditable = target.closest('.cm-content[contenteditable="true"]');
+  if (cmEditable instanceof HTMLElement) {
+    return finalize(cmEditableMenu(cmEditable));
   }
 
   // Artifact viewer (SessionDrawer / ProjectView file tab) lives outside

@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { StructuredPatchHunk, ToolCallState } from '../../../shared/types';
+import { ToolCallState } from '../../../shared/types';
+import { UnifiedDiff } from '../diff/UnifiedDiff';
 import MarkdownContent from '../MarkdownContent';
 import { useChatState } from '../../state/chat-context';
 import { buildTasksById, TASK_LIFECYCLE, TaskState, TaskStatus } from '../../state/task-state';
@@ -233,197 +234,9 @@ function ErrorBlock({ error }: { error: string }) {
 
 // --- Edit / Write ---
 
-// Tinted row backgrounds carry the semantic signal (kept per design intent),
-// but code text uses text-fg (theme-adaptive) instead of pastel text-red-200 /
-// text-green-200 which washed out on high-chroma theme canvases like Hello
-// Kitty's pink. The solid left bar + colored gutter glyph stay hardcoded so
-// the add/remove signal is visible even if the tint blends into the bubble.
-//
-// Long diffs cap the container height to DIFF_PREVIEW_LINES rows and scroll
-// internally; an Expand button removes the cap for full inline view. Matches
-// ReadView's preview-then-expand pattern.
-const DIFF_ROW_PX = 20;
-const DIFF_PREVIEW_LINES = 15;
-
-// Unified-diff row: del = removed line (old side only), add = inserted line
-// (new side only), ctx = unchanged (shown on both sides, dimmed). Line numbers
-// reflect the line's real position within old_string / new_string rather than
-// restarting at 1 for each side.
-type DiffRow =
-  | { kind: 'ctx'; oldN: number; newN: number; text: string }
-  | { kind: 'del'; oldN: number; text: string }
-  | { kind: 'add'; newN: number; text: string };
-
-// LCS-based line diff. Small inputs (Edit old/new blocks) make O(m*n) fine.
-// Produces rows in source order so deletions and insertions interleave with
-// context instead of being dumped into two separate contiguous blocks.
-function diffLines(oldLines: string[], newLines: string[]): DiffRow[] {
-  const m = oldLines.length;
-  const n = newLines.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = m - 1; i >= 0; i--) {
-    for (let j = n - 1; j >= 0; j--) {
-      dp[i][j] = oldLines[i] === newLines[j]
-        ? dp[i + 1][j + 1] + 1
-        : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const rows: DiffRow[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < m && j < n) {
-    if (oldLines[i] === newLines[j]) {
-      rows.push({ kind: 'ctx', oldN: i + 1, newN: j + 1, text: oldLines[i] });
-      i++; j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      rows.push({ kind: 'del', oldN: i + 1, text: oldLines[i] });
-      i++;
-    } else {
-      rows.push({ kind: 'add', newN: j + 1, text: newLines[j] });
-      j++;
-    }
-  }
-  while (i < m) { rows.push({ kind: 'del', oldN: i + 1, text: oldLines[i] }); i++; }
-  while (j < n) { rows.push({ kind: 'add', newN: j + 1, text: newLines[j] }); j++; }
-  return rows;
-}
-
-// Walk a jsdiff-style hunk into DiffRows with ABSOLUTE file line numbers. The
-// hunk's `lines` array is already interleaved ([' ctx', '-del', '+add', ...]).
-// oldStart/newStart are 1-indexed file line numbers for the first line of the
-// hunk. Context advances both counters; '-' advances only old; '+' advances
-// only new.
-function rowsFromHunk(hunk: StructuredPatchHunk): DiffRow[] {
-  const rows: DiffRow[] = [];
-  let oldN = hunk.oldStart;
-  let newN = hunk.newStart;
-  for (const raw of hunk.lines) {
-    const prefix = raw.charAt(0);
-    const text = raw.slice(1);
-    if (prefix === '-') {
-      rows.push({ kind: 'del', oldN, text });
-      oldN++;
-    } else if (prefix === '+') {
-      rows.push({ kind: 'add', newN, text });
-      newN++;
-    } else {
-      rows.push({ kind: 'ctx', oldN, newN, text });
-      oldN++;
-      newN++;
-    }
-  }
-  return rows;
-}
-
-function DiffView({
-  oldStr,
-  newStr,
-  structuredPatch,
-}: {
-  oldStr: string;
-  newStr: string;
-  structuredPatch?: StructuredPatchHunk[];
-}) {
-  // Prefer Claude Code's pre-computed hunks (absolute file line numbers).
-  // Fall back to LCS diff of old_string/new_string when the tool is still
-  // running / hasn't produced a structured result yet.
-  const { rows, hunkBoundaries, maxLineNum } = useMemo(() => {
-    if (structuredPatch && structuredPatch.length > 0) {
-      const out: DiffRow[] = [];
-      const boundaries = new Set<number>();
-      let max = 0;
-      structuredPatch.forEach((hunk, i) => {
-        if (i > 0) boundaries.add(out.length);
-        const hunkRows = rowsFromHunk(hunk);
-        out.push(...hunkRows);
-        max = Math.max(max, hunk.oldStart + hunk.oldLines, hunk.newStart + hunk.newLines);
-      });
-      return { rows: out, hunkBoundaries: boundaries, maxLineNum: max };
-    }
-    const oldLines = oldStr.split('\n');
-    const newLines = newStr.split('\n');
-    return {
-      rows: diffLines(oldLines, newLines),
-      hunkBoundaries: new Set<number>(),
-      maxLineNum: Math.max(oldLines.length, newLines.length),
-    };
-  }, [oldStr, newStr, structuredPatch]);
-
-  const total = rows.length;
-  const [open, setOpen] = useState(() => getInitialExpanded());
-  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
-  const overflow = total > DIFF_PREVIEW_LINES;
-  const containerStyle = open || !overflow
-    ? undefined
-    : { maxHeight: `${DIFF_PREVIEW_LINES * DIFF_ROW_PX}px` };
-
-  // Single line-number gutter matching Claude Code's native diff convention:
-  // deleted rows show the old-file number, context + added rows show the
-  // new-file number. Pad to the widest number so the column stays aligned —
-  // with structuredPatch, numbers can be large (e.g. line 2854).
-  const gutterWidth = Math.max(2, String(maxLineNum).length);
-  // calc(), not a bare `Nch`: Tailwind's global box-sizing:border-box makes a
-  // plain width include the span's px-1.5 padding, leaving too little room
-  // for the digits and wrapping "12" into "1"/"2" stacked lines.
-  const gutterCh = `calc(${gutterWidth}ch + 0.75rem)`;
-
-  return (
-    <>
-      <div
-        className="text-xs font-mono rounded-sm border border-edge overflow-auto"
-        style={containerStyle}
-      >
-        {rows.map((row, idx) => {
-          const showSeparator = hunkBoundaries.has(idx);
-          // Single-number gutter: del → old-file number (the line being removed),
-          // add/ctx → new-file number (what the file will look like post-edit).
-          const lineNum = row.kind === 'del' ? String(row.oldN) : String(row.newN);
-          const rowClass =
-            row.kind === 'del'
-              ? 'bg-red-600/10 border-l-[3px] border-red-500'
-              : row.kind === 'add'
-                ? 'bg-green-600/10 border-l-[3px] border-green-400'
-                : 'border-l-[3px] border-transparent';
-          const glyph = row.kind === 'del' ? '−' : row.kind === 'add' ? '+' : ' ';
-          const glyphClass =
-            row.kind === 'del'
-              ? 'text-red-400 font-bold'
-              : row.kind === 'add'
-                ? 'text-green-400 font-bold'
-                : 'text-fg-muted';
-          const textClass = row.kind === 'ctx' ? 'text-fg-dim' : 'text-fg';
-          return (
-            <React.Fragment key={idx}>
-              {showSeparator && (
-                <div className="flex items-center text-fg-muted text-[10px] border-y border-edge-dim bg-inset/40 select-none">
-                  <span className="px-2 py-0.5">⋯</span>
-                </div>
-              )}
-              <div className={`flex items-start ${rowClass}`}>
-                <span
-                  className="text-right px-1.5 py-0.5 text-fg-muted select-none shrink-0 whitespace-nowrap"
-                  style={{ width: gutterCh }}
-                >
-                  {lineNum}
-                </span>
-                <span className={`w-4 select-none shrink-0 ${glyphClass}`}>{glyph}</span>
-                <span className={`py-0.5 pr-2 whitespace-pre-wrap break-all flex-1 ${textClass}`}>{row.text || ' '}</span>
-              </div>
-            </React.Fragment>
-          );
-        })}
-      </div>
-      {overflow && (
-        <button
-          onClick={() => setOpen(o => !o)}
-          className="mt-1 text-[10px] uppercase tracking-wider text-fg-muted hover:text-fg-2"
-        >
-          {open ? 'Collapse' : `Expand (${total} lines)`}
-        </button>
-      )}
-    </>
-  );
-}
+// The unified diff renderer (rows, gutter, hunk separators, preview cap) moved
+// to components/diff/UnifiedDiff so the artifact-pane conflict view renders the
+// SAME diff (spec 2026-07-20 §6); the old hand-rolled LCS fallback is now jsdiff.
 
 function EditView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
   const fp = (tool.input.file_path as string) || '';
@@ -439,7 +252,7 @@ function EditView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string
         chips={replaceAll ? <Chip tone="warn">Replace all</Chip> : null}
       />
       {(oldStr || newStr) ? (
-        <DiffView oldStr={oldStr} newStr={newStr} structuredPatch={tool.structuredPatch} />
+        <UnifiedDiff oldStr={oldStr} newStr={newStr} structuredPatch={tool.structuredPatch} />
       ) : (
         <div className="text-xs text-fg-muted italic">No change content.</div>
       )}

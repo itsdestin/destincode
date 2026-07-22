@@ -446,6 +446,12 @@ describe('artifact IPC parity', () => {
     CHECK_EXISTENCE: 'artifacts:check-existence',
     // Rename a file on disk + update the sidecar record.
     RENAME: 'artifacts:rename',
+    // Was missing (registered only via its literal form) — a handler switched to
+    // the constant would have failed the suite for the wrong reason.
+    REMOVE_RECORD: 'artifacts:remove-record',
+    // External-change watcher subscribe/unsubscribe (project-watcher.ts).
+    WATCH_PROJECT: 'artifacts:watch-project',
+    UNWATCH_PROJECT: 'artifacts:unwatch-project',
   }).reduce<Record<string, string>>((acc, [name, value]) => {
     acc[value] = `ARTIFACT_IPC.${name}`;
     return acc;
