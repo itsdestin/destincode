@@ -13,7 +13,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useArtifact } from '../../../state/ArtifactContext';
 import { useProjectWatch } from '../../../hooks/useProjectWatch';
-import { dedupeContentHits, groupContentHits, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
+import { dedupeContentHits, groupContentHits, capGroups, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
 import { useTheme } from '../../../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
@@ -494,13 +494,14 @@ export function FilesTab({
               {searching && (() => {
                 const namePaths = new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')));
                 const rows = dedupeContentHits(contentHits, namePaths);
-                const shownRows = rows.slice(0, MAX_CONTENT_ROWS);
-                const groups = groupContentHits(shownRows);
-                const capped = contentTruncated || rows.length > shownRows.length;
+                // Group + sort BEFORE capping, so the biggest groups survive the cut.
+                const all = groupContentHits(rows);
+                const { groups, shownRows, capped: displayCapped } = capGroups(all, MAX_CONTENT_ROWS);
+                const capped = contentTruncated || displayCapped;
                 return (
                   <div className="col-span-full min-w-0">
                     <div className="text-[10.5px] uppercase tracking-wider text-fg-faint mt-2 mb-1.5 px-0.5">
-                      Matches by file contents ({shownRows.length}{capped ? '+' : ''})
+                      Matches by file contents ({shownRows}{capped ? '+' : ''})
                     </div>
                     <div className="flex flex-col gap-2">
                       {groups.map((group) => {

@@ -36,5 +36,27 @@ export function groupContentHits(hits: RankableHit[]): HitGroup[] {
     }
     group.hits.push(hit);
   }
-  return [...byPath.values()];
+  // Most matches first (Destin, 2026-07-22) — the file that mentions the query
+  // ten times is a better bet than ten files that mention it once. Sort is
+  // stable, so equal counts keep first-seen order.
+  return [...byPath.values()].sort((a, b) => b.hits.length - a.hits.length);
+}
+
+/** Apply the display cap by WHOLE groups after sorting, so the cap never
+ * splits a file's matches in half — except the first group, which is always
+ * shown and clipped to the budget if it alone exceeds it. */
+export function capGroups(groups: HitGroup[], maxRows: number): { groups: HitGroup[]; shownRows: number; capped: boolean } {
+  const out: HitGroup[] = [];
+  let rows = 0;
+  for (const group of groups) {
+    if (out.length === 0 && group.hits.length > maxRows) {
+      out.push({ path: group.path, hits: group.hits.slice(0, maxRows) });
+      rows = maxRows;
+      break;
+    }
+    if (rows + group.hits.length > maxRows) break;
+    out.push(group);
+    rows += group.hits.length;
+  }
+  return { groups: out, shownRows: rows, capped: out.length < groups.length || groups.some((g, i) => i === 0 && out[0] && out[0].hits.length < g.hits.length) };
 }
