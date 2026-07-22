@@ -11,6 +11,7 @@ import { useNativeBinding, usePreset, RuntimeBindingFields, loadLastBinding, per
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
+import { isTypingTarget } from '../utils/is-typing-target';
 
 interface SessionEntry {
   id: string;
@@ -282,8 +283,7 @@ export default function SessionStrip({
   const shiftHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (document.activeElement?.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea') return;
+      if (isTypingTarget(document.activeElement)) return;
 
       // Bare Shift press — start hold timer to open dropdown
       if (e.key === 'Shift' && !e.ctrlKey && !e.altKey && !e.metaKey && !shiftNavActive.current) {
