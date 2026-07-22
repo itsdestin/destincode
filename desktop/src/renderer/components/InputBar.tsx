@@ -361,6 +361,18 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
           const result = await sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
           if (!result || result.status === 'failed') {
             onToast?.(sendFailureCopy(result));
+            // Fix (reviewer Critical, post-de30b908): `send()` already ran
+            // setText('')/setAttachments([]) synchronously right after this
+            // function returned `true` — a failed ack must not silently lose
+            // the draft (the file's own invariant, documented at send()'s
+            // `if (!sendMessage(...)) return;`, says a refused send keeps the
+            // draft). Restore effectiveMessage (pre-sanitize, keeps newlines —
+            // what was actually in the textarea) and the original files.
+            // Guarded: only refill if the user hasn't typed/attached something
+            // new during the ack round-trip (a local IPC invoke, ~ms) — never
+            // clobber newer input.
+            setText((cur) => (cur.trim() ? cur : effectiveMessage));
+            setAttachments((cur) => (cur.length > 0 ? cur : files));
             return;
           }
           dispatch({
