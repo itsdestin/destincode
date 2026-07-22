@@ -11,6 +11,7 @@ import { useArtifact } from '../state/ArtifactContext';
 import { useTheme } from '../state/theme-context';
 import { clampDrawerWidth, applyDrawerWidthVar } from '../state/drawer-width';
 import { useEscClose } from '../hooks/use-esc-close';
+import { useProjectWatch } from '../hooks/useProjectWatch';
 import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
 import { ContentFindBar } from './ContentFindBar';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
@@ -90,6 +91,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // across switches). This drawer instance belongs to `sessionId`.
   const drawerOpen = state.drawerOpenBySession[sessionId] ?? false;
   const activeArtifactId = state.activeArtifactBySession[sessionId] ?? null;
+  // Live external-change events while the drawer is actually visible — the
+  // watcher in main is refcounted, so open drawers on the same project share one.
+  useProjectWatch(drawerOpen && projectRoot ? projectRoot : null);
   // Set when a pill click couldn't resolve; cleared on next click/selection/close.
   const pillError = state.pillError?.[sessionId] ?? null;
 

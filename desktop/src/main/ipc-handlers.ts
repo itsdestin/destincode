@@ -84,6 +84,7 @@ import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/proj
 import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
+import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { PROJECT_IPC } from './project/ipc-channels';
 import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
@@ -2860,6 +2861,7 @@ export function registerIpcHandlers(
   ) => {
     const { project } = await ensureProject(CLAUDE_DIR, projectRoot, sessionId);
     await applyGitTreatment(projectRoot);
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     const result = await appendVersion(projectRoot, project.id, project.name, {
       path: args.path,
       kind: args.kind,
@@ -2893,6 +2895,7 @@ export function registerIpcHandlers(
     newName: string
   ) => {
     const result = await renameArtifact(projectRoot, artifactId, newName);
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     if (result.ok) {
       // Broadcast so every open window's artifact UI re-lists with the new name.
       webContents.getAllWebContents().forEach((wc) =>
@@ -2910,6 +2913,7 @@ export function registerIpcHandlers(
     artifactId: string
   ) => {
     const result = await removeArtifactRecord(projectRoot, artifactId);
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     if (result.ok) {
       webContents.getAllWebContents().forEach((wc) =>
         wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'remove', by: 'user' })
@@ -3109,9 +3113,13 @@ export function registerIpcHandlers(
       const fullPath = artifact.kind === 'internal'
         ? path.join(projectRoot, artifact.path)
         : artifact.absolutePath!;
+      // Suppress the watcher echo of our own write — without this every in-app
+      // save would broadcast back as an "external" change (spec §8.4).
+      noteOwnWrite(fullPath);
       // Atomic write: write to .tmp then rename, so the original is never half-written
       await fs.promises.writeFile(fullPath + '.tmp', newContent, 'utf8');
       await fs.promises.rename(fullPath + '.tmp', fullPath);
+      invalidateSidecarIdCache(projectRoot);
       await appendVersion(projectRoot, projectId, projectName, {
         path: artifact.path,
         kind: artifact.kind,
@@ -3135,12 +3143,44 @@ export function registerIpcHandlers(
     if (resolved !== root && !resolved.startsWith(root + path.sep)) {
       return { ok: false, error: 'artifact-not-found' };
     }
+    noteOwnWrite(resolved); // watcher echo suppression (spec §8.4)
     await fs.promises.writeFile(resolved + '.tmp', newContent, 'utf8');
     await fs.promises.rename(resolved + '.tmp', resolved);
     invalidateDiscoveryCache(projectRoot); // refresh the cached mtime next scan
     webContents.getAllWebContents().forEach((wc) =>
       wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
     );
+    return { ok: true };
+  });
+
+  // ── External-change watcher (spec §8) ──
+  // Watchers live in main, refcounted per webContents (project-watcher.ts owns
+  // the lifecycle). Events reuse the existing CHANGED broadcast contract with
+  // by:'external' — the renderer filters on projectRoot exactly like user events.
+  initProjectWatchers((evt) => {
+    // Created/deleted files must show up in the next file-list fetch.
+    if (evt.kind !== 'edit') invalidateDiscoveryCache(evt.projectRoot);
+    webContents.getAllWebContents().forEach((wc) => wc.send(ARTIFACT_IPC.CHANGED, evt));
+  });
+  // A crashed/closed renderer never sends unwatch — drop its refs on destroy so
+  // it cannot pin a watcher forever. One listener per webContents, attached on
+  // its first subscribe.
+  const watchedSenders = new Set<number>();
+  ipcMain.handle(ARTIFACT_IPC.WATCH_PROJECT, async (e, projectRoot: string) => {
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0) return { ok: false };
+    const senderId = e.sender.id;
+    if (!watchedSenders.has(senderId)) {
+      watchedSenders.add(senderId);
+      e.sender.once('destroyed', () => {
+        watchedSenders.delete(senderId);
+        dropSubscriber(senderId);
+      });
+    }
+    return watchProject(projectRoot, senderId);
+  });
+  ipcMain.handle(ARTIFACT_IPC.UNWATCH_PROJECT, async (e, projectRoot: string) => {
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0) return { ok: false };
+    unwatchProject(projectRoot, e.sender.id);
     return { ok: true };
   });
 
@@ -3172,6 +3212,7 @@ export function registerIpcHandlers(
 
     // 1. Ensure a record exists (author 'user', type 'read' — a pin, not an edit).
     const { project } = await ensureProject(CLAUDE_DIR, projectRoot, 'manual-include');
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     const appendResult = await appendVersion(projectRoot, project.id, project.name, {
       path: isInternal ? canonical.slice(rootCanon.length + 1) : (canonical.split('/').pop() ?? canonical),
       kind: isInternal ? 'internal' : 'external',

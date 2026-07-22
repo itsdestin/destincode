@@ -72,20 +72,32 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     setEditing(false);
   }, [artifact.id]);
 
-  // ── Conflict detection: watch for concurrent agent edits while in edit mode ──
+  // ── React to on-disk changes (external writes, saves from other windows) ──
+  // Runs regardless of edit mode — the old version gated on `editing` AND
+  // filtered on by === 'agent', which nothing ever emitted, so the banner was
+  // unreachable dead code and read mode always showed stale content (spec §2.1).
+  // Now: clean viewer → silently refetch; dirty editor → raise the conflict
+  // banner with the disk version. `by` is deliberately ignored: a 'user' save
+  // from another window needs exactly the same handling as an 'external' write.
+  const dirty = editing && content !== null && draft !== content;
   useEffect(() => {
-    if (!editing) return;
     // artifacts.onChanged is optional — gracefully skip if IPC not wired yet
     const unsubFn = (window.claude as any).artifacts?.onChanged?.((evt: any) => {
-      if (evt.projectRoot === projectRoot && evt.artifactId === artifact.id && evt.by === 'agent') {
-        // Fetch the agent's version from disk to display in the conflict banner
-        (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
-          if (res && res.ok) setConflict({ disk: res.content ?? '' });
-        });
-      }
+      if (evt.projectRoot !== projectRoot || evt.artifactId !== artifact.id) return;
+      if (evt.kind === 'remove') return; // orphan handling is the host's concern
+      (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
+        if (!res || !res.ok || res.orphan) return;
+        const disk = res.content ?? '';
+        if (dirty) {
+          if (disk !== draft) setConflict({ disk });
+        } else if (disk !== content) {
+          // Refetch path: updating host content also resets the (clean) draft.
+          onContentChange(disk);
+        }
+      });
     });
     return typeof unsubFn === 'function' ? unsubFn : undefined;
-  }, [editing, artifact.id, projectRoot]);
+  }, [artifact.id, projectRoot, dirty, draft, content, onContentChange]);
 
   // ── Edit lifecycle callbacks (passed down to MarkdownView as controlled props) ──
   const handleStartEdit = useCallback(() => {
@@ -118,9 +130,12 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     handleSave();
   }, [handleSave]);
 
-  const resolveUseClaudes = useCallback(() => {
+  const resolveUseDisk = useCallback(() => {
     if (!conflict) return;
-    // Accept the agent's disk version: update UI content and exit edit mode
+    // Accept whatever is on disk: update UI content and exit edit mode. The
+    // action says "disk", not "Claude" — a watcher cannot know WHO wrote the
+    // file (git checkout, formatter, another editor), and naming Claude would
+    // be a guessed cause in a user-facing string (spec §8.2).
     onContentChange(conflict.disk);
     setDraft(conflict.disk);
     setEditing(false);
@@ -148,10 +163,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   const ViewerComponent = getViewer(artifact.path);
   return (
     <div className="h-full flex flex-col">
-      {/* Conflict banner — shown when agent edits the same file the user has open
-          in edit mode. Three actions: keep draft, accept agent's version, or view
-          a side-by-side diff. The diff is a simple two-column pre layout; a proper
-          diff library (e.g. diff2html) is left for a later refinement pass. */}
+      {/* Conflict banner — shown when the file changes on disk while the user
+          has UNSAVED edits. Three actions: keep draft, accept the disk version,
+          or view a side-by-side diff. The diff is a simple two-column pre layout;
+          a proper diff library (e.g. jsdiff) is left for a later refinement pass. */}
       {conflict && (
         // Theme-independent amber (matches ContextEditorOverlay's blast-radius
         // banner — the house pattern for warnings). The previous `dark:` variants
@@ -162,12 +177,12 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           className="p-3 text-sm flex flex-wrap gap-x-3 gap-y-1 items-center border-b shrink-0"
           style={{ color: '#9a6a00', background: '#FFF6E5', borderColor: '#E8C170' }}
         >
-          <span className="flex-1 min-w-0 font-medium">Claude also edited this file.</span>
+          <span className="flex-1 min-w-0 font-medium">This file changed on disk while you were editing.</span>
           <button className="underline hover:no-underline whitespace-nowrap" onClick={resolveKeepMine}>
             Keep mine
           </button>
-          <button className="underline hover:no-underline whitespace-nowrap" onClick={resolveUseClaudes}>
-            Use Claude's
+          <button className="underline hover:no-underline whitespace-nowrap" onClick={resolveUseDisk}>
+            Use disk version
           </button>
           <button
             className="underline hover:no-underline whitespace-nowrap"
@@ -185,7 +200,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
             <pre className="text-xs font-mono whitespace-pre-wrap text-fg">{draft}</pre>
           </div>
           <div className="p-2 overflow-auto">
-            <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">Claude's</div>
+            <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">On disk</div>
             <pre className="text-xs font-mono whitespace-pre-wrap text-fg">{conflict.disk}</pre>
           </div>
         </div>

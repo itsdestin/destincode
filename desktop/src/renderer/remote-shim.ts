@@ -1234,6 +1234,10 @@ export function installShim(): void {
       // Remove a tracking RECORD from the sidecar (never the file on disk).
       removeRecord: (projectRoot: string, artifactId: string) =>
         invoke('artifacts:remove-record', { projectRoot, artifactId }),
+      watchProject: (projectRoot: string) =>
+        invoke('artifacts:watch-project', { projectRoot }),
+      unwatchProject: (projectRoot: string) =>
+        invoke('artifacts:unwatch-project', { projectRoot }),
       onChanged: (cb: (event: any) => void) => {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);

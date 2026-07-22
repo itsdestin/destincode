@@ -12,6 +12,7 @@
 // glyph language is disliked — plain words instead).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useArtifact } from '../../../state/ArtifactContext';
+import { useProjectWatch } from '../../../hooks/useProjectWatch';
 import { useTheme } from '../../../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
@@ -249,6 +250,27 @@ export function FilesTab({
       if (r && r.ok) { setArtifacts(r.files ?? r.artifacts ?? []); setTruncated(!!r.truncated); setGated(!!r.gated); }
     });
   };
+  const refreshRef = useRef(refreshArtifacts);
+  refreshRef.current = refreshArtifacts;
+
+  // Live external changes (spec §8.3): watch the project root while this tab is
+  // mounted, and refresh the list when files appear/disappear on disk. Debounced
+  // — a git checkout emits hundreds of add/remove events in a burst, and each
+  // uncoalesced refresh would re-run the (cache-invalidated) discovery scan.
+  useProjectWatch(project.path);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = (window.claude as any).artifacts?.onChanged?.((evt: any) => {
+      if (evt.projectRoot !== project.path || evt.by !== 'external') return;
+      if (evt.kind !== 'add' && evt.kind !== 'remove') return; // edits refetch per-file
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; refreshRef.current(); }, 500);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      if (typeof unsub === 'function') unsub();
+    };
+  }, [project.path]);
 
   const activeArtifact = pvActiveId ? artifacts.find((a) => a.id === pvActiveId) : undefined;
 

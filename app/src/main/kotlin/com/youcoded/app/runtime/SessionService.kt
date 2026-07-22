@@ -3542,6 +3542,15 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
+
+            // External-change watcher (desktop-only: the filesystem watcher lives in
+            // Electron main — see desktop project-watcher.ts). Stub cases keep the
+            // type strings in parity; the renderer hook tolerates ok:false by
+            // degrading to "no live refresh".
+            "artifacts:watch-project", "artifacts:unwatch-project" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
             // artifacts:changed is a server-push event only — no inbound handler needed.
 
             // Project View hub (conversations, repo, context) is desktop-only in v1

@@ -1253,6 +1253,12 @@ contextBridge.exposeInMainWorld('claude', {
     // Remove a tracking RECORD from the sidecar (never the file on disk).
     removeRecord: (projectRoot: string, artifactId: string) =>
       ipcRenderer.invoke('artifacts:remove-record', projectRoot, artifactId),
+    // Subscribe/unsubscribe this renderer to external file-change events for a
+    // project root — events arrive via onChanged with by:'external'.
+    watchProject: (projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:watch-project', projectRoot),
+    unwatchProject: (projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:unwatch-project', projectRoot),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);
