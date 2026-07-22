@@ -388,3 +388,37 @@ describe('GitTransport auth-failure surfacing', () => {
     expect(String(err.message)).not.toContain(TOKEN);
   });
 });
+
+// REAL-GIT PIN: the credentialed invocation must not disturb actual git ops.
+// A file:// remote never consults credential helpers, so what this validates
+// is that real git (all 3 CI OSes — incl. Git for Windows's sh, which executes
+// the `!`-prefixed inline helper) ACCEPTS the prepended -c flags + env on the
+// full init→push→pull cycle, and that no token ever lands in the repo config.
+describe('GitTransport credentialed against real git', () => {
+  it('full sync cycle succeeds with a token provider; token never reaches any git config', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-gtc-'));
+    try {
+      const bare = path.join(tmp, 'remote.git');
+      fs.mkdirSync(bare);
+      execFileSync('git', ['init', '--bare', '--initial-branch=main', bare]);
+      const t = new GitTransport({ deviceName: 'TestDevice', getAuthToken: async () => TOKEN });
+      const root = path.join(tmp, 'device');
+      fs.mkdirSync(root);
+      const space: SyncSpace = { id: 'project:cred', kind: 'project', root };
+      await t.init(space);
+      await t.setRemote(space, bare);
+      fs.writeFileSync(path.join(root, 'note.md'), 'hello');
+      const push = await t.push(space, 'first');
+      expect(push.pushed).toBe(true);
+      await expect(t.pull(space)).resolves.toEqual({ updated: false, conflictCopies: [] });
+      // HYGIENE: the token must not appear in the hidden repo's config (the
+      // helper is per-invocation argv config, and even that carries only the
+      // env var NAME).
+      const config = fs.readFileSync(path.join(root, '.youcoded', 'sync.git', 'config'), 'utf8');
+      expect(config).not.toContain(TOKEN);
+      expect(config).not.toContain('credential');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  });
+});
