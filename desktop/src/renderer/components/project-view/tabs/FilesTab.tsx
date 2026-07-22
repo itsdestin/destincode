@@ -452,10 +452,11 @@ export function FilesTab({
           </Button>
         </div>
       )}
-      {!loading && !gated && flat && flatResults.length === 0 && (
-        <p className="text-sm text-fg-muted">
-          {searching ? `No ${noun} match your search.` : 'Nothing matches the current filters.'}
-        </p>
+      {/* Search mode has NO prose empty state — the "(0)" in the section
+          headers below carries it (Destin, 2026-07-22). The line remains for
+          the type-filter flatten, which has no headers. */}
+      {!loading && !gated && flat && !searching && flatResults.length === 0 && (
+        <p className="text-sm text-fg-muted">Nothing matches the current filters.</p>
       )}
       {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
@@ -484,18 +485,22 @@ export function FilesTab({
         {flat
           ? (
             <>
+              {searching && (
+                <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-faint mb-0.5 px-0.5">
+                  Matches by file name ({flatResults.length})
+                </div>
+              )}
               {flatResults.map(renderFileCard)}
               {searching && (() => {
                 const namePaths = new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')));
                 const rows = dedupeContentHits(contentHits, namePaths);
-                if (rows.length === 0) return null;
                 const shownRows = rows.slice(0, MAX_CONTENT_ROWS);
                 const groups = groupContentHits(shownRows);
                 const capped = contentTruncated || rows.length > shownRows.length;
                 return (
                   <div className="col-span-full min-w-0">
                     <div className="text-[10.5px] uppercase tracking-wider text-fg-faint mt-2 mb-1.5 px-0.5">
-                      Matches in file contents{capped ? ` — first ${shownRows.length}` : ` (${rows.length})`}
+                      Matches by file contents ({shownRows.length}{capped ? '+' : ''})
                     </div>
                     <div className="flex flex-col gap-2">
                       {groups.map((group) => {
