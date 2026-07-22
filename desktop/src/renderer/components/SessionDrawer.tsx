@@ -46,14 +46,17 @@ interface Props {
 // ── Small inline icon helper (lucide-style, inherits currentColor) ──
 const PATHS: Record<string, string> = {
   list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
-  // Link icon — "Copy path" (distinct from copying contents).
-  link: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
+  // Clipboard + slash — "Copy path" (approved mockup 13; the old chain link
+  // read as "hyperlink", not "copy the file path").
+  copypath: 'M9 2h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1ZM16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M10.5 16 13.5 10.5',
   // Folder — "Reveal in folder".
   folder: 'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
   // External-link (box + arrow-out) — "Open externally" (OS default app).
   external: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3',
-  expand: 'M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3',
-  shrink: 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3',
+  // Four standalone corner arrows (approved mockup 12, stems shortened) —
+  // the old bare brackets did not read as expand/contract.
+  expand: 'M9 4.5H4.5V9M15 4.5h4.5V9M9 19.5H4.5V15M15 19.5h4.5V15M5 5l4.2 4.2M19 5l-4.2 4.2M5 19l4.2-4.2M19 19l-4.2-4.2',
+  shrink: 'M9.5 5v4.5H5M14.5 5v4.5H19M9.5 19v-4.5H5M14.5 19v-4.5H19M9.1 9.1 4.9 4.9M14.9 9.1 19.1 4.9M9.1 14.9 4.9 19.1M14.9 14.9 19.1 19.1',
   pencil: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z',
   // Square-pen — distinct from the filename rename pencil; this edits contents.
   editdoc: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z',
@@ -69,7 +72,21 @@ function Ic({ name, size = 15 }: { name: keyof typeof PATHS | string; size?: num
   );
 }
 
-function IconBtn({ name, title, onClick, active }: { name: string; title: string; onClick: () => void; active?: boolean }) {
+// Reveal-in-folder glyph — folder + eye at the corner (approved mockup 2-prime).
+// Lives outside PATHS: the eye uses a thinner stroke (1.5) and a FILLED pupil,
+// which the uniform-stroke Ic helper cannot express.
+function RevealFolderIc({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.5 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.67.9l.81 1.2a2 2 0 0 0 1.69.9H20a2 2 0 0 1 2 2v3.5" />
+      <path strokeWidth={1.5} d="M12.5 18.3s1.9-3.3 5.25-3.3S23 18.3 23 18.3s-1.9 3.3-5.25 3.3-5.25-3.3-5.25-3.3Z" />
+      <circle cx="17.75" cy="18.3" r="1.3" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function IconBtn({ name, title, onClick, active, glyph }: { name?: string; title: string; onClick: () => void; active?: boolean; glyph?: React.ReactNode }) {
   return (
     <button
       type="button"
@@ -79,7 +96,7 @@ function IconBtn({ name, title, onClick, active }: { name: string; title: string
         active ? 'text-fg bg-well border-edge' : 'text-fg-dim border-transparent hover:text-fg hover:bg-well hover:border-edge'
       }`}
     >
-      <Ic name={name} />
+      {glyph ?? <Ic name={name!} />}
     </button>
   );
 }
@@ -571,8 +588,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         {/* Edit/Save moved to the floating button at the bottom-right of the
             doc pane (Destin, 2026-07-22) — see the cluster below the content div. */}
         {isElectron && <IconBtn name="external" title="Open with the default app" onClick={handleOpenExternal} />}
-        <IconBtn name="link" title="Copy path" onClick={handleCopyPath} />
-        {isElectron && <IconBtn name="folder" title="Reveal in folder" onClick={handleReveal} />}
+        <IconBtn name="copypath" title="Copy path" onClick={handleCopyPath} />
+        {isElectron && <IconBtn title="Reveal in folder" glyph={<RevealFolderIc />} onClick={handleReveal} />}
         <IconBtn name={expanded ? 'shrink' : 'expand'} title={expanded ? 'Shrink panel' : 'Expand panel'} active={expanded} onClick={() => dispatch({ type: 'DRAWER_EXPAND_TOGGLED' })} />
         <IconBtn name="close" title="Close" onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))} />
       </div>
