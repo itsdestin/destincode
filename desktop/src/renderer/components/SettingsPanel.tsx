@@ -22,7 +22,6 @@ import { BugReportPopup } from './development/BugReportPopup';
 import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
-import GithubAccountSection from './GithubAccountSection';
 import ModelProvidersSection from './ModelProvidersPopup';
 import SettingsRow from './SettingsRow';
 import { formatVersionLine } from '../../shared/version-line';
@@ -2370,13 +2369,11 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
     <>
       <div className="flex-1 px-4 py-4 space-y-2">
 
-        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
+        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08).
+            GitHub (and future providers) live INSIDE it on the Connected
+            accounts page — a sibling GitHub row read as a second, contradictory
+            sign-in (Destin feedback, 2026-07-22). */}
         <AccountSection />
-
-        {/* GitHub sits right under the WeCoded account: the app's two identities
-            (Connected accounts, Phase 3 2026-07-22). Desktop stack only — the
-            Android stack's github:* channels are not-implemented stubs. */}
-        <GithubAccountSection />
 
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />
 

@@ -7,6 +7,7 @@ import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
 import SettingsRow from './SettingsRow';
 import { Button, InputGroup } from './ui';
+import { ConnectedAccountsBody, GitHubMarkIcon } from './ConnectedAccounts';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Auth-token state and mutations
@@ -76,7 +77,31 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
   const { signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount } =
     useAccount();
 
+  // In-popup navigation (Destin feedback 2026-07-22): ONE Account card in
+  // Settings; external connections (GitHub now, Google etc. later) live on a
+  // "Connected accounts" PAGE inside it. A sibling settings row read as a
+  // second, contradictory GitHub sign-in ("Sign in with GitHub" right above
+  // "Connected as @…") because the WeCoded account also authenticates via
+  // GitHub — two different jobs wearing the same octocat.
+  const [page, setPage] = useState<'main' | 'connections'>('main');
+
+  // Combined github:status for the row summary + the connections page.
+  // 'unavailable' (handler missing / rejected — the Android stub) hides the
+  // whole Connected-accounts affordance rather than offering a dead flow.
+  const [ghStatus, setGhStatus] = useState<import('./ConnectedAccounts').GithubStatus | null | 'unavailable'>(null);
+  const refreshGh = React.useCallback(async () => {
+    const fn = (window as any).claude?.github?.status;
+    if (typeof fn !== 'function') { setGhStatus('unavailable'); return; }
+    try { setGhStatus(await fn()); } catch { setGhStatus('unavailable'); }
+  }, []);
+  useEffect(() => { void refreshGh(); }, [refreshGh]);
+
   useEscClose(true, onClose);
+
+  const ghSummary =
+    ghStatus === 'unavailable' || ghStatus === null ? 'GitHub'
+      : ghStatus.authed ? `GitHub · @${ghStatus.login ?? 'connected'}`
+        : 'GitHub — not connected';
 
   return createPortal(
     <>
@@ -90,7 +115,22 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
-          <h3 id="account-popup-title" className="text-sm font-semibold text-fg">Account</h3>
+          <div className="flex items-center gap-2 min-w-0">
+            {page === 'connections' && (
+              <button
+                onClick={() => setPage('main')}
+                aria-label="Back to account"
+                className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset shrink-0"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            )}
+            <h3 id="account-popup-title" className="text-sm font-semibold text-fg truncate">
+              {page === 'connections' ? 'Connected accounts' : 'Account'}
+            </h3>
+          </div>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -104,21 +144,51 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
 
         <div className="scroll-fade">
           <div className="p-5 space-y-5">
-            {signedIn && user ? (
-              // key on the canonical handle so SignedInBody remounts (re-seeding
-              // its useState draft initializers) if HandlePrompt saves a handle
-              // while this popup is open — otherwise handleDraft goes stale.
-              <SignedInBody
-                key={user.handle ?? ''}
-                user={user}
-                signOut={signOut}
-                updateProfile={updateProfile}
-                setHandle={setHandle}
-                deleteAccount={deleteAccount}
-                onClose={onClose}
+            {page === 'connections' ? (
+              <ConnectedAccountsBody
+                status={ghStatus === 'unavailable' ? null : ghStatus}
+                refresh={refreshGh}
               />
             ) : (
-              <SignedOutBody signInPending={signInPending} startSignIn={startSignIn} />
+              <>
+                {signedIn && user ? (
+                  // key on the canonical handle so SignedInBody remounts (re-seeding
+                  // its useState draft initializers) if HandlePrompt saves a handle
+                  // while this popup is open — otherwise handleDraft goes stale.
+                  <SignedInBody
+                    key={user.handle ?? ''}
+                    user={user}
+                    signOut={signOut}
+                    updateProfile={updateProfile}
+                    setHandle={setHandle}
+                    deleteAccount={deleteAccount}
+                    onClose={onClose}
+                  />
+                ) : (
+                  <SignedOutBody signInPending={signInPending} startSignIn={startSignIn} />
+                )}
+
+                {/* Connected accounts entry — shown regardless of WeCoded
+                    sign-in state (the GitHub connection is independent of it),
+                    hidden only where the github:* channels don't exist. */}
+                {ghStatus !== 'unavailable' && (
+                  <button
+                    onClick={() => setPage('connections')}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+                  >
+                    <span className="flex items-center justify-center shrink-0 text-fg-muted" style={{ width: 32, height: 20 }}>
+                      <GitHubMarkIcon />
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-xs text-fg font-medium">Connected accounts</span>
+                      <span className="block text-[10px] text-fg-muted truncate">{ghSummary}</span>
+                    </span>
+                    <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
