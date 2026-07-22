@@ -98,14 +98,40 @@ describe('computeOverlayTokens — --on-destructive', () => {
       '--on-destructive'
     ];
 
-  it('derives white for the default #DD4444 (no visual change from the shipped text-white)', () => {
+  it('derives white for the default destructive', () => {
     // Guards a real spec bug: change 43 was written believing white-on-#DD4444
-    // scored 4.7:1 and so specified "white if >= 4.5, else near-black". White
-    // actually scores 4.213:1, so that rule would have flipped EVERY danger
-    // button to near-black — which is also LOWER contrast (4.131:1). We pick the
-    // better of the two instead. If this ever returns #1A1A1A, danger buttons
-    // across every built-in theme just silently changed.
+    // (the OLD default) scored 4.7:1 and so specified "white if >= 4.5, else
+    // near-black". White actually scored 4.213:1, so that rule would have
+    // flipped EVERY danger button to near-black — which is also LOWER contrast
+    // (4.131:1). We pick the better of the two instead. If this ever returns
+    // #1A1A1A, danger buttons across every built-in theme just silently changed.
     expect(derive()).toBe('#FFFFFF');
+  });
+
+  it('the default destructive can carry an AA label at small text sizes', () => {
+    // ROADMAP :141. The old default #DD4444 could NOT: 4.213:1 vs white and
+    // 4.131:1 vs near-black, both under the 4.5 AA bar for text below 18px —
+    // and danger labels render at text-xs (12px) / text-2xs (11px). No label
+    // colour fixed it; only darkening the red did. This pins the property, not
+    // the hex, so a future repalette is free as long as it stays legible.
+    const tokens = computeOverlayTokens(TOKENS, undefined, undefined, false);
+    const destructive = tokens['--destructive'];
+    const onDestructive = tokens['--on-destructive'];
+
+    const lum = (hex: string) => {
+      const ch = (i: number) => {
+        const c = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * ch(0) + 0.7152 * ch(1) + 0.0722 * ch(2);
+    };
+    const [hi, lo] = lum(destructive) > lum(onDestructive)
+      ? [lum(destructive), lum(onDestructive)]
+      : [lum(onDestructive), lum(destructive)];
+
+    expect((hi + 0.05) / (lo + 0.05)).toBeGreaterThanOrEqual(4.5);
+    // The known-bad value must not come back.
+    expect(destructive).not.toBe('#DD4444');
   });
 
   it('derives near-black when a pack overrides destructive with a pale color', () => {

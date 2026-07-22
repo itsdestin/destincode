@@ -119,12 +119,21 @@
 
 /* ─── Crème ─── */
 [data-theme="creme"] {
-  --canvas: #F0E6D6;
+  /* Lightened from #F0E6D6. Chrome (--panel) has to separate from content
+     (--canvas) by luminance, not just by a 1px border; the old pair measured
+     1.051 against a 1.07 floor, so drawers/headers read as one continuous
+     sheet. Fixed by lightening CANVAS, not by darkening panel: creme's ramp is
+     tightly packed and panel is pinned between canvas above and inset/edge
+     below, so darkening panel to #E8DCC8 clears this pair but breaks
+     `inset vs panel` (1.183, min 1.2) and `edge on panel` (1.44, min 1.5).
+     Lightening canvas moves every other pair the right way instead. */
+  --canvas: #F6EEE1;
   --panel: #EBE1D1;
   --inset: #D8CCB9;
   --well: #F9F0E2;
   --accent: #3D3229;
-  --on-accent: #F0E6D6;
+  /* Tracks --canvas: all four built-ins keep on-accent == canvas. */
+  --on-accent: #F6EEE1;
   --fg: #2C2418;
   --fg-2: #564938;
   --fg-dim: #695E4D;

@@ -613,7 +613,8 @@ function EditAccountBody({
         <h4 className="text-[10px] font-medium text-red-500 uppercase tracking-wider">Danger zone</h4>
         {!deleteExpanded ? (
           // Arming step -> danger-outline. red-500 becomes the --destructive
-          // token so packs can restyle it (identical #DD4444 today).
+          // token so packs can restyle it (#C62828 today — no longer identical
+          // to the fixed status red #DD4444, which stayed put).
           <Button variant="danger-outline" onClick={() => setDeleteExpanded(true)} className="w-full">
             Delete account
           </Button>

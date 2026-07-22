@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateTheme, computeOnAccent, luminance, sanitizeCSS, validateCommunityTheme } from '../src/renderer/themes/theme-validator';
+import { validateTheme, computeOnAccent, luminance, sanitizeCSS, validateCommunityTheme, lintCustomCssSelectors } from '../src/renderer/themes/theme-validator';
 
 const MINIMAL_VALID = {
   name: 'Test Theme',
@@ -212,5 +212,62 @@ describe('validateCommunityTheme', () => {
   it('passes through themes without custom_css unchanged', () => {
     const result = validateCommunityTheme({ ...MINIMAL_VALID });
     expect(result.custom_css).toBeUndefined();
+  });
+});
+
+describe('lintCustomCssSelectors', () => {
+  // ROADMAP :46. halftone-dimension styled `.chat-bubble.user`/`.chat-bubble.assistant`
+  // and `.send-btn` — none of which the renderer emits — so its whole bubble
+  // treatment was silently inert while its previews implied otherwise. A rule
+  // that does nothing is worse than a wrong rule: nothing looks broken.
+  const capture = (css: string): string[] => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg: string) => { warnings.push(msg); };
+    try {
+      lintCustomCssSelectors(css, 'test-theme');
+    } finally {
+      console.warn = original;
+    }
+    return warnings;
+  };
+
+  it('warns on the exact dead selectors that shipped, naming the replacement', () => {
+    // The compound `.chat-bubble.user` yields a warning per distinct class
+    // (`chat-bubble` and `user`); the one that matters names the replacement.
+    const warnings = capture('.chat-bubble.user { color: red; }');
+    const dead = warnings.find((w) => w.includes('".chat-bubble"'));
+    expect(dead).toBeDefined();
+    expect(dead).toContain('.user-bubble / .assistant-bubble');
+  });
+
+  it('warns on .send-btn, which has no equivalent', () => {
+    const warnings = capture('.send-btn { box-shadow: 0 0 12px red; }');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('send-btn');
+  });
+
+  it('stays quiet for the real bubble classes the renderer emits', () => {
+    expect(capture('.user-bubble { border: 1px solid red; }')).toEqual([]);
+    expect(capture('.assistant-bubble { border-left: 3px solid red; }')).toEqual([]);
+  });
+
+  it('stays quiet for the other hooks halftone legitimately targets', () => {
+    expect(capture('.header-bar { border-color: red; } .input-bar-container { border-color: red; }')).toEqual([]);
+    expect(capture('.bg-accent { box-shadow: 0 0 20px red; }')).toEqual([]);
+  });
+
+  it('ignores class-like fragments inside declaration values', () => {
+    // url(...) paths and content strings must not be scanned as selectors.
+    expect(capture(".foo-bar { background-image: url('assets/a.b.svg'); }").length).toBe(1);
+    expect(capture("::-webkit-scrollbar-thumb { background-image: url('assets/x.svg'); }")).toEqual([]);
+  });
+
+  it('warns once per distinct class, not once per occurrence', () => {
+    expect(capture('.send-btn { color: red; } .send-btn:hover { color: blue; }')).toHaveLength(1);
+  });
+
+  it('is a no-op for themes without custom_css', () => {
+    expect(capture('')).toEqual([]);
   });
 });

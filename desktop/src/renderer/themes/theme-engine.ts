@@ -258,13 +258,21 @@ export function computeOverlayTokens(
   //
   // NOTE: this is a max-contrast pick, NOT the "white if >= 4.5, else near-black"
   // threshold the UI spec asked for. That rule was written believing white on the
-  // default #DD4444 scored 4.7:1; it actually scores 4.213:1, so the threshold
-  // would fail for EVERY theme and flip every danger button to near-black — which
-  // is both a visible regression and lower contrast than the white it replaced
-  // (near-black on #DD4444 is 4.131:1). Picking the better of the two delivers
+  // old default #DD4444 scored 4.7:1; it actually scored 4.213:1, so the threshold
+  // would have failed for EVERY theme and flipped every danger button to near-black
+  // — both a visible regression and LOWER contrast than the white it replaced
+  // (near-black on #DD4444 was 4.131:1). Picking the better of the two delivers
   // what the spec intended: white everywhere today, near-black only for packs
   // whose destructive is genuinely too light to carry it.
-  const destructive = overlay?.destructive ?? '#DD4444';
+  //
+  // The default was #DD4444, which could not carry an AA label at ANY text color:
+  // 4.213:1 vs white and 4.131:1 vs near-black, both under the 4.5 bar for text
+  // below 18px — and danger labels render at text-xs (12px) / text-2xs (11px).
+  // No label color fixed it; only darkening the red did. #C62828 scores 5.62:1
+  // against white, the largest margin of the candidates considered, so it stays
+  // AA even if a future size change pushes labels smaller. No shipped theme
+  // overrides overlay.destructive, so this default is what all 11 actually paint.
+  const destructive = overlay?.destructive ?? '#C62828';
   const onDestructive =
     contrastRatio('#FFFFFF', destructive) >= contrastRatio('#1A1A1A', destructive)
       ? '#FFFFFF'

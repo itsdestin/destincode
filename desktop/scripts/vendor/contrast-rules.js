@@ -163,13 +163,26 @@
     })),
   );
 
+  /** App default for --destructive when a pack does not override overlay.destructive.
+   *  MUST track theme-engine.ts computeOverlayTokens. Was #DD4444, which could not
+   *  carry an AA label at any text colour (4.213:1 vs white, 4.131:1 vs near-black). */
+  const DEFAULT_DESTRUCTIVE = '#C62828';
+
   const RULES = [
     ...TEXT_RULES,
 
     // ── HARD: UI breaks if these fail ──
     { name: 'on-accent on accent',  tier: 'HARD',    type: 'contrast',    fg: 'on-accent', bg: 'accent',  threshold: 4.5,  description: 'User bubble text and active button text must be readable' },
+    // Danger-button label. --destructive is pack-overridable with no guard, and
+    // --on-destructive derives to whichever of white/near-black reads better —
+    // this catches mid-tone destructives where NEITHER label clears AA. Danger
+    // labels render at text-xs (12px) / text-2xs (11px), so the small-text bar
+    // applies. Both tokens are synthesized in evaluate() when a pack does not
+    // declare them; see DEFAULT_DESTRUCTIVE.
+    { name: 'on-destructive on destructive', tier: 'HARD', type: 'contrast', fg: 'on-destructive', bg: 'destructive', threshold: 4.5, description: 'Danger button label (AA)' },
 
     // ── SURFACE: Elements disappear if these fail ──
+    { name: 'panel vs canvas',      tier: 'SURFACE', type: 'distinction', fg: 'panel',     bg: 'canvas',  threshold: 1.07, description: 'Chrome (headers, drawers, popups) must separate from the content behind it' },
     { name: 'inset vs panel',       tier: 'SURFACE', type: 'distinction', fg: 'inset',     bg: 'panel',   threshold: 1.2,  description: 'Session pills and toggle containers must be visible on header bar' },
     { name: 'canvas vs inset',      tier: 'SURFACE', type: 'distinction', fg: 'canvas',    bg: 'inset',   threshold: 1.3,  description: 'Code blocks must be visible inside assistant bubbles' },
     { name: 'well vs panel',        tier: 'SURFACE', type: 'distinction', fg: 'well',      bg: 'panel',   threshold: 1.15, description: 'Search bar must be visible in command drawer' },
@@ -287,6 +300,23 @@
       surfaces['inset-50'] = alphaComposite(parsed.inset, surfaces.panel, 0.5);
     }
 
+    // ── Synthesize the danger-button pair ──
+    // Neither token is declared by most packs: --destructive falls back to the
+    // app default and --on-destructive is DERIVED at runtime, so auditing only
+    // declared tokens silently skips every theme. Synthesizing here (rather than
+    // in each consumer) is deliberate: the previous arrangement had each audit
+    // deriving its own, which is how the pairs got dropped from one of them and
+    // the failure went unreported. Mirrors theme-engine.ts computeOverlayTokens.
+    if (!parsed.destructive) parsed.destructive = parseHex(DEFAULT_DESTRUCTIVE);
+    if (!parsed['on-destructive'] && parsed.destructive) {
+      const dLum = luminance(parsed.destructive);
+      const white = parseHex('#FFFFFF'), nearBlack = parseHex('#1A1A1A');
+      parsed['on-destructive'] =
+        contrastRatio(luminance(white), dLum) >= contrastRatio(luminance(nearBlack), dLum)
+          ? white
+          : nearBlack;
+    }
+
     const results = { HARD: [], SURFACE: [], SOFT: [] };
     let hardFails = 0, surfaceFails = 0, softWarns = 0;
 
@@ -318,6 +348,7 @@
     luminanceRatio,
     alphaComposite,
     RULES,
+    DEFAULT_DESTRUCTIVE,
     TEXT_TARGETS,
     TEXT_SURFACES,
     evaluateRule,
