@@ -117,7 +117,7 @@ describe("AccountSection", () => {
     vi.restoreAllMocks();
   });
 
-  it("signed out: shows a Sign in with GitHub row", async () => {
+  it("signed out: shows a Sign in to YouCoded row", async () => {
     (globalThis as any).window.claude = signedOutMock();
     const utils = renderSection();
     await flush();
@@ -126,7 +126,9 @@ describe("AccountSection", () => {
     fireEvent.click(utils.getByRole("button", { name: /Account/i }));
 
     // Signed-out popup surfaces the GitHub sign-in button.
-    expect(utils.getByText("Sign in with GitHub")).toBeTruthy();
+    // "Sign in to YouCoded", never "with GitHub" — the mechanism small print
+    // owns the GitHub mention (2026-07-22 two-GitHubs fix). PINNED copy.
+    expect(utils.getByText("Sign in to YouCoded")).toBeTruthy();
   });
 
   it("signed in: view mode is read-only — avatar, name, handle, provider row, sign out, Edit account", async () => {
@@ -143,7 +145,9 @@ describe("AccountSection", () => {
     expect(utils.getByText("@octo")).toBeTruthy();
 
     // Connected-provider row shows the GitHub login
-    expect(utils.getByText(/Connected: GitHub \(@octocat\)/)).toBeTruthy();
+    // "Signs in with", NOT "Connected:" — that word belongs to the
+    // Connected-accounts (repo access) page. PINNED copy.
+    expect(utils.getByText(/Signs in with GitHub \(@octocat\)/)).toBeTruthy();
 
     // Sign out + the single edit affordance are present
     expect(utils.getByRole("button", { name: "Sign out" })).toBeTruthy();

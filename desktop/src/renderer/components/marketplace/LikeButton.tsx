@@ -8,7 +8,7 @@
 //   initialCount  — like count from useMarketplaceStats().themes[themeId]?.likes ?? 0
 //
 // Behavior:
-//   - Signed out:   click opens SignInPromptModal with "Sign in with GitHub" CTA.
+//   - Signed out:   click opens SignInPromptModal with "Sign in to YouCoded" CTA.
 //                   Used to be a silent inline toast that was easy to miss and had
 //                   no way to actually start the sign-in flow.
 //   - Signed in:    flips state immediately (optimistic), calls window.claude.marketplaceApi.likeTheme()
@@ -119,7 +119,7 @@ export default function LikeButton({ themeId, initialLiked = false, initialCount
     e.stopPropagation();
 
     // Signed-out guard: open the sign-in prompt modal instead of the API call.
-    // The prompt has an actual "Sign in with GitHub" button that kicks off the
+    // The prompt has an actual "Sign in to YouCoded" button that kicks off the
     // device-code OAuth flow.
     if (!signedIn) {
       setSignInPromptOpen(true);

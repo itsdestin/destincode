@@ -226,11 +226,18 @@ function SignedOutBody({
   return (
     <div className="flex flex-col items-center gap-4 py-2 text-center">
       <p className="text-[11px] text-fg-dim leading-relaxed">
-        One sign-in for the marketplace and games — GitHub only sees your public profile.
+        One YouCoded account for the marketplace, games, and syncing with friends.
       </p>
       {/* Page-level CTA -> lg. Also drops hover:brightness-110, which was
           invisible on Light/Creme (their accent is already near-black), and
           gains the focus ring it never had. */}
+      {/* "Sign in to YouCoded", NOT "Sign in with GitHub" (Destin, 2026-07-22):
+          the account is a YOUCODED account — GitHub is only the login
+          mechanism, and naming the button after the mechanism made it read as
+          a duplicate of the Connected-accounts GitHub repo connection. The
+          mechanism lives in the small print below; the octocat stays off the
+          CTA for the same reason. Same rename applied to every sign-in
+          surface (SignInPromptModal, GameLobby, RatingSubmitModal, chip). */}
       <Button
         size="lg"
         onClick={() => {
@@ -241,9 +248,11 @@ function SignedOutBody({
         }}
         disabled={signInPending}
       >
-        <GitHubIcon />
-        {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
+        {signInPending ? 'Signing in…' : 'Sign in to YouCoded'}
       </Button>
+      <p className="text-[10px] text-fg-muted leading-relaxed">
+        Uses your GitHub profile to sign in — GitHub only shares your public info.
+      </p>
       {signInError && <p className="text-[10px] text-red-500">{signInError}</p>}
     </div>
   );
@@ -381,10 +390,13 @@ function SignedInBody({
         </div>
       </section>
 
-      {/* Linked-provider list — single provider in Phase 1, non-editable. */}
+      {/* Login-method line — which GitHub profile backs this YouCoded account.
+          Says "Signs in with", NOT "Connected:" — "connected" now belongs to
+          the Connected-accounts page (repo access), and reusing the word here
+          recreated the two-GitHubs confusion this popup was reworked to kill. */}
       <section className="flex items-center gap-1.5 text-xs text-fg-2">
         <GitHubIcon className="w-3.5 h-3.5" />
-        <span>Connected: GitHub (@{user.login})</span>
+        <span>Signs in with GitHub (@{user.login})</span>
       </section>
 
       {/* Blocked users — only rendered when the list is non-empty (loading and

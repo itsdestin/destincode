@@ -85,7 +85,7 @@ describe('RatingSubmitModal', () => {
     renderModal();
 
     // Must show the sign-in prompt — check for the button specifically (the <p> also contains "sign in")
-    expect(screen.getByRole('button', { name: /sign in with github/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /sign in to youcoded/i })).toBeTruthy();
     // Must NOT render the star picker
     expect(screen.queryAllByRole('radio')).toHaveLength(0);
     // Must NOT render the submit button
@@ -101,7 +101,7 @@ describe('RatingSubmitModal', () => {
     renderModal();
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /sign in with github/i }));
+      fireEvent.click(screen.getByRole('button', { name: /sign in to youcoded/i }));
     });
 
     expect(startSignIn).toHaveBeenCalledTimes(1);
