@@ -2858,7 +2858,7 @@ function AppInner() {
                       others). Change 17 puts it on the destructive token so it
                       tracks the toggle above it under a community theme. */}
                   {welcomeDangerous && (
-                    <p className="text-[10px] text-destructive">Claude will execute tools without asking for approval.</p>
+                    <p className="text-[10px] text-destructive-fg">Claude will execute tools without asking for approval.</p>
                   )}
                   <div className="flex gap-2">
                     {/* secondary, not ghost: this was the filled-grey family

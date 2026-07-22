@@ -207,6 +207,48 @@ function contrastRatio(hexA: string, hexB: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+function toHex(r: number, g: number, b: number): string {
+  return '#' + [r, g, b].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+/** Linear RGB blend of two hexes. t=0 returns a, t=1 returns b. */
+function mixHex(a: string, b: string, t: number): string {
+  const [ar, ag, ab] = parseHex(a);
+  const [br, bg, bb] = parseHex(b);
+  return toHex(ar + (br - ar) * t, ag + (bg - ag) * t, ab + (bb - ab) * t);
+}
+
+/**
+ * Derive the destructive colour used as TEXT on the theme's own surfaces.
+ *
+ * WHY this is a separate token from --destructive: that one is used as a FILLED
+ * surface (danger buttons/toggles), where the label needs contrast *against* it,
+ * so it wants to be dark. `text-destructive` needs contrast against the CANVAS,
+ * which on a dark theme means it wants to be light. Those pull in opposite
+ * directions, and a sweep of the red space found ZERO values that satisfy both
+ * at AA across all five shipped themes — one token genuinely cannot do both.
+ * This is the same split --accent / --on-accent already has, for the same reason.
+ *
+ * Nudges --destructive toward white (dark themes) or black (light themes) until
+ * it clears AA against the WORSE of canvas and panel. Most `text-destructive`
+ * sites sit on one or the other, and popups (panel) are the tighter constraint.
+ * Returns --destructive unchanged when it already passes, so light themes — where
+ * the fill colour is already legible as text — see no change at all.
+ */
+function deriveDestructiveFg(destructive: string, canvas: string, panel: string): string {
+  const worst = (c: string) => Math.min(contrastRatio(c, canvas), contrastRatio(c, panel));
+  if (worst(destructive) >= 4.5) return destructive;
+  const target = rgbLuminance(...parseHex(canvas)) < 0.5 ? '#FFFFFF' : '#000000';
+  // 2% steps: fine enough that the result stays recognisably the pack's red,
+  // coarse enough to terminate quickly. Falls through to the pure target only
+  // for a pathological pack whose destructive is the canvas colour.
+  for (let t = 0.02; t <= 1.0001; t += 0.02) {
+    const candidate = mixHex(destructive, target, t);
+    if (worst(candidate) >= 4.5) return candidate;
+  }
+  return target;
+}
+
 /** Computes overlay CSS custom properties from existing theme tokens.
  *  After the glassmorphism refactor, overlay surfaces consume --panels-blur /
  *  --panels-opacity directly (set globally in applyThemeToDom), so this helper
@@ -285,6 +327,9 @@ export function computeOverlayTokens(
     '--destructive': destructive,
     '--destructive-dim': `rgba(${parseHex(destructive).join(', ')}, 0.15)`,
     '--on-destructive': onDestructive,
+    // Text-on-surface variant. See deriveDestructiveFg — --destructive is a FILL
+    // colour and cannot also serve as legible text on a dark canvas.
+    '--destructive-fg': deriveDestructiveFg(destructive, tokens.canvas, tokens.panel),
     '--code': code,
     '--link': link,
     '--link-hover': linkHover,

@@ -329,7 +329,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
           </div>
           <div className="p-5 pt-3 overflow-y-auto space-y-4">
             {nativeError && (
-              <p className="text-xs text-destructive">{nativeError}</p>
+              <p className="text-xs text-destructive-fg">{nativeError}</p>
             )}
             {catalog.length === 0 ? (
               <p className="text-sm text-fg-muted text-center py-4">No models available. Add a provider key in Settings → Providers.</p>

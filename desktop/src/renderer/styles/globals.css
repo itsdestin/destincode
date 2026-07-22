@@ -209,6 +209,12 @@
   --color-scrim-heavy: var(--scrim-heavy);
   --color-destructive: var(--destructive);
   --color-destructive-dim: var(--destructive-dim);
+  /* Text-on-surface variant of --destructive, derived per theme by
+     theme-engine.ts. --destructive is a FILL colour (danger buttons), so on dark
+     themes it is too dark to also read as text on the canvas — a red that works
+     for both does not exist across our themes. Use `text-destructive-fg` for
+     destructive TEXT and `bg-destructive` for destructive SURFACES. */
+  --color-destructive-fg: var(--destructive-fg);
 
   /* Status colors — constant across all themes */
   --color-green-400: #4CAF50;
