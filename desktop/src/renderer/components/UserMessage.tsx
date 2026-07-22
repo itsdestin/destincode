@@ -10,6 +10,12 @@ interface Props {
   message: ChatMessage;
   sessionId: string;
   showTimestamps: boolean;
+  // M1: true while a native send is FIFO'd behind the in-flight turn
+  // (NativeSendResult status 'queued') — only meaningful alongside
+  // pending: true, since the confirm path (TRANSCRIPT_USER_MESSAGE) drops
+  // `queued` the same moment it clears `pending`. See chat-reducer.ts.
+  pending?: boolean;
+  queued?: boolean;
 }
 
 // Render a plain-text run with the existing treatment: flowing-keyword spans +
@@ -24,7 +30,7 @@ function renderTextRun(text: string, keyPrefix: string): React.ReactNode[] {
   );
 }
 
-export default React.memo(function UserMessage({ message, sessionId, showTimestamps }: Props) {
+export default React.memo(function UserMessage({ message, sessionId, showTimestamps, pending, queued }: Props) {
   const content = message.content;
 
   // Attached files: message.attachments carries the EXACT picker paths (which
@@ -70,6 +76,15 @@ export default React.memo(function UserMessage({ message, sessionId, showTimesta
   return (
     <div className="flex justify-end px-4 py-2">
       <div className="user-bubble max-w-[80%] break-words rounded-2xl rounded-br-sm bg-accent px-5 py-3 text-sm text-on-accent whitespace-pre-wrap">
+        {queued && pending && (
+          // M1: the send was FIFO'd behind the in-flight turn — this bubble
+          // hasn't actually reached the host yet. text-on-accent/50 matches
+          // the timestamp treatment just below (same bubble, same need for a
+          // muted label against the accent background) — no new color token.
+          <div className="text-[9px] uppercase tracking-wider text-on-accent/50 select-none mb-1">
+            Queued
+          </div>
+        )}
         {body}
         {showTimestamps && (
           <div className="bubble-timestamp text-[9px] text-on-accent/50 text-right mt-1 -mb-0.5 select-none leading-none">

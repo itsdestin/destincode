@@ -332,6 +332,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...(action.attachments?.length ? { attachments: action.attachments } : {}),
       };
 
+      // M1: a QUEUED send must not disturb the still-streaming prior turn —
+      // appending the bubble is fine (the open turn entry keeps merging in
+      // place), but nulling currentTurnId/currentGroupId here would fork the
+      // live turn (see BUG C in the M1 plan). isThinking is already true
+      // while a turn streams, so it's left untouched too.
+      if (action.queued) {
+        next.set(action.sessionId, {
+          ...session,
+          timeline: [...session.timeline, { kind: 'user', message, pending: true, queued: true }],
+        });
+        return next;
+      }
+
       next.set(action.sessionId, {
         ...session,
         timeline: [...session.timeline, { kind: 'user', message, pending: true }],
@@ -547,6 +560,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (confirmedIdx >= 0) {
         const entry = session.timeline[confirmedIdx];
         if (entry.kind !== 'user') return state; // type-narrowing safety
+        // Confirming clears BOTH pending and queued — `queued` only means
+        // anything while the bubble is still waiting on the host to drain it.
+        // Rebuilt object (rather than spreading entry) so a stale `queued: true`
+        // is dropped, not carried forward.
         const confirmed: TimelineEntry = {
           kind: 'user',
           message: entry.message,

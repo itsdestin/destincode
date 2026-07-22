@@ -13,6 +13,7 @@ import type { UsageSnapshot } from '../state/chat-types';
 import { hasPendingInteraction } from '../state/pty-input-gate';
 import { buildOutgoingMessage } from './outgoing-message';
 import { sendChatMessage } from './native-send';
+import type { NativeSendResult } from '../../shared/types';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { isAndroid } from '../platform';
 
@@ -68,6 +69,20 @@ function isImagePath(p: string): boolean {
 
 function fileNameFromPath(p: string): string {
   return p.replace(/\\/g, '/').split('/').pop() || p;
+}
+
+// M1: copy for a refused/unknown native send ack, shown via onToast instead
+// of dispatching a phantom bubble. Each branch names the REAL cause reported
+// by the host (queue-full / not-live) rather than a guessed one — see
+// docs/error-message-standards.md ("never guess an unverified cause").
+function sendFailureCopy(result: NativeSendResult | undefined): string {
+  if (result?.status === 'failed' && result.reason === 'queue-full') {
+    return 'Send queue is full (10 messages waiting). Wait for the current turn to finish.';
+  }
+  if (result?.status === 'failed' && result.reason === 'not-live') {
+    return 'This session is no longer running. Start or resume it to send messages.';
+  }
+  return 'The message could not be sent — no response from the session host.';
 }
 
 const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
@@ -332,6 +347,37 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       if (!outgoing) return true; // nothing to send — treat as consumed
       if (disabled) return false;
 
+      // M1 (bubble-after-ack, BUG C): native has no PTY, so the OLD code
+      // dispatched the optimistic bubble unconditionally, same as the CC path
+      // below. But a native send can come back QUEUED (host FIFO'd it behind
+      // an in-flight turn) or FAILED (not-live / queue-full) — dispatching
+      // before knowing the ack produced a phantom bubble on a refused send,
+      // and a naive queued dispatch would fork the still-streaming prior turn
+      // (see the `queued` branch in chat-reducer.ts USER_PROMPT). So the
+      // native branch awaits the ack FIRST and dispatches (or toasts) after —
+      // it RETURNs before the CC/PTY dispatch and paste machinery below.
+      if (provider === 'native') {
+        void (async () => {
+          const result = await sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
+          if (!result || result.status === 'failed') {
+            onToast?.(sendFailureCopy(result));
+            return;
+          }
+          dispatch({
+            type: 'USER_PROMPT',
+            sessionId,
+            content: outgoing.content,
+            timestamp: Date.now(),
+            attachments: files.map((f) => f.path),
+            queued: result.status === 'queued',
+          });
+        })();
+        return true;
+      }
+
+      // CC/PTY path (unchanged): dispatch the optimistic bubble BEFORE
+      // sending — Claude Code's transcript watcher confirms it once the JSONL
+      // line lands (see TRANSCRIPT_USER_MESSAGE dedup).
       dispatch({
         type: 'USER_PROMPT',
         sessionId,
@@ -342,16 +388,6 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         // content string can't be split back out of.
         attachments: files.map((f) => f.path),
       });
-
-      // Native runtime: no PTY. Send the plain string over native:send and
-      // RETURN before any of the PTY paste machinery below (56-byte chunking,
-      // FILE_GAP_MS scheduling, trailing `\r`). The optimistic bubble dedups
-      // because sendChatMessage's native join reproduces outgoing.content
-      // exactly (same filePaths + sanitized text). See native-send.ts.
-      if (provider === 'native') {
-        sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
-        return true;
-      }
 
       // Sending strategy:
       //

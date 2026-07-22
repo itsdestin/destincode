@@ -113,7 +113,12 @@ export type TimelineEntry =
   // catches up, it consumes the oldest matching pending entry (clears the flag)
   // rather than dedup'ing via content-match against the last 10 entries (which
   // silently dropped legitimate rapid-fire duplicates like "yes yes yes").
-  | { kind: 'user'; message: ChatMessage; pending?: boolean }
+  // queued: true means the native host FIFO'd this send behind an in-flight
+  // turn (NativeSendResult status 'queued') rather than sending it now — the
+  // bubble stays pending until the host actually drains it and the matching
+  // TRANSCRIPT_USER_MESSAGE arrives, at which point the confirm path drops
+  // this key (see chat-reducer.ts TRANSCRIPT_USER_MESSAGE).
+  | { kind: 'user'; message: ChatMessage; pending?: boolean; queued?: boolean }
   | { kind: 'assistant-turn'; turnId: string }
   | { kind: 'prompt'; prompt: InteractivePrompt }
   // /cost and /usage render a snapshot card inline. Permanent (not dismissible).
@@ -254,6 +259,11 @@ export type ChatAction =
       // Exact attached-file paths (see ChatMessage.attachments) — lets the
       // bubble render pills for paths with spaces that regex detection misses.
       attachments?: string[];
+      // M1: set when InputBar's native branch dispatches this AFTER a
+      // NativeSendResult of status 'queued' — see chat-reducer.ts USER_PROMPT
+      // (BUG C: the queued path must NOT null currentTurnId/currentGroupId,
+      // or it forks the still-streaming prior turn).
+      queued?: boolean;
     }
   | {
       type: 'SHOW_PROMPT';

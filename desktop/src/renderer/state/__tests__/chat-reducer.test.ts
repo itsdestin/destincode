@@ -399,3 +399,57 @@ describe('chatReducer HYDRATE_CHAT_STATE', () => {
     expect(state.get('sess-2')!.timeline).toHaveLength(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// M1 Task 3: bubble-after-ack. A queued native send only fires its
+// USER_PROMPT dispatch after the host acks — but the ack can land while a
+// PRIOR turn is still streaming (native has no PTY serialization). BUG C:
+// the non-queued USER_PROMPT path always nulls currentTurnId/currentGroupId,
+// which would fork the still-streaming turn into two timeline entries if
+// applied here. The queued variant must append the pending bubble without
+// touching turn/group/isThinking state.
+// ─────────────────────────────────────────────────────────────────────────
+const SID = 'sess-1';
+
+function withStreamingTurn(sessionId = SID, turnId = 't1', groupId = 'g1'): ChatState {
+  // Mirrors stateWithInFlightTurn above — a turn mid-stream via
+  // TRANSCRIPT_ASSISTANT_TEXT leaves currentTurnId/currentGroupId set and
+  // isThinking true. Constructed directly rather than by dispatching the
+  // action, matching this file's existing helper convention.
+  const session = createSessionChatState();
+  session.currentTurnId = turnId;
+  session.currentGroupId = groupId;
+  session.isThinking = true;
+  return new Map([[sessionId, session]]);
+}
+
+function withQueuedBubble(text: string, sessionId = SID): ChatState {
+  const state: ChatState = new Map([[sessionId, createSessionChatState()]]);
+  return chatReducer(state, {
+    type: 'USER_PROMPT', sessionId, content: text, timestamp: 1, queued: true,
+  });
+}
+
+describe('chatReducer USER_PROMPT queued (BUG C)', () => {
+  it('queued USER_PROMPT does not reset the streaming turn (BUG C pin)', () => {
+    let s = withStreamingTurn(); // helper: state with currentTurnId 't1', currentGroupId 'g1', isThinking true
+    s = chatReducer(s, { type: 'USER_PROMPT', sessionId: SID, content: 'next msg', timestamp: 1, queued: true });
+    const sess = s.get(SID)!;
+    expect(sess.currentTurnId).toBe('t1');       // NOT nulled — later deltas keep merging into the live turn
+    expect(sess.currentGroupId).toBe('g1');      // NOT nulled — tool grouping unaffected
+    const entry = sess.timeline.at(-1)!;
+    expect(entry).toMatchObject({ kind: 'user', pending: true, queued: true });
+  });
+
+  it('TRANSCRIPT_USER_MESSAGE confirms a queued bubble and clears the queued flag', () => {
+    let s = withQueuedBubble('next msg');
+    s = chatReducer(s, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'confirm-uuid-1', text: 'next msg', timestamp: 2,
+    });
+    // `as any`: timeline entries are a discriminated union without a type
+    // predicate on find(), and pending/queued only exist on the 'user' arm.
+    const entry = s.get(SID)!.timeline.find((e) => e.kind === 'user' && e.message.content === 'next msg') as any;
+    expect(entry.pending).toBe(false);
+    expect(entry.queued).toBeUndefined();
+  });
+});
