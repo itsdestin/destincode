@@ -36,3 +36,20 @@ describe('summarizeSpaceSyncError', () => {
     expect(summarizeSpaceSyncError(undefined).summary.length).toBeGreaterThan(0);
   });
 });
+
+// Phase 2 (2026-07-22): coded errors are already plain-language by contract —
+// the summarizer must pass them through, not flatten "reconnect your GitHub
+// account" into the generic "unexpected problem" line. Gated on the code,
+// never on matching prose.
+describe('summarizeSpaceSyncError github-auth pass-through', () => {
+  it("passes a 'github-auth'-coded message through verbatim", () => {
+    const msg = 'GitHub sign-in expired — reconnect your GitHub account in the Sync settings';
+    expect(summarizeSpaceSyncError(msg, 'github-auth')).toEqual({ interrupted: false, summary: msg });
+  });
+
+  it('other codes / no code keep the existing classification', () => {
+    expect(summarizeSpaceSyncError('something exploded', 'some-other-code').summary)
+      .toContain('unexpected problem');
+    expect(summarizeSpaceSyncError("Unable to create '/x/index.lock': File exists").interrupted).toBe(true);
+  });
+});

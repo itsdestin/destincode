@@ -55,8 +55,9 @@ import {
 import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 // Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
 // createGithubConnect is the stateful orchestrator that owns the in-flight flow.
-import { detectGh, installGh } from './github-auth';
+import { installGh } from './github-auth';
 import { createGithubConnect, setGithubConnect } from './github-connect';
+import { combinedGithubStatus } from './github-client';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
@@ -2694,7 +2695,10 @@ export function registerIpcHandlers(
   });
   // Register as the process-wide singleton so remote clients drive the SAME flow.
   setGithubConnect(githubConnect);
-  ipcMain.handle(IPC.GITHUB_STATUS, () => detectGh());
+  // Combined status (Phase 2): authed = stored app token OR gh login — a
+  // stock machine that connected in-app reads as authed with no gh at all.
+  // Keeps the legacy {installed, authed, login} shape (additive fields only).
+  ipcMain.handle(IPC.GITHUB_STATUS, () => combinedGithubStatus());
   ipcMain.handle(IPC.GITHUB_CONNECT_START, () => githubConnect.start());
   ipcMain.handle(IPC.GITHUB_CONNECT_CANCEL, () => { githubConnect.cancel(); return { ok: true }; });
   ipcMain.handle(IPC.GITHUB_INSTALL_GH, () => installGh());

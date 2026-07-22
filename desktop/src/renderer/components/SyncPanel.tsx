@@ -447,6 +447,11 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // Latest handleSpacesEnable, so handleGithubConnected can re-invoke it without
   // a declaration-order / stale-closure problem (the callback is defined below).
   const handleSpacesEnableRef = useRef<((enabled: boolean) => Promise<void>) | null>(null);
+  // Live "sync is enabled" fact for handleGithubConnected's reconnect-heal —
+  // a ref (not spacesStatus in the closure) for the same stale-closure reason
+  // as handleSpacesEnableRef above.
+  const spacesEnabledRef = useRef(false);
+  useEffect(() => { spacesEnabledRef.current = !!spacesStatus?.enabled; }, [spacesStatus]);
 
   const claude = (window as any).claude;
 
@@ -637,6 +642,15 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
     if (wasMidEnableRef.current) {
       wasMidEnableRef.current = false;
       await handleSpacesEnableRef.current?.(true);
+      return;
+    }
+    // Reconnect while sync was already enabled (expired token → red header →
+    // "Connect GitHub…"): kick a sync immediately so the header heals now,
+    // not at the next 120s poll. Method-guarded like every syncSpaces call;
+    // enabledRef (not spacesStatus) avoids a stale closure here.
+    if (spacesEnabledRef.current) {
+      setSpacesError(null);
+      try { await (window as any).claude?.syncSpaces?.syncNow?.(); } catch { /* error events surface it */ }
     }
   }, [refreshGithubStatus]);
 
@@ -657,7 +671,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
       const statusFn = (window as any).claude?.github?.status;
       const gs = typeof statusFn === 'function' ? await statusFn().catch(() => null) : null;
       if (gs) setGithubStatus(gs);
-      if (gs && (!gs.installed || !gs.authed)) {
+      // Gate on authed ONLY (Phase 2): a stored app token with no gh CLI is a
+      // fully working state (REST provisioning + in-transport credentials), so
+      // requiring `installed` here would bounce already-connected users into
+      // the modal. gh-missing is handled INSIDE the modal (Install CLI button)
+      // for users who do need to connect.
+      if (gs && !gs.authed) {
         wasMidEnableRef.current = true;
         setShowConnectGithub(true);
         return;
@@ -914,6 +933,12 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               const errorMsg = spacesError ?? engineError?.message;
               const enabled = !!spacesStatus?.enabled;
               const githubUnauthed = !!(githubStatus && !githubStatus.authed);
+              // Coded auth failure (expired/revoked token, never-connected
+              // device). githubUnauthed alone misses the stored-but-expired
+              // token case: github:status still reads authed because a token
+              // EXISTS — only the engine's 401/auth-refused error knows it
+              // stopped working. Matches the machine code, never the prose.
+              const authError = engineError?.errorCode === 'github-auth';
               const login = githubStatus?.login;
 
               // Resolve the single header state via the pure, pinned ladder
@@ -963,7 +988,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               // docs/error-message-standards.md we surface a plain-language SUMMARY
               // as the sub-text and keep the raw text behind a "Show details"
               // disclosure below — never a wall of jargon as the primary message.
-              const errorSummary = errorMsg ? summarizeSpaceSyncError(errorMsg as string) : null;
+              const errorSummary = errorMsg ? summarizeSpaceSyncError(errorMsg as string, engineError?.errorCode) : null;
               const sub =
                 hk === 'setup' ? 'Creating your private repositories — a few seconds.' :
                 hk === 'off' ? 'Turn on to back up and sync across your devices' :
@@ -1016,7 +1041,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                     </Button>
                     {/* secondary (outline) so it reads as a peer of the primary "Try again"
                         rather than competing with it for the same weight. */}
-                    {githubUnauthed && (
+                    {(githubUnauthed || authError) && (
                       <Button variant="secondary" size="sm" onClick={() => setShowConnectGithub(true)}>
                         Connect GitHub…
                       </Button>

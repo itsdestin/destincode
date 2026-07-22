@@ -5,14 +5,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { getGithubClient, GITHUB_AUTH_ERROR_CODE, type GithubClient } from '../github-client';
 import type { SyncSpace } from './types';
 
-const execFileAsync = promisify(execFile);
-
-/** Minimal exec shape — injectable so the gh recovery logic below is unit-testable. */
-type ExecFn = (file: string, args: string[], opts: object) => Promise<{ stdout: string }>;
+/** The one client method provisioning needs — injectable for tests. */
+type RepoCreator = Pick<GithubClient, 'createPrivateRepo'>;
 
 export function repoNameForSpace(space: SyncSpace): string {
   if (space.kind === 'personal') return 'youcoded-sync-personal';
@@ -28,36 +25,25 @@ export function repoNameForSpace(space: SyncSpace): string {
   return `youcoded-sync-project-${name || 'x'}-${short}`;
 }
 
-/** Creates a private repo via gh and returns its clone URL. Mirrors the
- *  createGithubRepo pattern in sync-setup-handlers.ts. An ALREADY-EXISTING
- *  repo is success, not failure — the state file recording provisioned URLs
- *  is per-device, so the user's second device re-runs this for repos the
- *  first device already created. Without the recovery path, sync could
- *  never start on any device but the first. */
-export async function provisionGithubRemote(repoName: string, exec: ExecFn = execFileAsync): Promise<string> {
-  try {
-    // `gh repo create` prints the repo URL on success; --private is mandatory (spec §14).
-    const { stdout } = await exec('gh', ['repo', 'create', repoName, '--private'], { timeout: 60_000 });
-    const url = stdout.trim();
-    if (!/^https:\/\/github\.com\//.test(url)) throw new Error(`unexpected gh output: ${stdout}`);
-    return `${url}.git`;
-  } catch (e: any) {
-    // Recovery: if the repo already exists (created by another device), reuse it.
-    const view = await exec('gh', ['repo', 'view', repoName, '--json', 'url', '-q', '.url'], { timeout: 60_000 })
-      .catch(() => null);
-    const url = view?.stdout.trim();
-    if (url && /^https:\/\/github\.com\//.test(url)) return `${url}.git`;
-    // Why plain-language errors: raw gh/exec errors are cryptic for
-    // non-developers, and Task 9's sync panel shows these messages verbatim.
-    if (e?.code === 'ENOENT') {
-      throw new Error('GitHub CLI (gh) is not installed — sync needs it to create your private repos');
-    }
-    const stderr = String(e?.stderr ?? '');
-    if (stderr.includes('auth') || stderr.includes('gh auth login')) {
-      throw new Error('Not signed in to GitHub — run "gh auth login" and try again');
-    }
-    throw e; // genuinely failed (offline, invalid name, …) — surface the original error
+/** Creates a private repo and returns its clone URL. Phase 2 (2026-07-22
+ *  sync-setup overhaul): goes through the shared github-client REST path —
+ *  no `gh` CLI required — using the app's stored token, or gh's own token on
+ *  machines that have one (the client's acquisition order handles both).
+ *  An ALREADY-EXISTING repo is success, not failure — the state file
+ *  recording provisioned URLs is per-device, so the user's second device
+ *  re-runs this for repos the first device already created; that recovery
+ *  lives inside createPrivateRepo (422 → adopt). Errors are already
+ *  plain-language + typed (syncErrorCode) — syncSpace surfaces them verbatim
+ *  as the space's error event every cycle. */
+export async function provisionGithubRemote(repoName: string, client: RepoCreator | null = getGithubClient()): Promise<string> {
+  if (!client) {
+    // main.ts registers the client before startSyncSpaces; reaching this means
+    // a wiring regression, but the user still needs an actionable message.
+    const e: any = new Error('Not connected to GitHub — connect your GitHub account in the Sync settings');
+    e.syncErrorCode = GITHUB_AUTH_ERROR_CODE;
+    throw e;
   }
+  return client.createPrivateRepo(repoName);
 }
 
 interface SpaceManagerOpts {

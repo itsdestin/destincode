@@ -19,8 +19,11 @@ export interface SyncStatusData {
     kind?: 'project' | 'personal'; remote?: string | null; lastSyncAt?: number | null;
   }>;
   // Engine events since app boot (last 50). `at` is stamped at broadcast time
-  // (ms epoch); older payloads may lack it.
-  recentEvents: Array<{ type: string; spaceId: string; at?: number; message?: string }>;
+  // (ms epoch); older payloads may lack it. `errorCode` is the stable
+  // machine-readable marker on 'error' events ('github-auth' → the panel
+  // shows a Connect/Reconnect GitHub CTA instead of only "Try again");
+  // matching on it, never on the prose message, is the contract.
+  recentEvents: Array<{ type: string; spaceId: string; at?: number; message?: string; errorCode?: string }>;
 }
 
 export interface SyncDot { color: 'green' | 'red' | 'gray'; label: string }

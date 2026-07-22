@@ -58,7 +58,12 @@ export type SpaceSyncEvent = (
   | { type: 'synced'; spaceId: string; pushed: boolean; updated: boolean }
   | { type: 'conflict'; spaceId: string; copies: string[] }
   | { type: 'oversize'; spaceId: string; files: string[] }
-  | { type: 'error'; spaceId: string; message: string }
+  // errorCode is a stable machine-readable marker (e.g. 'github-auth') copied
+  // from the thrown error's `syncErrorCode` so the renderer can attach the
+  // right CTA (Reconnect GitHub) without string-matching prose, which would
+  // silently break on any copy edit. Optional + additive: older payloads and
+  // uncoded errors simply omit it.
+  | { type: 'error'; spaceId: string; message: string; errorCode?: string }
   // Informational notice — NOT an error. Used for the large-history warning
   // (spec §7). Carries a REAL space id (unlike the 'hub'/'projects' sentinels),
   // but MUST NOT drive the red "sync isn't working" dot: sync still works

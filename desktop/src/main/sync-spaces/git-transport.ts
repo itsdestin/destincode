@@ -12,9 +12,84 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { DEFAULT_IGNORES, MAX_SYNC_FILE_BYTES, conflictCopyName } from './guards';
 import { nextGcCounter } from './gc-policy';
+import { GITHUB_AUTH_ERROR_CODE } from '../github-client';
 import type { PullResult, PushResult, SpaceVersion, SyncSpace, SyncTransport } from './types';
 
 const execFileAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// Credential injection (Phase 2, 2026-07-22 sync-setup overhaul)
+// ---------------------------------------------------------------------------
+
+/**
+ * Inline git credential helper (the `!`-prefixed form runs under git's own sh —
+ * bundled with Git for Windows too, so this is cross-platform). It answers
+ * `get` with the app token read FROM THE CHILD ENV; store/erase are no-ops.
+ *
+ * WHY a credential.helper and not GIT_ASKPASS: git consults credential HELPERS
+ * before askpass, so askpass could never take precedence over a stale system
+ * helper (e.g. an expired gh login). Prepending `credential.helper=` (empty)
+ * resets git's helper list, so when the app HAS a token it wins outright; when
+ * it has none we pass nothing and the system's configured helper keeps working
+ * exactly as today (the "no forced migration" guarantee).
+ *
+ * TOKEN HYGIENE: the token rides ONLY in the env var — this helper string (and
+ * therefore argv) never contains it, and nothing is written to any git config.
+ */
+export const GIT_CREDENTIAL_HELPER =
+  '!f() { if [ "$1" = "get" ]; then printf "username=x-access-token\\npassword=%s\\n" "$YOUCODED_GIT_TOKEN"; fi; }; f';
+
+/** Pure: build the argv+env for one git call. No token → untouched passthrough
+ *  (system credential helpers keep working). With a token → our helper wins,
+ *  the token rides env-only, and GIT_TERMINAL_PROMPT=0 stops git from ever
+ *  hanging on a TTY prompt we can't answer. */
+export function credentialedGitInvocation(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  token: string | null,
+): { args: string[]; env: NodeJS.ProcessEnv } {
+  if (!token) return { args, env };
+  return {
+    args: ['-c', 'credential.helper=', '-c', `credential.helper=${GIT_CREDENTIAL_HELPER}`, ...args],
+    env: { ...env, YOUCODED_GIT_TOKEN: token, GIT_TERMINAL_PROMPT: '0' },
+  };
+}
+
+/**
+ * Pure: recognize a git auth failure in stderr and translate it to the
+ * plain-language error the panel shows verbatim (never raw git jargon — see
+ * docs/error-message-standards.md). `tokenUsed` picks the accurate message:
+ * a failure WITH our token means the sign-in expired/was revoked; a failure
+ * with NO credentials at all means the device was never connected. Returns
+ * null for every non-auth failure so offline handling stays untouched.
+ */
+export function classifyGitAuthFailure(
+  stderr: string,
+  tokenUsed: boolean,
+): { message: string; code: string } | null {
+  const s = (stderr || '').toLowerCase();
+  const authy =
+    s.includes('authentication failed') ||
+    s.includes('invalid credentials') ||
+    s.includes('could not read username') ||
+    s.includes('could not read password') ||
+    /returned error: 40[13]/.test(s);
+  if (!authy) return null;
+  return {
+    code: GITHUB_AUTH_ERROR_CODE,
+    message: tokenUsed
+      ? 'GitHub sign-in expired — reconnect your GitHub account in the Sync settings'
+      : 'Not connected to GitHub — connect your GitHub account in the Sync settings',
+  };
+}
+
+/** Throw the classified auth failure as a coded error (engine copies
+ *  syncErrorCode onto the 'error' event so the UI can offer Reconnect). */
+function throwAuthFailure(auth: { message: string; code: string }): never {
+  const e: any = new Error(auth.message);
+  e.syncErrorCode = auth.code;
+  throw e;
+}
 const GIT_TIMEOUT = 5 * 60 * 1000; // mirrors sync-service.ts GIT_TIMEOUT
 const DEFAULT_GC_INTERVAL = 50;    // run a local git gc every 50th successful sync (spec §7)
 // Bound the recursive size walk so a pathological repo can never hang the probe.
@@ -24,16 +99,21 @@ const DEFAULT_GC_INTERVAL = 50;    // run a local git gc every 50th successful s
 const SIZE_WALK_MAX_ENTRIES = 200_000;
 const SIZE_WALK_MAX_DEPTH = 100;
 
-interface ExecResult { code: number; stdout: string; stderr: string; }
+interface ExecResult { code: number; stdout: string; stderr: string; tokenUsed: boolean; }
 
 export class GitTransport implements SyncTransport {
   private deviceName: string;
   private maxFileBytes: number;
   private gcInterval: number;
   private lockStaleMs: number;
+  private getAuthToken?: () => Promise<string | null>;
 
-  constructor(opts: { deviceName: string; maxFileBytes?: number; gcInterval?: number; lockStaleMs?: number }) {
+  constructor(opts: { deviceName: string; maxFileBytes?: number; gcInterval?: number; lockStaleMs?: number; getAuthToken?: () => Promise<string | null> }) {
     this.deviceName = opts.deviceName;
+    // App-token provider (github-client via service.ts). Optional + failure-
+    // tolerant: null/throw simply means "no app token", and the invocation
+    // falls back to the system credential helper unchanged.
+    this.getAuthToken = opts.getAuthToken;
     this.maxFileBytes = opts.maxFileBytes ?? MAX_SYNC_FILE_BYTES;
     // Injectable so tests can force a gc after a couple of syncs instead of 50.
     this.gcInterval = opts.gcInterval ?? DEFAULT_GC_INTERVAL;
@@ -101,16 +181,21 @@ export class GitTransport implements SyncTransport {
   }
 
   private async git(space: SyncSpace, args: string[]): Promise<ExecResult> {
-    const env = { ...process.env, GIT_DIR: this.gitDir(space), GIT_WORK_TREE: space.root };
+    const baseEnv = { ...process.env, GIT_DIR: this.gitDir(space), GIT_WORK_TREE: space.root };
+    // App token first, system helper otherwise (credentialedGitInvocation is a
+    // no-op passthrough on null). getToken is cached upstream, so this does
+    // not re-read disk / re-exec gh per git call.
+    const token = this.getAuthToken ? await this.getAuthToken().catch(() => null) : null;
+    const inv = credentialedGitInvocation(args, baseEnv, token);
     try {
       // Why maxBuffer 64MB: Node's default is only 1MB and it KILLS the child
       // when output exceeds it — on a big space that silently breaks history()
       // and the name-only file listings this class depends on.
-      const { stdout, stderr } = await execFileAsync('git', args,
-        { cwd: space.root, env, timeout: GIT_TIMEOUT, maxBuffer: 64 * 1024 * 1024 });
-      return { code: 0, stdout, stderr };
+      const { stdout, stderr } = await execFileAsync('git', inv.args,
+        { cwd: space.root, env: inv.env, timeout: GIT_TIMEOUT, maxBuffer: 64 * 1024 * 1024 });
+      return { code: 0, stdout, stderr, tokenUsed: token != null };
     } catch (e: any) {
-      return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout || '', stderr: e.stderr || String(e) };
+      return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout || '', stderr: e.stderr || String(e), tokenUsed: token != null };
     }
   }
 
@@ -193,6 +278,13 @@ export class GitTransport implements SyncTransport {
       // forked-transcript hazard on conversations (2026-07-15 review finding).
       const recovery = await this.pull(space);
       const retry = await this.git(space, ['push', '-u', 'origin', 'main']);
+      if (retry.code !== 0) {
+        // An auth-refused push must SURFACE (engine error event → red dot +
+        // Reconnect CTA), never return a silent pushed:false — an expired
+        // token would otherwise look like "nothing to push" forever.
+        const auth = classifyGitAuthFailure(retry.stderr, retry.tokenUsed);
+        if (auth) throwAuthFailure(auth);
+      }
       return { pushed: retry.code === 0, commit, oversize, updated: recovery.updated, conflictCopies: recovery.conflictCopies };
     }
     return { pushed: true, commit, oversize };
@@ -235,7 +327,15 @@ export class GitTransport implements SyncTransport {
 
     if (!(await this.hasRemote(space))) return { updated: false, conflictCopies: [] };
     const fetch = await this.git(space, ['fetch', 'origin', 'main']);
-    if (fetch.code !== 0) return { updated: false, conflictCopies: [] }; // offline — never block (spec §13)
+    if (fetch.code !== 0) {
+      // Auth refusals must NOT masquerade as offline: "offline" is silent by
+      // design (spec §13), so an expired/revoked credential would read as a
+      // healthy-but-idle device forever. Only classified AUTH failures throw;
+      // every other fetch failure keeps the never-block offline contract.
+      const auth = classifyGitAuthFailure(fetch.stderr, fetch.tokenUsed);
+      if (auth) throwAuthFailure(auth);
+      return { updated: false, conflictCopies: [] }; // offline — never block (spec §13)
+    }
     // Fix: a fresh device has no local `main` yet (nothing committed). `main..origin/main`
     // errors on an unborn branch, so adopt the remote wholesale on first sync — this is
     // what lets a second device actually receive the first device's push.
