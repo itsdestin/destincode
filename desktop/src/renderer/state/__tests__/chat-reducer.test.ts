@@ -401,13 +401,16 @@ describe('chatReducer HYDRATE_CHAT_STATE', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// M1 Task 3: bubble-after-ack. A queued native send only fires its
-// USER_PROMPT dispatch after the host acks — but the ack can land while a
-// PRIOR turn is still streaming (native has no PTY serialization). BUG C:
-// the non-queued USER_PROMPT path always nulls currentTurnId/currentGroupId,
-// which would fork the still-streaming turn into two timeline entries if
-// applied here. The queued variant must append the pending bubble without
-// touching turn/group/isThinking state.
+// Task 12: queued messages leave the timeline — docked strip + true-position
+// confirm. Replaces the Task 3/11 timeline-based queued mechanics (the
+// `queued`/`queueId` USER_PROMPT variant, QUEUED_PROMPT_CANCELED): a queued
+// native send now only touches SessionChatState.queuedMessages
+// (QUEUED_MESSAGE_ADDED/REMOVED) — NEVER the timeline or turn state — and
+// joins the timeline for the first time when TRANSCRIPT_USER_MESSAGE's
+// no-pending-match fallback appends it at the END, its true position,
+// instead of freezing an enqueue-time position above content the
+// still-streaming prior turn hadn't emitted yet ("assistant responding to
+// itself").
 // ─────────────────────────────────────────────────────────────────────────
 const SID = 'sess-1';
 
@@ -423,34 +426,106 @@ function withStreamingTurn(sessionId = SID, turnId = 't1', groupId = 'g1'): Chat
   return new Map([[sessionId, session]]);
 }
 
-function withQueuedBubble(text: string, sessionId = SID): ChatState {
-  const state: ChatState = new Map([[sessionId, createSessionChatState()]]);
-  return chatReducer(state, {
-    type: 'USER_PROMPT', sessionId, content: text, timestamp: 1, queued: true,
-  });
-}
-
-describe('chatReducer USER_PROMPT queued (BUG C)', () => {
-  it('queued USER_PROMPT does not reset the streaming turn (BUG C pin)', () => {
-    let s = withStreamingTurn(); // helper: state with currentTurnId 't1', currentGroupId 'g1', isThinking true
-    s = chatReducer(s, { type: 'USER_PROMPT', sessionId: SID, content: 'next msg', timestamp: 1, queued: true });
+describe('chatReducer QUEUED_MESSAGE_ADDED / QUEUED_MESSAGE_REMOVED (Task 12)', () => {
+  it('QUEUED_MESSAGE_ADDED appends to queuedMessages and touches NEITHER the timeline NOR turn state', () => {
+    let s = withStreamingTurn(); // currentTurnId 't1', currentGroupId 'g1', isThinking true
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'next msg', timestamp: 5 });
     const sess = s.get(SID)!;
-    expect(sess.currentTurnId).toBe('t1');       // NOT nulled — later deltas keep merging into the live turn
-    expect(sess.currentGroupId).toBe('g1');      // NOT nulled — tool grouping unaffected
-    const entry = sess.timeline.at(-1)!;
-    expect(entry).toMatchObject({ kind: 'user', pending: true, queued: true });
+    expect(sess.currentTurnId).toBe('t1');   // NOT nulled — later deltas keep merging into the live turn
+    expect(sess.currentGroupId).toBe('g1');  // NOT nulled — tool grouping unaffected
+    expect(sess.timeline).toHaveLength(0);   // NO timeline entry — the whole point of Task 12
+    expect(sess.queuedMessages).toEqual([{ queueId: 'q-1', content: 'next msg', timestamp: 5 }]);
   });
 
-  it('TRANSCRIPT_USER_MESSAGE confirms a queued bubble and clears the queued flag', () => {
-    let s = withQueuedBubble('next msg');
+  it('QUEUED_MESSAGE_ADDED is a no-op for an unknown session id', () => {
+    const s = new Map<string, ReturnType<typeof createSessionChatState>>();
+    const before = s;
+    const after = chatReducer(before, { type: 'QUEUED_MESSAGE_ADDED', sessionId: 'ghost', queueId: 'q-1', content: 'x', timestamp: 1 });
+    expect(after).toBe(before);
+  });
+
+  it('QUEUED_MESSAGE_REMOVED removes only the matching entry by queueId', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'first', timestamp: 1 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-2', content: 'second', timestamp: 2 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_REMOVED', sessionId: SID, queueId: 'q-1' });
+    expect(s.get(SID)!.queuedMessages).toEqual([{ queueId: 'q-2', content: 'second', timestamp: 2 }]);
+  });
+
+  it('QUEUED_MESSAGE_REMOVED is a no-op when the queueId is not present', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'first', timestamp: 1 });
+    const before = s;
+    const after = chatReducer(before, { type: 'QUEUED_MESSAGE_REMOVED', sessionId: SID, queueId: 'ghost-id' });
+    expect(after).toBe(before);
+  });
+
+  it('QUEUED_MESSAGE_REMOVED is a no-op for an unknown session id', () => {
+    const before: ChatState = new Map([[SID, createSessionChatState()]]);
+    const after = chatReducer(before, { type: 'QUEUED_MESSAGE_REMOVED', sessionId: 'ghost-session', queueId: 'q-1' });
+    expect(after).toBe(before);
+  });
+});
+
+describe('chatReducer TRANSCRIPT_USER_MESSAGE — true-position confirm for a drained queued message (Task 12)', () => {
+  it('a queued message with NO pending bubble appends at the END (true position), even mid-stream', () => {
+    // The prior turn is still streaming (currentTurnId/currentGroupId set,
+    // isThinking true) when the queued send drains — the bug this task
+    // fixes was freezing the queued bubble ABOVE this content because it
+    // rendered at enqueue time. With no timeline write on enqueue, the ONLY
+    // possible landing position is wherever TRANSCRIPT_USER_MESSAGE appends
+    // it: the end.
+    let s = withStreamingTurn();
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'queued text', timestamp: 1 });
     s = chatReducer(s, {
-      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'confirm-uuid-1', text: 'next msg', timestamp: 2,
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'queued text', timestamp: 2,
     });
-    // `as any`: timeline entries are a discriminated union without a type
-    // predicate on find(), and pending/queued only exist on the 'user' arm.
-    const entry = s.get(SID)!.timeline.find((e) => e.kind === 'user' && e.message.content === 'next msg') as any;
-    expect(entry.pending).toBe(false);
-    expect(entry.queued).toBeUndefined();
+    const timeline = s.get(SID)!.timeline;
+    expect(timeline).toHaveLength(1);
+    const entry = timeline[0];
+    expect(entry).toMatchObject({ kind: 'user', pending: false });
+    if (entry.kind === 'user') {
+      expect(entry.message.content).toBe('queued text');
+      expect('queued' in entry).toBe(false); // field is gone from the type entirely
+    }
+  });
+
+  it('drain-confirm removes the oldest queuedMessages entry with matching content', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'hi', timestamp: 1 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-2', content: 'hi', timestamp: 2 });
+    s = chatReducer(s, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'hi', timestamp: 3 });
+    // Oldest-content-match discipline (mirrors the pending-bubble dedup):
+    // q-1 (the OLDER entry) is removed, q-2 survives for the next drain.
+    expect(s.get(SID)!.queuedMessages).toEqual([{ queueId: 'q-2', content: 'hi', timestamp: 2 }]);
+  });
+
+  it('a sent-path pending bubble confirm is untouched: no queuedMessages entry exists, so nothing is removed', () => {
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'USER_PROMPT', sessionId: SID, content: 'plain send', timestamp: 1 });
+    expect(s.get(SID)!.timeline).toHaveLength(1);
+    s = chatReducer(s, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'plain send', timestamp: 2 });
+    const timeline = s.get(SID)!.timeline;
+    expect(timeline).toHaveLength(1); // confirmed IN PLACE, not appended again
+    expect(timeline[0]).toMatchObject({ kind: 'user', pending: false });
+    expect(s.get(SID)!.queuedMessages).toEqual([]);
+  });
+
+  it('list removal runs independent of which branch confirms: a queuedMessages entry with content matching an unrelated sent bubble is still cleaned up', () => {
+    // Minimal-correct-rule pin: the list scan is NOT gated on confirmedIdx
+    // finding (or failing to find) a pending bubble — it is a separate,
+    // unconditional content-match attempt against queuedMessages. Construct
+    // the (edge-case) situation where a 'sent' pending bubble and a queued
+    // list entry share content; the sent bubble confirms via the
+    // pending-bubble branch, and the list entry is independently cleaned up
+    // by the same TRANSCRIPT_USER_MESSAGE dispatch.
+    let s: ChatState = new Map([[SID, createSessionChatState()]]);
+    s = chatReducer(s, { type: 'USER_PROMPT', sessionId: SID, content: 'same text', timestamp: 1 });
+    s = chatReducer(s, { type: 'QUEUED_MESSAGE_ADDED', sessionId: SID, queueId: 'q-1', content: 'same text', timestamp: 2 });
+    s = chatReducer(s, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SID, uuid: 'u-1', text: 'same text', timestamp: 3 });
+    const timeline = s.get(SID)!.timeline;
+    expect(timeline).toHaveLength(1); // pending bubble confirmed in place, not double-appended
+    expect(s.get(SID)!.queuedMessages).toEqual([]); // list entry ALSO cleaned up by the same dispatch
   });
 });
 

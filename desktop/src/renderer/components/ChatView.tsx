@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
 import UserMessage from './UserMessage';
+import QueuedMessagesStrip from './QueuedMessagesStrip';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
 import PromptCard from './PromptCard';
@@ -38,12 +39,13 @@ interface Props {
    *  provider-config error bubble (missing/disabled key) can jump the user
    *  straight to the fix. App owns Settings open-state, so it passes this down. */
   onOpenProviderSettings?: () => void;
-  // Task 11 (cancel/edit queued messages): App owns the native:queue-remove
-  // invoke, the QUEUED_PROMPT_CANCELED dispatch, the toast state, and the
-  // input-bar ref the Edit flow refills — none of which ChatView/UserMessage
-  // have access to, so these are threaded straight through to the bubble.
-  // sessionId is explicit (not closed over) because App wires ONE pair of
-  // handlers shared across every session's ChatView instance.
+  // Task 12 (docked strip, replaces Task 11's UserMessage-bubble affordances):
+  // App owns the native:queue-remove invoke, the QUEUED_MESSAGE_REMOVED
+  // dispatch, the toast state, and the input-bar ref the Edit flow refills —
+  // none of which ChatView/QueuedMessagesStrip have access to, so these are
+  // threaded straight through to the strip. sessionId is explicit (not
+  // closed over) because App wires ONE pair of handlers shared across every
+  // session's ChatView instance.
   onCancelQueued?: (sessionId: string, queueId: string) => void;
   onEditQueued?: (sessionId: string, queueId: string, text: string) => void;
 }
@@ -631,11 +633,6 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                       message={entry.message}
                       sessionId={sessionId}
                       showTimestamps={showTimestamps}
-                      pending={entry.pending}
-                      queued={entry.queued}
-                      queueId={entry.queueId}
-                      onCancelQueued={onCancelQueued ? (queueId) => onCancelQueued(sessionId, queueId) : undefined}
-                      onEditQueued={onEditQueued ? (queueId, text) => onEditQueued(sessionId, queueId, text) : undefined}
                     />
                   );
                   break;
@@ -786,6 +783,22 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
         <div ref={bottomRef} className="h-1" />
            </div>
           </div>
+          {/* Task 12: docked strip for queued messages — a sibling of
+              .chat-scroll (NOT inside it), so it neither scrolls with the
+              timeline nor lives in the outer absolute ChatView container
+              (unlike ModelLoadingBar/jump-to-bottom, which float above the
+              WHOLE framed-shell). .chat-pane is `position: relative`, so this
+              anchors to ITS bottom edge via the same --bottom-chrome-height
+              offset those two floating elements use to clear the real
+              InputBar (which lives outside ChatView — see App.tsx's
+              chrome-wrapper--bottom). DOM choice documented per the task
+              brief: ChatView's scroll container's PARENT. */}
+          <QueuedMessagesStrip
+            sessionId={sessionId}
+            queuedMessages={state.queuedMessages}
+            onCancel={onCancelQueued ? (queueId) => onCancelQueued(sessionId, queueId) : undefined}
+            onEdit={onEditQueued ? (queueId, text) => onEditQueued(sessionId, queueId, text) : undefined}
+          />
         </div>
         {/* Right frame edge / divider + Session Drawer — only shown when open.
             projectRoot/projectId/projectName are resolved from the session's

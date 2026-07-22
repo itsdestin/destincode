@@ -431,17 +431,29 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             setAttachments((cur) => (cur.length > 0 ? cur : files));
             return;
           }
-          dispatch({
-            type: 'USER_PROMPT',
-            sessionId,
-            content: outgoing.content,
-            timestamp: Date.now(),
-            attachments: files.map((f) => f.path),
-            queued: result.status === 'queued',
-            // Task 11: only the 'queued' arm carries a queueId — undefined here
-            // is correct (and ignored by the reducer) for a 'sent' ack.
-            ...(result.status === 'queued' ? { queueId: result.queueId } : {}),
-          });
+          // Task 12: a 'queued' ack dispatches QUEUED_MESSAGE_ADDED instead of
+          // USER_PROMPT — the docked strip renders it, NOT the timeline (the
+          // Task 3/11 bug this replaces: an enqueue-time timeline bubble
+          // froze above content the still-streaming prior turn hadn't
+          // emitted yet). A 'sent' ack is unchanged: nothing is streaming, so
+          // the optimistic bubble's position is already correct.
+          if (result.status === 'queued') {
+            dispatch({
+              type: 'QUEUED_MESSAGE_ADDED',
+              sessionId,
+              queueId: result.queueId,
+              content: outgoing.content,
+              timestamp: Date.now(),
+            });
+          } else {
+            dispatch({
+              type: 'USER_PROMPT',
+              sessionId,
+              content: outgoing.content,
+              timestamp: Date.now(),
+              attachments: files.map((f) => f.path),
+            });
+          }
         })();
         return true;
       }

@@ -333,10 +333,11 @@ describe('InputBar — InputBarHandle hasDraft/fillDraft (Task 11)', () => {
   });
 });
 
-// Task 11: a 'queued' native ack must forward its queueId onto the USER_PROMPT
-// dispatch so the reducer can store it (chat-reducer.ts) and later target the
-// exact bubble via QUEUED_PROMPT_CANCELED.
-describe('InputBar native send — queued ack carries queueId onto USER_PROMPT (Task 11)', () => {
+// Task 12: a 'queued' native ack dispatches QUEUED_MESSAGE_ADDED (list entry,
+// no timeline write) instead of a queued-flavored USER_PROMPT — see
+// chat-reducer.ts and the Task 12 brief for why the old timeline bubble froze
+// above content from the still-streaming prior turn.
+describe('InputBar native send — queued ack dispatches QUEUED_MESSAGE_ADDED, not a timeline entry (Task 12)', () => {
   beforeEach(() => {
     (global as any).ResizeObserver = NoopResizeObserver;
     capturedDispatch = null;
@@ -357,7 +358,7 @@ describe('InputBar native send — queued ack carries queueId onto USER_PROMPT (
     vi.restoreAllMocks();
   });
 
-  it('dispatches USER_PROMPT with queued:true and the ack queueId', async () => {
+  it('dispatches QUEUED_MESSAGE_ADDED with the ack queueId, and writes NO timeline entry', async () => {
     (window as any).claude.native.send.mockResolvedValue({ status: 'queued', queueId: 'q-99' });
 
     let capturedStore: ReturnType<typeof useChatStore> | null = null;
@@ -382,10 +383,13 @@ describe('InputBar native send — queued ack carries queueId onto USER_PROMPT (
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {
-      const timeline = capturedStore!.getState().get('sess-1')?.timeline ?? [];
-      expect(timeline.length).toBe(1);
+      const queued = capturedStore!.getState().get('sess-1')?.queuedMessages ?? [];
+      expect(queued.length).toBe(1);
     });
-    const entry = capturedStore!.getState().get('sess-1')!.timeline[0];
-    expect(entry).toMatchObject({ kind: 'user', pending: true, queued: true, queueId: 'q-99' });
+    const session = capturedStore!.getState().get('sess-1')!;
+    expect(session.timeline).toHaveLength(0);
+    expect(session.queuedMessages).toEqual([
+      { queueId: 'q-99', content: 'queue me', timestamp: expect.any(Number) },
+    ]);
   });
 });

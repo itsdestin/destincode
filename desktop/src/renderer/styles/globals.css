@@ -553,6 +553,17 @@ body[data-mode="buddy-chat"] #theme-bg {
 .model-status-strip {
   bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
 }
+
+/* Task 12: docked strip for queued (not-yet-sent) messages. Unlike
+   .model-status-strip / .jump-to-bottom (which float above the WHOLE
+   framed-shell, in ChatView's outer absolute container), this is a sibling of
+   .chat-scroll INSIDE .chat-pane (position: relative) — see the DOM-choice
+   comment at its render site in ChatView.tsx. Same --bottom-chrome-height
+   offset math so it clears the real InputBar (a sibling of ChatView,
+   positioned by App.tsx's chrome-wrapper--bottom) regardless of scroll. */
+.queued-messages-strip {
+  bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
+}
 /* Indeterminate progress bar (llama-server gives no load %). A highlight sweeps
    across the track. Reduced-effects users get a static filled track instead. */
 @keyframes model-load-sweep {

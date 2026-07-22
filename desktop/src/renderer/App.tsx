@@ -526,18 +526,27 @@ function AppInner() {
     return true;
   }, [notifyIfPtyBlocked]);
 
-  // Task 11 (cancel/edit queued messages): Cancel — invoke removeQueued, then
-  // either dispatch the reducer's removal (true) or toast the honest "too
-  // late" reason (false, meaning the drain already won the race — the same
-  // outcome as an interrupt landing a tick too late elsewhere in this file).
+  // Task 11 (cancel/edit queued messages), rewired for Task 12's docked strip
+  // (was UserMessage's Cancel/Edit affordances — now QueuedMessagesStrip's):
+  // Cancel — invoke removeQueued, then dispatch the reducer's removal either
+  // way. true: the id was found and removed on the host — the row is
+  // genuinely gone. false: the drain already won the race (same outcome as
+  // an interrupt landing a tick too late elsewhere in this file) — toast the
+  // honest reason, but ALSO dispatch QUEUED_MESSAGE_REMOVED (Task 12 addition:
+  // the strip row must not linger beside its just-confirmed timeline entry;
+  // TRANSCRIPT_USER_MESSAGE's own drain-side removal would eventually clear
+  // it too, but that races the transcript watcher — dispatching here removes
+  // it immediately, and QUEUED_MESSAGE_REMOVED is a safe no-op if the
+  // transcript event's removal already won).
   const handleCancelQueued = useCallback(async (sid: string, queueId: string) => {
     const removed = await window.claude.native.queueRemove(sid, queueId);
     if (!removed) {
       setToast('Already sending — too late to cancel.');
       setTimeout(() => setToast(null), 3000);
+      dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
       return;
     }
-    dispatch({ type: 'QUEUED_PROMPT_CANCELED', sessionId: sid, queueId });
+    dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
   }, [dispatch]);
 
   // Edit = cancel + refill (design ruling — no in-place editing). The draft
@@ -545,7 +554,10 @@ function AppInner() {
   // destroy the queued message if the refill can't land. inputBarRef is the
   // single ChatInputBar instance (mounted once, bound to the active session);
   // see InputBarHandle's hasDraft/fillDraft for why this ref was extended
-  // instead of introducing new App state.
+  // instead of introducing new App state. Same too-late handling as Cancel
+  // above (dispatch QUEUED_MESSAGE_REMOVED either way) — but the draft is
+  // NOT refilled on the too-late path, since the message already reached the
+  // host and refilling would duplicate it if the user re-sent.
   const handleEditQueued = useCallback(async (sid: string, queueId: string, text: string) => {
     if (inputBarRef.current?.hasDraft()) {
       setToast('Finish or clear your current draft first, then edit the queued message.');
@@ -556,9 +568,10 @@ function AppInner() {
     if (!removed) {
       setToast('Already sending — too late to cancel.');
       setTimeout(() => setToast(null), 3000);
+      dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
       return;
     }
-    dispatch({ type: 'QUEUED_PROMPT_CANCELED', sessionId: sid, queueId });
+    dispatch({ type: 'QUEUED_MESSAGE_REMOVED', sessionId: sid, queueId });
     inputBarRef.current?.fillDraft(text);
   }, [dispatch]);
 
