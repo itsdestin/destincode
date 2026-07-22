@@ -1,6 +1,7 @@
 // Registers window.__terminalRegistry so main-process executeJavaScript
 // can call getScreenText for the attention classifier's ~1s buffer reads.
 // Must run before any TerminalView mounts (which call registerTerminal).
+import { guardDirtyEditor } from './components/artifact-views/dirty-editor-guard';
 import './bootstrap/terminal-bridge';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import TerminalView from './components/TerminalView';
@@ -2553,9 +2554,15 @@ function AppInner() {
                 sessions={sessions}
                 activeSessionId={sessionId}
                 onSelectSession={(id: string) => {
-                  setSessionId(id);
-                  // Notify Android/remote bridge so the native terminal view switches too
-                  (window as any).claude?.session?.switch?.(id);
+                  // Switching sessions REMOUNTS the artifact drawer, which
+                  // would silently discard a dirty editor draft — route the
+                  // user-initiated switch through the D3 guard. Programmatic
+                  // switches (session died/closed) stay unguarded on purpose.
+                  guardDirtyEditor(() => {
+                    setSessionId(id);
+                    // Notify Android/remote bridge so the native terminal view switches too
+                    (window as any).claude?.session?.switch?.(id);
+                  });
                 }}
                 onCreateSession={createSession}
                 onCloseSession={(id) => {

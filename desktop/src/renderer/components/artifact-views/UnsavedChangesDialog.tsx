@@ -4,6 +4,7 @@
 // from a dirty editor (selection change, close, Esc) through useUnsavedGuard.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActiveArtifactHandle } from './ActiveArtifactView';
+import { registerDirtyEditorGuard, unregisterDirtyEditorGuard } from './dirty-editor-guard';
 import { Button } from '../ui';
 
 export function UnsavedChangesDialog({
@@ -70,6 +71,14 @@ export function useUnsavedGuard(
     if (handleRef.current?.dirty) setPending(() => action);
     else action();
   }, [handleRef]);
+
+  // Make this host's guard reachable by OUTSIDE discard paths (drawer toggle
+  // in HeaderBar/OverflowMenu, session switching in App) — they cannot see
+  // the handle, but they must not silently discard a dirty draft either.
+  useEffect(() => {
+    registerDirtyEditorGuard(guard);
+    return () => unregisterDirtyEditorGuard(guard);
+  }, [guard]);
 
   const dialog = pending ? (
     <UnsavedChangesDialog

@@ -372,7 +372,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <span className="font-semibold text-sm">Session artifacts ({listedArtifacts.length})</span>
         {!active && (
           <CloseButton
-            onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })}
+            onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))}
             title="Close drawer"
             label="Close drawer"
           />
@@ -588,7 +588,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <IconBtn name="link" title="Copy path" onClick={handleCopyPath} />
         {isElectron && <IconBtn name="folder" title="Reveal in folder" onClick={handleReveal} />}
         <IconBtn name={expanded ? 'shrink' : 'expand'} title={expanded ? 'Shrink panel' : 'Expand panel'} active={expanded} onClick={() => dispatch({ type: 'DRAWER_EXPAND_TOGGLED' })} />
-        <IconBtn name="close" title="Close" onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })} />
+        <IconBtn name="close" title="Close" onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))} />
       </div>
 
       {/* metadata strip */}

@@ -1,3 +1,4 @@
+import { guardDirtyEditor } from './artifact-views/dirty-editor-guard';
 import React, { useRef, useLayoutEffect, useEffect, useCallback, useState } from 'react';
 import { ChatIcon, TerminalIcon, GamepadIcon } from './Icons';
 import SessionStrip from './SessionStrip';
@@ -241,7 +242,10 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
         type="button"
         onClick={() => {
           if (!activeSessionId) return;
-          dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId });
+          // Closing the drawer can discard a dirty editor draft — route
+          // through the artifact host's Save/Discard/Cancel guard (D3).
+          guardDirtyEditor(() =>
+            dispatch({ type: drawerOpen ? 'DRAWER_CLOSED' : 'DRAWER_OPENED', sessionId: activeSessionId }));
         }}
         className={`px-2 py-1 rounded-[var(--radius-toggle)] transition-colors flex items-center gap-1 ${
           drawerOpen ? 'bg-accent text-on-accent' : 'text-fg-dim hover:text-fg-2'
