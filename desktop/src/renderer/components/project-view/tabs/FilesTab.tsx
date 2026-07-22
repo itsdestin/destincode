@@ -13,6 +13,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useArtifact } from '../../../state/ArtifactContext';
 import { useProjectWatch } from '../../../hooks/useProjectWatch';
+import { dedupeContentHits, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
 import { useTheme } from '../../../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
@@ -273,7 +274,52 @@ export function FilesTab({
     };
   }, [project.path]);
 
-  const activeArtifact = pvActiveId ? artifacts.find((a) => a.id === pvActiveId) : undefined;
+  // ── Project-wide CONTENT search (unified list, Destin 2026-07-22: no
+  // toggle — name matches rank above these). Debounced; desktop-only (the
+  // Kotlin side is a stub and remote rejects as unsupported — both settle to
+  // an empty hit list and the search stays names-only there).
+  const [contentHits, setContentHits] = useState<RankableHit[]>([]);
+  const [contentTruncated, setContentTruncated] = useState(false);
+  // Search-result jump: which file+line to reveal once the overlay opens.
+  const [pendingReveal, setPendingReveal] = useState<{ id: string; line: number } | null>(null);
+  // A content hit on a file outside the loaded list (untracked in artifacts
+  // mode, cap-truncated in allfiles) still opens via the id-as-path GET
+  // contract — this synthetic record lets the overlay render it.
+  const [syntheticHit, setSyntheticHit] = useState<ArtifactRecord | null>(null);
+  useEffect(() => {
+    const q = search.trim();
+    if (!q || q.length < 2 || getPlatform() !== 'electron') {
+      setContentHits([]);
+      setContentTruncated(false);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      Promise.resolve((window.claude as any).artifacts.searchContent?.(project.path, q))
+        .then((res: any) => {
+          if (cancelled) return;
+          setContentHits(res?.ok ? (res.hits ?? []) : []);
+          setContentTruncated(!!res?.truncated);
+        })
+        .catch(() => { if (!cancelled) { setContentHits([]); setContentTruncated(false); } });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [search, project.path]);
+
+  const openContentHit = (hit: RankableHit) => {
+    const rec = artifacts.find((a) => a.path.replace(/\\/g, '/') === hit.path);
+    const id = rec?.id ?? hit.path;
+    if (!rec) {
+      setSyntheticHit({ id, path: hit.path, kind: 'internal', discovered: true } as any);
+    }
+    setPendingReveal({ id, line: hit.line });
+    dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId: PV_SESSION, artifactId: id });
+  };
+
+  const activeArtifact = pvActiveId
+    ? (artifacts.find((a) => a.id === pvActiveId)
+      ?? (syntheticHit && syntheticHit.id === pvActiveId ? syntheticHit : undefined))
+    : undefined;
 
   // Searching OR an active type filter flattens the tree to matching FILES only
   // — no folder cards. When you're looking for something, folders are noise;
@@ -425,7 +471,44 @@ export function FilesTab({
           columns read correctly on a phone. */}
       <div className="flex-1 overflow-auto max-sm:overflow-visible grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
         {flat
-          ? flatResults.map(renderFileCard)
+          ? (
+            <>
+              {flatResults.map(renderFileCard)}
+              {searching && (() => {
+                const namePaths = new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')));
+                const rows = dedupeContentHits(contentHits, namePaths);
+                if (rows.length === 0) return null;
+                const shown = rows.slice(0, MAX_CONTENT_ROWS);
+                return (
+                  <div className="col-span-full min-w-0">
+                    <div className="text-[10.5px] uppercase tracking-wider text-fg-faint mt-2 mb-1.5 px-0.5">
+                      Matches in file contents{contentTruncated || rows.length > shown.length ? ` — first ${shown.length}` : ` (${rows.length})`}
+                    </div>
+                    <div className="flex flex-col rounded-md border border-edge-dim overflow-hidden">
+                      {shown.map((hit, i) => {
+                        const filename = hit.path.split('/').pop() ?? hit.path;
+                        const dir = hit.path.slice(0, hit.path.length - filename.length);
+                        return (
+                          <button
+                            key={`${hit.path}:${hit.line}:${i}`}
+                            type="button"
+                            onClick={() => openContentHit(hit)}
+                            className="flex items-baseline gap-2 px-2.5 py-1.5 text-left min-w-0 hover:bg-well transition-colors border-b border-edge-dim last:border-b-0"
+                            title={`${hit.path}:${hit.line}`}
+                          >
+                            <span className="text-[12px] font-mono text-fg-2 shrink-0">{filename}</span>
+                            {dir && <span className="text-[11px] font-mono text-fg-faint truncate shrink min-w-0 max-w-[30%]">{dir}</span>}
+                            <span className="text-[11px] font-mono text-fg-muted shrink-0">:{hit.line}</span>
+                            <span className="text-[11.5px] font-mono text-fg-dim truncate min-w-0 flex-1">{hit.text}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
+          )
           : (
             <>
               {/* Files directly in this folder FIRST, then subfolders (per request:
@@ -523,6 +606,8 @@ export function FilesTab({
           artifact={activeArtifact}
           project={project}
           onRefreshArtifacts={() => { refreshArtifacts(); onMutated?.(); }}
+          initialLine={pendingReveal?.id === activeArtifact.id ? pendingReveal.line : undefined}
+          onInitialLineConsumed={() => setPendingReveal(null)}
         />
       )}
     </div>
@@ -539,9 +624,14 @@ interface DetailProps {
   artifact: ArtifactRecord;
   project: CentralIndexProject;
   onRefreshArtifacts: () => void;
+  /** Search jump-to-hit: reveal this 1-indexed line once content loads.
+   * Consumed exactly once (onInitialLineConsumed) so reopening the same file
+   * later does not re-jump to a stale line. */
+  initialLine?: number;
+  onInitialLineConsumed?: () => void;
 }
 
-function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) {
+function ArtifactDetail({ artifact, project, onRefreshArtifacts, initialLine, onInitialLineConsumed }: DetailProps) {
   const { dispatch } = useArtifact();
   const [content, setContent] = useState<string | null>(null);
   // Drive the viewer's edit lifecycle from the overlay header (controlsInHeader).
@@ -576,6 +666,18 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
     });
     return () => { cancelled = true; };
   }, [artifact.id, project.path]);
+
+  // Search jump-to-hit: fire once, only after content resolved (the editor
+  // mounts then; revealLine itself retries across the lazy-chunk window).
+  const revealedRef = useRef(false);
+  useEffect(() => { revealedRef.current = false; }, [artifact.id]);
+  useEffect(() => {
+    if (revealedRef.current || initialLine == null || content === null) return;
+    revealedRef.current = true;
+    viewRef.current?.revealLine(initialLine);
+    onInitialLineConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, initialLine, artifact.id]);
 
   const handleExclude = async () => {
     // Use absolutePath for external artifacts, relative path (internal) gets

@@ -36,6 +36,24 @@ export function editorViewWithin(root: Element | null): EditorView | null {
 }
 
 /**
+ * Scroll the editor under `root` to a 1-indexed line, select it, and focus.
+ * The jump-to-hit primitive for cross-file search (and anything later that
+ * needs "open at line N" — imperative on purpose: a line stored in state
+ * would re-fire on stale re-selections, see the archived plan §12.10).
+ * Returns false when no editor is mounted under root (markdown viewer,
+ * binary fallback) — callers just open the file without the jump.
+ */
+export function revealLineIn(root: Element | null, line: number): boolean {
+  const view = editorViewWithin(root);
+  if (!view) return false;
+  const clamped = Math.max(1, Math.min(line, view.state.doc.lines));
+  const pos = view.state.doc.line(clamped).from;
+  view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+  view.focus();
+  return true;
+}
+
+/**
  * Route Ctrl+F to CodeMirror's own search panel when a CM6 editor is mounted
  * under `root`. Returns true when handled. WHY not ContentFindBar: it walks
  * rendered DOM text nodes, and CM6 virtualizes — it would silently find only

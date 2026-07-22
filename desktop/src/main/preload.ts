@@ -1265,6 +1265,9 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('artifacts:watch-project', projectRoot),
     unwatchProject: (projectRoot: string) =>
       ipcRenderer.invoke('artifacts:unwatch-project', projectRoot),
+    // Project-wide content search (ripgrep in main; desktop-only).
+    searchContent: (projectRoot: string, query: string) =>
+      ipcRenderer.invoke('artifacts:search-content', projectRoot, query),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);

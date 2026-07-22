@@ -8,7 +8,7 @@ import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
 import { canonicalize } from '../../../shared/artifacts/canonicalize';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
-import { openEditorSearch } from './cm/editor-registry';
+import { openEditorSearch, revealLineIn } from './cm/editor-registry';
 import { draftKey, stashDraft, takeDraft, clearDraft } from './draft-store';
 
 // Confirm-tier wording (D5): name the actual consequence, per path family.
@@ -55,6 +55,10 @@ export interface ActiveArtifactHandle {
    * viewer is CM6 (its DOM is virtualized — ContentFindBar would silently
    * miss off-viewport matches). Returns true when handled. */
   openFind(): boolean;
+  /** Scroll the code editor to a 1-indexed line (search jump-to-hit).
+   * Retries briefly — the lazy CM6 chunk may still be mounting when a search
+   * result opens a file. No-op for non-code viewers. */
+  revealLine(line: number): void;
 }
 
 /** Metadata from the artifacts:get response that content alone cannot carry —
@@ -311,6 +315,17 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     saveEdit: () => handleSave(),
     cancelEdit: handleCancel,
     openFind: () => openEditorSearch(rootRef.current),
+    revealLine: (line: number) => {
+      // Retry across a few frames: the editor is a lazy chunk and mounts in an
+      // effect, so it may not be registered yet when the host calls this right
+      // after opening the file.
+      let attempts = 0;
+      const tryReveal = () => {
+        if (revealLineIn(rootRef.current, line)) return;
+        if (attempts++ < 20) setTimeout(tryReveal, 50);
+      };
+      tryReveal();
+    },
   }), [isEditable, editing, dirty, handleStartEdit, handleSave, handleCancel]);
 
   // Desktop app-quit / window-close guard while dirty (D3). Android never

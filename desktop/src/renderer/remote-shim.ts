@@ -1240,6 +1240,8 @@ export function installShim(): void {
         invoke('artifacts:watch-project', { projectRoot }),
       unwatchProject: (projectRoot: string) =>
         invoke('artifacts:unwatch-project', { projectRoot }),
+      searchContent: (projectRoot: string, query: string) =>
+        invoke('artifacts:search-content', { projectRoot, query }),
       onChanged: (cb: (event: any) => void) => {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);
