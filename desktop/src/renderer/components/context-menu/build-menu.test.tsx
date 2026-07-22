@@ -5,8 +5,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { buildContextMenu } from './build-menu';
 
-// Builds the DOM shape the real viewers emit (CodeView / MarkdownView), so this
-// test breaks if either viewer stops tagging its container.
+// Builds the DOM shape MarkdownView emits for raw text (txt) and rendered md.
+// CODE files no longer use this shape — CodeMirror replaced CodeView, and its
+// contract is pinned by build-menu-cm6.test.tsx, which mounts the REAL
+// component (a synthetic shape here would stay green while production broke).
 function mountViewer(opts: { path: string; source: 'raw' | 'rendered'; body: string }) {
   const container = document.createElement('div');
   container.setAttribute('data-artifact-viewer', 'true');

@@ -319,6 +319,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
         if (active && asideRef.current?.matches(':hover')) {
           e.preventDefault();
+          // CodeMirror viewers get CM6's own search panel — ContentFindBar
+          // walks rendered DOM text and CM6 virtualizes, so it would silently
+          // find only the viewport's matches.
+          if (editRef.current?.openFind?.()) return;
           setFindOpen(true);
         }
       }

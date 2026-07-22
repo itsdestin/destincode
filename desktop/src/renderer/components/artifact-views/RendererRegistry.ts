@@ -1,7 +1,6 @@
 // desktop/src/renderer/components/artifact-views/RendererRegistry.ts
 import { ComponentType, lazy } from 'react';
 import { MarkdownView } from './MarkdownView';
-import { CodeView } from './CodeView';
 import { CsvView } from './CsvView';
 import { ImageView } from './ImageView';
 import { HtmlView } from './HtmlView';
@@ -17,6 +16,10 @@ type ViewSpec = ComponentType<ArtifactViewProps>;
 // returns a real component for every entry — ActiveArtifactView wraps the render
 // in a <Suspense> boundary so the lazy ones resolve transparently.
 const PdfView = lazy(() => import('./PdfView').then((m) => ({ default: m.PdfView })));
+// CodeMirror editor — lazy like the other heavy viewers (~150KB + per-language
+// chunks); ViewerErrorBoundary is REQUIRED around the render because lazy()
+// THROWS chunk-load rejections (a real Android-offline failure mode).
+const CodeEditorView = lazy(() => import('./CodeEditorView').then((m) => ({ default: m.CodeEditorView })));
 const DocxView = lazy(() => import('./DocxView').then((m) => ({ default: m.DocxView })));
 const XlsxView = lazy(() => import('./XlsxView').then((m) => ({ default: m.XlsxView })));
 
@@ -24,15 +27,15 @@ const REGISTRY: Record<string, ViewSpec> = {
   md: MarkdownView,
   markdown: MarkdownView,
   txt: MarkdownView, // shares the textarea path
-  ts: CodeView,
-  tsx: CodeView,
-  js: CodeView,
-  jsx: CodeView,
-  py: CodeView,
-  css: CodeView,
-  json: CodeView,
-  yaml: CodeView,
-  yml: CodeView,
+  ts: CodeEditorView,
+  tsx: CodeEditorView,
+  js: CodeEditorView,
+  jsx: CodeEditorView,
+  py: CodeEditorView,
+  css: CodeEditorView,
+  json: CodeEditorView,
+  yaml: CodeEditorView,
+  yml: CodeEditorView,
   png: ImageView,
   jpg: ImageView,
   jpeg: ImageView,
@@ -62,6 +65,6 @@ export function getViewer(path: string, opts?: { textHint?: boolean }): ViewSpec
   // CodeView so rs/go/kt/sh/sql/toml/… and extensionless files render — and
   // edit — as code. No hint (older callers, pre-fetch renders) keeps the old
   // conservative fallback.
-  if (opts?.textHint) return CodeView;
+  if (opts?.textHint) return CodeEditorView;
   return BinaryFallback;
 }

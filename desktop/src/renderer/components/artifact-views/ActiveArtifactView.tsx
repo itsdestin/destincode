@@ -8,6 +8,7 @@ import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
 import { canonicalize } from '../../../shared/artifacts/canonicalize';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
+import { openEditorSearch } from './cm/editor-registry';
 
 // Confirm-tier wording (D5): name the actual consequence, per path family.
 // Never a vague "are you sure" — the user should know what the file DOES.
@@ -49,6 +50,10 @@ export interface ActiveArtifactHandle {
    * conflict or error and the caller should NOT proceed with navigation. */
   saveEdit(): Promise<boolean>;
   cancelEdit(): void;
+  /** Route find-in-document into the CodeMirror search panel when the active
+   * viewer is CM6 (its DOM is virtualized — ContentFindBar would silently
+   * miss off-viewport matches). Returns true when handled. */
+  openFind(): boolean;
 }
 
 /** Metadata from the artifacts:get response that content alone cannot carry —
@@ -112,6 +117,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // baseMtimeMs so a save over a changed file is rejected instead of silently
   // clobbering it (spec §12.9). null = no token yet → save runs unguarded.
   const mtimeRef = useRef<number | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Reset draft when content reloads from disk (e.g. artifact selection changes)
   useEffect(() => {
@@ -253,6 +259,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     startEdit: handleStartEdit,
     saveEdit: () => handleSave(),
     cancelEdit: handleCancel,
+    openFind: () => openEditorSearch(rootRef.current),
   }), [isEditable, editing, dirty, handleStartEdit, handleSave, handleCancel]);
 
   // Desktop app-quit / window-close guard while dirty (D3). Android never
@@ -300,7 +307,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     );
   }
   return (
-    <div className="h-full flex flex-col">
+    <div ref={rootRef} className="h-full flex flex-col">
       {/* Conflict banner — shown when the file changes on disk while the user
           has UNSAVED edits. Three actions: keep draft, accept the disk version,
           or view a real unified diff (shared UnifiedDiff renderer). */}
