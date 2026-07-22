@@ -13,7 +13,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useArtifact } from '../../../state/ArtifactContext';
 import { useProjectWatch } from '../../../hooks/useProjectWatch';
-import { dedupeContentHits, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
+import { dedupeContentHits, groupContentHits, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
 import { useTheme } from '../../../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
@@ -478,29 +478,46 @@ export function FilesTab({
                 const namePaths = new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')));
                 const rows = dedupeContentHits(contentHits, namePaths);
                 if (rows.length === 0) return null;
-                const shown = rows.slice(0, MAX_CONTENT_ROWS);
+                const shownRows = rows.slice(0, MAX_CONTENT_ROWS);
+                const groups = groupContentHits(shownRows);
+                const capped = contentTruncated || rows.length > shownRows.length;
                 return (
                   <div className="col-span-full min-w-0">
                     <div className="text-[10.5px] uppercase tracking-wider text-fg-faint mt-2 mb-1.5 px-0.5">
-                      Matches in file contents{contentTruncated || rows.length > shown.length ? ` — first ${shown.length}` : ` (${rows.length})`}
+                      Matches in file contents{capped ? ` — first ${shownRows.length}` : ` (${rows.length})`}
                     </div>
-                    <div className="flex flex-col rounded-md border border-edge-dim overflow-hidden">
-                      {shown.map((hit, i) => {
-                        const filename = hit.path.split('/').pop() ?? hit.path;
-                        const dir = hit.path.slice(0, hit.path.length - filename.length);
+                    <div className="flex flex-col gap-2">
+                      {groups.map((group) => {
+                        const filename = group.path.split('/').pop() ?? group.path;
+                        const dir = group.path.slice(0, group.path.length - filename.length);
                         return (
-                          <button
-                            key={`${hit.path}:${hit.line}:${i}`}
-                            type="button"
-                            onClick={() => openContentHit(hit)}
-                            className="flex items-baseline gap-2 px-2.5 py-1.5 text-left min-w-0 hover:bg-well transition-colors border-b border-edge-dim last:border-b-0"
-                            title={`${hit.path}:${hit.line}`}
-                          >
-                            <span className="text-[12px] font-mono text-fg-2 shrink-0">{filename}</span>
-                            {dir && <span className="text-[11px] font-mono text-fg-faint truncate shrink min-w-0 max-w-[30%]">{dir}</span>}
-                            <span className="text-[11px] font-mono text-fg-muted shrink-0">:{hit.line}</span>
-                            <span className="text-[11.5px] font-mono text-fg-dim truncate min-w-0 flex-1">{hit.text}</span>
-                          </button>
+                          <div key={group.path} className="rounded-md border border-edge-dim overflow-hidden">
+                            {/* Group header — the file. Clicking opens at the FIRST hit. */}
+                            <button
+                              type="button"
+                              onClick={() => openContentHit(group.hits[0])}
+                              className="w-full flex items-baseline gap-2 px-2.5 py-1.5 text-left min-w-0 bg-well/60 hover:bg-well transition-colors border-b border-edge-dim"
+                              title={group.path}
+                            >
+                              <span className="text-[12px] font-mono font-medium text-fg-2 shrink-0">{filename}</span>
+                              {dir && <span className="text-[11px] font-mono text-fg-faint truncate min-w-0">{dir}</span>}
+                              <span className="text-[11px] text-fg-muted shrink-0 ml-auto">
+                                {group.hits.length} {group.hits.length === 1 ? 'match' : 'matches'}
+                              </span>
+                            </button>
+                            {group.hits.map((hit, i) => (
+                              <button
+                                key={`${hit.line}:${i}`}
+                                type="button"
+                                onClick={() => openContentHit(hit)}
+                                className="w-full flex items-baseline gap-2 pl-5 pr-2.5 py-1 text-left min-w-0 hover:bg-well transition-colors"
+                                title={`${group.path}:${hit.line}`}
+                              >
+                                <span className="text-[11px] font-mono text-fg-muted shrink-0 w-8 text-right">{hit.line}</span>
+                                <span className="text-[11.5px] font-mono text-fg-dim truncate min-w-0 flex-1">{hit.text}</span>
+                              </button>
+                            ))}
+                          </div>
                         );
                       })}
                     </div>
