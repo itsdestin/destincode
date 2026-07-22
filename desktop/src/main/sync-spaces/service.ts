@@ -11,6 +11,7 @@ import { SpaceSyncEngine } from './engine';
 import { DailyBackup, BackupTarget } from './daily-backup';
 import { importProjectFolder } from './import-project';
 import { createSyncHubSocket } from '../sync-hub-socket';
+import { getGithubClient } from '../github-client';
 import type { LeaseResult, SyncHubEvent } from '../sync-hub-socket';
 import { readProjectRegistry, ensureProjectEntry, setProjectDisplayName, setProjectStopped } from './project-registry';
 import { planReconcile, activeManagedSpaces } from './materialization-planner';
@@ -70,6 +71,22 @@ let leaseEventListener: ((ev: LeaseEvent) => void) | null = null;
 // main.ts wires this to leaseClient.handleTakeoverRequest so a hub takeover-request
 // reaches the holder. Kept as a facade so service.ts doesn't import the lease client.
 export function setSyncSpacesLeaseEventListener(fn: ((ev: LeaseEvent) => void) | null): void { leaseEventListener = fn; }
+
+// The ONE factory for every GitTransport this service creates (engine,
+// materialize, create, import) — so the app-token credential provider can
+// never be forgotten at a single site. getAuthToken feeds the transport's
+// per-call inline credential helper: app/gh token when one exists (cached in
+// the client), null otherwise (system credential helper keeps working — the
+// no-migration guarantee). Failure-tolerant: a client error means "no token".
+function makeTransport(): GitTransport {
+  return new GitTransport({
+    deviceName: os.hostname(),
+    getAuthToken: async () => {
+      try { return (await getGithubClient()?.getToken())?.token ?? null; }
+      catch { return null; }
+    },
+  });
+}
 
 // Why: enable(true) racing enable(false) (two windows, or panel double-click)
 // would otherwise interleave — the disable stops the half-started engine and
@@ -203,7 +220,7 @@ async function materializeProject(entry: { name: string; repoName: string }): Pr
   const space = roots.spaces().find((s) => s.id === `project:${entry.name}`);
   if (!space || engine !== e) return; // disabled mid-materialize — next boot/connect adds it
   await e.addSpace(space);
-  const transport = new GitTransport({ deviceName: os.hostname() });
+  const transport = makeTransport();
   await transport.setRemote(space, url);
   await e.syncSpace(space);
 }
@@ -256,7 +273,7 @@ async function runDiscovery(): Promise<void> {
 }
 
 async function startEngine(log: (m: string) => void): Promise<void> {
-  const transport = new GitTransport({ deviceName: os.hostname() });
+  const transport = makeTransport();
   // Provision-on-demand hook for the engine: every sync cycle for a remote-less
   // space retries repo provisioning through here (poll, debounce, "Sync now"),
   // so a failed enable — gh missing, not signed in — self-heals once the user
@@ -543,7 +560,7 @@ export async function syncSpacesCreateProject(name: string) {
     const space = roots!.spaces().find(s => s.id === `project:${name}`)!;
     try {
       await engine.addSpace(space);
-      const transport = new GitTransport({ deviceName: os.hostname() });
+      const transport = makeTransport();
       await transport.init(space);
       await transport.setRemote(space, await manager!.ensureRemote(space));
       // No initial syncSpace here: a freshly created folder is empty — the
@@ -571,7 +588,7 @@ export async function syncSpacesImportProject(sourcePath: string, name: string, 
     if (space) {
       try {
         await engine.addSpace(space);
-        const transport = new GitTransport({ deviceName: os.hostname() });
+        const transport = makeTransport();
         await transport.init(space);
         await transport.setRemote(space, await manager!.ensureRemote(space));
         void engine.syncSpace(space); // imported content should reach the remote now, not at the next poll

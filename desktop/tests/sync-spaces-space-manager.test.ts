@@ -31,52 +31,30 @@ describe('repoNameForSpace', () => {
   });
 });
 
-describe('provisionGithubRemote (injected exec)', () => {
-  it('returns the created repo URL with .git suffix', async () => {
-    const exec = vi.fn(async () => ({ stdout: 'https://github.com/u/youcoded-sync-personal\n' }));
-    await expect(provisionGithubRemote('youcoded-sync-personal', exec))
+// Phase 2 (2026-07-22): provisioning goes through the shared github-client
+// (REST) — no gh CLI. The already-exists recovery + plain-language error
+// mapping live INSIDE createPrivateRepo (pinned in github-client.test.ts);
+// this seam only pins the delegation + the no-client wiring-regression path.
+describe('provisionGithubRemote (injected github-client)', () => {
+  it('delegates to createPrivateRepo and returns its clone URL', async () => {
+    const client = { createPrivateRepo: vi.fn(async () => 'https://github.com/u/youcoded-sync-personal.git') };
+    await expect(provisionGithubRemote('youcoded-sync-personal', client))
       .resolves.toBe('https://github.com/u/youcoded-sync-personal.git');
-    expect(exec).toHaveBeenCalledTimes(1);
-    expect(exec.mock.calls[0][1]).toEqual(['repo', 'create', 'youcoded-sync-personal', '--private']);
+    expect(client.createPrivateRepo).toHaveBeenCalledWith('youcoded-sync-personal');
   });
 
-  it('recovers when create fails but the repo already exists (second device)', async () => {
-    const exec = vi.fn()
-      .mockRejectedValueOnce(Object.assign(new Error('create failed'), { stderr: 'Name already exists on this account' }))
-      .mockResolvedValueOnce({ stdout: 'https://github.com/u/youcoded-sync-personal\n' });
-    await expect(provisionGithubRemote('youcoded-sync-personal', exec))
-      .resolves.toBe('https://github.com/u/youcoded-sync-personal.git');
-    expect(exec).toHaveBeenCalledTimes(2);
-    expect(exec.mock.calls[1][1].slice(0, 3)).toEqual(['repo', 'view', 'youcoded-sync-personal']);
+  it('propagates client errors verbatim (syncSpace surfaces them as the error event)', async () => {
+    const original = Object.assign(
+      new Error('GitHub sign-in expired — reconnect your GitHub account in the Sync settings'),
+      { syncErrorCode: 'github-auth' },
+    );
+    const client = { createPrivateRepo: vi.fn(async () => { throw original; }) };
+    await expect(provisionGithubRemote('r', client)).rejects.toBe(original);
   });
 
-  it('propagates the ORIGINAL create error when view also fails', async () => {
-    const original = new Error('network trouble');
-    const exec = vi.fn()
-      .mockRejectedValueOnce(original)
-      .mockRejectedValueOnce(new Error('view also failed'));
-    await expect(provisionGithubRemote('r', exec)).rejects.toBe(original);
-  });
-
-  it('throws "unexpected gh output" when create prints garbage and view fails', async () => {
-    const exec = vi.fn()
-      .mockResolvedValueOnce({ stdout: 'something weird\n' })
-      .mockRejectedValueOnce(new Error('view failed'));
-    await expect(provisionGithubRemote('r', exec)).rejects.toThrow('unexpected gh output');
-  });
-
-  it('maps a missing gh binary (ENOENT) to a plain-language error', async () => {
-    const enoent = Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
-    const exec = vi.fn().mockRejectedValue(enoent);
-    await expect(provisionGithubRemote('r', exec))
-      .rejects.toThrow('GitHub CLI (gh) is not installed');
-  });
-
-  it('maps a gh auth failure to a plain-language error', async () => {
-    const authErr = Object.assign(new Error('exit 4'), { stderr: 'To get started with GitHub CLI, please run: gh auth login' });
-    const exec = vi.fn().mockRejectedValue(authErr);
-    await expect(provisionGithubRemote('r', exec))
-      .rejects.toThrow('Not signed in to GitHub');
+  it('no registered client → plain-language, coded "not connected" error', async () => {
+    await expect(provisionGithubRemote('r', null)).rejects.toThrow('Not connected to GitHub');
+    await expect(provisionGithubRemote('r', null)).rejects.toMatchObject({ syncErrorCode: 'github-auth' });
   });
 });
 

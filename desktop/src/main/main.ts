@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, webContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, safeStorage, screen, shell, webContents } from 'electron';
 import path from 'path';
 // A write to a closed stdout/stderr throws EPIPE, and with no listener that is
 // an uncaught exception that kills the whole main process — the app dies with
@@ -38,6 +38,7 @@ import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
 import { startSyncSpaces, stopSyncSpaces, setSyncSpacesRemoteBroadcaster, setSyncSpacesAuthStore, hubLeaseRequest, setSyncSpacesLeaseEventListener, getManagedRoots, syncSpacesSyncNowAwaited } from './sync-spaces/service';
+import { createGithubClient, setGithubClient } from './github-client';
 // Plan 2b Task 8: conversation-lease lifecycle. The lease client coordinates
 // which device "holds" a conversation so two devices don't append to the same
 // transcript. Constructed in the main process (needs userData-scoped device id).
@@ -1611,6 +1612,17 @@ app.whenReady().then(async () => {
   const syncService = new SyncService();
   setSyncService(syncService);
   syncService.start().catch(e => log('ERROR', 'Main', 'SyncService start failed', { error: String(e) }));
+
+  // Shared GitHub client (Phase 2, 2026-07-22 sync-setup overhaul): token
+  // custody (safeStorage in the PER-INSTALL userData dir — never ~/.claude or
+  // a synced space) + REST repo provisioning. MUST be registered before
+  // startSyncSpaces: provisioning and the transport's credential provider
+  // read it via getGithubClient().
+  setGithubClient(createGithubClient({
+    storageDir: app.getPath('userData'),
+    safeStorage,
+    log: (m) => log('INFO', 'GithubClient', m),
+  }));
 
   // Cross-device sync spaces (spec 2026-07-03). Roots always ensured (the
   // session picker lists them); the engine runs only when the user enabled

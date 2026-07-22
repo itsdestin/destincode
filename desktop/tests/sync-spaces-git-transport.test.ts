@@ -267,3 +267,124 @@ describe('GitTransport stale-lock recovery', () => {
     await h.cleanup();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2 (2026-07-22): app-token credentials + auth-failure surfacing.
+// The invocation builder and the classifier are PURE — pinned directly. The
+// throw-wiring in pull()/push() is pinned by overriding the private git()
+// (cast) so no test ever needs a real network/auth failure.
+// ---------------------------------------------------------------------------
+
+import {
+  credentialedGitInvocation,
+  classifyGitAuthFailure,
+  GIT_CREDENTIAL_HELPER,
+} from '../src/main/sync-spaces/git-transport';
+
+const TOKEN = 'gho_supersecrettoken_should_never_leak';
+
+describe('credentialedGitInvocation', () => {
+  it('no token → untouched passthrough (system credential helpers keep working)', () => {
+    const args = ['push', '-u', 'origin', 'main'];
+    const env = { GIT_DIR: '/x/.youcoded/sync.git' } as NodeJS.ProcessEnv;
+    const inv = credentialedGitInvocation(args, env, null);
+    expect(inv.args).toBe(args);
+    expect(inv.env).toBe(env);
+  });
+
+  it('HYGIENE PIN: with a token, the token rides ENV ONLY — never argv', () => {
+    const inv = credentialedGitInvocation(['fetch', 'origin', 'main'], {}, TOKEN);
+    // Helper list is RESET then replaced, so our token takes precedence over
+    // any stale system helper.
+    expect(inv.args.slice(0, 4)).toEqual([
+      '-c', 'credential.helper=',
+      '-c', `credential.helper=${GIT_CREDENTIAL_HELPER}`,
+    ]);
+    expect(inv.args.join(' ')).not.toContain(TOKEN);
+    expect(inv.env.YOUCODED_GIT_TOKEN).toBe(TOKEN);
+    // Never hang on a TTY prompt we cannot answer.
+    expect(inv.env.GIT_TERMINAL_PROMPT).toBe('0');
+    // The helper reads the env var by NAME — it must appear in the helper
+    // string or the credentials would silently be empty.
+    expect(GIT_CREDENTIAL_HELPER).toContain('$YOUCODED_GIT_TOKEN');
+  });
+});
+
+describe('classifyGitAuthFailure', () => {
+  it('recognizes auth stderr shapes and picks the accurate message by token use', () => {
+    for (const stderr of [
+      "fatal: Authentication failed for 'https://github.com/u/r.git/'",
+      'remote: Invalid credentials',
+      "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      'fatal: unable to access …: The requested URL returned error: 403',
+    ]) {
+      expect(classifyGitAuthFailure(stderr, true)?.message).toContain('GitHub sign-in expired');
+      expect(classifyGitAuthFailure(stderr, false)?.message).toContain('Not connected to GitHub');
+      expect(classifyGitAuthFailure(stderr, true)?.code).toBe('github-auth');
+    }
+  });
+
+  it('returns null for every non-auth failure (offline stays silent by contract)', () => {
+    for (const stderr of [
+      'fatal: unable to access …: Could not resolve host: github.com',
+      'fatal: the remote end hung up unexpectedly',
+      '',
+    ]) {
+      expect(classifyGitAuthFailure(stderr, true)).toBeNull();
+    }
+  });
+});
+
+describe('GitTransport auth-failure surfacing', () => {
+  const space: SyncSpace = { id: 'personal', kind: 'personal', root: '/nowhere' };
+  const AUTH_STDERR = "fatal: Authentication failed for 'https://github.com/u/r.git/'";
+
+  /** Transport whose git() is scripted per leading arg — no real git runs. */
+  function scripted(responses: Record<string, { code: number; stdout?: string; stderr?: string }>) {
+    const t = new GitTransport({ deviceName: 'test', getAuthToken: async () => TOKEN });
+    (t as any).git = vi.fn(async (_s: SyncSpace, args: string[]) => {
+      const r = responses[args[0]] ?? { code: 0 };
+      return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '', tokenUsed: true };
+    });
+    (t as any).reapStaleLocks = () => {};
+    return t;
+  }
+
+  it('pull(): an auth-refused fetch THROWS the coded plain-language error (never mistaken for offline)', async () => {
+    const t = scripted({
+      remote: { code: 0, stdout: 'https://github.com/u/r.git' }, // hasRemote → true
+      diff: { code: 0, stdout: '' },                             // nothing staged
+      fetch: { code: 1, stderr: AUTH_STDERR },
+    });
+    const err = await t.pull(space).catch((e) => e);
+    expect(String(err.message)).toContain('GitHub sign-in expired');
+    expect(err.syncErrorCode).toBe('github-auth');
+    expect(String(err.message)).not.toContain(TOKEN);
+  });
+
+  it('pull(): a NON-auth fetch failure keeps the silent offline contract (spec §13)', async () => {
+    const t = scripted({
+      remote: { code: 0, stdout: 'https://github.com/u/r.git' },
+      diff: { code: 0, stdout: '' },
+      fetch: { code: 1, stderr: 'fatal: Could not resolve host: github.com' },
+    });
+    await expect(t.pull(space)).resolves.toEqual({ updated: false, conflictCopies: [] });
+  });
+
+  it('push(): an auth-refused push (after the recovery retry) THROWS the coded error', async () => {
+    const t = scripted({
+      remote: { code: 0, stdout: 'https://github.com/u/r.git' },
+      add: { code: 0 },
+      diff: { code: 0, stdout: '' },
+      'rev-list': { code: 0, stdout: '1' },
+      // fetch succeeds (token can read but not write — e.g. lost repo access),
+      // so pull() completes and only the push retry hits the refusal.
+      fetch: { code: 1, stderr: 'fatal: Could not resolve host: github.com' },
+      push: { code: 1, stderr: AUTH_STDERR },
+    });
+    const err = await t.push(space, 'msg').catch((e) => e);
+    expect(String(err.message)).toContain('GitHub sign-in expired');
+    expect(err.syncErrorCode).toBe('github-auth');
+    expect(String(err.message)).not.toContain(TOKEN);
+  });
+});

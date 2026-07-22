@@ -33,7 +33,15 @@ const INTERRUPTED_MARKERS = [
   'could not complete',    // "Sync merge could not complete for <id>: …"
 ];
 
-export function summarizeSpaceSyncError(raw: string | null | undefined): SpaceSyncErrorSummary {
+export function summarizeSpaceSyncError(raw: string | null | undefined, errorCode?: string): SpaceSyncErrorSummary {
+  // Coded errors (Phase 2: 'github-auth' from github-client / the transport)
+  // are ALREADY plain-language by contract — pass them through verbatim
+  // instead of flattening "reconnect your GitHub account" into the generic
+  // "unexpected problem" line. Gated on the machine-readable code, never on
+  // matching the prose itself.
+  if (errorCode === 'github-auth' && raw) {
+    return { interrupted: false, summary: raw };
+  }
   const text = (raw ?? '').toLowerCase();
   const interrupted = INTERRUPTED_MARKERS.some((m) => text.includes(m));
 

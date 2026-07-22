@@ -15,10 +15,18 @@
  *
  * TOKEN HYGIENE (load-bearing)
  * ----------------------------
- * The token returned by `pollForToken` flows ONLY into `completeLogin`. It is
+ * The token returned by `pollForToken` flows ONLY into `storeToken` (the app's
+ * github-client keychain custody) and `completeLogin` (gh bootstrap). It is
  * NEVER placed into an `emitDone` payload, never logged, never returned. The
  * done payload carries only `login` (a public handle) and a typed `error`
  * reason string. A unit test asserts the token never appears in any emitDone.
+ *
+ * PHASE 2 (2026-07-22 sync-setup overhaul): the app's own token store is the
+ * PRIMARY destination — a machine with no `gh` completes the connect fully
+ * in-app. Piping the token into `gh auth login --with-token` is now the
+ * BEST-EFFORT half of the two-way bootstrap (when gh exists, the terminal and
+ * Claude Code sessions inside YouCoded get an authed gh for free). The flow
+ * fails only if BOTH destinations fail.
  */
 
 import {
@@ -29,6 +37,7 @@ import {
   type DeviceFlow,
   type GhStatus,
 } from './github-auth';
+import { getGithubClient, fetchGithubLogin as realFetchGithubLogin } from './github-client';
 
 /** Public payload pushed on `github:connect-done`. Never carries the token. */
 export interface ConnectDonePayload {
@@ -54,6 +63,10 @@ export interface GithubConnectDeps {
   pollForToken?: typeof realPollForToken;
   completeLogin?: typeof realCompleteLogin;
   detectGh?: typeof realDetectGh;
+  /** Persist the token in the app's own store (github-client). */
+  storeToken?: (token: string, login?: string) => Promise<void>;
+  /** REST GET /user → login, so the success payload works with no gh at all. */
+  fetchLogin?: (token: string) => Promise<string | undefined>;
 }
 
 export interface GithubConnect {
@@ -71,6 +84,15 @@ export function createGithubConnect(
   const pollForToken = deps.pollForToken ?? realPollForToken;
   const completeLogin = deps.completeLogin ?? realCompleteLogin;
   const detectGh = deps.detectGh ?? realDetectGh;
+  // Default resolves the client PER CALL (not at create time): ipc-handlers
+  // constructs this orchestrator during registration, and the client singleton
+  // is registered from main.ts — capture-at-create would race that ordering.
+  const storeToken = deps.storeToken ?? (async (token: string, login?: string) => {
+    const client = getGithubClient();
+    if (!client) throw new Error('github-client not initialized');
+    await client.setToken(token, login);
+  });
+  const fetchLogin = deps.fetchLogin ?? realFetchGithubLogin;
 
   // The single in-flight flow's abort handle. Non-null only while a flow runs.
   let controller: AbortController | null = null;
@@ -132,23 +154,50 @@ export function createGithubConnect(
         return;
       }
 
-      // A completeLogin failure is its own typed reason so the modal can tell
-      // "you never approved" apart from "gh choked on the token".
+      // Login handle first (REST — works with zero gh): it labels the success
+      // payload AND gets recorded next to the stored token so github:status
+      // can show "Connected as X" without a network call. Best-effort.
+      let login: string | undefined;
+      try {
+        login = await fetchLogin(token);
+      } catch {
+        /* offline blip — leave undefined, detectGh below may still fill it */
+      }
+
+      // Two destinations, in priority order. The APP STORE is primary: it is
+      // what sync/publishing read from now. The gh login is the best-effort
+      // half of the two-way bootstrap — when gh exists, the user's terminal
+      // (and Claude Code sessions inside YouCoded) get an authed gh from the
+      // same single sign-in; when gh is absent this fails quietly and that's
+      // fine. Only BOTH failing is a failed connect.
+      let stored = false;
+      try {
+        await storeToken(token, login);
+        stored = true;
+      } catch {
+        /* keychain/disk failure — gh below may still save the flow */
+      }
+      let ghLoggedIn = false;
       try {
         await completeLogin(token);
+        ghLoggedIn = true;
       } catch {
+        /* gh missing or choked — fine when the app store took the token */
+      }
+      if (!stored && !ghLoggedIn) {
         finish({ ok: false, error: 'login-failed' });
         return;
       }
 
-      // Best-effort: fetch the login handle for the success payload. A detect
-      // failure must NOT downgrade the success — we just omit `login`.
-      let login: string | undefined;
-      try {
-        const status: GhStatus = await detectGh();
-        if (status.login) login = status.login;
-      } catch {
-        /* leave login undefined */
+      // Fallback login source when REST didn't answer: gh's own view. A
+      // failure here must NOT downgrade the success — we just omit `login`.
+      if (!login) {
+        try {
+          const status: GhStatus = await detectGh();
+          if (status.login) login = status.login;
+        } catch {
+          /* leave login undefined */
+        }
       }
       finish({ ok: true, login });
     })();

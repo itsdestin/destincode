@@ -280,3 +280,30 @@ describe('SpaceSyncEngine', () => {
     await engine.stop();
   });
 });
+
+// Phase 2 (2026-07-22): the typed marker on thrown errors must reach the event
+// stream — it is what lets the panel show "Connect GitHub…" for auth failures
+// without string-matching prose.
+describe('SpaceSyncEngine errorCode passthrough', () => {
+  it("copies a thrown error's syncErrorCode onto the 'error' event; uncoded errors omit it", async () => {
+    const t = fakeTransport();
+    (t.pull as any).mockImplementation(async () => {
+      throw Object.assign(new Error('GitHub sign-in expired — reconnect your GitHub account in the Sync settings'), { syncErrorCode: 'github-auth' });
+    });
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { debounceMs: 50, pollMs: 0, onEvent: e => events.push(e) });
+    const space: SyncSpace = { id: 'personal', kind: 'personal', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    const coded = events.find(e => e.type === 'error') as Extract<SpaceSyncEvent, { type: 'error' }>;
+    expect(coded.errorCode).toBe('github-auth');
+    expect(coded.message).toContain('GitHub sign-in expired');
+
+    // Uncoded throw → errorCode stays undefined (never invented).
+    (t.pull as any).mockImplementation(async () => { throw new Error('boom'); });
+    await engine.syncSpace(space);
+    const plain = (events.filter(e => e.type === 'error') as Extract<SpaceSyncEvent, { type: 'error' }>[]).at(-1)!;
+    expect(plain.errorCode).toBeUndefined();
+    await engine.stop();
+  });
+});

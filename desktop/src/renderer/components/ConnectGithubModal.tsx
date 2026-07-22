@@ -105,7 +105,13 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
       const s = await gh.status();
       if (cancelledRef.current) return;
       if (s?.authed) { succeed(s.login); return; }
-      if (!s?.installed) { setStage('gh-missing'); return; }
+      // Phase 2 (2026-07-22): the device flow stores the token in the APP
+      // (github-client keychain custody), so a missing gh CLI no longer gates
+      // connecting — go straight to the one-time code. The gh-missing stage +
+      // installer below are deliberately KEPT (not dead-coded out): the
+      // planned Connected-accounts settings surface will offer "Install
+      // GitHub CLI" as an optional extra for terminal/agent use, and the
+      // installer still backs that story.
       void startCode();
     } catch (err: any) {
       if (cancelledRef.current) return;

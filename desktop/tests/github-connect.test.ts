@@ -53,19 +53,23 @@ describe('createGithubConnect', () => {
   test('successful poll + login → emitDone({ok:true, login}) and NEVER the token', async () => {
     const { emit, done } = deferredDone();
     let loginToken: string | undefined;
+    let storedToken: string | undefined;
 
     const gc = createGithubConnect(emit, {
       startDeviceFlow: fakeStartDeviceFlow,
       pollForToken: async () => ({ token: SECRET }),
       completeLogin: async (token) => { loginToken = token; },
+      storeToken: async (token) => { storedToken = token; },
+      fetchLogin: async () => undefined, // REST silent → detectGh fallback fills login
       detectGh: async () => ({ installed: true, authed: true, login: 'octocat' }),
     });
 
     await gc.start();
     const payload = await done;
 
-    // The token flowed ONLY into completeLogin...
+    // The token flowed ONLY into storeToken + completeLogin...
     expect(loginToken).toBe(SECRET);
+    expect(storedToken).toBe(SECRET);
     // ...and the public payload carries the login handle, not the token.
     expect(payload).toEqual({ ok: true, login: 'octocat' });
     expect(JSON.stringify(payload)).not.toContain(SECRET);
@@ -77,6 +81,8 @@ describe('createGithubConnect', () => {
       startDeviceFlow: fakeStartDeviceFlow,
       pollForToken: async () => ({ token: SECRET }),
       completeLogin: async () => {},
+      storeToken: async () => {},
+      fetchLogin: async () => { throw new Error('network'); },
       detectGh: async () => { throw new Error('gh api failed'); },
     });
 
@@ -84,6 +90,48 @@ describe('createGithubConnect', () => {
     const payload = await done;
     expect(payload).toEqual({ ok: true });
     expect(JSON.stringify(payload)).not.toContain(SECRET);
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 2 (2026-07-22): the app token store is the PRIMARY destination and
+  // gh login is best-effort — a stock machine with NO gh completes the connect
+  // entirely in-app. Only both destinations failing fails the flow.
+  // -------------------------------------------------------------------------
+
+  test('PHASE 2 PIN: gh absent (completeLogin throws) but storeToken succeeds → ok:true', async () => {
+    const { emit, done } = deferredDone();
+    let stored: { token?: string; login?: string } = {};
+    const gc = createGithubConnect(emit, {
+      startDeviceFlow: fakeStartDeviceFlow,
+      pollForToken: async () => ({ token: SECRET }),
+      // ENOENT-style spawn failure — exactly what a machine without gh produces.
+      completeLogin: async () => { throw new Error('gh auth login failed to start'); },
+      storeToken: async (token, login) => { stored = { token, login }; },
+      fetchLogin: async () => 'octocat',
+      // detectGh must not even be needed for the login handle on a gh-less box.
+      detectGh: async () => ({ installed: false, authed: false }),
+    });
+
+    await gc.start();
+    const payload = await done;
+    expect(payload).toEqual({ ok: true, login: 'octocat' });
+    // The login handle is recorded NEXT TO the token so github:status can show
+    // "Connected as X" without a network call.
+    expect(stored).toEqual({ token: SECRET, login: 'octocat' });
+    expect(JSON.stringify(payload)).not.toContain(SECRET);
+  });
+
+  test('storeToken fails but gh login succeeds → ok:true (gh alone can carry the flow)', async () => {
+    const { emit, done } = deferredDone();
+    const gc = createGithubConnect(emit, {
+      startDeviceFlow: fakeStartDeviceFlow,
+      pollForToken: async () => ({ token: SECRET }),
+      completeLogin: async () => {},
+      storeToken: async () => { throw new Error('keychain unavailable'); },
+      fetchLogin: async () => 'octocat',
+    });
+    await gc.start();
+    expect(await done).toEqual({ ok: true, login: 'octocat' });
   });
 
   test("poll rejecting 'expired' → emitDone({ok:false, error:'expired'})", async () => {
@@ -112,14 +160,16 @@ describe('createGithubConnect', () => {
     expect(await done).toEqual({ ok: false, error: 'denied' });
   });
 
-  test("completeLogin throwing → emitDone({ok:false, error:'login-failed'}) with NO token", async () => {
+  test("BOTH destinations failing → emitDone({ok:false, error:'login-failed'}) with NO token", async () => {
     const { emit, done } = deferredDone();
     const gc = createGithubConnect(emit, {
       startDeviceFlow: fakeStartDeviceFlow,
       pollForToken: async () => ({ token: SECRET }),
-      // Force a failure whose message even CONTAINS the token — the orchestrator
-      // must not propagate it into the done payload.
+      // Force failures whose messages even CONTAIN the token — the orchestrator
+      // must not propagate them into the done payload.
       completeLogin: async () => { throw new Error(`gh choked on ${SECRET}`); },
+      storeToken: async () => { throw new Error(`keychain rejected ${SECRET}`); },
+      fetchLogin: async () => undefined,
     });
 
     await gc.start();
@@ -174,14 +224,18 @@ describe('createGithubConnect', () => {
       startDeviceFlow: fakeStartDeviceFlow,
       pollForToken: (dc, opts) => poll(dc, opts),
       completeLogin: async () => {},
+      storeToken: async () => {},
+      fetchLogin: async () => undefined,
       detectGh: async () => ({ installed: true, authed: true, login: 'octocat' }),
     });
 
     await gc.start();                 // flow A begins polling
     poll = async () => ({ token: SECRET }); // flow B will succeed
     await gc.start();                 // supersedes A (aborts it)
-    // Let A's abort-rejection and B's success both flush.
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    // Let A's abort-rejection and B's success both flush. A macrotask drains
+    // every pending microtask in B's (now longer) store→login→detect chain —
+    // counted Promise.resolve() flushes went stale each time a step was added.
+    await new Promise((r) => setTimeout(r, 0));
 
     // Exactly ONE emit — flow B's success — and NOT A's spurious 'cancelled'.
     expect(calls).toEqual([{ ok: true, login: 'octocat' }]);
@@ -193,6 +247,8 @@ describe('createGithubConnect', () => {
       startDeviceFlow: fakeStartDeviceFlow,
       pollForToken: async () => ({ token: SECRET }),
       completeLogin: async () => {},
+      storeToken: async () => {},
+      fetchLogin: async () => undefined,
       detectGh: async () => ({ installed: true, authed: true, login: 'octocat' }),
     });
 

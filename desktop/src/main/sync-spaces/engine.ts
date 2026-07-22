@@ -185,7 +185,10 @@ export class SpaceSyncEngine {
           }
         } catch { /* maintenance is best-effort; the sync itself already succeeded */ }
       } catch (e: any) {
-        this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e) });
+        // Forward the typed marker (e.g. 'github-auth' from the transport /
+        // provisioning) so the panel can offer the matching CTA — the message
+        // alone is prose and must never be string-matched.
+        this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e), errorCode: typeof e?.syncErrorCode === 'string' ? e.syncErrorCode : undefined });
       } finally {
         st.syncing = false;
         st.current = null;

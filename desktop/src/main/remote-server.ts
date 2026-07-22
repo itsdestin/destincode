@@ -35,7 +35,8 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 // Connect-GitHub modal (device-flow auth). status/install are stateless direct
 // calls; connect start/cancel drive the shared orchestrator singleton created in
 // ipc-handlers (its emitDone broadcasts github:connect-done to remote clients).
-import { detectGh, installGh } from './github-auth';
+import { installGh } from './github-auth';
+import { combinedGithubStatus } from './github-client';
 import { getGithubConnect } from './github-connect';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
@@ -1774,7 +1775,9 @@ export class RemoteServer {
       // is all main-process; the browser just renders the code/URL and waits for
       // the github:connect-done broadcast. The access token never crosses the WS.
       case 'github:status': {
-        this.respond(client.ws, type, id, await detectGh());
+        // Combined status (Phase 2) — same payload as the desktop handler:
+        // authed = stored app token OR gh login (legacy shape + additive fields).
+        this.respond(client.ws, type, id, await combinedGithubStatus());
         break;
       }
       case 'github:connect-start': {
