@@ -1,10 +1,38 @@
 // ActiveArtifactView — shared component for viewing and editing a single artifact.
 // Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
 // can use it identically without duplicating the edit state + conflict-detection logic.
-import React, { useCallback, useEffect, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
+import React, { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
 import { getViewer } from './RendererRegistry';
 import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
+import { editTier } from '../../../shared/artifacts/editable-path-policy';
+import { canonicalize } from '../../../shared/artifacts/canonicalize';
+
+// Confirm-tier wording (D5): name the actual consequence, per path family.
+// Never a vague "are you sure" — the user should know what the file DOES.
+function confirmMessage(canonPath: string): string {
+  const base = canonPath.split('/').pop() ?? canonPath;
+  if (base === '.envrc') {
+    return 'direnv runs this file as shell commands when you enter the folder.\n\nEdit it anyway?';
+  }
+  if (base === '.env' || base.startsWith('.env.')) {
+    return 'This file usually contains secrets like API keys and passwords.\n\nEdit it anyway?';
+  }
+  return 'This file configures Claude — settings and hooks here can run commands on your machine.\n\nEdit it anyway?';
+}
+
+// Surface the REAL save failure (error-message-standards): specific when we
+// know the cause, the raw error string when we do not — never a guessed cause.
+function saveErrorMessage(res: any): string {
+  const err = res?.error;
+  if (err === 'protected-path') {
+    return 'This file is protected and cannot be edited in YouCoded — paths under .git, .youcoded, and credential folders can change what runs on your machine.';
+  }
+  if (err === 'needs-confirm') {
+    return 'Editing this file needs an explicit confirmation. Leave and re-enter edit mode to confirm.';
+  }
+  return `Save failed: ${String(err ?? 'unknown error')}`;
+}
 
 // Imperative handle so an external chrome (the SessionDrawer header toolbar) can
 // drive edit mode while ActiveArtifactView keeps owning the edit/save/conflict
@@ -44,17 +72,28 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     : (artifact.absolutePath ?? artifact.path);
 
   const ext = artifact.path.split('.').pop()?.toLowerCase() ?? '';
+  // Renderer MIRROR of the D5 write policy — main enforces the real boundary
+  // in artifacts:save; this only hides the Edit affordance so the UI never
+  // offers an action main would refuse. (Main resolves symlinks first, so a
+  // mirror miss here fails safe: the save is still rejected.)
+  const tier = editTier(canonicalize(absolutePath, null));
   // Only plaintext formats support inline editing in v1.
-  const isEditable = ext === 'md' || ext === 'markdown' || ext === 'txt';
+  const isEditable = (ext === 'md' || ext === 'markdown' || ext === 'txt') && tier !== 'denied';
 
   // ── Task 6.4: controlled edit state (lifted from MarkdownView) ──
   // Owning edit state here lets the conflict banner read/reset it without
   // requiring a refactor of each individual viewer component.
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(content ?? '');
-  // conflict.disk holds the agent's version when a concurrent write is detected
+  // conflict.disk holds the on-disk version when a concurrent write is detected
   const [conflict, setConflict] = useState<{ disk: string } | null>(null);
   const [showDiff, setShowDiff] = useState(false);
+  // Surfaced save failures — replaces the old console-only error path (§2.4).
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Optimistic-concurrency token from artifacts:get, round-tripped into save as
+  // baseMtimeMs so a save over a changed file is rejected instead of silently
+  // clobbering it (spec §12.9). null = no token yet → save runs unguarded.
+  const mtimeRef = useRef<number | null>(null);
 
   // Reset draft when content reloads from disk (e.g. artifact selection changes)
   useEffect(() => {
@@ -70,6 +109,8 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // an empty draft over the file — exiting edit mode closes that window.
   useEffect(() => {
     setEditing(false);
+    setSaveError(null);
+    mtimeRef.current = null; // token belongs to the previous file
   }, [artifact.id]);
 
   // ── React to on-disk changes (external writes, saves from other windows) ──
@@ -87,6 +128,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
       if (evt.kind === 'remove') return; // orphan handling is the host's concern
       (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
         if (!res || !res.ok || res.orphan) return;
+        if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
         const disk = res.content ?? '';
         if (dirty) {
           if (disk !== draft) setConflict({ disk });
@@ -101,33 +143,68 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
 
   // ── Edit lifecycle callbacks (passed down to MarkdownView as controlled props) ──
   const handleStartEdit = useCallback(() => {
+    // Confirm-tier paths get one deliberate click BEFORE editing starts, not a
+    // surprise refusal at save time (D5 — mistake-prevention, not security; the
+    // hard boundary is main's).
+    if (tier === 'needs-confirm' && !window.confirm(confirmMessage(canonicalize(absolutePath, null)))) {
+      return;
+    }
+    // Refresh from disk on entering edit mode: picks up staleness the watcher
+    // may have missed AND captures the concurrency token the save round-trips.
+    (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
+      if (res && res.ok && !res.orphan && !res.tooLarge && typeof res.content === 'string') {
+        if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
+        if (res.content !== content) onContentChange(res.content);
+      }
+    }).catch(() => { /* stale content + no token — save falls back to unguarded */ });
     setEditing(true);
     setConflict(null);
-  }, []);
+    setSaveError(null);
+  }, [tier, absolutePath, projectRoot, artifact.id, content, onContentChange]);
 
-  const handleSave = useCallback(async () => {
+  // opts.force: skip the concurrency token — the deliberate "Keep mine"
+  // overwrite. Shaped as an options object so accidental event-object args
+  // (onClick={handleSave}) can never read as force=true.
+  const handleSave = useCallback(async (opts?: { force?: boolean }) => {
+    const saveOpts: { baseMtimeMs?: number; confirmed?: boolean } = {};
+    if (!opts?.force && mtimeRef.current !== null) saveOpts.baseMtimeMs = mtimeRef.current;
+    if (tier === 'needs-confirm') saveOpts.confirmed = true; // dialog shown at startEdit
     const res = await (window.claude as any).artifacts.save(
-      projectRoot, projectId, projectName, artifact.id, draft, sessionId
+      projectRoot, projectId, projectName, artifact.id, draft, sessionId, saveOpts
     );
     if (res && res.ok) {
+      if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
       onContentChange(draft);
       setEditing(false);
       setConflict(null);
+      setSaveError(null);
+    } else if (res && res.error === 'conflict') {
+      // Disk moved under the token — surface the conflict UI instead of
+      // silently clobbering whatever was written (spec §12.9).
+      const disk = await (window.claude as any).artifacts.get(projectRoot, artifact.id);
+      if (disk && disk.ok && !disk.orphan) {
+        if (typeof disk.mtimeMs === 'number') mtimeRef.current = disk.mtimeMs;
+        setConflict({ disk: disk.content ?? '' });
+      } else {
+        setSaveError('Save failed: the file changed on disk and could not be re-read.');
+      }
     } else {
-      console.error('[ActiveArtifactView] artifacts.save failed', res);
+      setSaveError(saveErrorMessage(res));
     }
-  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange]);
+  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier]);
 
   const handleCancel = useCallback(() => {
     setDraft(content ?? '');
     setEditing(false);
     setConflict(null);
+    setSaveError(null);
   }, [content]);
 
   // ── Conflict resolution actions ──
   const resolveKeepMine = useCallback(() => {
-    // Save the user's current draft over the agent's version
-    handleSave();
+    // Deliberate force-overwrite: "Keep mine" MEANS clobber what is on disk,
+    // so the concurrency token is skipped by design.
+    handleSave({ force: true });
   }, [handleSave]);
 
   const resolveUseDisk = useCallback(() => {
@@ -192,7 +269,21 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           </button>
         </div>
       )}
-      {/* Side-by-side diff: left = user draft, right = agent's disk version */}
+      {/* Save-failure banner — the real error, inline, dismissible. Replaces
+          the old console-only failure path where a failed save looked identical
+          to a successful one (§2.4). Theme-independent like the conflict banner. */}
+      {saveError && (
+        <div
+          className="p-3 text-sm flex flex-wrap gap-x-3 gap-y-1 items-center border-b shrink-0"
+          style={{ color: '#8a1f1f', background: '#FDECEC', borderColor: '#E5A0A0' }}
+        >
+          <span className="flex-1 min-w-0">{saveError}</span>
+          <button className="underline hover:no-underline whitespace-nowrap" onClick={() => setSaveError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {/* Side-by-side diff: left = user draft, right = the on-disk version */}
       {showDiff && conflict && (
         <div className="grid grid-cols-2 gap-0 border-b border-edge shrink-0 overflow-auto max-h-[40%]">
           <div className="p-2 border-r border-edge overflow-auto">
