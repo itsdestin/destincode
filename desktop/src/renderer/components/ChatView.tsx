@@ -559,6 +559,15 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   // three), and globals.css adds it into their bottom calc so they lift above
   // the strip instead of overlapping it — offset coordination, not z-index.
   //
+  // Task 12 dogfood fix (follow-up): the SAME var also gets folded into
+  // .chat-scroll's own padding-bottom (globals.css) — Destin found live/
+  // streaming timeline content settling BEHIND the strip, because nothing
+  // was reserving the strip's footprint inside the scrollable content area
+  // itself (only the OUTER floats were accounted for). One measured value,
+  // two consumers: the outer floats' bottom offset, and the scroll
+  // container's bottom padding — both need to clear the same strip, so both
+  // read the same var rather than duplicating the measurement.
+  //
   // Measurement idiom: ResizeObserver + CSS var, mirroring
   // useChromeMeasurements.ts's --bottom-chrome-height/--top-chrome-height
   // (this file's own established precedent) rather than a fixed
@@ -575,6 +584,13 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   // Re-runs only when the list crosses the empty/non-empty boundary — a
   // ResizeObserver on the already-attached element handles continuous height
   // changes (wrapping, row count changes) without re-attaching.
+  //
+  // auto-scroll verified unaffected: scrollToBottom()/jumpToBottom() below
+  // both read the scroll container's REAL scrollTop/scrollHeight — neither
+  // hardcodes an offset — so once .chat-scroll's padding-bottom grows by
+  // this var, both naturally settle content above the strip. No JS change
+  // needed there.
+  const QUEUED_STRIP_GAP = '0.5rem'; // visual breathing room above the strip's top edge (Destin's ask)
   const hasQueuedMessages = state.queuedMessages.length > 0;
   useEffect(() => {
     const root = chatRootRef.current;
@@ -589,7 +605,13 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     const el = queuedStripRef.current;
     if (!el) return;
     const update = () => {
-      root.style.setProperty('--queued-strip-height', `${Math.ceil(el.getBoundingClientRect().height)}px`);
+      // calc(...) keeps the gap in real rem units (respects root font-size /
+      // zoom) while the measured part is a real px value — string-concat
+      // into ONE var rather than adding a second var, so every consumer
+      // (.chat-scroll padding, the two floats' bottom offset) only has to
+      // read a single number instead of remembering to add the gap itself.
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      root.style.setProperty('--queued-strip-height', `calc(${h}px + ${QUEUED_STRIP_GAP})`);
     };
     const observer = new ResizeObserver(update);
     observer.observe(el);
