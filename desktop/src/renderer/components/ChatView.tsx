@@ -143,6 +143,11 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
+  // Task 12 review fix: refs for the --queued-strip-height measurement effect
+  // below (chatRootRef = this component's OUTER root; queuedStripRef = the
+  // strip's own rendered element).
+  const chatRootRef = useRef<HTMLDivElement>(null);
+  const queuedStripRef = useRef<HTMLDivElement>(null);
   // Ctrl+F find-over-chat-history. Searches the message timeline (contentRef)
   // via the same CSS-Highlight ContentFindBar the artifact viewer uses.
   const [findOpen, setFindOpen] = useState(false);
@@ -543,6 +548,60 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
     [sessionId, dispatch],
   );
 
+  // Task 12 review fix (Important — float collision): .model-status-strip and
+  // .jump-to-bottom float in THIS component's OUTER absolute root (see their
+  // render sites below) sharing the same --bottom-chrome-height offset band
+  // as .queued-messages-strip — with the strip visible, they'd sit at the
+  // exact same height and overlap it. .chat-pane (the strip's own DOM parent)
+  // is NOT an ancestor of those two floats, so a var set there wouldn't reach
+  // them; this measures the strip's OWN rendered height and publishes
+  // --queued-strip-height on chatRootRef (the true common ancestor of all
+  // three), and globals.css adds it into their bottom calc so they lift above
+  // the strip instead of overlapping it — offset coordination, not z-index.
+  //
+  // Measurement idiom: ResizeObserver + CSS var, mirroring
+  // useChromeMeasurements.ts's --bottom-chrome-height/--top-chrome-height
+  // (this file's own established precedent) rather than a fixed
+  // rows-times-row-height calc — the strip's row height isn't a constant
+  // (long content can wrap, font size varies per theme/user setting), so a
+  // real measurement is the only way to stay correct as those vary.
+  //
+  // Scoped to chatRootRef (per-ChatView-instance), NOT document.documentElement
+  // like useChromeMeasurements' vars: every session's ChatView is mounted
+  // simultaneously (only the active one is `visible`), so a root-scoped var
+  // would let a background session's queue count corrupt the visible
+  // session's float offset.
+  //
+  // Re-runs only when the list crosses the empty/non-empty boundary — a
+  // ResizeObserver on the already-attached element handles continuous height
+  // changes (wrapping, row count changes) without re-attaching.
+  const hasQueuedMessages = state.queuedMessages.length > 0;
+  useEffect(() => {
+    const root = chatRootRef.current;
+    if (!root) return;
+    if (!hasQueuedMessages) {
+      // No strip mounted (QueuedMessagesStrip returns null) — nothing to
+      // observe. Explicit 0px (not removeProperty) so the floats' calc reads
+      // a real value immediately rather than depending on their own fallback.
+      root.style.setProperty('--queued-strip-height', '0px');
+      return;
+    }
+    const el = queuedStripRef.current;
+    if (!el) return;
+    const update = () => {
+      root.style.setProperty('--queued-strip-height', `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    update();
+    // No removeProperty on cleanup: unlike useChromeMeasurements' document-
+    // level vars (which must be cleaned up because the root persists across
+    // the app's lifetime), this var lives on chatRootRef — it disappears
+    // with the DOM node on unmount, and on a boundary re-run the branch
+    // above already overwrites it with a fresh value.
+    return () => observer.disconnect();
+  }, [hasQueuedMessages]);
+
   return (
     <div
       // Fix: previously toggled display:none/flex, which forced a full reflow of
@@ -550,6 +609,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
       // reports). Using visibility+opacity+pointer-events keeps the layout box
       // stable across toggles — no reflow, no flash, and focus/IME survive.
       // `inert` removes hidden subtree from tab order + a11y tree.
+      ref={chatRootRef}
       inert={!visible}
       aria-hidden={visible ? undefined : true}
       style={{
@@ -792,9 +852,12 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               offset those two floating elements use to clear the real
               InputBar (which lives outside ChatView — see App.tsx's
               chrome-wrapper--bottom). DOM choice documented per the task
-              brief: ChatView's scroll container's PARENT. */}
+              brief: ChatView's scroll container's PARENT. Review fix: ref
+              feeds the --queued-strip-height measurement effect above (that
+              var is published on chatRootRef, NOT .chat-pane — see the WHY
+              comment there for why .chat-pane doesn't work for this). */}
           <QueuedMessagesStrip
-            sessionId={sessionId}
+            ref={queuedStripRef}
             queuedMessages={state.queuedMessages}
             onCancel={onCancelQueued ? (queueId) => onCancelQueued(sessionId, queueId) : undefined}
             onEdit={onEditQueued ? (queueId, text) => onEditQueued(sessionId, queueId, text) : undefined}

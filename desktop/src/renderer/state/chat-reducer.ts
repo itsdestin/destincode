@@ -582,6 +582,27 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // below the sole place a queued message's timeline entry gets created,
       // at its true (end-of-timeline) position. Oldest-content-match mirrors
       // the pending-bubble dedup's own discipline (rapid-fire duplicates).
+      //
+      // Caveat (review finding, traced all orderings): "the two scans never
+      // collide" only holds when contents are DISTINCT across the pending
+      // bubble and the queued list. If the SAME text was both sent immediately
+      // (a pending bubble) AND separately queued (a list entry) — e.g. "hi"
+      // typed twice in a row, once while idle and once while a turn was
+      // in-flight — this dispatch's list scan runs unconditionally regardless
+      // of WHICH of the two "hi"s this particular transcript event confirms.
+      // If it confirms the sent one, the list scan still removes the oldest
+      // queued "hi" row from the STRIP even though that queued message's own
+      // drain event hasn't arrived on the host yet. The eventual TIMELINE
+      // outcome is still correct — that queued message still gets its own
+      // TRANSCRIPT_USER_MESSAGE later, finds no pending bubble (already
+      // consumed), and appends at the true end-of-timeline position via the
+      // fallback below, same as always. The only visible effect is a
+      // duplicate-content STRIP ROW disappearing one drain early (an
+      // under-count for the span between the two events, not a lost or
+      // mis-positioned message) — an acceptable renderer-local display quirk
+      // for a scenario the old bubble-badge design had no better answer for
+      // either (two identical bubbles were already visually indistinguishable
+      // there too).
       let queuedMessages = session.queuedMessages;
       const queuedIdx = queuedMessages.findIndex((q) => q.content === action.text);
       if (queuedIdx !== -1) {

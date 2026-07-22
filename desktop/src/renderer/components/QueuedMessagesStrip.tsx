@@ -30,7 +30,6 @@ interface QueuedMessage {
 }
 
 interface Props {
-  sessionId: string;
   queuedMessages: QueuedMessage[];
   // Cancel/Edit — App owns the native:queue-remove invoke, the
   // QUEUED_MESSAGE_REMOVED dispatch (on BOTH outcomes — see App.tsx
@@ -42,11 +41,24 @@ interface Props {
   onEdit?: (queueId: string, text: string) => void;
 }
 
-export default function QueuedMessagesStrip({ queuedMessages, onCancel, onEdit }: Props) {
+// forwardRef (review fix, post-approval): ChatView needs the strip's OWN
+// rendered height to publish `--queued-strip-height` (see ChatView.tsx's
+// measurement effect) so the two floating elements that share its bottom
+// offset band (.model-status-strip / .jump-to-bottom) can lift above it
+// instead of overlapping it. The ref targets this component's root div
+// directly (not a wrapping element in ChatView) because that root is
+// `position: absolute` — a plain static wrapper around it would NOT size
+// itself to the absolutely-positioned child's content, so measuring a
+// wrapper instead of this element would always read 0.
+const QueuedMessagesStrip = React.forwardRef<HTMLDivElement, Props>(function QueuedMessagesStrip(
+  { queuedMessages, onCancel, onEdit },
+  ref,
+) {
   if (queuedMessages.length === 0) return null;
 
   return (
     <div
+      ref={ref}
       className="queued-messages-strip absolute left-3 right-3 z-10 flex flex-col gap-1.5"
       aria-label="Queued messages"
     >
@@ -89,4 +101,6 @@ export default function QueuedMessagesStrip({ queuedMessages, onCancel, onEdit }
       ))}
     </div>
   );
-}
+});
+
+export default QueuedMessagesStrip;

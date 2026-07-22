@@ -541,17 +541,22 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 
 /* Jump-to-bottom button — chrome floats over the content area,
-   so push the button up above it */
+   so push the button up above it. Task 12 review fix: + --queued-strip-height
+   (published by ChatView.tsx's measurement effect, 0px when the queued strip
+   isn't showing) lifts this ABOVE the strip instead of overlapping it —
+   offset coordination, not z-index, since both this and the strip are
+   legitimately visible/interactive at once. */
 .jump-to-bottom {
   /* Includes --vvp-offset so the button stays above the soft keyboard
      when it's open (same treatment as .bottom-float). */
-  bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
+  bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + 0.75rem + var(--vvp-offset, 0px));
 }
 
 /* Native local-model loading / unloaded strip — floats centered just above the
-   input chrome (same offset math as .jump-to-bottom). 2026-07-14. */
+   input chrome (same offset math as .jump-to-bottom). 2026-07-14. Task 12
+   review fix: + --queued-strip-height, same reasoning as .jump-to-bottom above. */
 .model-status-strip {
-  bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
+  bottom: calc(var(--bottom-chrome-height, 5rem) + var(--queued-strip-height, 0px) + 0.75rem + var(--vvp-offset, 0px));
 }
 
 /* Task 12: docked strip for queued (not-yet-sent) messages. Unlike
@@ -560,7 +565,9 @@ body[data-mode="buddy-chat"] #theme-bg {
    .chat-scroll INSIDE .chat-pane (position: relative) — see the DOM-choice
    comment at its render site in ChatView.tsx. Same --bottom-chrome-height
    offset math so it clears the real InputBar (a sibling of ChatView,
-   positioned by App.tsx's chrome-wrapper--bottom) regardless of scroll. */
+   positioned by App.tsx's chrome-wrapper--bottom) regardless of scroll.
+   Does NOT add --queued-strip-height to its own offset (that would push it
+   up above itself) — only the OTHER two floats that share this band do. */
 .queued-messages-strip {
   bottom: calc(var(--bottom-chrome-height, 5rem) + 0.75rem + var(--vvp-offset, 0px));
 }

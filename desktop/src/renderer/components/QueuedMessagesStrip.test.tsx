@@ -19,7 +19,7 @@ afterEach(() => {
 describe('QueuedMessagesStrip (Task 12)', () => {
   it('renders nothing when queuedMessages is empty', () => {
     const { container } = render(
-      <QueuedMessagesStrip sessionId="s-1" queuedMessages={[]} />,
+      <QueuedMessagesStrip queuedMessages={[]} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
@@ -27,7 +27,6 @@ describe('QueuedMessagesStrip (Task 12)', () => {
   it('renders one row per queued message with its content and a Queued label', () => {
     render(
       <QueuedMessagesStrip
-        sessionId="s-1"
         queuedMessages={[
           { queueId: 'q-1', content: 'first queued message', timestamp: 1 },
           { queueId: 'q-2', content: 'second queued message', timestamp: 2 },
@@ -42,7 +41,6 @@ describe('QueuedMessagesStrip (Task 12)', () => {
   it('renders neither affordance when no handlers are wired', () => {
     render(
       <QueuedMessagesStrip
-        sessionId="s-1"
         queuedMessages={[{ queueId: 'q-1', content: 'hello', timestamp: 1 }]}
       />,
     );
@@ -53,7 +51,6 @@ describe('QueuedMessagesStrip (Task 12)', () => {
   it('renders only Cancel when onEdit is not provided', () => {
     render(
       <QueuedMessagesStrip
-        sessionId="s-1"
         queuedMessages={[{ queueId: 'q-1', content: 'hello', timestamp: 1 }]}
         onCancel={vi.fn()}
       />,
@@ -67,7 +64,6 @@ describe('QueuedMessagesStrip (Task 12)', () => {
     const onEdit = vi.fn();
     render(
       <QueuedMessagesStrip
-        sessionId="s-1"
         queuedMessages={[{ queueId: 'q-42', content: 'edit me please', timestamp: 1 }]}
         onCancel={onCancel}
         onEdit={onEdit}
@@ -85,7 +81,6 @@ describe('QueuedMessagesStrip (Task 12)', () => {
     const onCancel = vi.fn();
     render(
       <QueuedMessagesStrip
-        sessionId="s-1"
         queuedMessages={[
           { queueId: 'q-1', content: 'first', timestamp: 1 },
           { queueId: 'q-2', content: 'second', timestamp: 2 },
