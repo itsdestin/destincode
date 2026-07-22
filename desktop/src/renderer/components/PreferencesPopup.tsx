@@ -21,6 +21,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onOpenAdvanced: () => void; // Switches to terminal view and sends /config to PTY
+  showAdvanced?: boolean;     // Hide Advanced button for native sessions (no /config support)
 }
 
 type PermissionDefault = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
@@ -52,7 +53,7 @@ const PERMISSION_LABELS: Record<PermissionDefault, { label: string; desc: string
   bypassPermissions: { label: 'Bypass', desc: 'Skip all permission prompts (risky)' },
 };
 
-export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Props) {
+export default function PreferencesPopup({ open, onClose, onOpenAdvanced, showAdvanced }: Props) {
   useEscClose(open, onClose);
   const [prefs, setPrefs] = useState<PrefsState>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
@@ -244,6 +245,8 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Prop
             </section>
 
             {/* Advanced escape hatch — opens Claude Code's native TUI for any option not covered here */}
+            {/* /config drives Claude Code's own terminal config UI — native sessions have no such surface, ever (program §2.5). */}
+            {showAdvanced !== false && (
             <section className="pt-3 border-t border-edge-dim">
               <Button
                 variant="secondary"
@@ -260,6 +263,7 @@ export default function PreferencesPopup({ open, onClose, onOpenAdvanced }: Prop
                 Switches to terminal view and runs Claude Code's full <code>/config</code>
               </p>
             </section>
+            )}
             </div>
           </div>
         )}

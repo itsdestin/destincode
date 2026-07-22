@@ -2742,9 +2742,10 @@ function AppInner() {
                     setSyncAutoOpen(true);
                     setSettingsOpen(true);
                   }}
-                  onRunSync={!trustGateActive && sessionId ? () => {
+                  onRunSync={!trustGateActive && sessionId && !isNativeSession ? () => {
                     // Send first, guarded — a refused send must not leave a
-                    // stale pending "/sync" bubble in the timeline.
+                    // stale pending "/sync" bubble in the timeline. Hide /sync for
+                    // native sessions — they have no PTY send capability.
                     if (!guardedPtySend(sessionId, '/sync\r')) return;
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
@@ -3021,6 +3022,7 @@ function AppInner() {
           // pending, "/config\r" would answer CC's live Ink menu instead.
           setTimeout(() => guardedPtySend(sessionId, '/config\r'), 50);
         }}
+        showAdvanced={currentSession?.provider !== 'native'}
       />
       <ModelPickerPopup
         open={modelPickerOpen}
