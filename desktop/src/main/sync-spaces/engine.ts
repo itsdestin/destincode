@@ -11,6 +11,11 @@ interface EngineOpts {
   pollMs?: number;      // default 120s (spec §6 degradation path); 0 disables
   sizeWarnBytes?: number; // default 500MB; injectable so tests can use a low threshold
   onEvent: (e: SpaceSyncEvent) => void;
+  // Provision the space's remote (repo create/view + setRemote) when a sync
+  // cycle finds none. Injected by service.ts so the engine stays free of a
+  // SpaceManager/gh dependency. MUST throw a plain-language error on failure —
+  // syncSpace surfaces it verbatim as the space's error event every cycle.
+  ensureProvisioned?: (space: SyncSpace) => Promise<void>;
 }
 
 // Warn once per launch when a space's hidden sync history exceeds this. Remote
@@ -57,6 +62,7 @@ export class SpaceSyncEngine {
   private debounceMs: number;
   private pollMs: number;
   private sizeWarnBytes: number;
+  private ensureProvisioned?: (space: SyncSpace) => Promise<void>;
   // One-per-LAUNCH dedup for the large-history warning: this Set lives as long
   // as the engine instance, so a space that's already over the threshold emits
   // the warning exactly once instead of on every sync.
@@ -67,6 +73,7 @@ export class SpaceSyncEngine {
     this.debounceMs = opts.debounceMs ?? 15_000;
     this.pollMs = opts.pollMs ?? 120_000;
     this.sizeWarnBytes = opts.sizeWarnBytes ?? SIZE_WARN_BYTES;
+    this.ensureProvisioned = opts.ensureProvisioned;
     this.onEvent = opts.onEvent;
     if (this.pollMs > 0) {
       this.pollTimer = setInterval(() => {
@@ -125,6 +132,21 @@ export class SpaceSyncEngine {
     // await an in-flight sync instead of resolving with git still running.
     st.current = (async () => {
       try {
+        // A space with NO remote must never emit 'synced': pull/push silently
+        // no-op without one, and that phantom success superseded the real
+        // provisioning error in the UI — a fresh device showed green
+        // "All synced" while it had never contacted GitHub (2026-07-20 VM bug).
+        // Instead, (re)provision on EVERY cycle — poll, debounce, and manual
+        // "Sync now" all pass through here — so the space heals itself the
+        // moment gh/auth is fixed, and the real failure (e.g. "GitHub CLI (gh)
+        // is not installed…") re-surfaces each cycle until then, which is what
+        // keeps it alive past latestUnresolvedError's supersession rule.
+        if (!(await this.transport.hasRemote(space))) {
+          if (!this.ensureProvisioned) {
+            throw new Error(`${space.id} is not connected to a sync repository yet`);
+          }
+          await this.ensureProvisioned(space);
+        }
         const pull = await this.transport.pull(space);
         if (pull.conflictCopies.length) this.onEvent({ type: 'conflict', spaceId: space.id, copies: pull.conflictCopies });
         const push = await this.transport.push(space, `sync from ${space.id}`);

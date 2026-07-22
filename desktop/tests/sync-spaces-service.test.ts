@@ -122,6 +122,11 @@ vi.mock('../src/main/sync-spaces/space-manager', () => ({
     isEnabled(): boolean { return this.enabled; }
     setEnabled(v: boolean): void { this.enabled = v; }
     remoteFor(): string | null { return null; }
+    // Honest-state-machine (2026-07-22): the service records per-space sync
+    // evidence on every real 'synced' broadcast and exposes it on status.
+    private lastSync: Record<string, number> = {};
+    lastSyncFor(id: string): number | null { return this.lastSync[id] ?? null; }
+    recordSyncSuccess(id: string, at: number): void { this.lastSync[id] = at; }
     // ensureRemoteFails knob (2026-07-12) simulates a gh-auth failure so the
     // materialize-failure discovery test can assert nothing is created.
     async ensureRemote(): Promise<string> {

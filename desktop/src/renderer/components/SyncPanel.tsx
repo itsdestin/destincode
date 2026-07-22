@@ -22,7 +22,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import ConnectGithubModal from './ConnectGithubModal';
 import type { PastSession } from '../../shared/types';
 import SettingsRow from './SettingsRow';
-import { latestUnresolvedError, type SyncStatusData } from './sync-dot-state';
+import { latestUnresolvedError, deriveSyncBoxState, type SyncStatusData } from './sync-dot-state';
 // relativeMs is co-located in the pure device-activity-label module (single
 // wording ladder, shared by the device recency label and the fallback below).
 import { deviceActivityLabel, relativeMs } from './device-activity-label';
@@ -429,7 +429,11 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   const [spacesError, setSpacesError] = useState<string | null>(null);
   // First enable provisions GitHub repos and can take seconds — without a
   // visible pending state the checkbox reads as "didn't take" to a non-developer.
-  const [enabling, setEnabling] = useState(false);
+  // false = no toggle in flight; 'on'/'off' = which direction. The direction
+  // matters: the header must only show "Setting up…" for an ENABLE in flight —
+  // the old boolean showed it during disable too, and (worse) let it mask the
+  // real hydrating/error states while enable() awaited the first personal pull.
+  const [enabling, setEnabling] = useState<false | 'on' | 'off'>(false);
   // GitHub connection state (device-flow modal). Sync's primary channel needs a
   // GitHub sign-in; we surface a "Connect GitHub…" affordance whenever the
   // structured github:status reports not-authed (NOT by parsing space-manager's
@@ -640,11 +644,39 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   // red note slot and re-fetch status so the checkbox reflects reality instead
   // of silently staying out of sync with the engine.
   const handleSpacesEnable = useCallback(async (enabled: boolean) => {
-    setEnabling(true);
+    // Preflight (2026-07-22): if GitHub isn't ready, route the user straight
+    // into the connect flow instead of letting enable() fail into an error
+    // state they then have to recover from. wasMidEnableRef makes the completed
+    // connect resume the enable automatically. Fetched FRESH here — not from
+    // githubStatus state — because the post-connect resume re-enters this
+    // callback through a ref whose closure still holds the pre-connect status,
+    // and a stale "unauthed" would reopen the modal in a loop. A missing
+    // handler (older shim / Android) resolves null and skips the preflight
+    // rather than blocking the toggle on an unknown.
+    if (enabled) {
+      const statusFn = (window as any).claude?.github?.status;
+      const gs = typeof statusFn === 'function' ? await statusFn().catch(() => null) : null;
+      if (gs) setGithubStatus(gs);
+      if (gs && (!gs.installed || !gs.authed)) {
+        wasMidEnableRef.current = true;
+        setShowConnectGithub(true);
+        return;
+      }
+    }
+    setEnabling(enabled ? 'on' : 'off');
     try {
-      setSpacesStatus(await claude.syncSpaces.enable(enabled));
+      const status = await claude.syncSpaces.enable(enabled);
+      setSpacesStatus(status);
       setSpacesError(null);
-      wasMidEnableRef.current = false;
+      // enable() deliberately does NOT reject on provisioning failures (they
+      // ride error events) — so a resolved enable is not proof of success.
+      // If any active space came back without a remote, provisioning failed;
+      // arm the same connect-then-resume recovery the rejection path uses,
+      // and refresh github:status so the error CTA is accurate.
+      const unprovisioned = enabled && ((status?.spaces ?? []) as any[])
+        .some((s) => s.state !== 'stopped' && !s.remote);
+      wasMidEnableRef.current = unprovisioned;
+      if (unprovisioned) await refreshGithubStatus();
     } catch (err: any) {
       setSpacesError(String(err?.message ?? err));
       // Remember an enable-turn-on that failed so a subsequent GitHub connect
@@ -884,20 +916,26 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               const githubUnauthed = !!(githubStatus && !githubStatus.authed);
               const login = githubStatus?.login;
 
-              // Resolve the single header state from the existing signals.
-              type HK = 'setup' | 'off' | 'waiting-github' | 'error' | 'syncing' | 'synced';
-              let hk: HK;
-              if (enabling) hk = 'setup';
-              else if (!enabled) hk = (errorMsg && githubUnauthed) ? 'waiting-github' : 'off';
-              else if (errorMsg) hk = 'error';
-              else if (spacesSyncing) hk = 'syncing';
-              else hk = 'synced';
+              // Resolve the single header state via the pure, pinned ladder
+              // (sync-dot-state.ts). Green is evidence-gated there: every
+              // active space provisioned AND the Personal space has completed
+              // a first real sync — a never-synced device reads as
+              // setup/hydrating, never "All synced" (the beta.8 VM bug).
+              const hk = deriveSyncBoxState({
+                pendingEnable: enabling === 'on',
+                enabled,
+                hasError: !!errorMsg,
+                githubUnauthed,
+                spaces: (spacesStatus?.spaces ?? []) as SyncStatusData['spaces'],
+                syncing: spacesSyncing,
+              });
 
               const dot =
                 hk === 'setup' ? 'bg-blue-400 animate-pulse' :
                 hk === 'off' ? 'bg-fg-muted/40' :
                 hk === 'waiting-github' ? 'bg-[#FF9800]' :
                 hk === 'error' ? 'bg-red-500' :
+                hk === 'hydrating' ? 'bg-blue-400 animate-pulse' :
                 hk === 'syncing' ? 'bg-blue-400 animate-pulse' :
                 'bg-green-500';
 
@@ -906,6 +944,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 hk === 'off' ? 'Backup & sync is off' :
                 hk === 'waiting-github' ? 'Waiting on GitHub' :
                 hk === 'error' ? "Couldn't sync" :
+                hk === 'hydrating' ? 'Downloading your synced data…' :
                 hk === 'syncing' ? 'Syncing…' :
                 'All synced';
 
@@ -930,6 +969,10 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                 hk === 'off' ? 'Turn on to back up and sync across your devices' :
                 hk === 'waiting-github' ? 'Connect your account to start syncing' :
                 hk === 'error' ? (errorSummary?.summary ?? 'Sync hit an unexpected problem.') :
+                // First sync: repos exist but this device hasn't finished its
+                // first pull. Named honestly — "Setting up… a few seconds" over
+                // a multi-minute download read as a stall (2026-07-20 report).
+                hk === 'hydrating' ? 'This can take a few minutes on first sync.' :
                 hk === 'syncing' ? syncingSub :
                 syncedSub;
               const subWarn = hk === 'error';
@@ -943,9 +986,10 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
               // summary (raw text stays in the "Show details" disclosure below).
               const offError = hk === 'off' && errorSummary ? errorSummary.summary : null;
 
-              // Toggle reflects the real enabled state (or the pending enable) so its
-              // click always flips the correct direction. Disabled only while setting up.
-              const toggleOn = enabling || enabled;
+              // Toggle reflects the pending direction when a toggle is in flight
+              // (so a disable click flips it off immediately instead of holding
+              // "on" until the round-trip settles), else the real enabled state.
+              const toggleOn = enabling ? enabling === 'on' : enabled;
 
               // Count tabs only when enabled & healthy (not off/setup/error/waiting).
               const showTabs = hk === 'synced' || hk === 'syncing';
@@ -1004,11 +1048,11 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
                           the primitive instead of the local opacity-50/cursor-wait pair.
                           onChange gets the NEXT value, so we pass it straight through
                           — same flip direction the old !enabled click had, because
-                          `checked` is toggleOn (= enabling || enabled). */}
+                          `checked` is toggleOn (pending direction, else enabled). */}
                       <Toggle
                         checked={toggleOn}
                         onChange={(next) => void handleSpacesEnable(next)}
-                        disabled={enabling}
+                        disabled={!!enabling}
                         className="mt-0.5"
                         title={enabled ? 'Cross-device sync on — click to turn off' : 'Cross-device sync off — click to turn on'}
                       />

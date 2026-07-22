@@ -14,7 +14,7 @@ import { createSyncHubSocket } from '../sync-hub-socket';
 import type { LeaseResult, SyncHubEvent } from '../sync-hub-socket';
 import { readProjectRegistry, ensureProjectEntry, setProjectDisplayName, setProjectStopped } from './project-registry';
 import { planReconcile, activeManagedSpaces } from './materialization-planner';
-import type { SpaceSyncEvent } from './types';
+import type { SpaceSyncEvent, SyncSpace } from './types';
 
 let roots: ManagedRoots | null = null;
 let manager: SpaceManager | null = null;
@@ -109,6 +109,15 @@ function broadcast(e: SpaceSyncEvent): void {
   // so every stored + fanned-out copy must carry the same timestamp.
   const stamped: SpaceSyncEvent = { ...e, at: Date.now() };
   recentEvents = [...recentEvents.slice(-49), stamped];
+  // Persist "this space has actually synced" evidence. Safe to key on the bare
+  // 'synced' type: the engine now refuses to emit it for a space with no
+  // remote (it provisions or errors instead), so every 'synced' that reaches
+  // here really completed a pull+push against GitHub. The panel gates its
+  // green "All synced" on this marker — recentEvents alone is per-boot and
+  // can't distinguish "synced before" from "never synced".
+  try {
+    if (stamped.type === 'synced' && stamped.at) manager?.recordSyncSuccess(stamped.spaceId, stamped.at);
+  } catch { /* a failed marker write must never block event delivery */ }
   for (const w of BrowserWindow.getAllWindows()) {
     try { w.webContents.send('syncspaces:event', stamped); } catch { /* window closing */ }
   }
@@ -248,18 +257,28 @@ async function runDiscovery(): Promise<void> {
 
 async function startEngine(log: (m: string) => void): Promise<void> {
   const transport = new GitTransport({ deviceName: os.hostname() });
+  // Provision-on-demand hook for the engine: every sync cycle for a remote-less
+  // space retries repo provisioning through here (poll, debounce, "Sync now"),
+  // so a failed enable — gh missing, not signed in — self-heals once the user
+  // fixes the cause, instead of staying remote-less until an app restart.
+  const ensureProvisioned = async (space: SyncSpace) => {
+    const url = await manager!.ensureRemote(space);
+    await transport.setRemote(space, url);
+  };
   // Capture this start's instance locally: if a disable (or another start)
   // supersedes us mid-loop, the module-level `engine` no longer points at `e`
   // and we must stop OUR instance ourselves — otherwise its chokidar watchers
   // leak with nothing left holding a reference to close them.
-  const e = new SpaceSyncEngine(transport, { onEvent: broadcast });
+  const e = new SpaceSyncEngine(transport, { onEvent: broadcast, ensureProvisioned });
   engine = e;
   for (const space of activeSpaces()) { // stopped projects never re-added (spec §7 gate)
     if (engine !== e) { await e.stop(); return; } // superseded — clean up and bail (no socket created yet)
     try {
       await e.addSpace(space);
-      const url = await manager!.ensureRemote(space);
-      await transport.setRemote(space, url);
+      // Same closure the engine retries with — provisioning here surfaces a
+      // failure IMMEDIATELY at enable time (the error event below) instead of
+      // waiting for the first sync cycle to discover it.
+      await ensureProvisioned(space);
       void e.syncSpace(space); // initial reconcile
     } catch (err: any) {
       log(`sync-spaces: failed to start space ${space.id}: ${String(err?.message ?? err)}`);
@@ -379,6 +398,10 @@ export async function syncSpacesStatus() {
       return {
         ...s,
         remote: manager?.remoteFor(s.id) ?? null,
+        // Persisted "has ever completed a real sync" marker (ms epoch or null).
+        // The panel's status ladder gates green on this — a device that has
+        // never synced must read as hydrating/setting-up, never "All synced".
+        lastSyncAt: manager?.lastSyncFor(s.id) ?? null,
         // Read-time overlay (spec §8): synced display name + lifecycle state.
         displayName: rec?.displayName ?? name,
         state: rec?.state ?? (s.kind === 'project' ? 'active' : undefined),

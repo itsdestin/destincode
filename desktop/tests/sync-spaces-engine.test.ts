@@ -197,6 +197,78 @@ describe('SpaceSyncEngine', () => {
     await engine.stop();
   });
 
+  // ---- Honest-state-machine pins (2026-07-22) ----------------------------
+  // A space with no remote must NEVER emit 'synced': pull/push silently no-op
+  // without one, and that phantom success superseded the real provisioning
+  // error under latestUnresolvedError — a fresh device showed green
+  // "All synced" while it had never contacted GitHub (beta.8 macOS VM bug).
+
+  it('never emits synced for a remote-less space (no provisioner: errors instead)', async () => {
+    const t = fakeTransport();
+    (t.hasRemote as any).mockImplementation(async () => false);
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { debounceMs: 50, pollMs: 0, onEvent: e => events.push(e) });
+    const space: SyncSpace = { id: 'personal', kind: 'personal', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    expect(events.some(e => e.type === 'synced')).toBe(false);
+    expect(events.some(e => e.type === 'error')).toBe(true);
+    // And it never reached the (silently no-opping) pull/push.
+    expect(t.pulls.length).toBe(0);
+    expect(t.pushes.length).toBe(0);
+    await engine.stop();
+  });
+
+  it('provisions a remote-less space via ensureProvisioned, then really syncs', async () => {
+    const t = fakeTransport();
+    let provisioned = false;
+    (t.hasRemote as any).mockImplementation(async () => provisioned);
+    const ensureProvisioned = vi.fn(async () => { provisioned = true; });
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { debounceMs: 50, pollMs: 0, onEvent: e => events.push(e), ensureProvisioned });
+    const space: SyncSpace = { id: 'personal', kind: 'personal', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    expect(ensureProvisioned).toHaveBeenCalledTimes(1);
+    expect(t.pulls.length).toBe(1);
+    expect(t.pushes.length).toBe(1);
+    expect(events.some(e => e.type === 'synced')).toBe(true);
+    expect(events.some(e => e.type === 'error')).toBe(false);
+    // Already-provisioned spaces don't re-provision on the next cycle.
+    await engine.syncSpace(space);
+    expect(ensureProvisioned).toHaveBeenCalledTimes(1);
+    await engine.stop();
+  });
+
+  it('self-heals: provisioning failure surfaces VERBATIM each cycle until it succeeds', async () => {
+    const t = fakeTransport();
+    let provisioned = false;
+    (t.hasRemote as any).mockImplementation(async () => provisioned);
+    // First two cycles fail like a stock machine (gh absent); third succeeds
+    // (user installed gh / connected GitHub) — no restart, no toggle-cycle.
+    const ensureProvisioned = vi.fn()
+      .mockRejectedValueOnce(new Error('GitHub CLI (gh) is not installed — sync needs it to create your private repos'))
+      .mockRejectedValueOnce(new Error('GitHub CLI (gh) is not installed — sync needs it to create your private repos'))
+      .mockImplementation(async () => { provisioned = true; });
+    const events: SpaceSyncEvent[] = [];
+    const engine = new SpaceSyncEngine(t, { debounceMs: 50, pollMs: 0, onEvent: e => events.push(e), ensureProvisioned });
+    const space: SyncSpace = { id: 'personal', kind: 'personal', root: tmp };
+    await engine.addSpace(space);
+    await engine.syncSpace(space);
+    await engine.syncSpace(space);
+    // The plain-language cause reaches the event stream verbatim, EVERY cycle —
+    // re-emission is what keeps it alive past latestUnresolvedError's
+    // "a later synced supersedes" rule.
+    const errs = events.filter(e => e.type === 'error') as Extract<SpaceSyncEvent, { type: 'error' }>[];
+    expect(errs.length).toBe(2);
+    expect(errs[0].message).toMatch(/GitHub CLI \(gh\) is not installed/);
+    expect(events.some(e => e.type === 'synced')).toBe(false);
+    // Cause fixed → the very next cycle provisions and completes a real sync.
+    await engine.syncSpace(space);
+    expect(events.some(e => e.type === 'synced')).toBe(true);
+    await engine.stop();
+  });
+
   it('emits error events instead of throwing (never-block, spec §13)', async () => {
     const t = fakeTransport();
     (t.push as any).mockImplementation(async () => { throw new Error('boom'); });
