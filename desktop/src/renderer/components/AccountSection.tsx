@@ -7,7 +7,7 @@ import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
 import SettingsRow from './SettingsRow';
 import { Button, InputGroup } from './ui';
-import { ConnectedAccountsBody, GitHubMarkIcon } from './ConnectedAccounts';
+import { ConnectedAccountsBody } from './ConnectedAccounts';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Auth-token state and mutations
@@ -98,8 +98,14 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
 
   useEscClose(true, onClose);
 
-  const ghSummary =
-    ghStatus === 'unavailable' || ghStatus === null ? 'GitHub'
+  // Collapsed-row summary. While signed OUT of the YouCoded account the row
+  // stays NEUTRAL ("Manage…") — a "GitHub · @login" line directly under the
+  // "Sign in with GitHub" button read as the app contradicting itself
+  // (Destin, 2026-07-22, second screenshot). Signed in, the concrete status
+  // is useful and the sign-in button isn't on screen to clash with.
+  const ghSummary = !signedIn
+    ? 'Manage GitHub and other connections'
+    : ghStatus === 'unavailable' || ghStatus === null ? 'GitHub'
       : ghStatus.authed ? `GitHub · @${ghStatus.login ?? 'connected'}`
         : 'GitHub — not connected';
 
@@ -176,8 +182,15 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
                     onClick={() => setPage('connections')}
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
                   >
+                    {/* Neutral link glyph, NOT the octocat — the WeCoded
+                        sign-in button above already wears GitHub's mark, and
+                        doubling it is what made the two read as one broken
+                        flow. Provider marks belong on the sub-page rows. */}
                     <span className="flex items-center justify-center shrink-0 text-fg-muted" style={{ width: 32, height: 20 }}>
-                      <GitHubMarkIcon />
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                      </svg>
                     </span>
                     <span className="flex-1 min-w-0">
                       <span className="block text-xs text-fg font-medium">Connected accounts</span>
