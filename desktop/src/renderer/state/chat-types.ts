@@ -118,7 +118,12 @@ export type TimelineEntry =
   // bubble stays pending until the host actually drains it and the matching
   // TRANSCRIPT_USER_MESSAGE arrives, at which point the confirm path drops
   // this key (see chat-reducer.ts TRANSCRIPT_USER_MESSAGE).
-  | { kind: 'user'; message: ChatMessage; pending?: boolean; queued?: boolean }
+  // queueId: the host-minted id (NativeSendResult's queued.queueId) for THIS
+  // entry — only present alongside queued:true. Lets QUEUED_PROMPT_CANCELED
+  // (Task 11's Cancel/Edit affordances) target the exact bubble to remove;
+  // dropped by the TRANSCRIPT_USER_MESSAGE confirm along with the other
+  // queued-only fields.
+  | { kind: 'user'; message: ChatMessage; pending?: boolean; queued?: boolean; queueId?: string }
   | { kind: 'assistant-turn'; turnId: string }
   | { kind: 'prompt'; prompt: InteractivePrompt }
   // /cost and /usage render a snapshot card inline. Permanent (not dismissible).
@@ -264,6 +269,20 @@ export type ChatAction =
       // (BUG C: the queued path must NOT null currentTurnId/currentGroupId,
       // or it forks the still-streaming prior turn).
       queued?: boolean;
+      // Task 11: the host-minted queueId from the same NativeSendResult, only
+      // present alongside queued:true. Stored on the timeline entry so a later
+      // Cancel/Edit click can identify which queued send to remove.
+      queueId?: string;
+    }
+  | {
+      // Task 11 (cancel/edit queued messages): removes the pending+queued user
+      // bubble matching queueId. No-op if the entry isn't found — either the
+      // id was never valid, or the drain already won the race and confirmed it
+      // (TRANSCRIPT_USER_MESSAGE already cleared pending+queued by then, so the
+      // pending&&queued match fails and this correctly becomes a no-op).
+      type: 'QUEUED_PROMPT_CANCELED';
+      sessionId: string;
+      queueId: string;
     }
   | {
       type: 'SHOW_PROMPT';

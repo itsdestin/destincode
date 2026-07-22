@@ -5,6 +5,7 @@ import { splitFlowingKeywords } from './FlowingKeywords';
 import { formatBubbleTime } from '../utils/format-time';
 import { detectFilepaths } from '../hooks/useInlineFilepathDetector';
 import { FilepathToken } from './FilepathToken';
+import { Button } from './ui';
 
 interface Props {
   message: ChatMessage;
@@ -16,6 +17,18 @@ interface Props {
   // `queued` the same moment it clears `pending`. See chat-reducer.ts.
   pending?: boolean;
   queued?: boolean;
+  // Task 11: the host-minted id for this queued entry (chat-types.ts
+  // TimelineEntry.queueId) — required by both affordances below to identify
+  // which queued send to target. Absent whenever queued isn't true.
+  queueId?: string;
+  // Task 11: Cancel/Edit affordances on a queued bubble. Both are plain
+  // callbacks (no IPC/dispatch here) — ChatView wires the actual
+  // native:queue-remove invoke + dispatch, mirroring how ChatView wires
+  // ModelLoadingBar's onReload inline rather than threading window.claude
+  // through this presentational component. Rendered only when BOTH the
+  // handler is provided AND queueId is present.
+  onCancelQueued?: (queueId: string) => void;
+  onEditQueued?: (queueId: string, text: string) => void;
 }
 
 // Render a plain-text run with the existing treatment: flowing-keyword spans +
@@ -30,7 +43,7 @@ function renderTextRun(text: string, keyPrefix: string): React.ReactNode[] {
   );
 }
 
-export default React.memo(function UserMessage({ message, sessionId, showTimestamps, pending, queued }: Props) {
+export default React.memo(function UserMessage({ message, sessionId, showTimestamps, pending, queued, queueId, onCancelQueued, onEditQueued }: Props) {
   const content = message.content;
 
   // Attached files: message.attachments carries the EXACT picker paths (which
@@ -81,8 +94,40 @@ export default React.memo(function UserMessage({ message, sessionId, showTimesta
           // hasn't actually reached the host yet. text-on-accent/50 matches
           // the timestamp treatment just below (same bubble, same need for a
           // muted label against the accent background) — no new color token.
-          <div className="text-[9px] uppercase tracking-wider text-on-accent/50 select-none mb-1">
-            Queued
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="text-[9px] uppercase tracking-wider text-on-accent/50 select-none">
+              Queued
+            </div>
+            {/* Task 11: Cancel/Edit — only when a queueId exists AND the
+                caller wired a handler. Small icon buttons (16px, below the
+                44dp touch guideline like the attachment remover in InputBar)
+                sized down from Button's default 28px icon slot via className. */}
+            {queueId && (onCancelQueued || onEditQueued) && (
+              <div className="flex items-center gap-0.5 -mr-1">
+                {onEditQueued && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Edit queued message"
+                    onClick={() => onEditQueued(queueId, message.content)}
+                    className="w-4 h-4 rounded-full text-on-accent/60 hover:text-on-accent hover:bg-on-accent/10 text-[10px] leading-none"
+                  >
+                    ✎
+                  </Button>
+                )}
+                {onCancelQueued && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Cancel queued message"
+                    onClick={() => onCancelQueued(queueId)}
+                    className="w-4 h-4 rounded-full text-on-accent/60 hover:text-on-accent hover:bg-on-accent/10 text-[10px] leading-none"
+                  >
+                    ✕
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         )}
         {body}

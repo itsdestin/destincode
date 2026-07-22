@@ -526,6 +526,42 @@ function AppInner() {
     return true;
   }, [notifyIfPtyBlocked]);
 
+  // Task 11 (cancel/edit queued messages): Cancel — invoke removeQueued, then
+  // either dispatch the reducer's removal (true) or toast the honest "too
+  // late" reason (false, meaning the drain already won the race — the same
+  // outcome as an interrupt landing a tick too late elsewhere in this file).
+  const handleCancelQueued = useCallback(async (sid: string, queueId: string) => {
+    const removed = await window.claude.native.queueRemove(sid, queueId);
+    if (!removed) {
+      setToast('Already sending — too late to cancel.');
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
+    dispatch({ type: 'QUEUED_PROMPT_CANCELED', sessionId: sid, queueId });
+  }, [dispatch]);
+
+  // Edit = cancel + refill (design ruling — no in-place editing). The draft
+  // check MUST happen BEFORE removeQueued runs — brief invariant: never
+  // destroy the queued message if the refill can't land. inputBarRef is the
+  // single ChatInputBar instance (mounted once, bound to the active session);
+  // see InputBarHandle's hasDraft/fillDraft for why this ref was extended
+  // instead of introducing new App state.
+  const handleEditQueued = useCallback(async (sid: string, queueId: string, text: string) => {
+    if (inputBarRef.current?.hasDraft()) {
+      setToast('Finish or clear your current draft first, then edit the queued message.');
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+    const removed = await window.claude.native.queueRemove(sid, queueId);
+    if (!removed) {
+      setToast('Already sending — too late to cancel.');
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
+    dispatch({ type: 'QUEUED_PROMPT_CANCELED', sessionId: sid, queueId });
+    inputBarRef.current?.fillDraft(text);
+  }, [dispatch]);
+
   // Compaction watchdog: activity-aware — resets on any reducer update for a
   // session with compactionPending set. Any transcript event bumps the timer
   // forward, so long compactions (large sessions) don't trigger a false "may
@@ -2631,6 +2667,8 @@ function AppInner() {
                       // Provider-config error bubble → open Settings straight to
                       // the Model Providers section so the key can be fixed.
                       onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
+                      onCancelQueued={handleCancelQueued}
+                      onEditQueued={handleEditQueued}
                     />
                   </ErrorBoundary>
                   <ErrorBoundary name="Terminal">

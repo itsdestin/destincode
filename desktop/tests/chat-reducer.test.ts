@@ -586,4 +586,61 @@ describe('native runtime reducer paths', () => {
     state = dispatch(state, { type: 'NATIVE_MODEL_STATE_CHANGED', sessionId: SESSION, state: 'sleeping', modelId: 'Qwen-2B', sizeBytes: 2_000_000_000 });
     expect(state.get(SESSION)!.modelEverResident).toBe(true);
   });
+
+  // ---- Task 11: cancel/edit queued messages ----
+  describe('QUEUED_PROMPT_CANCELED', () => {
+    it('stores queueId on a queued USER_PROMPT entry', () => {
+      state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'queued msg', timestamp: 1, queued: true, queueId: 'q-1' });
+      const entry = state.get(SESSION)!.timeline[0];
+      expect(entry).toMatchObject({ kind: 'user', pending: true, queued: true, queueId: 'q-1' });
+    });
+
+    it('removes only the matching pending+queued entry, leaving other timeline entries untouched', () => {
+      state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'keep me (sent)', timestamp: 1 });
+      state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'cancel me', timestamp: 2, queued: true, queueId: 'q-1' });
+      state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'keep me (queued)', timestamp: 3, queued: true, queueId: 'q-2' });
+      expect(state.get(SESSION)!.timeline).toHaveLength(3);
+
+      state = dispatch(state, { type: 'QUEUED_PROMPT_CANCELED', sessionId: SESSION, queueId: 'q-1' });
+
+      const timeline = state.get(SESSION)!.timeline;
+      expect(timeline).toHaveLength(2);
+      expect(timeline.map((e) => (e.kind === 'user' ? e.message.content : null))).toEqual([
+        'keep me (sent)',
+        'keep me (queued)',
+      ]);
+      // The survivor's own queueId is untouched.
+      expect(timeline[1]).toMatchObject({ queued: true, queueId: 'q-2' });
+    });
+
+    it('is a no-op when the drain already won the race (TRANSCRIPT_USER_MESSAGE confirmed first)', () => {
+      state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'racer', timestamp: 1, queued: true, queueId: 'q-1' });
+      // Confirm arrives first — clears pending+queued+queueId (see TRANSCRIPT_USER_MESSAGE).
+      state = dispatch(state, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-1', text: 'racer', timestamp: 2 });
+      const before = state.get(SESSION)!;
+      expect(before.timeline[0]).toMatchObject({ pending: false });
+
+      state = dispatch(state, { type: 'QUEUED_PROMPT_CANCELED', sessionId: SESSION, queueId: 'q-1' });
+
+      // No-op: same object reference, entry still present and confirmed.
+      expect(state.get(SESSION)!).toBe(before);
+      expect(state.get(SESSION)!.timeline).toHaveLength(1);
+    });
+
+    it('is a no-op for an unknown session id', () => {
+      state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'irrelevant', timestamp: 1, queued: true, queueId: 'q-1' });
+      const before = state;
+      state = dispatch(state, { type: 'QUEUED_PROMPT_CANCELED', sessionId: 'ghost-session', queueId: 'q-1' });
+      expect(state).toBe(before);
+    });
+
+    it('TRANSCRIPT_USER_MESSAGE confirm drops queueId along with pending/queued', () => {
+      state = dispatch(state, { type: 'USER_PROMPT', sessionId: SESSION, content: 'confirm me', timestamp: 1, queued: true, queueId: 'q-1' });
+      state = dispatch(state, { type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-1', text: 'confirm me', timestamp: 2 });
+      const entry = state.get(SESSION)!.timeline[0];
+      expect(entry).toMatchObject({ pending: false });
+      expect((entry as any).queued).toBeUndefined();
+      expect((entry as any).queueId).toBeUndefined();
+    });
+  });
 });

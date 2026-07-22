@@ -482,7 +482,11 @@ describe('NativeSessionHost', () => {
       const r1 = host.send(id, 'first');
       const r2 = host.send(id, 'second');
       expect(r1).toEqual({ status: 'sent' });
-      expect(r2).toEqual({ status: 'queued' });
+      // Cancel/edit (M1 follow-up): a queued ack now carries a host-minted id
+      // so the renderer can target this exact entry with removeQueued() later.
+      expect(r2.status).toBe('queued');
+      expect(typeof (r2 as { queueId: string }).queueId).toBe('string');
+      expect((r2 as { queueId: string }).queueId.length).toBeGreaterThan(0);
       await waitForTurnComplete(host, 2);
       expect(events).toEqual(['first', 'second']); // user-message for 'second' fires only when drained
     });
@@ -491,6 +495,37 @@ describe('NativeSessionHost', () => {
       host.send(id, 'turn'); // in flight
       for (let i = 0; i < 10; i++) expect(host.send(id, `q${i}`).status).toBe('queued');
       expect(host.send(id, 'overflow')).toEqual({ status: 'failed', reason: 'queue-full' });
+    });
+
+    // ---- Cancel/edit queued messages (Task 11) ----
+    describe('removeQueued', () => {
+      it('removes a queued entry mid-queue — the drain skips it and it never emits user-message', async () => {
+        const events: string[] = [];
+        host.on('transcript-event', (e) => { if (e.type === 'user-message') events.push(e.data.text); });
+        host.send(id, 'first');                                  // dispatched now
+        const rA = host.send(id, 'a') as { status: 'queued'; queueId: string };
+        const rB = host.send(id, 'b') as { status: 'queued'; queueId: string };
+        expect(host.removeQueued(id, rA.queueId)).toBe(true);
+        await waitForTurnComplete(host, 2);                      // 'first' + 'b' — 'a' was cut
+        expect(events).toEqual(['first', 'b']);
+        expect(rB.queueId).not.toBe(rA.queueId);
+      });
+
+      it('returns false for an id that already drained (shift() beat the removal)', async () => {
+        host.send(id, 'first');
+        const rA = host.send(id, 'a') as { status: 'queued'; queueId: string };
+        await waitForTurnComplete(host, 2); // both turns finish — 'a' has been shift()'d and sent
+        expect(host.removeQueued(id, rA.queueId)).toBe(false);
+      });
+
+      it('returns false on a dead/unknown session — never throws', () => {
+        expect(host.removeQueued('ghost-session', 'whatever')).toBe(false);
+      });
+
+      it('returns false for an id that was never queued', () => {
+        host.send(id, 'first'); // in flight, nothing queued yet
+        expect(host.removeQueued(id, 'not-a-real-id')).toBe(false);
+      });
     });
 
     it('interrupt aborts the current turn only — the queue still drains (pinned semantics)', async () => {
@@ -525,7 +560,7 @@ describe('NativeSessionHost', () => {
       const r1 = errHost.send('e-1', 'doomed');
       const r2 = errHost.send('e-1', 'after-error');
       expect(r1).toEqual({ status: 'sent' });
-      expect(r2).toEqual({ status: 'queued' });
+      expect(r2.status).toBe('queued'); // queueId is a fresh randomUUID — not asserted verbatim here
       await waitForTurnComplete(errHost, 1); // 'after-error' produced a turn-complete despite turn 1 erroring
       expect(types).toContain('session-error'); // turn 1 (doomed) errored, not stranded the queue
       expect(types).toContain('turn-complete');  // turn 2 (after-error) still ran and completed

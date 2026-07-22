@@ -773,6 +773,12 @@ export class RemoteServer {
         this.respond(client.ws, type, id, result);
         break;
       }
+      // Task 11: removeQueued is sync + never throws — mirrors the desktop invoke.
+      case 'native:queue-remove': {
+        const removed = this.nativeRuntime ? this.nativeRuntime.nativeHost.removeQueued(payload.sessionId, payload.queueId) : false;
+        this.respond(client.ws, type, id, removed);
+        break;
+      }
       case 'native:sessions-list': {
         this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
         break;

@@ -3,9 +3,9 @@ import '@testing-library/jest-dom/vitest';
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
-import { ChatProvider, useChatDispatch } from '../state/chat-context';
+import { ChatProvider, useChatDispatch, useChatStore } from '../state/chat-context';
 import { SkillProvider } from '../state/skill-context';
-import InputBar from './InputBar';
+import InputBar, { InputBarHandle } from './InputBar';
 
 // jsdom (per this repo's vitest.config.ts) has no global setupFiles/polyfills —
 // useScrollFade (mounted unconditionally by InputBar's textarea) reaches for
@@ -266,5 +266,126 @@ describe('InputBar — stop button (Task 10 placement)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
     expect((window as any).claude.session.sendInput).toHaveBeenCalledWith('sess-1', '\x1b');
     expect((window as any).claude.native.interrupt).not.toHaveBeenCalled();
+  });
+});
+
+// Task 11 (cancel/edit queued messages): the InputBarHandle ref idiom App uses
+// for the Edit-refill flow — checked BEFORE removeQueued runs (hasDraft) and
+// applied AFTER it succeeds (fillDraft). See InputBarHandle's WHY comment for
+// why this extends the existing ref rather than introducing new App state.
+describe('InputBar — InputBarHandle hasDraft/fillDraft (Task 11)', () => {
+  beforeEach(() => {
+    (global as any).ResizeObserver = NoopResizeObserver;
+    (window as any).claude = {
+      native: { supported: true, send: vi.fn() },
+      session: { sendInput: vi.fn() },
+      skills: {
+        list: vi.fn().mockResolvedValue([]),
+        getFavorites: vi.fn().mockResolvedValue([]),
+        getChips: vi.fn().mockResolvedValue([]),
+        getCuratedDefaults: vi.fn().mockResolvedValue([]),
+      },
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  function renderWithRef() {
+    const ref = React.createRef<InputBarHandle>();
+    render(
+      <ChatProvider>
+        <SkillProvider>
+          <InputBar ref={ref} sessionId="sess-1" provider="native" />
+        </SkillProvider>
+      </ChatProvider>,
+    );
+    return ref;
+  }
+
+  it('hasDraft() is false on an empty composer', () => {
+    const ref = renderWithRef();
+    expect(ref.current!.hasDraft()).toBe(false);
+  });
+
+  it('hasDraft() is false for a whitespace-only draft (trimmed)', () => {
+    const ref = renderWithRef();
+    const textarea = screen.getByPlaceholderText('Message Claude...') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '   ' } });
+    expect(ref.current!.hasDraft()).toBe(false);
+  });
+
+  it('hasDraft() is true once the user has typed something', () => {
+    const ref = renderWithRef();
+    const textarea = screen.getByPlaceholderText('Message Claude...') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'a draft in progress' } });
+    expect(ref.current!.hasDraft()).toBe(true);
+  });
+
+  it('fillDraft() replaces the composer content and focuses it', () => {
+    const ref = renderWithRef();
+    const textarea = screen.getByPlaceholderText('Message Claude...') as HTMLTextAreaElement;
+    act(() => { ref.current!.fillDraft('the edited queued message'); });
+    expect(textarea.value).toBe('the edited queued message');
+    expect(ref.current!.hasDraft()).toBe(true);
+  });
+});
+
+// Task 11: a 'queued' native ack must forward its queueId onto the USER_PROMPT
+// dispatch so the reducer can store it (chat-reducer.ts) and later target the
+// exact bubble via QUEUED_PROMPT_CANCELED.
+describe('InputBar native send — queued ack carries queueId onto USER_PROMPT (Task 11)', () => {
+  beforeEach(() => {
+    (global as any).ResizeObserver = NoopResizeObserver;
+    capturedDispatch = null;
+    (window as any).claude = {
+      native: { supported: true, send: vi.fn() },
+      session: { sendInput: vi.fn() },
+      skills: {
+        list: vi.fn().mockResolvedValue([]),
+        getFavorites: vi.fn().mockResolvedValue([]),
+        getChips: vi.fn().mockResolvedValue([]),
+        getCuratedDefaults: vi.fn().mockResolvedValue([]),
+      },
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('dispatches USER_PROMPT with queued:true and the ack queueId', async () => {
+    (window as any).claude.native.send.mockResolvedValue({ status: 'queued', queueId: 'q-99' });
+
+    let capturedStore: ReturnType<typeof useChatStore> | null = null;
+    function StoreCapture() {
+      capturedStore = useChatStore();
+      return null;
+    }
+
+    render(
+      <ChatProvider>
+        <SkillProvider>
+          <DispatchCapture />
+          <StoreCapture />
+          <InputBar sessionId="sess-1" provider="native" />
+        </SkillProvider>
+      </ChatProvider>,
+    );
+    act(() => { capturedDispatch!({ type: 'SESSION_INIT', sessionId: 'sess-1' }); });
+
+    const textarea = screen.getByPlaceholderText('Message Claude...') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'queue me' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => {
+      const timeline = capturedStore!.getState().get('sess-1')?.timeline ?? [];
+      expect(timeline.length).toBe(1);
+    });
+    const entry = capturedStore!.getState().get('sess-1')!.timeline[0];
+    expect(entry).toMatchObject({ kind: 'user', pending: true, queued: true, queueId: 'q-99' });
   });
 });

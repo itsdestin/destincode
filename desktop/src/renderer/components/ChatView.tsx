@@ -38,6 +38,14 @@ interface Props {
    *  provider-config error bubble (missing/disabled key) can jump the user
    *  straight to the fix. App owns Settings open-state, so it passes this down. */
   onOpenProviderSettings?: () => void;
+  // Task 11 (cancel/edit queued messages): App owns the native:queue-remove
+  // invoke, the QUEUED_PROMPT_CANCELED dispatch, the toast state, and the
+  // input-bar ref the Edit flow refills — none of which ChatView/UserMessage
+  // have access to, so these are threaded straight through to the bubble.
+  // sessionId is explicit (not closed over) because App wires ONE pair of
+  // handlers shared across every session's ChatView instance.
+  onCancelQueued?: (sessionId: string, queueId: string) => void;
+  onEditQueued?: (sessionId: string, queueId: string, text: string) => void;
 }
 
 function HistoryExpandButton({ sessionId, resumeInfo }: {
@@ -82,7 +90,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings }: Props) {
+export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -625,6 +633,9 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                       showTimestamps={showTimestamps}
                       pending={entry.pending}
                       queued={entry.queued}
+                      queueId={entry.queueId}
+                      onCancelQueued={onCancelQueued ? (queueId) => onCancelQueued(sessionId, queueId) : undefined}
+                      onEditQueued={onEditQueued ? (queueId, text) => onEditQueued(sessionId, queueId, text) : undefined}
                     />
                   );
                   break;

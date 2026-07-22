@@ -254,6 +254,10 @@ declare global {
         // fire-and-forget to invoke) — Task 3's InputBar awaits this to
         // decide whether to show the bubble or a failure toast.
         send: (sessionId: string, text: string) => Promise<NativeSendResult>;
+        // Task 11: cancel/edit a queued-but-not-yet-sent message. true = removed
+        // (caller may now safely refill the composer); false = too late (already
+        // draining/sent) or the session isn't live — never throws.
+        queueRemove: (sessionId: string, queueId: string) => Promise<boolean>;
         interrupt: (sessionId: string) => void;
         setBinding: (sessionId: string, binding: { providerId: string; modelId: string }) => Promise<boolean>;
         // Per-session native permission mode (StatusBar chip, Task 13). Returns

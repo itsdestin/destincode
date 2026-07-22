@@ -14,6 +14,7 @@
 // not wait on disk) AND enqueue the append on the per-session chain. A renderer
 // crash losing an unpersisted event is acceptable; a stuttering UI is not.
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './harness-session';
@@ -62,7 +63,11 @@ interface LiveEntry {
   appendChain: Promise<void>;
   // M1 send queue: FIFO of user messages that arrived while a turn was in
   // flight. Drained one at a time by runTurns; dropped with the entry on destroy.
-  queue: string[];
+  // Task 11 (cancel/edit queued messages): each entry carries a host-minted id
+  // (send()'s randomUUID()) so removeQueued() can target one entry precisely —
+  // the id is opaque to the drain loop, which only ever consumes the FRONT via
+  // shift() (see runTurns), so a removed entry can never be shifted out and sent.
+  queue: { id: string; text: string }[];
   // True from dispatch until runTurns finishes the last queued turn. Host-owned
   // (HarnessSession's in-flight state is private); safe because Node is single-threaded.
   inFlight: boolean;
@@ -388,8 +393,11 @@ export class NativeSessionHost extends EventEmitter {
     if (!entry) return { status: 'failed', reason: 'not-live' };
     if (entry.inFlight) {
       if (entry.queue.length >= SEND_QUEUE_LIMIT) return { status: 'failed', reason: 'queue-full' };
-      entry.queue.push(text);
-      return { status: 'queued' };
+      // Task 11: mint a stable id per queued entry so the renderer can target
+      // this exact message later with removeQueued() (Cancel/Edit before send).
+      const queueId = randomUUID();
+      entry.queue.push({ id: queueId, text });
+      return { status: 'queued', queueId };
     }
     entry.inFlight = true;
     // WHY: defer the turn dispatch one macrotask so the invoke reply (the renderer's
@@ -401,6 +409,25 @@ export class NativeSessionHost extends EventEmitter {
     // turn still starts — same outcome as stopping a millisecond before sending.
     setImmediate(() => { void this.runTurns(sessionId, entry, text); });
     return { status: 'sent' };
+  }
+
+  /** Cancel/edit a queued-but-not-yet-sent message (Task 11). Sync findIndex +
+   *  splice — the check-and-remove is atomic against the single-threaded drain
+   *  loop, which only ever consumes the FRONT of `queue` via shift() (see
+   *  runTurns): once splice() has run here, that entry can never be shifted
+   *  out and sent, no matter how send()/runTurns interleave around it. Never
+   *  throws; returns false (not true+error) for every "can't do that" case —
+   *  the session isn't live, the id was never queued, or the drain already
+   *  shift()'d it out (a real race the caller must handle, not a bug) — so the
+   *  renderer's Cancel/Edit affordance can render a single "too late" toast
+   *  without needing to distinguish the reason. */
+  removeQueued(sessionId: string, queueId: string): boolean {
+    const entry = this.live.get(sessionId);
+    if (!entry) return false;
+    const idx = entry.queue.findIndex((q) => q.id === queueId);
+    if (idx === -1) return false;
+    entry.queue.splice(idx, 1);
+    return true;
   }
 
   // Runs the dispatched turn, then drains the queue turn-by-turn. send() settling
@@ -417,7 +444,9 @@ export class NativeSessionHost extends EventEmitter {
       }
       // Destroy() may have removed/replaced the entry mid-turn — stop draining then.
       if (this.live.get(sessionId) !== entry) return;
-      next = entry.queue.shift();
+      // .text: queue entries are {id, text} (Task 11) — the id only matters to
+      // removeQueued(); shift() here is what makes a removed entry unreachable.
+      next = entry.queue.shift()?.text;
     }
     entry.inFlight = false;
   }

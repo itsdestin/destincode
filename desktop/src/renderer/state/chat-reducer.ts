@@ -340,7 +340,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (action.queued) {
         next.set(action.sessionId, {
           ...session,
-          timeline: [...session.timeline, { kind: 'user', message, pending: true, queued: true }],
+          // Task 11: carry the host-minted queueId onto the entry so a later
+          // QUEUED_PROMPT_CANCELED (Cancel/Edit click) can find this exact bubble.
+          timeline: [...session.timeline, { kind: 'user', message, pending: true, queued: true, queueId: action.queueId }],
         });
         return next;
       }
@@ -357,6 +359,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         errorMessage: null,
         stallWarning: null,
       });
+      return next;
+    }
+
+    // Task 11: Cancel/Edit a queued-but-not-yet-sent message. Removes the
+    // pending+queued entry matching queueId. No-op (not an error) when no
+    // match is found — the entry may never have existed for this session, or
+    // the drain already won the race and TRANSCRIPT_USER_MESSAGE confirmed it
+    // first, which clears BOTH pending and queued (see that handler below), so
+    // the pending&&queued match here correctly falls through to the no-op.
+    case 'QUEUED_PROMPT_CANCELED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const idx = session.timeline.findIndex(
+        (e) => e.kind === 'user' && e.pending === true && e.queued === true && e.queueId === action.queueId,
+      );
+      if (idx === -1) return state;
+      const timeline = [...session.timeline.slice(0, idx), ...session.timeline.slice(idx + 1)];
+      next.set(action.sessionId, { ...session, timeline });
       return next;
     }
 

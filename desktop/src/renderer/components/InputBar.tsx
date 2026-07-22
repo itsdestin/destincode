@@ -21,6 +21,20 @@ import { isAndroid } from '../platform';
 
 export interface InputBarHandle {
   clear: () => void;
+  // Task 11 (cancel/edit queued messages): the edit-refill idiom. There was no
+  // existing "external surface reads/replaces InputBar's draft" mechanism —
+  // `initialInput` fills once per session id (already consumed for an ACTIVE
+  // session) and the `youcoded:compose-insert` CustomEvent only prepends
+  // fire-and-forget (no way to check emptiness first, which the brief's
+  // ordering — refuse BEFORE removing the queued entry — requires). Extending
+  // this existing ref (already used by App for `clear()`) with a synchronous
+  // read + an unconditional replace was the smallest addition that supports
+  // the required check-then-act sequence; see task-11-report.md.
+  /** True when the composer currently holds a non-empty (trimmed) draft. */
+  hasDraft: () => boolean;
+  /** Replace the composer's content with `text` and focus it. Caller must call
+   *  hasDraft() first — this does not check emptiness itself. */
+  fillDraft: (text: string) => void;
 }
 
 interface Props {
@@ -168,6 +182,21 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       setText('');
       setAttachments([]);
       if (inputRef.current) inputRef.current.style.height = 'auto';
+    },
+    // Task 11: read the LIVE DOM value (not the `text` state closure) — mirrors
+    // send()'s currentText read above, same stale-closure rationale.
+    hasDraft: () => (inputRef.current?.value ?? text).trim().length > 0,
+    // Mirrors the initialInput prefill effect above (setText + focus + caret
+    // at the end) so an edited queued message gets the same "ready to review/
+    // send" placement.
+    fillDraft: (draftText: string) => {
+      setText(draftText);
+      requestAnimationFrame(() => {
+        if (inputRef.current) {
+          inputRef.current.focus();
+          inputRef.current.setSelectionRange(draftText.length, draftText.length);
+        }
+      });
     },
   }));
 
@@ -409,6 +438,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             timestamp: Date.now(),
             attachments: files.map((f) => f.path),
             queued: result.status === 'queued',
+            // Task 11: only the 'queued' arm carries a queueId — undefined here
+            // is correct (and ignored by the reducer) for a 'sent' ack.
+            ...(result.status === 'queued' ? { queueId: result.queueId } : {}),
           });
         })();
         return true;
