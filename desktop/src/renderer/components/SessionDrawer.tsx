@@ -636,17 +636,17 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                   <button
                     type="button"
                     onClick={() => editRef.current?.cancelEdit()}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-panel text-fg-2 border border-edge shadow-md hover:text-fg hover:bg-well transition-colors"
+                    className="flex items-center gap-2 px-5 py-3 rounded-full text-sm font-semibold bg-panel text-fg-2 border border-edge shadow-lg hover:text-fg hover:bg-well transition-colors"
                   >
-                    <Ic name="close" size={13} />
+                    <Ic name="close" size={17} />
                     Cancel
                   </button>
                   <button
                     type="button"
                     onClick={() => editRef.current?.saveEdit()}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-accent text-on-accent shadow-md hover:opacity-90 transition-opacity"
+                    className="flex items-center gap-2 px-5 py-3 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
                   >
-                    <Ic name="check" size={13} />
+                    <Ic name="check" size={17} />
                     Save
                   </button>
                 </>
@@ -654,9 +654,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 <button
                   type="button"
                   onClick={() => { editRef.current?.startEdit(); setListOpen(false); }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-accent text-on-accent shadow-md hover:opacity-90 transition-opacity"
+                  className="flex items-center gap-2 px-5 py-3 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
                 >
-                  <Ic name="editdoc" size={13} />
+                  <Ic name="editdoc" size={17} />
                   Edit
                 </button>
               )}
