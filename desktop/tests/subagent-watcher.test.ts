@@ -49,6 +49,14 @@ function wait(ms = 50): Promise<void> {
 const SETTLE_MS = 5_000;   // in-process: watcher read + emit
 const WATCH_MS = 15_000;   // fs.watch/stat-poll delivery of an external write
 
+// ...and the second knob, without which the ceilings above are fiction: a file
+// with no vi.setConfig inherits vitest's DEFAULT 5000ms testTimeout, so a
+// 15_000ms vi.waitFor can never actually wait 15s — the test dies at 5s first.
+// Same gap that kept sync-spaces-engine.test.ts flaking on macOS after PR #180
+// raised its poll ceiling and nothing else. One bounds the poll, one bounds the
+// test; both are required.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
+
 describe('SubagentWatcher', () => {
   let tmpRoot: string;
   let subagentsDir: string;

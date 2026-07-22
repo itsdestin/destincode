@@ -128,14 +128,45 @@ export interface SyncConfig {
 
 // --- Paths ---
 
-const claudeDir = path.join(os.homedir(), '.claude');
-const configPath = path.join(claudeDir, 'toolkit-state', 'config.json');
-const syncMarkerPath = path.join(claudeDir, 'toolkit-state', '.sync-marker');
-const backupMetaPath = path.join(claudeDir, 'backup-meta.json');
-const syncWarningsPath = path.join(claudeDir, '.sync-warnings');
-const syncWarningsJsonPath = path.join(claudeDir, '.sync-warnings.json');
-const syncLockDir = path.join(claudeDir, 'toolkit-state', '.sync-lock');
-const backupLogPath = path.join(claudeDir, 'backup.log');
+// `let`, not `const`, so setClaudeDirForTests() can re-point them. These are
+// still resolved once at module load in production — behavior is unchanged.
+let claudeDir: string;
+let configPath: string;
+let syncMarkerPath: string;
+let backupMetaPath: string;
+let syncWarningsPath: string;
+let syncWarningsJsonPath: string;
+let syncLockDir: string;
+let backupLogPath: string;
+
+function resolvePaths(home: string): void {
+  claudeDir = path.join(home, '.claude');
+  configPath = path.join(claudeDir, 'toolkit-state', 'config.json');
+  syncMarkerPath = path.join(claudeDir, 'toolkit-state', '.sync-marker');
+  backupMetaPath = path.join(claudeDir, 'backup-meta.json');
+  syncWarningsPath = path.join(claudeDir, '.sync-warnings');
+  syncWarningsJsonPath = path.join(claudeDir, '.sync-warnings.json');
+  syncLockDir = path.join(claudeDir, 'toolkit-state', '.sync-lock');
+  backupLogPath = path.join(claudeDir, 'backup.log');
+}
+resolvePaths(os.homedir());
+
+/**
+ * TEST-ONLY seam. Re-points this module's paths at a throwaway home.
+ *
+ * Without it these paths are frozen from os.homedir() at module load, so
+ * sync-warnings-lifecycle.test.ts read and wrote the developer's REAL
+ * ~/.claude/.sync-warnings.json — writeWarnings([]) deletes that file. That is
+ * both a live-app hazard (a running YouCoded owns it) and the actual source of
+ * the intermittent failure: SyncService.runHealthCheck() writes an OFFLINE
+ * warning to the same path at app launch, and the suite asserts no OFFLINE
+ * warning survives. Setting process.env.HOME does NOT work here — the static
+ * import is hoisted above any assignment, and os.homedir() reads USERPROFILE
+ * rather than HOME on Windows.
+ */
+export function setClaudeDirForTests(home: string): void {
+  resolvePaths(home);
+}
 
 /** Per-backend sync marker path, used for tracking individual push times. */
 function perBackendMarkerPath(backendId: string): string {

@@ -28,12 +28,55 @@ export async function readSidecar(projectRoot: string): Promise<ReadResult> {
   }
 }
 
+/**
+ * Advance `updatedAt` past `expected` when the two would collide.
+ *
+ * Fix (lost update): `updatedAt` is the CAS comparand, and it is a
+ * millisecond-resolution ISO timestamp. Two writers landing inside the SAME
+ * millisecond used to leave the on-disk token byte-identical to the value a
+ * concurrent reader had already read — so that reader's CAS check passed on a
+ * value that had in fact changed underneath it (classic ABA) and its stale copy
+ * clobbered the other writer's record. Both callers got `committed: true` and
+ * one artifact silently vanished; measured at ~50% of same-millisecond pairs.
+ *
+ * Guaranteeing the written token is strictly greater than the one the writer
+ * read makes every successful write strictly increase the on-disk token (a
+ * commit only happens when on-disk === expected). A stale reader can then never
+ * match, so ABA is impossible. The +1ms floor also makes this robust to a
+ * backwards wall-clock jump, which a plain `now` comparand is not.
+ *
+ * Compares PARSED times, not strings. toISOString() output is fixed-width, but
+ * a sidecar synced from Android carries Java Instant.toString(), which omits
+ * trailing zero sub-second digits ("…:36Z") — so lexicographic comparison would
+ * be wrong on exactly the cross-device files this guard has to protect.
+ * Unparseable input (hand-edited sidecar) falls through untouched rather than
+ * throwing; the CAS check itself still rejects the write.
+ */
+function bumpPastExpected(candidate: string, expected: string | null): string {
+  if (expected === null) return candidate;
+  const expMs = Date.parse(expected);
+  const candMs = Date.parse(candidate);
+  if (Number.isNaN(expMs) || Number.isNaN(candMs)) return candidate;
+  if (candMs > expMs) return candidate;
+  return new Date(expMs + 1).toISOString();
+}
+
 export async function writeSidecar(
   projectRoot: string,
   expectedUpdatedAt: string | null,
   next: ProjectSidecar
 ): Promise<{ committed: boolean }> {
   const path = join(projectRoot, SIDECAR_RELATIVE);
+  // Enforced HERE rather than in each caller so every sidecar writer inherits
+  // it (appendVersion, removeArtifactRecord, renameArtifact, the ipc-handlers
+  // manualIncludes/excludes paths, and sync-spaces import-project).
+  //
+  // This mutates `next`, so on a COMMITTED write the caller's in-memory object
+  // matches disk. On a CAS conflict it does not — `next` then carries a
+  // timestamp that was never written. Every caller re-reads the sidecar before
+  // retrying rather than reusing the object, so nothing observes that; a future
+  // caller that retries with the same object must re-read too.
+  next.updatedAt = bumpPastExpected(next.updatedAt, expectedUpdatedAt);
   const json = JSON.stringify(next, null, 2);
   const result = await casWrite(
     path,

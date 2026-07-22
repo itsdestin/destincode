@@ -105,6 +105,28 @@ fun readSidecar(projectRoot: String): ReadResult {
 }
 
 /**
+ * Advance [candidate] past [expected] when the two would collide. Mirrors
+ * bumpPastExpected() in desktop/src/main/artifacts/artifact-store.ts — see that
+ * file for the full rationale.
+ *
+ * Short version: updatedAt is the CAS comparand and it has millisecond
+ * resolution, so two writers inside one millisecond used to leave the on-disk
+ * token identical to the value a concurrent reader had already read. That
+ * reader's CAS then passed on stale data (ABA) and clobbered the other record.
+ * Making every committed write strictly increase the token removes the race.
+ *
+ * Unlike the TS side, this compares parsed Instants rather than strings:
+ * Instant.toString() omits trailing zero sub-second digits, so its output is
+ * NOT fixed-width and lexicographic comparison would be wrong.
+ */
+private fun bumpPastExpected(candidate: String, expected: String?): String {
+    if (expected == null) return candidate
+    val exp = try { Instant.parse(expected) } catch (_: Exception) { return candidate }
+    val cand = try { Instant.parse(candidate) } catch (_: Exception) { return candidate }
+    return if (cand.isAfter(exp)) candidate else exp.plusMillis(1).toString()
+}
+
+/**
  * Write [next] to the sidecar, guarded by CAS on [expectedUpdatedAt].
  * Returns committed=false on CAS conflict (caller should re-read and retry).
  */
@@ -114,6 +136,9 @@ fun writeSidecar(
     next:              ProjectSidecar,
 ): Boolean {
     val path = File(projectRoot, SIDECAR_RELATIVE).absolutePath
+    // Enforced here, not in callers, so every Android sidecar writer inherits
+    // it — same placement as the TS writeSidecar.
+    next.updatedAt = bumpPastExpected(next.updatedAt, expectedUpdatedAt)
     val json = next.toJson().toString(2)
     val result = casWrite(
         target            = path,

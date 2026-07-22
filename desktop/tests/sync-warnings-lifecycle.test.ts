@@ -9,20 +9,28 @@ import {
   clearWarningsByBackend,
   clearWarningsByCode,
   dismissWarning,
+  setClaudeDirForTests,
 } from '../src/main/sync-state';
 import type { SyncWarning } from '../src/main/sync-state';
 
-// Redirect HOME so the real ~/.claude isn't touched.
+// A throwaway home for this suite. The old header claimed HOME was redirected
+// "before the module is imported" — it never was: nothing assigned HOME, and a
+// static import is hoisted above any assignment anyway. So every assertion here
+// ran against the developer's REAL ~/.claude/.sync-warnings.json, which
+// writeWarnings([]) deletes.
+//
+// That is what made 'clearWarningsByCode removes only matching code' flaky
+// (ROADMAP :130): SyncService.runHealthCheck() writes an OFFLINE warning to
+// that exact file when a YouCoded instance launches, and this suite asserts no
+// OFFLINE warning survives. It was never module-load ORDER — no other suite
+// writes warnings — it was a second process sharing one real file.
 const tmpHome = path.join(os.tmpdir(), `sync-warnings-test-${Date.now()}`);
 const claudeDir = path.join(tmpHome, '.claude');
 const warningsPath = path.join(claudeDir, '.sync-warnings.json');
 
+setClaudeDirForTests(tmpHome);
+
 beforeEach(() => {
-  // sync-state.ts computes paths from os.homedir() at module-load time,
-  // so tests here work by redirecting HOME before the module is imported.
-  // If a previous test already imported the module, the path is frozen —
-  // re-importing via vi.resetModules() would be required for full isolation.
-  // For this suite we just ensure the claude dir exists under the same prefix.
   fs.mkdirSync(claudeDir, { recursive: true });
   try { fs.unlinkSync(warningsPath); } catch {}
 });
@@ -44,15 +52,13 @@ function mkWarning(overrides: Partial<SyncWarning> = {}): SyncWarning {
 }
 
 describe('sync warning store', () => {
-  // NOTE: These tests exercise the helpers against the real home-dir path
-  // because the module is imported unconditionally. We assert behavior
-  // against the file the helpers write to. Clean up on each run.
+  // These run against the throwaway home wired up at the top of the file, so
+  // no other process can write the file underneath them.
 
   it('readWarnings returns [] when file missing', async () => {
-    const result = await readWarnings();
-    expect(Array.isArray(result)).toBe(true);
-    // We can't assert [] strictly because a previous run may have left state —
-    // instead verify round-trip works.
+    // Now assertable exactly: with a private home there is no leftover state
+    // from a previous run or from a live app.
+    expect(await readWarnings()).toEqual([]);
   });
 
   it('writeWarnings → readWarnings round-trip', async () => {
@@ -130,9 +136,10 @@ describe('dismissWarning', () => {
 
 describe('cleanupStaleBackendErrorFiles', () => {
   it('removes leftover .sync-error-* files', async () => {
-    // Pokes at the shared ~/.claude/toolkit-state/ dir like the rest of this file.
-    // Safe because .sync-error-* files are retired and never otherwise written.
-    const toolkitStateDir = path.join(os.homedir(), '.claude', 'toolkit-state');
+    // Uses the same throwaway home as the rest of the file. This previously
+    // wrote .sync-error-* files into the developer's REAL ~/.claude/
+    // toolkit-state/ — harmless in effect, but it is a live app's directory.
+    const toolkitStateDir = path.join(tmpHome, '.claude', 'toolkit-state');
     fs.mkdirSync(toolkitStateDir, { recursive: true });
 
     const staleA = path.join(toolkitStateDir, '.sync-error-drive-test-stale-a');
@@ -145,7 +152,7 @@ describe('cleanupStaleBackendErrorFiles', () => {
     // Call the migration helper directly rather than invoking start(), which
     // would also kick off a network pull and timeout the test.
     const { SyncService } = await import('../src/main/sync-service');
-    const svc = new SyncService();
+    const svc = new SyncService(tmpHome);
     try {
       svc.cleanupStaleBackendErrorFiles();
       expect(fs.existsSync(staleA)).toBe(false);

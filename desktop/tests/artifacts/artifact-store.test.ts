@@ -1,10 +1,17 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord } from '../../src/main/artifacts/artifact-store';
 import type { ProjectSidecar } from '../../src/shared/artifacts/types';
 import sample from '../../../shared-fixtures/artifacts/sample-sidecar.json';
+
+// The 60-iteration concurrency loop below does real fs work (mkdtemp, fsync,
+// rename, rm x60) and takes ~1.3s locally — under vitest's default 5000ms
+// testTimeout, but only ~4x headroom, and fs work is exactly what inflates
+// under a loaded parallel pool. Bounding the file explicitly keeps this PR from
+// trading one load-dependent budget for another.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 describe('readSidecar', () => {
   let projectRoot: string;
@@ -114,6 +121,54 @@ describe('appendVersion', () => {
     expect(r2.committed).toBe(true);
     const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
     expect(sidecar.artifacts).toHaveLength(3);
+  });
+
+  // Pins the same-millisecond CAS ABA fix. The single-shot case above only
+  // caught it ~1 run in 3 (it needs both writes inside one millisecond), which
+  // read as a flaky test for months; at 60 iterations the old code loses a
+  // record essentially every run. If this ever goes red again, a writer is
+  // producing an updatedAt that does NOT advance past the value it read.
+  it('concurrent appends never lose a record (same-millisecond CAS)', async () => {
+    for (let i = 0; i < 60; i++) {
+      const root = mkdtempSync(join(tmpdir(), 'as-aba-'));
+      await appendVersion(root, sample.projectId, sample.name, {
+        path: 'a.md', kind: 'internal', absolutePath: null,
+        sessionId: 's', type: 'create', author: 'agent',
+      });
+      await Promise.all([
+        appendVersion(root, sample.projectId, sample.name, {
+          path: 'b.md', kind: 'internal', absolutePath: null,
+          sessionId: 's', type: 'create', author: 'agent',
+        }),
+        appendVersion(root, sample.projectId, sample.name, {
+          path: 'c.md', kind: 'internal', absolutePath: null,
+          sessionId: 's', type: 'create', author: 'agent',
+        }),
+      ]);
+      const s = await readSidecar(root) as ProjectSidecar;
+      expect(s.artifacts.map((a) => a.path).sort()).toEqual(['a.md', 'b.md', 'c.md']);
+      // 60 iterations x every run x CI — clean up rather than leak temp dirs.
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The invariant the fix rests on, asserted directly: a committed write always
+  // leaves a token strictly greater than the one the writer read. Without this,
+  // a concurrent reader holding the old token passes CAS on stale data.
+  it('a committed write always advances updatedAt past the expected token', async () => {
+    await appendVersion(projectRoot, sample.projectId, sample.name, {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'create', author: 'agent',
+    });
+    const before = (await readSidecar(projectRoot)) as ProjectSidecar;
+    // Same-millisecond write: hand back a timestamp that has NOT moved.
+    const next = { ...before, updatedAt: before.updatedAt };
+    const res = await writeSidecar(projectRoot, before.updatedAt, next);
+    expect(res.committed).toBe(true);
+    const after = (await readSidecar(projectRoot)) as ProjectSidecar;
+    expect(after.updatedAt > before.updatedAt).toBe(true);
+    // The in-memory object the caller still holds matches disk.
+    expect(next.updatedAt).toBe(after.updatedAt);
   });
 });
 
