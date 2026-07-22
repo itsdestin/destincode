@@ -453,3 +453,90 @@ describe('chatReducer USER_PROMPT queued (BUG C)', () => {
     expect(entry.queued).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 8 / BUG B: tool-group collapse semantics. Collapse is per tool-group;
+// group membership is decided by currentGroupId — TRANSCRIPT_TOOL_USE joins
+// the current group if set, else opens a new one. TRANSCRIPT_ASSISTANT_TEXT
+// and TRANSCRIPT_ASSISTANT_REASONING deliberately reset currentGroupId to
+// null (a tool following its own text/reasoning renders under it in a new
+// bubble) — that reset is intended and NOT under test here. What IS pinned:
+// tools with nothing but heartbeats between them must stay in one group.
+// ─────────────────────────────────────────────────────────────────────────
+describe('chatReducer tool-group collapse semantics (Task 8 / BUG B)', () => {
+  function initState(sessionId = SID): ChatState {
+    return new Map([[sessionId, createSessionChatState()]]);
+  }
+
+  function toolUse(toolUseId: string, uuid: string, sessionId = SID) {
+    return {
+      type: 'TRANSCRIPT_TOOL_USE' as const,
+      sessionId,
+      uuid,
+      toolUseId,
+      toolName: 'Bash',
+      toolInput: { command: `echo ${toolUseId}` },
+    };
+  }
+
+  /** Group id each tool currently belongs to, in group-insertion order. */
+  function groupIdsFor(state: ChatState, toolUseIds: string[], sessionId = SID): (string | undefined)[] {
+    const groups = [...state.get(sessionId)!.toolGroups.values()];
+    return toolUseIds.map((id) => groups.find((g) => g.toolIds.includes(id))?.id);
+  }
+
+  it('tools batched in one step share a group (collapse works)', () => {
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    state = chatReducer(state, toolUse('tool-3', 'u-3'));
+    const [g1, g2, g3] = groupIdsFor(state, ['tool-1', 'tool-2', 'tool-3']);
+    expect(g1).toBeDefined();
+    expect(g1).toBe(g2);
+    expect(g2).toBe(g3);
+    expect(state.get(SID)!.toolGroups.size).toBe(1);
+  });
+
+  it('a reasoning delta between tools starts a new group (intended bubble semantics)', () => {
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SID,
+      uuid: 'r-1', text: 'thinking about the next step', timestamp: 1000,
+    });
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    const [g1, g2] = groupIdsFor(state, ['tool-1', 'tool-2']);
+    expect(g1).toBeDefined();
+    expect(g2).toBeDefined();
+    expect(g1).not.toBe(g2);
+    expect(state.get(SID)!.toolGroups.size).toBe(2);
+  });
+
+  it('a thinking HEARTBEAT between tools does NOT split the group (spurious-split guard)', () => {
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SID,
+    });
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    const [g1, g2] = groupIdsFor(state, ['tool-1', 'tool-2']);
+    expect(g1).toBeDefined();
+    expect(g1).toBe(g2);
+    expect(state.get(SID)!.toolGroups.size).toBe(1);
+  });
+
+  it('a stall-warning HEARTBEAT between tools also does NOT split the group', () => {
+    // Stall warnings are still content-free liveness signals — same guard.
+    let state = initState();
+    state = chatReducer(state, toolUse('tool-1', 'u-1'));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_THINKING_HEARTBEAT', sessionId: SID,
+      stallWarning: { retryInMs: 5000, willRetry: true },
+    });
+    state = chatReducer(state, toolUse('tool-2', 'u-2'));
+    const [g1, g2] = groupIdsFor(state, ['tool-1', 'tool-2']);
+    expect(g1).toBeDefined();
+    expect(g1).toBe(g2);
+    expect(state.get(SID)!.toolGroups.size).toBe(1);
+  });
+});
