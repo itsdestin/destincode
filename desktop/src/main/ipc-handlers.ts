@@ -56,7 +56,7 @@ import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-re
 // Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
 // createGithubConnect is the stateful orchestrator that owns the in-flight flow.
 import { installGh } from './github-auth';
-import { createGithubConnect, setGithubConnect } from './github-connect';
+import { createGithubConnect, setGithubConnect, disconnectGithub } from './github-connect';
 import { combinedGithubStatus } from './github-client';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
@@ -2705,6 +2705,7 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.GITHUB_CONNECT_START, () => githubConnect.start());
   ipcMain.handle(IPC.GITHUB_CONNECT_CANCEL, () => { githubConnect.cancel(); return { ok: true }; });
   ipcMain.handle(IPC.GITHUB_INSTALL_GH, () => installGh());
+  ipcMain.handle(IPC.GITHUB_DISCONNECT, () => disconnectGithub());
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));

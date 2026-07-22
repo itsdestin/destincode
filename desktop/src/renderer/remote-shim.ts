@@ -1183,6 +1183,7 @@ export function installShim(): void {
       connectStart: () => invoke('github:connect-start'),
       connectCancel: () => invoke('github:connect-cancel'),
       installGh: () => invoke('github:install-gh'),
+      disconnect: () => invoke('github:disconnect'),
       onConnectDone: (cb: (payload: { ok: boolean; login?: string; error?: string }) => void) => {
         const handler: Callback = (p: any) => cb(p);
         addListener('github:connect-done', handler);

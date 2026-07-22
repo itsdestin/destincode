@@ -623,6 +623,8 @@ describe('github:* channel parity (desktop surfaces)', () => {
     ['github:connect-start', 'IPC.GITHUB_CONNECT_START'],
     ['github:connect-cancel', 'IPC.GITHUB_CONNECT_CANCEL'],
     ['github:install-gh', 'IPC.GITHUB_INSTALL_GH'],
+    // Connected accounts (Phase 3, 2026-07-22): deletes the app's stored token.
+    ['github:disconnect', 'IPC.GITHUB_DISCONNECT'],
   ];
   const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
   const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');

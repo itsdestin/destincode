@@ -197,6 +197,7 @@ const IPC = {
   GITHUB_CONNECT_START: 'github:connect-start',
   GITHUB_CONNECT_CANCEL: 'github:connect-cancel',
   GITHUB_INSTALL_GH: 'github:install-gh',
+  GITHUB_DISCONNECT: 'github:disconnect',
   GITHUB_CONNECT_DONE: 'github:connect-done',
   // Window detach / multi-window ownership (feature: drag session to new window)
   WINDOW_GET_ID: 'window:get-id',
@@ -864,6 +865,9 @@ contextBridge.exposeInMainWorld('claude', {
     connectStart: () => ipcRenderer.invoke(IPC.GITHUB_CONNECT_START),
     connectCancel: () => ipcRenderer.invoke(IPC.GITHUB_CONNECT_CANCEL),
     installGh: () => ipcRenderer.invoke(IPC.GITHUB_INSTALL_GH),
+    // Deletes the app's stored token (Settings → GitHub → Disconnect). Does NOT
+    // touch a gh CLI login — the app doesn't own that credential.
+    disconnect: () => ipcRenderer.invoke(IPC.GITHUB_DISCONNECT),
     // Push subscription — returns an unsubscribe function (callers MUST invoke it
     // on unmount to avoid leaking listeners across modal open/close cycles).
     onConnectDone: (cb: (payload: { ok: boolean; login?: string; error?: string }) => void) => {

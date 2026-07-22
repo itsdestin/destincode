@@ -909,6 +909,7 @@ export const IPC = {
   GITHUB_CONNECT_START: 'github:connect-start',
   GITHUB_CONNECT_CANCEL: 'github:connect-cancel',
   GITHUB_INSTALL_GH: 'github:install-gh',
+  GITHUB_DISCONNECT: 'github:disconnect', // clears the app's stored token (Connected accounts)
   GITHUB_CONNECT_DONE: 'github:connect-done', // push: {ok, login?, error?}
   // Multi-window detach subsystem (Renderer <-> Main)
   WINDOW_GET_ID: 'window:get-id',
