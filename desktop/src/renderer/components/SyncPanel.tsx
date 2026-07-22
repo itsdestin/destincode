@@ -1490,7 +1490,7 @@ function ConfirmDialog({
         style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(360px, 85vw)' }}
       >
         <div className="px-4 py-3 border-b border-destructive/30 bg-destructive/10">
-          <h3 className="text-xs font-bold text-destructive">{title}</h3>
+          <h3 className="text-xs font-bold text-destructive-fg">{title}</h3>
         </div>
         <div className="px-4 py-3 space-y-3">
           <p className="text-[11px] text-fg-dim leading-relaxed">{message}</p>

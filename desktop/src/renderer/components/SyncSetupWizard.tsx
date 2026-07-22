@@ -833,7 +833,7 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
       )}
 
       {installError && (
-        <div className="text-[10px] text-destructive">
+        <div className="text-[10px] text-destructive-fg">
           Couldn't install it automatically: {installError}
         </div>
       )}

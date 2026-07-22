@@ -1062,7 +1062,7 @@ export default function SessionStrip({
                   the same token as the toggle beside it, so a community theme
                   restyling its red doesn't leave the two out of sync. */}
               {dangerous && (
-                <p className="text-[10px] text-destructive">Claude will execute tools without asking for approval.</p>
+                <p className="text-[10px] text-destructive-fg">Claude will execute tools without asking for approval.</p>
               )}
               {/* Launch in new window — hidden on platforms without multi-window support */}
               {detachAvailable && (

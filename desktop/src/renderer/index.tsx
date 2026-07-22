@@ -91,7 +91,7 @@ function LoginScreen({ onLogin }: { onLogin: (password: string) => Promise<void>
             red-400 to #DD4444), but the token is what community packs can
             restyle. */}
         {error && (
-          <p className="text-destructive text-xs text-center">{error}</p>
+          <p className="text-destructive-fg text-xs text-center">{error}</p>
         )}
       </form>
     </div>

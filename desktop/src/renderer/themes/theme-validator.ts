@@ -49,6 +49,58 @@ export function lintCustomCss(css: string | undefined, slug: string): void {
   }
 }
 
+/** Class names a pack's custom_css may target that the renderer actually emits.
+ *  Deliberately a small allowlist of the CHAT-CHROME hooks packs are documented
+ *  to style, not every class in the bundle — the point is to catch a pack aiming
+ *  at a name that has never existed, not to freeze the whole DOM as public API. */
+const KNOWN_THEME_HOOKS: readonly string[] = [
+  'user-bubble',           // UserMessage.tsx
+  'assistant-bubble',      // AssistantTurnBubble.tsx, ChatView.tsx
+  'header-bar',
+  'input-bar-container',
+  'layer-surface',
+  'layer-scrim',
+  'bg-accent', 'bg-inset', 'bg-panel', 'bg-canvas', 'bg-well',
+];
+
+/** Class names shipped packs got wrong, mapped to what the renderer really uses.
+ *  halftone-dimension styled `.chat-bubble.user`/`.chat-bubble.assistant` and
+ *  `.send-btn` — none of which exist — so its entire bubble treatment was dead
+ *  in the app while its previews implied otherwise (ROADMAP :46). */
+const KNOWN_DEAD_SELECTORS: Record<string, string> = {
+  'chat-bubble': '.user-bubble / .assistant-bubble',
+  'send-btn': 'no equivalent — the send control carries no stable class',
+};
+
+/** Warns (non-fatal) when custom_css targets a class the renderer never emits.
+ *  Such a rule is not a style bug — it is silently inert, which is worse: the
+ *  pack looks styled in its preview and ships flat. Console-warn only, matching
+ *  lintCustomCss's "buggy custom_css still applies" stance. */
+export function lintCustomCssSelectors(css: string | undefined, slug: string): void {
+  if (!css) return;
+  // Strip declaration blocks so we only scan selector text (avoids matching
+  // class-like fragments inside url(...) or content strings).
+  const selectorText = css.replace(/\{[^}]*\}/g, ' ');
+  const seen = new Set<string>();
+  for (const m of selectorText.matchAll(/\.([A-Za-z_][\w-]*)/g)) {
+    const cls = m[1];
+    if (seen.has(cls)) continue;
+    seen.add(cls);
+    const dead = KNOWN_DEAD_SELECTORS[cls];
+    if (dead) {
+      console.warn(
+        `[theme-validator] Theme "${slug}" custom_css targets ".${cls}", which the renderer never emits — ` +
+        `the rule is silently inert. Use ${dead}.`
+      );
+    } else if (!KNOWN_THEME_HOOKS.includes(cls)) {
+      console.warn(
+        `[theme-validator] Theme "${slug}" custom_css targets ".${cls}", which is not a known theming hook. ` +
+        `If it is not a class the renderer emits, the rule will silently do nothing. Known hooks: ${KNOWN_THEME_HOOKS.join(', ')}.`
+      );
+    }
+  }
+}
+
 /** Throws a descriptive error if the theme JSON is invalid. */
 export function validateTheme(raw: unknown): ThemeDefinition {
   if (!raw || typeof raw !== 'object') throw new Error('Theme must be an object');
@@ -87,6 +139,7 @@ export function validateTheme(raw: unknown): ThemeDefinition {
   // without blocking theme load. Keeps the current behavior of "a theme with
   // buggy custom_css still applies," but makes the bug visible instead of silent.
   lintCustomCss(t.custom_css as string | undefined, t.slug as string);
+  lintCustomCssSelectors(t.custom_css as string | undefined, t.slug as string);
 
   return raw as ThemeDefinition;
 }

@@ -163,13 +163,34 @@
     })),
   );
 
+  /** App default for --destructive when a pack does not override overlay.destructive.
+   *  MUST track theme-engine.ts computeOverlayTokens. Was #DD4444, which could not
+   *  carry an AA label at any text colour (4.213:1 vs white, 4.131:1 vs near-black). */
+  const DEFAULT_DESTRUCTIVE = '#C62828';
+
   const RULES = [
     ...TEXT_RULES,
 
     // ── HARD: UI breaks if these fail ──
     { name: 'on-accent on accent',  tier: 'HARD',    type: 'contrast',    fg: 'on-accent', bg: 'accent',  threshold: 4.5,  description: 'User bubble text and active button text must be readable' },
+    // Danger-button label. --destructive is pack-overridable with no guard, and
+    // --on-destructive derives to whichever of white/near-black reads better —
+    // this catches mid-tone destructives where NEITHER label clears AA. Danger
+    // labels render at text-xs (12px) / text-2xs (11px), so the small-text bar
+    // applies. Both tokens are synthesized in evaluate() when a pack does not
+    // declare them; see DEFAULT_DESTRUCTIVE.
+    { name: 'on-destructive on destructive', tier: 'HARD', type: 'contrast', fg: 'on-destructive', bg: 'destructive', threshold: 4.5, description: 'Danger button label (AA)' },
+    // The OTHER destructive job: `text-destructive-fg` as real text on the
+    // theme's own surfaces (permission warnings at 10px, error strings,
+    // danger-outline labels). --destructive itself cannot serve this on dark
+    // themes — a fill wants to be dark so its label reads, text on a dark canvas
+    // wants to be light. Zero reds satisfy both at AA across the shipped themes,
+    // hence the separate token. Synthesized in evaluate() when undeclared.
+    { name: 'destructive-fg on canvas', tier: 'HARD', type: 'contrast', fg: 'destructive-fg', bg: 'canvas', threshold: 4.5, description: 'Destructive TEXT on content (AA)' },
+    { name: 'destructive-fg on panel',  tier: 'HARD', type: 'contrast', fg: 'destructive-fg', bg: 'panel',  threshold: 4.5, description: 'Destructive TEXT on popups/headers (AA)' },
 
     // ── SURFACE: Elements disappear if these fail ──
+    { name: 'panel vs canvas',      tier: 'SURFACE', type: 'distinction', fg: 'panel',     bg: 'canvas',  threshold: 1.07, description: 'Chrome (headers, drawers, popups) must separate from the content behind it' },
     { name: 'inset vs panel',       tier: 'SURFACE', type: 'distinction', fg: 'inset',     bg: 'panel',   threshold: 1.2,  description: 'Session pills and toggle containers must be visible on header bar' },
     { name: 'canvas vs inset',      tier: 'SURFACE', type: 'distinction', fg: 'canvas',    bg: 'inset',   threshold: 1.3,  description: 'Code blocks must be visible inside assistant bubbles' },
     { name: 'well vs panel',        tier: 'SURFACE', type: 'distinction', fg: 'well',      bg: 'panel',   threshold: 1.15, description: 'Search bar must be visible in command drawer' },
@@ -287,6 +308,54 @@
       surfaces['inset-50'] = alphaComposite(parsed.inset, surfaces.panel, 0.5);
     }
 
+    // ── Synthesize the danger-button pair ──
+    // Neither token is declared by most packs: --destructive falls back to the
+    // app default and --on-destructive is DERIVED at runtime, so auditing only
+    // declared tokens silently skips every theme. Synthesizing here (rather than
+    // in each consumer) is deliberate: the previous arrangement had each audit
+    // deriving its own, which is how the pairs got dropped from one of them and
+    // the failure went unreported. Mirrors theme-engine.ts computeOverlayTokens.
+    if (!parsed.destructive) parsed.destructive = parseHex(DEFAULT_DESTRUCTIVE);
+    if (!parsed['on-destructive'] && parsed.destructive) {
+      const dLum = luminance(parsed.destructive);
+      const white = parseHex('#FFFFFF'), nearBlack = parseHex('#1A1A1A');
+      parsed['on-destructive'] =
+        contrastRatio(luminance(white), dLum) >= contrastRatio(luminance(nearBlack), dLum)
+          ? white
+          : nearBlack;
+    }
+    // Text-on-surface variant. Mirrors theme-engine.ts deriveDestructiveFg:
+    // nudge --destructive toward white (dark themes) or black (light themes)
+    // until it clears AA against the WORSE of canvas and panel. Kept in lockstep
+    // with the engine — if these two disagree, the audit passes a theme the app
+    // renders illegibly, which is the exact failure this file exists to prevent.
+    if (!parsed['destructive-fg'] && parsed.destructive && parsed.canvas && parsed.panel) {
+      const worst = (c) => Math.min(
+        contrastRatio(luminance(c), luminance(parsed.canvas)),
+        contrastRatio(luminance(c), luminance(parsed.panel)),
+      );
+      if (worst(parsed.destructive) >= 4.5) {
+        parsed['destructive-fg'] = parsed.destructive;
+      } else {
+        const target = luminance(parsed.canvas) < 0.5 ? parseHex('#FFFFFF') : parseHex('#000000');
+        const d = parsed.destructive;
+        let picked = target;
+        for (let t = 0.02; t <= 1.0001; t += 0.02) {
+          // Math.round matches theme-engine's mixHex, which serialises to hex
+          // (integer channels) at every step. Without the rounding the two
+          // implementations can straddle the threshold on the same input.
+          const c = {
+            r: Math.round(d.r + (target.r - d.r) * t),
+            g: Math.round(d.g + (target.g - d.g) * t),
+            b: Math.round(d.b + (target.b - d.b) * t),
+            a: 1,
+          };
+          if (worst(c) >= 4.5) { picked = c; break; }
+        }
+        parsed['destructive-fg'] = picked;
+      }
+    }
+
     const results = { HARD: [], SURFACE: [], SOFT: [] };
     let hardFails = 0, surfaceFails = 0, softWarns = 0;
 
@@ -318,6 +387,7 @@
     luminanceRatio,
     alphaComposite,
     RULES,
+    DEFAULT_DESTRUCTIVE,
     TEXT_TARGETS,
     TEXT_SURFACES,
     evaluateRule,

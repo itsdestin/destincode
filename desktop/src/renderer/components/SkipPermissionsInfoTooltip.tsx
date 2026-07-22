@@ -71,7 +71,7 @@ export function SkipPermissionsInfoTooltip() {
                 skip-permissions warnings elsewhere: this heading is danger
                 messaging, so it rides the theme's destructive token rather than
                 a fixed red a community pack can't touch. */}
-            <p className="text-xs font-semibold text-destructive mt-2.5 mb-1.5">What could go wrong</p>
+            <p className="text-xs font-semibold text-destructive-fg mt-2.5 mb-1.5">What could go wrong</p>
             <div className="space-y-1">
               <div className="flex items-start gap-1.5 text-[11px] text-fg-2 leading-snug">
                 <span className="shrink-0 mt-px">·</span>

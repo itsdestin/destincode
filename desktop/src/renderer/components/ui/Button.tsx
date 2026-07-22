@@ -46,13 +46,19 @@ export const BUTTON_BASE =
  *
  *  danger uses text-on-destructive, NOT text-white: --destructive is
  *  pack-overridable with no contrast guard, so hardcoded white can go
- *  white-on-pale. The engine derives the label color per theme. */
+ *  white-on-pale. The engine derives the label color per theme.
+ *
+ *  danger-outline's LABEL uses text-destructive-fg while its border/hover-tint
+ *  stay on --destructive. Those are two different jobs: the border sits on the
+ *  panel as a fill, the label has to be readable text on that panel. On dark
+ *  themes --destructive is too dark to read as text — no single red satisfies
+ *  both roles at AA across our themes, which is why the token is split. */
 export const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   primary: 'bg-accent text-on-accent hover:bg-accent/90',
   secondary: 'border border-edge-dim text-fg-2 hover:bg-inset',
   ghost: 'text-fg-dim hover:text-fg hover:bg-inset',
   danger: 'bg-destructive text-on-destructive hover:bg-destructive/90',
-  'danger-outline': 'border border-destructive/50 text-destructive hover:bg-destructive/10',
+  'danger-outline': 'border border-destructive/50 text-destructive-fg hover:bg-destructive/10',
 };
 
 /** sm  — inline row actions (EngineCard, provider rows, chips)

@@ -578,7 +578,8 @@ function PartialRow({
           </Button>
           {/* Discard deletes the partial file on disk -> danger-outline. The
               hand-rolled red-500/40 border becomes the --destructive token, so
-              community packs can restyle it (identical #DD4444 today). */}
+              community packs can restyle it (#C62828 today — no longer identical
+              to the fixed status red #DD4444, which stayed put). */}
           <Button variant="danger-outline" size="sm" onClick={() => void discard()} disabled={busy}>
             Discard
           </Button>

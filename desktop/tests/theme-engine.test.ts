@@ -98,14 +98,40 @@ describe('computeOverlayTokens — --on-destructive', () => {
       '--on-destructive'
     ];
 
-  it('derives white for the default #DD4444 (no visual change from the shipped text-white)', () => {
+  it('derives white for the default destructive', () => {
     // Guards a real spec bug: change 43 was written believing white-on-#DD4444
-    // scored 4.7:1 and so specified "white if >= 4.5, else near-black". White
-    // actually scores 4.213:1, so that rule would have flipped EVERY danger
-    // button to near-black — which is also LOWER contrast (4.131:1). We pick the
-    // better of the two instead. If this ever returns #1A1A1A, danger buttons
-    // across every built-in theme just silently changed.
+    // (the OLD default) scored 4.7:1 and so specified "white if >= 4.5, else
+    // near-black". White actually scored 4.213:1, so that rule would have
+    // flipped EVERY danger button to near-black — which is also LOWER contrast
+    // (4.131:1). We pick the better of the two instead. If this ever returns
+    // #1A1A1A, danger buttons across every built-in theme just silently changed.
     expect(derive()).toBe('#FFFFFF');
+  });
+
+  it('the default destructive can carry an AA label at small text sizes', () => {
+    // ROADMAP :141. The old default #DD4444 could NOT: 4.213:1 vs white and
+    // 4.131:1 vs near-black, both under the 4.5 AA bar for text below 18px —
+    // and danger labels render at text-xs (12px) / text-2xs (11px). No label
+    // colour fixed it; only darkening the red did. This pins the property, not
+    // the hex, so a future repalette is free as long as it stays legible.
+    const tokens = computeOverlayTokens(TOKENS, undefined, undefined, false);
+    const destructive = tokens['--destructive'];
+    const onDestructive = tokens['--on-destructive'];
+
+    const lum = (hex: string) => {
+      const ch = (i: number) => {
+        const c = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * ch(0) + 0.7152 * ch(1) + 0.0722 * ch(2);
+    };
+    const [hi, lo] = lum(destructive) > lum(onDestructive)
+      ? [lum(destructive), lum(onDestructive)]
+      : [lum(onDestructive), lum(destructive)];
+
+    expect((hi + 0.05) / (lo + 0.05)).toBeGreaterThanOrEqual(4.5);
+    // The known-bad value must not come back.
+    expect(destructive).not.toBe('#DD4444');
   });
 
   it('derives near-black when a pack overrides destructive with a pale color', () => {
@@ -224,6 +250,85 @@ describe('buildEffectLayers', () => {
     for (const c of combos) {
       const { backgrounds, sizes } = buildEffectLayers(c);
       expect(sizes).toHaveLength(backgrounds.length);
+    }
+  });
+});
+
+describe('--destructive-fg (text-on-surface variant)', () => {
+  // ROADMAP: --destructive is over-constrained. It is used BOTH as a filled
+  // surface (label needs contrast against it -> wants dark) and, via
+  // text-destructive-fg, as text on the canvas (-> wants light on dark themes).
+  // A sweep of the red space found ZERO values satisfying both at AA across the
+  // five shipped themes, which is why the token is split.
+  const lum = (hex: string) => {
+    const ch = (i: number) => {
+      const c = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * ch(0) + 0.7152 * ch(1) + 0.0722 * ch(2);
+  };
+  const ratio = (a: string, b: string) => {
+    const [hi, lo] = lum(a) > lum(b) ? [lum(a), lum(b)] : [lum(b), lum(a)];
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  const THEMES: Record<string, { canvas: string; panel: string }> = {
+    midnight: { canvas: '#0D1117', panel: '#161B22' },
+    dark:     { canvas: '#111111', panel: '#191919' },
+    light:    { canvas: '#F2F2F2', panel: '#EAEAEA' },
+    creme:    { canvas: '#F6EEE1', panel: '#EBE1D1' },
+    halftone: { canvas: '#08060e', panel: '#100e1c' },
+  };
+
+  for (const [name, { canvas, panel }] of Object.entries(THEMES)) {
+    it(`clears AA on both canvas and panel for ${name}`, () => {
+      const tokens = { ...TOKENS, canvas, panel } as typeof TOKENS;
+      const fg = computeOverlayTokens(tokens, undefined, undefined, false)['--destructive-fg'];
+      // Both surfaces, because destructive text appears on popups AND content.
+      expect(ratio(fg, canvas), `${name} canvas`).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(fg, panel), `${name} panel`).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  it('leaves --destructive untouched when it already reads as text', () => {
+    // Light themes: the fill colour is already legible on the canvas, so the
+    // derivation must be a no-op rather than gratuitously shifting the hue.
+    const tokens = { ...TOKENS, canvas: '#F2F2F2', panel: '#EAEAEA' } as typeof TOKENS;
+    const out = computeOverlayTokens(tokens, undefined, undefined, false);
+    expect(out['--destructive-fg']).toBe(out['--destructive']);
+  });
+
+  it('lightens rather than darkens on dark themes', () => {
+    // The direction is the whole point: darkening would make it worse.
+    const tokens = { ...TOKENS, canvas: '#0D1117', panel: '#161B22' } as typeof TOKENS;
+    const out = computeOverlayTokens(tokens, undefined, undefined, false);
+    expect(lum(out['--destructive-fg'])).toBeGreaterThan(lum(out['--destructive']));
+  });
+
+  it('stays in lockstep with the vendored audit rules', async () => {
+    // If the engine and the audit derive different values, the audit green-lights
+    // a theme the app renders illegibly — the exact failure contrast-rules.js
+    // exists to prevent, and how the dropped-pairs regression happened.
+    const { createRequire } = await import('node:module');
+    const require2 = createRequire(import.meta.url);
+    const rules = require2('../scripts/vendor/contrast-rules.js');
+    for (const [name, { canvas, panel }] of Object.entries(THEMES)) {
+      const tokens = { ...TOKENS, canvas, panel } as typeof TOKENS;
+      const overlay = computeOverlayTokens(tokens, undefined, undefined, false);
+      const engineFg = overlay['--destructive-fg'];
+      // Feed the ENGINE's value to the audit rather than letting the audit
+      // derive its own — that is what pins them together. If the engine drifts
+      // to a value the audit rejects, this fails.
+      const audited = rules.evaluate({
+        ...tokens,
+        destructive: overlay['--destructive'],
+        'destructive-fg': engineFg,
+      });
+      for (const ruleName of ['destructive-fg on canvas', 'destructive-fg on panel']) {
+        const rule = audited.results.HARD.find((r: { rule: string }) => r.rule === ruleName);
+        expect(rule, `${name}: ${ruleName} present`).toBeDefined();
+        expect(rule.status, `${name}: ${ruleName} for engine value ${engineFg}`).toBe('PASS');
+      }
     }
   });
 });

@@ -147,7 +147,9 @@ export interface ThemeOverlay {
   scrim?: string;
   /** Heavy scrim for destructive/critical dialogs — deeper dim than standard scrim. */
   'scrim-heavy'?: string;
-  /** Destructive accent color for delete/danger actions. Defaults to #DD4444. */
+  /** Destructive accent color for delete/danger actions. Defaults to #C62828
+   *  (was #DD4444, which could not carry an AA label at any text color).
+   *  Distinct from the fixed status red #DD4444 used for state indicators. */
   destructive?: string;
   /** Shadow intensity multiplier (0–1). Higher = more visible popup shadows.
    *  Computed from canvas luminance when omitted (light themes ≈ 0.2, dark ≈ 0.1). */

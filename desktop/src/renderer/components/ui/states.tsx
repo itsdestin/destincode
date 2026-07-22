@@ -161,7 +161,7 @@ export type FieldErrorProps = {
 /** Field-level errors stay short lines under the input — not cards. */
 export function FieldError({ children, className = '' }: FieldErrorProps) {
   return (
-    <span className={`text-3xs text-destructive ${className}`.trim()} role="alert">
+    <span className={`text-3xs text-destructive-fg ${className}`.trim()} role="alert">
       {children}
     </span>
   );
