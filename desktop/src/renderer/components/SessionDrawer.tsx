@@ -568,22 +568,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           </button>
         )}
         <div className="flex-1" />
-        {/* Edit contents — pencil to start; ✓ / ✕ while editing. Driven via editRef. */}
-        {editState.editing ? (
-          <>
-            <IconBtn name="check" title="Save changes" active onClick={() => editRef.current?.saveEdit()} />
-            <IconBtn name="close" title="Cancel editing" onClick={() => editRef.current?.cancelEdit()} />
-          </>
-        ) : (
-          editState.isEditable && (
-            <IconBtn
-              name="editdoc"
-              title="Edit contents"
-              onClick={() => { editRef.current?.startEdit(); setListOpen(false); }}
-            />
-          )
-        )}
-        <span className="w-px h-[18px] bg-edge mx-0.5" />
+        {/* Edit/Save moved to the floating button at the bottom-right of the
+            doc pane (Destin, 2026-07-22) — see the cluster below the content div. */}
         {isElectron && <IconBtn name="external" title="Open with the default app" onClick={handleOpenExternal} />}
         <IconBtn name="link" title="Copy path" onClick={handleCopyPath} />
         {isElectron && <IconBtn name="folder" title="Reveal in folder" onClick={handleReveal} />}
@@ -632,6 +618,50 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               onEditStateChange={setEditState}
             />
           </div>
+          {/* Floating Edit ↔ Save cluster, bottom-right of the doc pane.
+              Pops IN when the artifact list collapses (doc goes full-width)
+              and back OUT when the list reopens — kept mounted so both
+              directions animate. While EDITING it stays visible regardless,
+              so Save can never be hidden by opening the list. */}
+          {active && (editState.editing || editState.isEditable) && (
+            <div
+              className={`absolute bottom-9 right-4 z-20 flex items-center gap-2 transition-all duration-200 ${
+                editState.editing || !showList
+                  ? 'opacity-100 scale-100'
+                  : 'opacity-0 scale-90 pointer-events-none'
+              }`}
+            >
+              {editState.editing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => editRef.current?.cancelEdit()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-panel text-fg-2 border border-edge shadow-md hover:text-fg hover:bg-well transition-colors"
+                  >
+                    <Ic name="close" size={13} />
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => editRef.current?.saveEdit()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-accent text-on-accent shadow-md hover:opacity-90 transition-opacity"
+                  >
+                    <Ic name="check" size={13} />
+                    Save
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { editRef.current?.startEdit(); setListOpen(false); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-accent text-on-accent shadow-md hover:opacity-90 transition-opacity"
+                >
+                  <Ic name="editdoc" size={13} />
+                  Edit
+                </button>
+              )}
+            </div>
+          )}
           {/* metadata strip — bottom of the DOC column (not a full-width row up
               top), so it shares the document's width and expands/shrinks with
               the artifact list (Destin, 2026-07-22). */}
