@@ -34,7 +34,7 @@ import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
 import { dispatchSlashCommand } from './state/slash-command-dispatcher';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
-import { hasPendingInteraction } from './state/pty-input-gate';
+import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
 import { usePromptDetector } from './hooks/usePromptDetector';
@@ -518,6 +518,9 @@ function AppInner() {
   }, []);
 
   const guardedPtySend = useCallback((sid: string, text: string): boolean => {
+    // Honest guard (M1): refuse before sending, so callers' `if (!guardedPtySend)`
+    // bails actually fire for native/destroyed sessions and skip optimistic writes.
+    if (!canPtySend(sessionsRef.current.find((x) => x.id === sid), chatStateMapRef.current.get(sid))) return false;
     if (notifyIfPtyBlocked(sid)) return false;
     window.claude.session.sendInput(sid, text);
     return true;
