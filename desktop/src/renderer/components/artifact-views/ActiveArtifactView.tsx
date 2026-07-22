@@ -7,6 +7,7 @@ import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
 import { canonicalize } from '../../../shared/artifacts/canonicalize';
+import { UnifiedDiff } from '../diff/UnifiedDiff';
 
 // Confirm-tier wording (D5): name the actual consequence, per path family.
 // Never a vague "are you sure" — the user should know what the file DOES.
@@ -242,8 +243,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     <div className="h-full flex flex-col">
       {/* Conflict banner — shown when the file changes on disk while the user
           has UNSAVED edits. Three actions: keep draft, accept the disk version,
-          or view a side-by-side diff. The diff is a simple two-column pre layout;
-          a proper diff library (e.g. jsdiff) is left for a later refinement pass. */}
+          or view a real unified diff (shared UnifiedDiff renderer). */}
       {conflict && (
         // Theme-independent amber (matches ContextEditorOverlay's blast-radius
         // banner — the house pattern for warnings). The previous `dark:` variants
@@ -283,17 +283,16 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           </button>
         </div>
       )}
-      {/* Side-by-side diff: left = user draft, right = the on-disk version */}
+      {/* Real unified diff (jsdiff via the shared UnifiedDiff — same renderer as
+          the tool cards). Direction: disk → draft, i.e. what "Keep mine" would
+          change on disk. Replaces the old two-<pre> columns, which were not a
+          diff at all (spec §6.2). */}
       {showDiff && conflict && (
-        <div className="grid grid-cols-2 gap-0 border-b border-edge shrink-0 overflow-auto max-h-[40%]">
-          <div className="p-2 border-r border-edge overflow-auto">
-            <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">Mine</div>
-            <pre className="text-xs font-mono whitespace-pre-wrap text-fg">{draft}</pre>
+        <div className="border-b border-edge shrink-0 overflow-auto max-h-[40%] p-2">
+          <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">
+            What keeping yours changes (disk → your draft)
           </div>
-          <div className="p-2 overflow-auto">
-            <div className="text-[10px] text-fg-muted mb-1 font-semibold uppercase tracking-wide">On disk</div>
-            <pre className="text-xs font-mono whitespace-pre-wrap text-fg">{conflict.disk}</pre>
-          </div>
+          <UnifiedDiff oldStr={conflict.disk} newStr={draft} />
         </div>
       )}
       <div className="flex-1 overflow-hidden">
