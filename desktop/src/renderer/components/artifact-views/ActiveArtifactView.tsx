@@ -2,13 +2,14 @@
 // Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
 // can use it identically without duplicating the edit state + conflict-detection logic.
 import React, { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
-import { getViewer } from './RendererRegistry';
+import { getViewer, getEditViewer } from './RendererRegistry';
 import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
 import { canonicalize } from '../../../shared/artifacts/canonicalize';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
 import { openEditorSearch } from './cm/editor-registry';
+import { draftKey, stashDraft, takeDraft, clearDraft } from './draft-store';
 
 // Confirm-tier wording (D5): name the actual consequence, per path family.
 // Never a vague "are you sure" — the user should know what the file DOES.
@@ -118,12 +119,31 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // clobbering it (spec §12.9). null = no token yet → save runs unguarded.
   const mtimeRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Mirrors for the unmount stash below — cleanup closures must read the
+  // CURRENT values, not the ones captured when the effect last ran.
+  const stateRef = useRef({ editing: false, draft: '', content: null as string | null });
+  stateRef.current = { editing, draft, content };
+  // A stashed draft waiting for content to resolve before it re-enters edit
+  // mode (restoring before the fetch lands would fight the draft-reset effect).
+  const pendingRestoreRef = useRef<ReturnType<typeof takeDraft>>(undefined);
+  const firstRunRef = useRef(true);
 
   // Reset draft when content reloads from disk (e.g. artifact selection changes)
   useEffect(() => {
     setDraft(content ?? '');
     setConflict(null);
     setShowDiff(false);
+    // Draft-stash restoration (draft-store.ts): an unguarded unmount (games
+    // panel, view toggle, Project View, pill click, …) stashed the dirty
+    // draft; the file is open again, so hand it back — edit mode, draft, and
+    // concurrency token — once real content has resolved.
+    const pending = pendingRestoreRef.current;
+    if (pending && content !== null) {
+      pendingRestoreRef.current = undefined;
+      setDraft(pending.draft);
+      mtimeRef.current = pending.mtimeMs;
+      setEditing(true);
+    }
   }, [content, artifact.id]);
 
   // Fix: leave edit mode when the user switches to a DIFFERENT file. Edit mode
@@ -135,7 +155,35 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     setEditing(false);
     setSaveError(null);
     mtimeRef.current = null; // token belongs to the previous file
-  }, [artifact.id]);
+    const key = draftKey(projectRoot, artifact.id);
+    pendingRestoreRef.current = takeDraft(key);
+    // On the FIRST mount content may already be resolved (host kept it warm),
+    // in which case the content effect above has already run this commit and
+    // will not run again — restore immediately. On artifact SWITCHES content
+    // is about to be nulled + refetched by the host, so restoring now would
+    // apply the draft against the previous file's stale content; the content
+    // effect picks the pending entry up when the right bytes land.
+    if (firstRunRef.current) {
+      firstRunRef.current = false;
+      const pending = pendingRestoreRef.current;
+      if (pending && stateRef.current.content !== null) {
+        pendingRestoreRef.current = undefined;
+        setDraft(pending.draft);
+        mtimeRef.current = pending.mtimeMs;
+        setEditing(true);
+      }
+    }
+    return () => {
+      // THE SAFETY NET: unmounting (or switching away) while dirty stashes
+      // the draft instead of discarding it. Guarded paths never reach here
+      // dirty — Discard runs cancelEdit first; unguarded paths (any layout
+      // change that unmounts the drawer) degrade to draft-survives.
+      const cur = stateRef.current;
+      if (cur.editing && cur.content !== null && cur.draft !== cur.content) {
+        stashDraft(key, { draft: cur.draft, mtimeMs: mtimeRef.current });
+      }
+    };
+  }, [artifact.id, projectRoot]);
 
   // ── React to on-disk changes (external writes, saves from other windows) ──
   // Runs regardless of edit mode — the old version gated on `editing` AND
@@ -203,6 +251,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     );
     if (res && res.ok) {
       if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
+      clearDraft(draftKey(projectRoot, artifact.id));
       onContentChange(draft);
       setEditing(false);
       setConflict(null);
@@ -226,11 +275,12 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier, content]);
 
   const handleCancel = useCallback(() => {
+    clearDraft(draftKey(projectRoot, artifact.id));
     setDraft(content ?? '');
     setEditing(false);
     setConflict(null);
     setSaveError(null);
-  }, [content]);
+  }, [content, projectRoot, artifact.id]);
 
   // ── Conflict resolution actions ──
   const resolveKeepMine = useCallback(() => {
@@ -245,11 +295,12 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // action says "disk", not "Claude" — a watcher cannot know WHO wrote the
     // file (git checkout, formatter, another editor), and naming Claude would
     // be a guessed cause in a user-facing string (spec §8.2).
+    clearDraft(draftKey(projectRoot, artifact.id));
     onContentChange(conflict.disk);
     setDraft(conflict.disk);
     setEditing(false);
     setConflict(null);
-  }, [conflict, onContentChange]);
+  }, [conflict, onContentChange, projectRoot, artifact.id]);
 
   // Expose edit control to the host header (SessionDrawer).
   useImperativeHandle(ref, () => ({
@@ -281,11 +332,16 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // The Registry returns a real component for every type (heavy viewers —
   // pdf/docx/xlsx — are React.lazy, so they're code-split but still rendered
   // here). The <Suspense> boundary below resolves the lazy chunk transparently.
-  const ViewerComponent = getViewer(artifact.path, {
-    // Only assert text when a get response actually sniffed the bytes —
-    // absent info keeps the registry's conservative extension routing.
-    textHint: contentInfo ? contentInfo.binary === false : undefined,
-  });
+  // Read mode routes by file type; EDIT mode always routes to an actual
+  // editor component — most read viewers (HtmlView iframe, CsvView grid) have
+  // no edit UI, so "Edit" on those files used to render nothing.
+  const ViewerComponent = editing
+    ? getEditViewer(artifact.path)
+    : getViewer(artifact.path, {
+        // Only assert text when a get response actually sniffed the bytes —
+        // absent info keeps the registry's conservative extension routing.
+        textHint: contentInfo ? contentInfo.binary === false : undefined,
+      });
 
   // Over the artifacts:get size cap: the content was deliberately not served
   // (a multi-MB string would block main + renderer, spec §2.3/§4.2). Offer the

@@ -56,6 +56,20 @@ const REGISTRY: Record<string, ViewSpec> = {
   tsv: CsvView,
 };
 
+/**
+ * The component that renders EDIT mode. Distinct from getViewer because most
+ * read-mode viewers have no edit UI at all — HtmlView is an iframe preview,
+ * CsvView a grid — so "Edit" on those files rendered nothing (found in
+ * review). md/markdown/txt keep MarkdownView's textarea (plan decision);
+ * every other editable text file edits in the CodeMirror editor, whatever
+ * its read-mode presentation is.
+ */
+export function getEditViewer(path: string): ViewSpec {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  if (ext === 'md' || ext === 'markdown' || ext === 'txt') return MarkdownView;
+  return CodeEditorView;
+}
+
 export function getViewer(path: string, opts?: { textHint?: boolean }): ViewSpec {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
   const hit = REGISTRY[ext];

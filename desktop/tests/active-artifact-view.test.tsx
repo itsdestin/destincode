@@ -89,6 +89,46 @@ describe('ActiveArtifactView save safety', () => {
     expect(opts).toMatchObject({ baseMtimeMs: 42 });
   });
 
+  it('stashes a dirty draft on unmount and restores it on remount (unguarded-discard safety net)', async () => {
+    // Any layout change that unmounts the drawer (games panel, terminal
+    // toggle, Project View, pill click) must degrade to draft-survives — the
+    // review found three such paths in one pass, so the net, not the
+    // enumeration, is what gets pinned.
+    const first = mountView();
+    await act(async () => { first.ref.current!.startEdit(); });
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    const textarea = first.utils.container.querySelector('textarea')!;
+    await act(async () => {
+      const { fireEvent } = await import('@testing-library/react');
+      fireEvent.change(textarea, { target: { value: 'edited but not saved' } });
+    });
+    expect(first.ref.current!.dirty).toBe(true);
+    first.utils.unmount(); // NO guard ran — simulates the games-panel case
+
+    const second = mountView();
+    await waitFor(() => expect(second.ref.current!.editing).toBe(true));
+    expect(second.utils.container.querySelector('textarea')!.value).toBe('edited but not saved');
+    // The restored draft still carries the concurrency token from startEdit.
+    await act(async () => { await second.ref.current!.saveEdit(); });
+    expect(save.mock.calls[0][6]).toMatchObject({ baseMtimeMs: 42 });
+  });
+
+  it('does NOT restore a draft that was saved before unmount', async () => {
+    const first = mountView();
+    await act(async () => { first.ref.current!.startEdit(); });
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    const textarea = first.utils.container.querySelector('textarea')!;
+    await act(async () => {
+      const { fireEvent } = await import('@testing-library/react');
+      fireEvent.change(textarea, { target: { value: 'about to be saved' } });
+    });
+    await act(async () => { await first.ref.current!.saveEdit(); });
+    first.utils.unmount();
+    const second = mountView();
+    await act(async () => {});
+    expect(second.ref.current!.editing).toBe(false);
+  });
+
   it('surfaces a conflict save as the conflict banner, not a silent overwrite', async () => {
     save.mockResolvedValue({ ok: false, error: 'conflict' });
     get.mockResolvedValue({ ok: true, content: 'disk version', orphan: false, mtimeMs: 99 });
