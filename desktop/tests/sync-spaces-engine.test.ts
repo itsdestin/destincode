@@ -37,6 +37,16 @@ afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 // inline third arg on it() silently overrides vi.setConfig — the #163 trap).
 const WAIT_MS = 60_000;
 
+// The knob above bounds the vi.waitFor POLLING. It does NOT bound the test, and
+// without this line the file inherits vitest's default 5000ms testTimeout — so
+// every 60s wait above was in fact capped at 5s and PR #180's ceiling was
+// unreachable. That is the "Test timed out in 5000ms" macOS flake on PR #181
+// (ROADMAP :252): #180 replaced the six inline `{ timeout: 5000 }` literals here
+// but never added the setConfig its two sibling files got in #163
+// (sync-spaces-project-discovery.test.ts:23, sync-spaces-git-transport.test.ts
+// :18). Both knobs are required — one bounds the poll, one bounds the test.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
+
 describe('SpaceSyncEngine', () => {
   it('debounces file changes into one sync (pull then push)', async () => {
     const t = fakeTransport();

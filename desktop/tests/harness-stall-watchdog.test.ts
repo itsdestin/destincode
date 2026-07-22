@@ -40,6 +40,31 @@ function modelFromStreams(makers: Array<() => ReadableStream>) {
   });
 }
 
+// One named knob for the watchdog budget, deliberately generous.
+//
+// This was 15ms, which took Windows CI red on PR #185 with "expected length 1
+// but got 2" and then passed on a plain re-run (ROADMAP :176). Nothing here
+// asserts on wall-clock — only on the ORDER and COUNT of events — so the budget
+// exists purely to be longer than the work, and a tight one buys nothing but
+// flakes. Two things made 15ms untenable:
+//
+//   1. Windows' default timer resolution is ~15.6ms, so a setTimeout(15) fires
+//      on the first tick AT OR PAST the budget. The warning timer and the
+//      retry's first chunk landed in the same tick and the winner was scheduler
+//      noise — hence Windows-only and re-run-green.
+//   2. Measured headroom on an idle 32-core Linux box was thin anyway: sweeping
+//      the budget, a spurious second warning first appears at 10ms and is the
+//      majority outcome by 3ms. 15ms was ~4x the ideal path.
+//
+// 250ms is ~16x the Windows tick and ~60x the measured ideal path, and costs
+// the file well under two seconds. Do NOT tighten these back toward the
+// event-loop noise floor to save milliseconds.
+const STALL_MS = 250;
+// The "keeps emitting" case needs the opposite margin: its chunk SPACING must
+// stay far below the window, or a scheduling hiccup between chunks fires the
+// watchdog and fails a never-warns assertion. 4ms spacing vs a 400ms window.
+const STREAMING_WINDOW_MS = 400;
+
 const HARNESS: HarnessManifest = {
   schema: 1, id: 'agent', name: 'Agent', systemPrompt: 'sys', tools: [],
   permissionPolicy: 'ask', limits: { maxTokens: 256 },
@@ -49,8 +74,9 @@ function makeOpts(over: Partial<HarnessSessionOpts>): HarnessSessionOpts {
     sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
     binding: { providerId: 'openrouter', modelId: 'm' },
     retryDelays: [1, 1, 1],
-    // Tiny watchdog so the suite runs in ~tens of ms on real timers.
-    stallWarningMs: 15, stallCountdownMs: 15,
+    // Real timers (see the file header) with a budget that machine load cannot
+    // close — see STALL_MS.
+    stallWarningMs: STALL_MS, stallCountdownMs: STALL_MS,
     ...over,
   } as HarnessSessionOpts;
 }
@@ -76,7 +102,7 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
     // A stall warning was surfaced, promising a retry.
     const warns = stallWarnings(events);
     expect(warns).toHaveLength(1);
-    expect(warns[0].data.stallWarning).toEqual({ retryInMs: 15, willRetry: true });
+    expect(warns[0].data.stallWarning).toEqual({ retryInMs: STALL_MS, willRetry: true });
     // The retry produced the real answer and the turn completed normally.
     const text = events.find((e) => e.type === 'assistant-text');
     expect(text?.data.text).toBe('recovered');
@@ -120,7 +146,7 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
   });
 
   it('a stream that keeps emitting (slower than the warn window) NEVER trips the watchdog', async () => {
-    // Chunks spaced 4ms apart, warn window 40ms → the watchdog is re-armed on
+    // Chunks spaced 4ms apart, warn window 400ms → the watchdog is re-armed on
     // every chunk and never fires. No stall warning, clean completion.
     const model = new MockLanguageModelV4({
       doStream: async () => ({
@@ -130,7 +156,7 @@ describe('HarnessSession — streaming inactivity watchdog', () => {
         }),
       }),
     });
-    const session = new HarnessSession(makeOpts({ stallWarningMs: 40, stallCountdownMs: 40 }), async () => model as any);
+    const session = new HarnessSession(makeOpts({ stallWarningMs: STREAMING_WINDOW_MS, stallCountdownMs: STREAMING_WINDOW_MS }), async () => model as any);
     const events = collect(session);
     await session.send('go');
 
