@@ -133,6 +133,19 @@ export interface GithubClient {
   /** Create (or adopt, when it already exists) a private repo; returns its
    *  https clone URL. Replaces `gh repo create/view`. */
   createPrivateRepo(name: string): Promise<string>;
+  /**
+   * Generic REST call for the gh-CLI conversions (publishing forks/branches/
+   * contents/PRs, issue creation, PR search). Returns {status, json} — the
+   * CALLER interprets non-2xx statuses (a 422 can be "already exists" =
+   * success). Throws only: coded not-connected (no token, unless
+   * `anonymous: true` — the search API works unauthenticated at 60 req/hr),
+   * coded auth-expired on 401, and named transport errors. The token rides
+   * the Authorization header only — never the path, body, or any error.
+   */
+  api(method: string, apiPath: string, body?: object, opts?: { anonymous?: boolean }): Promise<{ status: number; json: any }>;
+  /** GET /user → login for the CURRENT token. Throws coded not-connected /
+   *  auth-expired — replaces `gh api user --jq .login` in the publishers. */
+  fetchAuthedLogin(): Promise<string>;
 }
 
 /** On-disk shape of <userData>/github-token.json. `data` is base64: of the
@@ -235,13 +248,15 @@ export function createGithubClient(opts: GithubClientOpts): GithubClient {
   // REST
   // -------------------------------------------------------------------------
 
-  async function rest(token: string, method: string, apiPath: string, body?: object): Promise<{ status: number; json: any }> {
+  async function rest(token: string | null, method: string, apiPath: string, body?: object): Promise<{ status: number; json: any }> {
     let res: Awaited<ReturnType<FetchLike>>;
     try {
       res = await fetchFn(`https://api.github.com${apiPath}`, {
         method,
         headers: {
-          Authorization: `token ${token}`,
+          // token may be null only on anonymous calls (search API) — the
+          // Authorization header is simply omitted then.
+          ...(token ? { Authorization: `token ${token}` } : {}),
           Accept: 'application/vnd.github+json',
           'User-Agent': 'YouCoded',
           ...(body ? { 'Content-Type': 'application/json' } : {}),
@@ -256,6 +271,24 @@ export function createGithubClient(opts: GithubClientOpts): GithubClient {
     }
     const json = await res.json().catch(() => null);
     return { status: res.status, json };
+  }
+
+  async function api(method: string, apiPath: string, body?: object, apiOpts?: { anonymous?: boolean }): Promise<{ status: number; json: any }> {
+    const info = await getToken();
+    if (!info && !apiOpts?.anonymous) throw notConnectedError();
+    const out = await rest(info?.token ?? null, method, apiPath, body);
+    // 401 with a token = the credential is dead — every caller wants the same
+    // typed "reconnect" signal, so centralize it. (Anonymous 401s can't happen;
+    // anonymous rate-limit rejections are 403 and stay caller-interpreted.)
+    if (out.status === 401 && info) throw authExpiredError();
+    return out;
+  }
+
+  async function fetchAuthedLogin(): Promise<string> {
+    const user = await api('GET', '/user');
+    const login = user.json?.login ? String(user.json.login) : null;
+    if (!login) throw new Error(`GitHub could not identify this account (HTTP ${user.status})`);
+    return login;
   }
 
   async function createPrivateRepo(name: string): Promise<string> {
@@ -288,7 +321,7 @@ export function createGithubClient(opts: GithubClientOpts): GithubClient {
     throw new Error(`GitHub could not create repository "${name}" (HTTP ${created.status})${detail}`);
   }
 
-  return { setToken, clearToken, getToken, status, createPrivateRepo };
+  return { setToken, clearToken, getToken, status, createPrivateRepo, api, fetchAuthedLogin };
 }
 
 // ---------------------------------------------------------------------------

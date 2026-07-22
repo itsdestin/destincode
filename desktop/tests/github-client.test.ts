@@ -247,3 +247,52 @@ describe('combinedGithubStatus', () => {
     expect(s).toMatchObject({ installed: false, authed: false, source: null });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 3: generic api() + fetchAuthedLogin (the gh-CLI conversion surface)
+// ---------------------------------------------------------------------------
+
+describe('github-client api()', () => {
+  it('sends the token in the Authorization header only; caller interprets statuses', async () => {
+    const { fn, calls } = fakeFetch([['POST', '/repos/o/r/forks', { status: 202, json: { ok: true } }]]);
+    const c = createGithubClient({ storageDir: tmp, safeStorage: fakeSafeStorage(), execFn: ghExec(null), fetchFn: fn });
+    await c.setToken(SECRET);
+    const out = await c.api('POST', '/repos/o/r/forks');
+    expect(out.status).toBe(202);
+    expect(calls[0].url).not.toContain(SECRET);
+  });
+
+  it('no token → coded not-connected error, UNLESS anonymous is allowed', async () => {
+    const { fn } = fakeFetch([['GET', '/search/issues', { status: 200, json: { items: [] } }]]);
+    const c = createGithubClient({ storageDir: tmp, safeStorage: fakeSafeStorage(), execFn: ghExec(null), fetchFn: fn });
+    await expect(c.api('GET', '/search/issues')).rejects.toMatchObject({ syncErrorCode: GITHUB_AUTH_ERROR_CODE });
+    const anon = await c.api('GET', '/search/issues', undefined, { anonymous: true });
+    expect(anon.status).toBe(200);
+  });
+
+  it('401 with a token → coded sign-in-expired error (centralized for every consumer)', async () => {
+    const { fn } = fakeFetch([['GET', '/user', { status: 401, json: { message: 'Bad credentials' } }]]);
+    const c = createGithubClient({ storageDir: tmp, safeStorage: fakeSafeStorage(), execFn: ghExec(null), fetchFn: fn });
+    await c.setToken(SECRET);
+    const err = await c.api('GET', '/user').catch((e) => e);
+    expect(err.syncErrorCode).toBe(GITHUB_AUTH_ERROR_CODE);
+    expect(String(err.message)).toContain('GitHub sign-in expired');
+    expect(String(err.message)).not.toContain(SECRET);
+  });
+});
+
+describe('github-client fetchAuthedLogin', () => {
+  it('returns the login (replaces `gh api user --jq .login`)', async () => {
+    const { fn } = fakeFetch([['GET', '/user', { status: 200, json: { login: 'octocat' } }]]);
+    const c = createGithubClient({ storageDir: tmp, safeStorage: fakeSafeStorage(), execFn: ghExec(null), fetchFn: fn });
+    await c.setToken(SECRET);
+    await expect(c.fetchAuthedLogin()).resolves.toBe('octocat');
+  });
+
+  it('login missing from the response → named error without inventing a cause', async () => {
+    const { fn } = fakeFetch([['GET', '/user', { status: 500, json: {} }]]);
+    const c = createGithubClient({ storageDir: tmp, safeStorage: fakeSafeStorage(), execFn: ghExec(null), fetchFn: fn });
+    await c.setToken(SECRET);
+    await expect(c.fetchAuthedLogin()).rejects.toThrow('HTTP 500');
+  });
+});

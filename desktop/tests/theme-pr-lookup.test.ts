@@ -1,34 +1,50 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ThemePRLookup } from '../src/main/theme-pr-lookup';
 
+// Phase 3 (2026-07-22): ThemePRLookup runs on the GitHub SEARCH API (was a
+// `gh pr list` wrapper). Fakes inject fetch + token source — no gh, no network.
+
 describe('ThemePRLookup', () => {
-  let calls: string[][];
-  let stubResults: Record<string, string>;
+  let calls: string[];
+  let stubItems: Record<string, any[]>; // url-substring → search items
   let lookup: ThemePRLookup;
+  let token: string | null;
 
   beforeEach(() => {
     calls = [];
-    stubResults = {};
-    const fakeExec = async (_bin: string, args: string[]) => {
-      calls.push(args);
-      const key = args.join(' ');
-      return { stdout: stubResults[key] ?? '[]' };
+    stubItems = {};
+    token = 'gho_token';
+    const fakeFetch = async (url: string, _init?: any) => {
+      calls.push(url);
+      const hit = Object.entries(stubItems).find(([part]) => url.includes(part));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: hit ? hit[1] : [] }),
+      };
     };
-    lookup = new ThemePRLookup({ execFile: fakeExec as any, ttlMs: 60_000, now: () => 1_000 });
+    lookup = new ThemePRLookup({
+      fetchFn: fakeFetch as any,
+      getToken: async () => token,
+      ttlMs: 60_000,
+      now: () => 1_000,
+    });
   });
 
-  it('returns null when gh returns empty list', async () => {
+  it('returns null when the search returns no items', async () => {
     const result = await lookup.findOpenPR('sunset', 'alice');
     expect(result).toBeNull();
   });
 
-  it('returns first matching PR', async () => {
-    const args = ['pr', 'list', '--repo', 'itsdestin/wecoded-themes',
-      '--author', 'alice', '--state', 'open', '--search', 'sunset',
-      '--json', 'number,url'];
-    stubResults[args.join(' ')] = JSON.stringify([{ number: 42, url: 'https://x/42' }]);
+  it('returns the first matching PR and scopes the query to repo/author/state', async () => {
+    stubItems['state%3Aopen'] = [{ number: 42, html_url: 'https://x/pull/42' }];
     const result = await lookup.findOpenPR('sunset', 'alice');
-    expect(result).toEqual({ number: 42, url: 'https://x/42' });
+    expect(result).toEqual({ number: 42, url: 'https://x/pull/42' });
+    const q = decodeURIComponent(calls[0]);
+    expect(q).toContain('repo:itsdestin/wecoded-themes');
+    expect(q).toContain('author:alice');
+    expect(q).toContain('state:open');
+    expect(q).toContain('sunset');
   });
 
   it('caches results within the TTL window', async () => {
@@ -44,19 +60,25 @@ describe('ThemePRLookup', () => {
     expect(calls.length).toBe(2);
   });
 
-  it('searches recently merged PRs (5 minute window)', async () => {
+  it('searches recently merged PRs with the 5-minute merged:>= window', async () => {
     await lookup.findRecentlyMergedPR('sunset', 'alice');
-    expect(calls[0]).toContain('--state');
-    expect(calls[0]).toContain('merged');
-    // Search includes a merged:>= filter; just confirm it's present
-    const search = calls[0][calls[0].indexOf('--search') + 1];
-    expect(search).toContain('sunset');
-    expect(search).toMatch(/merged:>=/);
+    const q = decodeURIComponent(calls[0]);
+    expect(q).toContain('is:merged');
+    expect(q).toContain('sunset');
+    expect(q).toMatch(/merged:>=/);
   });
 
-  it('falls back to null on gh failure', async () => {
+  it('works ANONYMOUSLY when no token exists (the old gh path just failed here)', async () => {
+    token = null;
+    stubItems['state%3Aopen'] = [{ number: 7, html_url: 'https://x/pull/7' }];
+    const result = await lookup.findOpenPR('sunset', 'alice');
+    expect(result).toEqual({ number: 7, url: 'https://x/pull/7' });
+  });
+
+  it('falls back to null on fetch failure', async () => {
     const failing = new ThemePRLookup({
-      execFile: (async () => { throw new Error('gh not found'); }) as any,
+      fetchFn: (async () => { throw new Error('network down'); }) as any,
+      getToken: async () => null,
       ttlMs: 60_000, now: () => 1_000,
     });
     const result = await failing.findOpenPR('sunset', 'alice');

@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execFile, spawn } from 'child_process';
-import { promisify } from 'util';
 import type {
   ThemeRegistryIndex,
   ThemeRegistryEntry,
@@ -13,12 +11,6 @@ import { THEMES_DIR, listUserThemes, userThemeManifest } from './theme-watcher';
 import { synthesizeLocalThemeEntries, type LocalThemeRecord } from './local-theme-synthesizer';
 import { generateThemePreview } from './theme-preview-generator';
 import { SkillConfigStore } from './skill-config-store';
-
-const execFileAsync = promisify(execFile);
-
-// Resolve gh CLI path at module load
-let ghPath = 'gh';
-try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
 // Registry is fetched from this URL (GitHub Pages or raw GitHub)
 const REGISTRY_URL =
@@ -36,30 +28,6 @@ const MAX_THEME_SIZE_BYTES = 10 * 1024 * 1024;
 // CI rule — any file over this will be rejected at PR review anyway, so we
 // surface it as a clear pre-flight error instead of a cryptic mid-upload failure.
 const MAX_PUBLISH_FILE_BYTES = 10 * 1024 * 1024;
-
-/**
- * Invoke `gh api ... --input -` with a JSON body piped via stdin.
- *
- * Why: passing large base64 asset content as `-f content=<base64>` args blows
- * past Windows's ~32 KB argv limit for any file more than a few KB, and the
- * failure surfaces as an opaque "Failed to upload". Stdin has no length limit,
- * so this bypasses the whole class of argv-length bugs.
- */
-function ghApiWithBody(ghBin: string, args: string[], body: string, timeoutMs = 60000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(ghBin, [...args, '--input', '-'], { timeout: timeoutMs });
-    let stdout = '';
-    let stderr = '';
-    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr?.on('data', (d) => { stderr += d.toString(); });
-    proc.on('error', reject);
-    proc.on('close', (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`gh api exited ${code}: ${stderr.trim() || stdout.trim()}`));
-    });
-    proc.stdin?.end(body);
-  });
-}
 
 // Slug must be kebab-case: lowercase letters, digits, hyphens only
 const SAFE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -338,12 +306,10 @@ export class ThemeMarketplaceProvider {
 
   /**
    * Publish a user theme to the wecoded-themes repo via GitHub PR.
-   * Requires `gh` CLI to be authenticated.
    *
-   * Flow:
-   * 1. Verify gh auth
-   * 2. Fork itsdestin/wecoded-themes (idempotent — gh handles existing forks)
-   * 3. Create a branch, commit theme files, push, and open a PR
+   * Phase 3 (2026-07-22): goes through the shared github-client / forkPublish
+   * REST pipeline — no `gh` CLI required. Token acquisition (app store → gh)
+   * and the coded plain-language auth errors live in the client.
    */
   async publishTheme(
     slug: string,
@@ -366,64 +332,13 @@ export class ThemeMarketplaceProvider {
       throw new Error('Cannot publish a theme installed from the marketplace');
     }
 
-    // 1. Verify gh CLI auth
-    let username: string;
-    try {
-      const { stdout } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login']);
-      username = stdout.trim();
-      if (!username) throw new Error('Empty username');
-    } catch {
-      throw new Error('GitHub CLI not authenticated. Run `gh auth login` first.');
-    }
-
     const UPSTREAM_REPO = 'itsdestin/wecoded-themes';
     const isUpdate = !!opts.existingEntry;
     const branchName = isUpdate
       ? `update-theme/${slug}-${Date.now()}`
       : `theme/${slug}`;
 
-    // 2. Fork the themes repo (idempotent — gh returns existing fork)
-    try {
-      await execFileAsync(ghPath, ['repo', 'fork', UPSTREAM_REPO, '--clone=false'], { timeout: 30000 });
-    } catch (err: any) {
-      // gh repo fork returns exit code 0 even if fork exists; only throw on real errors
-      if (err.code === 'ENOENT') throw new Error('gh CLI not found');
-    }
-
-    const FORK_REPO = `${username}/wecoded-themes`;
-
-    // 3. Use the GitHub API to create/update files on a branch
-    // First, get the default branch SHA
-    let baseSha: string;
-    try {
-      const { stdout } = await execFileAsync(ghPath, [
-        'api', `repos/${UPSTREAM_REPO}/git/ref/heads/main`, '--jq', '.object.sha',
-      ]);
-      baseSha = stdout.trim();
-    } catch {
-      throw new Error('Failed to read upstream repo. Does itsdestin/wecoded-themes exist?');
-    }
-
-    // Create the branch on the fork
-    try {
-      await execFileAsync(ghPath, [
-        'api', `repos/${FORK_REPO}/git/refs`, '-X', 'POST',
-        '-f', `ref=refs/heads/${branchName}`,
-        '-f', `sha=${baseSha}`,
-      ]);
-    } catch {
-      // Branch may already exist — try to update it
-      try {
-        await execFileAsync(ghPath, [
-          'api', `repos/${FORK_REPO}/git/refs/heads/${branchName}`, '-X', 'PATCH',
-          '-f', `sha=${baseSha}`, '-F', 'force=true',
-        ]);
-      } catch (err: any) {
-        throw new Error(`Failed to create branch: ${err.message}`);
-      }
-    }
-
-    // 4. Use the local preview.png if it's already fresh (theme-builder generates
+    // Use the local preview.png if it's already fresh (theme-builder generates
     //    it via wecoded-themes/scripts/generate-previews.js at finalize). Falling
     //    back to BrowserWindow capture only when the local file is missing or
     //    stale keeps the canonical Playwright-rendered preview as the source
@@ -509,102 +424,47 @@ export class ThemeMarketplaceProvider {
       );
     }
 
-    // 6. Upload files via GitHub Contents API.
-    // Content is piped as a JSON body via stdin (not argv) to avoid Windows's
-    // ~32 KB command-line limit — see ghApiWithBody() comment.
+    // 6. Base64 all contents (bodies ride the REST request — no argv limits,
+    // the class of bug ghApiWithBody used to work around), then run the shared
+    // fork → branch → upload → PR pipeline.
+    const publishFiles: import('./github-fork-publish').PublishFile[] = [];
     for (const file of filesToUpload) {
-      let content: string;
-      if (file.repoPath.endsWith('manifest.json') && file.localPath === manifestPath) {
-        content = Buffer.from(JSON.stringify(cleanManifest, null, 2)).toString('base64');
-      } else {
-        const raw = await fs.promises.readFile(file.localPath);
-        content = raw.toString('base64');
-      }
-
-      const putArgs = ['api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT'];
-      const createBody = JSON.stringify({
-        message: `Add ${file.repoPath}`,
-        content,
-        branch: branchName,
-      });
-
-      try {
-        await ghApiWithBody(ghPath, putArgs, createBody);
-      } catch {
-        // File may already exist on the branch — fetch its sha and update.
-        try {
-          const { stdout: existingFile } = await execFileAsync(ghPath, [
-            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`,
-            '-q', '.sha', '-H', 'Accept: application/vnd.github.v3+json',
-            '--method', 'GET', '-f', `ref=${branchName}`,
-          ]);
-          const updateBody = JSON.stringify({
-            message: `Update ${file.repoPath}`,
-            content,
-            sha: existingFile.trim(),
-            branch: branchName,
-          });
-          await ghApiWithBody(ghPath, putArgs, updateBody);
-        } catch (err: any) {
-          throw new Error(`Failed to upload ${file.repoPath}: ${err?.message || 'unknown error'}`);
-        }
-      }
+      const content = (file.repoPath.endsWith('manifest.json') && file.localPath === manifestPath)
+        ? Buffer.from(JSON.stringify(cleanManifest, null, 2)).toString('base64')
+        : (await fs.promises.readFile(file.localPath)).toString('base64');
+      publishFiles.push({ repoPath: file.repoPath, contentBase64: content });
     }
 
-    // 6. Create the PR
     const prTitle = isUpdate
       ? `[Theme Update] ${manifest.name || slug}`
       : `[Theme] ${manifest.name || slug}`;
 
-    const prBody = [
-      isUpdate
-        ? `## Theme Update: ${manifest.name || slug}`
-        : `## New Theme: ${manifest.name || slug}`,
-      '',
-      manifest.description ? `> ${manifest.description}` : '',
-      '',
-      `- **Author:** ${manifest.author || username}`,
-      `- **Mode:** ${manifest.dark ? 'Dark' : 'Light'}`,
-      `- **Slug:** \`${slug}\``,
-      `- **Content hash:** \`${contentHash}\``,
-      '',
-      isUpdate
-        ? '_Update submitted via YouCoded Theme Marketplace_'
-        : '_Submitted via YouCoded Theme Marketplace_',
-    ].join('\n');
-
-    try {
-      const { stdout: prUrlRaw } = await execFileAsync(ghPath, [
-        'pr', 'create',
-        '--repo', UPSTREAM_REPO,
-        '--head', `${username}:${branchName}`,
-        '--title', prTitle,
-        '--body', prBody,
-      ], { timeout: 30000 });
-      const prUrl = prUrlRaw.trim();
-      this.invalidatePRStatus(slug, username);
-      this.invalidateRegistryCache();
-      return { prUrl, prNumber: extractPRNumber(prUrl) };
-    } catch (err: any) {
-      // If PR already exists, try to get its URL
-      if (err.stderr?.includes('already exists')) {
-        try {
-          const { stdout: existingPr } = await execFileAsync(ghPath, [
-            'pr', 'list',
-            '--repo', UPSTREAM_REPO,
-            '--head', `${username}:${branchName}`,
-            '--json', 'url', '--jq', '.[0].url',
-          ]);
-          if (existingPr.trim()) {
-            const prUrl = existingPr.trim();
-            this.invalidatePRStatus(slug, username);
-            this.invalidateRegistryCache();
-            return { prUrl, prNumber: extractPRNumber(prUrl) };
-          }
-        } catch { /* fall through */ }
-      }
-      throw new Error(`Failed to create PR: ${err.stderr || err.message}`);
-    }
+    const { forkPublish } = await import('./github-fork-publish');
+    const result = await forkPublish({
+      upstreamRepo: UPSTREAM_REPO,
+      branchName,
+      files: publishFiles,
+      prTitle,
+      prBody: (username) => [
+        isUpdate
+          ? `## Theme Update: ${manifest.name || slug}`
+          : `## New Theme: ${manifest.name || slug}`,
+        '',
+        manifest.description ? `> ${manifest.description}` : '',
+        '',
+        `- **Author:** ${manifest.author || username}`,
+        `- **Mode:** ${manifest.dark ? 'Dark' : 'Light'}`,
+        `- **Slug:** \`${slug}\``,
+        `- **Content hash:** \`${contentHash}\``,
+        '',
+        isUpdate
+          ? '_Update submitted via YouCoded Theme Marketplace_'
+          : '_Submitted via YouCoded Theme Marketplace_',
+      ].join('\n'),
+    });
+    this.invalidatePRStatus(slug, result.username);
+    this.invalidateRegistryCache();
+    return { prUrl: result.prUrl, prNumber: result.prNumber };
   }
 
   // Lazily-constructed PR lookup — initialized on first use so the module is
@@ -667,19 +527,22 @@ export class ThemeMarketplaceProvider {
     }
 
     // Resolve author: prefer the local manifest (it's the source of truth for
-    // who authored the theme). Fall back to gh auth so a manifest with no
-    // author still gets a reasonable answer.
+    // who authored the theme). Fall back to the github-client's authed login
+    // (app token or gh — Phase 3) so a manifest with no author still gets a
+    // reasonable answer.
     let author: string;
     try {
       const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf-8'));
       if (typeof manifest.author === 'string' && manifest.author.length > 0) {
         author = manifest.author;
       } else {
-        const { stdout } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login'], { timeout: 5000 });
-        author = stdout.trim();
+        const { getGithubClient } = await import('./github-client');
+        const client = getGithubClient();
+        if (!client) return { kind: 'unknown', reason: 'GitHub not connected' };
+        author = await client.fetchAuthedLogin();
       }
     } catch {
-      return { kind: 'unknown', reason: 'gh not authenticated' };
+      return { kind: 'unknown', reason: 'GitHub not connected' };
     }
 
     // All four lookups are independent — parallelize.
@@ -780,11 +643,4 @@ export class ThemeMarketplaceProvider {
       // Non-critical — continue without caching
     }
   }
-}
-
-/** Pull the numeric PR id out of a github.com PR url. Throws on malformed input. */
-function extractPRNumber(url: string): number {
-  const m = url.match(/\/pull\/(\d+)/);
-  if (!m) throw new Error(`Could not parse PR number from ${url}`);
-  return Number(m[1]);
 }

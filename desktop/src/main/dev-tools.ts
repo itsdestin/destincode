@@ -498,9 +498,11 @@ export type SubmitResult =
   | { ok: false; fallbackUrl: string };
 
 /**
- * Submit a GitHub issue via the `gh` CLI when authenticated, otherwise
- * fall back to a prefilled browser URL. The fallback path lets the user
- * review and submit in their browser themselves.
+ * Submit a GitHub issue via the shared github-client (REST — app token or gh
+ * token, Phase 3 2026-07-22, no gh CLI required), otherwise fall back to a
+ * prefilled browser URL. The fallback path lets the user review and submit
+ * in their browser themselves, and stays the guaranteed exit for machines
+ * with no GitHub credential at all.
  *
  * WHY: Body is assembled here (main process) using the canonical
  * buildIssueBody helper so the Environment line contains the real
@@ -518,55 +520,30 @@ export async function submitIssue(args: SubmitArgs): Promise<SubmitResult> {
     platform: 'desktop',
     os: `${os.platform()} ${os.release()}`,
   });
-
-  const ghAuthed = await isGhAuthenticated();
-  if (!ghAuthed) {
-    return { ok: false, fallbackUrl: buildPrefillUrl({ title: args.title, body, label: args.label }) };
-  }
-
-  const tmpFile = path.join(
-    os.tmpdir(),
-    `youcoded-issue-${Date.now()}-${process.pid}.md`,
-  );
-  await fs.promises.writeFile(tmpFile, body, 'utf8');
+  const fallbackUrl = buildPrefillUrl({ title: args.title, body, label: args.label });
 
   try {
-    const gh = resolveCmd('gh');
-    const stdout: string = await new Promise((resolve, reject) => {
-      execFile(
-        gh.command,
-        [
-          'issue', 'create',
-          '--repo', 'itsdestin/youcoded',
-          '--title', args.title,
-          '--body-file', tmpFile,
-          '--label', args.label,
-          '--label', 'youcoded-app:reported',
-        ],
-        { timeout: 30_000, maxBuffer: 1024 * 1024, shell: gh.shell },
-        (err, out) => (err ? reject(err) : resolve(String(out || ''))),
-      );
-    });
-    const url = (stdout.match(/https:\/\/github\.com\/[^\s]+/) || [''])[0].trim();
-    if (!url) {
-      // gh succeeded but didn't print a URL we can parse — treat as opaque success.
-      return { ok: true, url: 'https://github.com/itsdestin/youcoded/issues' };
-    }
-    return { ok: true, url };
-  } catch {
-    return { ok: false, fallbackUrl: buildPrefillUrl({ title: args.title, body, label: args.label }) };
-  } finally {
-    fs.promises.unlink(tmpFile).catch(() => undefined);
-  }
-}
+    const { getGithubClient } = await import('./github-client');
+    const client = getGithubClient();
+    const token = client ? await client.getToken().catch(() => null) : null;
+    if (!client || !token) return { ok: false, fallbackUrl };
 
-async function isGhAuthenticated(): Promise<boolean> {
-  const { command, shell } = resolveCmd('gh');
-  return new Promise((resolve) => {
-    execFile(command, ['auth', 'status'], { timeout: 5_000, shell }, (err) => {
-      resolve(!err);
+    // Labels must exist on itsdestin/youcoded (ipc-bridge rule) — the REST
+    // create applies them in the same call the old `gh issue create` did.
+    const res = await client.api('POST', '/repos/itsdestin/youcoded/issues', {
+      title: args.title,
+      body,
+      labels: [args.label, 'youcoded-app:reported'],
     });
-  });
+    if (res.status === 201 && res.json?.html_url) {
+      return { ok: true, url: String(res.json.html_url) };
+    }
+    return { ok: false, fallbackUrl };
+  } catch {
+    // Any failure (expired token, offline, rate limit) degrades to the
+    // browser prefill — issue reporting must never dead-end.
+    return { ok: false, fallbackUrl };
+  }
 }
 
 // ---------------------------------------------------------------------------
