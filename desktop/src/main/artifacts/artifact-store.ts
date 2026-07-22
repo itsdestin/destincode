@@ -69,8 +69,13 @@ export async function writeSidecar(
   const path = join(projectRoot, SIDECAR_RELATIVE);
   // Enforced HERE rather than in each caller so every sidecar writer inherits
   // it (appendVersion, removeArtifactRecord, renameArtifact, the ipc-handlers
-  // comment/tag paths, and sync-spaces import-project). The in-memory object is
-  // updated too, so a caller that keeps using `next` matches what is on disk.
+  // manualIncludes/excludes paths, and sync-spaces import-project).
+  //
+  // This mutates `next`, so on a COMMITTED write the caller's in-memory object
+  // matches disk. On a CAS conflict it does not — `next` then carries a
+  // timestamp that was never written. Every caller re-reads the sidecar before
+  // retrying rather than reusing the object, so nothing observes that; a future
+  // caller that retries with the same object must re-read too.
   next.updatedAt = bumpPastExpected(next.updatedAt, expectedUpdatedAt);
   const json = JSON.stringify(next, null, 2);
   const result = await casWrite(

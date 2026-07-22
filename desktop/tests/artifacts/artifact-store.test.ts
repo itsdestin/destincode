@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { readSidecar, writeSidecar, appendVersion, removeArtifactRecord } from '../../src/main/artifacts/artifact-store';
@@ -140,6 +140,8 @@ describe('appendVersion', () => {
       ]);
       const s = await readSidecar(root) as ProjectSidecar;
       expect(s.artifacts.map((a) => a.path).sort()).toEqual(['a.md', 'b.md', 'c.md']);
+      // 60 iterations x every run x CI — clean up rather than leak temp dirs.
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
