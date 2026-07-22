@@ -14,7 +14,7 @@
 // not wait on disk) AND enqueue the append on the per-session chain. A renderer
 // crash losing an unpersisted event is acceptable; a stuttering UI is not.
 import { EventEmitter } from 'events';
-import type { TranscriptEvent } from '../../shared/types';
+import type { TranscriptEvent, NativeSendResult } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
@@ -47,6 +47,11 @@ const NOOP_REMEMBERED_STORE: RememberedRuleStore = {
   async remember() { /* no-op */ },
 };
 
+// M1 send queue: bounded per program §2.1 — past this many FIFO'd sends, send()
+// refuses honestly (status 'failed', reason 'queue-full') instead of accepting
+// input the user has no way to know is piling up unseen.
+const SEND_QUEUE_LIMIT = 10;
+
 interface LiveEntry {
   session: HarnessSession;
   cwd: string;
@@ -55,6 +60,12 @@ interface LiveEntry {
   // holds. Starts resolved; a failed append is logged but never breaks the
   // chain (a later append must still run).
   appendChain: Promise<void>;
+  // M1 send queue: FIFO of user messages that arrived while a turn was in
+  // flight. Drained one at a time by runTurns; dropped with the entry on destroy.
+  queue: string[];
+  // True from dispatch until runTurns finishes the last queued turn. Host-owned
+  // (HarnessSession's in-flight state is private); safe because Node is single-threaded.
+  inFlight: boolean;
 }
 
 export class NativeSessionHost extends EventEmitter {
@@ -233,7 +244,7 @@ export class NativeSessionHost extends EventEmitter {
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession): void {
-    const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve() };
+    const entry: LiveEntry = { session, cwd, appendChain: Promise.resolve(), queue: [], inFlight: false };
     this.live.set(sessionId, entry);
     this.retainModel(sessionId, session.binding.modelId); // ref-count this model
     // Persist "Always allow" decisions for THIS session's project. The session
@@ -361,24 +372,49 @@ export class NativeSessionHost extends EventEmitter {
     return this.live.has(sessionId) || this.store.has(sessionId);
   }
 
-  /** Send a user turn. false when the session isn't live OR when the turn
-   *  couldn't start — this method NEVER throws or rejects. HarnessSession.send()
-   *  hard-throws on re-entrancy (a second send while a turn is in flight); the
-   *  host swallows that (and any provider-factory throw) here so the
-   *  fire-and-forget callers (`void nativeHost.send(...)` in ipc-handlers /
-   *  remote-server) can't produce an unhandledRejection — no global handler
-   *  exists. The rejected turn's own transcript is unaffected (the first turn
-   *  keeps streaming; only the overlapping call is dropped). */
-  async send(sessionId: string, text: string): Promise<boolean> {
+  /** Send a user turn. SYNCHRONOUS and NEVER throws — the result says what
+   *  happened to the CALL, not the turn: 'sent' means the turn was dispatched
+   *  (not that it completed — a later provider/tool failure surfaces as a
+   *  session-error transcript event, which the renderer already renders),
+   *  'queued' means it was FIFO'd behind the in-flight turn (M1 send queue —
+   *  a send during a live turn used to be silently dropped), 'failed' means it
+   *  was refused outright (reason says why: unknown session, or the queue is
+   *  already at SEND_QUEUE_LIMIT). HarnessSession.send() hard-throws on
+   *  re-entrancy (a second send while a turn is in flight) — the host never
+   *  calls it re-entrantly (inFlight gates that), so the only remaining throw
+   *  surface is a provider-factory rejection, which runTurns catches. */
+  send(sessionId: string, text: string): NativeSendResult {
     const entry = this.live.get(sessionId);
-    if (!entry) return false;
-    try {
-      await entry.session.send(text);
-      return true;
-    } catch (err) {
-      log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
-      return false;
+    if (!entry) return { status: 'failed', reason: 'not-live' };
+    if (entry.inFlight) {
+      if (entry.queue.length >= SEND_QUEUE_LIMIT) return { status: 'failed', reason: 'queue-full' };
+      entry.queue.push(text);
+      return { status: 'queued' };
     }
+    entry.inFlight = true;
+    // Fire the turn loop without awaiting: 'sent' means dispatched. Turn failures
+    // surface as session-error transcript events, not through this return value.
+    void this.runTurns(sessionId, entry, text);
+    return { status: 'sent' };
+  }
+
+  // Runs the dispatched turn, then drains the queue turn-by-turn. send() settling
+  // is the ONLY drain trigger — it settles strictly after turn-complete /
+  // session-error / user-interrupt, and stays unsettled across a permission ask
+  // (an ask pauses the turn; draining on it would hard-throw re-entrancy).
+  private async runTurns(sessionId: string, entry: LiveEntry, first: string): Promise<void> {
+    let next: string | undefined = first;
+    while (next !== undefined) {
+      try {
+        await entry.session.send(next);
+      } catch (err) {
+        log('ERROR', 'NativeSessionHost', 'send failed', { sessionId, error: String(err) });
+      }
+      // Destroy() may have removed/replaced the entry mid-turn — stop draining then.
+      if (this.live.get(sessionId) !== entry) return;
+      next = entry.queue.shift();
+    }
+    entry.inFlight = false;
   }
 
   interrupt(sessionId: string): boolean {

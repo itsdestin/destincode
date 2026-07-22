@@ -34,6 +34,12 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
 // OpenRouter or a direct Google key instead.
 export type SessionProvider = 'claude' | 'native';
 
+// M1: ack shape for native:send — 'sent' = turn dispatched now, 'queued' = FIFO'd
+// behind the in-flight turn, 'failed' = refused (reason says why, exactly).
+export type NativeSendResult =
+  | { status: 'sent' | 'queued' }
+  | { status: 'failed'; reason: 'not-live' | 'queue-full' };
+
 export interface SessionInfo {
   id: string;
   name: string;

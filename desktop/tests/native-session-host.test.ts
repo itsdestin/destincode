@@ -54,6 +54,38 @@ function delayedStream(chunks: any[], delayMs: number): ReadableStream {
 }
 const delayedFactory = async () => new MockLanguageModelV4({ doStream: async () => ({ stream: delayedStream(CHUNKS, 15) }) }) as any;
 
+// M1: host.send() is now SYNCHRONOUS (dispatch-only) — it no longer blocks
+// until the turn finishes, so tests that need to know a turn actually
+// completed must wait on the transcript-event stream instead of on send()'s
+// return value. Resolves once N 'turn-complete' events have been observed
+// (attach-after-send is safe: JS won't yield to the async turn until the
+// current synchronous call stack — including the send() call itself — empties).
+function waitForTurnComplete(host: NativeSessionHost, n: number): Promise<void> {
+  return new Promise((resolve) => {
+    let count = 0;
+    const onEvent = (e: any) => {
+      if (e.type === 'turn-complete') {
+        count += 1;
+        if (count >= n) { host.off('transcript-event', onEvent); resolve(); }
+      }
+    };
+    host.on('transcript-event', onEvent);
+  });
+}
+
+// A ModelFactory whose FIRST call throws (HarnessSession.send() catches this
+// inside its try/await and emits session-error, never a rejection) and whose
+// every later call succeeds via the plain `factory` stream — proves a
+// factory-throw turn doesn't strand the M1 send queue.
+function throwOnceFactory() {
+  let calls = 0;
+  return async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('doomed factory call');
+    return factory();
+  };
+}
+
 describe('NativeSessionHost', () => {
   let root: string; let host: NativeSessionHost;
   beforeEach(() => {
@@ -66,7 +98,8 @@ describe('NativeSessionHost', () => {
     const seen: any[] = [];
     host.on('transcript-event', (e) => seen.push(e));
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
-    await host.send('s-1', 'hello');
+    host.send('s-1', 'hello');       // M1: dispatch-only — wait for the turn separately
+    await waitForTurnComplete(host, 1);
     await host.drain('s-1');   // wait for the append chain to settle
     expect(seen.map((e) => e.type)).toContain('turn-complete');
     const history = host.getHistory('s-1');
@@ -77,7 +110,8 @@ describe('NativeSessionHost', () => {
 
   it('resume rebuilds a live session whose history includes the stored exchange', async () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
-    await host.send('s-1', 'hello');
+    host.send('s-1', 'hello');       // M1: dispatch-only — wait for the turn separately
+    await waitForTurnComplete(host, 1);
     await host.drain('s-1');
     await host.destroyAll();
 
@@ -85,7 +119,8 @@ describe('NativeSessionHost', () => {
     const resumed = await host2.resume('s-1', root);
     expect(resumed).toBe(true);
     expect(host2.getHistory('s-1')!.length).toBe(3);
-    await host2.send('s-1', 'again');
+    host2.send('s-1', 'again');
+    await waitForTurnComplete(host2, 1);
     await host2.drain('s-1');
     // Two full turns now on disk: 2 × (user-message, assistant-text, turn-complete).
     expect(host2.getHistory('s-1')!.length).toBe(6);
@@ -102,25 +137,16 @@ describe('NativeSessionHost', () => {
     expect(host.getHistory('nope')).toBeNull();
   });
 
-  it('send to an unknown session returns false, does not throw', async () => {
-    expect(await host.send('ghost', 'x')).toBe(false);
+  // M1: send() is now synchronous and returns a NativeSendResult (not a
+  // Promise<boolean>) — 'not-live' replaces the old bare `false`.
+  it('send to an unknown session returns failed/not-live, does not throw', () => {
+    expect(host.send('ghost', 'x')).toEqual({ status: 'failed', reason: 'not-live' });
   });
 
-  it('overlapping send() does not reject: second resolves false, first turn completes', async () => {
-    const seen: any[] = [];
-    host.on('transcript-event', (e) => seen.push(e));
-    await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
-    // Fire two sends without awaiting the first. HarnessSession.send() hard-throws
-    // on re-entrancy; the host must swallow that so the fire-and-forget callers
-    // (void nativeHost.send) can't produce an unhandledRejection.
-    const p1 = host.send('s-1', 'first');
-    const p2 = host.send('s-1', 'second');
-    const [r1, r2] = await Promise.all([p1, p2]);
-    expect(r1).toBe(true);
-    expect(r2).toBe(false); // overlapping call dropped, not thrown
-    await host.drain('s-1');
-    expect(seen.map((e) => e.type)).toContain('turn-complete'); // first turn still completed
-  });
+  // The old 'overlapping send() does not reject: second resolves false' pin is
+  // superseded by the M1 send queue below ('overlapping send queues FIFO and
+  // both turns complete in order') — an overlapping send is now FIFO'd, not
+  // dropped, so that assertion no longer describes the contract.
 
   it('destroy() while a stream is mid-emit: no throw, coherent prefix persisted', async () => {
     const store = new SessionStore(new NativeHome(root));
@@ -129,10 +155,11 @@ describe('NativeSessionHost', () => {
       midHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
     await midHost.create({ sessionId: 's-mid', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
-    const p = midHost.send('s-mid', 'hi');  // don't await — destroy mid-stream
+    // M1: send() dispatches synchronously now — 'sent' just means the turn
+    // started, so the "no throw on destroy mid-stream" story moves to destroy().
+    expect(midHost.send('s-mid', 'hi')).toEqual({ status: 'sent' });
     await gotDelta;                          // stream is now mid-emit (delta out, no finish yet)
-    await midHost.destroy('s-mid');          // stop the source, drain, flush
-    await expect(p).resolves.toBe(true);     // send resolved cleanly (no rejection)
+    await expect(midHost.destroy('s-mid')).resolves.toBeUndefined(); // stop the source, drain, flush — no throw
     // A coherent prefix is on disk — no torn/partial turn, no premature turn-complete.
     const events = store.readEvents('s-mid', root);
     expect(events.map((e) => e.type)).toEqual(['user-message', 'assistant-text']);
@@ -163,14 +190,16 @@ describe('NativeSessionHost', () => {
       orphanHost.on('transcript-event', (e) => { if (e.type === 'assistant-text') res(); });
     });
     await orphanHost.create({ sessionId: 's-orphan', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
-    const p = orphanHost.send('s-orphan', 'hi'); // don't await — resume mid-stream
+    // M1: send() dispatches synchronously — 'sent' means the turn started, not
+    // that resume() below is racing a still-pending promise.
+    expect(orphanHost.send('s-orphan', 'hi')).toEqual({ status: 'sent' }); // resume mid-stream
     await gotDelta;
 
     // Resume the SAME id while it is live. This is what a takeover-orphaned
-    // session did on the next open.
+    // session did on the next open. resume() awaits destroy() of the orphan
+    // underneath it, so the interrupted turn settles cleanly with no throw.
     const resumed = await orphanHost.resume('s-orphan', root);
     expect(resumed).toBe(true);
-    await expect(p).resolves.toBe(true); // the interrupted send still settles cleanly
 
     // Everything the old session could still have written must already be done:
     // resume() awaits destroy(), which aborts the stream, drains the append chain
@@ -198,7 +227,8 @@ describe('NativeSessionHost', () => {
     });
     const failHost = new NativeSessionHost(store, factory, async () => null);
     await failHost.create({ sessionId: 's-f', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
-    await failHost.send('s-f', 'hello');
+    failHost.send('s-f', 'hello');       // M1: dispatch-only — wait for the turn separately
+    await waitForTurnComplete(failHost, 1);
     await failHost.drain('s-f');
     expect(threw).toBe(true);
     const types = failHost.getHistory('s-f')!.map((e) => e.type);
@@ -262,7 +292,8 @@ describe('NativeSessionHost', () => {
       const p = permHost();
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       p.setPermissionMode('s', 'full-auto');
-      await p.send('s', 'seed a turn so there is a stored header to resume');  // full-auto → no ask, resolves
+      p.send('s', 'seed a turn so there is a stored header to resume');  // full-auto → no ask
+      await waitForTurnComplete(p, 1);
       await p.drain('s');
       await p.destroy('s');   // must drop the mode entry, not leak it
 
@@ -273,11 +304,12 @@ describe('NativeSessionHost', () => {
       const resumed = await p2.resume('s', root);
       expect(resumed).toBe(true);
       const seen: any[] = []; p2.on('transcript-event', (e) => seen.push(e));
-      const turn = p2.send('s', 'write a file');
+      const turnDone = waitForTurnComplete(p2, 1);
+      p2.send('s', 'write a file');
       const requestId = await ask;   // resolves ONLY if the resumed session is back to 'ask'
       expect(seen.map((e) => e.type)).not.toContain('turn-complete');  // paused on the ask
       p2.respondPermission(requestId, { decision: { behavior: 'deny' } });
-      await turn;
+      await turnDone;
       await p.destroyAll();
       await p2.destroyAll();
     });
@@ -288,7 +320,8 @@ describe('NativeSessionHost', () => {
       const seen: any[] = []; p.on('transcript-event', (e) => seen.push(e));
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       expect(p.setPermissionMode('s', 'full-auto')).toBe('full-auto');
-      await p.send('s', 'write a file');   // resolves — no ask to wait on
+      p.send('s', 'write a file');   // no ask to wait on
+      await waitForTurnComplete(p, 1);
       expect(asks).toHaveLength(0);                                  // full-auto → no permission ask
       expect(seen.map((e) => e.type)).toContain('turn-complete');
       await p.destroyAll();
@@ -301,7 +334,8 @@ describe('NativeSessionHost', () => {
       // Default mode 'ask' → the Write call raises an ask and the turn pauses.
       // Don't await send() — it won't resolve until we respond.
       const ask = firstAsk(p);
-      const turn = p.send('s', 'write a file');
+      const turnDone = waitForTurnComplete(p, 1);
+      p.send('s', 'write a file');
       const requestId = await ask;
       expect(seen.map((e) => e.type)).not.toContain('turn-complete');   // paused on the ask
       // Flip the mode mid-ask. The pending ask must be UNTOUCHED (spec pending-ask
@@ -311,7 +345,7 @@ describe('NativeSessionHost', () => {
       expect(seen.map((e) => e.type)).not.toContain('turn-complete');   // still pending after the flip
       // The ORIGINAL ask resolves by its own respond(), not by the mode flip.
       expect(p.respondPermission(requestId, { decision: { behavior: 'allow' } })).toBe(true);
-      await turn;
+      await turnDone;
       expect(seen.map((e) => e.type)).toContain('turn-complete');
       await p.destroyAll();
     });
@@ -323,11 +357,12 @@ describe('NativeSessionHost', () => {
       );
       await p.create({ sessionId: 's', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
       const ask = firstAsk(p);
-      const turn = p.send('s', 'write a file');
+      const turnDone = waitForTurnComplete(p, 1);
+      p.send('s', 'write a file');
       const requestId = await ask;
       // "Always allow": non-empty updatedPermissions signals the remember.
       p.respondPermission(requestId, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Write' }] });
-      await turn;
+      await turnDone;
       // remember() is fire-and-forget off the turn (mutateJson under a file lock);
       // poll until the persisted rule appears.
       let rules: any[] = [];
@@ -356,15 +391,17 @@ describe('NativeSessionHost', () => {
 
       // Turn 1 (mode 'ask'): the Write raises ONE ask; respond Always-allow.
       const ask1 = firstAsk(p);
-      const t1 = p.send('s', 'write once');
+      const t1Done = waitForTurnComplete(p, 1);
+      p.send('s', 'write once');
       p.respondPermission(await ask1, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Write' }] });
-      await t1;
+      await t1Done;
       expect(asks).toHaveLength(1);
 
       // Turn 2: the SAME gated call must NOT ask — the in-memory remembered rule
       // held even though the disk persist (remember) never resolved.
       const seen: any[] = []; p.on('transcript-event', (e) => seen.push(e));
-      await p.send('s', 'write again');   // resolves — no ask to wait on
+      p.send('s', 'write again');   // no ask to wait on
+      await waitForTurnComplete(p, 1);
       expect(asks).toHaveLength(1);       // still just the first ask (no re-ask)
       expect(seen.map((e) => e.type)).toContain('turn-complete');
       await p.destroyAll();
@@ -412,6 +449,88 @@ describe('NativeSessionHost', () => {
       h.setPermissionMode('s3', 'ask');
       expect(h.getPermissionMode('s3')).toBe('ask');
       await h.destroyAll();
+    });
+  });
+
+  // ---- M1: per-session FIFO send queue + honest sent/queued/failed result ----
+  describe('send queue (M1)', () => {
+    // A fresh host per test, driven by delayedFactory (15ms/chunk) so a turn
+    // stays genuinely in flight across several synchronous send() calls —
+    // that's the window these tests exercise (queueing, the cap, interrupt,
+    // destroy). Note send() itself sets entry.inFlight = true SYNCHRONOUSLY
+    // before returning, so the queueing behavior below would hold even against
+    // the fast `factory`; delayedFactory is used because it's what the brief
+    // that authored these scenarios specifies and it makes the in-flight
+    // window robust against future timing changes.
+    let host: NativeSessionHost;
+    let id: string;
+
+    beforeEach(async () => {
+      host = new NativeSessionHost(new SessionStore(new NativeHome(root)), delayedFactory, async () => null);
+      id = 'q-1';
+      await host.create({ sessionId: id, cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    });
+    afterEach(async () => { await host.destroyAll(); });
+
+    it('send to an unknown session returns failed/not-live', () => {
+      expect(host.send('ghost', 'x')).toEqual({ status: 'failed', reason: 'not-live' });
+    });
+
+    it('overlapping send queues FIFO and both turns complete in order', async () => {
+      const events: string[] = [];
+      host.on('transcript-event', (e) => { if (e.type === 'user-message') events.push(e.data.text); });
+      const r1 = host.send(id, 'first');
+      const r2 = host.send(id, 'second');
+      expect(r1).toEqual({ status: 'sent' });
+      expect(r2).toEqual({ status: 'queued' });
+      await waitForTurnComplete(host, 2);
+      expect(events).toEqual(['first', 'second']); // user-message for 'second' fires only when drained
+    });
+
+    it('refuses honestly past the queue cap', () => {
+      host.send(id, 'turn'); // in flight
+      for (let i = 0; i < 10; i++) expect(host.send(id, `q${i}`).status).toBe('queued');
+      expect(host.send(id, 'overflow')).toEqual({ status: 'failed', reason: 'queue-full' });
+    });
+
+    it('interrupt aborts the current turn only — the queue still drains (pinned semantics)', async () => {
+      const events: any[] = [];
+      host.on('transcript-event', (e) => events.push(e));
+      host.send(id, 'long');           // delayedFactory turn
+      host.send(id, 'queued-survivor');
+      host.interrupt(id);
+      await waitForTurnComplete(host, 1);    // survivor's turn
+      // Transcript contains user-interrupt for turn 1, then user-message 'queued-survivor'.
+      const types = events.map((e) => e.type);
+      expect(types).toContain('user-interrupt');
+      expect(types).toContain('turn-complete');
+      const interruptIdx = types.indexOf('user-interrupt');
+      const survivorMsgIdx = events.findIndex((e) => e.type === 'user-message' && e.data.text === 'queued-survivor');
+      expect(survivorMsgIdx).toBeGreaterThan(interruptIdx); // the queue only drains AFTER the interrupt settles turn 1
+    });
+
+    it('a failed turn (factory throw) does not strand the queue', async () => {
+      const errHost = new NativeSessionHost(new SessionStore(new NativeHome(root)), throwOnceFactory(), async () => null);
+      await errHost.create({ sessionId: 'e-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const types: string[] = [];
+      errHost.on('transcript-event', (e) => types.push(e.type));
+      const r1 = errHost.send('e-1', 'doomed');
+      const r2 = errHost.send('e-1', 'after-error');
+      expect(r1).toEqual({ status: 'sent' });
+      expect(r2).toEqual({ status: 'queued' });
+      await waitForTurnComplete(errHost, 1); // 'after-error' produced a turn-complete despite turn 1 erroring
+      expect(types).toContain('session-error'); // turn 1 (doomed) errored, not stranded the queue
+      expect(types).toContain('turn-complete');  // turn 2 (after-error) still ran and completed
+      await errHost.destroyAll();
+    });
+
+    it('destroy mid-turn drops queued sends without unhandled rejection', async () => {
+      const events: any[] = [];
+      host.on('transcript-event', (e) => events.push(e));
+      host.send(id, 'long');
+      host.send(id, 'never-sent');
+      await expect(host.destroy(id)).resolves.toBeUndefined(); // no throw
+      expect(events.some((e) => e.type === 'user-message' && e.data.text === 'never-sent')).toBe(false);
     });
   });
 });
