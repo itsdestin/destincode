@@ -15,7 +15,7 @@ import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
-import { NATIVE_META_UNSUPPORTED } from '../shared/types';
+import { NATIVE_META_UNSUPPORTED, type NativeSendResult } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -767,11 +767,9 @@ export class RemoteServer {
         break;
       }
       case 'native:send': {
-        // M1: mirrors the desktop invoke — return the result, never throw, so desktop
-        // and remote agree on failure shape (see native-runtime rule on transport parity).
-        const result = this.nativeRuntime
-          ? this.nativeRuntime.nativeHost.send(payload.sessionId, payload.text)
-          : { status: 'failed', reason: 'not-live' };
+        // M1: mirrors the desktop invoke — never throw (transport-parity rule).
+        const notLive = { status: 'failed', reason: 'not-live' } satisfies NativeSendResult;
+        const result = this.nativeRuntime ? this.nativeRuntime.nativeHost.send(payload.sessionId, payload.text) : notLive;
         this.respond(client.ws, type, id, result);
         break;
       }

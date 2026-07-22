@@ -358,7 +358,22 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // it RETURNs before the CC/PTY dispatch and paste machinery below.
       if (provider === 'native') {
         void (async () => {
-          const result = await sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
+          // Fix (final-review Important, 2026-07-22): the host's send() itself
+          // never rejects (NativeSessionHost.send() is documented SYNCHRONOUS
+          // and NEVER throws), but the invoke() HOP to get there can — version
+          // skew on the IPC channel, or (on remote access) the WebSocket
+          // dropping mid-round-trip. An unhandled rejection here would toast
+          // nothing and silently vanish the draft, so a rejection is routed
+          // through the EXACT same failure branch as a failed/undefined ack
+          // (same toast copy, same guarded draft restore) rather than treated
+          // as a distinct case — from the user's point of view a refused send
+          // and a lost send look identical: their message didn't go anywhere.
+          let result: NativeSendResult | undefined;
+          try {
+            result = await sendChatMessage('native', sessionId, outgoing.ptyText, files.map((f) => f.path));
+          } catch (err) {
+            console.error('native send invoke rejected:', err);
+          }
           if (!result || result.status === 'failed') {
             onToast?.(sendFailureCopy(result));
             // Fix (reviewer Critical, post-de30b908): `send()` already ran

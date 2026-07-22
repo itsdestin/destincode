@@ -498,6 +498,14 @@ describe('NativeSessionHost', () => {
       host.on('transcript-event', (e) => events.push(e));
       host.send(id, 'long');           // delayedFactory turn
       host.send(id, 'queued-survivor');
+      // M1 ordering fix (2026-07-22): send() now defers the turn dispatch one
+      // macrotask (setImmediate) so the invoke reply beats the transcript
+      // event. Interrupting in the SAME tick as send() would race that gap
+      // and no-op (the abort controller doesn't exist until the deferred turn
+      // actually starts — see the WHY comment on send()); a real user's stop
+      // click is always at least one tick after their send, so wait a
+      // macrotask before interrupting so the turn is genuinely in flight.
+      await new Promise((r) => setImmediate(r));
       host.interrupt(id);
       await waitForTurnComplete(host, 1);    // survivor's turn
       // Transcript contains user-interrupt for turn 1, then user-message 'queued-survivor'.
@@ -531,6 +539,27 @@ describe('NativeSessionHost', () => {
       host.send(id, 'never-sent');
       await expect(host.destroy(id)).resolves.toBeUndefined(); // no throw
       expect(events.some((e) => e.type === 'user-message' && e.data.text === 'never-sent')).toBe(false);
+    });
+
+    // Fix for the ack-vs-transcript ordering race: send() now defers runTurns()
+    // one macrotask (setImmediate) past its synchronous return so the invoke
+    // reply beats the transcript-event. This opens a one-tick gap where a
+    // destroy() landing in the SAME tick as send() (before the setImmediate
+    // callback fires) races the still-scheduled turn: destroy() removes the
+    // session's listeners synchronously, so when runTurns eventually calls
+    // entry.session.send() the turn still runs (see the WHY comment on
+    // send()) but is a zombie — no listener is left to forward or persist
+    // anything. Must not throw and must not emit for the dropped text.
+    it('destroy in the same tick as send() drops the turn without unhandled rejection', async () => {
+      const events: any[] = [];
+      host.on('transcript-event', (e) => events.push(e));
+      host.send(id, 'same-tick');
+      await expect(host.destroy(id)).resolves.toBeUndefined(); // no throw, no unhandled rejection
+      // Give the deferred runTurns (setImmediate) + the now-zombie turn's
+      // delayed stream room to play out in the background — it must stay
+      // silent (destroy() already tore down the session's listeners).
+      await new Promise((r) => setTimeout(r, 150));
+      expect(events.some((e) => e.type === 'user-message' && e.data.text === 'same-tick')).toBe(false);
     });
   });
 });

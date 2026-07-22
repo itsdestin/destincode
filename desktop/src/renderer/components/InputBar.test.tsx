@@ -122,4 +122,40 @@ describe('InputBar native send — failure keeps the draft (reviewer Critical fi
     // the newer draft survives, the lost first message does not reappear.
     expect(textarea.value).toBe('second draft');
   });
+
+  it('restores the draft and shows a toast when the invoke REJECTS (final-review fix)', async () => {
+    // Unlike the two tests above (a resolved 'failed'/undefined ack), this
+    // covers the IPC hop itself throwing — version skew or a dropped remote
+    // WebSocket. Before the fix this was an unhandled rejection: no toast,
+    // draft silently gone.
+    let rejectAck: (err: unknown) => void;
+    const ack = new Promise((_resolve, reject) => { rejectAck = reject; });
+    (window as any).claude.native.send.mockReturnValue(ack);
+
+    const onToast = vi.fn();
+    render(
+      <ChatProvider>
+        <SkillProvider>
+          <InputBar sessionId="sess-1" provider="native" onToast={onToast} />
+        </SkillProvider>
+      </ChatProvider>,
+    );
+
+    const textarea = screen.getByPlaceholderText('Message Claude...') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'hello world' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(textarea.value).toBe('');
+
+    rejectAck!(new Error('invoke rejected'));
+
+    // Falls back to the same undefined-result copy as the other failure branch.
+    await waitFor(() => {
+      expect(onToast).toHaveBeenCalledWith(
+        'The message could not be sent — no response from the session host.',
+      );
+    });
+    await waitFor(() => {
+      expect(textarea.value).toBe('hello world');
+    });
+  });
 });

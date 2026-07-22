@@ -392,9 +392,14 @@ export class NativeSessionHost extends EventEmitter {
       return { status: 'queued' };
     }
     entry.inFlight = true;
-    // Fire the turn loop without awaiting: 'sent' means dispatched. Turn failures
-    // surface as session-error transcript events, not through this return value.
-    void this.runTurns(sessionId, entry, text);
+    // WHY: defer the turn dispatch one macrotask so the invoke reply (the renderer's
+    // 'sent' ack) is flushed BEFORE HarnessSession emits the user-message transcript
+    // event — otherwise the transcript confirm can beat the ack to the renderer and
+    // duplicate the bubble (final-review finding, 2026-07-22). inFlight is set
+    // synchronously above, so queueing semantics are unchanged. Edge: an interrupt
+    // arriving inside this one-tick gap no-ops (abort doesn't exist yet) and the
+    // turn still starts — same outcome as stopping a millisecond before sending.
+    setImmediate(() => { void this.runTurns(sessionId, entry, text); });
     return { status: 'sent' };
   }
 
