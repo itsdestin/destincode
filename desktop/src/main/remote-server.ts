@@ -37,7 +37,7 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 // ipc-handlers (its emitDone broadcasts github:connect-done to remote clients).
 import { installGh } from './github-auth';
 import { combinedGithubStatus } from './github-client';
-import { getGithubConnect } from './github-connect';
+import { getGithubConnect, disconnectGithub } from './github-connect';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
 const HOOK_BUFFER_SIZE = 10_000; // ~10MB max, covers full conversations without excessive memory
@@ -1794,6 +1794,10 @@ export class RemoteServer {
       }
       case 'github:install-gh': {
         this.respond(client.ws, type, id, await installGh());
+        break;
+      }
+      case 'github:disconnect': {
+        this.respond(client.ws, type, id, await disconnectGithub());
         break;
       }
 

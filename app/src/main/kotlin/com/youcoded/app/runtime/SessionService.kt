@@ -3627,7 +3627,8 @@ class SessionService : Service() {
             "github:status",
             "github:connect-start",
             "github:connect-cancel",
-            "github:install-gh" -> {
+            "github:install-gh",
+            "github:disconnect" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
