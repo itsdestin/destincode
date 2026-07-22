@@ -68,6 +68,12 @@ interface SpaceManagerOpts {
 interface SpacesState {
   enabled: boolean;
   remotes: Record<string, string>; // spaceId -> clone URL
+  // spaceId -> ms epoch of the last COMPLETED pull+push against a real remote.
+  // This is the "has this device ever actually synced?" evidence the panel's
+  // green state is gated on — recentEvents is per-boot, so without a persisted
+  // marker a restart would forget that a first sync ever happened. Absent key
+  // = never synced. Written by service.broadcast on every real 'synced' event.
+  lastSync?: Record<string, number>;
 }
 
 export class SpaceManager {
@@ -97,6 +103,14 @@ export class SpaceManager {
   }
 
   isEnabled(): boolean { return this.read().enabled; }
+  /** ms epoch of this space's last completed real sync on THIS device, or null
+   *  if it has never synced. Survives restarts (unlike recentEvents). */
+  lastSyncFor(spaceId: string): number | null { return this.read().lastSync?.[spaceId] ?? null; }
+  recordSyncSuccess(spaceId: string, at: number): void {
+    const s = this.read();
+    s.lastSync = { ...s.lastSync, [spaceId]: at };
+    this.write(s);
+  }
   setEnabled(v: boolean): void { this.write({ ...this.read(), enabled: v }); }
   remoteFor(spaceId: string): string | null { return this.read().remotes[spaceId] ?? null; }
   recordRemote(spaceId: string, url: string): void {

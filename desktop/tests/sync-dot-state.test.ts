@@ -1,6 +1,6 @@
 // desktop/tests/sync-dot-state.test.ts
 import { describe, it, expect } from 'vitest';
-import { syncDotFor, findSpaceFor, lastSyncedLabel, latestUnresolvedError, type SyncStatusData } from '../src/renderer/components/sync-dot-state';
+import { syncDotFor, findSpaceFor, lastSyncedLabel, latestUnresolvedError, deriveSyncBoxState, type SyncStatusData } from '../src/renderer/components/sync-dot-state';
 
 const status = (over: Partial<SyncStatusData> = {}): SyncStatusData => ({
   enabled: true,
@@ -168,5 +168,59 @@ describe('lastSyncedLabel', () => {
   it('pluralizes hours ("3 hours ago")', () => {
     const s = status({ recentEvents: [{ type: 'synced', spaceId: 'project:budget-app', at: NOW - 3 * 60 * 60_000 }] });
     expect(lastSyncedLabel('project:budget-app', s, NOW)).toBe('3 hours ago');
+  });
+});
+
+// ---- deriveSyncBoxState (honest-state-machine fix, 2026-07-22) -------------
+// Green is EVIDENCE-GATED. The old inline ladder's bare `else` landed a device
+// that had never pushed or pulled on green "All synced" (beta.8 macOS VM bug).
+
+describe('deriveSyncBoxState', () => {
+  const spaces = (over: Partial<SyncStatusData['spaces'][number]>[] = []) => ([
+    { id: 'personal', root: '/p', kind: 'personal' as const, remote: 'https://github.com/u/youcoded-sync-personal.git', lastSyncAt: 1_800_000_000_000 },
+    { id: 'project:x', root: '/x', kind: 'project' as const, remote: 'https://github.com/u/r.git', lastSyncAt: 1_800_000_000_000 },
+  ].map((s, i) => ({ ...s, ...(over[i] ?? {}) })));
+  const base = { pendingEnable: false, enabled: true, hasError: false, githubUnauthed: false, syncing: false };
+
+  it('THE VM PIN: provisioned but never-synced Personal is hydrating, never synced', () => {
+    expect(deriveSyncBoxState({ ...base, spaces: spaces([{ lastSyncAt: null }]) })).toBe('hydrating');
+  });
+
+  it('a space with no provisioned remote reads as setup, never synced', () => {
+    expect(deriveSyncBoxState({ ...base, spaces: spaces([{ remote: null, lastSyncAt: null }]) })).toBe('setup');
+  });
+
+  it('an unresolved error wins over everything while enabled', () => {
+    expect(deriveSyncBoxState({ ...base, hasError: true, spaces: spaces([{ remote: null, lastSyncAt: null }]) })).toBe('error');
+  });
+
+  it('green only with full evidence: all provisioned + Personal has synced', () => {
+    expect(deriveSyncBoxState({ ...base, spaces: spaces() })).toBe('synced');
+    expect(deriveSyncBoxState({ ...base, syncing: true, spaces: spaces() })).toBe('syncing');
+  });
+
+  it('a stopped project without a remote does not block green (tombstones are inert)', () => {
+    expect(deriveSyncBoxState({ ...base, spaces: spaces([{}, { state: 'stopped', remote: null, lastSyncAt: null }]) })).toBe('synced');
+  });
+
+  it('a just-created project that has not synced yet does NOT flip the box to hydrating', () => {
+    // createProject deliberately waits for the first file change / poll —
+    // hydration gating is scoped to Personal (the first-sync long pole).
+    expect(deriveSyncBoxState({ ...base, spaces: spaces([{}, { lastSyncAt: null }]) })).toBe('synced');
+  });
+
+  it('empty spaces while enabled is still setup (enable round-trip not landed)', () => {
+    expect(deriveSyncBoxState({ ...base, spaces: [] })).toBe('setup');
+  });
+
+  it('disabled ladder: pending enable → setup; error+unauthed → waiting-github; else off', () => {
+    expect(deriveSyncBoxState({ ...base, enabled: false, pendingEnable: true, spaces: [] })).toBe('setup');
+    expect(deriveSyncBoxState({ ...base, enabled: false, hasError: true, githubUnauthed: true, spaces: [] })).toBe('waiting-github');
+    expect(deriveSyncBoxState({ ...base, enabled: false, hasError: true, spaces: [] })).toBe('off');
+    expect(deriveSyncBoxState({ ...base, enabled: false, spaces: [] })).toBe('off');
+  });
+
+  it('older payloads without kind/remote/lastSyncAt degrade to setup, not a crash or green', () => {
+    expect(deriveSyncBoxState({ ...base, spaces: [{ id: 'personal', root: '/p' }] })).toBe('setup');
   });
 });

@@ -124,6 +124,27 @@ describe('SpaceManager state', () => {
     expect(provisionRemote).toHaveBeenCalledTimes(2);
   });
 
+  it('recordSyncSuccess persists "has ever synced" evidence across instances', () => {
+    const stateFile = path.join(tmp, 'sync-spaces.json');
+    const m = new SpaceManager({ stateFile, provisionRemote: vi.fn() });
+    // Never-synced default is null — this is what gates the panel's green
+    // state: recentEvents is per-boot, so WITHOUT this persisted marker a
+    // restart couldn't tell "synced before" from "never synced" (beta.8 VM bug).
+    expect(m.lastSyncFor('personal')).toBe(null);
+    m.recordSyncSuccess('personal', 1_800_000_000_000);
+    expect(m.lastSyncFor('personal')).toBe(1_800_000_000_000);
+    // Survives a restart (fresh instance over the same state file) and
+    // coexists with the other persisted fields.
+    m.setEnabled(true);
+    const m2 = new SpaceManager({ stateFile, provisionRemote: vi.fn() });
+    expect(m2.lastSyncFor('personal')).toBe(1_800_000_000_000);
+    expect(m2.lastSyncFor('project:other')).toBe(null);
+    expect(m2.isEnabled()).toBe(true);
+    // A later sync advances the marker.
+    m2.recordSyncSuccess('personal', 1_800_000_000_500);
+    expect(m2.lastSyncFor('personal')).toBe(1_800_000_000_500);
+  });
+
   it('degrades to defaults when the state file is corrupt, and self-heals on write', () => {
     const stateFile = path.join(tmp, 'sync-spaces.json');
     fs.writeFileSync(stateFile, '{not json!!');

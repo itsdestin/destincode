@@ -9,7 +9,15 @@ export interface SyncStatusData {
   enabled: boolean;
   // `displayName`/`state` are the read-time overlay from the cross-device project
   // registry (2026-07-12): a stopped project reads as detached, not errored.
-  spaces: Array<{ id: string; root: string; displayName?: string; state?: 'active' | 'stopped' }>;
+  // `kind`/`remote`/`lastSyncAt` feed deriveSyncBoxState below — remote is the
+  // provisioned clone URL (null = repo never created for this device) and
+  // lastSyncAt is the persisted ms epoch of the last COMPLETED real sync
+  // (null = this device has never synced that space). Optional so older
+  // payloads (remote shim to an older host) still typecheck.
+  spaces: Array<{
+    id: string; root: string; displayName?: string; state?: 'active' | 'stopped';
+    kind?: 'project' | 'personal'; remote?: string | null; lastSyncAt?: number | null;
+  }>;
   // Engine events since app boot (last 50). `at` is stamped at broadcast time
   // (ms epoch); older payloads may lack it.
   recentEvents: Array<{ type: string; spaceId: string; at?: number; message?: string }>;
@@ -87,6 +95,54 @@ export function latestUnresolvedError(
     if (!superseded) return e;
   }
   return null;
+}
+
+/** The Sync box header states, in ladder order. 'hydrating' is the first-sync
+ *  download phase; 'setup' covers both the enable() round-trip and repo
+ *  provisioning (they read the same to a user: "creating your repositories"). */
+export type SyncBoxState = 'setup' | 'off' | 'waiting-github' | 'error' | 'hydrating' | 'syncing' | 'synced';
+
+/**
+ * Pure derivation of the Sync box header state (2026-07-22 honest-state-machine
+ * fix). The old inline ladder's bare `else → 'synced'` asserted only "enabled,
+ * no error right now, nothing in flight" — a device that had NEVER pushed or
+ * pulled landed on green "All synced" (the beta.8 macOS VM bug). Green is now
+ * EVIDENCE-GATED on two facts the status payload already carries:
+ *
+ *  - every active space has a provisioned remote (`remote` non-null); else the
+ *    device is still setting up (or the persistent not-provisioned error event
+ *    routes to 'error' above this check), and
+ *  - the Personal space has completed at least one real sync (`lastSyncAt`
+ *    non-null, persisted across restarts). Scoped to Personal deliberately:
+ *    it is the first-sync long pole (all conversations), while a just-created
+ *    empty project deliberately doesn't sync until its first file change —
+ *    gating on ALL spaces would flash 'hydrating' for up to 2 minutes after
+ *    every "New project".
+ */
+export function deriveSyncBoxState(i: {
+  /** An enable(true) call is in flight and status doesn't show enabled yet. */
+  pendingEnable: boolean;
+  enabled: boolean;
+  /** An unresolved error exists (enable rejection or unresolved engine error). */
+  hasError: boolean;
+  /** GitHub reads as not-installed or not-authed (github:status). */
+  githubUnauthed: boolean;
+  spaces: SyncStatusData['spaces'];
+  /** A user-triggered "Sync now" is in flight. */
+  syncing: boolean;
+}): SyncBoxState {
+  if (!i.enabled) {
+    if (i.pendingEnable) return 'setup';
+    return i.hasError && i.githubUnauthed ? 'waiting-github' : 'off';
+  }
+  if (i.hasError) return 'error';
+  const active = i.spaces.filter((s) => s.state !== 'stopped');
+  // No spaces yet = the enable round-trip hasn't populated status — still setup.
+  if (active.length === 0 || !active.every((s) => !!s.remote)) return 'setup';
+  const personal = active.find((s) => s.kind === 'personal');
+  if (personal && personal.lastSyncAt == null) return 'hydrating';
+  if (i.syncing) return 'syncing';
+  return 'synced';
 }
 
 /** "just now" / "N minutes ago" / "N hours ago" / null when unknown.
