@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
-import { useChatDispatch, useChatState } from '../state/chat-context';
+import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
 import { Button } from './ui';
@@ -16,6 +16,7 @@ import { buildOutgoingMessage } from './outgoing-message';
 import { sendChatMessage } from './native-send';
 import type { NativeSendResult } from '../../shared/types';
 import { useScrollFade } from '../hooks/useScrollFade';
+import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
 
 export interface InputBarHandle {
@@ -101,11 +102,15 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   const mirrorContentRef = useRef<HTMLDivElement>(null);
   const dispatch = useChatDispatch();
   // Task 10 (Destin placement ruling): the stop control lives in the composer
-  // row now, not beside ChatView's ThinkingIndicator. Cached per-session
-  // selector — the react-renderer rule requires useChatState over a raw map
-  // read on the render path. Same visibility gate Task 6 used in ChatView.
-  const chatState = useChatState(sessionId);
-  const showStop = chatState.isThinking && chatState.attentionState === 'ok';
+  // row now, not beside ChatView's ThinkingIndicator. Fix (review finding,
+  // 2026-07-22): useChatState(sessionId) here would re-render the composer —
+  // a controlled textarea — on EVERY dispatch for this session, i.e. every
+  // streaming token/tool delta, just to watch two booleans. useStreamingGate
+  // is a derived cached selector (useSessionAttention.ts idiom) whose
+  // getSnapshot returns a primitive, so useSyncExternalStore skips the
+  // re-render whenever the gate itself hasn't flipped. Same visibility
+  // predicate Task 6 used in ChatView (isThinking && attentionState==='ok').
+  const showStop = useStreamingGate(sessionId);
 
   // Per-session draft store — keeps input text and attachments separate
   // across sessions so switching away and back preserves your draft.
