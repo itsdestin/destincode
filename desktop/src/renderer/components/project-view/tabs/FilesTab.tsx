@@ -121,6 +121,7 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
 // Aliased: detail-tool-icons also exports a (different) FolderIcon used by the
 // Reveal button above.
 import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon } from '../icons';
+import { ChevronIcon } from '../../Icons';
 import { Button } from '../../ui';
 
 // Tiny per-type glyph for the folder-card filename list — one icon per
@@ -280,6 +281,16 @@ export function FilesTab({
   // an empty hit list and the search stays names-only there).
   const [contentHits, setContentHits] = useState<RankableHit[]>([]);
   const [contentTruncated, setContentTruncated] = useState(false);
+  // Groups are collapsed by default (Destin, 2026-07-22) — a fresh query
+  // collapses everything again so results always start as a scannable summary.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  useEffect(() => { setExpandedGroups(new Set()); }, [search]);
+  const toggleGroup = (path: string) => setExpandedGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    return next;
+  });
   // Search-result jump: which file+line to reveal once the overlay opens.
   const [pendingReveal, setPendingReveal] = useState<{ id: string; line: number } | null>(null);
   // A content hit on a file outside the loaded list (untracked in artifacts
@@ -490,27 +501,29 @@ export function FilesTab({
                       {groups.map((group) => {
                         const filename = group.path.split('/').pop() ?? group.path;
                         const dir = group.path.slice(0, group.path.length - filename.length);
+                        const expanded = expandedGroups.has(group.path);
                         return (
                           <div key={group.path} className="rounded-md border border-edge-dim overflow-hidden">
-                            {/* Group header — the file. Clicking opens at the FIRST hit. */}
+                            {/* Group header toggles the hit list (collapsed by default). */}
                             <button
                               type="button"
-                              onClick={() => openContentHit(group.hits[0])}
-                              className="w-full flex items-baseline gap-2 px-2.5 py-1.5 text-left min-w-0 bg-well/60 hover:bg-well transition-colors border-b border-edge-dim"
+                              onClick={() => toggleGroup(group.path)}
+                              className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-left min-w-0 bg-well/60 hover:bg-well transition-colors ${expanded ? 'border-b border-edge-dim' : ''}`}
                               title={group.path}
                             >
+                              <ChevronIcon className="w-3 h-3 shrink-0" expanded={expanded} />
                               <span className="text-[12px] font-mono font-medium text-fg-2 shrink-0">{filename}</span>
                               {dir && <span className="text-[11px] font-mono text-fg-faint truncate min-w-0">{dir}</span>}
                               <span className="text-[11px] text-fg-muted shrink-0 ml-auto">
                                 {group.hits.length} {group.hits.length === 1 ? 'match' : 'matches'}
                               </span>
                             </button>
-                            {group.hits.map((hit, i) => (
+                            {expanded && group.hits.map((hit, i) => (
                               <button
                                 key={`${hit.line}:${i}`}
                                 type="button"
                                 onClick={() => openContentHit(hit)}
-                                className="w-full flex items-baseline gap-2 pl-5 pr-2.5 py-1 text-left min-w-0 hover:bg-well transition-colors"
+                                className="w-full flex items-baseline gap-2 pl-7 pr-2.5 py-1 text-left min-w-0 hover:bg-well transition-colors"
                                 title={`${group.path}:${hit.line}`}
                               >
                                 <span className="text-[11px] font-mono text-fg-muted shrink-0 w-8 text-right">{hit.line}</span>
