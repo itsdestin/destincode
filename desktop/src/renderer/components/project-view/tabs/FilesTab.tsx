@@ -13,6 +13,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useArtifact } from '../../../state/ArtifactContext';
 import { useProjectWatch } from '../../../hooks/useProjectWatch';
+import { dedupeContentHits, groupContentHits, capGroups, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
 import { useTheme } from '../../../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
@@ -120,6 +121,7 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
 // Aliased: detail-tool-icons also exports a (different) FolderIcon used by the
 // Reveal button above.
 import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon } from '../icons';
+import { ChevronIcon } from '../../Icons';
 import { Button } from '../../ui';
 
 // Tiny per-type glyph for the folder-card filename list — one icon per
@@ -273,7 +275,62 @@ export function FilesTab({
     };
   }, [project.path]);
 
-  const activeArtifact = pvActiveId ? artifacts.find((a) => a.id === pvActiveId) : undefined;
+  // ── Project-wide CONTENT search (unified list, Destin 2026-07-22: no
+  // toggle — name matches rank above these). Debounced; desktop-only (the
+  // Kotlin side is a stub and remote rejects as unsupported — both settle to
+  // an empty hit list and the search stays names-only there).
+  const [contentHits, setContentHits] = useState<RankableHit[]>([]);
+  const [contentTruncated, setContentTruncated] = useState(false);
+  // Groups are collapsed by default (Destin, 2026-07-22) — a fresh query
+  // collapses everything again so results always start as a scannable summary.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  useEffect(() => { setExpandedGroups(new Set()); }, [search]);
+  const toggleGroup = (path: string) => setExpandedGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    return next;
+  });
+  // Search-result jump: which file+line to reveal once the overlay opens.
+  const [pendingReveal, setPendingReveal] = useState<{ id: string; line: number } | null>(null);
+  // A content hit on a file outside the loaded list (untracked in artifacts
+  // mode, cap-truncated in allfiles) still opens via the id-as-path GET
+  // contract — this synthetic record lets the overlay render it.
+  const [syntheticHit, setSyntheticHit] = useState<ArtifactRecord | null>(null);
+  useEffect(() => {
+    const q = search.trim();
+    if (!q || q.length < 2 || getPlatform() !== 'electron') {
+      setContentHits([]);
+      setContentTruncated(false);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      Promise.resolve((window.claude as any).artifacts.searchContent?.(project.path, q))
+        .then((res: any) => {
+          if (cancelled) return;
+          setContentHits(res?.ok ? (res.hits ?? []) : []);
+          setContentTruncated(!!res?.truncated);
+        })
+        .catch(() => { if (!cancelled) { setContentHits([]); setContentTruncated(false); } });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [search, project.path]);
+
+  const openContentHit = (hit: RankableHit) => {
+    const rec = artifacts.find((a) => a.path.replace(/\\/g, '/') === hit.path);
+    const id = rec?.id ?? hit.path;
+    if (!rec) {
+      setSyntheticHit({ id, path: hit.path, kind: 'internal', discovered: true } as any);
+    }
+    setPendingReveal({ id, line: hit.line });
+    dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId: PV_SESSION, artifactId: id });
+  };
+
+  const activeArtifact = pvActiveId
+    ? (artifacts.find((a) => a.id === pvActiveId)
+      ?? (syntheticHit && syntheticHit.id === pvActiveId ? syntheticHit : undefined))
+    : undefined;
 
   // Searching OR an active type filter flattens the tree to matching FILES only
   // — no folder cards. When you're looking for something, folders are noise;
@@ -395,10 +452,11 @@ export function FilesTab({
           </Button>
         </div>
       )}
-      {!loading && !gated && flat && flatResults.length === 0 && (
-        <p className="text-sm text-fg-muted">
-          {searching ? `No ${noun} match your search.` : 'Nothing matches the current filters.'}
-        </p>
+      {/* Search mode has NO prose empty state — the "(0)" in the section
+          headers below carries it (Destin, 2026-07-22). The line remains for
+          the type-filter flatten, which has no headers. */}
+      {!loading && !gated && flat && !searching && flatResults.length === 0 && (
+        <p className="text-sm text-fg-muted">Nothing matches the current filters.</p>
       )}
       {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
@@ -425,7 +483,68 @@ export function FilesTab({
           columns read correctly on a phone. */}
       <div className="flex-1 overflow-auto max-sm:overflow-visible grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
         {flat
-          ? flatResults.map(renderFileCard)
+          ? (
+            <>
+              {searching && (
+                <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-faint mb-0.5 px-0.5">
+                  Matches by file name ({flatResults.length})
+                </div>
+              )}
+              {flatResults.map(renderFileCard)}
+              {searching && (() => {
+                const namePaths = new Set(flatResults.map((a) => a.path.replace(/\\/g, '/')));
+                const rows = dedupeContentHits(contentHits, namePaths);
+                // Group + sort BEFORE capping, so the biggest groups survive the cut.
+                const all = groupContentHits(rows);
+                const { groups, shownRows, capped: displayCapped } = capGroups(all, MAX_CONTENT_ROWS);
+                const capped = contentTruncated || displayCapped;
+                return (
+                  <div className="col-span-full min-w-0">
+                    <div className="text-[10.5px] uppercase tracking-wider text-fg-faint mt-2 mb-1.5 px-0.5">
+                      Matches by file contents ({shownRows}{capped ? '+' : ''})
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {groups.map((group) => {
+                        const filename = group.path.split('/').pop() ?? group.path;
+                        const dir = group.path.slice(0, group.path.length - filename.length);
+                        const expanded = expandedGroups.has(group.path);
+                        return (
+                          <div key={group.path} className="rounded-md border border-edge-dim overflow-hidden">
+                            {/* Group header toggles the hit list (collapsed by default). */}
+                            <button
+                              type="button"
+                              onClick={() => toggleGroup(group.path)}
+                              className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-left min-w-0 bg-well/60 hover:bg-well transition-colors ${expanded ? 'border-b border-edge-dim' : ''}`}
+                              title={group.path}
+                            >
+                              <ChevronIcon className="w-3 h-3 shrink-0" expanded={expanded} />
+                              <span className="text-[12px] font-mono font-medium text-fg-2 shrink-0">{filename}</span>
+                              {dir && <span className="text-[11px] font-mono text-fg-faint truncate min-w-0">{dir}</span>}
+                              <span className="text-[11px] text-fg-muted shrink-0 ml-auto">
+                                {group.hits.length} {group.hits.length === 1 ? 'match' : 'matches'}
+                              </span>
+                            </button>
+                            {expanded && group.hits.map((hit, i) => (
+                              <button
+                                key={`${hit.line}:${i}`}
+                                type="button"
+                                onClick={() => openContentHit(hit)}
+                                className="w-full flex items-baseline gap-2 pl-7 pr-2.5 py-1 text-left min-w-0 hover:bg-well transition-colors"
+                                title={`${group.path}:${hit.line}`}
+                              >
+                                <span className="text-[11px] font-mono text-fg-muted shrink-0 w-8 text-right">{hit.line}</span>
+                                <span className="text-[11.5px] font-mono text-fg-dim truncate min-w-0 flex-1">{hit.text}</span>
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
+          )
           : (
             <>
               {/* Files directly in this folder FIRST, then subfolders (per request:
@@ -523,6 +642,8 @@ export function FilesTab({
           artifact={activeArtifact}
           project={project}
           onRefreshArtifacts={() => { refreshArtifacts(); onMutated?.(); }}
+          initialLine={pendingReveal?.id === activeArtifact.id ? pendingReveal.line : undefined}
+          onInitialLineConsumed={() => setPendingReveal(null)}
         />
       )}
     </div>
@@ -539,9 +660,14 @@ interface DetailProps {
   artifact: ArtifactRecord;
   project: CentralIndexProject;
   onRefreshArtifacts: () => void;
+  /** Search jump-to-hit: reveal this 1-indexed line once content loads.
+   * Consumed exactly once (onInitialLineConsumed) so reopening the same file
+   * later does not re-jump to a stale line. */
+  initialLine?: number;
+  onInitialLineConsumed?: () => void;
 }
 
-function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) {
+function ArtifactDetail({ artifact, project, onRefreshArtifacts, initialLine, onInitialLineConsumed }: DetailProps) {
   const { dispatch } = useArtifact();
   const [content, setContent] = useState<string | null>(null);
   // Drive the viewer's edit lifecycle from the overlay header (controlsInHeader).
@@ -576,6 +702,18 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
     });
     return () => { cancelled = true; };
   }, [artifact.id, project.path]);
+
+  // Search jump-to-hit: fire once, only after content resolved (the editor
+  // mounts then; revealLine itself retries across the lazy-chunk window).
+  const revealedRef = useRef(false);
+  useEffect(() => { revealedRef.current = false; }, [artifact.id]);
+  useEffect(() => {
+    if (revealedRef.current || initialLine == null || content === null) return;
+    revealedRef.current = true;
+    viewRef.current?.revealLine(initialLine);
+    onInitialLineConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, initialLine, artifact.id]);
 
   const handleExclude = async () => {
     // Use absolutePath for external artifacts, relative path (internal) gets

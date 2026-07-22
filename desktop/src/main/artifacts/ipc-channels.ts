@@ -47,6 +47,9 @@ export const ARTIFACT_IPC = {
   // by external, meaning changed on disk by something other than this app.
   WATCH_PROJECT: 'artifacts:watch-project',
   UNWATCH_PROJECT: 'artifacts:unwatch-project',
+  // Project-wide content search over bundled ripgrep (desktop-only; the Files
+  // tab ranks these hits BELOW filename matches in one unified list).
+  SEARCH_CONTENT: 'artifacts:search-content',
 } as const;
 
 export type ArtifactIpcChannel = typeof ARTIFACT_IPC[keyof typeof ARTIFACT_IPC];

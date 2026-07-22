@@ -86,6 +86,7 @@ import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
+import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
 import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
@@ -3248,6 +3249,12 @@ export function registerIpcHandlers(
     if (typeof projectRoot !== 'string' || projectRoot.length === 0) return { ok: false };
     unwatchProject(projectRoot, e.sender.id);
     return { ok: true };
+  });
+  ipcMain.handle(ARTIFACT_IPC.SEARCH_CONTENT, async (_e, projectRoot: string, query: string) => {
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0 || typeof query !== 'string') {
+      return { ok: false, hits: [], truncated: false, error: 'projectRoot and query are required' };
+    }
+    return searchProjectContent(projectRoot, query);
   });
 
   // Normalize an include/exclude entry to a canonical ABSOLUTE path. FilesTab

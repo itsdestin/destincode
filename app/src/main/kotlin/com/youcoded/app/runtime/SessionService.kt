@@ -3659,6 +3659,11 @@ class SessionService : Service() {
             // Electron main — see desktop project-watcher.ts). Stub cases keep the
             // type strings in parity; the renderer hook tolerates ok:false by
             // degrading to "no live refresh".
+            // Content search is desktop-only: no ripgrep binary on Android (D2).
+            "artifacts:search-content" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
             "artifacts:watch-project", "artifacts:unwatch-project" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }

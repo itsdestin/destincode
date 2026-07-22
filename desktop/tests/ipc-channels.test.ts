@@ -452,6 +452,7 @@ describe('artifact IPC parity', () => {
     // External-change watcher subscribe/unsubscribe (project-watcher.ts).
     WATCH_PROJECT: 'artifacts:watch-project',
     UNWATCH_PROJECT: 'artifacts:unwatch-project',
+    SEARCH_CONTENT: 'artifacts:search-content',
   }).reduce<Record<string, string>>((acc, [name, value]) => {
     acc[value] = `ARTIFACT_IPC.${name}`;
     return acc;
