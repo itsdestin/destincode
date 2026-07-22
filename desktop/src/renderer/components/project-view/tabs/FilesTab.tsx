@@ -16,7 +16,8 @@ import { useProjectWatch } from '../../../hooks/useProjectWatch';
 import { useTheme } from '../../../state/theme-context';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
-import type { ActiveArtifactHandle } from '../../artifact-views/ActiveArtifactView';
+import type { ActiveArtifactHandle, ArtifactContentInfo } from '../../artifact-views/ActiveArtifactView';
+import { useUnsavedGuard } from '../../artifact-views/UnsavedChangesDialog';
 import { ArtifactThumbnail } from '../../ArtifactThumbnail';
 import { fileTypeGroup, fileTypeLabel } from '../../../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../../../shared/artifacts/categorization';
@@ -549,19 +550,29 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
   const viewRef = useRef<ActiveArtifactHandle>(null);
   const [editState, setEditState] = useState({ isEditable: false, editing: false });
   const [copied, setCopied] = useState(false);
+  // get() metadata: binary sniff (code-view routing) + tooLarge notice.
+  const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
 
   const filename = artifact.path.split('/').pop() ?? artifact.path;
   const absPath = artifactAbsPath(project.path, artifact);
 
-  const handleClose = () => dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION });
+  // D3: closing the overlay with unsaved edits prompts Save/Discard/Cancel
+  // instead of silently discarding the draft.
+  const { guard: guardUnsaved, dialog: unsavedDialog } = useUnsavedGuard(viewRef, filename);
+  const handleClose = () => guardUnsaved(() =>
+    dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION }));
 
   // Load file content whenever the selected artifact changes.
   useEffect(() => {
     let cancelled = false;
     setContent(null);
+    setContentInfo(null);
     (window.claude as any).artifacts.get(project.path, artifact.id).then((res: any) => {
       if (cancelled) return;
-      if (res && res.ok) setContent(res.content ?? null);
+      if (res && res.ok) {
+        setContent(res.content ?? null);
+        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
+      }
     });
     return () => { cancelled = true; };
   }, [artifact.id, project.path]);
@@ -663,12 +674,14 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts }: DetailProps) 
 
   return (
     <ProjectDetailOverlay title={filename} onClose={handleClose} tools={tools} meta={meta}>
+      {unsavedDialog}
       {/* The viewer owns its own scroll; fill the overlay body height. */}
       <div className="h-full min-h-0">
         <ActiveArtifactView
           ref={viewRef}
           artifact={artifact}
           content={content}
+          contentInfo={contentInfo}
           projectRoot={project.path}
           projectId={project.id}
           projectName={project.name}

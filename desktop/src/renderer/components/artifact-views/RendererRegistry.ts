@@ -53,7 +53,15 @@ const REGISTRY: Record<string, ViewSpec> = {
   tsv: CsvView,
 };
 
-export function getViewer(path: string): ViewSpec {
+export function getViewer(path: string, opts?: { textHint?: boolean }): ViewSpec {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  return REGISTRY[ext] ?? BinaryFallback;
+  const hit = REGISTRY[ext];
+  if (hit) return hit;
+  // D4: an unknown extension is no longer an automatic BinaryFallback. When the
+  // artifacts:get response sniffed the bytes as TEXT (binary:false), route to
+  // CodeView so rs/go/kt/sh/sql/toml/… and extensionless files render — and
+  // edit — as code. No hint (older callers, pre-fetch renders) keeps the old
+  // conservative fallback.
+  if (opts?.textHint) return CodeView;
+  return BinaryFallback;
 }

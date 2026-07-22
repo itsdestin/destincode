@@ -41,14 +41,29 @@ function saveErrorMessage(res: any): string {
 export interface ActiveArtifactHandle {
   isEditable: boolean;
   editing: boolean;
+  /** True when edit mode holds changes not yet on disk — hosts must gate
+   * selection/close behind the unsaved-changes prompt when set (D3). */
+  dirty: boolean;
   startEdit(): void;
-  saveEdit(): void;
+  /** Resolves true when the save landed — false means the pane is showing a
+   * conflict or error and the caller should NOT proceed with navigation. */
+  saveEdit(): Promise<boolean>;
   cancelEdit(): void;
+}
+
+/** Metadata from the artifacts:get response that content alone cannot carry —
+ * hosts thread it through so the pane can route binary files and render the
+ * too-large notice instead of a blank viewer. */
+export interface ArtifactContentInfo {
+  binary?: boolean;
+  tooLarge?: boolean;
+  sizeBytes?: number;
 }
 
 export interface ActiveArtifactViewProps {
   artifact: ArtifactRecord;
   content: string | null;
+  contentInfo?: ArtifactContentInfo | null;
   projectRoot: string;
   projectId: string;
   projectName: string;
@@ -62,7 +77,7 @@ export interface ActiveArtifactViewProps {
 }
 
 export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifactViewProps>(function ActiveArtifactView({
-  artifact, content, projectRoot, projectId, projectName, sessionId, onContentChange,
+  artifact, content, contentInfo, projectRoot, projectId, projectName, sessionId, onContentChange,
   controlsInHeader = false, onEditStateChange,
 }, ref) {
   // Resolve the absolute path depending on artifact kind. Forward slashes
@@ -72,14 +87,16 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     ? `${projectRoot.replace(/\\/g, '/').replace(/\/+$/, '')}/${artifact.path.replace(/\\/g, '/')}`
     : (artifact.absolutePath ?? artifact.path);
 
-  const ext = artifact.path.split('.').pop()?.toLowerCase() ?? '';
   // Renderer MIRROR of the D5 write policy — main enforces the real boundary
   // in artifacts:save; this only hides the Edit affordance so the UI never
   // offers an action main would refuse. (Main resolves symlinks first, so a
   // mirror miss here fails safe: the save is still rejected.)
   const tier = editTier(canonicalize(absolutePath, null));
-  // Only plaintext formats support inline editing in v1.
-  const isEditable = (ext === 'md' || ext === 'markdown' || ext === 'txt') && tier !== 'denied';
+  // D4: ANY text file is editable — the old md/markdown/txt allowlist is gone.
+  // Not editable when: policy-denied, sniffed binary, over the size cap, or
+  // content has not resolved (null = loading/orphan — the §2.2 truncation guard).
+  const isEditable = content !== null && tier !== 'denied'
+    && !contentInfo?.binary && !contentInfo?.tooLarge;
 
   // ── Task 6.4: controlled edit state (lifted from MarkdownView) ──
   // Owning edit state here lets the conflict banner read/reset it without
@@ -166,7 +183,12 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // opts.force: skip the concurrency token — the deliberate "Keep mine"
   // overwrite. Shaped as an options object so accidental event-object args
   // (onClick={handleSave}) can never read as force=true.
-  const handleSave = useCallback(async (opts?: { force?: boolean }) => {
+  const handleSave = useCallback(async (opts?: { force?: boolean }): Promise<boolean> => {
+    // The §2.2 empty-file guarantee: while content is null (the fetch
+    // transient, an orphan, a binary file) there is NOTHING valid to save — a
+    // write here would truncate the file to the placeholder draft. This is the
+    // single highest-risk regression in the workstream; keep it hard-blocked.
+    if (content === null) return false;
     const saveOpts: { baseMtimeMs?: number; confirmed?: boolean } = {};
     if (!opts?.force && mtimeRef.current !== null) saveOpts.baseMtimeMs = mtimeRef.current;
     if (tier === 'needs-confirm') saveOpts.confirmed = true; // dialog shown at startEdit
@@ -179,7 +201,9 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
       setEditing(false);
       setConflict(null);
       setSaveError(null);
-    } else if (res && res.error === 'conflict') {
+      return true;
+    }
+    if (res && res.error === 'conflict') {
       // Disk moved under the token — surface the conflict UI instead of
       // silently clobbering whatever was written (spec §12.9).
       const disk = await (window.claude as any).artifacts.get(projectRoot, artifact.id);
@@ -189,10 +213,11 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
       } else {
         setSaveError('Save failed: the file changed on disk and could not be re-read.');
       }
-    } else {
-      setSaveError(saveErrorMessage(res));
+      return false;
     }
-  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier]);
+    setSaveError(saveErrorMessage(res));
+    return false;
+  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier, content]);
 
   const handleCancel = useCallback(() => {
     setDraft(content ?? '');
@@ -224,10 +249,21 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   useImperativeHandle(ref, () => ({
     isEditable,
     editing,
+    dirty,
     startEdit: handleStartEdit,
-    saveEdit: handleSave,
+    saveEdit: () => handleSave(),
     cancelEdit: handleCancel,
-  }), [isEditable, editing, handleStartEdit, handleSave, handleCancel]);
+  }), [isEditable, editing, dirty, handleStartEdit, handleSave, handleCancel]);
+
+  // Desktop app-quit / window-close guard while dirty (D3). Android never
+  // fires beforeunload usefully — its back navigation goes through the
+  // useEscClose stack in the hosts instead.
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
 
   // Notify the host whenever editability / edit-mode changes so its header
   // can swap the pencil ↔ save/cancel icons.
@@ -238,7 +274,31 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // The Registry returns a real component for every type (heavy viewers —
   // pdf/docx/xlsx — are React.lazy, so they're code-split but still rendered
   // here). The <Suspense> boundary below resolves the lazy chunk transparently.
-  const ViewerComponent = getViewer(artifact.path);
+  const ViewerComponent = getViewer(artifact.path, {
+    // Only assert text when a get response actually sniffed the bytes —
+    // absent info keeps the registry's conservative extension routing.
+    textHint: contentInfo ? contentInfo.binary === false : undefined,
+  });
+
+  // Over the artifacts:get size cap: the content was deliberately not served
+  // (a multi-MB string would block main + renderer, spec §2.3/§4.2). Offer the
+  // OS default app instead of a broken editor.
+  if (contentInfo?.tooLarge) {
+    const mb = contentInfo.sizeBytes ? (contentInfo.sizeBytes / (1024 * 1024)).toFixed(1) : '?';
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-fg-muted p-6 text-center">
+        <div>
+          This file is {mb} MB — too large to open in the artifact pane.
+        </div>
+        <button
+          className="underline hover:no-underline text-fg-2"
+          onClick={() => (window.claude as any).shell?.openPath?.(absolutePath)}
+        >
+          Open in default app
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="h-full flex flex-col">
       {/* Conflict banner — shown when the file changes on disk while the user

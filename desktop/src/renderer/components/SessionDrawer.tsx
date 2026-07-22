@@ -12,7 +12,8 @@ import { useTheme } from '../state/theme-context';
 import { clampDrawerWidth, applyDrawerWidthVar } from '../state/drawer-width';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useProjectWatch } from '../hooks/useProjectWatch';
-import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
+import { ActiveArtifactView, type ActiveArtifactHandle, type ArtifactContentInfo } from './artifact-views/ActiveArtifactView';
+import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
@@ -140,6 +141,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // content pane (the file is still open; only the LIST hides it).
   const active = allArtifacts.find((a) => a.id === activeArtifactId);
   const [content, setContent] = useState<string | null>(null);
+  // get() metadata the content string cannot carry: binary sniff (routes
+  // unknown extensions to the code view), tooLarge (renders the size notice).
+  const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
 
   useEffect(() => {
     if (!active) { setContent(null); return; }
@@ -152,9 +156,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     // permanently blank. ProjectView's FilesTab and ArtifactThumbnail already
     // null-gate the same way; this drawer was the only one that didn't.
     setContent(null);
+    setContentInfo(null);
     (window.claude as any).artifacts.get(projectRoot, active.id).then((res: any) => {
       if (cancelled) return;
-      if (res && res.ok) setContent(res.content ?? null);
+      if (res && res.ok) {
+        setContent(res.content ?? null);
+        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
+      }
     });
     return () => { cancelled = true; };
   }, [active?.id, projectRoot]);
@@ -177,6 +185,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // this ref + mirrors its state so the toolbar can swap pencil ↔ save/cancel.
   const editRef = useRef<ActiveArtifactHandle>(null);
   const [editState, setEditState] = useState<{ isEditable: boolean; editing: boolean }>({ isEditable: false, editing: false });
+  // D3: every navigation away from a dirty editor goes through this guard
+  // (Save / Discard / Cancel dialog) instead of silently discarding the draft.
+  const { guard: guardUnsaved, dialog: unsavedDialog } = useUnsavedGuard(
+    editRef, active ? (active.path.split('/').pop() ?? active.path) : 'This file');
   // Content pane node — the list collapses when the user engages the artifact
   // here (clicks into it or scrolls it), not when they merely preview by
   // clicking list rows.
@@ -332,12 +344,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const handleBack = useCallback(() => {
     if (renameActiveRef.current) { cancelRename(); return; }
     if (findOpen) { setFindOpen(false); return; }
-    if (editState.editing) { editRef.current?.cancelEdit(); return; }
+    if (editState.editing) { guardUnsaved(() => editRef.current?.cancelEdit()); return; }
     if (expanded) { dispatch({ type: 'DRAWER_EXPAND_TOGGLED' }); return; }
     if (listOpen) { setListOpen(false); return; }
     if (activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId }); return; }
     dispatch({ type: 'DRAWER_CLOSED', sessionId });
-  }, [findOpen, editState.editing, expanded, listOpen, activeArtifactId, dispatch, cancelRename, sessionId]);
+  }, [findOpen, editState.editing, expanded, listOpen, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved]);
 
   useEscClose(drawerOpen, handleBack);
 
@@ -427,8 +439,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 // Cancel any in-progress rename first so its open field doesn't
                 // bleed onto the newly-selected artifact.
                 if (renameActiveRef.current || renaming) cancelRename();
-                dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: a.id });
-                setListOpen(true);
+                // Re-selecting the open file never discards anything — skip the guard.
+                if (a.id === activeArtifactId) { setListOpen(true); return; }
+                guardUnsaved(() => {
+                  dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: a.id });
+                  setListOpen(true);
+                });
               }}
               // Discovered records have no sidecar entry to remove.
               onRemove={(a as any).discovered ? undefined : () => handleRemoveRecord(a.id)}
@@ -509,6 +525,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   return (
     <aside ref={asideRef} className={asideClass}>
       {resizeHandle}
+      {unsavedDialog}
       {/* top bar */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
@@ -609,6 +626,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               ref={editRef}
               artifact={active}
               content={content}
+              contentInfo={contentInfo}
               projectRoot={projectRoot}
               projectId={projectId}
               projectName={projectName}
