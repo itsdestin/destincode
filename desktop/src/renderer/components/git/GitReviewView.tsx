@@ -16,8 +16,6 @@ export interface GitReviewViewProps {
   relPath: string;
   fileName: string;
   onBack: () => void;
-  /** jump into the editor at a 1-indexed line (Task 7 host wires revealLine) */
-  onOpenAtLine: (line: number) => void;
   /** open the L3 discard confirm; willTrash = HEAD has no copy, so discard
    *  trashes the file instead of restoring (Task 9 wires the dialog) */
   onRequestDiscard: (willTrash: boolean) => void;
@@ -34,7 +32,7 @@ function gitApi(): any {
 }
 
 export function GitReviewView({
-  projectRoot, relPath, fileName, onBack, onOpenAtLine, onRequestDiscard,
+  projectRoot, relPath, fileName, onBack, onRequestDiscard,
   externalError, onExternalErrorClear,
 }: GitReviewViewProps) {
   const [review, setReview] = useState<GitFileReviewResult | null>(null);
@@ -192,42 +190,34 @@ export function GitReviewView({
               </div>
             )}
             <div className="flex items-center gap-1.5 mt-2">
-              {!uncommitted.untracked && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => run(() => (uncommitted.staged
-                    ? gitApi().unstage(projectRoot, relPath)
-                    : gitApi().stage(projectRoot, relPath)))}
-                  className="flex items-center gap-1.5 text-[11px] text-fg-2 hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-                    <rect x="3" y="3" width="18" height="18" rx="3" />
-                    {uncommitted.staged && <path d="m8 12.5 3 3 5.5-6.5" />}
-                  </svg>
-                  Staged for commit
-                </button>
-              )}
+              {/* Legible mirror (owner decision 2026-07-23): the checkbox used
+                  to hide behind !uncommitted.untracked, so a brand-new file
+                  had no way to be included in a commit from this view. The
+                  backend already handles it — staging an untracked file is a
+                  plain `git add`, and the mirror refresh flips the card to
+                  staged like any other file. */}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => run(() => (uncommitted.staged
+                  ? gitApi().unstage(projectRoot, relPath)
+                  : gitApi().stage(projectRoot, relPath)))}
+                className="flex items-center gap-1.5 text-[11px] text-fg-2 hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                  <rect x="3" y="3" width="18" height="18" rx="3" />
+                  {uncommitted.staged && <path d="m8 12.5 3 3 5.5-6.5" />}
+                </svg>
+                Include in commit
+              </button>
               <div className="flex-1" />
               <button
                 type="button"
                 onClick={() => onRequestDiscard(!uncommitted.inHead)}
                 className="px-2 py-1 rounded-md text-[11px] text-destructive-fg hover:bg-destructive/10 transition-colors"
               >
-                {!uncommitted.inHead ? 'Delete file…' : 'Discard changes…'}
+                Revert Changes…
               </button>
-              {uncommitted.hunks.length > 0 && (
-                <button
-                  type="button"
-                  // A pure-deletion hunk has newStart: 0 (nothing added at that
-                  // position); revealLine is 1-indexed, so clamp to 1 instead
-                  // of asking the editor to reveal a nonexistent line 0.
-                  onClick={() => onOpenAtLine(Math.max(1, uncommitted.hunks[0].newStart))}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-fg-dim hover:text-fg hover:bg-inset transition-colors"
-                >
-                  Open file ↗
-                </button>
-              )}
             </div>
           </GitReviewCard>
         )}
@@ -323,6 +313,14 @@ export function GitReviewView({
         >
           {`Commit ${stagedCount} staged file${stagedCount === 1 ? '' : 's'}`}
         </Button>
+        {/* Empty-cart hint (owner decision 2026-07-23): the commit button is
+            disabled whenever nothing is staged, but that gave no clue WHY —
+            this line only shows up in that state. */}
+        {stagedCount === 0 && (
+          <div className="mt-1 text-[11px] text-fg-muted">
+            Tick “Include in commit” on a change above to choose what gets committed.
+          </div>
+        )}
       </div>
     </div>
   );

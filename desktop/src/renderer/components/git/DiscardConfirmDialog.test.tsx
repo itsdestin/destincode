@@ -41,14 +41,14 @@ describe('DiscardConfirmDialog', () => {
     renderDialog({ onConfirm });
     expect(screen.getByText(/Restore “f.ts” to its last committed state\?/)).toBeInTheDocument();
     expect(screen.getByText(/uncommitted edits to this file will be lost/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Revert Changes' }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
   it('never-committed copy says trash, not restore', () => {
     renderDialog({ fileName: 'new.ts', willTrash: true });
     expect(screen.getByText(/Move “new.ts” to the system trash\?/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete file' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Move to Trash' })).toBeInTheDocument();
   });
 
   it('cancel and Escape both close without confirming', () => {

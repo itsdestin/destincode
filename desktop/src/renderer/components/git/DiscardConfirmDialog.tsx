@@ -38,7 +38,7 @@ export function DiscardConfirmDialog({ fileName, willTrash, onConfirm, onCancel 
         destructive
         role="alertdialog"
         aria-modal
-        aria-label={willTrash ? 'Delete file' : 'Discard changes'}
+        aria-label={willTrash ? 'Move file to trash' : 'Revert changes'}
         className="p-4 max-w-sm w-full mx-4"
         onClick={(e) => e.stopPropagation()}
       >
@@ -52,7 +52,7 @@ export function DiscardConfirmDialog({ fileName, willTrash, onConfirm, onCancel 
         </div>
         <div className="flex gap-2 justify-end">
           <Button variant="secondary" onClick={onCancel}>Cancel</Button>
-          <Button variant="danger" onClick={onConfirm}>{willTrash ? 'Delete file' : 'Discard changes'}</Button>
+          <Button variant="danger" onClick={onConfirm}>{willTrash ? 'Move to Trash' : 'Revert Changes'}</Button>
         </div>
       </OverlayPanel>
     </Scrim>

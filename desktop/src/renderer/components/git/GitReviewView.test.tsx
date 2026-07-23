@@ -41,7 +41,7 @@ function mountWith(overrides: Partial<typeof review> = {}, props: Partial<React.
   render(
     <GitReviewView
       projectRoot="/proj" relPath="src/f.ts" fileName="f.ts"
-      onBack={() => {}} onOpenAtLine={() => {}} onRequestDiscard={() => {}}
+      onBack={() => {}} onRequestDiscard={() => {}}
       {...props}
     />,
   );
@@ -83,7 +83,7 @@ describe('GitReviewView', () => {
     expect(scrollContainer).not.toBeNull();
     expect(scrollContainer?.className).toContain('max-h-[45vh]');
     // The action row (staged checkbox) must NOT be inside that scroll cap.
-    const actionRow = screen.getByText('Staged for commit');
+    const actionRow = screen.getByText('Include in commit');
     expect(scrollContainer?.contains(actionRow)).toBe(false);
   });
 
@@ -151,9 +151,67 @@ describe('GitReviewView', () => {
 
   it('staged checkbox row stages/unstages the file', async () => {
     const git = mountWith();
-    await waitFor(() => screen.getByText('Staged for commit'));
-    fireEvent.click(screen.getByText('Staged for commit'));
+    await waitFor(() => screen.getByText('Include in commit'));
+    fireEvent.click(screen.getByText('Include in commit'));
     await waitFor(() => expect(git.stage).toHaveBeenCalledWith('/proj', 'src/f.ts'));
+  });
+
+  // Legible mirror (owner decision 2026-07-23): the checkbox used to hide
+  // behind `!uncommitted.untracked`, so brand-new files had no way to be
+  // included in a commit from this view at all. It must render for
+  // untracked files too, and clicking it must still call git.stage — the
+  // backend already handles staging an untracked file as a plain `git add`.
+  it('shows the Include in commit checkbox for an untracked file and stages it on click', async () => {
+    const git = mountWith({
+      uncommitted: {
+        hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+new file'] }],
+        counts: { added: 1, removed: 0 }, staged: false, untracked: true, inHead: false, binary: false,
+      },
+    });
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    const checkbox = screen.getByText('Include in commit');
+    expect(checkbox).toBeInTheDocument();
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(git.stage).toHaveBeenCalledWith('/proj', 'src/f.ts'));
+  });
+
+  // Composer empty-cart hint (owner decision 2026-07-23): nothing explains
+  // WHY the commit button is disabled when the message field is empty of
+  // staged files — the hint only needs to appear when nothing is staged.
+  it('shows the empty-cart hint when stagedCount is 0 and hides it once something is staged', async () => {
+    mountWith({ stagedCount: 0 });
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    expect(screen.getByText('Tick “Include in commit” on a change above to choose what gets committed.')).toBeInTheDocument();
+
+    cleanup();
+    mountWith({ stagedCount: 2 });
+    await waitFor(() => screen.getByText('Uncommitted changes'));
+    expect(screen.queryByText('Tick “Include in commit” on a change above to choose what gets committed.')).not.toBeInTheDocument();
+  });
+
+  // Revert-button rename (owner decision 2026-07-23): "Delete file…" read as
+  // deleting the underlying file even though it only moves it to the OS
+  // trash (or restores from HEAD) — same label for both tracked and
+  // untracked files now, behavior (onRequestDiscard(!inHead)) unchanged.
+  it('revert button reads "Revert Changes…" for a tracked file and calls onRequestDiscard(false)', async () => {
+    const onRequestDiscard = vi.fn();
+    mountWith({}, { onRequestDiscard });
+    const btn = await waitFor(() => screen.getByRole('button', { name: 'Revert Changes…' }));
+    fireEvent.click(btn);
+    expect(onRequestDiscard).toHaveBeenCalledWith(false);
+  });
+
+  it('revert button also reads "Revert Changes…" for an untracked file and calls onRequestDiscard(true)', async () => {
+    const onRequestDiscard = vi.fn();
+    mountWith({
+      uncommitted: {
+        hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+new file'] }],
+        counts: { added: 1, removed: 0 }, staged: false, untracked: true, inHead: false, binary: false,
+      },
+    }, { onRequestDiscard });
+    const btn = await waitFor(() => screen.getByRole('button', { name: 'Revert Changes…' }));
+    fireEvent.click(btn);
+    expect(onRequestDiscard).toHaveBeenCalledWith(true);
   });
 
   it('surfaces a failed operation error verbatim', async () => {
@@ -183,8 +241,8 @@ describe('GitReviewView', () => {
   it('calls onExternalErrorClear at the top of a new run() (stage/unstage)', async () => {
     const onExternalErrorClear = vi.fn();
     const git = mountWith({}, { onExternalErrorClear });
-    await waitFor(() => screen.getByText('Staged for commit'));
-    fireEvent.click(screen.getByText('Staged for commit'));
+    await waitFor(() => screen.getByText('Include in commit'));
+    fireEvent.click(screen.getByText('Include in commit'));
     await waitFor(() => expect(git.stage).toHaveBeenCalledWith('/proj', 'src/f.ts'));
     expect(onExternalErrorClear).toHaveBeenCalledTimes(1);
   });
@@ -192,10 +250,10 @@ describe('GitReviewView', () => {
   it('a blocked run() (busy guard) does not call onExternalErrorClear', async () => {
     const onExternalErrorClear = vi.fn();
     const git = mountWith({}, { onExternalErrorClear });
-    await waitFor(() => screen.getByText('Staged for commit'));
+    await waitFor(() => screen.getByText('Include in commit'));
     let resolveStage: (v: { ok: boolean }) => void = () => {};
     git.stage.mockReturnValueOnce(new Promise((resolve) => { resolveStage = resolve; }));
-    const btn = screen.getByText('Staged for commit');
+    const btn = screen.getByText('Include in commit');
     fireEvent.click(btn); // first call clears
     fireEvent.click(btn); // second call is blocked by the busy guard — no additional clear
     expect(onExternalErrorClear).toHaveBeenCalledTimes(1);
@@ -205,10 +263,10 @@ describe('GitReviewView', () => {
 
   it('serializes overlapping stage/unstage clicks through run()', async () => {
     const git = mountWith();
-    await waitFor(() => screen.getByText('Staged for commit'));
+    await waitFor(() => screen.getByText('Include in commit'));
     let resolveStage: (v: { ok: boolean }) => void = () => {};
     git.stage.mockReturnValueOnce(new Promise((resolve) => { resolveStage = resolve; }));
-    const btn = screen.getByText('Staged for commit');
+    const btn = screen.getByText('Include in commit');
     fireEvent.click(btn);
     fireEvent.click(btn); // second click while the first op is still in-flight
     expect(git.stage).toHaveBeenCalledTimes(1);

@@ -656,14 +656,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               relPath={active.path}
               fileName={fileName}
               onBack={closeGitReview}
-              onOpenAtLine={(line) => {
-                // Close review, then land the editor on the line. revealLine
-                // internally retries while the lazy CM6 chunk mounts, but the
-                // handle itself is null until ActiveArtifactView remounts —
-                // defer one frame so the ref is populated.
-                closeGitReview();
-                requestAnimationFrame(() => editRef.current?.revealLine(line));
-              }}
               onRequestDiscard={(willTrash) => setDiscardAsk({ willTrash })}
               externalError={discardError}
               onExternalErrorClear={() => setDiscardError(null)}
