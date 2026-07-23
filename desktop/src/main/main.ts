@@ -233,6 +233,20 @@ if (DEV_PROFILE) {
   app.setName(DEV_PROFILE === 'dev' ? 'YouCoded Dev' : `YouCoded Dev (${DEV_PROFILE})`);
 }
 
+// Dev-only window title suffix, so several concurrent dev instances are
+// distinguishable in the OS taskbar / Alt-Tab / window switcher (the app's own
+// titlebar is hidden, but the WM still uses this title). `YOUCODED_DEV_LABEL` is
+// the human-readable descriptor run-dev.sh passes (e.g. "UI Consistency"); with
+// no label we fall back to the profile so a dev window is never just "YouCoded".
+// UNDEFINED in production (neither env var set) — the built app keeps the plain
+// "YouCoded" title from index.html untouched.
+const DEV_LABEL = process.env.YOUCODED_DEV_LABEL?.trim();
+const DEV_WINDOW_TITLE =
+  DEV_LABEL ? `YouCoded - ${DEV_LABEL}`
+  : DEV_PROFILE && DEV_PROFILE !== 'dev' ? `YouCoded Dev (${DEV_PROFILE})`
+  : DEV_PROFILE ? 'YouCoded Dev'
+  : undefined;
+
 // Windows AUMID alignment: electron-builder's NSIS installer stamps the Start
 // Menu shortcut with an AppUserModelID derived from `appId`. If the runtime
 // process's AUMID doesn't match, Windows resolves the taskbar button's icon
@@ -556,6 +570,9 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     x: opts?.x,
     y: opts?.y,
     icon,
+    // Dev-only distinguishing title (see DEV_WINDOW_TITLE). undefined in
+    // production and for buddy floaters, which have no taskbar presence.
+    title: opts?.buddy ? undefined : DEV_WINDOW_TITLE,
     titleBarStyle: opts?.buddy ? undefined : (isMac ? 'hiddenInset' as const : 'hidden' as const),
     // Live tear-off spawns this window mid-drag and needs the source window to
     // keep keyboard/pointer focus. show: false + showInactive() below prevents
@@ -586,6 +603,14 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     excludeFromCapture(win);
   }
 
+  // Keep the dev title stuck. index.html ships `<title>YouCoded</title>`, which
+  // fires page-title-updated on load and would clobber the constructor title;
+  // the renderer never sets document.title otherwise, so blocking that one event
+  // is all it takes. Only in dev (DEV_WINDOW_TITLE set) and never on buddies.
+  if (DEV_WINDOW_TITLE && !opts?.buddy) {
+    win.on('page-title-updated', (e) => e.preventDefault());
+    win.setTitle(DEV_WINDOW_TITLE);
+  }
 
   if (opts?.inactive) {
     win.webContents.once('did-finish-load', () => {
