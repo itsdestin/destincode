@@ -6,7 +6,7 @@
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "node scripts/run-dev.js",
-    "dev:main": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/main/pty-worker.js','dist/main/pty-worker.js')\" && electron .",
+    "dev:main": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/main/pty-worker.js','dist/main/pty-worker.js')\" && electron . --ozone-platform=x11",
     "dev:renderer": "vite",
     "build": "tsc && node -e \"require('fs').cpSync('src/main/pty-worker.js','dist/main/pty-worker.js')\" && node -e \"require('fs').mkdirSync('dist/renderer/data',{recursive:true})\" && node -e \"require('fs').cpSync('src/renderer/data/skill-registry.json','dist/renderer/data/skill-registry.json')\" && vite build && electron-builder",
     "test": "vitest",
