@@ -8,6 +8,7 @@ import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
+import { isTypingTarget } from '../utils/is-typing-target';
 
 // --- Helpers for friendly display ---
 
@@ -328,8 +329,7 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
     if (responding || confirmingAlways) return;
     const handler = (e: KeyboardEvent) => {
       // Don't steal keyboard events when user is typing in an input
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (isTypingTarget(e.target as Element)) return;
 
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
@@ -605,8 +605,7 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
   useEffect(() => {
     if (responding) return;
     const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (isTypingTarget(e.target as Element)) return;
 
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault();

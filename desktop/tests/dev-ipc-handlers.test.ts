@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as os from 'os';
 import { readLogTail } from '../src/main/dev-tools';
 
@@ -22,12 +22,17 @@ vi.mock('fs', () => ({
 // Mock os so home-dir redaction and tmpdir resolve predictably in tests.
 // WHY: submitIssue now calls os.platform() and os.release() to build the
 // Environment line in the issue body — those must be included in the mock.
-vi.mock('os', () => ({
-  homedir: vi.fn(() => '/home/alice'),
-  tmpdir: vi.fn(() => '/tmp'),
-  platform: vi.fn(() => 'linux'),
-  release: vi.fn(() => '5.15.0'),
-}));
+vi.mock('os', () => {
+  const api = {
+    homedir: vi.fn(() => '/home/alice'),
+    tmpdir: vi.fn(() => '/tmp'),
+    platform: vi.fn(() => 'linux'),
+    release: vi.fn(() => '5.15.0'),
+  };
+  // `default` too: the github-client import chain (logger.ts) uses the
+  // default-import form (`import os from 'os'`), not named imports.
+  return { ...api, default: api };
+});
 vi.mock('child_process', () => ({
   execFile: vi.fn(),
   // spawn mock default: stub with no-op streams. Tests that exercise spawn
@@ -157,6 +162,31 @@ describe('summarizeIssue', () => {
 });
 
 import { submitIssue } from '../src/main/dev-tools';
+import { setGithubClient } from '../src/main/github-client';
+
+// Phase 3 (2026-07-22): submitIssue posts through the shared github-client
+// (REST) instead of the gh CLI. Tests drive it by registering a FAKE client
+// singleton — the browser-prefill fallback remains the no-credential path.
+function fakeGithubClient(opts: {
+  token?: string | null;
+  issueStatus?: number;
+  issueUrl?: string;
+  apiThrows?: boolean;
+}) {
+  const apiCalls: Array<{ method: string; path: string; body: any }> = [];
+  const client: any = {
+    getToken: async () => (opts.token === null ? null : { token: opts.token ?? 'gho_x', source: 'app' }),
+    api: async (method: string, path: string, body?: any) => {
+      apiCalls.push({ method, path, body });
+      if (opts.apiThrows) throw new Error('boom');
+      return {
+        status: opts.issueStatus ?? 201,
+        json: { html_url: opts.issueUrl ?? 'https://github.com/itsdestin/youcoded/issues/42' },
+      };
+    },
+  };
+  return { client, apiCalls };
+}
 
 // Minimal SubmitArgs using the new raw-fields contract (body is now built in
 // the main process by buildIssueBody using app.getVersion() + os info).
@@ -177,66 +207,60 @@ const SUBMIT_FEATURE: import('../src/main/dev-tools').SubmitArgs = {
 };
 
 describe('submitIssue', () => {
-  it('returns the issue URL when gh is authed and create succeeds', async () => {
-    vi.mocked(execFile).mockImplementation(((cmd: string, args: string[], _o: any, cb: any) => {
-      // First call: gh auth status — exit 0
-      if (args[0] === 'auth' && args[1] === 'status') {
-        cb(null, 'Logged in', '');
-      } else if (args[0] === 'issue' && args[1] === 'create') {
-        cb(null, 'https://github.com/itsdestin/youcoded/issues/42\n', '');
-      }
-      return {} as any;
-    }) as any);
+  it('returns the issue URL when a GitHub token exists and the REST create succeeds', async () => {
+    const { client, apiCalls } = fakeGithubClient({});
+    setGithubClient(client);
     const out = await submitIssue(SUBMIT_BUG);
     expect(out.ok).toBe(true);
     expect((out as any).url).toBe('https://github.com/itsdestin/youcoded/issues/42');
+    // One REST POST to the issues endpoint, labels intact (the labels must
+    // exist on itsdestin/youcoded — ipc-bridge rule).
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0].method).toBe('POST');
+    expect(apiCalls[0].path).toBe('/repos/itsdestin/youcoded/issues');
+    expect(apiCalls[0].body.labels).toEqual(['bug', 'youcoded-app:reported']);
   });
 
-  it('returns a fallback URL when gh auth status fails', async () => {
-    vi.mocked(execFile).mockImplementation(((_c: string, args: string[], _o: any, cb: any) => {
-      if (args[0] === 'auth' && args[1] === 'status') {
-        cb(new Error('not authenticated'), '', 'You are not logged in');
-      }
-      return {} as any;
-    }) as any);
+  it('returns a fallback URL when no GitHub credential exists anywhere', async () => {
+    const { client } = fakeGithubClient({ token: null });
+    setGithubClient(client);
     const out = await submitIssue(SUBMIT_BUG);
     expect(out.ok).toBe(false);
     expect((out as any).fallbackUrl).toContain('https://github.com/itsdestin/youcoded/issues/new');
     expect((out as any).fallbackUrl).toContain('labels=bug');
   });
 
-  it('returns a fallback URL when gh issue create fails after auth check', async () => {
-    vi.mocked(execFile).mockImplementation(((_c: string, args: string[], _o: any, cb: any) => {
-      if (args[0] === 'auth') cb(null, 'Logged in', '');
-      else cb(new Error('rate limited'), '', '');
-      return {} as any;
-    }) as any);
+  it('returns a fallback URL when no client singleton is registered at all', async () => {
+    setGithubClient(null);
+    const out = await submitIssue(SUBMIT_BUG);
+    expect(out.ok).toBe(false);
+    expect((out as any).fallbackUrl).toContain('labels=bug');
+  });
+
+  it('returns a fallback URL when the REST create fails', async () => {
+    const { client } = fakeGithubClient({ apiThrows: true });
+    setGithubClient(client);
     const out = await submitIssue(SUBMIT_FEATURE);
     expect(out.ok).toBe(false);
     expect((out as any).fallbackUrl).toContain('labels=enhancement');
   });
 
   it('builds the issue body in main using buildIssueBody (not navigator.userAgent)', async () => {
-    // Verify the body written to the tmp file contains the canonical Environment
-    // line format produced by buildIssueBody, not a raw user-agent string.
-    let writtenBody = '';
-    const fs = await import('fs');
-    vi.mocked(fs.promises.writeFile).mockImplementation(async (_p: any, content: any) => {
-      writtenBody = String(content);
-    });
-    vi.mocked(execFile).mockImplementation(((cmd: string, args: string[], _o: any, cb: any) => {
-      if (args[0] === 'auth') cb(null, 'Logged in', '');
-      else cb(null, 'https://github.com/itsdestin/youcoded/issues/99\n', '');
-      return {} as any;
-    }) as any);
+    const { client, apiCalls } = fakeGithubClient({});
+    setGithubClient(client);
     await submitIssue(SUBMIT_BUG);
     // Body must contain the canonical "YouCoded vX.Y.Z · desktop · ..." format.
+    const writtenBody = String(apiCalls[0].body.body);
     expect(writtenBody).toContain('**Environment:** YouCoded v');
     expect(writtenBody).toContain('desktop');
     // Must NOT contain the raw navigator.userAgent substring that the old renderer
     // build-body helper would have included.
     expect(writtenBody).not.toContain('navigator');
   });
+
+  // The singleton outlives this describe — clear it so later suites (and other
+  // files sharing the worker) never see a stale fake client.
+  afterEach(() => setGithubClient(null));
 });
 
 import { installWorkspace, _resetInstallGuard } from '../src/main/dev-tools';

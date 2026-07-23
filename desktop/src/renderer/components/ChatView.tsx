@@ -20,6 +20,7 @@ import { SessionDrawer } from './SessionDrawer';
 import { useActiveProject } from '../hooks/useActiveProject';
 import { assistantName } from '../utils/assistant-name';
 import { ContentFindBar } from './ContentFindBar';
+import { isTypingTarget } from '../utils/is-typing-target';
 
 interface Props {
   sessionId: string;
@@ -308,8 +309,7 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
   const scrollSpeed = useRef(0);
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (document.activeElement?.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea') return;
+      if (isTypingTarget(document.activeElement)) return;
       if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
 

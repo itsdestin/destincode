@@ -260,3 +260,25 @@ describe('createGithubConnect', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// disconnectGithub (Connected accounts, Phase 3 2026-07-22)
+// ---------------------------------------------------------------------------
+
+import { disconnectGithub } from '../src/main/github-connect';
+import { setGithubClient } from '../src/main/github-client';
+
+describe('disconnectGithub', () => {
+  test('clears the stored token via the client and resolves ok', async () => {
+    const clearToken = vi.fn();
+    setGithubClient({ clearToken } as any);
+    await expect(disconnectGithub()).resolves.toEqual({ ok: true });
+    expect(clearToken).toHaveBeenCalledTimes(1);
+    setGithubClient(null);
+  });
+
+  test('is a safe no-op when no client is registered (wiring regression, not a crash)', async () => {
+    setGithubClient(null);
+    await expect(disconnectGithub()).resolves.toEqual({ ok: true });
+  });
+});

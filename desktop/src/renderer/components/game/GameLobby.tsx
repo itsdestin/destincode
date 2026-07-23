@@ -636,7 +636,7 @@ function SignInScreen() {
       </div>
       <p className="text-sm text-fg text-center">Sign in to play</p>
       <p className="text-xs text-fg-muted text-center max-w-xs">
-        Games use your GitHub name as your player tag.
+        Your YouCoded account name is your player tag.
       </p>
       {/* The old classes had `hover:bg-accent` on top of a `bg-accent` base, so
           hovering changed nothing. The shared `primary` fades the fill on hover,
@@ -647,7 +647,7 @@ function SignInScreen() {
         onClick={() => { void startSignIn(); }}
         disabled={signInPending}
       >
-        {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
+        {signInPending ? 'Signing in…' : 'Sign in to YouCoded'}
       </Button>
       {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
       {signInError && !signInPending && (

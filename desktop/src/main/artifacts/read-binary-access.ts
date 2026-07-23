@@ -11,27 +11,17 @@
 // limited to the user's project folders and tracked artifacts, and well-known
 // secret locations are refused even inside those roots.
 
-/** Directory segments that are refused anywhere in the path, even inside an
- * allowed project root (the seeded "Home" folder makes most of the home dir a
- * root, so the root check alone doesn't protect these). */
-const SENSITIVE_SEGMENTS = new Set(['.ssh', '.gnupg', '.aws', '.azure', '.kube']);
-
-/** Basenames refused outright (credential stores). */
-const SENSITIVE_BASENAMES = new Set(['.netrc', '_netrc', '.credentials.json']);
-
-/** True when a basename is a dotenv file (`.env`, `.env.local`, `.env.production`,
- * …) or a direnv `.envrc`. Added for the native tool-layer path guards (Phase 2):
- * dotenv files are the single most common place project secrets (API keys, DB
- * passwords) live, and `.envrc` (direnv) routinely holds `export SECRET=…` lines,
- * so the file tools hard-deny them the same way as other credential stores.
- * Matches the exact `.env` name plus any `.env.<suffix>` variant and `.envrc`, but
- * NOT unrelated names that merely start with the letters (e.g. `.environment`). */
-function isDotenvBasename(base: string): boolean {
-  return base === '.env' || base === '.envrc' || base.startsWith('.env.');
-}
-
-/** `.config/gh` holds the GitHub OAuth token (hosts.yml). */
-const SENSITIVE_SUBPATHS = ['/.config/gh/'];
+// The sensitive-set definitions moved to shared/artifacts/editable-path-policy
+// (D5, 2026-07-22) so the artifact WRITE boundary and this READ guard cannot
+// drift apart — one set, two consumers. Behavior here is unchanged: reads still
+// refuse dotenv (the write policy treats dotenv as confirm-tier instead; see
+// protectedReadPath in that module for why the two differ).
+import {
+  SENSITIVE_SEGMENTS,
+  SENSITIVE_BASENAMES,
+  SENSITIVE_SUBPATHS,
+  isDotenvBasename,
+} from '../../shared/artifacts/editable-path-policy';
 
 /** True when a canonical path points at a well-known secret location. */
 export function isSensitivePath(canonicalPath: string): boolean {

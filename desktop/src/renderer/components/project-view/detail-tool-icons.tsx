@@ -46,14 +46,22 @@ export const CheckIcon = ({ size }: { size?: number }) => (
 
 export const FolderIcon = ({ size }: { size?: number }) => (
   <Svg size={size}>
-    <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+    {/* Folder + eye — same reveal glyph as the SessionDrawer top bar (approved
+        mockup 2-prime), so the two surfaces stay consistent. */}
+    <path d="M10.5 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.67.9l.81 1.2a2 2 0 0 0 1.69.9H20a2 2 0 0 1 2 2v3.5" />
+    <path strokeWidth={1.5} d="M12.5 18.3s1.9-3.3 5.25-3.3S23 18.3 23 18.3s-1.9 3.3-5.25 3.3-5.25-3.3-5.25-3.3Z" />
+    <circle cx="17.75" cy="18.3" r="1.3" fill="currentColor" stroke="none" />
   </Svg>
 );
 
 export const LinkIcon = ({ size }: { size?: number }) => (
   <Svg size={size}>
-    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    {/* Clipboard + slash — "Copy path" (approved mockup 13; same glyph as the
+        SessionDrawer top bar). Export name kept to avoid churn at call sites,
+        both of which are Copy-path buttons. */}
+    <path d="M9 2h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    <path d="M10.5 16 13.5 10.5" />
   </Svg>
 );
 

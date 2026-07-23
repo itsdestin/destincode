@@ -1183,6 +1183,7 @@ export function installShim(): void {
       connectStart: () => invoke('github:connect-start'),
       connectCancel: () => invoke('github:connect-cancel'),
       installGh: () => invoke('github:install-gh'),
+      disconnect: () => invoke('github:disconnect'),
       onConnectDone: (cb: (payload: { ok: boolean; login?: string; error?: string }) => void) => {
         const handler: Callback = (p: any) => cb(p);
         addListener('github:connect-done', handler);
@@ -1211,8 +1212,9 @@ export function installShim(): void {
       readBinary: (absolutePath: string) =>
         invoke('artifacts:read-binary', { absolutePath }),
       save: (projectRoot: string, projectId: string, projectName: string,
-             artifactId: string, content: string, sessionId: string) =>
-        invoke('artifacts:save', { projectRoot, projectId, projectName, artifactId, content, sessionId }),
+             artifactId: string, content: string, sessionId: string,
+             opts?: { baseMtimeMs?: number; confirmed?: boolean }) =>
+        invoke('artifacts:save', { projectRoot, projectId, projectName, artifactId, content, sessionId, ...opts }),
       // Fix: data-flow gap — renderer Tracker calls this on Write/Edit/MultiEdit
       // transcript events so the central index is populated automatically on Android.
       appendVersion: (projectRoot: string, sessionId: string, args: any) =>
@@ -1234,6 +1236,12 @@ export function installShim(): void {
       // Remove a tracking RECORD from the sidecar (never the file on disk).
       removeRecord: (projectRoot: string, artifactId: string) =>
         invoke('artifacts:remove-record', { projectRoot, artifactId }),
+      watchProject: (projectRoot: string) =>
+        invoke('artifacts:watch-project', { projectRoot }),
+      unwatchProject: (projectRoot: string) =>
+        invoke('artifacts:unwatch-project', { projectRoot }),
+      searchContent: (projectRoot: string, query: string) =>
+        invoke('artifacts:search-content', { projectRoot, query }),
       onChanged: (cb: (event: any) => void) => {
         const handler: Callback = (evt: any) => cb(evt);
         addListener('artifacts:changed', handler);

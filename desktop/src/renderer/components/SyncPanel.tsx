@@ -12,7 +12,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, CloseButton, TextInput, Toggle } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
-import { deriveSyncState, type SyncDisplayState } from '../state/sync-display-state';
+import { deriveSyncState, deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import SyncSetupWizard from './SyncSetupWizard';
@@ -321,20 +321,59 @@ export default function SyncSection({ autoOpen, onAutoOpenHandled }: SyncSection
     }
   }, [autoOpen, open, onAutoOpenHandled]);
 
+  // Sync-spaces status for the compact row (2026-07-22 fix): the row used to
+  // derive from the LEGACY rclone status alone — `hasBackends` counts only
+  // Drive/iCloud backends — so a device running only the primary GitHub sync
+  // (on and green in the popup) read "Not configured" with a gray dot.
+  // Fetched on the same deferred schedule as the legacy status; kept fresh by
+  // the engine's own event push (same subscription the popup uses).
+  const [rowSpaces, setRowSpaces] = useState<any>(null);
+  const loadRowSpaces = useCallback(async () => {
+    const fn = (window as any).claude?.syncSpaces?.status;
+    if (typeof fn !== 'function') { setRowSpaces(null); return; }
+    try { setRowSpaces(await fn()); } catch { setRowSpaces(null); }
+  }, []);
+  useEffect(() => {
+    const timer = setTimeout(() => { void loadRowSpaces(); }, 350);
+    return () => clearTimeout(timer);
+  }, [loadRowSpaces]);
+  useEffect(() => {
+    const off = (window as any).claude?.syncSpaces?.onEvent?.(() => { void loadRowSpaces(); });
+    return () => { off?.(); };
+  }, [loadRowSpaces]);
+
   // Backend counts kept for the secondary "X synced / Y paused" caption.
   // Defensive ?. on inner fields: a malformed status payload without
   // `backends`/`warnings` must degrade to zero counts, not crash the panel.
   const syncCount = status?.backends?.filter(b => b.syncEnabled).length ?? 0;
   const storageCount = status?.backends?.filter(b => !b.syncEnabled).length ?? 0;
 
-  // Single derivation: compact row dot + label + badge all flow from this state.
-  // Severity-aware so the row can never read "Synced" while warnings are active.
-  const display: SyncDisplayState = deriveSyncState({
-    hasBackends: (status?.backends?.length ?? 0) > 0,
-    syncInProgress: status?.syncInProgress ?? false,
-    lastSyncEpoch: status?.lastSyncEpoch ?? null,
-    warnings: status?.warnings ?? [],
-  });
+  // Single derivation: compact row dot + label + badge all flow from this
+  // state. Severity-aware so the row can never read "Synced" while warnings
+  // are active — across BOTH sync systems (deriveSettingsRowState). The
+  // sync-spaces half rides the same pinned deriveSyncBoxState ladder the
+  // popup's Sync box uses, so row and popup can never disagree.
+  const rowBox = rowSpaces?.enabled
+    ? deriveSyncBoxState({
+        pendingEnable: false,
+        enabled: true,
+        hasError: !!latestUnresolvedError(rowSpaces as unknown as SyncStatusData | null),
+        githubUnauthed: false, // only affects the DISABLED branch of the ladder
+        spaces: (rowSpaces?.spaces ?? []) as SyncStatusData['spaces'],
+        syncing: false,
+      })
+    : null;
+  const rowLastSyncAt = ((rowSpaces?.spaces ?? []) as Array<{ lastSyncAt?: number | null }>)
+    .reduce<number | null>((acc, s) => (s.lastSyncAt != null && (acc === null || s.lastSyncAt > acc) ? s.lastSyncAt : acc), null);
+  const display: SyncDisplayState = deriveSettingsRowState(
+    {
+      hasBackends: (status?.backends?.length ?? 0) > 0,
+      syncInProgress: status?.syncInProgress ?? false,
+      lastSyncEpoch: status?.lastSyncEpoch ?? null,
+      warnings: status?.warnings ?? [],
+    },
+    rowBox ? { enabled: true, box: rowBox, lastSyncAt: rowLastSyncAt } : null,
+  );
 
   // Gate dot color on `loading` to keep it in sync with the "Loading..." label.
   // Without this gate, once `status` arrived the dot could flip to a real

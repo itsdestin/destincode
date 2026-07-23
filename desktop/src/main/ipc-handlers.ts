@@ -56,7 +56,7 @@ import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-re
 // Connect-GitHub modal (device-flow auth) — detectGh/installGh are step fns;
 // createGithubConnect is the stateful orchestrator that owns the in-flight flow.
 import { installGh } from './github-auth';
-import { createGithubConnect, setGithubConnect } from './github-connect';
+import { createGithubConnect, setGithubConnect, disconnectGithub } from './github-connect';
 import { combinedGithubStatus } from './github-client';
 import { getConfig as getMarketplaceConfig, setConfig as setMarketplaceConfig } from './marketplace-config-store';
 import { readComponent, type ComponentKind } from './marketplace-file-reader';
@@ -85,6 +85,10 @@ import { discoverProjectFiles, invalidateDiscoveryCache } from './artifacts/proj
 import { ensureProject, applyGitTreatment } from './artifacts/project-manager';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
+import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
+import { searchProjectContent } from './artifacts/content-search';
+import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
+import { authorizeArtifactRead, authorizeArtifactWrite } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { PROJECT_IPC } from './project/ipc-channels';
 import { listProjectConversations, projectConversationHistory, ccProjectSlug } from './project-conversations';
@@ -2707,6 +2711,7 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.GITHUB_CONNECT_START, () => githubConnect.start());
   ipcMain.handle(IPC.GITHUB_CONNECT_CANCEL, () => { githubConnect.cancel(); return { ok: true }; });
   ipcMain.handle(IPC.GITHUB_INSTALL_GH, () => installGh());
+  ipcMain.handle(IPC.GITHUB_DISCONNECT, () => disconnectGithub());
 
   // V2: Per-instance backend management (storage backends + multi-instance support)
   ipcMain.handle('sync:add-backend', (_e, instance) => addBackend(instance));
@@ -2869,6 +2874,7 @@ export function registerIpcHandlers(
   ) => {
     const { project } = await ensureProject(CLAUDE_DIR, projectRoot, sessionId);
     await applyGitTreatment(projectRoot);
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     const result = await appendVersion(projectRoot, project.id, project.name, {
       path: args.path,
       kind: args.kind,
@@ -2902,6 +2908,7 @@ export function registerIpcHandlers(
     newName: string
   ) => {
     const result = await renameArtifact(projectRoot, artifactId, newName);
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     if (result.ok) {
       // Broadcast so every open window's artifact UI re-lists with the new name.
       webContents.getAllWebContents().forEach((wc) =>
@@ -2919,6 +2926,7 @@ export function registerIpcHandlers(
     artifactId: string
   ) => {
     const result = await removeArtifactRecord(projectRoot, artifactId);
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     if (result.ok) {
       webContents.getAllWebContents().forEach((wc) =>
         wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'remove', by: 'user' })
@@ -3036,14 +3044,49 @@ export function registerIpcHandlers(
       fullPath = resolved;
     }
 
-    let content: string | null = null;
+    // Symlink-resolve + in-root + sensitive-read policy, all on the RESOLVED
+    // path (write-authorization.ts owns the logic + its tests). Tracked
+    // internals were never traversal-checked before (spec §12.1) — now they are.
+    const readAuth = await authorizeArtifactRead(projectRoot, fullPath, !artifact || artifact.kind === 'internal');
+    if (!readAuth.ok) {
+      if ('orphan' in readAuth) return { ok: true, artifact: artifact ?? null, content: null, orphan: true };
+      return { ok: false, error: readAuth.error };
+    }
+    const realPath = readAuth.realPath;
+
+    // Size gate BEFORE reading (spec §2.3): a multi-MB readFile blocks the main
+    // thread, ships whole over IPC/WS, then blocks the renderer rendering it.
+    let st: fs.Stats;
     try {
-      content = await fs.promises.readFile(fullPath, 'utf8');
+      st = await fs.promises.stat(realPath);
     } catch (e: any) {
       if (e.code !== 'ENOENT') throw e;
-      // File is missing — return orphan signal
+      return { ok: true, artifact: artifact ?? null, content: null, orphan: true };
     }
-    return { ok: true, artifact: artifact ?? null, content, orphan: content === null };
+    if (st.size > EDIT_MAX_BYTES) {
+      return {
+        ok: true, artifact: artifact ?? null, content: null, orphan: false,
+        tooLarge: true, sizeBytes: st.size, mtimeMs: st.mtimeMs,
+      };
+    }
+
+    let content: string | null = null;
+    let binary = false;
+    try {
+      const buf = await fs.promises.readFile(realPath);
+      // Head-slice NUL sniff: binary bytes decoded as utf8 turn into U+FFFD
+      // soup — return binary:true + null content so the renderer routes to the
+      // binary fallback instead of a garbage text view (D4 routing).
+      binary = looksBinary(buf.subarray(0, 8192));
+      if (!binary) content = buf.toString('utf8');
+    } catch (e: any) {
+      if (e.code !== 'ENOENT') throw e;
+      return { ok: true, artifact: artifact ?? null, content: null, orphan: true };
+    }
+    // mtimeMs is the optimistic-concurrency token: round-trip it into
+    // artifacts:save as baseMtimeMs and the save is rejected when the file
+    // changed underneath (spec §12.9 — last-write-wins fix).
+    return { ok: true, artifact: artifact ?? null, content, orphan: false, binary, mtimeMs: st.mtimeMs };
   });
 
   // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image). The
@@ -3107,20 +3150,60 @@ export function registerIpcHandlers(
     projectName: string,
     artifactId: string,
     newContent: string,
-    sessionId: string
+    sessionId: string,
+    // baseMtimeMs: optimistic-concurrency token from artifacts:get — the save is
+    // rejected ('conflict') when the file changed underneath (spec §12.9).
+    // confirmed: the user clicked through the confirm-tier dialog; main REQUIRES
+    // it for needs-confirm paths so the policy decision cannot be skipped by a
+    // caller that never showed the dialog (D5 — mistake-prevention tier).
+    opts?: { baseMtimeMs?: number; confirmed?: boolean }
   ) => {
     const sidecar = await readSidecar(projectRoot);
     const artifact = (sidecar && !('corrupted' in sidecar))
       ? sidecar.artifacts.find((a) => a.id === artifactId)
       : undefined;
 
+    let fullPath: string;
     if (artifact) {
-      const fullPath = artifact.kind === 'internal'
+      // NOTE the tracked branch historically wrote artifact.absolutePath! with
+      // NO check at all — the sidecar-escalation hole (spec §12.1). Everything
+      // below now runs on the RESOLVED path for both branches.
+      fullPath = artifact.kind === 'internal'
         ? path.join(projectRoot, artifact.path)
         : artifact.absolutePath!;
-      // Atomic write: write to .tmp then rename, so the original is never half-written
-      await fs.promises.writeFile(fullPath + '.tmp', newContent, 'utf8');
-      await fs.promises.rename(fullPath + '.tmp', fullPath);
+    } else {
+      // Discovered (on-disk) file: the id IS a canonical relative path. Fast
+      // string-level traversal reject before touching the filesystem.
+      const resolved = path.resolve(projectRoot, artifactId);
+      const root = path.resolve(projectRoot);
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        return { ok: false, error: 'artifact-not-found' };
+      }
+      fullPath = resolved;
+    }
+
+    // Symlink resolution → in-root enforcement → D5 tier policy → concurrency
+    // token, all on the RESOLVED path (write-authorization.ts owns the logic +
+    // its tests — this is the feature's security boundary, keep it pinned).
+    const auth = await authorizeArtifactWrite({
+      projectRoot,
+      fullPath,
+      mustStayInRoot: !artifact || artifact.kind === 'internal',
+      baseMtimeMs: opts?.baseMtimeMs,
+      confirmed: opts?.confirmed,
+    });
+    if (!auth.ok) return auth;
+    const realPath = auth.realPath;
+
+    // Suppress the watcher echo of our own write (spec §8.4), then atomic
+    // write: .tmp + rename so the original is never half-written.
+    noteOwnWrite(realPath);
+    await fs.promises.writeFile(realPath + '.tmp', newContent, 'utf8');
+    await fs.promises.rename(realPath + '.tmp', realPath);
+    const st = await fs.promises.stat(realPath).catch(() => null);
+
+    if (artifact) {
+      invalidateSidecarIdCache(projectRoot);
       await appendVersion(projectRoot, projectId, projectName, {
         path: artifact.path,
         kind: artifact.kind,
@@ -3129,28 +3212,54 @@ export function registerIpcHandlers(
         type: 'edit',
         author: 'user',
       });
-      // Broadcast the change to every renderer so all open windows update their artifact UI
-      webContents.getAllWebContents().forEach((wc) =>
-        wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
-      );
-      return { ok: true };
+    } else {
+      // NO sidecar mutation for discovered files, so editing a doc never
+      // silently creates a .youcoded/ tracking dir.
+      invalidateDiscoveryCache(projectRoot); // refresh the cached mtime next scan
     }
-
-    // Discovered (on-disk) file: write directly by path. NO sidecar mutation, so
-    // editing a doc never silently creates a .youcoded/ tracking dir. Resolve
-    // inside the project root and refuse escapes (traversal guard, same as GET).
-    const resolved = path.resolve(projectRoot, artifactId);
-    const root = path.resolve(projectRoot);
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-      return { ok: false, error: 'artifact-not-found' };
-    }
-    await fs.promises.writeFile(resolved + '.tmp', newContent, 'utf8');
-    await fs.promises.rename(resolved + '.tmp', resolved);
-    invalidateDiscoveryCache(projectRoot); // refresh the cached mtime next scan
+    // Broadcast the change to every renderer so all open windows update their artifact UI
     webContents.getAllWebContents().forEach((wc) =>
       wc.send(ARTIFACT_IPC.CHANGED, { projectRoot, artifactId, kind: 'edit', by: 'user' })
     );
+    // Fresh token so the editor can keep saving without a refetch round-trip.
+    return { ok: true, mtimeMs: st?.mtimeMs };
+  });
+
+  // ── External-change watcher (spec §8) ──
+  // Watchers live in main, refcounted per webContents (project-watcher.ts owns
+  // the lifecycle). Events reuse the existing CHANGED broadcast contract with
+  // by:'external' — the renderer filters on projectRoot exactly like user events.
+  initProjectWatchers((evt) => {
+    // Created/deleted files must show up in the next file-list fetch.
+    if (evt.kind !== 'edit') invalidateDiscoveryCache(evt.projectRoot);
+    webContents.getAllWebContents().forEach((wc) => wc.send(ARTIFACT_IPC.CHANGED, evt));
+  });
+  // A crashed/closed renderer never sends unwatch — drop its refs on destroy so
+  // it cannot pin a watcher forever. One listener per webContents, attached on
+  // its first subscribe.
+  const watchedSenders = new Set<number>();
+  ipcMain.handle(ARTIFACT_IPC.WATCH_PROJECT, async (e, projectRoot: string) => {
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0) return { ok: false };
+    const senderId = e.sender.id;
+    if (!watchedSenders.has(senderId)) {
+      watchedSenders.add(senderId);
+      e.sender.once('destroyed', () => {
+        watchedSenders.delete(senderId);
+        dropSubscriber(senderId);
+      });
+    }
+    return watchProject(projectRoot, senderId);
+  });
+  ipcMain.handle(ARTIFACT_IPC.UNWATCH_PROJECT, async (e, projectRoot: string) => {
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0) return { ok: false };
+    unwatchProject(projectRoot, e.sender.id);
     return { ok: true };
+  });
+  ipcMain.handle(ARTIFACT_IPC.SEARCH_CONTENT, async (_e, projectRoot: string, query: string) => {
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0 || typeof query !== 'string') {
+      return { ok: false, hits: [], truncated: false, error: 'projectRoot and query are required' };
+    }
+    return searchProjectContent(projectRoot, query);
   });
 
   // Normalize an include/exclude entry to a canonical ABSOLUTE path. FilesTab
@@ -3181,6 +3290,7 @@ export function registerIpcHandlers(
 
     // 1. Ensure a record exists (author 'user', type 'read' — a pin, not an edit).
     const { project } = await ensureProject(CLAUDE_DIR, projectRoot, 'manual-include');
+    invalidateSidecarIdCache(projectRoot); // watcher path-to-id map is stale
     const appendResult = await appendVersion(projectRoot, project.id, project.name, {
       path: isInternal ? canonical.slice(rootCanon.length + 1) : (canonical.split('/').pop() ?? canonical),
       kind: isInternal ? 'internal' : 'external',

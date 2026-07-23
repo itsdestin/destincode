@@ -1,4 +1,6 @@
+import React, { useEffect, useState } from 'react';
 import type { ArtifactViewProps } from './types';
+import { inlineLocalAssets } from './html-inline-assets';
 
 // HtmlView — full-size interactive preview of an HTML artifact.
 //
@@ -8,10 +10,26 @@ import type { ArtifactViewProps } from './types';
 // (incl. Tailwind-CDN pages) render and run; we omit `allow-same-origin` so the
 // frame stays an opaque origin and can't script the app. Artifacts are the
 // user's own generated files, so script execution for a faithful preview is the
-// right trade-off. Caveat of srcDoc: pages that pull in *relative* local assets
-// (sibling CSS/images) won't resolve those — self-contained pages render fully.
-export function HtmlView({ content }: ArtifactViewProps) {
-  if (content === null) {
+// right trade-off.
+//
+// Relative local assets (sibling styles.css / game.js / images) can never load
+// from a srcDoc frame — no base URL, and the CSP blocks file:// subresources —
+// so they are INLINED first via html-inline-assets.ts (guarded read-binary
+// IPC). A page whose assets fail to fetch degrades to the old behavior:
+// unstyled markup, not a broken pane.
+export function HtmlView({ content, absolutePath }: ArtifactViewProps) {
+  const [doc, setDoc] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setDoc(null);
+    if (content === null) return;
+    inlineLocalAssets(content, absolutePath).then((processed) => {
+      if (!cancelled) setDoc(processed);
+    });
+    return () => { cancelled = true; };
+  }, [content, absolutePath]);
+
+  if (content === null || doc === null) {
     return (
       <div className="flex items-center justify-center h-full text-sm text-fg-muted">
         Loading…
@@ -20,7 +38,7 @@ export function HtmlView({ content }: ArtifactViewProps) {
   }
   return (
     <iframe
-      srcDoc={content}
+      srcDoc={doc}
       sandbox="allow-scripts allow-popups allow-forms"
       className="w-full h-full border-0 bg-white"
       title="HTML preview"

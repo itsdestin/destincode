@@ -6,6 +6,7 @@ import { TagPicker } from './tags/TagPicker';
 import { NoteEditor } from './tags/NoteEditor';
 import { Button } from './ui';
 import { NATIVE_META_UNSUPPORTED, type SessionMetaResult } from '../../shared/types';
+import { isTypingTarget } from '../utils/is-typing-target';
 
 // Flag order must match ResumeBrowser's pill order so the UI is consistent.
 type FlagName = 'priority' | 'complete';
@@ -103,8 +104,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Enter') return;
       // Don't hijack Enter while the user is typing in the tag search or the note.
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      if (isTypingTarget(e.target as Element)) return;
       onConfirm(buildResult());
     };
     window.addEventListener('keydown', handler);

@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
@@ -17,12 +15,6 @@ import type {
   SkillEntry, SkillDetailView, SkillFilters, ChipConfig,
   MetadataOverride, SkillProvider,
 } from '../shared/types';
-
-const execFileAsync = promisify(execFile);
-
-// Resolve gh CLI path at module load (mirrors theme-marketplace-provider.ts)
-let ghPath = 'gh';
-try { const w = require('which'); ghPath = w.sync('gh'); } catch { /* use bare 'gh' */ }
 
 const CLAUDE_PLUGINS_ROOT = path.join(os.homedir(), '.claude', 'plugins');
 
@@ -447,59 +439,10 @@ export class LocalSkillProvider implements SkillProvider {
       throw new Error('Only user-created skills can be published to the marketplace');
     }
 
-    // 1. Verify gh CLI auth
-    let username: string;
-    try {
-      const { stdout } = await execFileAsync(ghPath, ['api', 'user', '--jq', '.login']);
-      username = stdout.trim();
-      if (!username) throw new Error('Empty username');
-    } catch {
-      throw new Error('GitHub CLI not authenticated. Run `gh auth login` first.');
-    }
-
     const UPSTREAM_REPO = 'itsdestin/wecoded-marketplace';
     const branchName = `plugin/${id}`;
 
-    // 2. Fork the marketplace repo (idempotent — gh returns existing fork)
-    try {
-      await execFileAsync(ghPath, ['repo', 'fork', UPSTREAM_REPO, '--clone=false'], { timeout: 30000 });
-    } catch (err: any) {
-      if (err.code === 'ENOENT') throw new Error('gh CLI not found');
-      // gh repo fork returns exit 0 even if fork exists; only throw on real errors
-    }
-
-    const FORK_REPO = `${username}/wecoded-marketplace`;
-
-    // 3. Get the default branch SHA from upstream
-    let baseSha: string;
-    try {
-      const { stdout } = await execFileAsync(ghPath, [
-        'api', `repos/${UPSTREAM_REPO}/git/ref/heads/main`, '--jq', '.object.sha',
-      ]);
-      baseSha = stdout.trim();
-    } catch {
-      throw new Error('Failed to read upstream repo. Does itsdestin/wecoded-marketplace exist?');
-    }
-
-    // Create branch on the fork (or update if it already exists)
-    try {
-      await execFileAsync(ghPath, [
-        'api', `repos/${FORK_REPO}/git/refs`, '-X', 'POST',
-        '-f', `ref=refs/heads/${branchName}`,
-        '-f', `sha=${baseSha}`,
-      ]);
-    } catch {
-      try {
-        await execFileAsync(ghPath, [
-          'api', `repos/${FORK_REPO}/git/refs/heads/${branchName}`, '-X', 'PATCH',
-          '-f', `sha=${baseSha}`, '-f', 'force=true',
-        ]);
-      } catch (err: any) {
-        throw new Error(`Failed to create branch: ${err.message}`);
-      }
-    }
-
-    // 4. Collect plugin files, filtering out sensitive content
+    // 1. Collect plugin files, filtering out sensitive content
     const filesToUpload: { repoPath: string; localPath: string }[] = [];
     const allFiles = await this.walkPluginDirectory(pluginDir);
 
@@ -526,86 +469,47 @@ export class LocalSkillProvider implements SkillProvider {
       throw new Error('No files to upload (all files were filtered as sensitive)');
     }
 
-    // 5. Upload files via GitHub Contents API
+    // 2. Base64 the contents up front. Bodies ride the REST request (Phase 3,
+    // 2026-07-22) — the old `gh api -f content=<base64>` argv form silently
+    // broke on Windows's ~32 KB command-line limit for any file past a few KB.
+    const publishFiles: import('./github-fork-publish').PublishFile[] = [];
     for (const file of filesToUpload) {
       const raw = await fs.promises.readFile(file.localPath);
-      const content = raw.toString('base64');
-
-      try {
-        await execFileAsync(ghPath, [
-          'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
-          '-f', `message=Add ${file.repoPath}`,
-          '-f', `content=${content}`,
-          '-f', `branch=${branchName}`,
-        ], { timeout: 30000 });
-      } catch {
-        // File may already exist — update it (need the sha)
-        try {
-          const { stdout: existingFile } = await execFileAsync(ghPath, [
-            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`,
-            '-q', '.sha', '-H', 'Accept: application/vnd.github.v3+json',
-            '--method', 'GET', '-f', `ref=${branchName}`,
-          ]);
-          await execFileAsync(ghPath, [
-            'api', `repos/${FORK_REPO}/contents/${file.repoPath}`, '-X', 'PUT',
-            '-f', `message=Update ${file.repoPath}`,
-            '-f', `content=${content}`,
-            '-f', `sha=${existingFile.trim()}`,
-            '-f', `branch=${branchName}`,
-          ], { timeout: 30000 });
-        } catch {
-          throw new Error(`Failed to upload ${file.repoPath}`);
-        }
-      }
+      publishFiles.push({ repoPath: file.repoPath, contentBase64: raw.toString('base64') });
     }
 
     // 6. Create the PR
-    const prTitle = `[Plugin] ${skill.displayName || id}`;
-    const prBody = [
-      `## New Plugin: ${skill.displayName || id}`,
-      '',
-      skill.description ? `> ${skill.description}` : '',
-      '',
-      `- **Author:** ${skill.author || username}`,
-      `- **Type:** ${skill.type || 'plugin'}`,
-      `- **Category:** ${skill.category || 'other'}`,
-      `- **Plugin ID:** \`${id}\``,
-      '',
-      `### What it does`,
-      skill.description || '_No description provided_',
-      '',
-      `### Files`,
-      filesToUpload.map(f => `- \`${f.repoPath}\``).join('\n'),
-      '',
-      '_Submitted via YouCoded Marketplace_',
-    ].join('\n');
-
-    try {
-      const { stdout: prUrlRaw } = await execFileAsync(ghPath, [
-        'pr', 'create',
-        '--repo', UPSTREAM_REPO,
-        '--head', `${username}:${branchName}`,
-        '--title', prTitle,
-        '--body', prBody,
-      ], { timeout: 30000 });
-      return { prUrl: prUrlRaw.trim() };
-    } catch (err: any) {
-      // If PR already exists, try to get its URL
-      if (err.stderr?.includes('already exists')) {
-        try {
-          const { stdout: existingPr } = await execFileAsync(ghPath, [
-            'pr', 'list',
-            '--repo', UPSTREAM_REPO,
-            '--head', `${username}:${branchName}`,
-            '--json', 'url', '--jq', '.[0].url',
-          ]);
-          if (existingPr.trim()) {
-            return { prUrl: existingPr.trim() };
-          }
-        } catch { /* fall through */ }
-      }
-      throw new Error(`Failed to create PR: ${err.stderr || err.message}`);
-    }
+    // 3. Fork → branch → upload → PR through the shared github-client pipeline
+    // (Phase 3, 2026-07-22 — no gh CLI required; its plain-language coded
+    // errors surface verbatim in the publish UI). The Author line prefers the
+    // skill's own author and falls back to the authed login forkPublish
+    // resolves — same behavior as the old `gh api user` call.
+    const { forkPublish } = await import('./github-fork-publish');
+    const result = await forkPublish({
+      upstreamRepo: UPSTREAM_REPO,
+      branchName,
+      files: publishFiles,
+      prTitle: `[Plugin] ${skill.displayName || id}`,
+      prBody: (username) => [
+        `## New Plugin: ${skill.displayName || id}`,
+        '',
+        skill.description ? `> ${skill.description}` : '',
+        '',
+        `- **Author:** ${skill.author || username}`,
+        `- **Type:** ${skill.type || 'plugin'}`,
+        `- **Category:** ${skill.category || 'other'}`,
+        `- **Plugin ID:** \`${id}\``,
+        '',
+        `### What it does`,
+        skill.description || '_No description provided_',
+        '',
+        `### Files`,
+        filesToUpload.map(f => `- \`${f.repoPath}\``).join('\n'),
+        '',
+        '_Submitted via YouCoded Marketplace_',
+      ].join('\n'),
+    });
+    return { prUrl: result.prUrl };
   }
 
   /** Recursively walk a plugin directory and return all file paths. */

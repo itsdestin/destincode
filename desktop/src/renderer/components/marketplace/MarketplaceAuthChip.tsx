@@ -71,7 +71,7 @@ export default function MarketplaceAuthChip() {
       // an icon; the anchored error popover below carries the full message).
       : signInError
         ? `Sign-in failed: ${signInError}. Click to try again.`
-        : "Sign in with GitHub";
+        : "Sign in to YouCoded";
 
   return (
     <div ref={wrapperRef} className="relative shrink-0">

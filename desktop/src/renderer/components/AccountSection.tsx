@@ -7,6 +7,7 @@ import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
 import SettingsRow from './SettingsRow';
 import { Button, InputGroup } from './ui';
+import { ConnectedAccountsBody } from './ConnectedAccounts';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
 // both the Desktop and Android settings stacks. Auth-token state and mutations
@@ -76,7 +77,37 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
   const { signedIn, user, signInPending, startSignIn, signOut, updateProfile, setHandle, deleteAccount } =
     useAccount();
 
+  // In-popup navigation (Destin feedback 2026-07-22): ONE Account card in
+  // Settings; external connections (GitHub now, Google etc. later) live on a
+  // "Connected accounts" PAGE inside it. A sibling settings row read as a
+  // second, contradictory GitHub sign-in ("Sign in with GitHub" right above
+  // "Connected as @…") because the WeCoded account also authenticates via
+  // GitHub — two different jobs wearing the same octocat.
+  const [page, setPage] = useState<'main' | 'connections'>('main');
+
+  // Combined github:status for the row summary + the connections page.
+  // 'unavailable' (handler missing / rejected — the Android stub) hides the
+  // whole Connected-accounts affordance rather than offering a dead flow.
+  const [ghStatus, setGhStatus] = useState<import('./ConnectedAccounts').GithubStatus | null | 'unavailable'>(null);
+  const refreshGh = React.useCallback(async () => {
+    const fn = (window as any).claude?.github?.status;
+    if (typeof fn !== 'function') { setGhStatus('unavailable'); return; }
+    try { setGhStatus(await fn()); } catch { setGhStatus('unavailable'); }
+  }, []);
+  useEffect(() => { void refreshGh(); }, [refreshGh]);
+
   useEscClose(true, onClose);
+
+  // Collapsed-row summary. While signed OUT of the YouCoded account the row
+  // stays NEUTRAL ("Manage…") — a "GitHub · @login" line directly under the
+  // "Sign in with GitHub" button read as the app contradicting itself
+  // (Destin, 2026-07-22, second screenshot). Signed in, the concrete status
+  // is useful and the sign-in button isn't on screen to clash with.
+  const ghSummary = !signedIn
+    ? 'Manage GitHub and other connections'
+    : ghStatus === 'unavailable' || ghStatus === null ? 'GitHub'
+      : ghStatus.authed ? `GitHub · @${ghStatus.login ?? 'connected'}`
+        : 'GitHub — not connected';
 
   return createPortal(
     <>
@@ -90,7 +121,22 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="shrink-0 border-b border-edge flex items-center justify-between px-5 py-3">
-          <h3 id="account-popup-title" className="text-sm font-semibold text-fg">Account</h3>
+          <div className="flex items-center gap-2 min-w-0">
+            {page === 'connections' && (
+              <button
+                onClick={() => setPage('main')}
+                aria-label="Back to account"
+                className="text-fg-muted hover:text-fg transition-colors w-7 h-7 flex items-center justify-center rounded-sm hover:bg-inset shrink-0"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            )}
+            <h3 id="account-popup-title" className="text-sm font-semibold text-fg truncate">
+              {page === 'connections' ? 'Connected accounts' : 'Account'}
+            </h3>
+          </div>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -104,21 +150,58 @@ function AccountPopup({ onClose }: { onClose: () => void }) {
 
         <div className="scroll-fade">
           <div className="p-5 space-y-5">
-            {signedIn && user ? (
-              // key on the canonical handle so SignedInBody remounts (re-seeding
-              // its useState draft initializers) if HandlePrompt saves a handle
-              // while this popup is open — otherwise handleDraft goes stale.
-              <SignedInBody
-                key={user.handle ?? ''}
-                user={user}
-                signOut={signOut}
-                updateProfile={updateProfile}
-                setHandle={setHandle}
-                deleteAccount={deleteAccount}
-                onClose={onClose}
+            {page === 'connections' ? (
+              <ConnectedAccountsBody
+                status={ghStatus === 'unavailable' ? null : ghStatus}
+                refresh={refreshGh}
               />
             ) : (
-              <SignedOutBody signInPending={signInPending} startSignIn={startSignIn} />
+              <>
+                {signedIn && user ? (
+                  // key on the canonical handle so SignedInBody remounts (re-seeding
+                  // its useState draft initializers) if HandlePrompt saves a handle
+                  // while this popup is open — otherwise handleDraft goes stale.
+                  <SignedInBody
+                    key={user.handle ?? ''}
+                    user={user}
+                    signOut={signOut}
+                    updateProfile={updateProfile}
+                    setHandle={setHandle}
+                    deleteAccount={deleteAccount}
+                    onClose={onClose}
+                  />
+                ) : (
+                  <SignedOutBody signInPending={signInPending} startSignIn={startSignIn} />
+                )}
+
+                {/* Connected accounts entry — shown regardless of WeCoded
+                    sign-in state (the GitHub connection is independent of it),
+                    hidden only where the github:* channels don't exist. */}
+                {ghStatus !== 'unavailable' && (
+                  <button
+                    onClick={() => setPage('connections')}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-inset/50 hover:bg-inset transition-colors text-left"
+                  >
+                    {/* Neutral link glyph, NOT the octocat — the WeCoded
+                        sign-in button above already wears GitHub's mark, and
+                        doubling it is what made the two read as one broken
+                        flow. Provider marks belong on the sub-page rows. */}
+                    <span className="flex items-center justify-center shrink-0 text-fg-muted" style={{ width: 32, height: 20 }}>
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                      </svg>
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-xs text-fg font-medium">Connected accounts</span>
+                      <span className="block text-[10px] text-fg-muted truncate">{ghSummary}</span>
+                    </span>
+                    <svg className="w-3.5 h-3.5 text-fg-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -143,11 +226,18 @@ function SignedOutBody({
   return (
     <div className="flex flex-col items-center gap-4 py-2 text-center">
       <p className="text-[11px] text-fg-dim leading-relaxed">
-        One sign-in for the marketplace and games — GitHub only sees your public profile.
+        One YouCoded account for the marketplace, games, and syncing with friends.
       </p>
       {/* Page-level CTA -> lg. Also drops hover:brightness-110, which was
           invisible on Light/Creme (their accent is already near-black), and
           gains the focus ring it never had. */}
+      {/* "Sign in to YouCoded", NOT "Sign in with GitHub" (Destin, 2026-07-22):
+          the account is a YOUCODED account — GitHub is only the login
+          mechanism, and naming the button after the mechanism made it read as
+          a duplicate of the Connected-accounts GitHub repo connection. The
+          mechanism lives in the small print below; the octocat stays off the
+          CTA for the same reason. Same rename applied to every sign-in
+          surface (SignInPromptModal, GameLobby, RatingSubmitModal, chip). */}
       <Button
         size="lg"
         onClick={() => {
@@ -158,9 +248,11 @@ function SignedOutBody({
         }}
         disabled={signInPending}
       >
-        <GitHubIcon />
-        {signInPending ? 'Signing in…' : 'Sign in with GitHub'}
+        {signInPending ? 'Signing in…' : 'Sign in to YouCoded'}
       </Button>
+      <p className="text-[10px] text-fg-muted leading-relaxed">
+        Uses your GitHub profile to sign in — GitHub only shares your public info.
+      </p>
       {signInError && <p className="text-[10px] text-red-500">{signInError}</p>}
     </div>
   );
@@ -298,10 +390,13 @@ function SignedInBody({
         </div>
       </section>
 
-      {/* Linked-provider list — single provider in Phase 1, non-editable. */}
+      {/* Login-method line — which GitHub profile backs this YouCoded account.
+          Says "Signs in with", NOT "Connected:" — "connected" now belongs to
+          the Connected-accounts page (repo access), and reusing the word here
+          recreated the two-GitHubs confusion this popup was reworked to kill. */}
       <section className="flex items-center gap-1.5 text-xs text-fg-2">
         <GitHubIcon className="w-3.5 h-3.5" />
-        <span>Connected: GitHub (@{user.login})</span>
+        <span>Signs in with GitHub (@{user.login})</span>
       </section>
 
       {/* Blocked users — only rendered when the list is non-empty (loading and

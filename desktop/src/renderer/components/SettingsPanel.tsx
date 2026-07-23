@@ -2369,7 +2369,10 @@ function DesktopSettings({ open, onClose, onSendInput, hasActiveSession, onOpenT
     <>
       <div className="flex-1 px-4 py-4 space-y-2">
 
-        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08) */}
+        {/* Account leads the stack — your identity is the first thing settings should show (Destin, 2026-07-08).
+            GitHub (and future providers) live INSIDE it on the Connected
+            accounts page — a sibling GitHub row read as a second, contradictory
+            sign-in (Destin feedback, 2026-07-22). */}
         <AccountSection />
 
         <ThemeButton onSendInput={onSendInput} onOpenMarketplace={onOpenThemeMarketplace} onPublishTheme={onPublishTheme} />

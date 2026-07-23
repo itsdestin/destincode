@@ -11,7 +11,9 @@ import { useArtifact } from '../state/ArtifactContext';
 import { useTheme } from '../state/theme-context';
 import { clampDrawerWidth, applyDrawerWidthVar } from '../state/drawer-width';
 import { useEscClose } from '../hooks/use-esc-close';
-import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
+import { useProjectWatch } from '../hooks/useProjectWatch';
+import { ActiveArtifactView, type ActiveArtifactHandle, type ArtifactContentInfo } from './artifact-views/ActiveArtifactView';
+import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
@@ -44,14 +46,17 @@ interface Props {
 // ── Small inline icon helper (lucide-style, inherits currentColor) ──
 const PATHS: Record<string, string> = {
   list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
-  // Link icon — "Copy path" (distinct from copying contents).
-  link: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
+  // Clipboard + slash — "Copy path" (approved mockup 13; the old chain link
+  // read as "hyperlink", not "copy the file path").
+  copypath: 'M9 2h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1ZM16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M10.5 16 13.5 10.5',
   // Folder — "Reveal in folder".
   folder: 'M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z',
   // External-link (box + arrow-out) — "Open externally" (OS default app).
   external: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3',
-  expand: 'M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3',
-  shrink: 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3',
+  // Four standalone corner arrows (approved mockup 12, stems shortened) —
+  // the old bare brackets did not read as expand/contract.
+  expand: 'M9 4.5H4.5V9M15 4.5h4.5V9M9 19.5H4.5V15M15 19.5h4.5V15M5 5l4.2 4.2M19 5l-4.2 4.2M5 19l4.2-4.2M19 19l-4.2-4.2',
+  shrink: 'M9.5 5v4.5H5M14.5 5v4.5H19M9.5 19v-4.5H5M14.5 19v-4.5H19M9.1 9.1 4.9 4.9M14.9 9.1 19.1 4.9M9.1 14.9 4.9 19.1M14.9 14.9 19.1 19.1',
   pencil: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z',
   // Square-pen — distinct from the filename rename pencil; this edits contents.
   editdoc: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z',
@@ -67,7 +72,21 @@ function Ic({ name, size = 15 }: { name: keyof typeof PATHS | string; size?: num
   );
 }
 
-function IconBtn({ name, title, onClick, active }: { name: string; title: string; onClick: () => void; active?: boolean }) {
+// Reveal-in-folder glyph — folder + eye at the corner (approved mockup 2-prime).
+// Lives outside PATHS: the eye uses a thinner stroke (1.5) and a FILLED pupil,
+// which the uniform-stroke Ic helper cannot express.
+function RevealFolderIc({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.5 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.67.9l.81 1.2a2 2 0 0 0 1.69.9H20a2 2 0 0 1 2 2v3.5" />
+      <path strokeWidth={1.5} d="M12.5 18.3s1.9-3.3 5.25-3.3S23 18.3 23 18.3s-1.9 3.3-5.25 3.3-5.25-3.3-5.25-3.3Z" />
+      <circle cx="17.75" cy="18.3" r="1.3" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function IconBtn({ name, title, onClick, active, glyph }: { name?: string; title: string; onClick: () => void; active?: boolean; glyph?: React.ReactNode }) {
   return (
     <button
       type="button"
@@ -77,7 +96,7 @@ function IconBtn({ name, title, onClick, active }: { name: string; title: string
         active ? 'text-fg bg-well border-edge' : 'text-fg-dim border-transparent hover:text-fg hover:bg-well hover:border-edge'
       }`}
     >
-      <Ic name={name} />
+      {glyph ?? <Ic name={name!} />}
     </button>
   );
 }
@@ -90,6 +109,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // across switches). This drawer instance belongs to `sessionId`.
   const drawerOpen = state.drawerOpenBySession[sessionId] ?? false;
   const activeArtifactId = state.activeArtifactBySession[sessionId] ?? null;
+  // Live external-change events while the drawer is actually visible — the
+  // watcher in main is refcounted, so open drawers on the same project share one.
+  useProjectWatch(drawerOpen && projectRoot ? projectRoot : null);
   // Set when a pill click couldn't resolve; cleared on next click/selection/close.
   const pillError = state.pillError?.[sessionId] ?? null;
 
@@ -136,6 +158,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // content pane (the file is still open; only the LIST hides it).
   const active = allArtifacts.find((a) => a.id === activeArtifactId);
   const [content, setContent] = useState<string | null>(null);
+  // get() metadata the content string cannot carry: binary sniff (routes
+  // unknown extensions to the code view), tooLarge (renders the size notice).
+  const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
 
   useEffect(() => {
     if (!active) { setContent(null); return; }
@@ -148,9 +173,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     // permanently blank. ProjectView's FilesTab and ArtifactThumbnail already
     // null-gate the same way; this drawer was the only one that didn't.
     setContent(null);
+    setContentInfo(null);
     (window.claude as any).artifacts.get(projectRoot, active.id).then((res: any) => {
       if (cancelled) return;
-      if (res && res.ok) setContent(res.content ?? null);
+      if (res && res.ok) {
+        setContent(res.content ?? null);
+        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
+      }
     });
     return () => { cancelled = true; };
   }, [active?.id, projectRoot]);
@@ -173,6 +202,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // this ref + mirrors its state so the toolbar can swap pencil ↔ save/cancel.
   const editRef = useRef<ActiveArtifactHandle>(null);
   const [editState, setEditState] = useState<{ isEditable: boolean; editing: boolean }>({ isEditable: false, editing: false });
+  // D3: every navigation away from a dirty editor goes through this guard
+  // (Save / Discard / Cancel dialog) instead of silently discarding the draft.
+  const { guard: guardUnsaved, dialog: unsavedDialog } = useUnsavedGuard(
+    editRef, active ? (active.path.split('/').pop() ?? active.path) : 'This file');
   // Content pane node — the list collapses when the user engages the artifact
   // here (clicks into it or scrolls it), not when they merely preview by
   // clicking list rows.
@@ -303,6 +336,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
         if (active && asideRef.current?.matches(':hover')) {
           e.preventDefault();
+          // CodeMirror viewers get CM6's own search panel — ContentFindBar
+          // walks rendered DOM text and CM6 virtualizes, so it would silently
+          // find only the viewport's matches.
+          if (editRef.current?.openFind?.()) return;
           setFindOpen(true);
         }
       }
@@ -328,12 +365,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const handleBack = useCallback(() => {
     if (renameActiveRef.current) { cancelRename(); return; }
     if (findOpen) { setFindOpen(false); return; }
-    if (editState.editing) { editRef.current?.cancelEdit(); return; }
+    if (editState.editing) { guardUnsaved(() => editRef.current?.cancelEdit()); return; }
     if (expanded) { dispatch({ type: 'DRAWER_EXPAND_TOGGLED' }); return; }
     if (listOpen) { setListOpen(false); return; }
     if (activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId }); return; }
     dispatch({ type: 'DRAWER_CLOSED', sessionId });
-  }, [findOpen, editState.editing, expanded, listOpen, activeArtifactId, dispatch, cancelRename, sessionId]);
+  }, [findOpen, editState.editing, expanded, listOpen, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved]);
 
   useEscClose(drawerOpen, handleBack);
 
@@ -352,7 +389,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         <span className="font-semibold text-sm">Session artifacts ({listedArtifacts.length})</span>
         {!active && (
           <CloseButton
-            onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })}
+            onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))}
             title="Close drawer"
             label="Close drawer"
           />
@@ -423,8 +460,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 // Cancel any in-progress rename first so its open field doesn't
                 // bleed onto the newly-selected artifact.
                 if (renameActiveRef.current || renaming) cancelRename();
-                dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: a.id });
-                setListOpen(true);
+                // Re-selecting the open file never discards anything — skip the guard.
+                if (a.id === activeArtifactId) { setListOpen(true); return; }
+                guardUnsaved(() => {
+                  dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: a.id });
+                  setListOpen(true);
+                });
               }}
               // Discovered records have no sidecar entry to remove.
               onRemove={(a as any).discovered ? undefined : () => handleRemoveRecord(a.id)}
@@ -505,6 +546,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   return (
     <aside ref={asideRef} className={asideClass}>
       {resizeHandle}
+      {unsavedDialog}
       {/* top bar */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
@@ -543,37 +585,15 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           </button>
         )}
         <div className="flex-1" />
-        {/* Edit contents — pencil to start; ✓ / ✕ while editing. Driven via editRef. */}
-        {editState.editing ? (
-          <>
-            <IconBtn name="check" title="Save changes" active onClick={() => editRef.current?.saveEdit()} />
-            <IconBtn name="close" title="Cancel editing" onClick={() => editRef.current?.cancelEdit()} />
-          </>
-        ) : (
-          editState.isEditable && (
-            <IconBtn
-              name="editdoc"
-              title="Edit contents"
-              onClick={() => { editRef.current?.startEdit(); setListOpen(false); }}
-            />
-          )
-        )}
-        <span className="w-px h-[18px] bg-edge mx-0.5" />
+        {/* Edit/Save moved to the floating button at the bottom-right of the
+            doc pane (Destin, 2026-07-22) — see the cluster below the content div. */}
         {isElectron && <IconBtn name="external" title="Open with the default app" onClick={handleOpenExternal} />}
-        <IconBtn name="link" title="Copy path" onClick={handleCopyPath} />
-        {isElectron && <IconBtn name="folder" title="Reveal in folder" onClick={handleReveal} />}
+        <IconBtn name="copypath" title="Copy path" onClick={handleCopyPath} />
+        {isElectron && <IconBtn title="Reveal in folder" glyph={<RevealFolderIc />} onClick={handleReveal} />}
         <IconBtn name={expanded ? 'shrink' : 'expand'} title={expanded ? 'Shrink panel' : 'Expand panel'} active={expanded} onClick={() => dispatch({ type: 'DRAWER_EXPAND_TOGGLED' })} />
-        <IconBtn name="close" title="Close" onClick={() => dispatch({ type: 'DRAWER_CLOSED', sessionId })} />
+        <IconBtn name="close" title="Close" onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))} />
       </div>
 
-      {/* metadata strip */}
-      <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-b border-edge-dim bg-well shrink-0">
-        {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
-        <span>{statusWord}</span>
-        <span className="text-fg-faint">·</span>
-        <span>{formatRelativeTime(active.lastModified)}</span>
-        {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
-      </div>
 
       {/* body: push list + content.
           data-list-open drives the <=700px rules in globals.css, where the
@@ -592,7 +612,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         </div>
         {/* Positioning parent for the find bar. contentRef is the INNER div so
             the find bar (a sibling) isn't itself walked by the search. */}
-        <div className="drawer-content flex-1 min-w-0 overflow-hidden relative">
+        <div className="drawer-content flex-1 min-w-0 overflow-hidden relative flex flex-col">
           {findOpen && (
             <ContentFindBar
               containerRef={contentRef}
@@ -600,11 +620,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               onClose={() => setFindOpen(false)}
             />
           )}
-          <div ref={contentRef} className="h-full overflow-hidden artifact-content-pane">
+          <div ref={contentRef} className="flex-1 min-h-0 overflow-hidden artifact-content-pane">
             <ActiveArtifactView
               ref={editRef}
               artifact={active}
               content={content}
+              contentInfo={contentInfo}
               projectRoot={projectRoot}
               projectId={projectId}
               projectName={projectName}
@@ -613,6 +634,60 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               controlsInHeader
               onEditStateChange={setEditState}
             />
+          </div>
+          {/* Floating Edit ↔ Save cluster, bottom-right of the doc pane.
+              Pops IN when the artifact list collapses (doc goes full-width)
+              and back OUT when the list reopens — kept mounted so both
+              directions animate. While EDITING it stays visible regardless,
+              so Save can never be hidden by opening the list. */}
+          {active && (editState.editing || editState.isEditable) && (
+            <div
+              className={`absolute bottom-9 right-4 z-20 flex items-center gap-2 transition-all duration-200 ${
+                editState.editing || !showList
+                  ? 'opacity-100 scale-100'
+                  : 'opacity-0 scale-90 pointer-events-none'
+              }`}
+            >
+              {editState.editing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => editRef.current?.cancelEdit()}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-panel text-fg-2 border border-edge shadow-lg hover:text-fg hover:bg-well transition-colors"
+                  >
+                    <Ic name="close" size={15} />
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => editRef.current?.saveEdit()}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
+                  >
+                    <Ic name="check" size={15} />
+                    Save
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { editRef.current?.startEdit(); setListOpen(false); }}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold bg-accent text-on-accent shadow-lg hover:opacity-90 transition-opacity"
+                >
+                  <Ic name="editdoc" size={15} />
+                  Edit
+                </button>
+              )}
+            </div>
+          )}
+          {/* metadata strip — bottom of the DOC column (not a full-width row up
+              top), so it shares the document's width and expands/shrinks with
+              the artifact list (Destin, 2026-07-22). */}
+          <div className="flex items-center gap-2 px-3.5 py-1 text-[11px] text-fg-muted border-t border-edge-dim bg-well shrink-0">
+            {/* WHY: status shown as a word, not a ●◐○ glyph (user-disliked — see dislikes-status-glyphs memory). */}
+            <span>{statusWord}</span>
+            <span className="text-fg-faint">·</span>
+            <span>{formatRelativeTime(active.lastModified)}</span>
+            {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
           </div>
         </div>
       </div>

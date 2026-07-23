@@ -197,6 +197,7 @@ const IPC = {
   GITHUB_CONNECT_START: 'github:connect-start',
   GITHUB_CONNECT_CANCEL: 'github:connect-cancel',
   GITHUB_INSTALL_GH: 'github:install-gh',
+  GITHUB_DISCONNECT: 'github:disconnect',
   GITHUB_CONNECT_DONE: 'github:connect-done',
   // Window detach / multi-window ownership (feature: drag session to new window)
   WINDOW_GET_ID: 'window:get-id',
@@ -866,6 +867,9 @@ contextBridge.exposeInMainWorld('claude', {
     connectStart: () => ipcRenderer.invoke(IPC.GITHUB_CONNECT_START),
     connectCancel: () => ipcRenderer.invoke(IPC.GITHUB_CONNECT_CANCEL),
     installGh: () => ipcRenderer.invoke(IPC.GITHUB_INSTALL_GH),
+    // Deletes the app's stored token (Settings → GitHub → Disconnect). Does NOT
+    // touch a gh CLI login — the app doesn't own that credential.
+    disconnect: () => ipcRenderer.invoke(IPC.GITHUB_DISCONNECT),
     // Push subscription — returns an unsubscribe function (callers MUST invoke it
     // on unmount to avoid leaking listeners across modal open/close cycles).
     onConnectDone: (cb: (payload: { ok: boolean; login?: string; error?: string }) => void) => {
@@ -1236,9 +1240,11 @@ contextBridge.exposeInMainWorld('claude', {
     // to bytes (renderer can't fetch a file:// URL from the http/app origin).
     readBinary: (absolutePath: string) =>
       ipcRenderer.invoke('artifacts:read-binary', absolutePath),
+    // opts: { baseMtimeMs?, confirmed? } — concurrency token + confirm-tier ack
     save: (projectRoot: string, projectId: string, projectName: string,
-           artifactId: string, content: string, sessionId: string) =>
-      ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId),
+           artifactId: string, content: string, sessionId: string,
+           opts?: { baseMtimeMs?: number; confirmed?: boolean }) =>
+      ipcRenderer.invoke('artifacts:save', projectRoot, projectId, projectName, artifactId, content, sessionId, opts),
     // Fix: data-flow gap — renderer Tracker calls this on Write/Edit/MultiEdit
     // transcript events so the central index is populated automatically.
     appendVersion: (projectRoot: string, sessionId: string, args: any) =>
@@ -1260,6 +1266,15 @@ contextBridge.exposeInMainWorld('claude', {
     // Remove a tracking RECORD from the sidecar (never the file on disk).
     removeRecord: (projectRoot: string, artifactId: string) =>
       ipcRenderer.invoke('artifacts:remove-record', projectRoot, artifactId),
+    // Subscribe/unsubscribe this renderer to external file-change events for a
+    // project root — events arrive via onChanged with by:'external'.
+    watchProject: (projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:watch-project', projectRoot),
+    unwatchProject: (projectRoot: string) =>
+      ipcRenderer.invoke('artifacts:unwatch-project', projectRoot),
+    // Project-wide content search (ripgrep in main; desktop-only).
+    searchContent: (projectRoot: string, query: string) =>
+      ipcRenderer.invoke('artifacts:search-content', projectRoot, query),
     onChanged: (cb: (event: any) => void) => {
       const handler = (_e: any, payload: any) => cb(payload);
       ipcRenderer.on('artifacts:changed', handler);

@@ -242,6 +242,31 @@ export function getGithubConnect(): GithubConnect | null {
   return singleton;
 }
 
+// ---------------------------------------------------------------------------
+// Disconnect (Settings → GitHub → Disconnect)
+// ---------------------------------------------------------------------------
+
+/**
+ * Delete the app's stored GitHub token. Deliberately does NOT touch a gh CLI
+ * login — the app doesn't own that credential, and the client's acquisition
+ * order will keep borrowing it (which the Connected-accounts UI states).
+ *
+ * If sync is enabled, kick an immediate sync so the panel reflects the
+ * consequence NOW — on a device with no gh fallback the next pull/push fails
+ * with the coded 'github-auth' error, landing sync in the honest
+ * red-with-Reconnect state instead of waiting for the 120s poll to reveal it.
+ */
+export async function disconnectGithub(): Promise<{ ok: true }> {
+  getGithubClient()?.clearToken();
+  try {
+    // Dynamic import: service.ts imports github-client, and a static import
+    // here would put this module in every sync test's import graph for no gain.
+    const { isSyncSpacesEnabled, syncSpacesSyncNow } = await import('./sync-spaces/service');
+    if (isSyncSpacesEnabled()) void syncSpacesSyncNow();
+  } catch { /* sync service not started — nothing to surface */ }
+  return { ok: true };
+}
+
 /** Map a thrown value to its typed reason string, defaulting to 'network'. */
 function reasonOf(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);

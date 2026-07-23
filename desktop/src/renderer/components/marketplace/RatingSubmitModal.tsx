@@ -252,14 +252,14 @@ export default function RatingSubmitModal({
           // ── Signed-out state ────────────────────────────────────────────────
           <div className="flex flex-col items-center gap-3 py-2">
             <p className="text-sm text-fg-muted text-center">
-              Sign in with GitHub to rate this plugin.
+              Sign in to YouCoded to rate this plugin.
             </p>
             <Button
               size="lg"
               onClick={() => void startSignIn()}
               className="py-1.5"
             >
-              Sign in with GitHub
+              Sign in to YouCoded
             </Button>
             {/* knowledge-debt #6: surface a failed sign-in instead of silently swallowing it. */}
             {signInError && (

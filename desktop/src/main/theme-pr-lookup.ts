@@ -1,6 +1,11 @@
 // theme-pr-lookup.ts
-// Thin wrapper around `gh pr list` to check whether a theme submission has an
-// open or recently-merged PR in the wecoded-themes repo.
+// Checks whether a theme submission has an open or recently-merged PR in the
+// wecoded-themes repo, via the GitHub search API (Phase 3, 2026-07-22 — was a
+// `gh pr list` wrapper; REST removes the gh dependency and, when a token is
+// available through the github-client, lifts the rate limit from 60/hr
+// anonymous to 5,000/hr authed. Anonymous still WORKS — a machine with no
+// GitHub credential merely degrades on rate limits, where the old gh path
+// returned null unconditionally).
 //
 // Used by publish-state-resolver to bridge the post-merge / pre-registry-CI
 // window: after a PR merges, the registry hasn't rebuilt yet, so the theme
@@ -8,29 +13,22 @@
 // covers that gap.
 //
 // Both methods cache per (slug, author) pair for ttlMs (default 60s) so rapid
-// navigation between theme details doesn't thrash the gh CLI. On any failure
-// (gh missing, not authed, network down) they return null — callers treat that
-// as "no PR found" and decide separately whether to surface a degraded-mode
-// warning.
+// navigation between theme details doesn't thrash the API. On any failure
+// (network down, rate-limited, expired token) they return null — callers
+// treat that as "no PR found" and decide separately whether to surface a
+// degraded-mode warning.
 
-import { execFile as _execFile } from 'child_process';
-import { promisify } from 'util';
+import { getGithubClient } from './github-client';
+import type { FetchLike } from './github-auth';
 
 const REPO = 'itsdestin/wecoded-themes';
 const DEFAULT_TTL_MS = 60_000;
 // How far back to look when searching for recently-merged PRs.
 const MERGED_WINDOW_MIN = 5;
-// Per-call timeout for the gh binary. If gh hangs (auth prompt, dead network,
-// DNS stall) we'd otherwise freeze the publish-state resolver — the renderer
-// UI would sit on "Checking publish status…" forever.
-const GH_TIMEOUT_MS = 5000;
-
-// Promisified execFile that always passes a timeout option. child_process
-// kills the child with SIGTERM after `timeout` ms, which causes the promise
-// to reject — runAndParseFirst then degrades to `null`.
-const _execFileAsync = promisify(_execFile);
-const defaultExecFile = (bin: string, args: string[]) =>
-  _execFileAsync(bin, args, { timeout: GH_TIMEOUT_MS }) as unknown as Promise<{ stdout: string }>;
+// Per-call timeout. If the API hangs (dead network, DNS stall) we'd otherwise
+// freeze the publish-state resolver — the renderer UI would sit on "Checking
+// publish status…" forever.
+const LOOKUP_TIMEOUT_MS = 5000;
 
 export interface PRRef {
   number: number;
@@ -43,29 +41,38 @@ interface CacheEntry {
 }
 
 export interface ThemePRLookupOpts {
-  /** Injectable execFile for testing — defaults to promisified child_process.execFile */
-  execFile?: (bin: string, args: string[]) => Promise<{ stdout: string }>;
+  /** Injectable fetch for testing — defaults to global fetch with a timeout. */
+  fetchFn?: FetchLike;
+  /** Injectable token source — defaults to the github-client singleton
+   *  (null = anonymous search, which still works at 60 req/hr). */
+  getToken?: () => Promise<string | null>;
   /** Cache TTL in milliseconds — defaults to 60 000 */
   ttlMs?: number;
   /** Monotonic clock injectable for tests — defaults to Date.now */
   now?: () => number;
-  /** Path to the gh binary — defaults to 'gh' (resolved via PATH) */
-  ghPath?: string;
 }
+
+const defaultFetch: FetchLike = (url, init) =>
+  fetch(url, { ...(init as RequestInit), signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) });
+
+const defaultGetToken = async (): Promise<string | null> => {
+  try { return (await getGithubClient()?.getToken())?.token ?? null; }
+  catch { return null; }
+};
 
 export class ThemePRLookup {
   private openCache = new Map<string, CacheEntry>();
   private mergedCache = new Map<string, CacheEntry>();
-  private execFile: (bin: string, args: string[]) => Promise<{ stdout: string }>;
+  private fetchFn: FetchLike;
+  private getToken: () => Promise<string | null>;
   private ttlMs: number;
   private now: () => number;
-  private ghPath: string;
 
   constructor(opts: ThemePRLookupOpts = {}) {
-    this.execFile = opts.execFile ?? defaultExecFile;
+    this.fetchFn = opts.fetchFn ?? defaultFetch;
+    this.getToken = opts.getToken ?? defaultGetToken;
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.now = opts.now ?? Date.now;
-    this.ghPath = opts.ghPath ?? 'gh';
   }
 
   /** Bust the cache for a specific (slug, author) pair — call after submitting or merging. */
@@ -77,17 +84,8 @@ export class ThemePRLookup {
 
   /** Returns the first open PR matching (slug, author), or null if none / on error. */
   async findOpenPR(slug: string, author: string): Promise<PRRef | null> {
-    return this.cached(this.openCache, `${author}/${slug}`, async () => {
-      const args = [
-        'pr', 'list',
-        '--repo', REPO,
-        '--author', author,
-        '--state', 'open',
-        '--search', slug,
-        '--json', 'number,url',
-      ];
-      return this.runAndParseFirst(args);
-    });
+    return this.cached(this.openCache, `${author}/${slug}`, async () =>
+      this.searchFirst(`repo:${REPO} is:pr state:open author:${author} ${slug}`));
   }
 
   /**
@@ -99,17 +97,10 @@ export class ThemePRLookup {
    */
   async findRecentlyMergedPR(slug: string, author: string): Promise<PRRef | null> {
     return this.cached(this.mergedCache, `${author}/${slug}`, async () => {
-      // ISO timestamp for "5 minutes ago" — gh supports merged:>=<ISO8601> in --search
+      // ISO timestamp for "5 minutes ago" — the search API supports the same
+      // merged:>=<ISO8601> qualifier gh's --search forwarded to it.
       const cutoff = new Date(this.now() - MERGED_WINDOW_MIN * 60_000).toISOString();
-      const args = [
-        'pr', 'list',
-        '--repo', REPO,
-        '--author', author,
-        '--state', 'merged',
-        '--search', `${slug} merged:>=${cutoff}`,
-        '--json', 'number,url',
-      ];
-      return this.runAndParseFirst(args);
+      return this.searchFirst(`repo:${REPO} is:pr is:merged author:${author} merged:>=${cutoff} ${slug}`);
     });
   }
 
@@ -127,21 +118,30 @@ export class ThemePRLookup {
     return value;
   }
 
-  private async runAndParseFirst(args: string[]): Promise<PRRef | null> {
+  /** GET /search/issues for the query; first hit as a PRRef, null on anything else. */
+  private async searchFirst(query: string): Promise<PRRef | null> {
     try {
-      const { stdout } = await this.execFile(this.ghPath, args);
-      const arr: unknown = JSON.parse(stdout || '[]');
-      if (
-        Array.isArray(arr) &&
-        arr.length > 0 &&
-        typeof (arr[0] as any)?.number === 'number'
-      ) {
-        const first = arr[0] as { number: number; url: unknown };
-        return { number: first.number, url: String(first.url) };
+      const token = await this.getToken();
+      const res = await this.fetchFn(
+        `https://api.github.com/search/issues?q=${encodeURIComponent(query)}&per_page=1`,
+        {
+          method: 'GET',
+          headers: {
+            // Anonymous when no token — search allows it (rate-limited).
+            ...(token ? { Authorization: `token ${token}` } : {}),
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'YouCoded',
+          },
+        },
+      );
+      const json: any = await res.json().catch(() => null);
+      const first = Array.isArray(json?.items) ? json.items[0] : null;
+      if (first && typeof first.number === 'number') {
+        return { number: first.number, url: String(first.html_url ?? '') };
       }
       return null;
     } catch {
-      // gh not installed, not authed, network error, or unexpected JSON — degrade gracefully
+      // Network error, rate-limited, timeout — degrade gracefully.
       return null;
     }
   }
