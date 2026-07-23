@@ -66,8 +66,11 @@ export function FileFilterPopover({
   showDeletedAvailable,
   onClose,
 }: {
-  typeFilter: 'all' | FileTypeGroup;
-  onTypeFilter(v: 'all' | FileTypeGroup): void;
+  // Type filter is OPTIONAL — the Project View passes it; the SessionDrawer
+  // (change 38) has no type concept, so it omits both and the Type group is
+  // simply not rendered. When omitted, `typeFilter` is treated as 'all'.
+  typeFilter?: 'all' | FileTypeGroup;
+  onTypeFilter?(v: 'all' | FileTypeGroup): void;
   sortBy: FileSortKey;
   onSortBy(v: FileSortKey): void;
   // Hide code & configs — ON by default (the default view is documents-first;
@@ -88,9 +91,9 @@ export function FileFilterPopover({
   // Sort is a preference, not a filter, so "Clear" only resets the filters —
   // back to their DEFAULTS, which for hideCode is ON.
   const filtersActive =
-    typeFilter !== 'all' || !hideCode || (showDeletedAvailable && showDeleted);
+    (!!onTypeFilter && typeFilter !== 'all') || !hideCode || (showDeletedAvailable && showDeleted);
   const clear = () => {
-    onTypeFilter('all');
+    onTypeFilter?.('all');
     onHideCode(true);
     if (showDeletedAvailable) onShowDeleted(false);
   };
@@ -113,13 +116,15 @@ export function FileFilterPopover({
           </button>
         )}
       </div>
-      <Group label="Type">
-        {TYPE_OPTIONS.map((o) => (
-          <Chip key={o.value} active={typeFilter === o.value} onClick={() => onTypeFilter(o.value)}>
-            {o.label}
-          </Chip>
-        ))}
-      </Group>
+      {onTypeFilter && (
+        <Group label="Type">
+          {TYPE_OPTIONS.map((o) => (
+            <Chip key={o.value} active={(typeFilter ?? 'all') === o.value} onClick={() => onTypeFilter(o.value)}>
+              {o.label}
+            </Chip>
+          ))}
+        </Group>
+      )}
       <Group label="Sort by">
         {SORT_OPTIONS.map((o) => (
           <Chip key={o.value} active={sortBy === o.value} onClick={() => onSortBy(o.value)}>

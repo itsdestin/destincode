@@ -20,6 +20,7 @@ import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
 import { CloseButton, TextInput } from './ui';
+import { FileFilterPopover } from './project-view/FileFilterPopover';
 
 type SortKey = 'recent' | 'name' | 'type';
 
@@ -62,6 +63,8 @@ const PATHS: Record<string, string> = {
   editdoc: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z',
   check: 'M20 6 9 17l-5-5',
   close: 'M18 6 6 18M6 6l12 12',
+  // Sliders — the filter/sort trigger (change 38, matching Project View).
+  sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4',
 };
 function Ic({ name, size = 15 }: { name: keyof typeof PATHS | string; size?: number }) {
   return (
@@ -149,10 +152,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     });
   }, [allArtifacts, hideCodeAndConfigs, showDeletedArtifacts, orphanIds]);
   const hiddenCount = allArtifacts.length - artifacts.length;
-  const deletedCount = useMemo(
-    () => allArtifacts.filter((a) => a.status === 'deleted' || orphanIds.has(a.id)).length,
-    [allArtifacts, orphanIds],
-  );
   // Look up the open document in the UNFILTERED list — toggling "Hide code" /
   // "Show deleted" while viewing a now-filtered-out file must not blank the
   // content pane (the file is still open; only the LIST hides it).
@@ -214,6 +213,24 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const [findOpen, setFindOpen] = useState(false);     // Ctrl+F find-in-document
   const [searchQuery, setSearchQuery] = useState('');  // filter the artifact list
   const [sortBy, setSortBy] = useState<SortKey>('recent');
+
+  // Change 38: sort + the two visibility toggles moved behind ONE sliders
+  // trigger into the shared FileFilterPopover (Destin: "a filter toggle menu
+  // thing like project view"). Click-outside is owned HERE — the popover's
+  // contract (FileFilterPopover.tsx:9-11) is that the parent wraps the trigger
+  // AND the popover in one ref and closes on mousedown outside it.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (filterWrapRef.current && !filterWrapRef.current.contains(e.target as Node)) {
+        setFilterOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [filterOpen]);
   const isElectron = getPlatform() === 'electron';
 
   // No selection → force the list visible so the user can pick something.
@@ -395,12 +412,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           />
         )}
       </div>
-      {/* Search + sort */}
+      {/* Search + filter (change 38). Shared TextInput (change 20) + ONE sliders
+          trigger opening FileFilterPopover (Sort + Visibility; no Type group in
+          the drawer). The native sort <select> and the two CheckboxGlyph rows
+          are gone — their state now lives behind the popover. */}
       <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-edge-dim shrink-0">
-        {/* Shared TextInput (change 20). Retires the gray `focus:border-fg-muted`
-            focus and the `bg-canvas` field surface for the app-wide field look;
-            flex-1/min-w-0 stay because this input shares its row with the sort
-            <select>. */}
         <TextInput
           size="sm"
           value={searchQuery}
@@ -409,24 +425,49 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           aria-label="Search files"
           className="flex-1 min-w-0"
         />
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as SortKey)}
-          title="Sort files"
-          className="bg-canvas border border-edge rounded text-[11px] text-fg-2 px-1 py-1 outline-none cursor-pointer"
-        >
-          <option value="recent">Recent</option>
-          <option value="name">Name</option>
-          <option value="type">Type</option>
-        </select>
+        <div className="relative shrink-0" ref={filterWrapRef}>
+          {/* Accent badge counts filters active BEYOND the default view. Only
+              "Show deleted" narrows/alters from the default here (hideCode is
+              default-ON and toggling it OFF reveals more, so it isn't counted —
+              same convention as Project View). */}
+          {(() => {
+            const activeFilters = showDeletedArtifacts ? 1 : 0;
+            return (
+              <button
+                type="button"
+                onClick={() => setFilterOpen((o) => !o)}
+                aria-expanded={filterOpen}
+                aria-label={activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filter and sort'}
+                title="Filter and sort"
+                className={`relative w-7 h-7 rounded-md inline-flex items-center justify-center border transition-colors ${
+                  filterOpen || activeFilters > 0
+                    ? 'text-fg bg-well border-edge'
+                    : 'text-fg-dim border-transparent hover:text-fg hover:bg-well hover:border-edge'
+                }`}
+              >
+                <Ic name="sliders" size={15} />
+                {activeFilters > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-accent text-on-accent text-[9px] font-medium leading-[15px] text-center">
+                    {activeFilters}
+                  </span>
+                )}
+              </button>
+            );
+          })()}
+          {filterOpen && (
+            <FileFilterPopover
+              sortBy={sortBy}
+              onSortBy={setSortBy}
+              hideCode={hideCodeAndConfigs}
+              onHideCode={setHideCodeAndConfigs}
+              showDeleted={showDeletedArtifacts}
+              onShowDeleted={setShowDeletedArtifacts}
+              showDeletedAvailable={true}
+              onClose={() => setFilterOpen(false)}
+            />
+          )}
+        </div>
       </div>
-      <FilterToggles
-        hideCodeAndConfigs={hideCodeAndConfigs}
-        setHideCodeAndConfigs={setHideCodeAndConfigs}
-        showDeletedArtifacts={showDeletedArtifacts}
-        setShowDeletedArtifacts={setShowDeletedArtifacts}
-        deletedCount={deletedCount}
-      />
       <div className="flex-1 overflow-y-auto">
         {/* A pill click that couldn't resolve — shown INSTEAD of letting the
             generic empty state contradict the file the user just clicked. */}
@@ -696,59 +737,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 }
 
 // ─── Filter toggles (extracted so both layouts share them) ───────────────────
-
-// Real checkbox visual (lucide-style square + check) instead of the ☑/☐
-// unicode glyphs — consistent with the app's SVG iconography and crisper at
-// small sizes.
-function CheckboxGlyph({ checked }: { checked: boolean }) {
-  return (
-    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-      {checked && <path d="m8 12.5 3 3 5.5-6.5" />}
-    </svg>
-  );
-}
-
-function FilterToggles({
-  hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts, deletedCount,
-}: {
-  hideCodeAndConfigs: boolean; setHideCodeAndConfigs: (v: boolean) => void;
-  showDeletedArtifacts: boolean; setShowDeletedArtifacts: (v: boolean) => void;
-  deletedCount: number;
-}) {
-  return (
-    <div className="shrink-0 border-b border-edge">
-      <button
-        type="button"
-        className={`w-full text-left px-2 py-1.5 text-[11px] border-t border-edge-dim flex items-center justify-between transition-colors ${
-          hideCodeAndConfigs ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
-        }`}
-        onClick={() => setHideCodeAndConfigs(!hideCodeAndConfigs)}
-        title={hideCodeAndConfigs ? 'Showing Documents and Mockups only. Click to show all.' : 'Showing all files. Click to hide code & configs.'}
-      >
-        <span className="flex items-center gap-1.5">
-          <CheckboxGlyph checked={hideCodeAndConfigs} />
-          <span>Hide code &amp; configs</span>
-        </span>
-      </button>
-      <button
-        type="button"
-        className={`w-full text-left px-2 py-1.5 text-[11px] border-t border-edge-dim flex items-center justify-between transition-colors ${
-          showDeletedArtifacts ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
-        }`}
-        onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
-        title={showDeletedArtifacts ? 'Including deleted files in the list. Click to hide them.' : `Hiding deleted files${deletedCount > 0 ? ` — ${deletedCount} hidden` : ''}. Click to include them.`}
-      >
-        <span className="flex items-center gap-1.5">
-          <CheckboxGlyph checked={showDeletedArtifacts} />
-          <span>Show deleted</span>
-        </span>
-        {!showDeletedArtifacts && deletedCount > 0 && <span className="text-fg-muted">+{deletedCount}</span>}
-      </button>
-    </div>
-  );
-}
 
 // ─── ArtifactListItem ────────────────────────────────────────────────────────
 
