@@ -367,9 +367,13 @@ export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent
   }
 }
 
-// Carry-forward 5: only the auto-title flow (topic-watcher) calls this. setTitle
-// is timestamp-less — it never fabricates activity. No user-rename path exists
-// for conversations yet (Plan 2b/2c scope).
+// Carry-forward 5: the auto-title flows call this — the topic-watcher for
+// 'claude' sessions (~/.claude/topics -> broadcastRename), and the native
+// title feeder (native-title-feeder.ts, Task 7) for 'native' ones, which has
+// no topic file to watch and instead generates a title from a single bound-
+// model call at first turn-complete. setTitle is timestamp-less — it never
+// fabricates activity. No user-rename path exists for conversations yet
+// (Plan 2b/2c scope).
 export function noteTitleChanged(claudeSessionId: string, title: string, sessionProvider: SessionProvider): Promise<MetaWriteResult> {
   return metaWrite(() => store!.setTitle(sessionProvider, claudeSessionId, title));
 }

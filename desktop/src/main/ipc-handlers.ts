@@ -21,6 +21,12 @@ import { TranscriptWatcher, cwdToProjectSlug } from './transcript-watcher';
 import { NativeHome } from './native-home';
 import { SecretsStore } from './providers/secrets-store';
 import { ProviderRegistry } from './providers/provider-registry';
+// Task 7: native auto-title generation over the AI SDK — the SAME `ai`
+// package harness-session.ts already depends on (never through
+// HarnessSession.send(), which hard-throws on re-entrancy).
+import { generateText } from 'ai';
+import type { ModelBinding } from '../shared/provider-types';
+import { createNativeTitleFeeder } from './native-title-feeder';
 import { ModelCatalog } from './providers/model-catalog';
 import { EngineManager } from './engine/engine-manager';
 import type { EngineModel as EngineModelType } from '../shared/engine-types';
@@ -635,6 +641,10 @@ export function registerIpcHandlers(
     // Idempotent + no-op for non-native ids: flushes/tears down the native
     // HarnessSession if this id is live, otherwise returns immediately.
     await nativeHost.destroy(sessionId);
+    // Task 7: drop the title feeder's per-session state too — a no-op for
+    // non-native ids (the feeder was never fed events for them) and cheap
+    // idempotent Map.delete for native ones.
+    nativeTitleFeeder.forget(sessionId);
     const result = sessionManager.destroySession(sessionId);
     if (result) {
       // Explicit user-initiated destroy → treat as clean exit (0). The
@@ -2045,6 +2055,46 @@ export function registerIpcHandlers(
   const resolvePortableModel = async (sessionId: string): Promise<PortableModelRef | null> =>
     bindingToPortableModel(nativeHost.getBinding(sessionId), await providerRegistry.list());
 
+  // Task 7: native auto-title feeder. CC sessions get titled by the topic
+  // watcher below (~/.claude/topics, fed by the Auto-Title hook); native
+  // sessions have no such feed, so this generates one from the bound model
+  // at first turn-complete. See native-title-feeder.ts's header for the full
+  // rationale (JSONL-never, ordering, M6 floor-gating hook).
+  const nativeTitleFeeder = createNativeTitleFeeder({
+    // Bounded with a 15s abort — a bare unbounded generateText await would
+    // hang the feeder (same hazard class as the compaction-hang rule).
+    // providerRegistry.languageModel() itself throws for an unconfigured/
+    // disabled/removed provider; that rejection propagates to the feeder's
+    // own try/catch around `generate`, which is exactly the "unresolvable =
+    // skip silently, never an error event" contract — no separate handling
+    // needed here.
+    generate: async (binding: ModelBinding, prompt: string) => {
+      const model = await providerRegistry.languageModel(binding);
+      const { text } = await generateText({ model, prompt, abortSignal: AbortSignal.timeout(15_000) });
+      return text;
+    },
+    getBinding: (sessionId: string) => nativeHost.getBinding(sessionId),
+    // Store title wins; falls back to the live session name for the boot
+    // window before the store's first upsert lands (mirrors the browse/store
+    // title-overlay precedence Task 3/5 established — store wins unless
+    // placeholder).
+    hasTitle: async (sessionId: string) => {
+      const rec = await getConversationStore()?.get('native', sessionId);
+      if (rec?.title && rec.title !== 'Untitled') return true;
+      const session = sessionManager.getSession(sessionId);
+      return !!session?.name && session.name !== 'New Session';
+    },
+    // Both halves, or the Resume Browser (store title) and the live pill
+    // (session.name) disagree. Native ids are identity-mapped (see the WHY
+    // comment on noteTranscriptEvent's native call just below), so
+    // sessionId doubles as both the desktop id and the store's record id.
+    onTitle: async (sessionId: string, title: string) => {
+      sendForSession(sessionId, IPC.SESSION_RENAMED, sessionId, title);
+      broadcastRename(sessionId, title);
+      await noteTitleChanged(sessionId, title, 'native');
+    },
+  });
+
   // Native transcript events ride the SAME channel as CC's — the reducer
   // consumes an identical event shape regardless of runtime.
   nativeHost.on('transcript-event', (event: TranscriptEvent) => {
@@ -2059,6 +2109,9 @@ export function registerIpcHandlers(
     // below, which resolves through sessionIdMap — event.sessionId IS already
     // the store's record id; no lookup needed.
     noteTranscriptEvent(event.sessionId, event, 'native');
+    // Task 7: feed the SAME event stream into the title feeder. Pure/injected
+    // logic — see native-title-feeder.ts — never throws synchronously.
+    nativeTitleFeeder.noteEvent(event);
     if (event.type === 'turn-complete') {
       // The model may have changed mid-session (NATIVE_SET_BINDING) — refresh
       // the portable ref on every turn rather than trusting a stale snapshot
@@ -2440,6 +2493,11 @@ export function registerIpcHandlers(
     void nativeHost.destroy(sessionId).catch((e) => {
       log('ERROR', 'IPC', 'native teardown on session-exit failed', { sessionId, error: String(e) });
     });
+    // Task 7: same backstop reasoning as the destroy() call above — this
+    // path also covers crashes/takeovers that never went through
+    // SESSION_DESTROY, so the feeder's per-session state needs the same
+    // cleanup here too.
+    nativeTitleFeeder.forget(sessionId);
     // Clean up context + session stats cache files
     const claudeId = sessionIdMap.get(sessionId);
     if (claudeId) {
