@@ -25,6 +25,11 @@ export interface PresenceSocket {
   // setDesired: desired is the RENDERER's intent (sign-in/incognito/leader)
   // and must survive a sleep/wake cycle unchanged.
   setSuspended(asleep: boolean): void;
+  // User-idle gate (no system OR remote input for the idle threshold — see the
+  // poller in social-handlers.ts). Same composition rule as setSuspended:
+  // presence means a HUMAN is around, so an app left running 24/7 on an awake
+  // machine (remote-access keep-awake) must not read "Online" forever.
+  setIdle(idle: boolean): void;
   send(message: Record<string, unknown>): void;
   isConnected(): boolean;
   destroy(): void;
@@ -105,13 +110,22 @@ export function createPresenceSocket(opts: {
   // wake restores whatever the renderer wanted.
   let rendererDesired = false;
   let suspended = false;
-  const applyDesire = () => engine.setDesired(rendererDesired && !suspended);
+  let idle = false;
+  const applyDesire = () => engine.setDesired(rendererDesired && !suspended && !idle);
 
   return {
     setDesired(want) { rendererDesired = want; applyDesire(); },
     setSuspended(asleep) {
       if (suspended === asleep) return;
       suspended = asleep;
+      applyDesire();
+    },
+    // Independent axis from suspend: a dark wake clears suspended but not
+    // idle, so a lid bumped open cannot flash a false "Online" — only real
+    // input (which clears idle via the poller) reconnects.
+    setIdle(nowIdle) {
+      if (idle === nowIdle) return;
+      idle = nowIdle;
       applyDesire();
     },
     send(message) { engine.send(JSON.stringify(message)); },

@@ -35,6 +35,18 @@ let presenceSocket: PresenceSocket | null = null;
 // on a destroyed socket and could resurrect it via the engine).
 let onSuspend: (() => void) | null = null;
 let onResume: (() => void) | null = null;
+let idlePoller: NodeJS.Timeout | null = null;
+
+// Presence idle threshold: no system input AND no remote-client activity for
+// this long → presence drops ("Last seen …"), because Online must mean a HUMAN
+// is around, not that the process exists. Discovered via tjmorin's Mac
+// (2026-07-23): the remote-access keep-awake powerSaveBlocker keeps machines
+// permanently awake, so an idle app pings forever and reads Online for days.
+// 10 min matches the server's staleness threshold by design.
+const IDLE_DISCONNECT_MS = 10 * 60 * 1000;
+// 15s poll: cheap native sync call; bounds the reconnect delay after the user
+// returns (friends see them come back online within ~15s of first input).
+const IDLE_POLL_MS = 15_000;
 
 // ── Channel list for double-registration guard ───────────────────────────────
 // Byte-identical to the strings in preload.ts (IPC.SOCIAL_*), remote-shim.ts,
@@ -115,6 +127,20 @@ export function registerSocialHandlers(
   onResume = () => presence.setSuspended(false);
   powerMonitor.on("suspend", onSuspend);
   powerMonitor.on("resume", onResume);
+
+  // Idle gate poller (see IDLE_DISCONNECT_MS). Two activity sources, either
+  // keeps presence alive: local keyboard/mouse (getSystemIdleTime — returns
+  // seconds; on platforms where the desktop offers no idle API it reports 0,
+  // which fails SAFE to "active", i.e. current behavior), and remote-access
+  // clients (their input never touches local idle time — without this, a user
+  // driving the app from their phone would wrongly read as away).
+  if (idlePoller) clearInterval(idlePoller);
+  idlePoller = setInterval(() => {
+    const localIdleMs = powerMonitor.getSystemIdleTime() * 1000;
+    const lastRemote = remoteServer?.getLastClientActivityMs() ?? 0;
+    const remoteIdleMs = lastRemote === 0 ? Number.POSITIVE_INFINITY : Date.now() - lastRemote;
+    presence.setIdle(localIdleMs >= IDLE_DISCONNECT_MS && remoteIdleMs >= IDLE_DISCONNECT_MS);
+  }, IDLE_POLL_MS);
 
   // One client instance shared across all handlers. getToken() is read lazily
   // per-request so sign-out takes effect immediately.
