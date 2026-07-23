@@ -17,6 +17,7 @@ import { gitFooterState } from '../utils/git-footer';
 import { ActiveArtifactView, type ActiveArtifactHandle, type ArtifactContentInfo } from './artifact-views/ActiveArtifactView';
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
+import { GitReviewView } from './git/GitReviewView';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { categorizeArtifact } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
@@ -624,11 +625,24 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             the find bar (a sibling) isn't itself walked by the search. */}
         <div className="drawer-content flex-1 min-w-0 overflow-hidden relative flex flex-col">
           {gitReviewOpen && active ? (
-            // Task 8 replaces this placeholder with <GitReviewView …/>. Standard
-            // top bar (above) stays; find bar, content, edit cluster, and the
-            // metadata strip below are all swapped out while review is open
+            // Standard top bar (above) stays; find bar, content, edit cluster, and
+            // the metadata strip below are all swapped out while review is open
             // (locked decision, ledger 10).
-            <div data-testid="git-review-view" className="flex-1 min-h-0" />
+            <GitReviewView
+              projectRoot={projectRoot}
+              relPath={active.path}
+              fileName={fileName}
+              onBack={() => dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId })}
+              onOpenAtLine={(line) => {
+                // Close review, then land the editor on the line. revealLine
+                // internally retries while the lazy CM6 chunk mounts, but the
+                // handle itself is null until ActiveArtifactView remounts —
+                // defer one frame so the ref is populated.
+                dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId });
+                requestAnimationFrame(() => editRef.current?.revealLine(line));
+              }}
+              onRequestDiscard={() => { /* wired in Task 9 */ }}
+            />
           ) : (
             <>
               {findOpen && (
