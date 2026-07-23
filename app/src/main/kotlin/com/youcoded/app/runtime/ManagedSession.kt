@@ -29,7 +29,6 @@ import java.util.UUID
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 
 // --- Permission override classification ---
@@ -98,16 +97,6 @@ class ManagedSession(
 
     /** Draft text in the input bar — shared across Chat/Terminal/Shell modes */
     var inputDraft by mutableStateOf(TextFieldValue())
-
-    /** Set draft text with cursor at end */
-    fun setDraftText(text: String) {
-        inputDraft = TextFieldValue(text, TextRange(text.length))
-    }
-
-    /** Clear draft */
-    fun clearDraft() {
-        inputDraft = TextFieldValue()
-    }
 
     val isRunning: Boolean get() = ptyBridge?.isRunning ?: directShellBridge?.isRunning ?: false
     fun getTerminalSession(): com.termux.terminal.TerminalSession? =
@@ -660,11 +649,6 @@ class ManagedSession(
         // so cleanup never matched anything. Socket closure is now handled by
         // EventBridge.monitorSocketClosure() which detects when the relay
         // process exits and emits PermissionExpired to clear the React UI.
-    }
-
-    /** Mark a prompt as completed so the detector won't re-create it. */
-    fun markPromptCompleted(promptId: String) {
-        completedPromptIds.add(promptId)
     }
 
     // ─── Transcript watcher integration ─────────────────────────

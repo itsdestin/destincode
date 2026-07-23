@@ -55,11 +55,6 @@ class ServiceBinder(private val context: Context) {
         }
     }
 
-    fun stopService() {
-        service?.destroyAllSessions()
-        _state.value = SessionState.Disconnected
-    }
-
     fun unbind() {
         try {
             context.unbindService(connection)

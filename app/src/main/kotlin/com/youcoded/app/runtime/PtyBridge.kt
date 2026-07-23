@@ -28,9 +28,6 @@ class PtyBridge(
     val socketPath: String get() = socketName
     val homeDir: File get() = bootstrap.homeDir
 
-    private val _outputFlow = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 1000)
-    val outputFlow: SharedFlow<String> = _outputFlow
-
     private val _screenVersion = MutableStateFlow(0)
     val screenVersion: StateFlow<Int> = _screenVersion
 
@@ -80,7 +77,6 @@ class PtyBridge(
                 if (_rawBuffer.length > RAW_BUFFER_MAX) {
                     _rawBuffer.delete(0, _rawBuffer.length - RAW_BUFFER_MAX)
                 }
-                _outputFlow.tryEmit(delta)
             } else if (transcript.length < lastTranscriptLength) {
                 lastTranscriptLength = transcript.length
             }
@@ -291,18 +287,6 @@ class PtyBridge(
             } catch (_: Exception) { continue }
         }
         return sb.toString()
-    }
-
-    /** Check whether the current PTY screen contains an "always allow" option.
-     *  Reads the live screen buffer to detect 3-option vs 2-option prompts. */
-    fun hasAlwaysAllowOption(): Boolean {
-        val screenText = readScreenText().lowercase()
-        val result = "always" in screenText || "ask again" in screenText
-        return result
-    }
-
-    fun sendBtw(message: String) {
-        writeInput("/btw $message\r")
     }
 
     fun getSession(): TerminalSession? = session

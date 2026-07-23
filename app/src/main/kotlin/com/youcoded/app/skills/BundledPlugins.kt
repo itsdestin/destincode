@@ -14,8 +14,5 @@ object BundledPlugins {
         "wecoded-marketplace-publisher",
     )
 
-    const val REASON =
-        "Bundled with YouCoded — required for theme customization and publishing."
-
     fun isBundled(id: String): Boolean = IDS.contains(id)
 }

@@ -39,10 +39,6 @@ object ClaudeCodeRegistry {
     fun youcodedPluginsDir(homeDir: File): File =
         File(youcodedMarketplaceRoot(homeDir), "plugins")
 
-    /** Absolute install dir for a plugin under the YouCoded marketplace. */
-    fun pluginInstallDir(homeDir: File, id: String): File =
-        File(youcodedPluginsDir(homeDir), id)
-
     /** The @-qualified key Claude Code uses in enabledPlugins and installed_plugins.json. */
     fun pluginKey(id: String): String = "$id@$YOUCODED_MARKETPLACE_ID"
 
@@ -279,12 +275,5 @@ object ClaudeCodeRegistry {
         removePluginFromManifest(homeDir, id)
         removeInstalledPlugin(homeDir, id)
         disablePluginInSettings(homeDir, id)
-    }
-
-    /** Is this plugin already present in installed_plugins.json? */
-    fun isPluginRegistered(homeDir: File, id: String): Boolean {
-        val db = readInstalledPlugins(homeDir)
-        val plugins = db.optJSONObject("plugins") ?: return false
-        return plugins.has(pluginKey(id))
     }
 }

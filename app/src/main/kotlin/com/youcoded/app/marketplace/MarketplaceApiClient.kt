@@ -153,12 +153,6 @@ class MarketplaceApiClient(
 
     // ── Public API (mirrors TS client method by method) ──────────────────────
 
-    /** GET /stats — no auth required */
-    suspend fun getStats(): ApiResult<JSONObject> {
-        val (code, body) = request("/stats")
-        return if (code == 200) ApiResult.Ok(body) else errFromResponse(code, body)
-    }
-
     /** POST /auth/github/start — initiates device-code OAuth flow */
     suspend fun authStart(): ApiResult<JSONObject> {
         val (code, body) = request("/auth/github/start", method = "POST")

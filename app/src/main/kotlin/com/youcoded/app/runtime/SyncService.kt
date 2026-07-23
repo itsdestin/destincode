@@ -39,7 +39,6 @@ class SyncService(
     private val configPath = File(claudeDir, "toolkit-state/config.json")
     private val localConfigPath = File(claudeDir, "toolkit-state/config.local.json")
     private val syncMarkerPath = File(claudeDir, "toolkit-state/.sync-marker")
-    private val pullMarkerPath = File(claudeDir, "toolkit-state/.session-sync-marker")
     private val lockDir = File(claudeDir, "toolkit-state/.sync-lock")
     private val backupLogPath = File(claudeDir, "backup.log")
     private val appSyncMarkerPath = File(claudeDir, "toolkit-state/.app-sync-active")
@@ -50,10 +49,8 @@ class SyncService(
     companion object {
         private const val PUSH_INTERVAL_MS = 15 * 60 * 1000L   // 15 minutes
         private const val PUSH_DEBOUNCE_MIN = 15
-        private const val PULL_DEBOUNCE_MIN = 10
         private const val INDEX_PRUNE_DAYS = 30
         private const val PROCESS_TIMEOUT_S = 60L
-        private const val SESSION_PUSH_TIMEOUT_S = 15L
         // Recent-conversations strategy: foreground pull only fetches the N most-
         // recently-active sessions (sorted by lastActive in conversation-index.json).
         // The remainder is scheduled as a background pull. Without this, a fresh

@@ -374,41 +374,6 @@ class SkillConfigStore(private val homeDir: File) {
     fun getPackages(): JSONObject =
         config.optJSONObject("packages") ?: JSONObject()
 
-    fun getPackage(id: String): JSONObject? =
-        getPackages().optJSONObject(id)
-
-    /**
-     * Decomposition v3 §9.8: return packages with status computed from disk
-     * presence. After cross-device sync, Android may have a desktop-installed
-     * package in config but no files on disk yet — surface that as "pending"
-     * so the UI can show an Install CTA.
-     */
-    fun getPackagesWithStatus(): JSONObject {
-        val packages = getPackages()
-        val result = JSONObject()
-        val keys = packages.keys()
-        while (keys.hasNext()) {
-            val id = keys.next()
-            val pkg = packages.optJSONObject(id) ?: continue
-            val components = pkg.optJSONArray("components")
-            var onDisk = true
-            if (components != null) {
-                for (i in 0 until components.length()) {
-                    val c = components.optJSONObject(i) ?: continue
-                    if (c.optString("type") == "plugin") {
-                        onDisk = java.io.File(c.optString("path")).exists()
-                        break
-                    }
-                }
-            }
-            // Clone + annotate without mutating the stored object
-            val copy = JSONObject(pkg.toString())
-            copy.put("status", if (onDisk) "installed" else "pending")
-            result.put(id, copy)
-        }
-        return result
-    }
-
     fun recordPackageInstall(id: String, pkg: JSONObject) {
         val packages = getPackages()
         packages.put(id, pkg)
@@ -478,22 +443,6 @@ class SkillConfigStore(private val homeDir: File) {
             }
         }
         return result
-    }
-
-    fun recordPluginInstall(id: String, meta: JSONObject) {
-        // Bridge to packages API
-        val pluginsDir = File(homeDir, ".claude/plugins/$id")
-        val pkg = JSONObject().apply {
-            put("version", "1.0.0")
-            put("source", "marketplace")
-            put("installedAt", meta.optString("installedAt", ""))
-            put("removable", true)
-            put("components", JSONArray().put(JSONObject().apply {
-                put("type", "plugin")
-                put("path", meta.optString("installPath", pluginsDir.absolutePath))
-            }))
-        }
-        recordPackageInstall(id, pkg)
     }
 
     fun removePluginInstall(id: String) {
