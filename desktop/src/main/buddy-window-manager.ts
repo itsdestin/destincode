@@ -15,6 +15,9 @@ import {
 // electron). Imported here for this file's own use, and re-exported below so
 // every existing `from './buddy-window-manager'` import keeps working.
 import { clampToWorkArea, type Rect, type Point, type Size } from '../shared/buddy-geometry';
+// WHY: `implements BuddyManager` is compile-time proof this class still
+// satisfies the shape main.ts depends on after the capture/attach refactor.
+import type { BuddyManager } from './buddy-manager';
 
 // Push-channel names (kept as local consts — this module deliberately doesn't
 // import shared/types; values must match IPC.* in src/shared/types.ts).
@@ -61,7 +64,7 @@ export interface BuddyWindowManagerDeps {
  *   - `hide()` destroys both windows.
  *   - Window crashes (`render-process-gone`) trigger `hide()` — user re-enables via settings.
  */
-export class BuddyWindowManager {
+export class BuddyWindowManager implements BuddyManager {
   private mascot: BrowserWindow | null = null;
   private chat: BrowserWindow | null = null;
   // 3-button action-bar window pinned below the mascot while the chat is
@@ -466,6 +469,16 @@ export class BuddyWindowManager {
   getMascotWindow(): BrowserWindow | null { return this.mascot; }
   getChatWindow(): BrowserWindow | null { return this.chat; }
   getBarWindow(): BrowserWindow | null { return this.bar; }
+
+  // WHY: BuddyManager interface methods — main.ts's capture handler and the
+  // BUDDY_ATTACH_FILE sender go through these instead of the three getters
+  // above, so main.ts works unchanged against the overlay manager (Task 3).
+  captureWindows(): BrowserWindow[] {
+    return [this.mascot, this.chat, this.bar].filter((w): w is BrowserWindow => !!w && !w.isDestroyed());
+  }
+  chatWebContents(): Electron.WebContents | null {
+    return this.chat && !this.chat.isDestroyed() ? this.chat.webContents : null;
+  }
 
   /**
    * Place the mascot at an anchor-based target position from the renderer

@@ -61,6 +61,7 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
+import type { BuddyManager } from './buddy-manager';
 import { BAR_SIZE, MASCOT_SIZE, CHAT_SIZE } from './buddy-bar-geometry';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
 import { cleanupStaleDownloads } from './update-installer';
@@ -108,11 +109,14 @@ if (process.platform === 'win32') {
 
 
 let mainWindow: BrowserWindow | null = null;
-// Module-level ref so createAppWindow's 'closed' handler can reach the
-// BuddyWindowManager (defined later inside the ready-handler closure).
-// Assigned once during setup; `createAppWindow` uses it to hide the buddy
-// when the last main window closes (spec §7.6).
-let buddyManagerRef: BuddyWindowManager | null = null;
+// Module-level ref so createAppWindow's 'closed' handler can reach the buddy
+// manager (defined later inside the ready-handler closure), whichever
+// implementation is active — BuddyWindowManager (three windows) today,
+// BuddyOverlayManager (one DOM overlay, Linux Wayland) from Task 3. Typed as
+// the BuddyManager interface so this call site never depends on which one it
+// is. Assigned once during setup; `createAppWindow` uses it to hide the
+// buddy when the last main window closes (spec §7.6).
+let buddyManagerRef: BuddyManager | null = null;
 let cleanupIpcHandlers: (() => Promise<void>) | null = null;
 // Plan 2b Task 8: the conversation-lease client + this install's device identity.
 // Constructed inside createWindow (before registerIpcHandlers) but referenced
@@ -1513,13 +1517,18 @@ app.whenReady().then(async () => {
   // three black rectangles in the screenshot.
   ipcMain.handle(IPC.BUDDY_CAPTURE_DESKTOP, async (): Promise<string | null> => {
     const { desktopCapturer } = require('electron') as typeof import('electron');
-    const mascotWin = buddyManager.getMascotWindow();
-    const chatWin = buddyManager.getChatWindow();
-    const barWin = buddyManager.getBarWindow();
+    // WHY: go through the BuddyManager interface instead of the three-window
+    // getters (getMascotWindow/getChatWindow/getBarWindow) so this handler
+    // works unchanged whichever strategy is active (three windows or the
+    // Linux Wayland overlay). captureWindows() already filters to alive,
+    // non-destroyed windows, mascot first when present — same set and same
+    // ordering the old three getters produced.
+    const liveBuddyWindows = buddyManager.captureWindows();
+    const mascotWin = liveBuddyWindows[0] ?? null;
     // Pick the display the mascot lives on — multi-monitor users expect
     // "screenshot my desktop" to mean the one their buddy is sitting on,
     // not every monitor merged into one long strip.
-    const targetDisplay = mascotWin && !mascotWin.isDestroyed()
+    const targetDisplay = mascotWin
       ? screen.getDisplayMatching(mascotWin.getBounds())
       : screen.getPrimaryDisplay();
 
@@ -1527,9 +1536,7 @@ app.whenReady().then(async () => {
     // creation in createAppWindow), the buddies are already invisible to
     // desktopCapturer and we skip the opacity dip entirely.
     const needsOpacityFallback = !nativeCaptureExclusionAvailable();
-    const buddyWindows = needsOpacityFallback
-      ? [mascotWin, chatWin, barWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
-      : [];
+    const buddyWindows = needsOpacityFallback ? liveBuddyWindows : [];
 
     try {
       if (needsOpacityFallback) {
@@ -1570,10 +1577,7 @@ app.whenReady().then(async () => {
       // buddyManager instead of broadcasting because other windows
       // (main, detached peers) shouldn't auto-attach a screenshot the
       // user took from the floater's capture button.
-      const liveChat = buddyManager.getChatWindow();
-      if (liveChat && !liveChat.isDestroyed()) {
-        liveChat.webContents.send(IPC.BUDDY_ATTACH_FILE, tmpPath);
-      }
+      buddyManager.chatWebContents()?.send(IPC.BUDDY_ATTACH_FILE, tmpPath);
       return tmpPath;
     } catch (err) {
       log('ERROR', 'Buddy', 'capture-desktop failed', { error: String(err) });
