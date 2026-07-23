@@ -199,14 +199,45 @@ export function FilesTab({
     return () => { cancelled = true; };
   }, [project.id, refreshKey, forceScan]);
 
-  // Existence check: fold "file not on disk" into the deleted UI state alongside
-  // sidecar-tracked delete versions. Re-runs whenever the artifact list changes.
-  // WHY exclude discovered files: they were JUST found on disk by the scan, so
-  // they're inherently present — and their ids aren't sidecar ids, so
-  // checkExistence would (wrongly) report every one as "missing" → deleted.
+  // External artifacts — sidecar records that live OUTSIDE the project folder.
+  // The disk walk above (LIST_ALL_FILES) only ever covers the project root, so
+  // it structurally cannot produce these — which is the one thing the old
+  // Artifacts tab held that Project Files cannot (see FilesTab header comment).
+  // Internals are dropped here: in-folder files come from the walk above,
+  // undifferentiated, so a sidecar-tracked internal record would just be a
+  // second, redundant copy of a card already shown.
+  const [externals, setExternals] = useState<ArtifactRecord[]>([]);
+  // Manual re-fetch after an in-tab mutation (Exclude) — mirrors refreshArtifacts
+  // below (fire-and-forget; the component is known-mounted when the user
+  // triggers it, so no cancellation guard is needed here).
+  const refreshExternals = () => {
+    (window.claude as any).artifacts.listProject(project.id).then((r: any) => {
+      const tracked: ArtifactRecord[] = (r?.ok && r.artifacts) ? r.artifacts : [];
+      setExternals(tracked.filter((a) => a.kind !== 'internal'));
+    }).catch(() => setExternals([]));
+  };
+  useEffect(() => {
+    let cancelled = false;
+    (window.claude as any).artifacts.listProject(project.id).then((r: any) => {
+      if (cancelled) return;
+      const tracked: ArtifactRecord[] = (r?.ok && r.artifacts) ? r.artifacts : [];
+      setExternals(tracked.filter((a) => a.kind !== 'internal'));
+    }).catch(() => { if (!cancelled) setExternals([]); });
+    return () => { cancelled = true; };
+    // No separate "counts" refresh counter reaches this file (only refreshKey
+    // does — see ProjectView's comment on countsKey); Exclude instead calls
+    // refreshExternals() directly (see onRefreshArtifacts below), so this
+    // effect only needs to re-run on project switch or a "+ Add file" bump.
+  }, [project.id, refreshKey]);
+
+  // Existence check: fold "file not on disk" into the deleted UI state. Scoped
+  // to EXTERNALS only — the on-disk walk (`artifacts` above) only ever returns
+  // files that exist, so checking them is dead weight; an external whose file
+  // was moved or deleted must still render as an orphan row rather than a card
+  // that errors on click.
   const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    const trackedIds = artifacts.filter((a) => !a.discovered).map((a) => a.id);
+    const trackedIds = externals.map((a) => a.id);
     if (trackedIds.length === 0) { setOrphanIds(new Set()); return; }
     let cancelled = false;
     (window.claude as any).artifacts.checkExistence(project.path, trackedIds)
@@ -216,7 +247,7 @@ export function FilesTab({
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [project.path, artifacts]);
+  }, [project.path, externals]);
 
   // Filter the file grid (search, type filter, hide-code). 2026-07-23: the
   // deleted-state / "Show deleted" branch was dropped along with the Artifacts
@@ -227,15 +258,26 @@ export function FilesTab({
   // "Code & configs" TYPE filter is selected (the two together would always
   // show nothing — an explicit type pick wins over the default hide).
   const effectiveHideCode = hideCode && typeFilter !== 'code';
+  // Shared predicate — search / type filter / hide-code apply identically to
+  // Project Files AND External Artifacts (Task 5), so both sections filter
+  // through this one function rather than duplicating the three checks.
+  const matchesFilters = (a: ArtifactRecord) => {
+    const filename = a.path.split('/').pop() ?? a.path;
+    if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
+    if (typeFilter !== 'all' && fileTypeGroup(a.path) !== typeFilter) return false;
+    if (effectiveHideCode && fileTypeGroup(a.path) === 'code') return false;
+    return true;
+  };
   const filtered = useMemo(
-    () => artifacts.filter((a) => {
-      const filename = a.path.split('/').pop() ?? a.path;
-      if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
-      if (typeFilter !== 'all' && fileTypeGroup(a.path) !== typeFilter) return false;
-      if (effectiveHideCode && fileTypeGroup(a.path) === 'code') return false;
-      return true;
-    }),
+    () => artifacts.filter(matchesFilters),
     [artifacts, search, typeFilter, effectiveHideCode],
+  );
+  // External Artifacts section — root-only (rendered below), but filtered +
+  // sorted here alongside Project Files so both stay in lockstep with the
+  // same search/type/sort controls.
+  const visibleExternals = useMemo(
+    () => externals.filter(matchesFilters).sort(fileComparator(sortBy)),
+    [externals, search, typeFilter, effectiveHideCode, sortBy],
   );
   const refreshArtifacts = () => {
     const load = (window.claude as any).artifacts.listAllFiles(project.id, forceScan ? { force: true } : undefined);
@@ -317,8 +359,13 @@ export function FilesTab({
     dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId: PV_SESSION, artifactId: id });
   };
 
+  // WHY externals.find here: an External Artifacts card dispatches
+  // ACTIVE_ARTIFACT_SET with its sidecar id, which never appears in `artifacts`
+  // (the on-disk walk only covers the project folder) — without this fallback
+  // clicking an external card would open nothing.
   const activeArtifact = pvActiveId
     ? (artifacts.find((a) => a.id === pvActiveId)
+      ?? externals.find((a) => a.id === pvActiveId)
       ?? (syntheticHit && syntheticHit.id === pvActiveId ? syntheticHit : undefined))
     : undefined;
 
@@ -613,6 +660,21 @@ export function FilesTab({
           )}
       </div>
 
+      {/* Root-only: externals have no position in the project folder hierarchy,
+          so showing them while drilled into a subfolder would imply they live
+          there. Omitted entirely when empty — no "none yet" prose. Still
+          renders on a gated root (below): the gate covers the disk walk only,
+          not this sidecar read, so a home-dir project still shows what Claude
+          touched outside it. */}
+      {!currentDir && visibleExternals.length > 0 && (
+        <>
+          <h3 className="text-sm font-medium text-fg mt-6 mb-2 shrink-0">External Artifacts</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 shrink-0">
+            {visibleExternals.map(renderFileCard)}
+          </div>
+        </>
+      )}
+
       {/* Truncation note — discovery hit a cap (very large folder). Never let a
           partial list read as complete. */}
       {truncated && (
@@ -629,7 +691,7 @@ export function FilesTab({
         <ArtifactDetail
           artifact={activeArtifact}
           project={project}
-          onRefreshArtifacts={() => { refreshArtifacts(); onMutated?.(); }}
+          onRefreshArtifacts={() => { refreshArtifacts(); refreshExternals(); onMutated?.(); }}
           initialLine={pendingReveal?.id === activeArtifact.id ? pendingReveal.line : undefined}
           onInitialLineConsumed={() => setPendingReveal(null)}
         />
@@ -765,17 +827,17 @@ function ArtifactDetail({ artifact, project, onRefreshArtifacts, initialLine, on
         <LinkIcon size={13} />
         {copied ? 'Copied' : 'Copy path'}
       </button>
-      {/* Exclude = hide from the Artifacts tab: un-pins the file AND writes a
-          sticky manualExcludes entry so Claude re-editing it doesn't resurface
-          it. Recovery: "+ Add file" re-pins it (includes win over excludes).
-          Discovered files have no sidecar entry and aren't in Artifacts anyway,
-          so the button is hidden for them. */}
-      {!artifact.discovered && (
+      {/* Exclude = hide this external artifact from the section. Writes a sticky
+          manualExcludes entry so Claude re-editing the file does not resurface it.
+          Externals only: an in-folder file cannot be hidden from a plain disk walk
+          without lying about what is in the folder. There is no in-app undo now
+          that + Add file imports instead of pinning. */}
+      {artifact.kind !== 'internal' && (
         <button
           type="button"
           className={TOOL_BTN_NEUTRAL}
           onClick={handleExclude}
-          title="Hide this file from Artifacts (bring it back with + Add file)"
+          title="Hide this external artifact from this project. This cannot be undone in-app."
         >
           Exclude
         </button>
