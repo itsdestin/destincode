@@ -36,12 +36,24 @@ function errText(r: { code: number; stderr: string }): string {
 }
 
 async function locate(projectRoot: string, relPath: string): Promise<Located | 'outside' | null> {
-  const abs = path.resolve(projectRoot, relPath);
-  const inProject = path.relative(projectRoot, abs);
+  // WHY realpath: `git rev-parse --show-toplevel` (via resolveRepoRoot below)
+  // always answers with the CANONICAL physical path. If the caller's
+  // projectRoot is a non-canonical alias of the same directory — macOS's
+  // os.tmpdir() is a /var -> /private/var symlink, Windows CI runners hand
+  // out 8.3 short names like C:\Users\RUNNER~1\... — then `path.relative`
+  // between the alias and the canonical repoRoot produces a garbage
+  // `../../...` path and every downstream git call fails as "outside
+  // repository". Canonicalize first so all path math agrees with git's own
+  // notion of the root. `.catch` falls through to the raw projectRoot for a
+  // path that doesn't exist (yet) — resolveRepoRoot then gives git's own
+  // honest "not a repository" answer instead of an ENOENT here.
+  const realProject = await fs.promises.realpath(projectRoot).catch(() => projectRoot);
+  const abs = path.resolve(realProject, relPath);
+  const inProject = path.relative(realProject, abs);
   // Defense in depth under the IPC known-root gate: an artifact path may never
   // escape its project root.
   if (inProject.startsWith('..') || path.isAbsolute(inProject)) return 'outside';
-  const repoRoot = await resolveRepoRoot(projectRoot);
+  const repoRoot = await resolveRepoRoot(realProject);
   if (!repoRoot) return null;
   const rel = path.relative(repoRoot, abs).split(path.sep).join('/');
   return { repoRoot, abs, rel };

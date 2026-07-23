@@ -28,7 +28,12 @@ function sh(cwd: string, args: string[]): string {
 describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
   let root: string;
   beforeEach(async () => {
-    root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-git-svc-'));
+    // WHY realpath: on macOS os.tmpdir() is a /var -> /private/var symlink
+    // alias; git's own toplevel answer is always canonical. Tests below
+    // compare absolute paths (e.g. shell.trashItem args) against `root` —
+    // without this, those assertions would fail on macOS CI even with the
+    // production fix applied, since `root` itself would be the alias form.
+    root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-git-svc-')));
     invalidateRepoRootCache();
     sh(root, ['init', '-b', 'main']);
     await fs.promises.writeFile(path.join(root, 'a.txt'), 'one\ntwo\n');
@@ -51,7 +56,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
   });
 
   it('fileStatus: non-repo dir -> isRepo false, ok true', async () => {
-    const bare = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-norepo-'));
+    const bare = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-norepo-')));
     try {
       const r = await gitFileStatus(bare, 'x.txt');
       expect(r).toMatchObject({ ok: true, isRepo: false, counts: null, hasHistory: false });
@@ -65,7 +70,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
   });
 
   it('mutation op in a non-repo dir reports not-a-git-repository, not path-outside-project', async () => {
-    const bare = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-norepo-'));
+    const bare = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-norepo-')));
     try {
       const r = await gitStage(bare, 'x.txt');
       expect(r.ok).toBe(false);
@@ -109,7 +114,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     // (e.g. at /etc/passwd) must never have its TARGET content read into
     // hunks — that would leak arbitrary filesystem content through the git
     // review surface. lstat (not stat) is what prevents the follow.
-    const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-symlink-target-'));
+    const outside = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-symlink-target-')));
     try {
       const secretPath = path.join(outside, 'secret.txt');
       await fs.promises.writeFile(secretPath, 'TOP SECRET CONTENT\n');
@@ -124,7 +129,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
   });
 
   it('fileStatus: untracked symlink outside the repo counts as 0/0, never follows the link', async () => {
-    const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-symlink-target-'));
+    const outside = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-symlink-target-')));
     try {
       const secretPath = path.join(outside, 'secret.txt');
       await fs.promises.writeFile(secretPath, 'TOP SECRET CONTENT\n');
@@ -214,7 +219,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
   });
 
   it('fileReview works in a repo with no commits yet (unborn HEAD)', async () => {
-    const fresh = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-'));
+    const fresh = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-')));
     try {
       sh(fresh, ['init']);
       await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
@@ -228,7 +233,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
   });
 
   it('discard on unborn HEAD unstages (rm --cached) then trashes, leaving the file untracked', async () => {
-    const fresh = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-'));
+    const fresh = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-')));
     try {
       sh(fresh, ['init']);
       await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
@@ -243,7 +248,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
   });
 
   it('unstage on unborn HEAD falls back to rm --cached, leaving the file untracked', async () => {
-    const fresh = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-'));
+    const fresh = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-unborn-')));
     try {
       sh(fresh, ['init']);
       await fs.promises.writeFile(path.join(fresh, 'f.txt'), 'hello\n');
@@ -290,5 +295,41 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     expect(r.hasMore).toBe(true);
     const page2 = await gitFileReview(root, 'a.txt', { logSkip: LOG_PAGE });
     expect(page2.log.length).toBeGreaterThan(0);
+  });
+
+  // Regression for the macOS/Windows CI failure: locate() computed
+  // `path.relative(repoRoot, abs)` from the CALLER's projectRoot while
+  // repoRoot came from `git rev-parse --show-toplevel`, which git resolves to
+  // the CANONICAL physical path. Any non-canonical alias for the same
+  // directory (macOS `/var` -> `/private/var` symlink, Windows short 8.3
+  // names, or — as reproduced here — a plain symlink into the repo) makes
+  // `rel` a garbage `../../...` string and every git call fails as
+  // "outside repository". This test builds that exact symlink-alias
+  // situation on Linux (where it wouldn't otherwise occur, since /tmp isn't
+  // a symlink) so the bug is caught here without needing macOS/Windows CI.
+  it('resolves paths through a symlinked projectRoot alias (macOS /var + Windows short-path regression)', async () => {
+    const parent = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ycd-symlink-alias-'));
+    try {
+      const real = path.join(parent, 'real-repo');
+      const alias = path.join(parent, 'alias-repo');
+      await fs.promises.mkdir(real);
+      await fs.promises.symlink(real, alias);
+
+      sh(real, ['init', '-b', 'main']);
+      await fs.promises.writeFile(path.join(real, 'a.txt'), 'one\ntwo\n');
+      sh(real, ['add', '.']);
+      sh(real, ['commit', '-m', 'initial']);
+      await fs.promises.writeFile(path.join(real, 'a.txt'), 'one\nTWO\nthree\n');
+
+      const status = await gitFileStatus(alias, 'a.txt');
+      expect(status.ok).toBe(true);
+      expect(status.isRepo).toBe(true);
+      expect(status.counts).toEqual({ added: 2, removed: 1 });
+
+      const review = await gitFileReview(alias, 'a.txt');
+      expect(review.ok).toBe(true);
+      expect(review.uncommitted?.inHead).toBe(true);
+      expect(review.uncommitted?.hunks.length).toBeGreaterThan(0);
+    } finally { await fs.promises.rm(parent, { recursive: true, force: true }); }
   });
 });
