@@ -95,6 +95,33 @@ export function localToScreenPoint(local: Point, displayBounds: Rect): Point {
   return { x: local.x + displayBounds.x, y: local.y + displayBounds.y };
 }
 
+/** The primary-display geometry an overlay window was built for. */
+export interface DisplayGeometry {
+  bounds: Rect;
+  workArea: Rect;
+  scaleFactor: number;
+}
+
+const rectsEqual = (a: Rect, b: Rect): boolean =>
+  a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+// WHY this exists (2026-07-23 black-flash loop, probe-verified): on KWin
+// Wayland, merely SHOWING a window fires display-metrics-changed with
+// changedMetrics=[] and completely unchanged geometry — three times within
+// 200ms of showInactive(). Rebuilding the overlay on every event therefore
+// self-sustained (create -> spurious event -> destroy+recreate -> spurious
+// event -> ...), flashing the whole screen black at ~2Hz until Electron hit
+// a V8 fatal. The overlay only cares whether the geometry it was BUILT FOR
+// went stale, so handleDisplayChange compares before rebuilding. Pure and
+// exported for the pinning tests.
+export function displayGeometryChanged(builtFor: DisplayGeometry, current: DisplayGeometry): boolean {
+  return (
+    builtFor.scaleFactor !== current.scaleFactor ||
+    !rectsEqual(builtFor.bounds, current.bounds) ||
+    !rectsEqual(builtFor.workArea, current.workArea)
+  );
+}
+
 /**
  * One screen-sized, click-through-by-default BrowserWindow hosting the whole
  * buddy floater (mascot + chat + bar) as DOM, for platforms where Electron
@@ -118,6 +145,9 @@ export class BuddyOverlayManager implements BuddyManager {
   // events (e.g. a monitor hotplug fires several in quick succession) into
   // one destroy+recreate rather than rebuilding the renderer repeatedly.
   private recreateTimer: NodeJS.Timeout | null = null;
+  // Geometry the current window was built for — the rebuild guard's baseline
+  // (see displayGeometryChanged's WHY comment). Set by createWindow.
+  private builtFor: DisplayGeometry | null = null;
 
   constructor(private readonly deps: BuddyOverlayDeps) {
     // WHY these three (not the brief's literal 'display-metrics-changed' |
@@ -141,6 +171,14 @@ export class BuddyOverlayManager implements BuddyManager {
       // Only rebuild while actually shown — a hidden overlay has nothing to
       // resize, and the next show() will read the current display anyway.
       if (!this.win || this.win.isDestroyed()) return;
+      // Spurious-event guard (see displayGeometryChanged's WHY comment):
+      // KWin Wayland fires display-metrics-changed just from showing a
+      // window, with nothing actually changed. Rebuilding then would fire
+      // more spurious events and loop forever, flashing the screen black.
+      // Only rebuild when the geometry this window was built for is stale.
+      const d = screen.getPrimaryDisplay();
+      const current: DisplayGeometry = { bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor };
+      if (this.builtFor && !displayGeometryChanged(this.builtFor, current)) return;
       const old = this.win;
       this.win = null;
       old.destroy();
@@ -153,6 +191,9 @@ export class BuddyOverlayManager implements BuddyManager {
    *  responsible for having cleared `this.win` first. */
   private createWindow(): void {
     const primary = screen.getPrimaryDisplay();
+    // Snapshot the geometry this window is being built for — the rebuild
+    // guard in handleDisplayChange compares against exactly this.
+    this.builtFor = { bounds: primary.bounds, workArea: primary.workArea, scaleFactor: primary.scaleFactor };
     const win = this.deps.createOverlayWindow({ width: primary.bounds.width, height: primary.bounds.height });
     this.win = win;
     win.setTitle(OVERLAY_TITLE);

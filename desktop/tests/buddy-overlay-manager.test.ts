@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { overlayInitPayload, localToScreenPoint } from '../src/main/buddy-overlay-manager';
+import { overlayInitPayload, localToScreenPoint, displayGeometryChanged } from '../src/main/buddy-overlay-manager';
 
 describe('overlayInitPayload', () => {
   const bounds = { x: 0, y: 0, width: 1707, height: 1067 };
@@ -35,5 +35,37 @@ describe('localToScreenPoint / overlayInitPayload round trip (non-origin display
 
     const payload = overlayInitPayload(bounds, workArea, { mascot: screenPoint, dock: null });
     expect(payload.mascot).toEqual(localPoint); // identical local point recovered
+  });
+});
+
+// 2026-07-23 black-flash-loop root cause: on KWin Wayland, merely MAPPING a
+// window fires display-metrics-changed with changedMetrics=[] and IDENTICAL
+// geometry (probe-verified — 3 spurious events within 200ms of showInactive).
+// handleDisplayChange rebuilding on every event therefore self-sustained:
+// create -> spurious event -> destroy+recreate -> spurious event -> ... with
+// each renderer destroyed before first paint (black full-screen flashes) until
+// Electron hit a V8 fatal. The guard: only rebuild when the geometry the
+// window was BUILT FOR actually changed. These tests pin the comparison.
+describe('displayGeometryChanged', () => {
+  const geo = {
+    bounds: { x: 0, y: 0, width: 1707, height: 1067 },
+    workArea: { x: 0, y: 0, width: 1707, height: 1018 },
+    scaleFactor: 1.4997071027755737,
+  };
+  it('identical geometry -> false (spurious event must NOT rebuild)', () => {
+    expect(displayGeometryChanged(geo, { ...geo })).toBe(false);
+    // deep copies, not reference equality
+    expect(displayGeometryChanged(geo, {
+      bounds: { ...geo.bounds }, workArea: { ...geo.workArea }, scaleFactor: geo.scaleFactor,
+    })).toBe(false);
+  });
+  it('bounds change -> true (resolution switch)', () => {
+    expect(displayGeometryChanged(geo, { ...geo, bounds: { x: 0, y: 0, width: 1920, height: 1080 } })).toBe(true);
+  });
+  it('workArea-only change -> true (panel moved/resized)', () => {
+    expect(displayGeometryChanged(geo, { ...geo, workArea: { x: 0, y: 44, width: 1707, height: 974 } })).toBe(true);
+  });
+  it('scaleFactor change -> true (fractional scaling toggle)', () => {
+    expect(displayGeometryChanged(geo, { ...geo, scaleFactor: 2 })).toBe(true);
   });
 });
