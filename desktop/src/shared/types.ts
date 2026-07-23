@@ -34,6 +34,26 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
 // OpenRouter or a direct Google key instead.
 export type SessionProvider = 'claude' | 'native';
 
+// A model reference portable ACROSS devices — persisted on a Conversation Store
+// record (conversations/store-core.ts) so the resume selector can pre-fill
+// without a round-trip. Deliberately NOT the device-local providerId ULID: that
+// ULID only resolves via THIS device's ~/.youcoded/providers.json, so
+// persisting it would silently break resume on every OTHER synced device.
+// modelId/providerType/providerLabel are the portable identity a peer device
+// can re-resolve (or just display).
+//
+// Lives here (shared/types.ts), not conversations/store-core.ts, because
+// PastSession below needs it and shared/ must never import FROM main/ (main →
+// shared is the only legal direction — see SessionProvider above for the same
+// pattern). store-core.ts re-exports this type so its existing importers
+// (conversation-store.ts, service.ts, portable-model.ts, ipc-handlers.ts)
+// didn't need to change their import paths.
+export interface PortableModelRef {
+  modelId: string;
+  providerType: string;
+  providerLabel: string;
+}
+
 // M1: ack shape for native:send — 'sent' = turn dispatched now, 'queued' = FIFO'd
 // behind the in-flight turn, 'failed' = refused (reason says why, exactly).
 // Task 11 (cancel/edit queued messages): the 'queued' arm carries the host-
@@ -613,14 +633,17 @@ export interface SkillComponents {
 export type SessionFlagName = 'complete' | 'priority';
 export const SESSION_FLAG_NAMES: SessionFlagName[] = ['complete', 'priority'];
 
-/** Refusal message for flag/tag/note writes against a NATIVE session. Native
- *  conversations have no Conversation Store record yet, so a write would either
- *  be dropped silently or seed a mislabeled provider:'claude' phantom. Shared by
- *  the ipcMain handlers, the remote WS handlers, and the renderer's disabled-state
- *  tooltip so all three say the same thing. Retire with the native-sync-parity
- *  work (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md). */
-export const NATIVE_META_UNSUPPORTED =
-  'Tags, notes, and flags are not yet supported for native sessions.';
+/** Generic fallback shown when a host answers session:get-meta with
+ *  `supported: false` but no `unsupportedReason` of its own. As of Task 5
+ *  (2026-07-2x) native sessions are real Conversation Store records and no
+ *  longer answer this way — Android still can (tags/notes aren't built there
+ *  yet), so this stays as the renderer's host-neutral catch-all rather than
+ *  naming a cause it hasn't verified. Formerly NATIVE_META_UNSUPPORTED, which
+ *  named native sessions specifically — renamed when that was no longer true.
+ *  Shared by the ipcMain handlers, the remote WS handlers, and the renderer's
+ *  disabled-state tooltip so all three say the same thing. */
+export const META_UNSUPPORTED_FALLBACK =
+  "Tags and notes aren't available for this session.";
 
 /** session:get-meta result. `supported: false` means writes will be REFUSED for
  *  this session — render the controls disabled rather than accepting edits. */
@@ -682,6 +705,11 @@ export interface PastSession {
    *  disabled — `claude --resume` would error on the missing JSONL. Distinct
    *  from missingProject so the renderer can word the note accurately. */
   notSyncedYet?: boolean;
+  /** Portable reference to the model this conversation last ran a turn with —
+   *  read straight off the Conversation Store record (Task 4 writes it via
+   *  noteModelUsed). Absent for legacy-only rows and for a store record no
+   *  turn has landed on yet. Task 6 uses it to pre-fill the resume selector. */
+  lastUsedModel?: PortableModelRef;
 }
 
 export interface HistoryMessage {

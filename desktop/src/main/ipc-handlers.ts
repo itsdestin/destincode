@@ -7,7 +7,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, NATIVE_META_UNSUPPORTED, type SessionFlagName, type TranscriptEvent, type HookEvent, type PastSession } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent } from '../shared/types';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
@@ -1421,28 +1421,14 @@ export function registerIpcHandlers(
     for (const [desktopId, claudeId] of sessionIdMap.entries()) {
       if (sessionManager.getSession(desktopId)) activeIds.add(claudeId);
     }
-    // CC (Claude Code) transcript rows.
-    const ccRows = await listPastSessions(activeIds);
-    // Native-harness rows — map NativeSessionHost.list() entries onto the
-    // PastSession shape (now that PastSession carries `provider`). Native
-    // sessions have no CC auto-title hook, so the store already derived a title
-    // from the first user message; fall back to 'Untitled' when even that is
-    // absent. mtimeMs/sizeBytes stand in for lastModified/size.
-    const nativeRows: PastSession[] = nativeHost.list().map((r) => ({
-      sessionId: r.sessionId,
-      name: r.title ?? 'Untitled',
-      projectSlug: r.slug,
-      projectPath: r.cwd,
-      lastModified: r.mtimeMs,
-      size: r.sizeBytes,
-      provider: 'native' as const,
-      // Stored (raw) harness id from the header — drives the Resume Browser's
-      // preset label. Note: not legacy-mapped here (a 'chat' header shows as
-      // Assistant via the label's fallback), which is fine for a display badge.
-      harnessId: r.harnessId,
-    }));
-    // ResumeBrowser re-sorts by lastModified, so a plain concat is fine here.
-    return [...ccRows, ...nativeRows];
+    // Task 5: native rows now join the SAME store-overlay enrichment pass CC
+    // rows get (flags/tags/note/device/title precedence, lastUsedModel) instead
+    // of being bare-concatenated after the fact — see listPastSessions's
+    // nativeEntries param. nativeHost.list() is the live/persisted session
+    // registry; passing it in (rather than session-browser.ts reading disk
+    // itself) keeps NativeSessionHost the one source of truth for what native
+    // sessions exist.
+    return listPastSessions(activeIds, nativeHost.list());
   });
 
   ipcMain.handle(IPC.SESSION_HISTORY, async (
@@ -2488,16 +2474,17 @@ export function registerIpcHandlers(
   // transcriptRef and an EPOCH lastActive — synced to every device and never
   // pruned (flagged records are deliberately kept). Confirmed on disk 2026-07-18.
   //
-  // Native conversations do not participate in the store at all until the parity
-  // work lands (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md),
-  // so the correct answer today is to write nothing. Checked against BOTH live and
-  // persisted native ids: a past native session opened from the Resume Browser is
-  // not live, but must not seed a record either.
+  // Task 5: native conversations are real Conversation Store records now
+  // (Task 4 made native transcript events upsert 'native' records the same way
+  // CC turns upsert 'claude' ones), so the gate's job shrinks to its ORIGINAL
+  // purpose — the CC live-before-mapping race — and no longer needs a
+  // provider carve-out at all. A native id is always identity-mapped into
+  // sessionIdMap the moment it's created (SESSION_CREATE's native branch), so
+  // `sessionIdMap.has(sessionId)` is true for it from the start; this gate was
+  // never the thing keeping native writes out — nativeMetaRefusal below (now
+  // deleted) was. Retiring that refusal is only safe BECAUSE Task 4 landed
+  // real native writes first — see the design's Task 5 note.
   const canWriteStoreRecord = (sessionId: string, resolved: string): boolean => {
-    // Kept as defence-in-depth for any FUTURE call site. The three handlers below
-    // now reject native ids outright before reaching here, so this branch is
-    // unreachable from them — see nativeMetaRefusal.
-    if (nativeHost.isNativeSessionId(resolved)) return false;
     return sessionIdMap.has(sessionId) || !sessionManager.getSession(sessionId);
   };
 
@@ -2510,35 +2497,19 @@ export function registerIpcHandlers(
     canWrite: canWriteStoreRecord,
   });
 
-  // Stopgap (2026-07-19). The 2026-07-18 gate above correctly stopped native
-  // sessions seeding phantom provider:'claude' records — but the handlers still
-  // returned { ok: true } and still broadcast SESSION_META_CHANGED, so the
-  // renderer's optimistic update stuck and the user believed the flag/tag/note
-  // had saved until the next browse. Silent data loss. Until native records are
-  // a real thing (v1.3.1 — docs/active/specs/2026-07-18-native-sync-parity-design.md)
-  // the honest answer is an explicit refusal: no write, NO broadcast (a broadcast
-  // would make listeners refetch and "confirm" a change that never happened), and
-  // an ok:false the renderer reverts on. session:get-meta reports supported:false
-  // so the UI can disable the controls up front rather than fail on click.
-  const nativeMetaRefusal = (resolved: string) =>
-    (nativeHost.isNativeSessionId(resolved)
-      ? {
-          ok: false as const,
-          error: NATIVE_META_UNSUPPORTED,
-          unsupported: true as const,
-          // Separate from `error` because the renderer SHOWS this one — other
-          // hosts put machine strings in `error`.
-          unsupportedReason: NATIVE_META_UNSUPPORTED,
-        }
-      : null);
+  // Provider for a resolved session id — 'native' when NativeSessionHost
+  // recognizes it (live now, or a persisted ~/.youcoded/sessions file), else
+  // 'claude'. Shared by SET_FLAG/SET_TAG/SET_NOTE/GET_META so all four read
+  // and write the SAME store bucket for a given session (conversations/
+  // conversation-store.ts keys records by provider + id).
+  const sessionProviderFor = (resolved: string): SessionProvider =>
+    nativeHost.isNativeSessionId(resolved) ? 'native' : 'claude';
 
   ipcMain.handle(IPC.SESSION_SET_FLAG, async (_event, sessionId: string, flag: string, value: boolean) => {
     if (!SESSION_FLAG_NAMES.includes(flag as SessionFlagName)) {
       return { ok: false, error: `unknown flag: ${flag}` };
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
-    const refusal = nativeMetaRefusal(resolved);
-    if (refusal) return refusal;
     try {
       // Plan 2c: flags are STORE-ONLY now. The legacy conversation-index
       // dual-write (svc.setSessionFlag) was removed — the Conversation Store is
@@ -2562,13 +2533,10 @@ export function registerIpcHandlers(
         // now report ok:false (store not up yet / never came up / rejected)
         // instead of the old fire-and-forget that always said ok:true even
         // when the write silently evaporated (2026-07-19 incident class, for
-        // the store-availability dimension — native refusal above is separate
-        // and unchanged). No broadcast on a dropped write: the renderer would
-        // otherwise refetch and "confirm" a change that never landed.
-        // Provider is hardcoded 'claude' for now — these SESSION_SET_* handlers
-        // still refuse native ids up front via nativeMetaRefusal above; Task 5
-        // makes them provider-aware.
-        const res = await noteFlagChanged(resolved, flag, !!value, 'claude');
+        // the store-availability dimension). Task 5: provider is now derived
+        // per-session instead of hardcoded 'claude' — the write lands in
+        // whichever bucket get-meta/browse will read it back from.
+        const res = await noteFlagChanged(resolved, flag, !!value, sessionProviderFor(resolved));
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2638,17 +2606,15 @@ export function registerIpcHandlers(
     }
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     const key = tagFlagKey(tagId);
-    const refusal = nativeMetaRefusal(resolved);
-    if (refusal) return refusal;
     try {
       // Same phantom-record gate as SESSION_SET_FLAG: only write the store when
-      // `resolved` is a known CLAUDE id or a non-live session, and never for a
-      // native session. (Tags are stored as `tag:<id>` flags, so this is the path
-      // that made "tag a native session" seed a phantom CC record.)
+      // `resolved` is a known CLAUDE id or a non-live session (regardless of
+      // provider — see canWriteStoreRecord's comment; Task 5 dropped the
+      // native carve-out). Tags are stored as `tag:<id>` flags.
       if (canWriteStoreRecord(sessionId, resolved)) {
-        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider
-        // hardcoded 'claude' — see SESSION_SET_FLAG's comment.
-        const res = await noteFlagChanged(resolved, key, !!value, 'claude');
+        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider is
+        // derived, not hardcoded — see SESSION_SET_FLAG's comment.
+        const res = await noteFlagChanged(resolved, key, !!value, sessionProviderFor(resolved));
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2665,13 +2631,11 @@ export function registerIpcHandlers(
     const resolved = sessionIdMap.get(sessionId) || sessionId;
     const text = String(note ?? '');
     if (text.length > 8000) return { ok: false, error: 'note exceeds 8000 characters' };
-    const refusal = nativeMetaRefusal(resolved);
-    if (refusal) return refusal;
     try {
       if (canWriteStoreRecord(sessionId, resolved)) {
-        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider
-        // hardcoded 'claude' — see SESSION_SET_FLAG's comment.
-        const res = await noteSessionNote(resolved, text, 'claude');
+        // Item 6: same honest-write parity as SESSION_SET_FLAG. Provider is
+        // derived, not hardcoded — see SESSION_SET_FLAG's comment.
+        const res = await noteSessionNote(resolved, text, sessionProviderFor(resolved));
         if (!res.ok) {
           return { ok: false, error: 'Could not save — conversation storage is not available on this device.' };
         }
@@ -2688,17 +2652,12 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.SESSION_GET_META, async (_e, sessionId: string) => {
     const store = getConversationStore();
     const resolved = sessionIdMap.get(sessionId) || sessionId;
-    // `supported` tells the renderer whether writes will actually persist, so the
-    // tags/note UI can render disabled instead of accepting edits that get refused.
-    // Deliberately keyed on native-ness ONLY, not on `store` being present: store
-    // is null transiently during startup, and flickering the controls off mid-boot
-    // would be worse than the brief window where an edit fails loudly.
-    if (nativeHost.isNativeSessionId(resolved)) {
-      return { tags: [], note: '', supported: false, unsupportedReason: NATIVE_META_UNSUPPORTED };
-    }
+    // Task 5: read from whichever provider bucket this session actually writes
+    // to — native records are real now, so there's no more up-front refusal.
+    // `supported` stays in the result shape (Android still answers false).
     if (!store) return { tags: [], note: '', supported: true };
     try {
-      const rec = await store.get('claude', resolved);
+      const rec = await store.get(sessionProviderFor(resolved), resolved);
       if (!rec) return { tags: [], note: '', supported: true };
       const tags: string[] = [];
       for (const [k, v] of Object.entries(rec.flags)) {

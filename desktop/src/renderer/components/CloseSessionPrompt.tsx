@@ -5,7 +5,7 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { NoteEditor } from './tags/NoteEditor';
 import { Button } from './ui';
-import { NATIVE_META_UNSUPPORTED, type SessionMetaResult } from '../../shared/types';
+import { META_UNSUPPORTED_FALLBACK, type SessionMetaResult } from '../../shared/types';
 import { isTypingTarget } from '../utils/is-typing-target';
 
 // Flag order must match ResumeBrowser's pill order so the UI is consistent.
@@ -44,13 +44,15 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
   // The session's tags/note as loaded on open — the baseline for the delta, so
   // Cancel changes nothing and Confirm only writes what the user toggled.
   const [original, setOriginal] = useState<{ tags: Set<string>; note: string }>({ tags: new Set(), note: '' });
-  // False for sessions whose meta the backend refuses to store (native). This
-  // prompt writes flags/tags/note and then IMMEDIATELY destroys the session, so
-  // there is never a read-back to reveal a refused write — the only honest option
-  // is to not offer the controls at all. See NATIVE_META_UNSUPPORTED.
+  // False for sessions whose meta the backend refuses to store — as of Task 5
+  // that's Android only (desktop native sessions are real store records now).
+  // This prompt writes flags/tags/note and then IMMEDIATELY destroys the
+  // session, so there is never a read-back to reveal a refused write — the
+  // only honest option is to not offer the controls at all. See
+  // META_UNSUPPORTED_FALLBACK.
   const [metaSupported, setMetaSupported] = useState(true);
   // Host-supplied wording — Android's reason differs from the desktop's.
-  const [metaReason, setMetaReason] = useState(NATIVE_META_UNSUPPORTED);
+  const [metaReason, setMetaReason] = useState(META_UNSUPPORTED_FALLBACK);
   // Gate the meta section on the getMeta round-trip completing. Without this the
   // NoteEditor mounts optimistically, and text typed before the response arrives
   // is committed by its unmount-commit effect when the section then disappears —
@@ -77,7 +79,7 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
         setOriginal({ tags, note: m?.note ?? '' });
         // Missing field = older backend; assume supported rather than hiding the UI.
         setMetaSupported(m?.supported !== false);
-        setMetaReason(m?.unsupportedReason || NATIVE_META_UNSUPPORTED);
+        setMetaReason(m?.unsupportedReason || META_UNSUPPORTED_FALLBACK);
         setMetaLoaded(true);
       })
       .catch(() => { if (!cancelled) { setTagIds(new Set()); setNote(''); setOriginal({ tags: new Set(), note: '' }); setMetaLoaded(true); } });

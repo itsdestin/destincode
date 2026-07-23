@@ -18,7 +18,6 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { TagChip } from './tags/TagChip';
 import { NoteEditor } from './tags/NoteEditor';
-import { NATIVE_META_UNSUPPORTED } from '../../shared/types';
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
@@ -474,8 +473,6 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   if (!open) return null;
 
   const renderExpandedOptions = (s: PastSession) => {
-  // Store-backed meta (flags/tags/note) can't be written for native sessions yet.
-  const metaDisabled = s.provider === 'native';
   return (
     <div className="px-4 pb-2">
       <div className="rounded-lg bg-inset/50 border border-edge-dim p-3 flex flex-col gap-2">
@@ -546,61 +543,50 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         )}
 
-        {/* Flags / tags / note are Conversation Store-backed, and native sessions have
-            no store record yet — the backend REFUSES those writes (NATIVE_META_UNSUPPORTED).
-            HIDE the block rather than disabling it: TagPicker also hosts the GLOBAL tag
-            registry CRUD (create / rename / recolor / archive / delete), which has nothing
-            to do with the selected session — greying that out under a "not supported for
-            native sessions" caption would strand the user's whole tag registry behind an
-            unrelated explanation. Drop the branch when native-sync-parity lands.
-
-            NOTE: this gates on the RENDERER-side `s.provider`, while the backend gates on
-            `nativeHost.isNativeSessionId`. The two predicates are intentionally independent
-            and may disagree; both directions are safe (hidden-but-allowed costs nothing,
-            shown-but-refused is caught by the revert in toggleFlag/toggleTag/saveNote). */}
-        {metaDisabled ? (
-          <p className="text-[10px] text-fg-muted leading-snug">{NATIVE_META_UNSUPPORTED}</p>
-        ) : (
-          <>
-            {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
-            <div>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
-              <div className="flex gap-1">
-                {FLAG_ORDER.map((flag) => {
-                  const active = !!s.flags?.[flag];
-                  return (
-                    <button
-                      key={flag}
-                      onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
-                      className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
-                        active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
-                      }`}
-                      aria-pressed={active}
-                    >
-                      {FLAG_LABEL[flag]}
-                    </button>
-                  );
-                })}
-              </div>
+        {/* Flags / tags / note are Conversation Store-backed. Task 5 (2026-07-2x)
+            unlocked native sessions here too — they're real store records now
+            (Task 4), so there's no more "unsupported" branch to hide this
+            block behind. A write that somehow gets refused (store down, etc.)
+            is still caught by the revert in toggleFlag/toggleTag/saveNote. */}
+        <>
+          {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
+            <div className="flex gap-1">
+              {FLAG_ORDER.map((flag) => {
+                const active = !!s.flags?.[flag];
+                return (
+                  <button
+                    key={flag}
+                    onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
+                    className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                      active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
+                    }`}
+                    aria-pressed={active}
+                  >
+                    {FLAG_LABEL[flag]}
+                  </button>
+                );
+              })}
             </div>
+          </div>
 
-            {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
-            <div onClick={(e) => e.stopPropagation()}>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
-              <TagPicker
-                appliedIds={new Set(s.tags ?? [])}
-                onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
-                registry={registry}
-              />
-            </div>
+          {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
+            <TagPicker
+              appliedIds={new Set(s.tags ?? [])}
+              onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
+              registry={registry}
+            />
+          </div>
 
-            {/* Note — stopPropagation so editing doesn't collapse the row. */}
-            <div onClick={(e) => e.stopPropagation()}>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
-              <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
-            </div>
-          </>
-        )}
+          {/* Note — stopPropagation so editing doesn't collapse the row. */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
+            <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
+          </div>
+        </>
 
         {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
             native sessions have no PTY permission flow, so it never applies. */}

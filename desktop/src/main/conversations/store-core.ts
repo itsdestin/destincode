@@ -3,7 +3,13 @@
 // This is the same pure-core/IO-shell split as local-theme-synthesizer.ts:
 // keeping this file free of side effects is what lets us unit-test every merge
 // and parse rule with plain objects and no mocks.
-import type { SessionProvider } from '../../shared/types';
+import type { SessionProvider, PortableModelRef } from '../../shared/types';
+// Task 5: PortableModelRef now LIVES in shared/types.ts (PastSession needs it
+// too, and shared/ must never import from main/ — see the type's own comment
+// there). Re-exported here so this module's existing importers
+// (conversation-store.ts, service.ts, portable-model.ts, ipc-handlers.ts) keep
+// working against './store-core' unchanged.
+export type { PortableModelRef };
 
 export const RECORD_SCHEMA_VERSION = 1;
 
@@ -11,18 +17,6 @@ export const RECORD_SCHEMA_VERSION = 1;
 // (pinned, archived, etc.) migrate losslessly in Plan 2c. `updatedAt` is what
 // lets us merge a single flag independently of the whole record.
 export interface FlagState { value: boolean; updatedAt: string }
-
-// A model reference portable ACROSS devices — persisted with the record so the
-// always-shown resume selector can pre-fill without a round-trip. Deliberately
-// NOT the device-local providerId ULID: that ULID only resolves via THIS
-// device's ~/.youcoded/providers.json, so persisting it would silently break
-// resume on every OTHER synced device. modelId/providerType/providerLabel are
-// the portable identity a peer device can re-resolve (or just display).
-export interface PortableModelRef {
-  modelId: string;
-  providerType: string;
-  providerLabel: string;
-}
 
 export interface ConversationRecord {
   schema: number;

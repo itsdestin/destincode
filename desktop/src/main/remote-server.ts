@@ -15,7 +15,7 @@ import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
-import { NATIVE_META_UNSUPPORTED, type NativeSendResult } from '../shared/types';
+import type { NativeSendResult, SessionProvider } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -139,16 +139,19 @@ export class RemoteServer {
     this.nativeRuntime = rt;
   }
 
-  /** True when this id belongs to a native session, which has no conversation-store
-   *  record to write meta into yet (see NATIVE_META_UNSUPPORTED). Remote clients pass
-   *  raw session ids — no sessionIdMap resolution is needed because native ids are
-   *  mapped to themselves (ipc-handlers sets sessionIdMap identity for native).
-   *  If the native runtime isn't wired yet there are no native sessions to protect,
-   *  so the answer is false and the write proceeds as before. */
-  private isNativeMetaTarget(sessionId: unknown): boolean {
+  /** Task 5: which Conversation Store bucket a session's meta reads/writes
+   *  belong to. 'native' when NativeSessionHost recognizes the id (live now,
+   *  or a persisted ~/.youcoded/sessions file); 'claude' otherwise, including
+   *  when the native runtime isn't wired yet (nothing to recognize as native).
+   *  Remote clients pass raw session ids — no sessionIdMap resolution is
+   *  needed because native ids are mapped to themselves (ipc-handlers sets
+   *  sessionIdMap identity for native). Mirrors ipc-handlers' sessionProviderFor
+   *  so a session's meta lands in — and reads back from — the same bucket
+   *  regardless of which surface (Electron IPC or remote WS) touched it. */
+  private sessionProviderFor(sessionId: unknown): SessionProvider {
     const rt = this.nativeRuntime;
-    if (!rt) return false;
-    return rt.nativeHost.isNativeSessionId(String(sessionId ?? ''));
+    if (!rt) return 'claude';
+    return rt.nativeHost.isNativeSessionId(String(sessionId ?? '')) ? 'native' : 'claude';
   }
 
   /** Injected by ipc-handlers after main.ts builds the lease client/requester,
@@ -757,7 +760,12 @@ export class RemoteServer {
       }
       case 'session:browse': {
         const activeIds = new Set(this.sessionManager.listSessions().map(s => s.id));
-        const sessions = await listPastSessions(activeIds);
+        // Task 5: remote browse gains native rows for the first time, through
+        // the SAME enrichment pass the Electron IPC path uses (see
+        // ipc-handlers' SESSION_BROWSE) — previously this surface only ever
+        // returned CC rows, so a remote web client's Resume Browser silently
+        // never showed native sessions at all.
+        const sessions = await listPastSessions(activeIds, this.nativeRuntime?.nativeHost.list());
         this.respond(client.ws, type, id, sessions);
         break;
       }
@@ -945,20 +953,13 @@ export class RemoteServer {
         // hasn't been called yet.
         const rawId = String(payload?.sessionId ?? '');
         const resolved = this.sessionMetaWiring?.resolve(rawId) ?? rawId;
-        // Same native refusal as the ipcMain handler. Without this the remote path
-        // still seeds the phantom provider:'claude' record the 2026-07-18 gate was
-        // written to prevent — a phone tagging a native session bypassed it entirely.
-        if (this.isNativeMetaTarget(resolved)) {
-          this.respond(client.ws, type, id, { ok: false, error: NATIVE_META_UNSUPPORTED, unsupported: true, unsupportedReason: NATIVE_META_UNSUPPORTED });
-          break;
-        }
         if (!this.sessionMetaWiring || this.sessionMetaWiring.canWrite(rawId, resolved)) {
           // Item 6: await the real result and answer honestly instead of the old
           // fire-and-forget that always said ok:true even when the write
           // silently evaporated (store not up yet / never came up / rejected).
-          // Provider hardcoded 'claude' — same stopgap as the ipcMain
-          // SESSION_SET_TAG handler (native ids already refused above).
-          const res = await noteFlagChanged(resolved, tagFlagKey(tagId), !!payload?.value, 'claude');
+          // Task 5: provider is derived, not hardcoded — writes land in the
+          // SAME bucket session:get-meta / session:browse will read back.
+          const res = await noteFlagChanged(resolved, tagFlagKey(tagId), !!payload?.value, this.sessionProviderFor(resolved));
           if (!res.ok) {
             this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
             break;
@@ -973,14 +974,9 @@ export class RemoteServer {
         if (text.length > 8000) { this.respond(client.ws, type, id, { ok: false, error: 'note too long' }); break; }
         const rawId = String(payload?.sessionId ?? '');
         const resolved = this.sessionMetaWiring?.resolve(rawId) ?? rawId;
-        if (this.isNativeMetaTarget(resolved)) {
-          this.respond(client.ws, type, id, { ok: false, error: NATIVE_META_UNSUPPORTED, unsupported: true, unsupportedReason: NATIVE_META_UNSUPPORTED });
-          break;
-        }
         if (!this.sessionMetaWiring || this.sessionMetaWiring.canWrite(rawId, resolved)) {
-          // Provider hardcoded 'claude' — same stopgap as the ipcMain
-          // SESSION_SET_NOTE handler (native ids already refused above).
-          const res = await noteSessionNote(resolved, text, 'claude');
+          // Task 5: provider is derived, not hardcoded — see session:set-tag.
+          const res = await noteSessionNote(resolved, text, this.sessionProviderFor(resolved));
           if (!res.ok) {
             this.respond(client.ws, type, id, { ok: false, error: 'Could not save — conversation storage is not available on this device.' });
             break;
@@ -993,13 +989,16 @@ export class RemoteServer {
         const { getConversationStore } = await import('./conversations/service');
         const store = getConversationStore();
         let out = { tags: [] as string[], note: '', supported: true };
-        if (this.isNativeMetaTarget(payload?.sessionId)) {
-          this.respond(client.ws, type, id, { tags: [], note: '', supported: false, unsupportedReason: NATIVE_META_UNSUPPORTED });
-          break;
-        }
+        // Task 5: resolve through the same map set-tag/set-note use (a latent
+        // gap here previously — this handler read the raw id straight through,
+        // which only worked by accident for ids that never needed resolving)
+        // and read from whichever provider bucket this session actually writes
+        // to. No more up-front native refusal — native records are real.
+        const rawId = String(payload?.sessionId ?? '');
+        const resolved = this.sessionMetaWiring?.resolve(rawId) ?? rawId;
         if (store) {
           try {
-            const rec = await store.get('claude', String(payload?.sessionId));
+            const rec = await store.get(this.sessionProviderFor(resolved), resolved);
             if (rec) {
               const tags: string[] = [];
               for (const [k, v] of Object.entries(rec.flags)) {
