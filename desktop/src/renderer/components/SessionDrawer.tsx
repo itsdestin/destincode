@@ -111,7 +111,7 @@ function IconBtn({ name, title, onClick, active, glyph }: { name?: string; title
 
 export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }: Props) {
   const { state, dispatch } = useArtifact();
-  const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts, drawerWidth, setDrawerWidth, resetDrawerWidth } = useTheme();
+  const { showDeletedArtifacts, setShowDeletedArtifacts, drawerWidth, setDrawerWidth, resetDrawerWidth } = useTheme();
   const allArtifacts = state.sessionArtifacts[sessionId] ?? [];
   // Drawer open/closed AND the selected artifact are per-session (remembered
   // across switches). This drawer instance belongs to `sessionId`.
@@ -154,15 +154,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const artifacts = useMemo(() => {
     return allArtifacts.filter((a) => {
       if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
-      // This drawer's hide-code keeps ONLY documents (broader than the Project
-      // View's, which drops just code), so an explicit type pick must suspend it
-      // or e.g. Type=Images would always come back empty. Same rule both places.
-      if (hideCodeAndConfigs && types.size === 0 && categorizeArtifact(a.path) !== 'document') return false;
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
       if (isDeleted && !showDeletedArtifacts) return false;
       return true;
     });
-  }, [allArtifacts, hideCodeAndConfigs, showDeletedArtifacts, orphanIds, types]);
+  }, [allArtifacts, showDeletedArtifacts, orphanIds, types]);
   const hiddenCount = allArtifacts.length - artifacts.length;
   // Look up the open document in the UNFILTERED list — toggling "Hide code" /
   // "Show deleted" while viewing a now-filtered-out file must not blank the
@@ -464,8 +460,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               onTypesChange={setTypes}
               sortBy={sortBy}
               onSortBy={setSortBy}
-              hideCode={hideCodeAndConfigs}
-              onHideCode={setHideCodeAndConfigs}
               showDeleted={showDeletedArtifacts}
               onShowDeleted={setShowDeletedArtifacts}
               showDeletedAvailable={true}
@@ -498,15 +492,15 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               message={
                 searchQuery.trim()
                   ? <>No files match “{searchQuery.trim()}”.</>
-                  : hideCodeAndConfigs && hiddenCount > 0
-                    ? <>No documents yet — {hiddenCount} code/config file{hiddenCount === 1 ? '' : 's'} hidden. Use the filter menu to show them.</>
+                  : types.size > 0 && hiddenCount > 0
+                    ? <>No files of the selected type{types.size === 1 ? '' : 's'} — {hiddenCount} hidden by the filter.</>
                     : <>Nothing here yet. Files Claude writes or edits in this chat will appear here.</>
               }
               action={
                 searchQuery.trim()
                   ? { label: 'Clear search', onClick: () => setSearchQuery('') }
-                  : hideCodeAndConfigs && hiddenCount > 0
-                    ? { label: 'Show all files', onClick: () => setHideCodeAndConfigs(false) }
+                  : types.size > 0 && hiddenCount > 0
+                    ? { label: 'Show all types', onClick: () => setTypes(new Set()) }
                     : undefined
               }
             />

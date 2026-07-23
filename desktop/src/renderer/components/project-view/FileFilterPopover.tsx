@@ -64,7 +64,6 @@ function Group({ label, multi, children }: { label: string; multi?: boolean; chi
 export function FileFilterPopover({
   types, onTypesChange,
   sortBy, onSortBy,
-  hideCode, onHideCode,
   showDeleted, onShowDeleted,
   showDeletedAvailable,
   onClose,
@@ -75,10 +74,6 @@ export function FileFilterPopover({
   onTypesChange(next: Set<FileTypeGroup>): void;
   sortBy: FileSortKey;
   onSortBy(v: FileSortKey): void;
-  // Hide code & configs — ON by default (the default view is documents-first;
-  // non-developers shouldn't wade through source files to find their docs).
-  hideCode: boolean;
-  onHideCode(v: boolean): void;
   showDeleted: boolean;
   onShowDeleted(v: boolean): void;
   // "Show deleted" only makes sense for the tracked Artifacts tab (All files
@@ -90,13 +85,10 @@ export function FileFilterPopover({
   // registered later, so the shared LIFO stack handles the ordering.
   useEscClose(true, onClose);
 
-  // Sort is a preference, not a filter, so "Clear" only resets the filters —
-  // back to their DEFAULTS, which for hideCode is ON.
-  const filtersActive =
-    types.size > 0 || !hideCode || (showDeletedAvailable && showDeleted);
+  // Sort is a preference, not a filter, so "Clear" only resets the filters.
+  const filtersActive = types.size > 0 || (showDeletedAvailable && showDeleted);
   const clear = () => {
     onTypesChange(new Set());
-    onHideCode(true);
     if (showDeletedAvailable) onShowDeleted(false);
   };
 
@@ -146,18 +138,16 @@ export function FileFilterPopover({
           </Chip>
         ))}
       </Group>
-      <Group label="Visibility" multi>
-        {/* Default-ON. When the "Code & configs" TYPE filter is selected the
-            parent suspends this (the two together would always show nothing). */}
-        <Chip multi active={hideCode} onClick={() => onHideCode(!hideCode)}>
-          Hide code & configs
-        </Chip>
-        {showDeletedAvailable && (
+      {/* "Hide code & configs" was retired 2026-07-23 (Destin): "Code & configs"
+          is a TYPE, so hiding it was a second, overlapping way to filter by type.
+          Only render Visibility when it still has a control to show. */}
+      {showDeletedAvailable && (
+        <Group label="Visibility" multi>
           <Chip multi active={showDeleted} onClick={() => onShowDeleted(!showDeleted)}>
             Show deleted
           </Chip>
-        )}
-      </Group>
+        </Group>
+      )}
     </div>
   );
 }

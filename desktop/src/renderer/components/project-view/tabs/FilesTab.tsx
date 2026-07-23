@@ -139,7 +139,6 @@ export function FilesTab({
   search,
   types,
   sortBy,
-  hideCode,
   refreshKey,
   mode,
   onMutated,
@@ -150,7 +149,6 @@ export function FilesTab({
   // Multi-select type filter; EMPTY set = all types (filter popover).
   types: ReadonlySet<FileTypeGroup>;
   sortBy: FileSortKey;               // filter popover: sort (files only)
-  hideCode: boolean;                 // filter popover: hide code & configs (default ON)
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
   mode: 'artifacts' | 'allfiles';
   // Called after an in-tab sidecar mutation (exclude) so ProjectView can refetch
@@ -228,15 +226,11 @@ export function FilesTab({
     return () => { cancelled = true; };
   }, [project.path, artifacts]);
 
-  // Filter the artifact grid (deleted-state, search, type filter, hide-code).
+  // Filter the artifact grid (deleted-state, search, type filter).
   // Search matches the FILE NAME only — a query matching a folder name should
   // not surface every file inside that folder. Hide-code is suspended while the
   // "Code & configs" TYPE filter is selected (the two together would always
   // show nothing — an explicit type pick wins over the default hide).
-  // An explicit type pick beats the default hide — otherwise "Hide code" plus a
-  // type selection can combine into a guaranteed-empty list. One rule for both
-  // file browsers (the drawer's hide-code is broader, so it needs this too).
-  const effectiveHideCode = hideCode && types.size === 0;
   const filtered = useMemo(
     () => artifacts.filter((a) => {
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
@@ -244,10 +238,9 @@ export function FilesTab({
       const filename = a.path.split('/').pop() ?? a.path;
       if (search && !filename.toLowerCase().includes(search.toLowerCase())) return false;
       if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
-      if (effectiveHideCode && fileTypeGroup(a.path) === 'code') return false;
       return true;
     }),
-    [artifacts, showDeletedArtifacts, orphanIds, search, types, effectiveHideCode],
+    [artifacts, showDeletedArtifacts, orphanIds, search, types],
   );
   const refreshArtifacts = () => {
     const load = mode === 'allfiles'
@@ -349,7 +342,7 @@ export function FilesTab({
   // — no folder cards. When you're looking for something, folders are noise;
   // each flat card shows its parent folder for context instead. Plain browsing
   // (no search, no type filter) keeps the navigable folder tree; the visibility
-  // toggles (hide-code, show-deleted) don't flatten — they only prune it.
+  // toggles (show-deleted) don't flatten — they only prune it.
   const searching = !!search.trim();
   const flat = searching || types.size > 0;
   const dirView = useMemo(() => listDir(filtered, currentDir, sortBy), [filtered, currentDir, sortBy]);
@@ -489,7 +482,7 @@ export function FilesTab({
       )}
       {!loading && !gated && emptyHere && (
         <p className="text-sm text-fg-muted">
-          {/* When files EXIST but the visibility filters (hide-code / deleted)
+          {/* When files EXIST but the filters (type / deleted)
               hid them all, say so — the bare "no artifacts yet" empty state
               would lie about the project. */}
           {artifacts.length > 0

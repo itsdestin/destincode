@@ -97,10 +97,6 @@ export function ProjectView(props: ProjectViewProps) {
   // Multi-select type filter; EMPTY set = all types (Destin, 2026-07-23).
   const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
-  // Hide code & configs — ON by default (documents-first default view), local
-  // to the Project View so the default always wins on a fresh look. Resets to
-  // ON on project switch alongside the other filters.
-  const [hideCode, setHideCode] = useState(true);
   // Filter popover (behind the sliders icon in the search pill). Click-outside
   // is handled HERE with a wrapper ref that contains both the trigger and the
   // popover — putting it inside the popover would race the trigger's own click
@@ -249,7 +245,6 @@ export function ProjectView(props: ProjectViewProps) {
       // Sort is a preference, not a filter, so it persists.
       setArtifactSearch('');
       setTypes(new Set());
-      setHideCode(true); // default ON — see the state declaration
       setFilterOpen(false);
     }
 
@@ -667,9 +662,8 @@ export function ProjectView(props: ProjectViewProps) {
                     placeholder={tab === 'allfiles' ? 'Search files…' : 'Search artifacts…'}
                     inputAriaLabel={tab === 'allfiles' ? 'Search files' : 'Search artifacts'}
                     /* Filters active BEYOND the default view (type + Show deleted).
-                       Sort is a preference; hideCode is default-ON and turning it
-                       OFF reveals more — neither is counted, so a narrowed grid is
-                       never mistaken for the full list with the popover shut. */
+                       Sort is a preference, so it isn't counted — the badge only
+                       signals "filters narrowed this" while the popover is shut. */
                     activeFilters={(types.size > 0 ? 1 : 0) + (tab === 'artifacts' && showDeletedArtifacts ? 1 : 0)}
                     filterOpen={filterOpen}
                     onToggleFilter={() => setFilterOpen((o) => !o)}
@@ -680,8 +674,6 @@ export function ProjectView(props: ProjectViewProps) {
                         onTypesChange={setTypes}
                         sortBy={fileSort}
                         onSortBy={setFileSort}
-                        hideCode={hideCode}
-                        onHideCode={setHideCode}
                         showDeleted={showDeletedArtifacts}
                         onShowDeleted={setShowDeletedArtifacts}
                         showDeletedAvailable={tab === 'artifacts'}
@@ -713,10 +705,10 @@ export function ProjectView(props: ProjectViewProps) {
               not clamp itself to the viewport and scroll internally. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
             {activeProject && tab === 'artifacts' && (
-              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} mode="artifacts" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
             )}
             {activeProject && tab === 'allfiles' && (
-              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} hideCode={hideCode} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} mode="allfiles" onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />
