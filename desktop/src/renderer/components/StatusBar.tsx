@@ -8,7 +8,7 @@ import type { NativePermissionMode } from '../../shared/permission-types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
-import { Scrim, OverlayPanel } from './overlays/Overlay';
+import { Scrim, OverlayPanel, CONTENT_Z } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
@@ -532,7 +532,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
           region actually has a bounded height to scroll within. The prior
           position:fixed + transform approach broke the height constraint. */}
       <Scrim layer={2} onClick={onClose} />
-      <div className="fixed inset-0 z-[61] flex items-center justify-center p-4 pointer-events-none">
+      <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: CONTENT_Z[2] }}>
         <OverlayPanel
           layer={2}
           className="w-full max-w-[420px] max-h-[80vh] flex flex-col pointer-events-auto"
