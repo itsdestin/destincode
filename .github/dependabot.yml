@@ -1,0 +1,75 @@
+version: 2
+
+# Design + decisions: youcoded-dev/docs/active/specs/2026-07-23-dependabot-design.md
+# Cadence for every entry: weekly, max 5 open PRs, minor/patch grouped into ONE
+# PR per ecosystem; majors stay individual so a bad one is reviewed/reverted alone.
+
+updates:
+  # ---- Desktop Electron app: the largest surface (~56 packages) ----
+  - package-ecosystem: "npm"
+    directory: "/desktop"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      desktop-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # node-pty is PATCHED after install by desktop/scripts/patch-node-pty.js,
+      # which rewrites a line in unixTerminal.js and EXITS 0 when that line is
+      # absent ("pattern not found - skipping"). A bump can therefore silently
+      # drop the macOS spawn-helper fix while `npm ci` and CI stay green; the
+      # breakage shows only in a PACKAGED mac build (posix_spawn failed), which
+      # desktop-ci.yml never produces. Bump by hand and re-verify the patch
+      # applied. (npm's "latest" 1.1.0 is also BELOW our pin 1.2.0-beta.12 —
+      # "forward" is not machine-decidable here.)
+      - dependency-name: "node-pty"
+      # Natives below: green tests do NOT prove a PACKAGED build works, so
+      # majors are bumped deliberately, not automatically. Minor/patch still flow.
+      - dependency-name: "electron"           # major = new Node ABI, native rebuilds
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "koffi"              # native FFI, prebuilt binaries
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vscode/ripgrep"    # downloads a platform binary at install
+        update-types: ["version-update:semver-major"]
+
+  # ---- PartyKit multiplayer server ----
+  - package-ecosystem: "npm"
+    directory: "/desktop/partykit"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      partykit-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # ---- Android (Gradle) ----
+  # Two entries: plugin versions (AGP, Kotlin) live in the ROOT build.gradle.kts;
+  # libraries (Compose BOM, okhttp, mlkit, camerax) live in app/build.gradle.kts.
+  # terminal-emulator-vendored/ is deliberately absent — it is vendored source.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      gradle-root-minor-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "gradle"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      gradle-app-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # ---- GitHub Actions ----
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
