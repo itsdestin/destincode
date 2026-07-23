@@ -42,11 +42,27 @@ export function watchGit(repoRoot: string, subscriberId: number): { ok: boolean 
         emit?.({ repoRoot });
       }, DEBOUNCE_MS);
     };
+    // WHY: fs.watch's FSWatcher is an EventEmitter, and it emits 'error' (not
+    // just throw) when its watched target vanishes out from under it — repo
+    // deleted, `git worktree remove`, or anything else that surgeries .git
+    // while we're subscribed. An EventEmitter with zero 'error' listeners
+    // throws an uncaught exception that crashes the whole Electron main
+    // process. Tear this root's entry down the same way unwatch/drop do, so
+    // the app self-heals: the next watchGit() for this root goes back
+    // through the existsSync check above and correctly reports {ok:false}.
+    const onWatcherError = () => {
+      // Guard against a stale watcher's error arriving after this entry was
+      // already replaced (e.g. a fresh watchGit() re-created it) — only tear
+      // down if we're still the current entry for this root.
+      if (entries.get(repoRoot) === created) closeEntry(repoRoot, created);
+    };
     // Watching the DIRECTORIES catches create/replace of direct children —
     // git rewrites HEAD/index atomically via rename, which a file-watch loses.
     for (const target of [gitDir, path.join(gitDir, 'refs', 'heads')]) {
       try {
-        created.watchers.push(fs.watch(target, fire));
+        const watcher = fs.watch(target, fire);
+        watcher.on('error', onWatcherError);
+        created.watchers.push(watcher);
       } catch {
         // refs/heads may not exist yet in a repo with no commits — HEAD watch
         // still covers the state change when the first commit creates it.
