@@ -101,7 +101,7 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
             </div>
           ) : linkError ? (
             <div className="w-40 h-40 rounded-lg bg-well border border-edge-dim flex items-center justify-center p-3">
-              <span className="text-xs text-red-400 text-center">{linkError}</span>
+              <span className="text-xs text-destructive-fg text-center">{linkError}</span>
             </div>
           ) : shareLink ? (
             <div className="bg-white p-3 rounded-lg">
@@ -126,7 +126,13 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
         <div className="border-t border-edge-dim pt-4">
           {prUrl ? (
             <div className="text-center">
-              <p className="text-xs text-[#4CAF50] font-medium mb-1">Published successfully!</p>
+              {/* Neutral, not green. The state family's rule is that errors are
+                  neutral cards rather than red boxes (design rule 6) — success
+                  gets the same treatment for the same reason. The word
+                  "successfully" carries the meaning, and the accent PR link
+                  below already draws the eye. Also retires a raw #4CAF50 that
+                  no contrast audit could see, and that was weak on Crème. */}
+              <p className="text-xs text-fg font-medium mb-1">Published successfully!</p>
               <a
                 href={prUrl}
                 target="_blank"
@@ -146,7 +152,7 @@ export default function ShareSheet({ skillId, onClose }: ShareSheetProps) {
                 {publishing ? 'Publishing...' : 'Publish to Marketplace'}
               </Button>
               {publishError && (
-                <p className="text-xs text-red-400 text-center mt-2">{publishError}</p>
+                <p className="text-xs text-destructive-fg text-center mt-2">{publishError}</p>
               )}
             </>
           )}

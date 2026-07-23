@@ -240,7 +240,7 @@ export function ContextEditorOverlay({ project, file, onClose }: ContextEditorOv
 
         {/* Inline write error — surfaces the allow-list rejection reason. */}
         {saveError && (
-          <div className="text-xs text-red-500 shrink-0">{saveError}</div>
+          <div className="text-xs text-destructive-fg shrink-0">{saveError}</div>
         )}
 
         {/* Body: loading / error / view / edit */}
@@ -250,7 +250,7 @@ export function ContextEditorOverlay({ project, file, onClose }: ContextEditorOv
           </div>
         ) : loadError ? (
           <div className="flex-1 min-h-0 flex items-center justify-center">
-            <p className="text-sm text-red-500 max-w-md text-center">{loadError}</p>
+            <p className="text-sm text-destructive-fg max-w-md text-center">{loadError}</p>
           </div>
         ) : editing ? (
           /* Shared Textarea (change 20). Retires the `focus:ring-1` focus ring

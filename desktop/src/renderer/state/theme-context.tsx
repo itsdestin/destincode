@@ -34,7 +34,6 @@ const SHOW_TURN_METADATA_KEY = 'youcoded-show-turn-metadata';
 // Artifact viewer: filter Session Drawer / Project View to "Documents and
 // Mockups" by default. Stored as '0' / '1' (default '1' — code & configs
 // hidden) so non-technical users see only the readable outputs first.
-const HIDE_CODE_AND_CONFIGS_KEY = 'youcoded-hide-code-and-configs';
 // Artifact viewer: include "deleted" artifacts in the list. Default OFF —
 // deleted artifacts (explicit deletes + files missing from disk) are hidden.
 const SHOW_DELETED_ARTIFACTS_KEY = 'youcoded-show-deleted-artifacts';
@@ -71,8 +70,6 @@ interface ThemeContextValue {
   setShowTimestamps: (v: boolean) => void;
   showTurnMetadata: boolean;
   setShowTurnMetadata: (v: boolean) => void;
-  hideCodeAndConfigs: boolean;
-  setHideCodeAndConfigs: (v: boolean) => void;
   showDeletedArtifacts: boolean;
   setShowDeletedArtifacts: (v: boolean) => void;
   /** Artifact drawer width in px (youcoded#105). Committed value — the live
@@ -101,7 +98,6 @@ const ThemeContext = createContext<ThemeContextValue>({
   reducedEffects: false, setReducedEffects: () => {},
   showTimestamps: true, setShowTimestamps: () => {},
   showTurnMetadata: false, setShowTurnMetadata: () => {},
-  hideCodeAndConfigs: true, setHideCodeAndConfigs: () => {},
   showDeletedArtifacts: false, setShowDeletedArtifacts: () => {},
   drawerWidth: DEFAULT_DRAWER_WIDTH, setDrawerWidth: () => {}, resetDrawerWidth: () => {},
   allThemes: BUILTIN_THEMES, activeTheme: BUILTIN_THEMES[0], bgStyle: null, patternStyle: null,
@@ -148,7 +144,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [showTurnMetadata, setShowTurnMetadataState] = useState(() => getStored(SHOW_TURN_METADATA_KEY, '') === '1');
   // Artifact viewer "Hide code & configs" toggle. Default ON for non-technical
   // users — they only see Documents & Mockups in the drawer / Project View.
-  const [hideCodeAndConfigs, setHideCodeAndConfigsState] = useState(() => getStored(HIDE_CODE_AND_CONFIGS_KEY, '1') !== '0');
   // Artifact viewer "Show deleted" toggle. Default OFF — hide both explicit
   // delete versions AND artifacts whose underlying file has gone missing.
   const [showDeletedArtifacts, setShowDeletedArtifactsState] = useState(() => getStored(SHOW_DELETED_ARTIFACTS_KEY, '') === '1');
@@ -293,10 +288,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
           setShowTurnMetadataState(prefs.showTurnMetadata);
           try { localStorage.setItem(SHOW_TURN_METADATA_KEY, prefs.showTurnMetadata ? '1' : '0'); } catch {}
         }
-        if (typeof prefs.hideCodeAndConfigs === 'boolean') {
-          setHideCodeAndConfigsState(prefs.hideCodeAndConfigs);
-          try { localStorage.setItem(HIDE_CODE_AND_CONFIGS_KEY, prefs.hideCodeAndConfigs ? '1' : '0'); } catch {}
-        }
         if (typeof prefs.showDeletedArtifacts === 'boolean') {
           setShowDeletedArtifactsState(prefs.showDeletedArtifacts);
           try { localStorage.setItem(SHOW_DELETED_ARTIFACTS_KEY, prefs.showDeletedArtifacts ? '1' : '0'); } catch {}
@@ -338,10 +329,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       if (typeof prefs.showTurnMetadata === 'boolean') {
         setShowTurnMetadataState(prefs.showTurnMetadata);
         try { localStorage.setItem(SHOW_TURN_METADATA_KEY, prefs.showTurnMetadata ? '1' : '0'); } catch {}
-      }
-      if (typeof prefs.hideCodeAndConfigs === 'boolean') {
-        setHideCodeAndConfigsState(prefs.hideCodeAndConfigs);
-        try { localStorage.setItem(HIDE_CODE_AND_CONFIGS_KEY, prefs.hideCodeAndConfigs ? '1' : '0'); } catch {}
       }
       if (typeof prefs.showDeletedArtifacts === 'boolean') {
         setShowDeletedArtifactsState(prefs.showDeletedArtifacts);
@@ -509,15 +496,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     persistAppearance({ showTurnMetadata: v });
   }, []);
 
-  // Toggle for "Hide code & configs" filter in artifact surfaces. Persists
-  // alongside other appearance prefs so the choice survives reloads + syncs
-  // across peer windows (main + buddy).
-  const setHideCodeAndConfigs = useCallback((v: boolean) => {
-    setHideCodeAndConfigsState(v);
-    try { localStorage.setItem(HIDE_CODE_AND_CONFIGS_KEY, v ? '1' : '0'); } catch {}
-    persistAppearance({ hideCodeAndConfigs: v });
-  }, []);
-
   // Toggle for "Show deleted" in artifact surfaces. Persists across reloads
   // and syncs to peer windows (same pattern as the other appearance prefs).
   const setShowDeletedArtifacts = useCallback((v: boolean) => {
@@ -571,7 +549,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     reducedEffects, setReducedEffects,
     showTimestamps, setShowTimestamps,
     showTurnMetadata, setShowTurnMetadata,
-    hideCodeAndConfigs, setHideCodeAndConfigs,
     showDeletedArtifacts, setShowDeletedArtifacts,
     drawerWidth, setDrawerWidth, resetDrawerWidth,
     allThemes, activeTheme, bgStyle, patternStyle,
@@ -579,7 +556,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }), [activeSlug, setTheme, cycleTheme, cycleList, setCycleList, font,
        reducedEffects, setReducedEffects, showTimestamps, setShowTimestamps,
        showTurnMetadata, setShowTurnMetadata,
-       hideCodeAndConfigs, setHideCodeAndConfigs,
        showDeletedArtifacts, setShowDeletedArtifacts,
        // drawerWidth is the only new dep — the two setters are recreated per
        // render but close over nothing stale (clamp reads window at call time),

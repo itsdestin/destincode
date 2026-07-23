@@ -11,6 +11,9 @@ import path from 'node:path';
 // Real (pure) — used to compute the exact on-disk transcript path the service
 // derives, so the quiescence tests can grow the same file the loop stats.
 import { ccProjectSlug } from '../src/main/project-conversations';
+// Real (pure) — mirrors localJsonlPath's native branch so Task 8 tests can
+// compute the exact ~/.youcoded/sessions/<slug>/<id>.jsonl path the service derives.
+import { cwdToProjectSlug } from '../src/main/transcript-watcher';
 
 // vi.mock factories are hoisted above imports, so shared fake state must be
 // created via vi.hoisted for the factories to close over it.
@@ -163,8 +166,8 @@ describe('conversations service composition root', () => {
   it('an event upserts projectName/originalPath/lastActive/device', async () => {
     const svc = await freshService(startOpts());
     const cwd = path.join(tmpRoot, 'my-project');
-    svc.noteSessionStarted('claude-abc', cwd);
-    svc.noteTranscriptEvent('claude-abc', ev({ type: 'turn-complete', timestamp: 1_700_000_000_000 }));
+    svc.noteSessionStarted('claude-abc', cwd, 'claude');
+    svc.noteTranscriptEvent('claude-abc', ev({ type: 'turn-complete', timestamp: 1_700_000_000_000 }), 'claude');
     await Promise.resolve();
     expect(h.store.upsert).toHaveBeenCalledWith(expect.objectContaining({
       id: 'claude-abc',
@@ -180,8 +183,8 @@ describe('conversations service composition root', () => {
   it('turn-complete mirrors the jsonl and syncs the personal space promptly', async () => {
     const svc = await freshService(startOpts());
     const cwd = path.join(tmpRoot, 'proj-x');
-    svc.noteSessionStarted('claude-xyz', cwd);
-    svc.noteTranscriptEvent('claude-xyz', ev({ type: 'turn-complete' }));
+    svc.noteSessionStarted('claude-xyz', cwd, 'claude');
+    svc.noteTranscriptEvent('claude-xyz', ev({ type: 'turn-complete' }), 'claude');
     await Promise.resolve();
     expect(h.mirrorIn).toHaveBeenCalledTimes(1);
     const arg = h.mirrorIn.mock.calls[0][0];
@@ -209,7 +212,10 @@ describe('conversations service composition root', () => {
     // calls store.list synchronously during startConversationStore, before this
     // line) sees an empty list — this test isolates the SYNCED-event sweep.
     const svc = await freshService(startOpts());
-    h.store.list.mockResolvedValue([recA, recB] as any);
+    // Task 8: the sweep now lists BOTH provider buckets — gate the fake on the
+    // provider arg so these claude-only records aren't double-counted under
+    // the native bucket too.
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [recA, recB] : []));
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut).toHaveBeenCalledTimes(1);
@@ -231,7 +237,7 @@ describe('conversations service composition root', () => {
       projectName: 'startup-proj', originalPath: dir,
       transcriptRef: 'claude/transcripts/startup-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
     };
-    h.store.list.mockResolvedValue([rec] as any);
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [rec] : []));
     await freshService(startOpts()); // startup sweep fires — no fireSync
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${rec.id}.jsonl`);
@@ -261,8 +267,8 @@ describe('conversations service composition root', () => {
     // Records set AFTER start (as in the previous test) so the startup catch-up
     // sweep sees an empty list and this test isolates the SYNCED-event sweep.
     const svc = await freshService(startOpts());
-    h.store.list.mockResolvedValue([liveRec, idleRec] as any);
-    svc.noteSessionStarted(liveRec.id, liveDir); // liveRec is a LIVE session here
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [liveRec, idleRec] : []));
+    svc.noteSessionStarted(liveRec.id, liveDir, 'claude'); // liveRec is a LIVE session here
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
     expect(h.materializeOut).toHaveBeenCalledTimes(1);
@@ -283,11 +289,11 @@ describe('conversations service composition root', () => {
       transcriptRef: 'claude/transcripts/ended-proj/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl',
     };
     const svc = await freshService(startOpts());
-    svc.noteSessionStarted(rec.id, dir); // now LIVE → guarded
+    svc.noteSessionStarted(rec.id, dir, 'claude'); // now LIVE → guarded
     // Records set AFTER start + guard (as in the sweep tests above) so the
     // startup catch-up sweep sees an empty list — this test isolates the
     // SYNCED-event sweep and the guard-release path.
-    h.store.list.mockResolvedValue([rec] as any);
+    h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [rec] : []));
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await new Promise((r) => setTimeout(r, 20));
     expect(h.materializeOut).not.toHaveBeenCalled(); // skipped while live
@@ -318,7 +324,7 @@ describe('conversations service composition root', () => {
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     fs.writeFileSync(localPath, 'aaaa'); // initial size
 
-    svc.noteSessionStarted(id, dir);
+    svc.noteSessionStarted(id, dir, 'claude');
     svc.noteSessionEnded(id);            // kicks the async targeted materialize
     await vi.advanceTimersByTimeAsync(0); // flush get() → first stat → arm probe
     // Grow the file mid-wait: the next probe sees a DIFFERENT size, so the copy
@@ -359,7 +365,7 @@ describe('conversations service composition root', () => {
     h.store.get.mockImplementation(async (_p: string, gid: string) => (gid === recA.id ? recA : recB) as any);
     h.store.list.mockResolvedValue([recA, recB] as any);
 
-    svc.noteSessionStarted(recA.id, dirA);
+    svc.noteSessionStarted(recA.id, dirA, 'claude');
     svc.noteSessionEnded(recA.id);
     await vi.advanceTimersByTimeAsync(0);   // flush get() → first stat (absent → size 0) → arm probe
     await vi.advanceTimersByTimeAsync(750); // probe 2: size 0 stable → copy recA only
@@ -391,7 +397,7 @@ describe('conversations service composition root', () => {
     let sz = 100;
     const statSpy = vi.spyOn(fs, 'statSync').mockImplementation(() => ({ size: (sz += 100) } as any));
 
-    svc.noteSessionStarted(id, dir);
+    svc.noteSessionStarted(id, dir, 'claude');
     svc.noteSessionEnded(id);
     // Advance well past QUIESCE_MAX_MS (6s) — every probe sees a bigger size.
     for (let i = 0; i < 12; i++) await vi.advanceTimersByTimeAsync(750);
@@ -420,10 +426,10 @@ describe('conversations service composition root', () => {
     h.store.get.mockResolvedValue(rec as any);
     // Local file absent (size 0), so it would reach quiescence on probe 2 — but
     // we re-open the session first, and the post-wait guard must win.
-    svc.noteSessionStarted(id, dir);
+    svc.noteSessionStarted(id, dir, 'claude');
     svc.noteSessionEnded(id);              // deletes guard, kicks async materialize
     await vi.advanceTimersByTimeAsync(0);  // flush get() → first probe (size 0) → arm sleep
-    svc.noteSessionStarted(id, dir);       // session re-opens mid-wait → re-adds the guard
+    svc.noteSessionStarted(id, dir, 'claude');       // session re-opens mid-wait → re-adds the guard
     await vi.advanceTimersByTimeAsync(750); // probe 2: size 0 stable → quiesced, but guard is set
     expect(h.materializeOut).not.toHaveBeenCalled();
     svc.stopConversationStore();
@@ -448,7 +454,7 @@ describe('conversations service composition root', () => {
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     fs.writeFileSync(localPath, 'the-final-turn');
 
-    svc.noteSessionStarted(id, dir); // learn the cwd so flush can locate the file
+    svc.noteSessionStarted(id, dir, 'claude'); // learn the cwd so flush can locate the file
     const p = svc.flushSessionToSpace(id);
     await vi.advanceTimersByTimeAsync(0);   // first stat → arm the probe sleep
     await vi.advanceTimersByTimeAsync(750); // probe 2: size stable → quiescent → mirror + push
@@ -491,17 +497,135 @@ describe('conversations service composition root', () => {
     const svc = await import('../src/main/conversations/service');
     await svc.startConversationStore(startOpts());
     await svc.startConversationStore(startOpts()); // double start — no stop between
-    // Exactly one sweep per synced event ⇒ store.list called once.
+    // Exactly one sweep per synced event ⇒ store.list called once PER PROVIDER
+    // bucket (Task 8 widened the sweep to list both 'claude' and 'native').
     h.store.list.mockClear();
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
     await vi.waitFor(() => expect(h.store.list).toHaveBeenCalled());
-    expect(h.store.list).toHaveBeenCalledTimes(1);
+    expect(h.store.list).toHaveBeenCalledTimes(2);
+    expect(h.store.list).toHaveBeenCalledWith('claude');
+    expect(h.store.list).toHaveBeenCalledWith('native');
     // Exactly one periodic interval ⇒ one reconcile per 30-min tick.
     h.reconcile.mockClear();
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(h.reconcile).toHaveBeenCalledTimes(1);
     svc.stopConversationStore();
     vi.useRealTimers();
+  });
+
+  // Security: transcriptRef arrives from synced peer records (and is reachable
+  // over remote WS). A crafted record must never let materialize join outside
+  // the space root — same refuse-on-escape stance as providerDir/recordPath in
+  // conversation-store.ts.
+  describe('transcriptRef containment guard', () => {
+    it('containedTranscriptPath accepts a normal relative ref and refuses traversal/absolute/empty refs', async () => {
+      const svc = await freshService(startOpts());
+      const root = path.join(tmpRoot, 'space-root');
+      expect(svc.containedTranscriptPath(root, 'claude/transcripts/a/b.jsonl'))
+        .toBe(path.resolve(root, 'claude/transcripts/a/b.jsonl'));
+      expect(svc.containedTranscriptPath(root, '../../outside/x.jsonl')).toBeNull();
+      expect(svc.containedTranscriptPath(root, path.resolve(tmpRoot, 'outside', 'y.jsonl'))).toBeNull();
+      expect(svc.containedTranscriptPath(root, '')).toBeNull();
+    });
+
+    // I1 (final review): pins the trailing `+ path.sep` in containedTranscriptPath.
+    // A SIBLING-PREFIX dir shares the root's string prefix but is a DIFFERENT
+    // directory — root `<p>/space`, ref resolving to `<p>/space-evil`. A bare
+    // `startsWith(resolvedRoot)` (dropping `+ path.sep`) would WRONGLY accept it;
+    // the sep-terminated boundary is what refuses it. Mutation-verified: without
+    // the `+ path.sep` this assertion goes red (the escape is accepted).
+    it('containedTranscriptPath refuses a sibling-prefix dir that shares the root name (pins the trailing path.sep)', async () => {
+      const svc = await freshService(startOpts());
+      const root = path.join(tmpRoot, 'x', 'space');
+      // Resolves to <p>/space-evil/t.jsonl — same string prefix as <p>/space,
+      // different dir. MUST be refused.
+      expect(svc.containedTranscriptPath(root, path.join('..', 'space-evil', 't.jsonl'))).toBeNull();
+      // Control: a subdir LITERALLY named the same is genuinely inside (under
+      // root + sep), so it must still be accepted — proves the guard refuses the
+      // sibling specifically, not everything containing 'space-evil'.
+      expect(svc.containedTranscriptPath(root, path.join('space-evil', 't.jsonl')))
+        .toBe(path.resolve(root, 'space-evil', 't.jsonl'));
+    });
+
+    // I1 integration twin: the same sibling-prefix escape refused at the
+    // materializeOne level. The ref keeps its `claude/` lane prefix (so it clears
+    // the lane assertion that runs FIRST) yet resolves to a sibling of the space
+    // root — proving the containment guard, not the lane check, is what stops the
+    // materialize. root here is <tmpRoot>/Conversations, so the sibling is
+    // <tmpRoot>/Conversations-evil. Mutation-verified alongside the unit case.
+    it('materializeOne refuses a sibling-prefix escape that still passes the lane check', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'sibling-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'sibling-escape-1', provider: 'claude', projectName: 'sibling-proj', originalPath: dir,
+        // Starts with 'claude/' (passes the lane assertion) but resolves to
+        // <tmpRoot>/Conversations-evil/... — a sibling-prefix of the space root.
+        transcriptRef: 'claude/../../Conversations-evil/sibling-escape-1.jsonl',
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('sibling-escape-1', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('escaping space root'), 'sibling-escape-1');
+      warnSpy.mockRestore();
+    });
+
+    it('materializeOne refuses a transcriptRef that escapes the space root', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'escape-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'escaping-1', provider: 'claude', projectName: 'escape-proj', originalPath: dir,
+        transcriptRef: '../../outside/x.jsonl',
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('escaping-1', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('refused transcriptRef'), 'escaping-1');
+      warnSpy.mockRestore();
+    });
+
+    it('materializeOne refuses an absolute transcriptRef', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'escape-proj-abs');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'escaping-2', provider: 'claude', projectName: 'escape-proj-abs', originalPath: dir,
+        transcriptRef: path.resolve(tmpRoot, 'outside', 'y.jsonl'),
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('escaping-2', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('refused transcriptRef'), 'escaping-2');
+      warnSpy.mockRestore();
+    });
+
+    it('materializeSweep refuses an escaping record but still materializes a valid one', async () => {
+      await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const goodDir = path.join(tmpRoot, 'good-proj');
+      const badDir = path.join(tmpRoot, 'bad-proj');
+      fs.mkdirSync(goodDir, { recursive: true });
+      fs.mkdirSync(badDir, { recursive: true });
+      const badRec = {
+        id: 'bad-rec', provider: 'claude', projectName: 'bad-proj', originalPath: badDir,
+        transcriptRef: '../../outside/z.jsonl',
+      };
+      const goodRec = {
+        id: 'good-rec', provider: 'claude', projectName: 'good-proj', originalPath: goodDir,
+        transcriptRef: 'claude/transcripts/good-proj/good-rec.jsonl',
+      };
+      h.store.list.mockImplementation(async (p: string) => (p === 'claude' ? [badRec, goodRec] : []));
+      fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+      await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain('good-rec.jsonl');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('refused transcriptRef'), 'bad-rec');
+      warnSpy.mockRestore();
+    });
   });
 
   it('a non-personal or non-updated synced event does NOT materialize', async () => {
@@ -516,15 +640,350 @@ describe('conversations service composition root', () => {
   // 5 — title write-through.
   it('noteTitleChanged writes through to store.setTitle', async () => {
     const svc = await freshService(startOpts());
-    svc.noteTitleChanged('claude-t', 'My Title');
+    svc.noteTitleChanged('claude-t', 'My Title', 'claude');
     expect(h.store.setTitle).toHaveBeenCalledWith('claude', 'claude-t', 'My Title');
   });
 
-  // 6 — flag write-through.
-  it('noteFlagChanged writes through to store.setFlag', async () => {
+  // 6 — flag write-through. The 4th arg is now `knownNative` (boolean): false
+  // means "not live/on-disk native" → the write probes the store's native bucket
+  // and, finding nothing (default mock returns null), lands in the claude bucket.
+  it('noteFlagChanged writes through to store.setFlag (knownNative=false, no native record → claude)', async () => {
     const svc = await freshService(startOpts());
-    svc.noteFlagChanged('claude-f', 'complete', true);
+    await svc.noteFlagChanged('claude-f', 'complete', true, false);
     expect(h.store.setFlag).toHaveBeenCalledWith('claude', 'claude-f', 'complete', true);
+  });
+
+  // C1: knownNative=true (live/on-disk native id) routes the write to native
+  // without probing the store.
+  it('noteFlagChanged routes to the native bucket when knownNative=true', async () => {
+    const svc = await freshService(startOpts());
+    await svc.noteFlagChanged('nat-f', 'complete', true, true);
+    expect(h.store.setFlag).toHaveBeenCalledWith('native', 'nat-f', 'complete', true);
+  });
+
+  // C1: the core misroute fix — knownNative=false, but a native record EXISTS in
+  // the store (a store-only native browse row: synced, transcript not local, so
+  // isNativeSessionId is false). The write must probe the native bucket and land
+  // there, NOT seed a claude phantom.
+  it('noteFlagChanged probes the store and routes to native when a store-only native record exists', async () => {
+    const svc = await freshService(startOpts());
+    h.store.get.mockResolvedValue({ id: 'store-only-nat', provider: 'native' } as any);
+    await svc.noteFlagChanged('store-only-nat', 'complete', true, false);
+    expect(h.store.get).toHaveBeenCalledWith('native', 'store-only-nat');
+    expect(h.store.setFlag).toHaveBeenCalledWith('native', 'store-only-nat', 'complete', true);
+    expect(h.store.setFlag).not.toHaveBeenCalledWith('claude', 'store-only-nat', 'complete', true);
+  });
+
+  // --- noteModelUsed (Task 3) ------------------------------------------------
+  // Never seeds a record on its own (a model-only upsert would be exactly the
+  // §3.2 phantom shape) — it either upserts into an EXISTING record right
+  // away, or stashes on ctx and rides the next transcript-event upsert.
+  describe('noteModelUsed', () => {
+    const ref = { modelId: 'claude-opus-4-7', providerType: 'anthropic', providerLabel: 'Claude Pro' };
+
+    it('upserts lastUsedModel immediately when a record already exists', async () => {
+      const svc = await freshService(startOpts());
+      const dir = path.join(tmpRoot, 'model-proj');
+      svc.noteSessionStarted('claude-m1', dir, 'claude');
+      h.store.get.mockResolvedValue({ id: 'claude-m1', provider: 'claude' } as any);
+      svc.noteModelUsed('claude-m1', ref);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.store.get).toHaveBeenCalledWith('claude', 'claude-m1');
+      expect(h.store.upsert).toHaveBeenCalledWith({ id: 'claude-m1', provider: 'claude', lastUsedModel: ref });
+    });
+
+    it('does NOT upsert (never seeds a record) when no record exists yet — it rides the next transcript upsert instead', async () => {
+      const svc = await freshService(startOpts());
+      const dir = path.join(tmpRoot, 'model-proj-2');
+      svc.noteSessionStarted('claude-m2', dir, 'claude');
+      h.store.get.mockResolvedValue(null); // no record yet
+      svc.noteModelUsed('claude-m2', ref);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.store.upsert).not.toHaveBeenCalled();
+      // The stashed ref rides the NEXT transcript-event upsert.
+      svc.noteTranscriptEvent('claude-m2', ev({ type: 'turn-complete' }), 'claude');
+      await Promise.resolve();
+      expect(h.store.upsert).toHaveBeenCalledWith(expect.objectContaining({ id: 'claude-m2', lastUsedModel: ref }));
+    });
+
+    it('is a no-op for a session that never announced itself (no ctx, no provider known)', async () => {
+      const svc = await freshService(startOpts());
+      svc.noteModelUsed('never-announced', ref);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.store.get).not.toHaveBeenCalled();
+      expect(h.store.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  // --- Native transcript events (Task 4) -------------------------------------
+  // Native sessions ride the SAME noteTranscriptEvent/noteModelUsed entry points
+  // as CC, just keyed by sessionProvider:'native' — ipc-handlers.ts's native
+  // listener calls noteTranscriptEvent(event.sessionId, event, 'native') directly
+  // (native ids are identity-mapped in sessionIdMap, no lookup needed). This pins
+  // that the native lane upserts provider:'native' with the native transcriptRef
+  // shape and folds in a stashed lastUsedModel — exactly like the CC lane, just
+  // parameterized by the threaded provider (Task 3), not a separate code path.
+  describe('native transcript events (Task 4)', () => {
+    it('native turn-complete upserts a native-lane record carrying lastUsedModel', async () => {
+      const svc = await freshService(startOpts());
+      svc.noteSessionStarted('nat-1', path.join('/home/d', 'proj'), 'native');
+      svc.noteModelUsed('nat-1', { modelId: 'qwen-3', providerType: 'local-engine', providerLabel: 'Local models (llama.cpp)' });
+      svc.noteTranscriptEvent('nat-1', ev({ type: 'turn-complete', sessionId: 'nat-1' }), 'native');
+      await Promise.resolve();
+      const up = h.store.upsert.mock.calls.at(-1)![0];
+      expect(up.provider).toBe('native');
+      expect(up.transcriptRef).toBe('native/transcripts/proj/nat-1.jsonl');
+      expect(up.lastUsedModel?.modelId).toBe('qwen-3');
+    });
+
+    // Ordering hazard the plan pins explicitly: the SAME debounce-clear rule the
+    // CC path relies on (test above, "turn-complete cancels a pending debounce
+    // timer") must also hold for a native-keyed session — it's the same code
+    // path keyed by session id, not a provider-specific branch, but the plan
+    // asks to confirm rather than assume.
+    it('native: turn-complete cancels a pending debounce timer (same ordering rule as CC)', async () => {
+      vi.useFakeTimers();
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      await svc.startConversationStore(startOpts());
+      svc.noteSessionStarted('nat-2', path.join(tmpRoot, 'np'), 'native');
+      svc.noteTranscriptEvent('nat-2', ev({ type: 'assistant-text', sessionId: 'nat-2' }), 'native'); // arms debounce
+      svc.noteTranscriptEvent('nat-2', ev({ type: 'turn-complete', sessionId: 'nat-2' }), 'native');   // immediate upsert + cancel
+      await Promise.resolve();
+      expect(h.store.upsert).toHaveBeenCalledTimes(1);
+      // The stale debounce timer must NOT fire a second (stale) upsert 5s later.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(h.store.upsert).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+  });
+
+  // --- Native flush / materialize (Task 8) -----------------------------------
+  // flushSessionToSpace/materializeOne/materializeSweep go fully provider-aware:
+  // native sessions mirror their ~/.youcoded/sessions/ transcript into the
+  // native/ space lane, and the materialize direction respects the SAME lane
+  // (D5, never cross-materialize) plus the live-session guard, kept for native
+  // for a different reason than CC's (see the WHY comments in service.ts).
+  describe('native flush / materialize (Task 8)', () => {
+    it('flushes a native session from ~/.youcoded/sessions into the native/ space lane', async () => {
+      vi.useFakeTimers();
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      const nativeHomeRoot = path.join(tmpRoot, 'native-home');
+      await svc.startConversationStore({ ...startOpts(), nativeHomeRoot });
+      const dir = path.join(tmpRoot, 'native-flush-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const id = '44444444-4444-4444-4444-444444444444';
+      // Seed the local NATIVE transcript at the exact path localJsonlPath derives
+      // for provider:'native' — ~/.youcoded/sessions/<cwdToProjectSlug(cwd)>/<id>.jsonl.
+      const localPath = path.join(nativeHomeRoot, '.youcoded', 'sessions', cwdToProjectSlug(dir), `${id}.jsonl`);
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(localPath, 'native-final-turn');
+
+      svc.noteSessionStarted(id, dir, 'native'); // learn the cwd + NATIVE provider
+      const p = svc.flushSessionToSpace(id);
+      await vi.advanceTimersByTimeAsync(0);   // first stat → arm the probe sleep
+      await vi.advanceTimersByTimeAsync(750); // probe 2: size stable → quiescent → mirror + push
+      await p;
+      expect(h.mirrorIn).toHaveBeenCalledTimes(1);
+      const arg = h.mirrorIn.mock.calls[0][0];
+      // Source: the NATIVE local path, not a claude/ projectsDir path.
+      expect(arg.localJsonlPath).toBe(localPath);
+      // Dest: the native/ space lane, not claude/.
+      expect(arg.spaceTranscriptPath).toContain(`native${path.sep}transcripts`);
+      expect(arg.spaceTranscriptPath).toContain(`${id}.jsonl`);
+      expect(h.syncSpacesSyncNowAwaited).toHaveBeenCalledWith('personal', expect.any(Number));
+      svc.stopConversationStore();
+      vi.useRealTimers();
+    });
+
+    // Honest no-op: a missing local source must never throw and must never
+    // block the handoff barrier — flushSessionToSpace doesn't inspect mirrorIn's
+    // return value at all, it always proceeds to the awaited sync push. This
+    // pins that "copied:false" (the real mirrorIn's answer for a missing local
+    // file — see transcript-mirror.test.ts) is a legitimate, silent outcome here.
+    it('flush against a MISSING local source discards {copied:false} and pushes nothing, but still syncs (honest no-op, no throw)', async () => {
+      vi.useFakeTimers();
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      await svc.startConversationStore(startOpts());
+      const dir = path.join(tmpRoot, 'missing-source-proj');
+      fs.mkdirSync(dir, { recursive: true }); // project dir exists; the TRANSCRIPT file does not
+      const id = 'missing-source-1';
+      h.mirrorIn.mockReturnValueOnce({ copied: false }); // what the real mirrorIn returns for an absent local file
+      svc.noteSessionStarted(id, dir, 'native');
+      const p = svc.flushSessionToSpace(id);
+      // Absent local file reads size 0 on every probe → quiescent immediately
+      // (waitForQuiescence's own "absent local is quiescent" branch).
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(750);
+      await expect(p).resolves.toBeUndefined(); // never throws
+      expect(h.mirrorIn).toHaveBeenCalledTimes(1);
+      // The push still runs regardless of mirrorIn's result — no early return.
+      expect(h.syncSpacesSyncNowAwaited).toHaveBeenCalledWith('personal', expect.any(Number));
+      svc.stopConversationStore();
+      vi.useRealTimers();
+    });
+
+    // Lane assertion (D5): a record's transcriptRef must live under ITS OWN
+    // provider's lane. A native record carrying a claude/ ref is mislabeled —
+    // refuse rather than materialize it as if it were a CC transcript.
+    it('materializeOne refuses a claude/ transcriptRef on a native record (lane mismatch)', async () => {
+      const svc = await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const dir = path.join(tmpRoot, 'lane-mismatch-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'lane-mismatch-1', provider: 'native', projectName: 'lane-mismatch-proj', originalPath: dir,
+        // WRONG lane: a native record must be 'native/transcripts/...', not 'claude/...'.
+        transcriptRef: 'claude/transcripts/lane-mismatch-proj/lane-mismatch-1.jsonl',
+      };
+      h.store.get.mockResolvedValue(rec as any);
+      await svc.materializeOne('lane-mismatch-1', dir);
+      expect(h.materializeOut).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lane mismatch'), 'lane-mismatch-1');
+      warnSpy.mockRestore();
+    });
+
+    // materializeOne falls back to the 'native' bucket when 'claude' has no hit,
+    // so a native-only id still resolves (proves the try-claude-then-native
+    // fallback, not just the shared-mock path the lane-mismatch test rides).
+    it('materializeOne finds a native-only id via the claude→native fallback', async () => {
+      const svc = await freshService(startOpts());
+      const dir = path.join(tmpRoot, 'native-fallback-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      const rec = {
+        id: 'native-fallback-1', provider: 'native', projectName: 'native-fallback-proj', originalPath: dir,
+        transcriptRef: 'native/transcripts/native-fallback-proj/native-fallback-1.jsonl',
+      };
+      h.store.get.mockImplementation(async (p: string, gid: string) => (p === 'native' && gid === rec.id ? rec : null) as any);
+      await svc.materializeOne(rec.id, dir);
+      expect(h.store.get).toHaveBeenCalledWith('claude', rec.id);
+      expect(h.store.get).toHaveBeenCalledWith('native', rec.id);
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${rec.id}.jsonl`);
+    });
+
+    // Live-session guard, kept for native for a DIFFERENT reason than CC (no
+    // long-lived fd; a mid-session materializeOut would redirect subsequent
+    // native appends onto the freshly-materialized file instead of losing an
+    // inode) — see the WHY comment in materializeSweep. This proves the sweep
+    // actually widens to list('native') AND still honors the guard there.
+    it('materialize sweep skips a LIVE native session; an idle native record still materializes', async () => {
+      const liveDir = path.join(tmpRoot, 'native-live-proj');
+      const idleDir = path.join(tmpRoot, 'native-idle-proj');
+      fs.mkdirSync(liveDir, { recursive: true });
+      fs.mkdirSync(idleDir, { recursive: true });
+      const liveRec = {
+        id: 'native-live-1', provider: 'native', projectName: 'native-live-proj', originalPath: liveDir,
+        transcriptRef: 'native/transcripts/native-live-proj/native-live-1.jsonl',
+      };
+      const idleRec = {
+        id: 'native-idle-1', provider: 'native', projectName: 'native-idle-proj', originalPath: idleDir,
+        transcriptRef: 'native/transcripts/native-idle-proj/native-idle-1.jsonl',
+      };
+      const svc = await freshService(startOpts());
+      h.store.list.mockImplementation(async (p: string) => (p === 'native' ? [liveRec, idleRec] : []));
+      svc.noteSessionStarted(liveRec.id, liveDir, 'native'); // liveRec is a LIVE native session
+      fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+      await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${idleRec.id}.jsonl`);
+    });
+
+    // Sweep-level counterpart to "materializeOne refuses a claude/ transcriptRef
+    // on a native record" above: the SAME lane assertion runs inside
+    // materializeSweep (service.ts ~:479), but until now that copy had ZERO
+    // test coverage — neutralizing it broke nothing, silently reopening
+    // cross-lane materialization on every 'synced' event AND at every startup
+    // sweep (unattended paths, not just the one-off materializeOne call).
+    // Proves SKIP-not-abort: the mismatched record is silently skipped while a
+    // well-formed sibling in the SAME sweep still materializes.
+    it('materializeSweep refuses a lane-mismatched native record but still materializes a valid native sibling', async () => {
+      const badDir = path.join(tmpRoot, 'native-lane-bad-proj');
+      const goodDir = path.join(tmpRoot, 'native-lane-good-proj');
+      fs.mkdirSync(badDir, { recursive: true });
+      fs.mkdirSync(goodDir, { recursive: true });
+      const badRec = {
+        id: 'native-lane-bad-1', provider: 'native', projectName: 'native-lane-bad-proj', originalPath: badDir,
+        // WRONG lane: a native record must be 'native/transcripts/...', not 'claude/...'.
+        transcriptRef: 'claude/transcripts/native-lane-bad-proj/native-lane-bad-1.jsonl',
+      };
+      const goodRec = {
+        id: 'native-lane-good-1', provider: 'native', projectName: 'native-lane-good-proj', originalPath: goodDir,
+        transcriptRef: 'native/transcripts/native-lane-good-proj/native-lane-good-1.jsonl',
+      };
+      await freshService(startOpts());
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      h.store.list.mockImplementation(async (p: string) => (p === 'native' ? [badRec, goodRec] : []));
+      fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
+      await vi.waitFor(() => expect(h.materializeOut).toHaveBeenCalled());
+      expect(h.materializeOut).toHaveBeenCalledTimes(1);
+      expect(h.materializeOut.mock.calls[0][0].localJsonlPath).toContain(`${goodRec.id}.jsonl`);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lane mismatch'), badRec.id);
+      warnSpy.mockRestore();
+    });
+  });
+
+  // --- Meta-write honesty (Item 6) ------------------------------------------
+  // IPC meta handlers go live (main.ts:745) before the store starts
+  // (main.ts:1701, fire-and-forget) — a tag/flag/note set in that boot window
+  // used to silently vanish while the store?. chains no-op'd and the IPC
+  // handler still answered ok:true (the 2026-07-19 incident class, for the
+  // store-availability dimension). These pin the buffer-until-ready /
+  // honest-ok:false behavior at the composition root.
+  describe('meta-write buffering (Item 6)', () => {
+    it('buffers a flag write made before the store starts, flushes it in order, resolves ok:true', async () => {
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      const p1 = svc.noteFlagChanged('id1', 'complete', true, false);   // store not started yet
+      const p2 = svc.noteSessionNote('id1', 'note-2', false);
+      await svc.startConversationStore(startOpts());
+      expect(await p1).toEqual({ ok: true });
+      expect(await p2).toEqual({ ok: true });
+      const flagOrder = h.store.setFlag.mock.invocationCallOrder[0];
+      const noteOrder = h.store.setNote.mock.invocationCallOrder[0];
+      expect(flagOrder).toBeLessThan(noteOrder);             // arrival order preserved
+      svc.stopConversationStore();
+    });
+
+    it('resolves buffered writes ok:false when the store never comes up', async () => {
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      const p = svc.noteFlagChanged('id1', 'complete', true, false);
+      h.managedRoots = null;                                  // no personal root
+      await svc.startConversationStore();
+      expect(await p).toEqual({ ok: false });
+    });
+
+    it('a rejecting store write resolves ok:false, not ok:true', async () => {
+      const svc = await freshService(startOpts());
+      h.store.setFlag.mockRejectedValue(new Error('lock timeout'));
+      expect(await svc.noteFlagChanged('id1', 'complete', true, false)).toEqual({ ok: false });
+    });
+
+    it('a ready store resolves a flag write ok:true immediately (no buffering)', async () => {
+      const svc = await freshService(startOpts());
+      expect(await svc.noteFlagChanged('id1', 'complete', true, false)).toEqual({ ok: true });
+    });
+
+    // stopConversationStore's idempotent-teardown call (fired at the top of
+    // EVERY startConversationStore, including the very first) must NOT settle
+    // writes that arrived before the store ever got a chance to come up — only
+    // a stop of an ALREADY-RUNNING store (app quit / explicit restart) does.
+    it('after stopConversationStore on a running store, a NEW write re-buffers instead of resolving', async () => {
+      vi.resetModules();
+      const svc = await import('../src/main/conversations/service');
+      await svc.startConversationStore(startOpts());
+      svc.stopConversationStore();
+      let settled = false;
+      const p = svc.noteFlagChanged('id2', 'complete', true, false).then((r) => { settled = true; return r; });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(settled).toBe(false);          // still buffered, not resolved yet
+      await svc.startConversationStore(startOpts());
+      expect(await p).toEqual({ ok: true }); // the restart flushes it
+      svc.stopConversationStore();
+    });
   });
 
   // 7 — stop() unsubscribes, clears the periodic timer AND pending debounce timers.
@@ -538,8 +997,8 @@ describe('conversations service composition root', () => {
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(h.reconcile).toHaveBeenCalledTimes(2);
     // Arm a pending debounce for a chatty event, then stop BEFORE its 5s window.
-    svc.noteSessionStarted('claude-s', path.join(tmpRoot, 'p'));
-    svc.noteTranscriptEvent('claude-s', ev({ type: 'assistant-text' }));
+    svc.noteSessionStarted('claude-s', path.join(tmpRoot, 'p'), 'claude');
+    svc.noteTranscriptEvent('claude-s', ev({ type: 'assistant-text' }), 'claude');
     svc.stopConversationStore();
     // A synced event after stop does nothing (unsubscribed + store nulled).
     fireSync({ type: 'synced', spaceId: 'personal', updated: true, pushed: false });
@@ -554,7 +1013,7 @@ describe('conversations service composition root', () => {
   // 8 — events for sessions never announced still upsert (no cwd known).
   it('an event for an unannounced session upserts with no originalPath', async () => {
     const svc = await freshService(startOpts());
-    svc.noteTranscriptEvent('claude-unknown', ev({ type: 'turn-complete' }));
+    svc.noteTranscriptEvent('claude-unknown', ev({ type: 'turn-complete' }), 'claude');
     await Promise.resolve();
     expect(h.store.upsert).toHaveBeenCalledTimes(1);
     const arg = h.store.upsert.mock.calls[0][0];
@@ -570,9 +1029,9 @@ describe('conversations service composition root', () => {
     vi.resetModules();
     const svc = await import('../src/main/conversations/service');
     await svc.startConversationStore(startOpts());
-    svc.noteSessionStarted('claude-d', path.join(tmpRoot, 'd'));
-    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a1' }));
-    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a2' }));
+    svc.noteSessionStarted('claude-d', path.join(tmpRoot, 'd'), 'claude');
+    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a1' }), 'claude');
+    svc.noteTranscriptEvent('claude-d', ev({ type: 'assistant-text', uuid: 'a2' }), 'claude');
     await vi.advanceTimersByTimeAsync(5_000);
     expect(h.store.upsert).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -583,9 +1042,9 @@ describe('conversations service composition root', () => {
     vi.resetModules();
     const svc = await import('../src/main/conversations/service');
     await svc.startConversationStore(startOpts());
-    svc.noteSessionStarted('claude-c', path.join(tmpRoot, 'c'));
-    svc.noteTranscriptEvent('claude-c', ev({ type: 'assistant-text' })); // arms debounce
-    svc.noteTranscriptEvent('claude-c', ev({ type: 'turn-complete' }));   // immediate upsert + cancel
+    svc.noteSessionStarted('claude-c', path.join(tmpRoot, 'c'), 'claude');
+    svc.noteTranscriptEvent('claude-c', ev({ type: 'assistant-text' }), 'claude'); // arms debounce
+    svc.noteTranscriptEvent('claude-c', ev({ type: 'turn-complete' }), 'claude');   // immediate upsert + cancel
     await Promise.resolve();
     expect(h.store.upsert).toHaveBeenCalledTimes(1);
     // The stale debounce timer must NOT fire a second upsert 5s later.
@@ -598,8 +1057,8 @@ describe('conversations service composition root', () => {
   it('a rejecting store.upsert is swallowed (no unhandled rejection)', async () => {
     h.store.upsert.mockRejectedValue(new Error('lock timeout'));
     const svc = await freshService(startOpts());
-    svc.noteSessionStarted('claude-r', path.join(tmpRoot, 'r'));
-    svc.noteTranscriptEvent('claude-r', ev({ type: 'turn-complete' }));
+    svc.noteSessionStarted('claude-r', path.join(tmpRoot, 'r'), 'claude');
+    svc.noteTranscriptEvent('claude-r', ev({ type: 'turn-complete' }), 'claude');
     await new Promise((r) => setTimeout(r, 10));
     // World keeps turning: the prompt push still fired despite the upsert reject.
     expect(h.syncSpacesSyncNow).toHaveBeenCalledWith('personal');
@@ -671,6 +1130,32 @@ describe('conversations service composition root', () => {
       expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(1);
       h.store.list.mockResolvedValue([]);   // the record is gone now
       expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
+    });
+
+    // Task 4 regression: now that Task 4 wires real native/ records into the
+    // store (provider:'native'), this MUST never list or remove from that
+    // bucket — a legit native/ record is never even candidate-listed because
+    // the cleanup lists ONLY 'claude' (see the WHY comment at its list() call).
+    it('never lists or touches the native bucket — a legit native/ record survives untouched', async () => {
+      const homeRoot = path.join(tmpRoot, 'nh-native-safe');
+      seedNativeSession(homeRoot, 'native-4');
+      // Start with a benign list() so startup's own materializeSweep — which
+      // Task 8 legitimately widened to list BOTH provider buckets — doesn't
+      // trip the throwing impl below. That widening is a DIFFERENT function's
+      // job; this test only asserts about pruneNativePhantomRecords's own
+      // list() call, so the throwing mock is swapped in AFTER start, isolating
+      // it to the explicit prune call made below.
+      h.store.list.mockResolvedValue([]);
+      const svc = await freshService({ ...startOpts(), nativeHomeRoot: homeRoot });
+      h.store.list.mockReset();
+      h.store.list.mockImplementation(async (provider: string) => {
+        if (provider === 'native') throw new Error('pruneNativePhantomRecords must never list the native bucket');
+        return [];
+      });
+      expect(await svc.pruneNativePhantomRecords({ nativeHomeRoot: homeRoot })).toBe(0);
+      expect(h.store.list).toHaveBeenCalledWith('claude');
+      expect(h.store.list).not.toHaveBeenCalledWith('native');
+      expect(h.store.remove).not.toHaveBeenCalled();
     });
   });
 

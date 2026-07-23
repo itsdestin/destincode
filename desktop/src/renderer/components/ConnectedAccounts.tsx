@@ -128,7 +128,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
           </div>
         )}
 
-        {error && <p className="text-[11px] text-red-500">{error}</p>}
+        {error && <p className="text-[11px] text-destructive-fg">{error}</p>}
       </div>
 
       {showConnect && (

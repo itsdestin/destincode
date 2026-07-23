@@ -239,3 +239,17 @@ describe('SessionStore', () => {
     });
   });
 });
+
+// Task 3 (M2 plan) — pins the DELIBERATE divergence documented at the top of
+// session-store.ts: native sessions use the raw cwdToProjectSlug, while the CC
+// layer (project-conversations.ts) additionally uppercases a lowercase
+// Windows drive letter before slugifying. This is NOT a bug to unify — see
+// that file's comment for why (it would orphan existing native transcripts).
+describe('native/CC slug divergence', () => {
+  it('encodes the deliberate slug divergence: native uses raw cwdToProjectSlug, CC layer drive-normalizes', async () => {
+    const { cwdToProjectSlug } = await import('../src/main/transcript-watcher');
+    const { ccProjectSlug } = await import('../src/main/project-conversations');
+    expect(cwdToProjectSlug('c:\\Users\\d\\proj')).toBe('c--Users-d-proj');
+    expect(ccProjectSlug('c:\\Users\\d\\proj')).toBe('C--Users-d-proj');   // NOT equal — pinned
+  });
+});

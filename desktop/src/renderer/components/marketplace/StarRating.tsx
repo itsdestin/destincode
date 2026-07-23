@@ -23,6 +23,21 @@ interface StarRatingProps {
   hideCount?: boolean;
 }
 
+/**
+ * Star gold. Deliberately a raw hex and NOT a theme token (ruling 2026-07-22,
+ * spec §14.7): it isn't a status color carrying "caution" — it's the app-store
+ * gold-star convention, which users read as "star rating" the way they read a
+ * green dot as "online". There is no `--gold`/`--rating` token in any theme, so
+ * the alternatives were `text-accent` (blue stars on Midnight, green on a green
+ * pack — it changes what the control means) or inventing a token across 11
+ * theme manifests plus the contrast audit, which is a change-36-scale project.
+ *
+ * Exported so the interactive stars in RatingSubmitModal use the same value —
+ * two independent hexes for one meaning is how this codebase ends up with three
+ * copies of everything.
+ */
+export const STAR_GOLD_CLASS = 'text-[#f0ad4e]';
+
 const SIZE_CONFIG = {
   sm: {
     starText: 'text-[10px]',
@@ -64,7 +79,7 @@ export default function StarRating({ value, count, size, hideCount = false }: St
         </span>
         {/* Filled layer — clipped to the fractional fill width */}
         <span
-          className={`absolute inset-0 overflow-hidden ${cfg.starText} text-[#f0ad4e] tracking-[0.5px]`}
+          className={`absolute inset-0 overflow-hidden ${cfg.starText} ${STAR_GOLD_CLASS} tracking-[0.5px]`}
           style={{ width: `${fillPercent}%` }}
         >
           {STAR_CHAR.repeat(5)}

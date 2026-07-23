@@ -228,7 +228,7 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
   const { state, dispatch } = useArtifact();
   // Open/closed is per-session — reflect (and toggle) the ACTIVE session's flag.
   const drawerOpen = activeSessionId ? (state.drawerOpenBySession[activeSessionId] ?? false) : false;
-  // Count logic shared with the narrow overflow menu's "Session artifacts" row.
+  // Count logic shared with the narrow overflow menu's "Session Files" row.
   const artifactCount = useArtifactCount(activeSessionId, projectRoot);
 
   // Fix: always show the button so users can open the drawer even before any
@@ -250,11 +250,11 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
         className={`px-2 py-1 rounded-[var(--radius-toggle)] transition-colors flex items-center gap-1 ${
           drawerOpen ? 'bg-accent text-on-accent' : 'text-fg-dim hover:text-fg-2'
         }`}
-        // "Session artifacts" (Destin, 2026-07-20) — the "Session" qualifier
-        // now carries what the bare word "Files" used to: this is ONE session's
-        // activity log (including files merely VIEWED via pills), as distinct
-        // from Project View's project-wide Artifacts tab.
-        title="Session artifacts"
+        // "Session Files" (Destin, 2026-07-23; was "Session artifacts" from
+        // 2026-07-20). The "Session" qualifier carries the distinction: this is
+        // ONE session's activity log (including files merely VIEWED via pills),
+        // as distinct from Project View's project-wide set.
+        title="Session Files"
       >
         {/* Document icon — SVG matches the style of the settings gear above */}
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -657,7 +657,7 @@ export default function HeaderBar({
             conditional (the original hide-at-zero plan was dropped — see the
             ArtifactDrawerButton docblock). Grouped with the game-panel toggle
             since both are panel toggles sharing identical pill styling. */}
-        {/* Session artifacts is a ||| menu row on narrow, so the button would
+        {/* Session Files is a ||| menu row on narrow, so the button would
             be a duplicate entry point. */}
         {!narrow && (
           <ArtifactDrawerButton

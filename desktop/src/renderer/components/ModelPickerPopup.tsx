@@ -4,7 +4,7 @@ import type { ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
-import { Button, CloseButton, TextInput, Toggle, FOCUS_RING } from './ui';
+import { Button, CloseButton, TextInput, Toggle, FOCUS_RING, LoadingState } from './ui';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -262,6 +262,20 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   // NOT the Claude alias/effort/fast controls (those are PTY /model, /fast,
   // /effort writes that a native session has no PTY for). Selecting a model
   // calls native.setBinding for a mid-session model swap.
+  //
+  // Task 6 extracted this same catalog+providers.list() data flow into
+  // NativeModelSelect.tsx for the resume-time picker (ResumeBrowser + the
+  // pre-resume modal). This branch was NOT rewritten to consume it: this is a
+  // click-to-swap-NOW picker (each row click immediately calls setBinding,
+  // awaits the ack, and either closes on success or shows an inline error
+  // while staying open) highlighting the session's CURRENT live binding.
+  // NativeModelSelect is a pick-then-let-the-caller-decide picker (onSelect
+  // fires synchronously on click; the caller — Resume's confirm button —
+  // decides when anything actually happens) with no notion of a "current"
+  // binding to highlight. Forcing one component to cover both interaction
+  // models would need a mode flag threading through selection semantics,
+  // ack timing, and error display — not a clean extraction, so this branch
+  // is left as its own thing.
   if (provider === 'native') {
     const q = nativeSearch.trim().toLowerCase();
     const filtered = q
@@ -389,7 +403,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
         </div>
 
         {!loaded ? (
-          <div className="p-8 text-center text-sm text-fg-muted">Loading…</div>
+          <LoadingState what="models" />
         ) : (
           <div className="p-5 space-y-5">
             {/* Model */}

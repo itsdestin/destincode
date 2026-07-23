@@ -54,3 +54,6 @@ export type { SegmentedTabsProps, SegmentedTab } from './SegmentedTabs';
 
 export { ProgressBar } from './ProgressBar';
 export type { ProgressBarProps } from './ProgressBar';
+
+export { SearchFilterPill } from './SearchFilterPill';
+export type { SearchFilterPillProps } from './SearchFilterPill';

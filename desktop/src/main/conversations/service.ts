@@ -10,14 +10,15 @@ import os from 'node:os';
 import { createConversationStore, ConversationStore } from './conversation-store';
 import { log } from '../logger';
 import { NativeHome } from '../native-home';
-import type { ConversationRecord } from './store-core';
+import type { ConversationRecord, PortableModelRef } from './store-core';
 import { mirrorIn, materializeOut } from './transcript-mirror';
 import { reconcile } from './reconciler';
 import { ccProjectSlug } from '../project-conversations';
+import { cwdToProjectSlug } from '../transcript-watcher';
 import { onSyncSpacesEvent, syncSpacesSyncNow, syncSpacesSyncNowAwaited, getManagedRoots } from '../sync-spaces/service';
 import { readFolders } from '../saved-folders';
 import { resolveLocalProject } from './resolve-local-project';
-import type { TranscriptEvent } from '../../shared/types';
+import type { TranscriptEvent, SessionProvider } from '../../shared/types';
 import type { SpaceSyncEvent } from '../sync-spaces/types';
 
 const ACTIVITY_DEBOUNCE_MS = 5_000;
@@ -35,11 +36,57 @@ export const QUIESCE_MAX_MS = 6_000;   // give up waiting; skip this round (reco
 // force dialog. Keep all three constants in sync if you change one.
 export const HANDOFF_SYNC_TIMEOUT_MS = 15_000;
 
-interface SessionCtx { cwd: string }
+interface SessionCtx {
+  cwd: string;
+  // The session-runtime axis (design §4.0 — NOT model-provider, which
+  // native-session-host.ts already calls `provider`; hence `sessionProvider`
+  // everywhere in this module to avoid entrenching that name collision).
+  provider: SessionProvider;
+  // Stashed by noteModelUsed when no record exists yet to attach it to
+  // directly; folded into the NEXT transcript-event upsert (see
+  // noteTranscriptEvent). Never used to seed a record on its own.
+  pendingModelRef?: PortableModelRef;
+}
 
 let store: ConversationStore | null = null;
+// WHY: IPC meta handlers go live (main.ts:745) before the store starts
+// (main.ts:1701, fire-and-forget), so a tag/flag/note set in that boot window
+// used to vanish while the store?. chains silently no-op'd — the IPC handler
+// still answered ok:true (the 2026-07-19 incident class, for the
+// store-availability dimension). metaWrite buffers a write made while
+// 'starting', flushes buffered writes in arrival order once the store settles
+// into 'ready' or 'unavailable', and answers honestly either way.
+export type MetaWriteResult = { ok: boolean };
+let storePhase: 'starting' | 'ready' | 'unavailable' = 'starting';
+const pendingMetaWrites: Array<{ run: () => Promise<void>; resolve: (r: MetaWriteResult) => void }> = [];
+
+async function metaWrite(run: () => Promise<void>): Promise<MetaWriteResult> {
+  if (storePhase === 'ready') {
+    try { await run(); return { ok: true }; } catch { return { ok: false }; }
+  }
+  if (storePhase === 'unavailable') return { ok: false };
+  return new Promise((resolve) => pendingMetaWrites.push({ run, resolve }));
+}
+
+// Drains whatever is currently queued, resolving each in ARRIVAL order. Called
+// once the store settles (ready or unavailable) so boot-window writes get an
+// honest answer instead of hanging forever. Items that arrive AFTER this call
+// starts (rare — nothing awaits mid-drain except the store call itself) simply
+// queue for the next settle.
+async function settlePendingMetaWrites(): Promise<void> {
+  const drained = pendingMetaWrites.splice(0);
+  for (const w of drained) {
+    if (storePhase !== 'ready') { w.resolve({ ok: false }); continue; }
+    try { await w.run(); w.resolve({ ok: true }); } catch { w.resolve({ ok: false }); }
+  }
+}
 let projectsDir = '';
 let topicsDir = '';
+// Test-overridable ~/.youcoded parent root (see startConversationStore's
+// nativeHomeRoot opt) — localJsonlPath's native branch needs the SAME override
+// pruneNativePhantomRecords already accepts, so tests can point both at one
+// tmp dir instead of the real home directory.
+let nativeHomeRootOpt: string | undefined;
 let device = '';
 let unsubscribe: (() => void) | null = null;
 let reconcileTimer: NodeJS.Timeout | null = null;
@@ -64,11 +111,21 @@ export async function startConversationStore(opts?: {
   const personalRoot = getManagedRoots()?.personalRoot;
   const root = opts?.conversationsRoot
     ?? (personalRoot ? path.join(personalRoot, 'Conversations') : null);
-  if (!root) return; // managed roots unavailable — the store stays off this launch
+  if (!root) {
+    // Managed roots unavailable — the store stays off this launch. Any writes
+    // buffered while phase was 'starting' get an honest ok:false rather than
+    // hanging forever waiting for a store that will never come up.
+    storePhase = 'unavailable';
+    await settlePendingMetaWrites();
+    return;
+  }
   projectsDir = opts?.projectsDir ?? path.join(os.homedir(), '.claude', 'projects');
   topicsDir = opts?.topicsDir ?? path.join(os.homedir(), '.claude', 'topics');
+  nativeHomeRootOpt = opts?.nativeHomeRoot;
   device = opts?.device ?? os.hostname();
   store = createConversationStore(root);
+  storePhase = 'ready';
+  await settlePendingMetaWrites();
 
   // Carry-forward 3: subscribe ONCE and hold the unsubscribe. The listener Set
   // dedups identical fn refs, but a fresh closure each start would still leak.
@@ -120,11 +177,22 @@ export function stopConversationStore(): void {
   for (const t of pendingActivity.values()) clearTimeout(t);
   pendingActivity.clear();
   sessions.clear();
+  // WHY: only settle pending meta writes when a store was ACTUALLY running.
+  // startConversationStore calls this unconditionally first (idempotent
+  // teardown) even on the very first-ever start, when writes may already be
+  // buffered waiting for THAT SAME call to bring the store up — settling them
+  // ok:false here would fail them moments before they'd have succeeded. A real
+  // stop of a RUNNING store (app quit, or an explicit restart) is different:
+  // nothing is coming to flush the queue on its own, so anything still pending
+  // must not hang its caller forever.
+  const hadStore = store !== null;
   store = null;
+  storePhase = 'starting';
+  if (hadStore) void settlePendingMetaWrites();
 }
 
-export function noteSessionStarted(claudeSessionId: string, cwd: string): void {
-  sessions.set(claudeSessionId, { cwd });
+export function noteSessionStarted(claudeSessionId: string, cwd: string, sessionProvider: SessionProvider): void {
+  sessions.set(claudeSessionId, { cwd, provider: sessionProvider });
 }
 
 /**
@@ -158,6 +226,10 @@ export async function pruneNativePhantomRecords(opts?: { nativeHomeRoot?: string
   const s = store;
   if (!s) return 0;
   let records: ConversationRecord[];
+  // WHY hardcoded 'claude' (not threaded): this cleanup targets records
+  // mislabeled UNDER the 'claude' bucket by definition (PR #176's bug wrote
+  // native sessions there with a hardcoded provider) — it is never called for
+  // any other bucket, so there is no sessionProvider to thread here.
   try { records = await s.list('claude'); } catch { return 0; }
   // Cheap shape filter FIRST, so the sessions-dir listing below is only paid for
   // when a candidate actually exists (the common case is zero candidates).
@@ -176,6 +248,8 @@ export async function pruneNativePhantomRecords(opts?: { nativeHomeRoot?: string
   for (const rec of candidates) {
     if (!nativeIds.has(rec.id)) continue;
     try {
+      // Same WHY as the list() call above — this ONLY ever removes from the
+      // 'claude' bucket, by definition of what a phantom-prune target is.
       if (await s.remove('claude', rec.id)) {
         pruned++;
         log('INFO', 'ConversationStore', 'pruned a phantom native record mislabeled as claude', { id: rec.id });
@@ -185,15 +259,46 @@ export async function pruneNativePhantomRecords(opts?: { nativeHomeRoot?: string
   return pruned;
 }
 
-// <root>/claude/transcripts/<projectKey>/<id>.jsonl — the durable space copy.
-// projectKey is the portable project name (basename of cwd), matching the
-// reconciler's transcriptRef convention (NOT the CC slug).
-function spaceTranscriptPath(projectKey: string, sessionId: string): string {
-  return path.join(store!.root(), 'claude', 'transcripts', projectKey, `${sessionId}.jsonl`);
+// <root>/<sessionProvider>/transcripts/<projectKey>/<id>.jsonl — the durable
+// space copy. projectKey is the portable project name (basename of cwd),
+// matching the reconciler's transcriptRef convention (NOT the CC slug).
+// sessionProvider is now a REQUIRED param (design D3) so every call site names
+// its lane explicitly — 'claude' and 'native' transcripts live in disjoint
+// lanes under the space root (design §4.1 item 2 / §4.2 in the M2 plan).
+function spaceTranscriptPath(projectKey: string, sessionId: string, sessionProvider: SessionProvider): string {
+  return path.join(store!.root(), sessionProvider, 'transcripts', projectKey, `${sessionId}.jsonl`);
 }
-// The CC on-disk transcript path for this session — projects dir + CC slug.
-function localJsonlPath(cwd: string, sessionId: string): string {
+// SECURITY: transcriptRef arrives from synced peer records (and is reachable over
+// remote WS). Joining it unchecked would let a crafted record read/write outside
+// the space root. Same refuse-on-escape stance as providerDir/recordPath in
+// conversation-store.ts. Exported for tests.
+export function containedTranscriptPath(root: string, ref: string): string | null {
+  if (!ref || path.isAbsolute(ref)) return null;
+  const resolvedRoot = path.resolve(root);
+  const joined = path.resolve(resolvedRoot, ref);
+  return joined.startsWith(resolvedRoot + path.sep) ? joined : null;
+}
+// The on-disk transcript path for this session, on THIS device.
+// 'claude' -> ~/.claude/projects/<ccProjectSlug(cwd)>/<id>.jsonl (CC's own convention).
+// 'native' -> ~/.youcoded/sessions/<cwdToProjectSlug(cwd)>/<id>.jsonl — mirrors
+// NativeHome's private sessionPath() exactly (raw slug, NOT ccProjectSlug's
+// drive-letter uppercasing — see harness/session-store.ts's slug-divergence
+// comment for why the two deliberately diverge).
+function localJsonlPath(cwd: string, sessionId: string, sessionProvider: SessionProvider): string {
+  if (sessionProvider === 'native') {
+    const home = new NativeHome(nativeHomeRootOpt);
+    return path.join(home.root, 'sessions', cwdToProjectSlug(cwd), `${sessionId}.jsonl`);
+  }
   return path.join(projectsDir, ccProjectSlug(cwd), `${sessionId}.jsonl`);
+}
+
+// ConversationRecord.provider is typed SessionProvider | string (string-open
+// for future providers, store-core.ts) — narrow it defensively for path
+// building so a foreign/corrupt provider string can't reach fs.join with an
+// unexpected segment. Defaults to 'claude' (today's only real bucket besides
+// 'native').
+function asSessionProvider(provider: string): SessionProvider {
+  return provider === 'native' ? 'native' : 'claude';
 }
 
 // Fire-and-forget store write with carry-forward 1 baked in: upsert can reject
@@ -203,7 +308,7 @@ function safeUpsert(input: Parameters<ConversationStore['upsert']>[0]): void {
   store?.upsert(input).catch(() => { /* lock contention — reconciler catches up */ });
 }
 
-export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent): void {
+export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent, sessionProvider: SessionProvider): void {
   if (!store) return;
   const ctx = sessions.get(claudeSessionId);
   const upsertNow = () => {
@@ -214,7 +319,7 @@ export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent
     if (t) { clearTimeout(t); pendingActivity.delete(claudeSessionId); }
     safeUpsert({
       id: claudeSessionId,
-      provider: 'claude',
+      provider: sessionProvider,
       // Metadata fields are LOCAL TRUTH in the store's merge; omit them (leave
       // undefined) when no cwd is known so we never overwrite a real value with ''.
       projectName: ctx ? path.basename(ctx.cwd) : undefined,
@@ -224,8 +329,13 @@ export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent
       lastActive: new Date(ev.timestamp).toISOString(),
       device,
       transcriptRef: ctx
-        ? `claude/transcripts/${path.basename(ctx.cwd)}/${claudeSessionId}.jsonl`
+        ? `${sessionProvider}/transcripts/${path.basename(ctx.cwd)}/${claudeSessionId}.jsonl`
         : undefined,
+      // Fold-in (design note): a model noted via noteModelUsed before this
+      // session had a record to attach to rides here instead of being lost —
+      // never sent as a standalone write (see noteModelUsed's own comment for
+      // why a model-only upsert would be the §3.2 phantom shape).
+      lastUsedModel: ctx?.pendingModelRef,
     });
   };
 
@@ -237,8 +347,8 @@ export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent
         // Mirror the fresh local transcript into the durable space copy so it
         // rides the personal-space sync. Best-effort — the reconciler re-mirrors.
         mirrorIn({
-          localJsonlPath: localJsonlPath(ctx.cwd, claudeSessionId),
-          spaceTranscriptPath: spaceTranscriptPath(key, claudeSessionId),
+          localJsonlPath: localJsonlPath(ctx.cwd, claudeSessionId, sessionProvider),
+          spaceTranscriptPath: spaceTranscriptPath(key, claudeSessionId, sessionProvider),
         });
       } catch { /* best-effort; the reconciler catches up */ }
       // Prompt push (design §2): conversations move faster than the engine's
@@ -259,19 +369,81 @@ export function noteTranscriptEvent(claudeSessionId: string, ev: TranscriptEvent
   }
 }
 
-// Carry-forward 5: only the auto-title flow (topic-watcher) calls this. setTitle
-// is timestamp-less — it never fabricates activity. No user-rename path exists
-// for conversations yet (Plan 2b/2c scope).
-export function noteTitleChanged(claudeSessionId: string, title: string): void {
-  store?.setTitle('claude', claudeSessionId, title).catch(() => { /* carry-forward 1 */ });
+// Carry-forward 5: the auto-title flows call this — the topic-watcher for
+// 'claude' sessions (~/.claude/topics -> broadcastRename), and the native
+// title feeder (native-title-feeder.ts, Task 7) for 'native' ones, which has
+// no topic file to watch and instead generates a title from a single bound-
+// model call at first turn-complete. setTitle is timestamp-less — it never
+// fabricates activity. No user-rename path exists for conversations yet
+// (Plan 2b/2c scope).
+export function noteTitleChanged(claudeSessionId: string, title: string, sessionProvider: SessionProvider): Promise<MetaWriteResult> {
+  return metaWrite(() => store!.setTitle(sessionProvider, claudeSessionId, title));
 }
 
-export function noteFlagChanged(claudeSessionId: string, flag: string, value: boolean): void {
-  store?.setFlag('claude', claudeSessionId, flag, value).catch(() => { /* carry-forward 1 */ });
+// C1: resolve which store bucket a meta write lands in. `knownNative` is the
+// caller's SYNCHRONOUS isNativeSessionId(id) result — true only when the record
+// is live now or on-disk here. When false the bucket is decided by probing the
+// store's native bucket: a store-only native browse row (record synced, its
+// transcript not yet materialized on this device — Task 5) is STILL native, but
+// isNativeSessionId can't see it (session-store.ts has() is live/on-disk only).
+// Without this probe, tagging/noting such a row wrote provider 'claude', seeding
+// a phantom claude/<id>.json (blank transcriptRef, EPOCH lastActive) that syncs
+// out, gets pruned on the origin device (the user's tag silently lost), shadows
+// the real native record in materializeOne, and litters browse with a ghost row.
+//
+// Probed INSIDE the metaWrite thunk (which runs only once storePhase==='ready',
+// so `store` is non-null) rather than at handler entry. That closes the boot
+// window: a write made before startConversationStore finishes is buffered while
+// the store is still null; deriving the provider up front would default to
+// 'claude' and flush a native id into the wrong bucket at settle time. Deferring
+// the probe to flush time re-derives it correctly against the now-live store.
+async function providerForWrite(id: string, knownNative: boolean): Promise<SessionProvider> {
+  if (knownNative) return 'native';
+  try { return (await store!.get('native', id)) ? 'native' : 'claude'; }
+  catch { return 'claude'; }
 }
 
-export function noteSessionNote(claudeSessionId: string, note: string): void {
-  store?.setNote('claude', claudeSessionId, note).catch(() => { /* carry-forward 1 */ });
+export function noteFlagChanged(claudeSessionId: string, flag: string, value: boolean, knownNative: boolean): Promise<MetaWriteResult> {
+  return metaWrite(async () => {
+    const provider = await providerForWrite(claudeSessionId, knownNative);
+    await store!.setFlag(provider, claudeSessionId, flag, value);
+  });
+}
+
+export function noteSessionNote(claudeSessionId: string, note: string, knownNative: boolean): Promise<MetaWriteResult> {
+  return metaWrite(async () => {
+    const provider = await providerForWrite(claudeSessionId, knownNative);
+    await store!.setNote(provider, claudeSessionId, note);
+  });
+}
+
+/**
+ * Stash the model a session just used on its ctx, and — if a record for this
+ * id ALREADY exists — upsert lastUsedModel right away so the resume selector
+ * shows it without waiting for the next transcript event. When no ctx exists
+ * (the session never announced itself via noteSessionStarted) there is
+ * nowhere safe to stash the ref or a provider to write under, so this is a
+ * no-op — a session that's actually running will have announced by now.
+ *
+ * NEVER seeds a record on its own: an upsert carrying only `lastUsedModel`
+ * (no lastActive) on a session with no existing record would be exactly the
+ * §3.2 phantom shape (blank transcriptRef, EPOCH lastActive, synced
+ * everywhere) that pruneNativePhantomRecords exists to clean up. When no
+ * record exists yet, the ref rides the NEXT transcript-event upsert instead
+ * (see noteTranscriptEvent's ctx.pendingModelRef fold-in).
+ */
+export function noteModelUsed(sessionId: string, ref: PortableModelRef): void {
+  const ctx = sessions.get(sessionId);
+  if (!ctx) return;
+  ctx.pendingModelRef = ref;
+  const s = store;
+  if (!s) return;
+  void s.get(ctx.provider, sessionId)
+    .then((rec) => {
+      if (!rec) return; // no record yet — rides the next transcript upsert instead
+      return s.upsert({ id: sessionId, provider: ctx.provider, lastUsedModel: ref });
+    })
+    .catch(() => { /* best-effort; the next transcript upsert folds it in anyway */ });
 }
 
 // resolveLocalProject (originalPath → managed-by-name → saved-by-basename) lives
@@ -297,13 +469,25 @@ export function buildLocalProjectResolver(): (rec: { projectName: string; origin
   return (rec) => resolveLocalProject(rec, managed, saved);
 }
 
+// Task 8: list BOTH provider buckets so the sweep covers native/ records too.
+// Per-provider try/catch (not one try around both calls) so a hiccup listing
+// one bucket (e.g. a corrupt file in claude/) can't starve the other — same
+// per-record isolation philosophy as the materializeOut try/catch below, one
+// level up.
+async function listAllProviders(s: ConversationStore): Promise<ConversationRecord[]> {
+  const out: ConversationRecord[] = [];
+  for (const p of ['claude', 'native'] as const) {
+    try { out.push(...(await s.list(p))); } catch { /* isolated per bucket */ }
+  }
+  return out;
+}
+
 async function materializeSweep(): Promise<void> {
   // Capture the store (review fix 3): stop() mid-sweep nulls the module field,
   // and every use below an await would otherwise become a swallowed TypeError.
   const s = store;
   if (!s) return;
-  let records;
-  try { records = await s.list('claude'); } catch { return; }
+  const records = await listAllProviders(s);
   // Hoist the project lookups once per sweep (review fix 2) — see
   // resolveLocalProject's comment for why per-record IO was a real cost.
   const managed = new Map<string, string>(
@@ -313,24 +497,49 @@ async function materializeSweep(): Promise<void> {
   try { saved = readFolders(); } catch { /* saved folders unreadable */ }
   for (const rec of records) {
     if (!rec.transcriptRef) continue; // no durable copy to materialize from
-    // Review fix 1: NEVER materialize over a LIVE session's transcript. Without
-    // leases (Plan 2b), a same-conversation-on-two-devices pull would replace
-    // the JSONL Claude Code is actively appending to — Windows EPERM containment
-    // is unreliable (libuv opens with FILE_SHARE_DELETE), and on POSIX the
-    // rename always succeeds: CC keeps appending to the unlinked inode, the
-    // TranscriptWatcher's path-read never grows, chat view freezes, and local
-    // turns are lost when the handle closes. Accepted caveat: nothing removes
-    // entries from `sessions` on session exit, so an ended session stays
-    // guarded until restart — fine for 2a because mirrorIn keeps the space
-    // current from the fresher local side; a noteSessionEnded refinement lands
-    // with leases in 2b.
+    // The record IS the truth for provider (not a param) — see
+    // asSessionProvider's comment.
+    const sessionProvider = asSessionProvider(rec.provider);
+    // Lane assertion (D5, never cross-materialize): a record's transcriptRef
+    // must live under ITS OWN provider's lane. Checked before the containment
+    // guard below — it's a pure string check on the record's own fields (no
+    // IO either way), so a mislabeled-but-otherwise-well-formed ref is caught
+    // here first; containment still runs unconditionally after for whatever
+    // survives, since matching the lane prefix alone doesn't rule out
+    // traversal inside it.
+    if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+      console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
+      continue;
+    }
+    // SECURITY: refuse before any other work — see containedTranscriptPath.
+    const src = containedTranscriptPath(s.root(), rec.transcriptRef);
+    if (!src) { console.warn('[conversations] refused transcriptRef escaping space root', rec.id); continue; }
+    // Review fix 1: NEVER materialize over a LIVE session's transcript.
+    // For CLAUDE, without leases (Plan 2b) a same-conversation-on-two-devices
+    // pull would replace the JSONL Claude Code is actively appending to —
+    // Windows EPERM containment is unreliable (libuv opens with
+    // FILE_SHARE_DELETE), and on POSIX the rename always succeeds: CC keeps
+    // appending to the unlinked inode, the TranscriptWatcher's path-read never
+    // grows, chat view freezes, and local turns are lost when the handle
+    // closes.
+    // For NATIVE, the SAME guard is kept for a DIFFERENT reason (design §5):
+    // there is no long-lived fd — appendSessionLine (native-home.ts) opens the
+    // file by path on every call — so the CC inode-detach failure mode above
+    // does not apply. Instead, a mid-session materializeOut here would
+    // silently REDIRECT the native session's subsequent appends onto the
+    // freshly-materialized (space) file, interleaving space content with live
+    // local appends. Same guard, different failure mode.
+    // Accepted caveat: nothing removes entries from `sessions` on session
+    // exit, so an ended session stays guarded until restart — fine for 2a
+    // because mirrorIn keeps the space current from the fresher local side; a
+    // noteSessionEnded refinement lands with leases in 2b.
     if (sessions.has(rec.id)) continue;
     const local = resolveLocalProject(rec, managed, saved);
     if (!local) continue;
     try {
       materializeOut({
-        spaceTranscriptPath: path.join(s.root(), rec.transcriptRef),
-        localJsonlPath: localJsonlPath(local, rec.id),
+        spaceTranscriptPath: src,
+        localJsonlPath: localJsonlPath(local, rec.id, sessionProvider),
       });
     } catch { /* per-record isolation — one bad copy must not abort the sweep */ }
   }
@@ -363,8 +572,44 @@ export function noteSessionEnded(claudeSessionId: string): void {
 // so it resolves the project via resolveLocalProject.
 export async function materializeOne(id: string, cwd?: string): Promise<void> {
   const s = store; if (!s) return;
-  let rec; try { rec = await s.get('claude', id); } catch { return; }
+  // Task 8: try 'claude' first, then 'native' — a UUID can't legitimately
+  // exist in both buckets, so the first hit IS the record (no need to read
+  // both on the common path). Each lookup is isolated: a rejecting get() on
+  // one bucket doesn't stop us from trying the other.
+  let rec: ConversationRecord | null = null;
+  try { rec = await s.get('claude', id); } catch { rec = null; }
+  if (!rec) {
+    try { rec = await s.get('native', id); } catch { rec = null; }
+  }
+  // C1: a claude-bucket record with an EMPTY transcriptRef for an id that ALSO
+  // exists in the native bucket is a phantom shadowing the real native record
+  // (the C1 misroute seeds exactly this shape). The claude-first lookup above
+  // would find the phantom, hit the `!rec.transcriptRef` early-return below, and
+  // silently no-op the requester's targeted pull. Prefer the native record when
+  // it's the one carrying a transcript.
+  if (rec && !rec.transcriptRef && asSessionProvider(rec.provider) === 'claude') {
+    let nativeRec: ConversationRecord | null = null;
+    try { nativeRec = await s.get('native', id); } catch { nativeRec = null; }
+    if (nativeRec?.transcriptRef) {
+      console.warn('[conversations] native record shadowed by empty claude phantom — using native', id);
+      rec = nativeRec;
+    }
+  }
   if (!rec?.transcriptRef) return;
+  // The record IS the truth for provider (not a param) — see
+  // asSessionProvider's comment.
+  const sessionProvider = asSessionProvider(rec.provider);
+  // Lane assertion (D5, never cross-materialize) — see the identical check +
+  // WHY in materializeSweep. Runs before the containment guard for the same
+  // reason: pure field check, no IO, catches a mislabeled ref first.
+  if (!rec.transcriptRef.startsWith(`${sessionProvider}/`)) {
+    console.warn('[conversations] refused transcriptRef lane mismatch', rec.id);
+    return;
+  }
+  // SECURITY: refuse before any other work (quiescence wait, local resolution)
+  // — see containedTranscriptPath.
+  const src = containedTranscriptPath(s.root(), rec.transcriptRef);
+  if (!src) { console.warn('[conversations] refused transcriptRef escaping space root', rec.id); return; }
   // Resolve the local project. On the common path cwd is known (learned via
   // noteSessionStarted), so only pay for the managed/saved-folder reads on the
   // cwd miss (a session that ended without ever being announced here).
@@ -376,7 +621,7 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
     local = resolveLocalProject(rec, managed, saved) ?? undefined;
   }
   if (!local) return;
-  const localPath = localJsonlPath(local, id);
+  const localPath = localJsonlPath(local, id, sessionProvider);
   // Quiescence: if it never stabilizes before QUIESCE_MAX_MS, CC is still
   // flushing — SKIP this round (never rename over a transcript CC still has open:
   // POSIX detaches the inode and CC keeps appending to it → chat freeze + lost
@@ -386,7 +631,7 @@ export async function materializeOne(id: string, cwd?: string): Promise<void> {
   // CC is now appending to (the sweep's live-session invariant).
   if (sessions.has(id)) return;
   try {
-    materializeOut({ spaceTranscriptPath: path.join(s.root(), rec.transcriptRef), localJsonlPath: localPath });
+    materializeOut({ spaceTranscriptPath: src, localJsonlPath: localPath });
   } catch { /* grow-only copy failed — startup sweep catches up */ }
 }
 
@@ -419,9 +664,9 @@ export async function flushSessionToSpace(claudeSessionId: string): Promise<void
   const ctx = sessions.get(claudeSessionId);
   if (!ctx) return; // no cwd known — can't locate the transcript
   const key = path.basename(ctx.cwd);
-  const localPath = localJsonlPath(ctx.cwd, claudeSessionId);
+  const localPath = localJsonlPath(ctx.cwd, claudeSessionId, ctx.provider);
   await waitForQuiescence(localPath); // best-effort wait; push regardless of the result
-  try { mirrorIn({ localJsonlPath: localPath, spaceTranscriptPath: spaceTranscriptPath(key, claudeSessionId) }); }
+  try { mirrorIn({ localJsonlPath: localPath, spaceTranscriptPath: spaceTranscriptPath(key, claudeSessionId, ctx.provider) }); }
   catch { /* best-effort; the reconciler re-mirrors */ }
   // MIRROR-BEFORE-RELEASE is load-bearing: genuinely AWAIT the push so the final
   // turn is in the space before the requester pulls. syncSpacesSyncNow would be
@@ -450,7 +695,10 @@ function runReconcile(): void {
     // + the Conversations root. Best-effort — a throw here must not abort the scan.
     mirror: (localPath: string, projectKey: string, sessionId: string) => {
       try {
-        mirrorIn({ localJsonlPath: localPath, spaceTranscriptPath: spaceTranscriptPath(projectKey, sessionId) });
+        // WHY hardcoded 'claude': the reconciler scans ~/.claude/projects only
+        // — it is CC-only by definition, not a stopgap (reconciler.ts:115,182,188
+        // are the same call, kept for the same reason).
+        mirrorIn({ localJsonlPath: localPath, spaceTranscriptPath: spaceTranscriptPath(projectKey, sessionId, 'claude') });
       } catch { /* best-effort */ }
     },
   }).catch(() => { /* reconciler failure must never break startup (carry-forward 2) */ });

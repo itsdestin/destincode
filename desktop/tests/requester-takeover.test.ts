@@ -16,6 +16,10 @@ function makeDeps(opts: {
   // installs that share a hostname).
   queryResults: Array<{ held: boolean; device?: string; self?: boolean }>;
   takeoverThrows?: boolean;
+  // Undeliverable: leaseClient.takeover resolves null (hub had no delivery
+  // path — see takeover.ts). Distinct from takeoverThrows (which simulates an
+  // exception, mapped to 'error').
+  takeoverReturnsNull?: boolean;
   queryThrows?: boolean;
   forceThrows?: boolean;
 }) {
@@ -27,6 +31,7 @@ function makeDeps(opts: {
       takeover: vi.fn(async (sid: string) => {
         order.push(`takeover:${sid}`);
         if (opts.takeoverThrows) throw new Error('takeover blew up');
+        if (opts.takeoverReturnsNull) return null;
       }),
       query: vi.fn(async (_sid: string) => {
         if (opts.queryThrows) throw new Error('query blew up');
@@ -131,6 +136,21 @@ describe('createRequesterTakeover', () => {
     const flow = createRequesterTakeover(deps as any);
     const res = await flow.takeover('c1');
     expect(res).toEqual({ outcome: 'error' });
+  });
+
+  it('takeover: leaseClient.takeover() resolving null -> undeliverable, poll never runs', async () => {
+    // Hub had no delivery path (offline / not connected to any device) — the
+    // holder was never asked, so the 25s poll must be skipped entirely: no
+    // timer advance here, and query must never be called.
+    const deps = makeDeps({ queryResults: [{ held: true, device: 'Laptop-B' }], takeoverReturnsNull: true });
+    const flow = createRequesterTakeover(deps as any);
+    const res = await flow.takeover('c1');
+    expect(res).toEqual({ outcome: 'undeliverable' });
+    expect(deps.leaseClient.query).not.toHaveBeenCalled();
+    expect(deps.leaseClient.acquire).not.toHaveBeenCalled();
+    expect(deps.syncNow).not.toHaveBeenCalled();
+    expect(deps.materializeOne).not.toHaveBeenCalled();
+    expect(deps.order).toEqual(['takeover:c1']);
   });
 
   it('takeover: query() throwing -> error', async () => {

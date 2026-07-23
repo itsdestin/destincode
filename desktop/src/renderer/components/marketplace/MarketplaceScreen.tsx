@@ -12,7 +12,7 @@ import MarketplaceFilterBar, {
   type FilterState, emptyFilter, isActive,
 } from "./MarketplaceFilterBar";
 import MarketplaceRail from "./MarketplaceRail";
-import MarketplaceCard from "./MarketplaceCard";
+import MarketplaceCard, { STATUS_TONE_CLASS } from "./MarketplaceCard";
 import MarketplaceGrid from "./MarketplaceGrid";
 import MarketplaceDetailOverlay, { type DetailTarget } from "./MarketplaceDetailOverlay";
 import WallpaperBackdrop from "../WallpaperBackdrop";
@@ -579,13 +579,12 @@ function IntegrationDetailOverlay({
 }) {
   useEscClose(true, onClose);
 
-  const toneClass: Record<string, string> = {
-    ok: 'bg-green-500/15 text-green-400 border-green-500/30',
-    warn: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-    err: 'bg-red-500/15 text-red-400 border-red-500/30',
-    neutral: 'bg-inset text-fg-2 border-edge',
-    locked: 'bg-slate-500/10 text-fg-dim border-slate-500/30',
-  };
+  // Change 24: this was a second, hand-copied tone map that had already drifted
+  // from MarketplaceCard's (it omitted the `border` keyword, and its `locked`
+  // kept the stock slate hue after the card's was tokenized). One map now —
+  // the detail overlay and the card can't disagree about what a status looks
+  // like. The `border` keyword comes from STATUS_TONE_CLASS, so the call site
+  // below no longer adds its own.
 
   // Derive the action-button state. Precedence: platform-blocked > planned >
   // deprecated > install-error > install-state. The spec table in
@@ -665,11 +664,11 @@ function IntegrationDetailOverlay({
                   <h1 className="text-xl sm:text-2xl font-semibold text-fg">{item.displayName}</h1>
                   {item.tagline && <p className="mt-1 text-sm sm:text-base text-fg-2">{item.tagline}</p>}
                   <div className="mt-3 flex items-center gap-2 flex-wrap">
-                    <span className={`text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 border ${toneClass[statusBadge.tone]}`}>
+                    <span className={`text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 ${STATUS_TONE_CLASS[statusBadge.tone]}`}>
                       {statusBadge.text}
                     </span>
                     {item.state.error && (
-                      <span className="text-xs text-red-400 truncate max-w-[40ch]" title={item.state.error}>{item.state.error}</span>
+                      <span className="text-xs text-destructive-fg truncate max-w-[40ch]" title={item.state.error}>{item.state.error}</span>
                     )}
                   </div>
                 </div>

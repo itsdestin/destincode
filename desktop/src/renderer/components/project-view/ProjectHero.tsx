@@ -3,11 +3,11 @@
 //
 // Layout (matches docs/superpowers/prototypes/2026-06-14-project-view-redesign.html):
 //   PROJECT eyebrow
-//   <project name button ▾>          [Open repo ↗] [New Conversation]
-//   path · owner/name
+//   <project name button ▾>                        [New Conversation]
+//   [folder] path · [octocat] owner/name  (both inline click targets)
 //   N files · N conversations · N context files · active <when>
 // (2026-07-23: the separate "N artifacts" stat was dropped when the Artifacts
-// tab merged into Files.)
+// tab merged into Files — there is no longer a tab for it to correspond to.)
 //
 // The project name is a clickable switcher trigger (opens <ProjectSwitcher>,
 // Task 2.3) and MUST NOT truncate — it wraps. The ONE accent use in this card is
@@ -83,12 +83,8 @@ function ChevronDown({ size = 18 }: { size?: number }) {
   );
 }
 
-// (The external-link glyph that used to live here went with the "Open repo"
-//  button — that action is a cog-menu row now, and menu rows are text-only.)
-
-// Git-branch glyph shared with ProjectSwitcher — lives in ./icons.tsx.
 import { createPortal } from 'react-dom';
-import { GitBranchIcon, CogIcon } from './icons';
+import { FolderIcon, GitHubIcon, CogIcon } from './icons';
 import { Button, TextInput } from '../ui';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
@@ -190,10 +186,11 @@ export function ProjectHero({
       ? { key: 'stop-sync', label: 'Stop syncing', onClick: () => setConfirmingStop(true), danger: true }
     : null;
 
+  // 'reveal'/'repo' rows used to live here, duplicating "Open in File Explorer"/
+  // "Open repo" — both are gone now that the path/repo line below is itself a
+  // click target at every width, cog menu included.
   const menuItems: MenuItem[] = [
     { key: 'rename', label: 'Rename', onClick: () => setRenaming(true) },
-    ...(isElectron ? [{ key: 'reveal', label: 'Open in File Explorer', onClick: () => void (window.claude as any).shell.openPath(project.path) }] : []),
-    ...(repo?.webUrl ? [{ key: 'repo', label: showRepoSlug ? `Open ${repo.owner}/${repo.name} on GitHub` : 'Open repository', onClick: () => window.claude.shell.openExternal(repo.webUrl!) }] : []),
     ...(syncAction ? [syncAction] : []),
     ...(destructiveAction ? [destructiveAction] : []),
   ];
@@ -243,18 +240,38 @@ export function ProjectHero({
           </button>
         )}
 
-        {/* Path + optional owner/name repo slug. */}
+        {/* Path + optional owner/name repo slug — both double as click targets
+            (Open in File Explorer / Open on GitHub), replacing the old
+            standalone buttons this row now subsumes. */}
         <div className="flex items-center gap-2 mt-1.5 min-w-0">
-          <span className="font-mono text-xs text-fg-muted truncate" title={project.path}>
-            {project.path}
-          </span>
+          <button
+            type="button"
+            onClick={isElectron ? () => void (window.claude as any).shell.openPath(project.path) : undefined}
+            disabled={!isElectron}
+            className="inline-flex items-center gap-1 min-w-0 text-fg-muted hover:text-fg-2 transition-colors disabled:cursor-default"
+            title={isElectron ? 'Open in File Explorer' : project.path}
+          >
+            <FolderIcon size={13} />
+            <span
+              className={`font-mono text-xs truncate ${isElectron ? 'underline decoration-dotted underline-offset-2 decoration-fg-faint hover:decoration-fg-muted' : ''}`}
+            >
+              {project.path}
+            </span>
+          </button>
           {showRepoSlug && (
             <>
               <span className="text-fg-faint shrink-0">·</span>
-              <span className="inline-flex items-center gap-1 text-xs text-fg-dim shrink-0">
-                <GitBranchIcon size={13} />
-                {repo!.owner}/{repo!.name}
-              </span>
+              <button
+                type="button"
+                onClick={() => window.claude.shell.openExternal(repo!.webUrl!)}
+                className="inline-flex items-center gap-1 text-xs text-fg-dim hover:text-fg-2 shrink-0 transition-colors"
+                title={`Open ${repo!.owner}/${repo!.name} on GitHub`}
+              >
+                <GitHubIcon size={13} />
+                <span className="underline decoration-dotted underline-offset-2 decoration-fg-faint hover:decoration-fg-muted">
+                  {repo!.owner}/{repo!.name}
+                </span>
+              </button>
             </>
           )}
         </div>
@@ -349,15 +366,8 @@ export function ProjectHero({
                 Rename
               </Button>
             )}
-            {isElectron && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => void (window.claude as any).shell.openPath(project.path)}
-              >
-                Open in File Explorer
-              </Button>
-            )}
+            {/* "Open in File Explorer" used to live here — it's now the path
+                line above (every width, not desktop-only). */}
             {/* WHY danger-outline (spec decision 67): "Remove from YouCoded" and
                 "Stop syncing" used to look neutral and only turn red on hover.
                 These are consequential enough that hover is the wrong moment to
@@ -389,18 +399,8 @@ export function ProjectHero({
       {/* Right: cog menu + New Conversation. Everything else that used to sit
           here or on the actions row below is now behind the cog. */}
       <div className="w-full sm:w-auto sm:shrink-0 flex items-center gap-2">
-        {/* Desktop keeps Open repo as a visible button; narrow folds it into
-            the cog menu with the rest of the management actions. */}
-        {!narrow && repo?.webUrl && (
-          <Button
-            variant="secondary"
-            size="lg"
-            onClick={() => window.claude.shell.openExternal(repo.webUrl!)}
-            title={showRepoSlug ? `Open ${repo.owner}/${repo.name} on GitHub` : 'Open repository'}
-          >
-            Open repo
-          </Button>
-        )}
+        {/* "Open repo" used to live here — it's now the repo-slug link in the
+            path/repo row above, reachable at every width. */}
         {/* The ONE accent use in this hero. */}
         <Button size="lg" className="flex-1 sm:flex-none" onClick={() => onNewConversation(project.path)}>
           New Conversation

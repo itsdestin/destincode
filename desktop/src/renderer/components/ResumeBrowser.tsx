@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom';
 import { MODELS, type ModelAlias } from './StatusBar';
 import { Scrim, OverlayPanel } from './overlays/Overlay';
-import { Button, Toggle } from './ui';
+import { Button, Toggle, LoadingState, EmptyState } from './ui';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
@@ -18,7 +18,8 @@ import { useTagRegistry } from '../hooks/useTagRegistry';
 import { TagPicker } from './tags/TagPicker';
 import { TagChip } from './tags/TagChip';
 import { NoteEditor } from './tags/NoteEditor';
-import { NATIVE_META_UNSUPPORTED } from '../../shared/types';
+import NativeModelSelect from './NativeModelSelect';
+import type { ModelBinding } from '../../shared/provider-types';
 
 const MODEL_LABELS: Record<string, string> = {
   sonnet: 'Sonnet',
@@ -185,12 +186,21 @@ interface PastSession {
   // into ~/.claude/projects yet (sync in flight). Resume is disabled too —
   // distinct flag so the note can say so accurately.
   notSyncedYet?: boolean;
+  // Task 6: portable reference to the model this conversation last ran a turn
+  // with (Conversation Store, Task 4/5). Pre-fills the native resume selector
+  // below when it matches a model available on THIS device.
+  lastUsedModel?: import('../../shared/types').PortableModelRef;
 }
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string) => void;
+  // Returns whether a resume actually launched (App's handleResumeSession does).
+  // handleConfirmResume awaits it and closes the browser ONLY on success — a create
+  // that never acked keeps the browser open (App toasts the reason) so the user can
+  // retry, instead of closing over a silent failure (Task 6 review ack-gap). `void`
+  // return kept in the union for any non-awaiting wiring (defaults to "close").
+  onResume: (sessionId: string, projectSlug: string, projectPath: string, model: string, dangerous: boolean, launchInNewWindow?: boolean, provider?: string, nativeBinding?: ModelBinding) => void | boolean | Promise<void | boolean>;
   defaultModel?: string;
   defaultSkipPermissions?: boolean;
 }
@@ -215,8 +225,20 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [resumeModel, setResumeModel] = useState<string>(defaultModel || 'sonnet');
   const [resumeDangerous, setResumeDangerous] = useState(defaultSkipPermissions || false);
+  // Task 6 — native resume ALWAYS offers the provider-scoped model selector
+  // (Destin's ruling: never auto-launch a binding). null until the user picks
+  // a row OR NativeModelSelect auto-selects a prefill match; the Resume button
+  // stays disabled for a native row until this is set. Reset whenever a
+  // (possibly different) row expands/collapses — a fresh NativeModelSelect
+  // mount per expansion is what actually resets ITS internal state; this just
+  // keeps the Resume-button gate and the value threaded through onResume in
+  // sync with that same lifecycle.
+  const [nativeResumeBinding, setNativeResumeBinding] = useState<ModelBinding | null>(null);
   // Launch the resumed session in a new peer window (multi-window only).
   const [resumeLaunchInNewWindow, setResumeLaunchInNewWindow] = useState(false);
+  // Sesion id currently resuming — keeps its Resume button busy + the browser open
+  // until the create acks (Task 6 review ack-gap). Closes only on a launched resume.
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const detachAvailable = typeof (window as any).claude?.detach?.openDetached === 'function';
   // Show Complete: when off, sessions marked complete are hidden (default).
   // Persists across opens via localStorage so Destin doesn't re-toggle each time.
@@ -251,6 +273,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setExpandedId(null);
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
+      setNativeResumeBinding(null);
       // Reset the sticky-visible set each open — previously kept rows drop out.
       setStickyComplete(new Set());
       // Reset filter pills each open — current spec: no persistence.
@@ -460,22 +483,32 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setResumeModel(defaultModel || 'sonnet');
       setResumeDangerous(defaultSkipPermissions || false);
       setResumeLaunchInNewWindow(false);
+      setNativeResumeBinding(null);
     }
   };
 
-  const handleConfirmResume = (s: PastSession) => {
-    // Native sessions reuse the binding stored in their header — the CC-only
-    // model / skip-permissions choices are irrelevant, so pass the current
-    // (default) values but tag the row's provider so App takes the native path.
-    onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow, s.provider);
-    onClose();
+  const handleConfirmResume = async (s: PastSession) => {
+    // Native sessions: the CC-only model / skip-permissions choices are
+    // irrelevant (no PTY, no /model or /effort), so pass the current (default)
+    // values but tag the row's provider so App takes the native path, PLUS the
+    // binding the user just picked (or the prefill auto-selected) in the
+    // NativeModelSelect below — the Resume button is disabled until this is
+    // set (see the (s.provider === 'native' && !nativeResumeBinding) guard on
+    // the button), so it is always present here for a native row.
+    //
+    // Task 6 review ack-gap: await the resume and close the browser ONLY when it
+    // actually launched. A create that never acked returns false — keep the
+    // browser open (App has toasted the honest reason) so the user can retry or
+    // pick another row, rather than closing over a silent failure.
+    setResumingId(s.sessionId);
+    const result = await onResume(s.sessionId, s.projectSlug, s.projectPath, resumeModel, resumeDangerous, resumeLaunchInNewWindow, s.provider, nativeResumeBinding ?? undefined);
+    setResumingId(null);
+    if (result !== false) onClose(); // undefined (non-awaiting wiring) or true → close
   };
 
   if (!open) return null;
 
   const renderExpandedOptions = (s: PastSession) => {
-  // Store-backed meta (flags/tags/note) can't be written for native sessions yet.
-  const metaDisabled = s.provider === 'native';
   return (
     <div className="px-4 pb-2">
       <div className="rounded-lg bg-inset/50 border border-edge-dim p-3 flex flex-col gap-2">
@@ -530,7 +563,21 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
             )}
           </>
         ) : (
-          <p className="text-[10px] text-fg-muted">Resumes with this conversation's saved model.</p>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Model</label>
+            {/* Task 6 — native resume ALWAYS offers this selector (never
+                auto-launches a binding). Prefilled from the conversation's
+                synced lastUsedModel when it matches a model available on
+                THIS device; no local match leaves it un-prefilled — never an
+                error, never a substitute. onSelect both handles a manual pick
+                AND the (only-once, first-load) prefill auto-select. */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <NativeModelSelect
+                prefill={s.lastUsedModel}
+                onSelect={(binding) => setNativeResumeBinding(binding)}
+              />
+            </div>
+          </div>
         )}
 
         {/* Launch in new window — hidden on remote/Android (single-window) */}
@@ -546,66 +593,61 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           </div>
         )}
 
-        {/* Flags / tags / note are Conversation Store-backed, and native sessions have
-            no store record yet — the backend REFUSES those writes (NATIVE_META_UNSUPPORTED).
-            HIDE the block rather than disabling it: TagPicker also hosts the GLOBAL tag
-            registry CRUD (create / rename / recolor / archive / delete), which has nothing
-            to do with the selected session — greying that out under a "not supported for
-            native sessions" caption would strand the user's whole tag registry behind an
-            unrelated explanation. Drop the branch when native-sync-parity lands.
-
-            NOTE: this gates on the RENDERER-side `s.provider`, while the backend gates on
-            `nativeHost.isNativeSessionId`. The two predicates are intentionally independent
-            and may disagree; both directions are safe (hidden-but-allowed costs nothing,
-            shown-but-refused is caught by the revert in toggleFlag/toggleTag/saveNote). */}
-        {metaDisabled ? (
-          <p className="text-[10px] text-fg-muted leading-snug">{NATIVE_META_UNSUPPORTED}</p>
-        ) : (
-          <>
-            {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
-            <div>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
-              <div className="flex gap-1">
-                {FLAG_ORDER.map((flag) => {
-                  const active = !!s.flags?.[flag];
-                  return (
-                    <button
-                      key={flag}
-                      onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
-                      className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
-                        active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
-                      }`}
-                      aria-pressed={active}
-                    >
-                      {FLAG_LABEL[flag]}
-                    </button>
-                  );
-                })}
-              </div>
+        {/* Flags / tags / note are Conversation Store-backed. Task 5 (2026-07-2x)
+            unlocked native sessions here too — they're real store records now
+            (Task 4), so there's no more "unsupported" branch to hide this
+            block behind. A write that somehow gets refused (store down, etc.)
+            is still caught by the revert in toggleFlag/toggleTag/saveNote. */}
+        <>
+          {/* Reserved flags — Priority pins to top; Complete hides from the menu. */}
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Flags</label>
+            <div className="flex gap-1">
+              {FLAG_ORDER.map((flag) => {
+                const active = !!s.flags?.[flag];
+                return (
+                  <button
+                    key={flag}
+                    onClick={(e) => { e.stopPropagation(); toggleFlag(s.sessionId, flag, !active); }}
+                    className={`flex-1 px-1 py-1 rounded-sm text-[10px] transition-colors ${
+                      active ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-dim hover:bg-edge'
+                    }`}
+                    aria-pressed={active}
+                  >
+                    {FLAG_LABEL[flag]}
+                  </button>
+                );
+              })}
             </div>
+          </div>
 
-            {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
-            <div onClick={(e) => e.stopPropagation()}>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
-              <TagPicker
-                appliedIds={new Set(s.tags ?? [])}
-                onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
-                registry={registry}
-              />
-            </div>
+          {/* Custom tags — stopPropagation so interacting doesn't collapse the row. */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Tags</label>
+            <TagPicker
+              appliedIds={new Set(s.tags ?? [])}
+              onToggle={(tagId, next) => toggleTag(s.sessionId, tagId, next)}
+              registry={registry}
+            />
+          </div>
 
-            {/* Note — stopPropagation so editing doesn't collapse the row. */}
-            <div onClick={(e) => e.stopPropagation()}>
-              <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
-              <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
-            </div>
-          </>
-        )}
+          {/* Note — stopPropagation so editing doesn't collapse the row. */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <label className="text-[10px] uppercase tracking-wider text-fg-muted mb-1 block">Note</label>
+            <NoteEditor value={s.note ?? ''} onSave={(text) => saveNote(s.sessionId, text)} />
+          </div>
+        </>
 
         {/* Resume button. The dangerous (skip-permissions) styling is CC-only —
             native sessions have no PTY permission flow, so it never applies. */}
         {(() => {
           const dangerous = s.provider !== 'native' && resumeDangerous;
+          // Task 6 — Resume stays disabled for a native row until a model
+          // binding exists (manual pick or a prefill auto-select). Never lets
+          // resume proceed with no binding to launch — that would be exactly
+          // the auto-launch Destin's ruling forbids.
+          const nativeNeedsPick = s.provider === 'native' && !nativeResumeBinding;
+          const busy = resumingId === s.sessionId; // create in flight — keep the button busy (ack-gap)
           return (
             /* Filled danger for skip-permissions — same call as SessionStrip's
                Create button (spec §11, change 62). See the longer note there. */
@@ -613,9 +655,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
               variant={dangerous ? 'danger' : 'primary'}
               size="lg"
               onClick={() => handleConfirmResume(s)}
+              disabled={nativeNeedsPick || busy}
               className="w-full py-1.5"
             >
-              {dangerous ? 'Resume (Dangerous)' : 'Resume Session'}
+              {busy ? 'Resuming…' : dangerous ? 'Resume (Dangerous)' : 'Resume Session'}
             </Button>
           );
         })()}
@@ -885,11 +928,12 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
           <div ref={listRef} className="scroll-fade">
             <div className="py-2">
               {loading ? (
-                <p className="text-sm text-fg-muted text-center py-8">Loading sessions...</p>
+                <LoadingState what="sessions" />
               ) : filtered.length === 0 ? (
-                <p className="text-sm text-fg-muted text-center py-8">
-                  {search.trim() ? 'No matching sessions' : 'No previous sessions found'}
-                </p>
+                <EmptyState
+                  message={search.trim() ? 'No matching sessions' : 'No previous sessions found'}
+                  action={search.trim() ? { label: 'Clear search', onClick: () => setSearch('') } : undefined}
+                />
               ) : grouped ? (
                 // Grouped by project — only when the Projects filter is active
                 [...grouped.entries()].map(([projectPath, items]) => (

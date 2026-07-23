@@ -20,12 +20,15 @@ import { ContentFindBar } from './ContentFindBar';
 import { GitReviewView } from './git/GitReviewView';
 import { DiscardConfirmDialog } from './git/DiscardConfirmDialog';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
-import { categorizeArtifact } from '../../shared/artifacts/categorization';
+import { categorizeArtifact, fileTypeGroup } from '../../shared/artifacts/categorization';
+import type { FileTypeGroup } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
-import { CloseButton, TextInput } from './ui';
+import { CloseButton, EmptyState, SearchFilterPill } from './ui';
+import { FileFilterPopover } from './project-view/FileFilterPopover';
 
-type SortKey = 'recent' | 'name' | 'type';
+// 'type' removed 2026-07-23 — the Type FILTER supersedes sorting by type.
+type SortKey = 'recent' | 'name';
 
 // Maps the rename IPC's error codes to user-facing copy. Falls back to a
 // generic message so an unexpected code still surfaces *something* rather than
@@ -108,7 +111,7 @@ function IconBtn({ name, title, onClick, active, glyph }: { name?: string; title
 
 export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }: Props) {
   const { state, dispatch } = useArtifact();
-  const { hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts, drawerWidth, setDrawerWidth, resetDrawerWidth } = useTheme();
+  const { showDeletedArtifacts, setShowDeletedArtifacts, drawerWidth, setDrawerWidth, resetDrawerWidth } = useTheme();
   const allArtifacts = state.sessionArtifacts[sessionId] ?? [];
   // Drawer open/closed AND the selected artifact are per-session (remembered
   // across switches). This drawer instance belongs to `sessionId`.
@@ -123,6 +126,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // Existence check (unchanged): mark artifacts whose file is gone as orphans,
   // folded into the "deleted" UI state alongside explicit delete versions.
   const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());
+  // Multi-select type filter; EMPTY set = all types. Matches Project View
+  // (Destin, 2026-07-23 — the drawer gained the Type group).
+  const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   useEffect(() => {
     if (!drawerOpen || allArtifacts.length === 0 || !projectRoot) {
       setOrphanIds(new Set());
@@ -147,17 +153,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
 
   const artifacts = useMemo(() => {
     return allArtifacts.filter((a) => {
-      if (hideCodeAndConfigs && categorizeArtifact(a.path) !== 'document') return false;
+      if (types.size > 0 && !types.has(fileTypeGroup(a.path))) return false;
       const isDeleted = a.status === 'deleted' || orphanIds.has(a.id);
       if (isDeleted && !showDeletedArtifacts) return false;
       return true;
     });
-  }, [allArtifacts, hideCodeAndConfigs, showDeletedArtifacts, orphanIds]);
+  }, [allArtifacts, showDeletedArtifacts, orphanIds, types]);
   const hiddenCount = allArtifacts.length - artifacts.length;
-  const deletedCount = useMemo(
-    () => allArtifacts.filter((a) => a.status === 'deleted' || orphanIds.has(a.id)).length,
-    [allArtifacts, orphanIds],
-  );
   // Look up the open document in the UNFILTERED list — toggling "Hide code" /
   // "Show deleted" while viewing a now-filtered-out file must not blank the
   // content pane (the file is still open; only the LIST hides it).
@@ -219,6 +221,24 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const [findOpen, setFindOpen] = useState(false);     // Ctrl+F find-in-document
   const [searchQuery, setSearchQuery] = useState('');  // filter the artifact list
   const [sortBy, setSortBy] = useState<SortKey>('recent');
+
+  // Change 38: sort + the two visibility toggles moved behind ONE sliders
+  // trigger into the shared FileFilterPopover (Destin: "a filter toggle menu
+  // thing like project view"). Click-outside is owned HERE — the popover's
+  // contract (FileFilterPopover.tsx:9-11) is that the parent wraps the trigger
+  // AND the popover in one ref and closes on mousedown outside it.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (filterWrapRef.current && !filterWrapRef.current.contains(e.target as Node)) {
+        setFilterOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [filterOpen]);
   const isElectron = getPlatform() === 'electron';
   const gitReviewOpen = state.gitReviewBySession?.[sessionId] ?? false;
   // Footer git status only for the open file, only while the drawer is visible.
@@ -321,7 +341,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       : artifacts.slice();
     arr.sort((a, b) => {
       if (sortBy === 'name') return fileNameOf(a).localeCompare(fileNameOf(b));
-      if (sortBy === 'type') return (extOf(fileNameOf(a)).localeCompare(extOf(fileNameOf(b))) || fileNameOf(a).localeCompare(fileNameOf(b)));
       return (b.lastModified || '').localeCompare(a.lastModified || ''); // recent first
     });
     return arr;
@@ -400,13 +419,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const listInner = (
     <>
       <div className="flex items-center justify-between px-3 py-2 border-b border-edge shrink-0">
-        {/* "Session artifacts" (Destin, 2026-07-20). This supersedes the older
-            rule that reserved the word "Artifacts" for the Project View tab —
-            the "Session" qualifier is what now carries the distinction: this
+        {/* "Session Files" (Destin, 2026-07-23) — was "Session artifacts"
+            (2026-07-20, which itself superseded reserving "Artifacts" for the
+            Project View tab). "Files" is the plain word for what this actually
+            lists; the "Session" qualifier still carries the distinction: this
             drawer is one session's activity log (created/edited/viewed all
-            appear), Project View's Artifacts tab is the project-wide set of
-            what Claude made plus pinned files. */}
-        <span className="font-semibold text-sm">Session artifacts ({listedArtifacts.length})</span>
+            appear), vs the project-wide set in Project View. */}
+        <span className="font-semibold text-sm">Session Files ({listedArtifacts.length})</span>
         {!active && (
           <CloseButton
             onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))}
@@ -415,38 +434,40 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           />
         )}
       </div>
-      {/* Search + sort */}
-      <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-edge-dim shrink-0">
-        {/* Shared TextInput (change 20). Retires the gray `focus:border-fg-muted`
-            focus and the `bg-canvas` field surface for the app-wide field look;
-            flex-1/min-w-0 stay because this input shares its row with the sort
-            <select>. */}
-        <TextInput
-          size="sm"
+      {/* Search + filter. Uses the SHARED SearchFilterPill so this row and the
+          Project View files toolbar are the same control (Destin, 2026-07-23:
+          "if the goal is consistency, we should try to better match"). The
+          click-outside listener stays here — the popover requires one ref around
+          both trigger and popover, which the pill forwards. */}
+      <div className="px-2 py-1.5 border-b border-edge-dim shrink-0">
+        <SearchFilterPill
+          ref={filterWrapRef}
+          className="w-full"
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search files"
-          aria-label="Search files"
-          className="flex-1 min-w-0"
-        />
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as SortKey)}
-          title="Sort files"
-          className="bg-canvas border border-edge rounded text-[11px] text-fg-2 px-1 py-1 outline-none cursor-pointer"
+          onChange={setSearchQuery}
+          placeholder="Search files…"
+          inputAriaLabel="Search files"
+          /* Only "Show deleted" alters the default view here; hide-code is
+             default-ON and turning it OFF reveals more, so neither is counted —
+             same convention as Project View. */
+          activeFilters={(types.size > 0 ? 1 : 0) + (showDeletedArtifacts ? 1 : 0)}
+          filterOpen={filterOpen}
+          onToggleFilter={() => setFilterOpen((o) => !o)}
         >
-          <option value="recent">Recent</option>
-          <option value="name">Name</option>
-          <option value="type">Type</option>
-        </select>
+          {filterOpen && (
+            <FileFilterPopover
+              types={types}
+              onTypesChange={setTypes}
+              sortBy={sortBy}
+              onSortBy={setSortBy}
+              showDeleted={showDeletedArtifacts}
+              onShowDeleted={setShowDeletedArtifacts}
+              showDeletedAvailable={true}
+              onClose={() => setFilterOpen(false)}
+            />
+          )}
+        </SearchFilterPill>
       </div>
-      <FilterToggles
-        hideCodeAndConfigs={hideCodeAndConfigs}
-        setHideCodeAndConfigs={setHideCodeAndConfigs}
-        showDeletedArtifacts={showDeletedArtifacts}
-        setShowDeletedArtifacts={setShowDeletedArtifacts}
-        deletedCount={deletedCount}
-      />
       <div className="flex-1 overflow-y-auto">
         {/* A pill click that couldn't resolve — shown INSTEAD of letting the
             generic empty state contradict the file the user just clicked. */}
@@ -456,15 +477,34 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           </div>
         )}
         {listedArtifacts.length === 0 ? (
-          <div className="p-3 text-xs text-fg-muted">
-            {searchQuery.trim()
-              ? <>No files match “{searchQuery.trim()}”.</>
-              : pillError
-                ? null /* the note above already explains the state */
-                : hideCodeAndConfigs && hiddenCount > 0
-                  ? <>No documents yet — {hiddenCount} code/config file{hiddenCount === 1 ? '' : 's'} hidden. Toggle off above to view all.</>
-                  : <>Nothing here yet. Files Claude writes or edits in this chat will appear here.</>}
-          </div>
+          pillError ? null /* the note above already explains the state */ : (
+            /* Same EmptyState + way-out pattern as the Project View files tab and
+               the Resume browser (change 32). A search that matched nothing gets a
+               Clear search button; the filtered-empty case points at the filter
+               popover — NOT "toggle off above", which went stale when change 38
+               moved those toggles off the drawer body and behind the sliders icon. */
+            <EmptyState
+              /* BLOCK, not inline: centered + stacked, matching the Resume
+                 browser (Destin, 2026-07-23). Inline laid the message and button
+                 out in a left-aligned row, which also clipped in a narrow drawer.
+                 px-3 keeps the text off the edges at small drawer widths. */
+              className="px-3"
+              message={
+                searchQuery.trim()
+                  ? <>No files match “{searchQuery.trim()}”.</>
+                  : types.size > 0 && hiddenCount > 0
+                    ? <>No files of the selected type{types.size === 1 ? '' : 's'} — {hiddenCount} hidden by the filter.</>
+                    : <>Nothing here yet. Files Claude writes or edits in this chat will appear here.</>
+              }
+              action={
+                searchQuery.trim()
+                  ? { label: 'Clear search', onClick: () => setSearchQuery('') }
+                  : types.size > 0 && hiddenCount > 0
+                    ? { label: 'Show all types', onClick: () => setTypes(new Set()) }
+                    : undefined
+              }
+            />
+          )
         ) : (
           listedArtifacts.map((a) => (
             <ArtifactListItem
@@ -600,7 +640,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             </span>
             {/* Inline failure note — keeps the field open so the user can correct it. */}
             {renameError && (
-              <span className="absolute left-1 top-full mt-1 text-[11px] text-red-400 whitespace-nowrap z-10">
+              <span className="absolute left-1 top-full mt-1 text-[11px] text-destructive-fg whitespace-nowrap z-10">
                 {renameError}
               </span>
             )}
@@ -784,59 +824,6 @@ export function GitFooterEntry({
 }
 
 // ─── Filter toggles (extracted so both layouts share them) ───────────────────
-
-// Real checkbox visual (lucide-style square + check) instead of the ☑/☐
-// unicode glyphs — consistent with the app's SVG iconography and crisper at
-// small sizes.
-function CheckboxGlyph({ checked }: { checked: boolean }) {
-  return (
-    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-      {checked && <path d="m8 12.5 3 3 5.5-6.5" />}
-    </svg>
-  );
-}
-
-function FilterToggles({
-  hideCodeAndConfigs, setHideCodeAndConfigs, showDeletedArtifacts, setShowDeletedArtifacts, deletedCount,
-}: {
-  hideCodeAndConfigs: boolean; setHideCodeAndConfigs: (v: boolean) => void;
-  showDeletedArtifacts: boolean; setShowDeletedArtifacts: (v: boolean) => void;
-  deletedCount: number;
-}) {
-  return (
-    <div className="shrink-0 border-b border-edge">
-      <button
-        type="button"
-        className={`w-full text-left px-2 py-1.5 text-[11px] border-t border-edge-dim flex items-center justify-between transition-colors ${
-          hideCodeAndConfigs ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
-        }`}
-        onClick={() => setHideCodeAndConfigs(!hideCodeAndConfigs)}
-        title={hideCodeAndConfigs ? 'Showing Documents and Mockups only. Click to show all.' : 'Showing all files. Click to hide code & configs.'}
-      >
-        <span className="flex items-center gap-1.5">
-          <CheckboxGlyph checked={hideCodeAndConfigs} />
-          <span>Hide code &amp; configs</span>
-        </span>
-      </button>
-      <button
-        type="button"
-        className={`w-full text-left px-2 py-1.5 text-[11px] border-t border-edge-dim flex items-center justify-between transition-colors ${
-          showDeletedArtifacts ? 'bg-inset text-fg' : 'text-fg-muted hover:text-fg hover:bg-inset'
-        }`}
-        onClick={() => setShowDeletedArtifacts(!showDeletedArtifacts)}
-        title={showDeletedArtifacts ? 'Including deleted files in the list. Click to hide them.' : `Hiding deleted files${deletedCount > 0 ? ` — ${deletedCount} hidden` : ''}. Click to include them.`}
-      >
-        <span className="flex items-center gap-1.5">
-          <CheckboxGlyph checked={showDeletedArtifacts} />
-          <span>Show deleted</span>
-        </span>
-        {!showDeletedArtifacts && deletedCount > 0 && <span className="text-fg-muted">+{deletedCount}</span>}
-      </button>
-    </div>
-  );
-}
 
 // ─── ArtifactListItem ────────────────────────────────────────────────────────
 

@@ -27,6 +27,15 @@ export interface HolderTakeoverDeps {
   leaseClient: { release(sessionId: string): Promise<void> };
   flushSessionToSpace: (claudeSessionId: string) => Promise<void>;
   pushMoved: (desktopId: string, device?: string) => void;  // dual-path push (renderer + remote)
+  // Which runtime a live desktop id is (wired to sessionManager.getSession(id)?.provider).
+  // Drives step 3's branch: a native holder has NO PTY, so the ESC byte is a no-op —
+  // it must be quiesced through its HarnessSession instead. Undefined reads as CC/PTY.
+  getProvider: (desktopId: string) => string | undefined;
+  // Native takeover quiesce (wired to nativeHost.quiesce): clears the send queue,
+  // aborts the in-flight turn, and awaits it settling so no append lands past the
+  // flush — the native analogue of the ESC-then-flush wait CC gets for free. In the
+  // deps (not imported) to keep this module's fake-collaborator test style.
+  quiesceNative: (desktopId: string) => Promise<void>;
   // Native teardown, injected rather than imported so this module keeps its
   // fake-collaborator test style. Idempotent + a no-op for non-native ids, so
   // step 8 can call it unconditionally (same contract as nativeHost.destroy).
@@ -57,17 +66,35 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
       // 2. We don't actually hold it live — just release the lease (idempotent) and
       //    stop. Nothing to interrupt / flush / move.
       if (liveDesktopIds.length === 0) {
+        console.log(`[takeover] holder ${claudeId.slice(0, 8)}: no live session — releasing lease only`);
         try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
         return;
       }
-      // 3. Interrupt EVERY live holder, not just the first. A create+resume pair can
-      //    leave two desktop ids mapped to one claude id; the old pick-first behavior
-      //    interrupted only one and left the OTHER running as a silent second writer
-      //    on the same transcript (never interrupted, flushed, or told it moved). The
-      //    single ESC byte is safe to write directly per PITFALLS "Keyboard Routing"
-      //    (single-byte writes reach Ink as a fresh keystroke regardless of timing).
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: quiescing ${liveDesktopIds.length} live holder(s)`);
+      // 3. Interrupt/quiesce EVERY live holder, not just the first. A create+resume
+      //    pair can leave two desktop ids mapped to one claude id; the old pick-first
+      //    behavior handled only one and left the OTHER running as a silent second
+      //    writer on the same transcript (never interrupted, flushed, or told it
+      //    moved). BRANCH PER HOLDER by runtime:
+      //     - native: quiesce the HarnessSession (clear queue + abort + await the
+      //       turn settling). A native session has no PTY, so the ESC byte below
+      //       would be a no-op — quiesce is its only real interrupt, and awaiting it
+      //       is what guarantees no append lands past the flush (Task 9).
+      //     - CC/PTY: a single ESC byte, safe to write directly per PITFALLS
+      //       "Keyboard Routing" (single-byte writes reach Ink as a fresh keystroke
+      //       regardless of timing).
+      //    ALL holders quiesce/interrupt BEFORE the single flush below — a still-live
+      //    turn appending after the flush is exactly the corruption this ordering
+      //    prevents. Each holder is independently try/caught (a stuck quiesce on one
+      //    must not abort the handoff of its siblings).
       for (const desktopId of liveDesktopIds) {
-        try { deps.sessionManager.sendInput(desktopId, '\x1b'); } catch { /* best-effort */ }
+        try {
+          if (deps.getProvider(desktopId) === 'native') {
+            await deps.quiesceNative(desktopId);
+          } else {
+            deps.sessionManager.sendInput(desktopId, '\x1b');
+          }
+        } catch (e) { console.warn(`[takeover] holder ${claudeId.slice(0, 8)}: quiesce/interrupt of ${desktopId.slice(0, 8)} failed:`, e); }
       }
 
       // 4-5. Wait for CC to finish flushing the interrupted turn(s), mirror
@@ -75,9 +102,11 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
       //      so one flush covers every live holder. MIRROR-BEFORE-RELEASE is
       //      load-bearing: the requester pulls the moment it sees the release, so the
       //      final turn must already be in the space.
-      try { await deps.flushSessionToSpace(claudeId); } catch { /* best-effort */ }
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: flushing to space`);
+      try { await deps.flushSessionToSpace(claudeId); } catch (e) { console.warn(`[takeover] holder ${claudeId.slice(0, 8)}: flush failed:`, e); }
 
       // 6. Release the lease so the requester can acquire. Idempotent + best-effort.
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: releasing lease`);
       try { await deps.leaseClient.release(claudeId); } catch { /* best-effort */ }
 
       // 7-8. Tell the renderer + remote each moved session, then destroy it. pushMoved
@@ -96,7 +125,8 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
         try { await deps.destroyNative(desktopId); } catch { /* best-effort */ }
         try { deps.sessionManager.destroySession(desktopId); } catch { /* best-effort */ }
       }
-    } catch { /* never surface out of a fire-and-forget hub-event handler */ }
+      console.log(`[takeover] holder ${claudeId.slice(0, 8)}: handoff complete`);
+    } catch (e) { console.warn(`[takeover] holder ${claudeId.slice(0, 8)}: unexpected escape:`, e); /* never surface out of a fire-and-forget hub-event handler */ }
   };
 }
 
@@ -111,7 +141,10 @@ export function createHolderTakeover(deps: HolderTakeoverDeps):
 // stop a user from opening their conversation.
 export interface RequesterTakeoverDeps {
   leaseClient: {
-    takeover(sessionId: string): Promise<unknown>;
+    // `| null` made explicit (was `Promise<unknown>`, which already admitted null
+    // structurally): the requester now branches on this exact value — see
+    // takeover() below — so the type should say so, not just tolerate it.
+    takeover(sessionId: string): Promise<unknown | null>;
     // `self` (deviceId-derived, from the lease client) is the correct "held by
     // US" signal — NOT `device`, which is the hostname label and collides when
     // two installs share a hostname (dev instance + built app is this plan's own
@@ -126,7 +159,13 @@ export interface RequesterTakeoverDeps {
   delay: (ms: number) => Promise<void>;                 // injectable so tests drive the poll with fake timers
 }
 
-export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' }
+// 'undeliverable' is distinct from 'timeout': the hub had NO delivery path at
+// all (offline/not connected to any device), so the holder was never asked —
+// as opposed to 'timeout', where the request WAS delivered and the holder
+// simply didn't answer within the poll budget. Blaming a device that was never
+// contacted ("<device> isn't responding") is dishonest; the renderer surfaces
+// each with its own copy (App.tsx takeoverPrompt phase).
+export interface RequesterOutcome { outcome: 'acquired' | 'timeout' | 'error' | 'undeliverable' }
 
 // The requester object's type — referenced by ipc-handlers' leaseWiring param so
 // main.ts can build the flow and pass it through without a circular import.
@@ -151,7 +190,17 @@ export function createRequesterTakeover(deps: RequesterTakeoverDeps) {
     async takeover(sessionId: string): Promise<RequesterOutcome> {
       try {
         // Broadcast the request; the holder answers by releasing its lease.
-        await deps.leaseClient.takeover(sessionId);
+        // `sent === null` means the hub had NO delivery path for this request —
+        // see lease-client.ts `takeover()` (thin passthrough to hubRequest) and
+        // sync-hub-socket.ts `request()`, which resolves null on timeout, when
+        // not connected, or when the socket drops mid-flight. In every one of
+        // those cases the holder was NEVER asked, so there is nothing to poll
+        // for: the file-fallback poll below exists to detect a delivered request
+        // going unanswered, and running it here would just delay an already-known
+        // answer for up to MAX_MS while implying a device ignored a request it
+        // never received. Return the honest outcome immediately instead.
+        const sent = await deps.leaseClient.takeover(sessionId);
+        if (sent === null) return { outcome: 'undeliverable' };
         const started = Date.now();
         // Poll until the lease frees (held:false, or the holder is now us) or we
         // hit the 10s budget. Checking free BEFORE the first sleep means an

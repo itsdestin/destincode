@@ -71,6 +71,13 @@ export function RadioGroup({
   ...aria
 }: RadioGroupProps) {
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // Don't hijack arrow keys typed into a nested editable field. An option's
+    // body can contain its own inputs (e.g. SyncSetupWizard's repo-name inputs
+    // sit inside the radio rows); without this, arrows there would bubble here
+    // and switch the selection. Native radios never do that. Keydowns from a
+    // radio or the group itself still navigate.
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable) return;
     const delta = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
       : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1
       : 0;

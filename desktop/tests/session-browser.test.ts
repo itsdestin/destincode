@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createConversationStore } from '../src/main/conversations/conversation-store';
+import { cwdToProjectSlug } from '../src/main/transcript-watcher';
 
 // Task 7 (store union): session-browser reads the Conversation Store via a
 // dynamic import of './conversations/service' inside listPastSessions. The real
@@ -50,10 +51,44 @@ afterEach(() => {
 
 // session-browser captures CLAUDE_DIR from os.homedir() at module load —
 // reset + dynamic import per call so the stub applies.
-async function listSessions(activeIds?: Set<string>) {
+async function listSessions(activeIds?: Set<string>, nativeEntries?: any[]) {
   vi.resetModules();
   const mod = await import('../src/main/session-browser');
-  return mod.listPastSessions(activeIds);
+  return mod.listPastSessions(activeIds, nativeEntries as any);
+}
+
+// Task 5: a fake NativeSessionHost.list() entry — the shape session-browser.ts
+// expects (NativeSessionListEntry & {provider:'native'}). `binding` is opaque
+// to session-browser (never read), so a minimal stub is enough.
+function nativeEntry(overrides: Partial<{
+  sessionId: string; title?: string; cwd: string; harnessId: string;
+  mtimeMs: number; sizeBytes: number; slug: string;
+}> = {}) {
+  const cwd = overrides.cwd ?? path.join(tmpHome, 'native-proj');
+  return {
+    v: 1 as const,
+    sessionId: overrides.sessionId ?? 'native-sid',
+    harnessId: overrides.harnessId ?? 'assistant',
+    binding: { modelId: 'stub', providerId: 'stub' } as any,
+    cwd,
+    createdAt: Date.parse('2026-06-01T00:00:00Z'),
+    title: overrides.title,
+    mtimeMs: overrides.mtimeMs ?? Date.parse('2026-06-15T00:00:00Z'),
+    sizeBytes: overrides.sizeBytes ?? 4321,
+    slug: overrides.slug ?? cwdToProjectSlug(cwd),
+    provider: 'native' as const,
+  };
+}
+
+/** Writes a real ~/.youcoded/sessions/<slug>/<id>.jsonl — the file the
+ *  notSyncedYet-for-native probe (nativeJsonlPath in session-browser.ts)
+ *  checks for, mirroring writeTranscript's CC equivalent above. */
+function writeNativeTranscript(cwd: string, sid: string): string {
+  const dir = path.join(tmpHome, '.youcoded', 'sessions', cwdToProjectSlug(cwd));
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${sid}.jsonl`);
+  fs.writeFileSync(file, JSON.stringify({ v: 1, sessionId: sid, cwd }) + '\n');
+  return file;
 }
 
 const SID_A = '11111111-1111-4111-8111-111111111111';
@@ -414,6 +449,184 @@ describe('listPastSessions — Conversation Store union (Phase 2a)', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0].sessionId).toBe(SID_A);
     expect(sessions[0].name).toBe('survives a broken store read');
+  });
+});
+
+describe('listPastSessions — native rows join the SAME overlay (Task 5)', () => {
+  function seedStore(): ReturnType<typeof createConversationStore> {
+    const root = path.join(tmpHome, 'YouCoded', 'Personal', 'Conversations');
+    const store = createConversationStore(root);
+    storeHolder.current = store;
+    return store;
+  }
+
+  it('lists a bare native row when there is no store record yet', async () => {
+    const entries = [nativeEntry({ sessionId: 'native-1', title: 'Native Chat' })];
+    const sessions = await listSessions(undefined, entries);
+    expect(sessions).toHaveLength(1);
+    const row = sessions[0];
+    expect(row.provider).toBe('native');
+    expect(row.sessionId).toBe('native-1');
+    expect(row.name).toBe('Native Chat');
+    expect(row.harnessId).toBe('assistant');
+  });
+
+  it('falls back to Untitled when the header has no title and no store record exists', async () => {
+    const entries = [nativeEntry({ sessionId: 'native-2', title: undefined })];
+    const sessions = await listSessions(undefined, entries);
+    expect(sessions[0].name).toBe('Untitled');
+  });
+
+  it('excludes a LIVE native session (Bug 1 parity — resuming it would spawn a second writer)', async () => {
+    const entries = [nativeEntry({ sessionId: 'native-live' })];
+    const sessions = await listSessions(new Set(['native-live']), entries);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it('enriches a matching native row with its store record: flags, tags, note, device, title, lastUsedModel', async () => {
+    const store = seedStore();
+    await store.upsert({
+      id: 'native-3',
+      provider: 'native',
+      projectName: 'native-proj',
+      originalPath: path.join(tmpHome, 'native-proj'),
+      title: 'Native Store Title',
+      lastActive: '2026-07-01T00:00:00Z',
+      device: 'phone',
+      lastUsedModel: { modelId: 'gpt-5', providerType: 'openrouter', providerLabel: 'OpenRouter' },
+    });
+    await store.setFlag('native', 'native-3', 'priority', true);
+    await store.setFlag('native', 'native-3', 'tag:tag_1', true);
+    await store.setNote('native', 'native-3', 'left off here');
+
+    const entries = [nativeEntry({ sessionId: 'native-3', title: 'Header Title' })];
+    const sessions = await listSessions(undefined, entries);
+    expect(sessions).toHaveLength(1);
+    const row = sessions[0];
+    // Store title wins over the header/nativeEntries-derived title...
+    expect(row.name).toBe('Native Store Title');
+    expect(row.device).toBe('phone');
+    expect(row.flags).toEqual({ priority: true });
+    expect(row.tags).toEqual(['tag_1']);
+    expect(row.note).toBe('left off here');
+    expect(row.lastUsedModel).toEqual({ modelId: 'gpt-5', providerType: 'openrouter', providerLabel: 'OpenRouter' });
+    expect(row.provider).toBe('native');
+    // ...but the row is still resumable (native transcript already listed locally).
+    expect(row.missingProject).toBeUndefined();
+  });
+
+  it('does not let a literal "Untitled" store title clobber a real header/derived title', async () => {
+    const store = seedStore();
+    await store.upsert({
+      id: 'native-3b',
+      provider: 'native',
+      title: 'Untitled',
+      lastActive: '2026-07-01T00:00:00Z',
+      device: 'phone',
+    });
+    const entries = [nativeEntry({ sessionId: 'native-3b', title: 'Real Header Title' })];
+    const sessions = await listSessions(undefined, entries);
+    expect(sessions[0].name).toBe('Real Header Title');
+  });
+
+  it('gates resume on a store-only native record whose project folder is not on this device (missingProject)', async () => {
+    const store = seedStore();
+    await store.upsert({
+      id: 'native-4',
+      provider: 'native',
+      projectName: 'native-proj-foreign',
+      originalPath: path.join(tmpHome, 'not-on-this-device', 'native-proj-foreign'),
+      title: 'Foreign Native Session',
+      lastActive: '2026-07-05T00:00:00Z',
+      device: 'other-device',
+    });
+    // No matching nativeEntries row — this session never ran on this device.
+    const sessions = await listSessions();
+    expect(sessions).toHaveLength(1);
+    const row = sessions[0];
+    expect(row.provider).toBe('native');
+    expect(row.missingProject).toBe(true);
+    expect(row.projectSlug).toBe('');
+  });
+
+  it('flags notSyncedYet for a store-only native record using the NATIVE probe path (~/.youcoded/sessions), not the CC one', async () => {
+    const store = seedStore();
+    const localProj = path.join(tmpHome, 'native-local-proj');
+    fs.mkdirSync(localProj, { recursive: true });
+    await store.upsert({
+      id: 'native-5',
+      provider: 'native',
+      projectName: 'native-local-proj',
+      originalPath: localProj,
+      title: 'Native Folder Here',
+      lastActive: '2026-07-06T00:00:00Z',
+      device: 'other-device',
+    });
+    // Deliberately no ~/.youcoded/sessions/... file yet (sync hasn't delivered
+    // the transcript) — and deliberately no ~/.claude/projects/... file either,
+    // which would be the WRONG probe for a native record.
+    const sessions = await listSessions();
+    const row = sessions.find((s: any) => s.sessionId === 'native-5');
+    expect(row?.notSyncedYet).toBe(true);
+    expect(row?.missingProject).toBeUndefined();
+  });
+
+  it('clears notSyncedYet once the native transcript materializes locally', async () => {
+    const store = seedStore();
+    const localProj = path.join(tmpHome, 'native-local-proj-2');
+    fs.mkdirSync(localProj, { recursive: true });
+    await store.upsert({
+      id: 'native-6',
+      provider: 'native',
+      projectName: 'native-local-proj-2',
+      originalPath: localProj,
+      title: 'Native Materialized',
+      lastActive: '2026-07-07T00:00:00Z',
+      device: 'other-device',
+    });
+    writeNativeTranscript(localProj, 'native-6');
+
+    const sessions = await listSessions();
+    const row = sessions.find((s: any) => s.sessionId === 'native-6');
+    expect(row?.notSyncedYet).toBeUndefined();
+    expect(row?.missingProject).toBeUndefined();
+    expect(row?.projectSlug).toBe(cwdToProjectSlug(localProj));
+    expect(row?.projectPath).toBe(localProj);
+  });
+
+  it('overrides a native row\'s local project/slug from the store when the resolved folder holds the transcript (cross-device)', async () => {
+    const store = seedStore();
+    const resolvedLocal = path.join(tmpHome, 'native-resolved-proj');
+    fs.mkdirSync(resolvedLocal, { recursive: true });
+    writeNativeTranscript(resolvedLocal, 'native-7');
+    savedHolder.current = [{ path: resolvedLocal }];
+
+    await store.upsert({
+      id: 'native-7',
+      provider: 'native',
+      projectName: 'native-resolved-proj',
+      originalPath: path.join(tmpHome, 'not-on-this-device', 'native-resolved-proj'),
+      title: 'Cross Device Native',
+      lastActive: '2026-07-08T00:00:00Z',
+      device: 'other-device',
+    });
+
+    // The legacy (nativeEntries) row carries a STALE cwd/slug — the kind a
+    // session recorded before a folder move would leave behind.
+    const staleCwd = path.join(tmpHome, 'stale-legacy-cwd');
+    const entries = [nativeEntry({ sessionId: 'native-7', cwd: staleCwd })];
+    const sessions = await listSessions(undefined, entries);
+    const row = sessions.find((s: any) => s.sessionId === 'native-7');
+    expect(row?.projectPath).toBe(resolvedLocal);
+    expect(row?.projectSlug).toBe(cwdToProjectSlug(resolvedLocal));
+  });
+
+  it('degrades to bare native rows when store.list() throws', async () => {
+    storeHolder.current = { list: () => Promise.reject(new Error('store dir unreadable')) };
+    const entries = [nativeEntry({ sessionId: 'native-8', title: 'Survives Broken Store' })];
+    const sessions = await listSessions(undefined, entries);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].name).toBe('Survives Broken Store');
   });
 });
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../state/theme-context';
 import { useMarketplace } from '../state/marketplace-context';
 import FavoriteStar from './marketplace/FavoriteStar';
@@ -168,7 +168,13 @@ export default function ThemeScreen({ onClose, onSendInput, onOpenMarketplace, o
                   tabIndex={0}
                   onClick={() => setTheme(t.slug)}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTheme(t.slug); } }}
-                  className={`relative rounded-lg overflow-hidden border text-left transition-colors cursor-pointer ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
+                  // Change 22 reaches these tiles ONLY as a focus ring. They are
+                  // deliberately NOT .layer-surface: the tile paints the
+                  // *previewed* theme's own tokens inline, so painting the
+                  // active theme's panel over it would defeat the preview.
+                  // They were the only keyboard-reachable control in this file
+                  // with no focus indication at all.
+                  className={`relative rounded-lg overflow-hidden border text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
                 >
                   <div style={{ height: 6, background: `linear-gradient(90deg, ${t.tokens.canvas}, ${t.tokens.accent})` }} />
                   <div className="px-2 py-1.5" style={{ background: t.tokens.canvas }}>
@@ -325,6 +331,15 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
     }, 150);
   }, [theme, isUserTheme]);
 
+  // Change 40 (§9.D): the roundness slider is CONTROLLED, but its source of
+  // truth (currentRoundness, below) is derived from the theme FILE via an async
+  // writeFile — it does not update within a drag. A bare `value={currentRoundness}`
+  // would therefore freeze the thumb mid-drag. So we keep a local draft the drag
+  // updates instantly, and re-sync it whenever currentRoundness changes for an
+  // EXTERNAL reason (switching which theme is being edited) — the exact staleness
+  // §9.D flagged. Same draft+resync shape as EngineCard's context knob.
+  const [roundnessDraft, setRoundnessDraft] = useState(0.5);
+
   const updateRoundness = useCallback((value: number) => {
     if (!isUserTheme) return;
     const shape = roundnessToShape(value);
@@ -356,6 +371,10 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
     if (!md) return 0.5;
     return Math.min(parseInt(md) / 16, 1);
   })();
+
+  // Re-sync the draft when the underlying theme's roundness changes for a reason
+  // other than this slider (e.g. the editor is pointed at a different theme).
+  useEffect(() => { setRoundnessDraft(currentRoundness); }, [currentRoundness]);
 
   return (
     <div className="flex flex-col h-full">
@@ -408,8 +427,8 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
                 <span className="text-[10px] text-fg-faint">□</span>
                 <input
                   type="range" min="0" max="1" step="0.05"
-                  defaultValue={currentRoundness}
-                  onChange={e => updateRoundness(parseFloat(e.target.value))}
+                  value={roundnessDraft}
+                  onChange={e => { const v = parseFloat(e.target.value); setRoundnessDraft(v); updateRoundness(v); }}
                   className="flex-1 accent-accent"
                 />
                 <span className="text-[10px] text-fg-faint">◯</span>

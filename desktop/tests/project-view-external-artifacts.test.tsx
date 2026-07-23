@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vite
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import { ArtifactContext } from '../src/renderer/state/ArtifactContext';
 import { initialArtifactState } from '../src/renderer/state/artifact-tracker';
+import type { FileTypeGroup } from '../src/shared/artifacts/categorization';
 
 // jsdom has no IntersectionObserver; ArtifactThumbnail (rendered per card)
 // needs one for any non-fallback file type (e.g. the .md card below) to mount
@@ -68,8 +69,11 @@ const stubClaude = (files: any[], tracked: any[], opts: { gated?: boolean } = {}
 };
 
 const props = {
-  project: PROJECT, search: '', typeFilter: 'all' as const,
-  sortBy: 'name' as const, hideCode: true, refreshKey: 0,
+  // Type filter went multi-select on 2026-07-23 and "Hide code & configs" was
+  // retired the same day (code is just one of the types). An EMPTY set means
+  // "all types", which is the unfiltered view these tests want.
+  project: PROJECT, search: '', types: new Set<FileTypeGroup>(),
+  sortBy: 'name' as const, refreshKey: 0,
 };
 
 // FilesTab needs ArtifactContext (useArtifact throws without a provider).

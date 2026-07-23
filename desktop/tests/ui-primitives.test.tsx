@@ -292,6 +292,22 @@ describe('Radio / RadioGroup', () => {
     fireEvent.keyDown(screen.getByRole('radiogroup'), { key: 'ArrowUp' });
     expect(onChange).toHaveBeenCalledWith('c');
   });
+
+  it('does NOT navigate on arrow keys typed into a nested field', () => {
+    // An option body can hold its own input (SyncSetupWizard's repo-name fields
+    // sit inside the radio rows). Arrows there must move the text cursor, not
+    // switch the selection — the guard change 39 added.
+    const onChange = vi.fn();
+    render(
+      <RadioGroup options={['a', 'b']} value="a" onChange={onChange} aria-label="Modes">
+        <Radio checked onChange={() => onChange('a')} aria-label="a" />
+        <input aria-label="nested" />
+        <Radio checked={false} onChange={() => onChange('b')} aria-label="b" />
+      </RadioGroup>,
+    );
+    fireEvent.keyDown(screen.getByLabelText('nested'), { key: 'ArrowDown' });
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
 
 describe('field surface', () => {
